@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AITab, AITabState } from "./AITabTypes";
+import type { Theme } from "./aiAssistantPanelTheme";
 import { GroupParticipantPanel, type Participant } from "./GroupParticipantPanel";
 import { HistoryGroupDiscussionTab } from "./HistoryGroupDiscussionTab";
 import { VEConversationView, type VEConversationHandle, type VEMessage } from "./VEConversationView";
 
 type AssistantActiveTabContentProps = {
     activeTab: AITab;
+    tabs?: AITab[];
     isLocalTabActive: boolean;
     isProjectTabActive: boolean;
     lang: string;
-    theme: any;
+    theme: Theme;
     /** Get saved state for a tab (from useAITabManager) */
     getTabState?: (tabId: string) => AITabState | undefined;
     /** Save state for a tab (from useAITabManager) */
@@ -23,28 +25,63 @@ type AssistantActiveTabContentProps = {
  * (sharing the same AssistantConversationBody + AssistantInputStack layout but
  * with independent state). This component only handles VE and group tab types.
  */
-export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState }: AssistantActiveTabContentProps) {
-    // Local and project tabs are rendered by AIAssistantPanel directly
-    if (isLocalTabActive || isProjectTabActive) return null;
+export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState }: AssistantActiveTabContentProps) {
+    const contentTabs = useMemo(() => {
+        const sourceTabs = tabs && tabs.length > 0 ? tabs : [activeTab];
+        return sourceTabs.filter(tab =>
+            isPersistentConversationTab(tab) || (tab.id === activeTab.id && tab.type === "group")
+        );
+    }, [activeTab, tabs]);
+    if (contentTabs.length === 0) return null;
 
+    return (
+        <>
+            {contentTabs.map(tab => (
+                <AssistantTabContentPane
+                    key={tab.id}
+                    tab={tab}
+                    active={tab.id === activeTab.id && !isLocalTabActive && !isProjectTabActive}
+                    lang={lang}
+                    theme={theme}
+                    getTabState={getTabState}
+                    saveTabState={saveTabState}
+                />
+            ))}
+        </>
+    );
+}
+
+function isPersistentConversationTab(tab: AITab): boolean {
+    return tab.type === "ve" || (tab.type === "group" && !!tab.veId);
+}
+
+type AssistantTabContentPaneProps = {
+    tab: AITab;
+    active: boolean;
+    lang: string;
+    theme: Theme;
+    getTabState?: (tabId: string) => AITabState | undefined;
+    saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
+};
+
+function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTabState }: AssistantTabContentPaneProps) {
     let content: React.ReactNode = null;
 
-    if (activeTab.type === "ve" && activeTab.veId) {
+    if (tab.type === "ve" && tab.veId) {
         // VE 1:1 tab: render VEConversationView without participant panel.
         // Uses UnifiedVEGroupWrapper with no participants to share the same
         // component type as group tabs, preventing React unmount on tab upgrade.
         content = (
             <UnifiedVEGroupWrapper
-                key={activeTab.id}
-                tab={activeTab}
+                tab={tab}
                 theme={theme}
                 lang={lang}
                 getTabState={getTabState}
                 saveTabState={saveTabState}
             />
         );
-    } else if (activeTab.type === "group") {
-        const isLiveGroup = !!activeTab.veId && Array.isArray(activeTab.participants) && activeTab.participants.length > 0;
+    } else if (tab.type === "group") {
+        const isLiveGroup = !!tab.veId && Array.isArray(tab.participants) && tab.participants.length > 0;
 
         if (isLiveGroup) {
             // Group tab: render VEConversationView with participant panel.
@@ -52,8 +89,7 @@ export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProje
             // preserves the VEConversationView instance when upgrading from VE to group.
             content = (
                 <UnifiedVEGroupWrapper
-                    key={activeTab.id}
-                    tab={activeTab}
+                    tab={tab}
                     theme={theme}
                     lang={lang}
                     getTabState={getTabState}
@@ -63,10 +99,9 @@ export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProje
         } else {
             content = (
                 <HistoryGroupDiscussionTab
-                    key={activeTab.id}
-                    discussionId={activeTab.discussionId || activeTab.id.replace(/^history-/, "")}
-                    title={activeTab.title}
-                    readOnly={!!activeTab.readOnly}
+                    discussionId={tab.discussionId || tab.id.replace(/^history-/, "")}
+                    title={tab.title}
+                    readOnly={!!tab.readOnly}
                     theme={theme}
                     lang={lang}
                 />
@@ -81,14 +116,14 @@ export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProje
     // height:0 provides an explicit percentage-height reference for children using height:100%
     // (CSS spec: percentage heights resolve against the parent's explicit height, not flex-computed height).
     return (
-        <div style={{ flex: 1, minHeight: 0, height: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div aria-hidden={!active} style={{ flex: active ? 1 : "0 0 auto", minHeight: 0, height: active ? 0 : 0, display: active ? "flex" : "none", flexDirection: "column", overflow: "hidden" }}>
             {content}
         </div>
     );
 }
 
 // --- Shared Hook: useVEStatePersistence ---
-// Manages VEConversationView state persistence on unmount (tab switch).
+// Manages VEConversationView state persistence on unmount (tab close or removal).
 
 function useVEStatePersistence(
     tabId: string,
@@ -132,7 +167,7 @@ function useVEStatePersistence(
 
 interface UnifiedVEGroupWrapperProps {
     tab: AITab;
-    theme: any;
+    theme: Theme;
     lang: string;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;

@@ -417,15 +417,23 @@ func (s *routeSnapshot) mergeCandidate(resultsByHub map[string]resolvedCandidate
 	if candidate.hub == nil {
 		return
 	}
-	current, ok := resultsByHub[candidate.hub.ID]
+	key := virtualHubCandidateKey(candidate)
+	current, ok := resultsByHub[key]
 	next := resolvedCandidate{
 		view:          hubToAccessView(candidate.hub, email, candidate.routeDomain, candidate.tenantID),
 		routePriority: candidate.routePriority,
 		rank:          candidate.rank,
 	}
 	if !ok || compareHubPriority(next, current) {
-		resultsByHub[candidate.hub.ID] = next
+		resultsByHub[key] = next
 	}
+}
+
+func virtualHubCandidateKey(candidate snapshotCandidate) string {
+	if candidate.hub == nil {
+		return ""
+	}
+	return candidate.hub.ID + "\x00" + strings.TrimSpace(candidate.tenantID)
 }
 
 func buildResolveResult(email string, resultsByHub map[string]resolvedCandidate, emptyMessage string) *ResolveResult {

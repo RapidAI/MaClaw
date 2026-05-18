@@ -90,11 +90,15 @@ func TestAsyncJobRedactsResultAndError(t *testing.T) {
 	p := agentservice.Principal{TenantID: "tenant", UserID: "user"}
 	jsonEscapedRoot, _ := json.Marshal(dataRoot)
 	job := m.createUserJob("test.success", p, func(context.Context) (any, error) {
-		return map[string]string{
+		return map[string]any{
 			"message":      "token=secret-token path=" + dataRoot,
 			"escaped_path": string(jsonEscapedRoot),
 			"endpoint_url": "https://user:pass@example.test/api?api_key=url-secret&trace=ok",
-			"author":       "visible-author",
+			"api_secret":   "plain-secret-value",
+			"nested": map[string]string{
+				"auth_header": "Bearer nested-secret-value",
+			},
+			"author": "visible-author",
 		}, nil
 	})
 	deadline := time.Now().Add(3 * time.Second)
@@ -105,7 +109,7 @@ func TestAsyncJobRedactsResultAndError(t *testing.T) {
 		}
 		if got.Status == asyncJobStatusSucceeded {
 			text := string(got.Result)
-			if strings.Contains(text, "secret-token") || strings.Contains(text, "url-secret") || strings.Contains(text, "user:pass") || strings.Contains(text, dataRoot) || strings.Contains(text, filepath.ToSlash(dataRoot)) || strings.Contains(text, string(jsonEscapedRoot)) {
+			if strings.Contains(text, "secret-token") || strings.Contains(text, "url-secret") || strings.Contains(text, "plain-secret-value") || strings.Contains(text, "nested-secret-value") || strings.Contains(text, "user:pass") || strings.Contains(text, dataRoot) || strings.Contains(text, filepath.ToSlash(dataRoot)) || strings.Contains(text, string(jsonEscapedRoot)) {
 				t.Fatalf("expected redacted async result, got %s", text)
 			}
 			if !strings.Contains(text, "trace=ok") {

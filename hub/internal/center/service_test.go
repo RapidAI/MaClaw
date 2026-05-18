@@ -746,6 +746,11 @@ func TestRegisterUsesCorporateEmailDomainsAndPublicSignup(t *testing.T) {
 	var gotDomains []string
 	var gotAcceptPublicSignup bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/hubs/hub_multi_domain/heartbeat" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
 		if r.URL.Path != "/api/hubs/register" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}

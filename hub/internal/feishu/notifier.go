@@ -40,10 +40,23 @@ func newLarkBot(appID, appSecret string) *lark.Bot {
 
 const openIDMapKey = "feishu_openid_map"
 
+func tenantBindingKey(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	if tenantID == store.DefaultTenantID {
+		return email
+	}
+	return tenantID + "\x00" + email
+}
+
 // BindingInfo holds the open_id and optional mobile for a Feishu binding.
 type BindingInfo struct {
-	OpenID string `json:"open_id"`
-	Mobile string `json:"mobile,omitempty"`
+	OpenID   string `json:"open_id"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Mobile   string `json:"mobile,omitempty"`
 }
 
 // Mailer is the subset of mail.Service used by the Feishu notifier.
@@ -132,7 +145,7 @@ type Notifier struct {
 	aliasMu   sync.RWMutex
 	aliasToID map[string]map[string]string // open_id → (alias → session_id)
 	idToAlias map[string]map[string]string // open_id → (session_id → alias)
-	aliasSeq  map[string]int              // open_id → next alias number
+	aliasSeq  map[string]int               // open_id → next alias number
 
 	// plugin is the optional FeishuPlugin reference. When set, handleBotMessage
 	// will attempt to route messages through the IM Adapter pipeline first.
@@ -154,6 +167,7 @@ type Notifier struct {
 // NotifyBroadcaster sends verification codes to all reachable channels.
 type NotifyBroadcaster interface {
 	BroadcastVerifyCode(ctx context.Context, email, code, excludePlatform string) (sentTo string, err error)
+	BroadcastVerifyCodeForTenant(ctx context.Context, tenantID, email, code, excludePlatform string) (sentTo string, err error)
 }
 
 // New creates a Notifier. The notifier is always returned (never nil) so that
@@ -275,14 +289,22 @@ func (n *Notifier) Bot() *lark.Bot {
 
 // BindOpenID stores an email → open_id mapping for personal Feishu users.
 func (n *Notifier) BindOpenID(email, openID, mobile string) {
+	n.BindOpenIDForTenant(store.DefaultTenantID, email, openID, mobile)
+}
+
+func (n *Notifier) BindOpenIDForTenant(tenantID, email, openID, mobile string) {
 	if email == "" || openID == "" {
 		return
 	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
 	n.oidMu.Lock()
-	n.oidCache[email] = BindingInfo{OpenID: openID, Mobile: mobile}
+	n.oidCache[tenantBindingKey(tenantID, email)] = BindingInfo{OpenID: openID, TenantID: tenantID, Mobile: mobile}
 	n.oidMu.Unlock()
 	n.saveOpenIDMap()
-	log.Printf("[feishu] bound open_id for email=%s", email)
+	log.Printf("[feishu] bound open_id for tenant=%s email=%s", tenantID, email)
 }
 
 // GetOpenIDMap returns a copy of the current email→open_id bindings (legacy).
@@ -309,8 +331,12 @@ func (n *Notifier) GetBindingsMap() map[string]BindingInfo {
 
 // RemoveOpenID removes an email → open_id binding.
 func (n *Notifier) RemoveOpenID(email string) {
+	n.RemoveOpenIDForTenant(store.DefaultTenantID, email)
+}
+
+func (n *Notifier) RemoveOpenIDForTenant(tenantID, email string) {
 	n.oidMu.Lock()
-	delete(n.oidCache, email)
+	delete(n.oidCache, tenantBindingKey(tenantID, email))
 	n.oidMu.Unlock()
 	n.saveOpenIDMap()
 }
@@ -326,6 +352,12 @@ func (n *Notifier) loadOpenIDMap() {
 	// Try new format first: map[string]BindingInfo (values are JSON objects).
 	var m map[string]BindingInfo
 	if err := json.Unmarshal([]byte(raw), &m); err == nil {
+		for key, info := range m {
+			if strings.TrimSpace(info.TenantID) == "" {
+				info.TenantID = store.DefaultTenantID
+				m[key] = info
+			}
+		}
 		n.oidMu.Lock()
 		n.oidCache = m
 		n.oidMu.Unlock()
@@ -339,7 +371,7 @@ func (n *Notifier) loadOpenIDMap() {
 	}
 	migrated := make(map[string]BindingInfo, len(legacy))
 	for email, oid := range legacy {
-		migrated[email] = BindingInfo{OpenID: oid}
+		migrated[tenantBindingKey(store.DefaultTenantID, email)] = BindingInfo{OpenID: oid, TenantID: store.DefaultTenantID}
 	}
 	n.oidMu.Lock()
 	n.oidCache = migrated
@@ -425,9 +457,13 @@ func (n *Notifier) clearDedup(sessionID string) {
 
 // resolveOpenID returns the open_id for an email, if bound.
 func (n *Notifier) resolveOpenID(email string) string {
+	return n.resolveOpenIDForTenant(store.DefaultTenantID, email)
+}
+
+func (n *Notifier) resolveOpenIDForTenant(tenantID, email string) string {
 	n.oidMu.RLock()
 	defer n.oidMu.RUnlock()
-	return n.oidCache[email].OpenID
+	return n.oidCache[tenantBindingKey(tenantID, email)].OpenID
 }
 
 // ---------------------------------------------------------------------------
@@ -1388,6 +1424,13 @@ func (n *Notifier) ResolveOpenIDByEmail(email string) string {
 		return ""
 	}
 	return n.resolveOpenID(strings.ToLower(strings.TrimSpace(email)))
+}
+
+func (n *Notifier) ResolveOpenIDByTenantEmail(tenantID, email string) string {
+	if n == nil {
+		return ""
+	}
+	return n.resolveOpenIDForTenant(tenantID, strings.ToLower(strings.TrimSpace(email)))
 }
 
 // SendTextToOpenID sends a plain text message to a Feishu user by open_id.

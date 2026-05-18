@@ -609,6 +609,10 @@ func (p *FeishuPlugin) LookupByEmail(email string) string {
 	return p.notifier.resolveOpenID(email)
 }
 
+func (p *FeishuPlugin) LookupByTenantEmail(tenantID, email string) string {
+	return p.notifier.resolveOpenIDForTenant(tenantID, email)
+}
+
 // Capabilities declares that Feishu supports rich text cards, Markdown,
 // images, and button interactions.
 func (p *FeishuPlugin) Capabilities() im.CapabilityDeclaration {

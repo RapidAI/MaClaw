@@ -62,6 +62,9 @@ func (s *WorkflowStoreSQLite) GetWorkflow(ctx context.Context, id string) (*work
 }
 
 func (s *WorkflowStoreSQLite) ListWorkflows(ctx context.Context, ownerID string) ([]workflow.WorkflowDefinition, error) {
+	if ownerID == "" {
+		return nil, errors.New("ownerID is required")
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, owner_id, name, description, created_at, updated_at
 		 FROM workflow_definitions WHERE owner_id = ? ORDER BY updated_at DESC`, ownerID)
@@ -84,6 +87,66 @@ func (s *WorkflowStoreSQLite) ListWorkflows(ctx context.Context, ownerID string)
 		defs = append(defs, def)
 	}
 	return defs, rows.Err()
+}
+
+// UpdateWorkflow updates mutable workflow definition metadata.
+func (s *WorkflowStoreSQLite) UpdateWorkflow(ctx context.Context, def *workflow.WorkflowDefinition) error {
+	if def == nil {
+		return errors.New("workflow definition is required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_definitions SET name = ?, description = ?, updated_at = ? WHERE id = ?`,
+		def.Name,
+		def.Description,
+		def.UpdatedAt.UTC().Format(time.RFC3339),
+		def.ID,
+	)
+	if err != nil {
+		return err
+	}
+	return ensureRowsAffected(res)
+}
+
+// DeleteWorkflow deletes a workflow definition and its versions when it has no running instances.
+func (s *WorkflowStoreSQLite) DeleteWorkflow(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var running int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM workflow_instances WHERE workflow_id = ? AND status IN ('running', 'blocked')`, id,
+	).Scan(&running); err != nil {
+		return err
+	}
+	if running > 0 {
+		return errors.New("cannot delete workflow with running instances")
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_versions WHERE workflow_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM workflow_definitions WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if err := ensureRowsAffected(res); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func ensureRowsAffected(res sql.Result) error {
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -239,12 +302,12 @@ func (s *WorkflowStoreSQLite) ListPendingReviews(ctx context.Context, page, page
 // scanVersion scans a single row into a WorkflowVersion.
 func (s *WorkflowStoreSQLite) scanVersion(row *sql.Row) (*workflow.WorkflowVersion, error) {
 	var (
-		ver                          workflow.WorkflowVersion
-		status                       string
-		graphJSON                    string
-		submittedAt, publishedAt     sql.NullString
-		rejectionReason              string
-		createdAt, updatedAt         string
+		ver                      workflow.WorkflowVersion
+		status                   string
+		graphJSON                string
+		submittedAt, publishedAt sql.NullString
+		rejectionReason          string
+		createdAt, updatedAt     string
 	)
 	if err := row.Scan(
 		&ver.ID, &ver.WorkflowID, &ver.VersionNumber, &status, &graphJSON,
@@ -280,12 +343,12 @@ func (s *WorkflowStoreSQLite) scanVersion(row *sql.Row) (*workflow.WorkflowVersi
 // scanVersionFromRows scans the current row from sql.Rows into a WorkflowVersion.
 func (s *WorkflowStoreSQLite) scanVersionFromRows(rows *sql.Rows) (*workflow.WorkflowVersion, error) {
 	var (
-		ver                          workflow.WorkflowVersion
-		status                       string
-		graphJSON                    string
-		submittedAt, publishedAt     sql.NullString
-		rejectionReason              string
-		createdAt, updatedAt         string
+		ver                      workflow.WorkflowVersion
+		status                   string
+		graphJSON                string
+		submittedAt, publishedAt sql.NullString
+		rejectionReason          string
+		createdAt, updatedAt     string
 	)
 	if err := rows.Scan(
 		&ver.ID, &ver.WorkflowID, &ver.VersionNumber, &status, &graphJSON,

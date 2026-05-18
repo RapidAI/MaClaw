@@ -57,6 +57,9 @@ func (s *PGWorkflowStore) GetWorkflow(ctx context.Context, id string) (*Workflow
 }
 
 func (s *PGWorkflowStore) ListWorkflows(ctx context.Context, ownerID string) ([]WorkflowDefinition, error) {
+	if ownerID == "" {
+		return nil, errors.New("ownerID is required")
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, owner_id, name, description, created_at, updated_at
 		 FROM workflow_definitions WHERE owner_id = $1 ORDER BY updated_at DESC`, ownerID)
@@ -76,6 +79,66 @@ func (s *PGWorkflowStore) ListWorkflows(ctx context.Context, ownerID string) ([]
 		defs = append(defs, def)
 	}
 	return defs, rows.Err()
+}
+
+// UpdateWorkflow updates mutable workflow definition metadata.
+func (s *PGWorkflowStore) UpdateWorkflow(ctx context.Context, def *WorkflowDefinition) error {
+	if def == nil {
+		return errors.New("workflow definition is required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_definitions SET name = $1, description = $2, updated_at = $3 WHERE id = $4`,
+		def.Name,
+		def.Description,
+		def.UpdatedAt.UTC(),
+		def.ID,
+	)
+	if err != nil {
+		return err
+	}
+	return ensurePGRowsAffected(res)
+}
+
+// DeleteWorkflow deletes a workflow definition and its versions when it has no running instances.
+func (s *PGWorkflowStore) DeleteWorkflow(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var running int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM workflow_instances WHERE workflow_id = $1 AND status IN ('running', 'blocked')`, id,
+	).Scan(&running); err != nil {
+		return err
+	}
+	if running > 0 {
+		return errors.New("cannot delete workflow with running instances")
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_versions WHERE workflow_id = $1`, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM workflow_definitions WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if err := ensurePGRowsAffected(res); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func ensurePGRowsAffected(res sql.Result) error {
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

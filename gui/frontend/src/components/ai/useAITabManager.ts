@@ -502,7 +502,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     }, [onCloseVESession, updateTabState]);
 
     const saveTabState = useCallback((tabId: string, state: Partial<AITabState>) => {
-        const existing = tabStatesRef.current.get(tabId) || {
+        const openTab = tabStateRef.current.tabs.find(t => t.id === tabId);
+        const cachedState = tabStatesRef.current.get(tabId);
+        if (!openTab && !cachedState) return;
+        const existing = cachedState || {
             history: [],
             scrollTop: 0,
             inputText: "",

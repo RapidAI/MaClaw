@@ -534,10 +534,11 @@ type heartbeatConfigProvider struct {
 	settings store.SystemSettingsRepository
 }
 
-func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID string) (*ws.HeartbeatConfigPayload, error) {
+func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID string, tenantID string) (*ws.HeartbeatConfigPayload, error) {
+	settings := scopedSystemSettingsForTenant(tenantID, p.settings)
 	policy := corelib.DefaultCapabilityMarketPolicy()
-	if p.settings != nil {
-		raw, err := p.settings.Get(ctx, "capability_market_policy")
+	if settings != nil {
+		raw, err := settings.Get(ctx, "capability_market_policy")
 		if err != nil {
 			log.Printf("[hub-config] failed to read capability_market_policy: %v", err)
 			// Don't return error — capability_market_policy failure should not
@@ -550,5 +551,47 @@ func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID 
 			}
 		}
 	}
-	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorization(ctx, p.settings)}, nil
+	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorizationForTenant(ctx, p.settings, tenantID)}, nil
+}
+
+type tenantScopedSystemSettings struct {
+	tenantID string
+	base     store.SystemSettingsRepository
+}
+
+func scopedSystemSettingsForTenant(tenantID string, base store.SystemSettingsRepository) store.SystemSettingsRepository {
+	tenantID = strings.TrimSpace(tenantID)
+	if base == nil || tenantID == "" || tenantID == store.DefaultTenantID {
+		return base
+	}
+	return tenantScopedSystemSettings{tenantID: tenantID, base: base}
+}
+
+func (s tenantScopedSystemSettings) Set(ctx context.Context, key, valueJSON string) error {
+	return s.base.Set(ctx, s.key(key), valueJSON)
+}
+
+func (s tenantScopedSystemSettings) Get(ctx context.Context, key string) (string, error) {
+	return s.base.Get(ctx, s.key(key))
+}
+
+func (s tenantScopedSystemSettings) TenantID() string {
+	return s.tenantID
+}
+
+func (s tenantScopedSystemSettings) key(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" || strings.HasPrefix(key, "tenant:") || isGlobalHeartbeatSettingKey(key) {
+		return key
+	}
+	return "tenant:" + s.tenantID + ":" + key
+}
+
+func isGlobalHeartbeatSettingKey(key string) bool {
+	switch key {
+	case "center_registration", "center_base_url", "admin_email", "hub_installation_id", "server_public_base_url":
+		return true
+	default:
+		return false
+	}
 }

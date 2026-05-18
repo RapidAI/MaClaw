@@ -50,6 +50,18 @@ func newTestPGStore(t *testing.T) *PGWorkflowStore {
 		CREATE INDEX IF NOT EXISTS idx_wf_ver_status ON workflow_versions(status);
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_ver_published ON workflow_versions(workflow_id)
 			WHERE status = 'published';
+
+		CREATE TABLE IF NOT EXISTS workflow_instances (
+			id              TEXT PRIMARY KEY,
+			workflow_id     TEXT NOT NULL,
+			version_id      TEXT NOT NULL REFERENCES workflow_versions(id),
+			status          TEXT NOT NULL DEFAULT 'running',
+			current_node_id TEXT DEFAULT '',
+			instance_data   TEXT DEFAULT '{}',
+			trigger_data    TEXT DEFAULT '',
+			created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			completed_at    TIMESTAMP
+		);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("create schema: %v", err)
@@ -145,6 +157,78 @@ func TestPGWorkflowStore_ListWorkflows(t *testing.T) {
 	}
 	if len(defs) != 1 {
 		t.Fatalf("expected 1 workflow for user_b, got %d", len(defs))
+	}
+}
+
+func TestPGWorkflowStore_UpdateWorkflow(t *testing.T) {
+	store := newTestPGStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	def := &WorkflowDefinition{ID: "wf_update", OwnerID: "user_a", Name: "Old", Description: "Old desc", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateWorkflow(ctx, def); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+
+	def.Name = "New"
+	def.Description = "New desc"
+	def.UpdatedAt = now.Add(time.Hour)
+	if err := store.UpdateWorkflow(ctx, def); err != nil {
+		t.Fatalf("UpdateWorkflow: %v", err)
+	}
+
+	got, err := store.GetWorkflow(ctx, def.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflow: %v", err)
+	}
+	if got.Name != "New" || got.Description != "New desc" {
+		t.Fatalf("workflow not updated: %+v", got)
+	}
+}
+
+func TestPGWorkflowStore_DeleteWorkflow(t *testing.T) {
+	store := newTestPGStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	def := &WorkflowDefinition{ID: "wf_delete", OwnerID: "user_a", Name: "Delete", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateWorkflow(ctx, def); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	ver := &WorkflowVersion{ID: "ver_delete", WorkflowID: def.ID, VersionNumber: "0.1.0", Status: VersionDraft, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateVersion(ctx, ver); err != nil {
+		t.Fatalf("CreateVersion: %v", err)
+	}
+
+	if err := store.DeleteWorkflow(ctx, def.ID); err != nil {
+		t.Fatalf("DeleteWorkflow: %v", err)
+	}
+	got, err := store.GetWorkflow(ctx, def.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflow: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected workflow deleted, got %+v", got)
+	}
+}
+
+func TestPGWorkflowStore_DeleteWorkflowRejectsRunningInstance(t *testing.T) {
+	store := newTestPGStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	def := &WorkflowDefinition{ID: "wf_running", OwnerID: "user_a", Name: "Running", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateWorkflow(ctx, def); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	ver := &WorkflowVersion{ID: "ver_running", WorkflowID: def.ID, VersionNumber: "0.1.0", Status: VersionPublished, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateVersion(ctx, ver); err != nil {
+		t.Fatalf("CreateVersion: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO workflow_instances (id, workflow_id, version_id, status) VALUES ($1, $2, $3, $4)`, "inst_running", def.ID, ver.ID, string(InstanceRunning)); err != nil {
+		t.Fatalf("insert instance: %v", err)
+	}
+
+	if err := store.DeleteWorkflow(ctx, def.ID); err == nil {
+		t.Fatal("expected running instance to block workflow deletion")
 	}
 }
 
@@ -404,7 +488,7 @@ func TestPGWorkflowStore_ListPendingReviews(t *testing.T) {
 		ver := &WorkflowVersion{
 			ID: "vpr_" + string(rune('a'+i)), WorkflowID: "wf_pr",
 			VersionNumber: "1.0." + string(rune('0'+i)),
-			Status: status, Graph: WorkflowGraph{},
+			Status:        status, Graph: WorkflowGraph{},
 			SubmittedAt: &subAt,
 			CreatedAt:   now.Add(time.Duration(i) * time.Minute),
 			UpdatedAt:   now.Add(time.Duration(i) * time.Minute),
@@ -448,7 +532,7 @@ func TestPGWorkflowStore_ListPendingReviews_Pagination(t *testing.T) {
 		ver := &WorkflowVersion{
 			ID: "vpag_" + string(rune('a'+i)), WorkflowID: "wf_pag",
 			VersionNumber: "1.0." + string(rune('0'+i)),
-			Status: VersionPendingReview, Graph: WorkflowGraph{},
+			Status:        VersionPendingReview, Graph: WorkflowGraph{},
 			SubmittedAt: &subAt,
 			CreatedAt:   now.Add(time.Duration(i) * time.Minute),
 			UpdatedAt:   now.Add(time.Duration(i) * time.Minute),

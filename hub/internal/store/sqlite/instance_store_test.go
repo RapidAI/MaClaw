@@ -230,12 +230,12 @@ func TestInstanceStore_GetPendingApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create multiple node executions with different statuses
+	// Create multiple node executions with different statuses and node types.
 	executions := []*workflow.NodeExecution{
-		{ID: "exec-p1", InstanceID: "inst-005", NodeID: "node-a", Status: workflow.NodePending, StartedAt: now},
-		{ID: "exec-p2", InstanceID: "inst-005", NodeID: "node-b", Status: workflow.NodePending, StartedAt: now.Add(time.Second)},
-		{ID: "exec-r1", InstanceID: "inst-005", NodeID: "node-c", Status: workflow.NodeRunning, StartedAt: now},
-		{ID: "exec-c1", InstanceID: "inst-005", NodeID: "node-d", Status: workflow.NodeCompleted, StartedAt: now},
+		{ID: "exec-p1", InstanceID: "inst-005", NodeID: "node-a", NodeType: workflow.NodeApproval, Status: workflow.NodeRunning, StartedAt: now},
+		{ID: "exec-p2", InstanceID: "inst-005", NodeID: "node-b", NodeType: workflow.NodeApproval, Status: workflow.NodeRunning, StartedAt: now.Add(time.Second)},
+		{ID: "exec-r1", InstanceID: "inst-005", NodeID: "node-c", NodeType: workflow.NodeAction, Status: workflow.NodeRunning, StartedAt: now},
+		{ID: "exec-c1", InstanceID: "inst-005", NodeID: "node-d", NodeType: workflow.NodeApproval, Status: workflow.NodeCompleted, StartedAt: now},
 	}
 	for _, e := range executions {
 		if err := store.CreateNodeExecution(ctx, e); err != nil {
@@ -243,7 +243,7 @@ func TestInstanceStore_GetPendingApprovals(t *testing.T) {
 		}
 	}
 
-	// GetPendingApprovals should return only pending ones
+	// GetPendingApprovals should return only running approval nodes.
 	pending, err := store.GetPendingApprovals(ctx, "any-approver")
 	if err != nil {
 		t.Fatalf("GetPendingApprovals: %v", err)

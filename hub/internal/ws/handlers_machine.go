@@ -18,7 +18,7 @@ import (
 )
 
 type HeartbeatConfigProvider interface {
-	GetHeartbeatConfig(ctx context.Context, userID string) (*HeartbeatConfigPayload, error)
+	GetHeartbeatConfig(ctx context.Context, userID string, tenantID string) (*HeartbeatConfigPayload, error)
 }
 
 type HeartbeatConfigPayload struct {
@@ -849,7 +849,7 @@ func (g *Gateway) handleMachineHello(ctx *ConnContext, msg Envelope) error {
 	// Include hub_config in hello ack so the client gets digital_employee_authorization
 	// immediately on connection, without waiting for the first heartbeat cycle.
 	ackPayload := map[string]any{"ok": true}
-	g.injectHubConfig(ackPayload, ctx.UserID, "handleMachineHello")
+	g.injectHubConfig(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHello")
 	return writeAckPayload(ctx.Conn, msg.RequestID, ackPayload)
 }
 
@@ -873,7 +873,7 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 			ackPayload["security_policy"] = policy
 		}
 	}
-	g.injectHubConfig(ackPayload, ctx.UserID, "handleMachineHeartbeat")
+	g.injectHubConfig(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHeartbeat")
 	return writeAckPayload(ctx.Conn, msg.RequestID, ackPayload)
 }
 
@@ -1465,13 +1465,13 @@ func writeAckPayload(conn *websocket.Conn, requestID string, payload map[string]
 
 // injectHubConfig adds hub_config (including digital_employee_authorization) to
 // an ack payload. Used by both handleMachineHello and handleMachineHeartbeat.
-func (g *Gateway) injectHubConfig(ackPayload map[string]any, userID, caller string) {
+func (g *Gateway) injectHubConfig(ackPayload map[string]any, userID, tenantID, caller string) {
 	if g.ConfigProvider == nil {
 		return
 	}
-	cfg, err := g.ConfigProvider.GetHeartbeatConfig(context.Background(), userID)
+	cfg, err := g.ConfigProvider.GetHeartbeatConfig(context.Background(), userID, tenantID)
 	if err != nil {
-		log.Printf("[ws] %s: hub config unavailable for user_id=%s: %v", caller, userID, err)
+		log.Printf("[ws] %s: hub config unavailable for user_id=%s tenant_id=%s: %v", caller, userID, tenantID, err)
 		return
 	}
 	if cfg != nil {

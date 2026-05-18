@@ -25,6 +25,25 @@ type IMBindingCleaner interface {
 	RemoveBindingByEmail(email string)
 }
 
+type IMTenantBindingCleaner interface {
+	RemoveBindingByTenantEmail(tenantID, email string)
+}
+
+func removeIMBindingsForTenant(cleaners []IMBindingCleaner, tenantID, email string) {
+	for _, cleaner := range cleaners {
+		if cleaner == nil {
+			continue
+		}
+		if tenantCleaner, ok := cleaner.(IMTenantBindingCleaner); ok {
+			tenantCleaner.RemoveBindingByTenantEmail(tenantID, email)
+			continue
+		}
+		if tenantID == DefaultTenantID {
+			cleaner.RemoveBindingByEmail(email)
+		}
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // In-memory verification code store with rate limiting and auto-cleanup.
 // ──────────────────────────────────────────────────────────────────────────────
@@ -222,7 +241,7 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 
 		if channel == "feishu" || channel == "both" {
 			if feishuNotifier != nil {
-				openID := feishuNotifier.ResolveOpenIDByEmail(email)
+				openID := feishuNotifier.ResolveOpenIDByTenantEmail(tenantID, email)
 				if openID != "" {
 					feishuNotifier.SendTextToOpenID(openID, fmt.Sprintf("MaClaw 解绑验证码: %s（%d分钟内有效）", code, int(verifyCodeTTL.Minutes())))
 					sentVia = append(sentVia, "feishu")
@@ -297,16 +316,12 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 
 		// Remove Feishu open_id binding.
 		if feishuNotifier != nil {
-			feishuNotifier.RemoveOpenID(email)
+			feishuNotifier.RemoveOpenIDForTenant(tenantID, email)
 			log.Printf("[bind] removed feishu binding for %s", email)
 		}
 
 		// Remove bindings from other IM plugins (QQ Bot, etc.).
-		for _, cleaner := range imCleaners {
-			if cleaner != nil {
-				cleaner.RemoveBindingByEmail(email)
-			}
-		}
+		removeIMBindingsForTenant(imCleaners, tenantID, email)
 
 		// Delete the user record so query returns unbound.
 		if repo := identity.UsersRepo(); repo != nil {

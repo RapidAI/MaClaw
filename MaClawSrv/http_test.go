@@ -3620,6 +3620,35 @@ func TestListSkillsSupportsNameCursorPagination(t *testing.T) {
 	}
 }
 
+func TestSanitizeSkillStepForAPIRedactsSensitiveMapKeys(t *testing.T) {
+	dataRoot := t.TempDir()
+	step := corelib.NLSkillStep{
+		Action: "run",
+		Params: map[string]interface{}{
+			"api_secret": "plain-param-secret",
+			"nested": map[string]interface{}{
+				"auth_header": "Bearer nested-param-secret",
+				"path":        dataRoot,
+			},
+			"notes": "token=inline-secret path=" + dataRoot,
+		},
+		Capture: map[string]string{
+			"access_token": "plain-capture-secret",
+			"summary":      "visible",
+		},
+	}
+	got := sanitizeSkillStepForAPI(dataRoot, step)
+	body := fmt.Sprintf("%#v", got)
+	for _, leaked := range []string{"plain-param-secret", "nested-param-secret", "plain-capture-secret", "inline-secret", dataRoot, filepath.ToSlash(dataRoot)} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("expected skill step to redact %q, got %s", leaked, body)
+		}
+	}
+	if got.Capture["summary"] != "visible" {
+		t.Fatalf("expected benign capture to remain visible, got %#v", got.Capture)
+	}
+}
+
 func TestGetSkillAndValidationRedactLocalPaths(t *testing.T) {
 	dataRoot := t.TempDir()
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})

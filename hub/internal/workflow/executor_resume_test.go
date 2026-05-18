@@ -154,7 +154,7 @@ func TestResumeInstance_SingleMode_Approve(t *testing.T) {
 		t.Fatalf("ResumeInstance returned error: %v", err)
 	}
 
-	// Should advance to completion (action-1 → no more nodes → completed)
+	// Should advance to completion (action-1 鈫?no more nodes 鈫?completed)
 	if instStore.statusUpdate != InstanceCompleted {
 		t.Errorf("Expected instance status %q, got %q", InstanceCompleted, instStore.statusUpdate)
 	}
@@ -217,6 +217,113 @@ func TestResumeInstance_SingleMode_Reject(t *testing.T) {
 	}
 }
 
+func TestResumeInstance_SingleMode_EscalateDoesNotComplete(t *testing.T) {
+	graph := buildApprovalGraph(ApprovalNodeConfig{
+		ApproverIDs:  []string{"ve-1"},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	})
+
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &resumeTestMockWorkflowStore{version: ver}
+	instStore := &resumeTestMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:            "inst-1",
+			VersionID:     "ver-1",
+			Status:        InstanceRunning,
+			CurrentNodeID: "approval-1",
+			InstanceData:  make(map[string]interface{}),
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &resumeTestMockDispatcher{}
+
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
+		Decision:   "escalate",
+		ApproverID: "ve-1",
+		DecidedAt:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("ResumeInstance returned error: %v", err)
+	}
+	if instStore.statusUpdate == InstanceCompleted || instStore.statusUpdate == InstanceFailed {
+		t.Fatalf("escalation should keep approval pending, got status update %q", instStore.statusUpdate)
+	}
+}
+
+func TestResumeInstance_SingleMode_AllowsFallbackApprover(t *testing.T) {
+	graph := buildApprovalGraph(ApprovalNodeConfig{
+		ApproverIDs:      []string{"ve-1"},
+		Mode:             ModeSingle,
+		TimeoutHours:     24,
+		FallbackApprover: "ve-fallback",
+	})
+
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &resumeTestMockWorkflowStore{version: ver}
+	instStore := &resumeTestMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:            "inst-1",
+			VersionID:     "ver-1",
+			Status:        InstanceRunning,
+			CurrentNodeID: "approval-1",
+			InstanceData:  make(map[string]interface{}),
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &resumeTestMockDispatcher{}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
+		Decision:   "approve",
+		ApproverID: "ve-fallback",
+		DecidedAt:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("fallback approver response should be accepted: %v", err)
+	}
+	if instStore.statusUpdate != InstanceCompleted {
+		t.Fatalf("fallback approval should complete single approval workflow, got %q", instStore.statusUpdate)
+	}
+}
+func TestResumeInstance_RejectsUnexpectedApprover(t *testing.T) {
+	graph := buildApprovalGraph(ApprovalNodeConfig{
+		ApproverIDs:  []string{"ve-1"},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	})
+
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &resumeTestMockWorkflowStore{version: ver}
+	instStore := &resumeTestMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:            "inst-1",
+			VersionID:     "ver-1",
+			Status:        InstanceRunning,
+			CurrentNodeID: "approval-1",
+			InstanceData:  make(map[string]interface{}),
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &resumeTestMockDispatcher{}
+
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
+		Decision:   "approve",
+		ApproverID: "ve-outsider",
+		DecidedAt:  time.Now().UTC(),
+	})
+	if err == nil {
+		t.Fatal("expected unexpected approver response to be rejected")
+	}
+	if instStore.statusUpdate == InstanceCompleted {
+		t.Fatal("unexpected approver must not complete the workflow")
+	}
+}
+
 // --- Countersign Mode Tests ---
 
 func TestResumeInstance_Countersign_AllApprove(t *testing.T) {
@@ -242,7 +349,7 @@ func TestResumeInstance_Countersign_AllApprove(t *testing.T) {
 
 	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
 
-	// First approver approves — should NOT advance yet
+	// First approver approves 鈥?should NOT advance yet
 	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-1", DecidedAt: time.Now().UTC(),
 	})
@@ -253,7 +360,7 @@ func TestResumeInstance_Countersign_AllApprove(t *testing.T) {
 		t.Error("Should not complete after first approval in countersign mode")
 	}
 
-	// Second approver approves — should NOT advance yet
+	// Second approver approves 鈥?should NOT advance yet
 	err = executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-2", DecidedAt: time.Now().UTC(),
 	})
@@ -264,7 +371,7 @@ func TestResumeInstance_Countersign_AllApprove(t *testing.T) {
 		t.Error("Should not complete after second approval in countersign mode")
 	}
 
-	// Third approver approves — NOW should advance
+	// Third approver approves 鈥?NOW should advance
 	err = executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-3", DecidedAt: time.Now().UTC(),
 	})
@@ -299,7 +406,7 @@ func TestResumeInstance_Countersign_RejectImmediately(t *testing.T) {
 
 	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
 
-	// First approver rejects — should immediately fail
+	// First approver rejects 鈥?should immediately fail
 	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "reject", ApproverID: "ve-1", Rationale: "Not acceptable", DecidedAt: time.Now().UTC(),
 	})
@@ -337,7 +444,7 @@ func TestResumeInstance_AnyNofM_PassWhenNReached(t *testing.T) {
 
 	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
 
-	// First approve — not enough yet
+	// First approve 鈥?not enough yet
 	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-1", DecidedAt: time.Now().UTC(),
 	})
@@ -348,7 +455,7 @@ func TestResumeInstance_AnyNofM_PassWhenNReached(t *testing.T) {
 		t.Error("Should not complete after 1 approval (need 3)")
 	}
 
-	// Second approve — still not enough
+	// Second approve 鈥?still not enough
 	err = executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-2", DecidedAt: time.Now().UTC(),
 	})
@@ -359,7 +466,7 @@ func TestResumeInstance_AnyNofM_PassWhenNReached(t *testing.T) {
 		t.Error("Should not complete after 2 approvals (need 3)")
 	}
 
-	// Third approve — NOW should advance (3 of 5 reached)
+	// Third approve 鈥?NOW should advance (3 of 5 reached)
 	err = executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-3", DecidedAt: time.Now().UTC(),
 	})
@@ -372,7 +479,7 @@ func TestResumeInstance_AnyNofM_PassWhenNReached(t *testing.T) {
 }
 
 func TestResumeInstance_AnyNofM_RejectWhenImpossible(t *testing.T) {
-	// 3 of 5 required. If 3 reject, only 2 remaining can approve → impossible to reach 3.
+	// 3 of 5 required. If 3 reject, only 2 remaining can approve 鈫?impossible to reach 3.
 	graph := buildApprovalGraph(ApprovalNodeConfig{
 		ApproverIDs:  []string{"ve-1", "ve-2", "ve-3", "ve-4", "ve-5"},
 		Mode:         ModeAnyNofM,
@@ -396,7 +503,7 @@ func TestResumeInstance_AnyNofM_RejectWhenImpossible(t *testing.T) {
 
 	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
 
-	// Three rejections: remaining=2, approvalCount=0, maxPossible=0+2=2 < 3 → reject
+	// Three rejections: remaining=2, approvalCount=0, maxPossible=0+2=2 < 3 鈫?reject
 	for _, id := range []string{"ve-1", "ve-2"} {
 		err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 			Decision: "reject", ApproverID: id, DecidedAt: time.Now().UTC(),
@@ -405,12 +512,12 @@ func TestResumeInstance_AnyNofM_RejectWhenImpossible(t *testing.T) {
 			t.Fatalf("Error: %v", err)
 		}
 	}
-	// After 2 rejections: remaining=3, approvalCount=0, maxPossible=0+3=3 >= 3 → still possible
+	// After 2 rejections: remaining=3, approvalCount=0, maxPossible=0+3=3 >= 3 鈫?still possible
 	if instStore.statusUpdate == InstanceFailed {
 		t.Error("Should not fail after 2 rejections (still possible with 3 remaining)")
 	}
 
-	// Third rejection: remaining=2, approvalCount=0, maxPossible=0+2=2 < 3 → impossible
+	// Third rejection: remaining=2, approvalCount=0, maxPossible=0+2=2 < 3 鈫?impossible
 	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "reject", ApproverID: "ve-3", DecidedAt: time.Now().UTC(),
 	})
@@ -419,6 +526,41 @@ func TestResumeInstance_AnyNofM_RejectWhenImpossible(t *testing.T) {
 	}
 	if instStore.statusUpdate != InstanceFailed {
 		t.Errorf("Expected failed when impossible to reach N, got %q", instStore.statusUpdate)
+	}
+}
+
+func TestResumeInstance_AnyNofM_EscalateDoesNotConsumeVote(t *testing.T) {
+	graph := buildApprovalGraph(ApprovalNodeConfig{
+		ApproverIDs:  []string{"ve-1", "ve-2", "ve-3"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 2,
+		TimeoutHours: 24,
+	})
+
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &resumeTestMockWorkflowStore{version: ver}
+	instStore := &resumeTestMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:            "inst-1",
+			VersionID:     "ver-1",
+			Status:        InstanceRunning,
+			CurrentNodeID: "approval-1",
+			InstanceData:  make(map[string]interface{}),
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &resumeTestMockDispatcher{}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	if err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{Decision: "escalate", ApproverID: "ve-1", DecidedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("escalate response returned error: %v", err)
+	}
+	if instStore.statusUpdate == InstanceCompleted || instStore.statusUpdate == InstanceFailed {
+		t.Fatalf("escalation should not settle any_n_of_m approval, got %q", instStore.statusUpdate)
+	}
+	state := getApprovalNodeState(instStore.instance, "approval-1")
+	if len(state.Decisions) != 0 {
+		t.Fatalf("escalation should not count as a vote, got decisions %#v", state.Decisions)
 	}
 }
 
@@ -448,7 +590,7 @@ func TestResumeInstance_Sequential_AllApprove(t *testing.T) {
 
 	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
 
-	// First approver approves — should dispatch to second
+	// First approver approves 鈥?should dispatch to second
 	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-1", DecidedAt: time.Now().UTC(),
 	})
@@ -462,7 +604,7 @@ func TestResumeInstance_Sequential_AllApprove(t *testing.T) {
 		t.Error("Should not complete after first sequential approval")
 	}
 
-	// Second approver approves — should dispatch to third
+	// Second approver approves 鈥?should dispatch to third
 	err = executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-2", DecidedAt: time.Now().UTC(),
 	})
@@ -473,7 +615,7 @@ func TestResumeInstance_Sequential_AllApprove(t *testing.T) {
 		t.Errorf("Expected dispatch to ve-3, got %v", dispatcher.dispatched)
 	}
 
-	// Third (last) approver approves — should advance workflow
+	// Third (last) approver approves 鈥?should advance workflow
 	err = executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-3", DecidedAt: time.Now().UTC(),
 	})
@@ -509,7 +651,7 @@ func TestResumeInstance_Sequential_RejectImmediately(t *testing.T) {
 
 	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
 
-	// Second approver rejects — should immediately fail, no dispatch to third
+	// Second approver rejects 鈥?should immediately fail, no dispatch to third
 	// First, simulate first approver approved
 	_ = executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{
 		Decision: "approve", ApproverID: "ve-1", DecidedAt: time.Now().UTC(),
@@ -530,6 +672,41 @@ func TestResumeInstance_Sequential_RejectImmediately(t *testing.T) {
 		if id == "ve-3" {
 			t.Error("Should not dispatch to ve-3 after ve-2 rejected")
 		}
+	}
+}
+
+func TestResumeInstance_Sequential_RejectsOutOfOrderResponse(t *testing.T) {
+	graph := buildApprovalGraph(ApprovalNodeConfig{
+		ApproverIDs:   []string{"ve-1", "ve-2", "ve-3"},
+		Mode:          ModeSequential,
+		ApproverOrder: []string{"ve-1", "ve-2", "ve-3"},
+		TimeoutHours:  24,
+	})
+
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &resumeTestMockWorkflowStore{version: ver}
+	instStore := &resumeTestMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:            "inst-1",
+			VersionID:     "ver-1",
+			Status:        InstanceRunning,
+			CurrentNodeID: "approval-1",
+			InstanceData:  make(map[string]interface{}),
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &resumeTestMockDispatcher{}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	err := executor.ResumeInstance(context.Background(), "inst-1", "approval-1", ApprovalResponse{Decision: "approve", ApproverID: "ve-2", DecidedAt: time.Now().UTC()})
+	if err == nil {
+		t.Fatal("expected out-of-order sequential response to be rejected")
+	}
+	if len(dispatcher.dispatched) != 0 {
+		t.Fatalf("out-of-order response should not dispatch next approver, got %v", dispatcher.dispatched)
+	}
+	if instStore.statusUpdate == InstanceCompleted {
+		t.Fatal("out-of-order response must not complete workflow")
 	}
 }
 

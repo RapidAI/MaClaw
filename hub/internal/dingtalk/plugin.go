@@ -168,6 +168,7 @@ type Mailer interface {
 // NotifyBroadcaster sends verification codes to all reachable channels.
 type NotifyBroadcaster interface {
 	BroadcastVerifyCode(ctx context.Context, email, code, excludePlatform string) (sentTo string, err error)
+	BroadcastVerifyCodeForTenant(ctx context.Context, tenantID, email, code, excludePlatform string) (sentTo string, err error)
 }
 
 // Plugin implements im.IMPlugin for DingTalk Bot (Stream Mode).
@@ -218,9 +219,10 @@ type webhookEntry struct {
 }
 
 type pendingBind struct {
-	Email  string
-	Code   string
-	Expiry time.Time
+	TenantID string
+	Email    string
+	Code     string
+	Expiry   time.Time
 }
 
 // New creates a DingTalk plugin.
@@ -1340,9 +1342,10 @@ func (p *Plugin) handleBindingFlow(staffID, text string) bool {
 func (p *Plugin) handleEmailSubmit(staffID, email string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	tenantID := store.DefaultTenantID
 	email = strings.TrimSpace(strings.ToLower(email))
 
-	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
+	user, err := p.users.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil || user == nil {
 		_ = p.replyViaWebhook(staffID,
 			fmt.Sprintf("❌ 未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
@@ -1352,14 +1355,15 @@ func (p *Plugin) handleEmailSubmit(staffID, email string) {
 	code := generateCode()
 	p.pendingMu.Lock()
 	p.pending[staffID] = &pendingBind{
-		Email:  email,
-		Code:   code,
-		Expiry: time.Now().Add(5 * time.Minute),
+		TenantID: tenantID,
+		Email:    email,
+		Code:     code,
+		Expiry:   time.Now().Add(5 * time.Minute),
 	}
 	p.pendingMu.Unlock()
 
 	if p.broadcaster != nil {
-		sentTo, err := p.broadcaster.BroadcastVerifyCode(ctx, email, code, "dingtalk")
+		sentTo, err := p.broadcaster.BroadcastVerifyCodeForTenant(ctx, tenantID, email, code, "dingtalk")
 		if err != nil {
 			log.Printf("[dingtalk] broadcast verification code for %s failed: %v", email, err)
 			_ = p.replyViaWebhook(staffID, fmt.Sprintf("❌ 验证码发送失败: %v", err))
@@ -1414,10 +1418,7 @@ func (p *Plugin) handleVerifyCode(staffID, code string, pb *pendingBind) bool {
 		return true
 	}
 
-	p.bindMu.Lock()
-	p.bindings[staffID] = pb.Email
-	p.bindMu.Unlock()
-	p.saveBindings()
+	p.BindTenantEmail(staffID, pb.TenantID, pb.Email)
 
 	p.pendingMu.Lock()
 	delete(p.pending, staffID)
@@ -1451,10 +1452,17 @@ func (p *Plugin) RemoveBinding(staffID string) {
 
 // LookupByEmail returns the DingTalk staffId bound to the given email, or "".
 func (p *Plugin) LookupByEmail(email string) string {
+	return p.LookupByTenantEmail(store.DefaultTenantID, email)
+}
+
+func (p *Plugin) LookupByTenantEmail(tenantID, email string) string {
+	tenantID = normalizeTenantID(tenantID)
+	email = strings.TrimSpace(strings.ToLower(email))
 	p.bindMu.RLock()
 	defer p.bindMu.RUnlock()
-	for uid, e := range p.bindings {
-		if strings.EqualFold(e, email) {
+	for uid, raw := range p.bindings {
+		info := decodeBindingValue(raw)
+		if info.TenantID == tenantID && strings.EqualFold(info.Email, email) {
 			return uid
 		}
 	}
@@ -1472,12 +1480,25 @@ func (p *Plugin) GetBindings() map[string]string {
 	return m
 }
 
+func (p *Plugin) BindTenantEmail(staffID, tenantID, email string) {
+	p.bindMu.Lock()
+	p.bindings[staffID] = encodeBindingValue(tenantID, email)
+	p.bindMu.Unlock()
+	p.saveBindings()
+}
+
 // RemoveBindingByEmail removes all staffId→email bindings for the given email.
 func (p *Plugin) RemoveBindingByEmail(email string) {
+	p.RemoveBindingByTenantEmail(store.DefaultTenantID, email)
+}
+
+func (p *Plugin) RemoveBindingByTenantEmail(tenantID, email string) {
+	tenantID = normalizeTenantID(tenantID)
 	p.bindMu.Lock()
 	var removed bool
-	for uid, e := range p.bindings {
-		if strings.EqualFold(e, email) {
+	for uid, raw := range p.bindings {
+		info := decodeBindingValue(raw)
+		if info.TenantID == tenantID && strings.EqualFold(info.Email, email) {
 			delete(p.bindings, uid)
 			removed = true
 		}
@@ -1493,6 +1514,39 @@ func (p *Plugin) RemoveBindingByEmail(email string) {
 // ---------------------------------------------------------------------------
 
 const dingtalkBindingsKey = "dingtalk_bindings"
+
+type bindingInfo struct {
+	Email    string `json:"email"`
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+func normalizeTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return store.DefaultTenantID
+	}
+	return tenantID
+}
+
+func encodeBindingValue(tenantID, email string) string {
+	tenantID = normalizeTenantID(tenantID)
+	email = strings.TrimSpace(strings.ToLower(email))
+	if tenantID == store.DefaultTenantID {
+		return email
+	}
+	data, _ := json.Marshal(bindingInfo{Email: email, TenantID: tenantID})
+	return string(data)
+}
+
+func decodeBindingValue(raw string) bindingInfo {
+	var info bindingInfo
+	if strings.HasPrefix(strings.TrimSpace(raw), "{") && json.Unmarshal([]byte(raw), &info) == nil {
+		info.Email = strings.TrimSpace(strings.ToLower(info.Email))
+		info.TenantID = normalizeTenantID(info.TenantID)
+		return info
+	}
+	return bindingInfo{Email: strings.TrimSpace(strings.ToLower(raw)), TenantID: store.DefaultTenantID}
+}
 
 func (p *Plugin) loadBindings() {
 	raw, err := p.system.Get(context.Background(), dingtalkBindingsKey)

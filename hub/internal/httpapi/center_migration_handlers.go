@@ -187,13 +187,9 @@ func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.
 				}
 			}
 			if feishuNotifier != nil {
-				feishuNotifier.RemoveOpenID(user.Email)
+				feishuNotifier.RemoveOpenIDForTenant(tenantID, user.Email)
 			}
-			for _, cleaner := range imCleaners {
-				if cleaner != nil {
-					cleaner.RemoveBindingByEmail(user.Email)
-				}
-			}
+			removeIMBindingsForTenant(imCleaners, tenantID, user.Email)
 			if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), tenantID, user.Email); err != nil {
 				writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
 				return

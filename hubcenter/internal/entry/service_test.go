@@ -3,6 +3,7 @@ package entry
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -881,6 +882,61 @@ func TestResolveByDomainReturnsNoneWhenNoExactDomainRoute(t *testing.T) {
 	}
 	if len(result.Hubs) != 0 {
 		t.Fatalf("expected no hubs, got %+v", result.Hubs)
+	}
+}
+
+func TestResolveByEmailKeepsSameHubTenantCandidates(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:             "hub_multi_tenant",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Hub Multi Tenant",
+		BaseURL:        "https://hub.example.com",
+		Visibility:     "shared",
+		EnrollmentMode: "open",
+		Status:         "online",
+		HubSecretHash:  "secret",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	for _, link := range []*store.HubUserLink{
+		{ID: "link_tenant_a", HubID: hub.ID, TenantID: "tenant_a", Email: "same@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: "link_tenant_b", HubID: hub.ID, TenantID: "tenant_b", Email: "same@example.com", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubUserLinks.Create(ctx, link); err != nil {
+			t.Fatalf("create link %s: %v", link.ID, err)
+		}
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "same@example.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	if result == nil || result.Mode != "multiple" || len(result.Hubs) < 2 {
+		t.Fatalf("expected multiple virtual hub candidates, got %+v", result)
+	}
+	seen := map[string]bool{}
+	for _, item := range result.Hubs {
+		if item.HubID != hub.ID {
+			t.Fatalf("unexpected hub id: %+v", item)
+		}
+		if item.TenantID == "" {
+			continue
+		}
+		seen[item.TenantID] = true
+		if item.PWAURL == "" || !strings.Contains(item.PWAURL, "tenant_id=") {
+			t.Fatalf("expected tenant pwa url, got %+v", item)
+		}
+	}
+	if !seen["tenant_a"] || !seen["tenant_b"] {
+		t.Fatalf("missing tenant candidates: %+v", result.Hubs)
 	}
 }
 

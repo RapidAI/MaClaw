@@ -9,6 +9,22 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+type stubSystemSettingsRepo struct {
+	values map[string]string
+}
+
+func (r *stubSystemSettingsRepo) Set(_ context.Context, key, valueJSON string) error {
+	if r.values == nil {
+		r.values = make(map[string]string)
+	}
+	r.values[key] = valueJSON
+	return nil
+}
+
+func (r *stubSystemSettingsRepo) Get(_ context.Context, key string) (string, error) {
+	return r.values[key], nil
+}
+
 // stubUserRepo implements store.UserRepository for testing.
 type stubUserRepo struct {
 	users map[string]*store.User
@@ -80,6 +96,30 @@ func TestResolveEmail(t *testing.T) {
 	email = n.resolveEmail("unknown")
 	if email != "" {
 		t.Fatalf("expected empty for unknown user, got %s", email)
+	}
+}
+
+func TestTenantOpenIDBindingsAreIsolated(t *testing.T) {
+	system := &stubSystemSettingsRepo{}
+	n := New("", "", &stubUserRepo{}, system, nil)
+	t.Cleanup(n.StopEventLoop)
+
+	n.BindOpenIDForTenant(store.DefaultTenantID, "same@example.com", "open-default", "")
+	n.BindOpenIDForTenant("tenant_a", "same@example.com", "open-tenant-a", "")
+
+	if got := n.ResolveOpenIDByTenantEmail(store.DefaultTenantID, "same@example.com"); got != "open-default" {
+		t.Fatalf("default tenant binding = %q", got)
+	}
+	if got := n.ResolveOpenIDByTenantEmail("tenant_a", "same@example.com"); got != "open-tenant-a" {
+		t.Fatalf("tenant binding = %q", got)
+	}
+
+	n.RemoveOpenIDForTenant("tenant_a", "same@example.com")
+	if got := n.ResolveOpenIDByTenantEmail("tenant_a", "same@example.com"); got != "" {
+		t.Fatalf("tenant binding after remove = %q", got)
+	}
+	if got := n.ResolveOpenIDByTenantEmail(store.DefaultTenantID, "same@example.com"); got != "open-default" {
+		t.Fatalf("default tenant binding after tenant remove = %q", got)
 	}
 }
 

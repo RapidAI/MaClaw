@@ -613,6 +613,53 @@ describe('useAITabManager', () => {
 
             expect(result.current.getTabState(tab!.id)).toBeUndefined();
         });
+
+        it('ignores late state saves after a closed VE tab unmounts', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tab: AITab | null = null;
+            act(() => {
+                tab = result.current.createVETab("ve-late", "Late Agent");
+            });
+            act(() => {
+                result.current.closeTab(tab!.id);
+            });
+            act(() => {
+                result.current.saveTabState(tab!.id, {
+                    history: [{ role: "user", content: "late snapshot" }],
+                    scrollTop: 10,
+                    inputText: "late",
+                });
+            });
+
+            expect(result.current.getTabState(tab!.id)).toBeUndefined();
+        });
+
+        it('keeps allowing cached project tab state updates after close', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tab: AITab | null = null;
+            act(() => {
+                tab = result.current.createProjectTab("D:\\work\\sample", "Sample project");
+            });
+            act(() => {
+                result.current.saveTabState(tab!.id, {
+                    history: [{ role: "user", content: "before close" }],
+                    scrollTop: 20,
+                    inputText: "before",
+                });
+            });
+            act(() => {
+                result.current.closeTab(tab!.id);
+            });
+            act(() => {
+                result.current.saveTabState(tab!.id, {
+                    inputText: "after close",
+                });
+            });
+
+            expect(result.current.getTabState(tab!.id)?.inputText).toBe("after close");
+        });
     });
 
     describe('default max digital employee tabs is 8', () => {

@@ -151,7 +151,7 @@ func (e *WorkflowExecutor) StartInstance(ctx context.Context, workflowID, trigge
 // approvalNodeState tracks per-node approval decisions for multi-approver modes.
 // Stored in InstanceData under the key "_approval_state_<nodeID>".
 type approvalNodeState struct {
-	Decisions map[string]string `json:"decisions"` // approverID → "approve"/"reject"/"escalate"
+	Decisions map[string]string `json:"decisions"` // approverID -> "approve"/"reject"/"escalate"
 }
 
 // getApprovalNodeState retrieves the approval state for a node from instance data.
@@ -272,7 +272,7 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 	}
 
 	if !shouldAdvance {
-		// Still waiting for more approvals — do not advance yet.
+		// Still waiting for more approvals; do not advance yet.
 		return nil
 	}
 
@@ -305,6 +305,13 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 // - shouldReject=true means the approval node is rejected and workflow should fail.
 // - Both false means still waiting for more responses.
 func (e *WorkflowExecutor) processApprovalResponse(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, error) {
+	if !isAllowedApprovalDecision(response.Decision) {
+		return false, false, fmt.Errorf("invalid approval decision %q", response.Decision)
+	}
+	if !isConfiguredApprover(cfg, response.ApproverID) {
+		return false, false, fmt.Errorf("approver %q is not assigned to approval node %s", response.ApproverID, nodeID)
+	}
+
 	switch cfg.Mode {
 	case ModeSingle:
 		return e.processSingleMode(response)
@@ -315,17 +322,46 @@ func (e *WorkflowExecutor) processApprovalResponse(ctx context.Context, inst *Wo
 	case ModeSequential:
 		return e.processSequentialMode(ctx, inst, nodeID, cfg, response)
 	default:
-		// Unknown mode — treat as single approver.
+		// Unknown mode; treat as single approver.
 		return e.processSingleMode(response)
 	}
 }
 
+func isAllowedApprovalDecision(decision string) bool {
+	switch decision {
+	case approvalDecisionApprove, approvalDecisionReject, approvalDecisionEscalate:
+		return true
+	default:
+		return false
+	}
+}
+
+func isConfiguredApprover(cfg *ApprovalNodeConfig, approverID string) bool {
+	if approverID == "" {
+		return false
+	}
+	for _, id := range cfg.ApproverIDs {
+		if id == approverID {
+			return true
+		}
+	}
+	for _, id := range cfg.ApproverOrder {
+		if id == approverID {
+			return true
+		}
+	}
+	return cfg.FallbackApprover == approverID
+}
+
 // processSingleMode handles single-approver mode: one decision immediately determines outcome.
 func (e *WorkflowExecutor) processSingleMode(response ApprovalResponse) (bool, bool, error) {
-	if response.Decision == "reject" {
+	if response.Decision == approvalDecisionReject {
 		return false, true, nil
 	}
-	// "approve" or "escalate" — advance the workflow.
+	if response.Decision == approvalDecisionEscalate {
+		return false, false, nil
+	}
+	// "approve" advances the workflow.
 	return true, false, nil
 }
 
@@ -335,8 +371,11 @@ func (e *WorkflowExecutor) processSingleMode(response ApprovalResponse) (bool, b
 // - Advance when all approvers have approved.
 func (e *WorkflowExecutor) processCountersignMode(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, error) {
 	// Reject immediately on any rejection
-	if response.Decision == "reject" {
+	if response.Decision == approvalDecisionReject {
 		return false, true, nil
+	}
+	if response.Decision == approvalDecisionEscalate {
+		return false, false, nil
 	}
 
 	// Track the approval
@@ -348,7 +387,7 @@ func (e *WorkflowExecutor) processCountersignMode(ctx context.Context, inst *Wor
 	allApproved := true
 	for _, approverID := range cfg.ApproverIDs {
 		decision, responded := state.Decisions[approverID]
-		if !responded || decision != "approve" {
+		if !responded || decision != approvalDecisionApprove {
 			allApproved = false
 			break
 		}
@@ -363,10 +402,14 @@ func (e *WorkflowExecutor) processCountersignMode(ctx context.Context, inst *Wor
 }
 
 // processAnyNofMMode handles any-N-of-M mode:
-// - Track approval count; advance when N approvals are reached.
-// - Reject when it becomes impossible to reach N approvals
-//   (i.e., rejections > M - N, meaning not enough remaining approvers can reach N).
+//   - Track approval count; advance when N approvals are reached.
+//   - Reject when it becomes impossible to reach N approvals
+//     (i.e., rejections > M - N, meaning not enough remaining approvers can reach N).
 func (e *WorkflowExecutor) processAnyNofMMode(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, error) {
+	if response.Decision == approvalDecisionEscalate {
+		return false, false, nil
+	}
+
 	state := getApprovalNodeState(inst, nodeID)
 	state.Decisions[response.ApproverID] = response.Decision
 	setApprovalNodeState(inst, nodeID, state)
@@ -376,9 +419,9 @@ func (e *WorkflowExecutor) processAnyNofMMode(ctx context.Context, inst *Workflo
 	rejectionCount := 0
 	for _, decision := range state.Decisions {
 		switch decision {
-		case "approve":
+		case approvalDecisionApprove:
 			approvalCount++
-		case "reject":
+		case approvalDecisionReject:
 			rejectionCount++
 		}
 	}
@@ -415,8 +458,11 @@ func (e *WorkflowExecutor) processAnyNofMMode(ctx context.Context, inst *Workflo
 // - On reject: reject immediately (stop the sequence).
 func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, error) {
 	// Reject immediately on any rejection
-	if response.Decision == "reject" {
+	if response.Decision == approvalDecisionReject {
 		return false, true, nil
+	}
+	if response.Decision == approvalDecisionEscalate {
+		return false, false, nil
 	}
 
 	// Track the approval
@@ -436,6 +482,14 @@ func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *Work
 		if approverID == response.ApproverID {
 			currentIdx = i
 			break
+		}
+	}
+	if currentIdx == -1 {
+		return false, false, fmt.Errorf("approver %q is not in sequential approval order", response.ApproverID)
+	}
+	for i := 0; i < currentIdx; i++ {
+		if state.Decisions[order[i]] != approvalDecisionApprove {
+			return false, false, fmt.Errorf("sequential approval response from %q arrived before approver %q completed", response.ApproverID, order[i])
 		}
 	}
 
@@ -468,7 +522,7 @@ func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *Work
 		return false, false, fmt.Errorf("dispatch to next sequential approver %s: %w", nextApproverID, err)
 	}
 
-	// Still waiting — next approver needs to respond
+	// Still waiting; next approver needs to respond.
 	return false, false, nil
 }
 
@@ -620,7 +674,7 @@ func (e *WorkflowExecutor) HandleQueueFull(ctx context.Context, instanceID, node
 // reason is one of: "timeout", "unavailable", "queue_full".
 func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, cfg *ApprovalNodeConfig, reason string) error {
 	if cfg.FallbackApprover == "" {
-		// No fallback configured — mark node as blocked and notify initiator.
+		// No fallback configured; mark node as blocked and notify initiator.
 		return e.markNodeBlocked(ctx, inst, node, reason, "no fallback approver configured")
 	}
 
@@ -630,7 +684,7 @@ func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *Work
 	// Attempt to dispatch to fallback approver.
 	err := e.dispatcher.DispatchFallback(ctx, req, cfg.FallbackApprover, reason)
 	if err != nil {
-		// Cascading failure — fallback approver is also unavailable.
+		// Cascading failure; fallback approver is also unavailable.
 		_ = e.auditStore.Append(ctx, &AuditEntry{
 			ID:         generateID("audit"),
 			InstanceID: inst.ID,
@@ -645,7 +699,7 @@ func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *Work
 		return e.markNodeBlocked(ctx, inst, node, reason, "fallback approver also unavailable: "+err.Error())
 	}
 
-	// Fallback dispatch succeeded — record the event.
+	// Fallback dispatch succeeded; record the event.
 	_ = e.auditStore.Append(ctx, &AuditEntry{
 		ID:         generateID("audit"),
 		InstanceID: inst.ID,
@@ -818,7 +872,7 @@ func (e *WorkflowExecutor) executeNode(ctx context.Context, inst *WorkflowInstan
 	return nil
 }
 
-// executeTriggerNode handles the trigger node — advances to next nodes.
+// executeTriggerNode handles the trigger node and advances to next nodes.
 func (e *WorkflowExecutor) executeTriggerNode(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, graph *WorkflowGraph) error {
 	nextNodes := findOutgoingNodes(graph, node.ID)
 	if len(nextNodes) == 0 {
@@ -842,7 +896,7 @@ func (e *WorkflowExecutor) executeConditionBranchNode(ctx context.Context, inst 
 		return fmt.Errorf("parse condition branch config: %w", err)
 	}
 
-	// Sort branches by priority (ascending — lower number = higher priority)
+	// Sort branches by priority (ascending; lower number = higher priority)
 	branches := make([]BranchCondition, len(config.Branches))
 	copy(branches, config.Branches)
 	sort.Slice(branches, func(i, j int) bool {
@@ -861,7 +915,7 @@ func (e *WorkflowExecutor) executeConditionBranchNode(ctx context.Context, inst 
 		}
 	}
 
-	// No branch matched — check for default branch
+	// No branch matched; check for default branch.
 	if config.DefaultBranch != "" {
 		targetNode := findNodeByID(graph, config.DefaultBranch)
 		if targetNode == nil {
@@ -870,7 +924,7 @@ func (e *WorkflowExecutor) executeConditionBranchNode(ctx context.Context, inst 
 		return e.executeNode(ctx, inst, targetNode, graph)
 	}
 
-	// No match and no default — mark node as failed
+	// No match and no default; mark node as failed.
 	failReason := "no condition branch matched and no default branch configured"
 	_ = e.auditStore.Append(ctx, &AuditEntry{
 		ID:         generateID("audit"),
@@ -927,7 +981,7 @@ func exprInList(fieldVal, condVal interface{}) bool {
 }
 
 // executeApprovalNode dispatches an approval request to the assigned VE approver(s).
-// Approval nodes are blocking — they dispatch the request and wait for
+// Approval nodes are blocking: they dispatch the request and wait for
 // response via ResumeInstance. The node stays in "running" status until
 // a response is received.
 func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, graph *WorkflowGraph) error {
@@ -964,7 +1018,7 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 			return fmt.Errorf("dispatch to approver: %w", err)
 		}
 	case ModeCountersign:
-		// Dispatch to all approvers — all must approve.
+		// Dispatch to all approvers; all must approve.
 		var dispatched []string
 		for _, approverID := range cfg.ApproverIDs {
 			if err := e.dispatcher.Dispatch(ctx, req, approverID); err != nil {
@@ -987,12 +1041,12 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 				}
 				_ = e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked)
 				inst.Status = InstanceBlocked
-				return nil // Don't fail the node — let timeout handler deal with it.
+				return nil // Don't fail the node; let timeout handler deal with it.
 			}
 			dispatched = append(dispatched, approverID)
 		}
 	case ModeAnyNofM:
-		// Dispatch to all approvers — N of M must approve.
+		// Dispatch to all approvers; N of M must approve.
 		var dispatched []string
 		for _, approverID := range cfg.ApproverIDs {
 			if err := e.dispatcher.Dispatch(ctx, req, approverID); err != nil {
@@ -1031,7 +1085,7 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 		return fmt.Errorf("unknown approval mode: %s", cfg.Mode)
 	}
 
-	// Execution pauses here — will be resumed via ResumeInstance when response arrives.
+	// Execution pauses here and will be resumed via ResumeInstance when response arrives.
 	return nil
 }
 
@@ -1127,7 +1181,7 @@ func (e *WorkflowExecutor) executeTerminalNode(ctx context.Context, inst *Workfl
 	var termConfig TerminalNodeConfig
 	if node.Config != nil {
 		if err := json.Unmarshal(node.Config, &termConfig); err != nil {
-			// Config parse failure is non-fatal — instance is already completed.
+			// Config parse failure is non-fatal; instance is already completed.
 			_ = e.auditStore.Append(ctx, &AuditEntry{
 				ID:         generateID("audit"),
 				InstanceID: inst.ID,
@@ -1202,7 +1256,7 @@ func (e *WorkflowExecutor) executeTerminalNode(ctx context.Context, inst *Workfl
 	// 5. Dispatch notifications
 	if e.notifDispatcher != nil && len(notifs) > 0 {
 		if err := e.notifDispatcher.DispatchBatch(ctx, notifs); err != nil {
-			// Notification dispatch failure is non-fatal — instance is already completed.
+			// Notification dispatch failure is non-fatal; instance is already completed.
 			_ = e.auditStore.Append(ctx, &AuditEntry{
 				ID:         generateID("audit"),
 				InstanceID: inst.ID,
@@ -1217,7 +1271,7 @@ func (e *WorkflowExecutor) executeTerminalNode(ctx context.Context, inst *Workfl
 	// 6. Start confirmation tracking
 	if e.confirmTracker != nil {
 		if err := e.confirmTracker.StartTracking(ctx, inst, &termConfig); err != nil {
-			// Confirmation tracking failure is non-fatal — instance is already completed.
+			// Confirmation tracking failure is non-fatal; instance is already completed.
 			_ = e.auditStore.Append(ctx, &AuditEntry{
 				ID:         generateID("audit"),
 				InstanceID: inst.ID,

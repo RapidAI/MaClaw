@@ -848,15 +848,17 @@ func (n *Notifier) sendSessionCommand(entry *session.SessionCacheEntry, msgType 
 // handleEmailSubmit validates the email exists in Hub, generates a code,
 // sends it to the email, and stores the pending verification.
 func handleEmailSubmit(n *Notifier, openID, email string) {
+	tenantID := store.DefaultTenantID
+
 	// Check if this email is already bound to this open_id.
-	existing := n.resolveOpenID(email)
+	existing := n.resolveOpenIDForTenant(tenantID, email)
 	if existing == openID {
 		replyText(n, openID, "✅ 该邮箱已绑定，无需重复操作。\n✅ This email is already bound.")
 		return
 	}
 
 	// Verify the email exists in Hub.
-	user, err := n.users.GetByTenantEmail(context.Background(), store.DefaultTenantID, email)
+	user, err := n.users.GetByTenantEmail(context.Background(), tenantID, email)
 	if err != nil || user == nil {
 		replyText(n, openID, "未找到该邮箱对应的 Hub 用户，请确认邮箱是否正确。\nNo Hub user found for this email.")
 		return
@@ -884,7 +886,7 @@ func handleEmailSubmit(n *Notifier, openID, email string) {
 	if n.broadcaster != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		sentTo, err := n.broadcaster.BroadcastVerifyCode(ctx, email, code, "feishu")
+		sentTo, err := n.broadcaster.BroadcastVerifyCodeForTenant(ctx, tenantID, email, code, "feishu")
 		if err != nil {
 			log.Printf("[feishu/webhook] broadcast verification code for %s failed: %v", email, err)
 			replyText(n, openID, fmt.Sprintf("验证码发送失败: %v", err))
@@ -954,7 +956,7 @@ func handleVerifyCode(n *Notifier, openID, code string) {
 		return
 	}
 
-	n.BindOpenID(pb.Email, openID, "")
+	n.BindOpenIDForTenant(store.DefaultTenantID, pb.Email, openID, "")
 	replyText(n, openID, "✅ 绑定成功！您将通过飞书接收 Hub 会话通知。\n✅ Binding succeeded! You will receive Hub session notifications via Feishu.")
 }
 

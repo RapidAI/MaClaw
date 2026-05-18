@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +78,7 @@ type RemoteGatewayPlugin struct {
 }
 
 type pendingRemoteBind struct {
+	TenantID  string
 	Email     string
 	Code      string
 	ExpiresAt time.Time
@@ -467,6 +469,7 @@ func (p *RemoteGatewayPlugin) handleBindingFlow(platformUID, text string) bool {
 }
 
 func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
+	tenantID := store.DefaultTenantID
 	// Check if already bound
 	p.bindMu.RLock()
 	existing := p.bindings[platformUID]
@@ -478,7 +481,7 @@ func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
 	}
 
 	// Verify email exists in Hub
-	user, err := p.users.GetByTenantEmail(context.Background(), store.DefaultTenantID, email)
+	user, err := p.users.GetByTenantEmail(context.Background(), tenantID, email)
 	if err != nil || user == nil {
 		_ = p.SendText(context.Background(), UserTarget{PlatformUID: platformUID},
 			"该邮箱未在 Hub 注册，请检查后重试。")
@@ -488,6 +491,7 @@ func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
 	code := generateBindCode()
 	p.pendingMu.Lock()
 	p.pending[platformUID] = &pendingRemoteBind{
+		TenantID:  tenantID,
 		Email:     email,
 		Code:      code,
 		ExpiresAt: time.Now().Add(10 * time.Minute),
@@ -523,13 +527,11 @@ func (p *RemoteGatewayPlugin) handleVerifyCode(platformUID, code string, pb *pen
 	}
 	// Code matches — remove pending entry
 	email := pb.Email
+	tenantID := pb.TenantID
 	delete(p.pending, platformUID)
 	p.pendingMu.Unlock()
 
-	p.bindMu.Lock()
-	p.bindings[platformUID] = email
-	p.bindMu.Unlock()
-	p.saveBindings()
+	p.BindTenantEmail(platformUID, tenantID, email)
 
 	_ = p.SendText(context.Background(), UserTarget{PlatformUID: platformUID},
 		fmt.Sprintf("✅ 绑定成功！邮箱: %s\n\n现在可以直接发消息与 AI 助手对话了。\n输入 /help 查看可用命令。", email))
@@ -555,10 +557,17 @@ func (p *RemoteGatewayPlugin) handleUnbind(platformUID string) {
 
 // LookupByEmail returns the platformUID bound to the given email, or "".
 func (p *RemoteGatewayPlugin) LookupByEmail(email string) string {
+	return p.LookupByTenantEmail(store.DefaultTenantID, email)
+}
+
+func (p *RemoteGatewayPlugin) LookupByTenantEmail(tenantID, email string) string {
+	tenantID = normalizeRemoteTenantID(tenantID)
+	email = normalizeEmail(email)
 	p.bindMu.RLock()
 	defer p.bindMu.RUnlock()
-	for uid, e := range p.bindings {
-		if e == email {
+	for uid, raw := range p.bindings {
+		info := decodeRemoteBindingValue(raw)
+		if info.TenantID == tenantID && info.Email == email {
 			return uid
 		}
 	}
@@ -576,9 +585,75 @@ func (p *RemoteGatewayPlugin) GetBindings() map[string]string {
 	return out
 }
 
+func (p *RemoteGatewayPlugin) BindTenantEmail(platformUID, tenantID, email string) {
+	p.bindMu.Lock()
+	p.bindings[platformUID] = encodeRemoteBindingValue(tenantID, email)
+	p.bindMu.Unlock()
+	p.saveBindings()
+}
+
+func (p *RemoteGatewayPlugin) RemoveBindingByTenantEmail(tenantID, email string) {
+	tenantID = normalizeRemoteTenantID(tenantID)
+	email = normalizeEmail(email)
+	p.bindMu.Lock()
+	var removed bool
+	for uid, raw := range p.bindings {
+		info := decodeRemoteBindingValue(raw)
+		if info.TenantID == tenantID && info.Email == email {
+			delete(p.bindings, uid)
+			removed = true
+		}
+	}
+	p.bindMu.Unlock()
+	if removed {
+		p.saveBindings()
+	}
+}
+
+func (p *RemoteGatewayPlugin) RemoveBindingByEmail(email string) {
+	p.RemoveBindingByTenantEmail(store.DefaultTenantID, email)
+}
+
 // ---------------------------------------------------------------------------
 // Persistence — store bindings in system_settings as JSON
 // ---------------------------------------------------------------------------
+
+type remoteBindingInfo struct {
+	Email    string `json:"email"`
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+func normalizeRemoteTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return store.DefaultTenantID
+	}
+	return tenantID
+}
+
+func normalizeEmail(email string) string {
+	return strings.TrimSpace(strings.ToLower(email))
+}
+
+func encodeRemoteBindingValue(tenantID, email string) string {
+	tenantID = normalizeRemoteTenantID(tenantID)
+	email = normalizeEmail(email)
+	if tenantID == store.DefaultTenantID {
+		return email
+	}
+	data, _ := json.Marshal(remoteBindingInfo{Email: email, TenantID: tenantID})
+	return string(data)
+}
+
+func decodeRemoteBindingValue(raw string) remoteBindingInfo {
+	var info remoteBindingInfo
+	if strings.HasPrefix(strings.TrimSpace(raw), "{") && json.Unmarshal([]byte(raw), &info) == nil {
+		info.Email = normalizeEmail(info.Email)
+		info.TenantID = normalizeRemoteTenantID(info.TenantID)
+		return info
+	}
+	return remoteBindingInfo{Email: normalizeEmail(raw), TenantID: store.DefaultTenantID}
+}
 
 func (p *RemoteGatewayPlugin) loadBindings() {
 	key := fmt.Sprintf("im_%s_bindings", p.platform)

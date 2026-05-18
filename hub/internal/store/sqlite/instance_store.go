@@ -151,7 +151,7 @@ func (s *instanceStore) GetPendingApprovals(ctx context.Context, approverID stri
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, instance_id, node_id, node_type, status, started_at, completed_at, result_json, fail_reason
 		 FROM node_executions
-		 WHERE status = 'pending'
+		 WHERE status = 'running' AND node_type = 'approval'
 		 ORDER BY started_at ASC`,
 	)
 	if err != nil {

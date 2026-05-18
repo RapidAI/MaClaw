@@ -9,6 +9,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // BindingLookup can resolve an email to a platform-specific UID.
@@ -16,6 +19,12 @@ import (
 type BindingLookup interface {
 	// LookupByEmail returns the platform UID for the given email, or "" if not bound.
 	LookupByEmail(email string) string
+}
+
+// TenantBindingLookup resolves bindings within one Hub tenant. Plugins that
+// only implement BindingLookup are treated as legacy default-tenant bindings.
+type TenantBindingLookup interface {
+	LookupByTenantEmail(tenantID, email string) string
 }
 
 // Mailer is the subset of mail.Service needed for sending emails.
@@ -46,6 +55,11 @@ func NewNotifyBroadcaster(adapter *Adapter, mailer Mailer) *NotifyBroadcaster {
 // Returns a human-readable summary of where the code was sent (e.g.
 // "邮箱 + 飞书" or "邮箱") for the caller to display.
 func (b *NotifyBroadcaster) BroadcastVerifyCode(ctx context.Context, email, code, excludePlatform string) (sentTo string, err error) {
+	return b.BroadcastVerifyCodeForTenant(ctx, store.DefaultTenantID, email, code, excludePlatform)
+}
+
+func (b *NotifyBroadcaster) BroadcastVerifyCodeForTenant(ctx context.Context, tenantID, email, code, excludePlatform string) (sentTo string, err error) {
+	tenantID = normalizeTenantID(tenantID)
 	var channels []string
 	var firstErr error
 
@@ -79,12 +93,7 @@ func (b *NotifyBroadcaster) BroadcastVerifyCode(ctx context.Context, email, code
 			if name == excludePlatform {
 				continue
 			}
-			// Check if this plugin supports binding lookup
-			lookup, ok := plugin.(BindingLookup)
-			if !ok {
-				continue
-			}
-			uid := lookup.LookupByEmail(email)
+			uid := lookupBindingUID(plugin, tenantID, email)
 			if uid == "" {
 				continue
 			}
@@ -113,6 +122,11 @@ func (b *NotifyBroadcaster) BroadcastVerifyCode(ctx context.Context, email, code
 // caller (mailer.SendLoginConfirmation), so this only covers IM platforms.
 // Returns a list of channel display names where the link was sent.
 func (b *NotifyBroadcaster) BroadcastLoginLink(ctx context.Context, email, confirmURL string) []string {
+	return b.BroadcastLoginLinkForTenant(ctx, store.DefaultTenantID, email, confirmURL)
+}
+
+func (b *NotifyBroadcaster) BroadcastLoginLinkForTenant(ctx context.Context, tenantID, email, confirmURL string) []string {
+	tenantID = normalizeTenantID(tenantID)
 	if b.adapter == nil {
 		return nil
 	}
@@ -128,11 +142,7 @@ func (b *NotifyBroadcaster) BroadcastLoginLink(ctx context.Context, email, confi
 
 	var channels []string
 	for name, plugin := range plugins {
-		lookup, ok := plugin.(BindingLookup)
-		if !ok {
-			continue
-		}
-		uid := lookup.LookupByEmail(email)
+		uid := lookupBindingUID(plugin, tenantID, email)
 		if uid == "" {
 			continue
 		}
@@ -151,6 +161,11 @@ func (b *NotifyBroadcaster) BroadcastLoginLink(ctx context.Context, email, confi
 // skipped to avoid duplicate / spammy notifications. Email is only used as a
 // fallback when no IM channel is configured or all IM sends fail.
 func (b *NotifyBroadcaster) BroadcastText(ctx context.Context, email, subject, text string) {
+	b.BroadcastTextForTenant(ctx, store.DefaultTenantID, email, subject, text)
+}
+
+func (b *NotifyBroadcaster) BroadcastTextForTenant(ctx context.Context, tenantID, email, subject, text string) {
+	tenantID = normalizeTenantID(tenantID)
 	imSent := false
 
 	// 1. Try all bound IM platforms first.
@@ -163,11 +178,7 @@ func (b *NotifyBroadcaster) BroadcastText(ctx context.Context, email, subject, t
 		b.adapter.mu.RUnlock()
 
 		for name, plugin := range plugins {
-			lookup, ok := plugin.(BindingLookup)
-			if !ok {
-				continue
-			}
-			uid := lookup.LookupByEmail(email)
+			uid := lookupBindingUID(plugin, tenantID, email)
 			if uid == "" {
 				continue
 			}
@@ -193,6 +204,11 @@ func (b *NotifyBroadcaster) BroadcastText(ctx context.Context, email, subject, t
 // otherwise the accompanying message text is sent as a fallback.
 // Used for Swarm PDF document delivery.
 func (b *NotifyBroadcaster) BroadcastFile(ctx context.Context, email, b64Data, fileName, mimeType, message string) {
+	b.BroadcastFileForTenant(ctx, store.DefaultTenantID, email, b64Data, fileName, mimeType, message)
+}
+
+func (b *NotifyBroadcaster) BroadcastFileForTenant(ctx context.Context, tenantID, email, b64Data, fileName, mimeType, message string) {
+	tenantID = normalizeTenantID(tenantID)
 	if b.adapter == nil {
 		return
 	}
@@ -205,11 +221,7 @@ func (b *NotifyBroadcaster) BroadcastFile(ctx context.Context, email, b64Data, f
 	b.adapter.mu.RUnlock()
 
 	for name, plugin := range plugins {
-		lookup, ok := plugin.(BindingLookup)
-		if !ok {
-			continue
-		}
-		uid := lookup.LookupByEmail(email)
+		uid := lookupBindingUID(plugin, tenantID, email)
 		if uid == "" {
 			continue
 		}
@@ -261,6 +273,28 @@ func joinChannels(channels []string) string {
 	return result
 }
 
+func normalizeTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return store.DefaultTenantID
+	}
+	return tenantID
+}
+
+func lookupBindingUID(plugin IMPlugin, tenantID, email string) string {
+	if lookup, ok := plugin.(TenantBindingLookup); ok {
+		return lookup.LookupByTenantEmail(tenantID, email)
+	}
+	if tenantID != store.DefaultTenantID {
+		return ""
+	}
+	lookup, ok := plugin.(BindingLookup)
+	if !ok {
+		return ""
+	}
+	return lookup.LookupByEmail(email)
+}
+
 // ActiveUserProvider returns the last active IM platform for a user.
 type ActiveUserProvider interface {
 	GetActiveUser(userID string) (platformName, platformUID string, ok bool)
@@ -276,6 +310,11 @@ func (b *NotifyBroadcaster) SetActiveUserProvider(p ActiveUserProvider) {
 // platform. Falls back to sending to a single bound IM channel (first
 // found) if no active platform is known, to avoid duplicate notifications.
 func (b *NotifyBroadcaster) SendToActive(ctx context.Context, userID, email, subject, text string) {
+	b.SendToActiveForTenant(ctx, store.DefaultTenantID, userID, email, subject, text)
+}
+
+func (b *NotifyBroadcaster) SendToActiveForTenant(ctx context.Context, tenantID, userID, email, subject, text string) {
+	tenantID = normalizeTenantID(tenantID)
 	if b.activeProvider != nil {
 		platformName, platformUID, ok := b.activeProvider.GetActiveUser(userID)
 		if ok && b.adapter != nil {
@@ -300,11 +339,7 @@ func (b *NotifyBroadcaster) SendToActive(ctx context.Context, userID, email, sub
 			if !ok {
 				continue
 			}
-			lookup, ok := plugin.(BindingLookup)
-			if !ok {
-				continue
-			}
-			uid := lookup.LookupByEmail(email)
+			uid := lookupBindingUID(plugin, tenantID, email)
 			if uid == "" {
 				continue
 			}

@@ -185,13 +185,9 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 			}
 		}
 		if feishuNotifier != nil {
-			feishuNotifier.RemoveOpenID(user.Email)
+			feishuNotifier.RemoveOpenIDForTenant(user.TenantID, user.Email)
 		}
-		for _, cleaner := range imCleaners {
-			if cleaner != nil {
-				cleaner.RemoveBindingByEmail(user.Email)
-			}
-		}
+		removeIMBindingsForTenant(imCleaners, user.TenantID, user.Email)
 		if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), user.TenantID, user.Email); err != nil {
 			writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
 			return

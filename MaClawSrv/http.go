@@ -1567,7 +1567,7 @@ func sanitizeAnyMapForAPI(dataRoot string, in map[string]interface{}) map[string
 	}
 	out := make(map[string]interface{}, len(in))
 	for key, value := range in {
-		out[key] = sanitizeAnyValueForAPI(dataRoot, value)
+		out[key] = sanitizeAnyValueForAPI(dataRoot, key, value)
 	}
 	return out
 }
@@ -1578,19 +1578,26 @@ func sanitizeStringMapForAPI(dataRoot string, in map[string]string) map[string]s
 	}
 	out := make(map[string]string, len(in))
 	for key, value := range in {
+		if supportBundleSensitiveKey(key) {
+			out[key] = "[redacted]"
+			continue
+		}
 		out[key] = redactSupportBundleText(dataRoot, value)
 	}
 	return out
 }
 
-func sanitizeAnyValueForAPI(dataRoot string, value interface{}) interface{} {
+func sanitizeAnyValueForAPI(dataRoot, key string, value interface{}) interface{} {
 	switch v := value.(type) {
 	case string:
+		if supportBundleSensitiveKey(key) {
+			return "[redacted]"
+		}
 		return redactSupportBundleText(dataRoot, v)
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i := range v {
-			out[i] = sanitizeAnyValueForAPI(dataRoot, v[i])
+			out[i] = sanitizeAnyValueForAPI(dataRoot, key, v[i])
 		}
 		return out
 	case map[string]interface{}:

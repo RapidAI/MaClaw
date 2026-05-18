@@ -375,6 +375,9 @@ func redactAsyncJobRawMessage(dataRoot string, payload json.RawMessage) json.Raw
 func redactAsyncJobValue(dataRoot, key string, value any) any {
 	switch v := value.(type) {
 	case string:
+		if supportBundleSensitiveKey(key) {
+			return "[redacted]"
+		}
 		if asyncJobPathLikeKey(key) || supportBundleLooksAbsolutePath(v) {
 			return redactSupportBundleValue(dataRoot, v)
 		}

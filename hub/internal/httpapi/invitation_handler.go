@@ -218,13 +218,9 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 
 			// Remove IM bindings.
 			if feishuNotifier != nil {
-				feishuNotifier.RemoveOpenID(email)
+				feishuNotifier.RemoveOpenIDForTenant(code.TenantID, email)
 			}
-			for _, cleaner := range imCleaners {
-				if cleaner != nil {
-					cleaner.RemoveBindingByEmail(email)
-				}
-			}
+			removeIMBindingsForTenant(imCleaners, code.TenantID, email)
 
 			// Delete the user record so bind-query returns unbound.
 			if identity != nil {
