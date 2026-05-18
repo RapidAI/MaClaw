@@ -31,6 +31,7 @@ type UpdateHubVisibilityRequest struct {
 type MigrateHubUserRequest struct {
 	Mode      string `json:"mode"`
 	Email     string `json:"email"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	Domain    string `json:"domain"`
 	FromHubID string `json:"from_hub_id"`
 	ToHubID   string `json:"to_hub_id"`
@@ -245,9 +246,9 @@ func MigrateHubUserHandler(service *hubs.Service) http.HandlerFunc {
 		)
 		switch mode {
 		case "email", "user":
-			result, err = service.MigrateUser(r.Context(), hubs.MigrateUserRequest{Email: req.Email, FromHubID: req.FromHubID, ToHubID: req.ToHubID})
+			result, err = service.MigrateUser(r.Context(), hubs.MigrateUserRequest{Email: req.Email, TenantID: strings.TrimSpace(req.TenantID), FromHubID: req.FromHubID, ToHubID: req.ToHubID})
 		case "domain":
-			result, err = service.MigrateDomain(r.Context(), hubs.MigrateDomainRequest{Domain: req.Domain, FromHubID: req.FromHubID, ToHubID: req.ToHubID})
+			result, err = service.MigrateDomain(r.Context(), hubs.MigrateDomainRequest{Domain: req.Domain, TenantID: strings.TrimSpace(req.TenantID), FromHubID: req.FromHubID, ToHubID: req.ToHubID})
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_MIGRATION_MODE", "Migration mode must be email or domain")
 			return

@@ -19,7 +19,7 @@ import (
 // RunMemory 执行 memory 子命令。
 func RunMemory(args []string, dataDir string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui memory <list|search|recall|themes|eval|save|delete|compress|backup|auto-compress|stats|embed-status|graph|strength|infer>")
+		return NewUsageError("usage: maclaw-tui memory <list|search|recall|candidates|themes|eval|save|delete|compress|backup|auto-compress|stats|embed-status|graph|strength|infer>")
 	}
 	switch args[0] {
 	case "list":
@@ -28,6 +28,8 @@ func RunMemory(args []string, dataDir string) error {
 		return memorySearch(dataDir, args[1:])
 	case "recall":
 		return memoryRecall(dataDir, args[1:])
+	case "candidates":
+		return memoryCandidates(dataDir, args[1:])
 	case "themes":
 		return memoryThemes(dataDir, args[1:])
 	case "eval":
@@ -58,8 +60,8 @@ func RunMemory(args []string, dataDir string) error {
 }
 
 func openMemoryStore(dataDir string) (*memory.Store, error) {
-	path := filepath.Join(dataDir, "memories.json")
-	return memory.NewStore(path)
+	memoryDir := filepath.Join(dataDir, "memory")
+	return memory.NewStoreWithMode(memoryDir, memory.StoreModeAuto)
 }
 
 func memoryList(dataDir string, args []string) error {
@@ -141,7 +143,7 @@ func memoryRecall(dataDir string, args []string) error {
 	category := fs.String("category", "", "filter by category")
 	query := fs.String("query", "", "recall query")
 	limit := fs.Int("limit", 10, "max results")
-	mode := fs.String("mode", "hybrid", "recall mode: hybrid|adaptive|auto")
+	mode := fs.String("mode", "hybrid", "recall mode: hybrid|lightmem|adaptive|auto")
 	project := fs.String("project", "", "project path for scoped recall")
 	debug := fs.Bool("debug", false, "include adaptive recall debug plan")
 	jsonOut := fs.Bool("json", false, "JSON output")
@@ -158,97 +160,81 @@ func memoryRecall(dataDir string, args []string) error {
 	}
 	defer store.Stop()
 
-	entries, plan, err := memoryRecallByMode(store, q, memory.Category(*category), *mode, *project, *limit)
+	result, err := memoryRecallResultByMode(store, q, memory.Category(*category), *mode, *project, *limit)
 	if err != nil {
 		return err
 	}
 	if *jsonOut {
-		if *debug && plan != nil {
-			return PrintJSON(map[string]interface{}{"entries": entries, "plan": plan})
+		if *debug {
+			return PrintJSON(result)
 		}
-		return PrintJSON(entries)
+		return PrintJSON(result.Entries)
 	}
-	if *debug && plan != nil {
-		fmt.Printf("Adaptive Recall Plan: complexity=%s fallback=%v themes=%d expanded=%d\n",
-			plan.Complexity, plan.Fallback, len(plan.SelectedThemes), len(plan.ExpandedEntryIDs))
-		fmt.Printf("  budget max_items=%d token_budget=%d\n", plan.Budget.MaxItems, plan.Budget.TokenBudget)
-		fmt.Printf("  diversity theme_cap=%d source_cap=%d deferred_theme=%d deferred_source=%d backfilled=%d selected_themes=%d selected_sources=%d selected_theme_coverage=%d/%d->%d reserved=%d\n",
-			plan.Diversity.ThemeCap, plan.Diversity.SourceCap, plan.Diversity.DeferredByThemeCap, plan.Diversity.DeferredBySourceCap, plan.Diversity.BackfilledDeferred, plan.Diversity.SelectedThemeCount, plan.Diversity.SelectedSourceCount, plan.Diversity.SelectedThemeCoveredBefore, plan.Diversity.SelectedThemeTargets, plan.Diversity.SelectedThemeCoveredAfter, plan.Diversity.ReservedSelectedThemes)
-		for _, facet := range plan.QueryFacets {
-			fmt.Printf("  facet %s: %s tokens=%v\n", facet.Kind, facet.Text, facet.Tokens)
-		}
-		for _, coverage := range plan.FacetCoverage {
-			fmt.Printf("  facet_coverage %s: themes=%v expanded=%v\n", coverage.Kind, coverage.SelectedThemeIDs, coverage.ExpandedEntryIDs)
-		}
-		for _, aggregate := range plan.ThemeAggregates {
-			fmt.Printf("  aggregate %s: results=%d seeds=%d expanded=%d tokens=%d facets=%v\n",
-				aggregate.ThemeID, len(aggregate.ResultEntryIDs), len(aggregate.SeedEntryIDs), len(aggregate.ExpandedEntryIDs), aggregate.TokenEstimate, aggregate.MatchedFacets)
-			for _, preview := range aggregate.ResultPreviews {
-				fmt.Printf("    preview: %s\n", preview)
-			}
-		}
-		for _, theme := range plan.SelectedThemes {
-			fmt.Printf("  theme %s: %s (%s facets=%v)\n", theme.ThemeID, theme.Summary, theme.Reason, theme.MatchedFacets)
-			for _, ev := range theme.MatchEvidence {
-				fmt.Printf("    match %s token=%s entry=%s source=%s preview=%s\n", ev.FacetKind, ev.Token, ev.EntryID, ev.SourceType, ev.ContentPreview)
-			}
-		}
-		for _, ev := range plan.ResultEvidence {
-			fmt.Printf("  result #%d %s via %s source=%s theme=%s\n", ev.Rank, ev.EntryID, ev.Reason, ev.SourceType, ev.ThemeID)
-		}
-		for _, ev := range plan.ExpandedEvidence {
-			fmt.Printf("  expanded #%d %s source=%s theme=%s score=%d\n", ev.Rank, ev.EntryID, ev.SourceType, ev.ThemeID, ev.ExpansionScore)
-		}
-	}
-	if len(entries) == 0 {
+	formatted := memory.FormatRecallResultForTool(store, q, result, *debug, true)
+	if formatted == "No relevant memories found." {
 		fmt.Println("No memories found.")
 		return nil
 	}
-	fmt.Printf("%-24s %-20s %-12s %s\n", "ID", "CATEGORY", "ACCESS", "CONTENT")
-	fmt.Println(strings.Repeat("-", 80))
-	for _, e := range entries {
-		content := strings.ReplaceAll(e.Content, "\n", " ")
-		if len(content) > 40 {
-			content = content[:37] + "..."
-		}
-		fmt.Printf("%-24s %-20s %-12d %s\n", e.ID, e.Category, e.AccessCount, content)
-	}
+	fmt.Print(formatted)
 	return nil
 }
 
+func memoryRecallResultByMode(store *memory.Store, query string, category memory.Category, mode string, projectPath string, limit int) (memory.ToolRecallResult, error) {
+	return store.RecallByMode(query, category, mode, projectPath, limit)
+}
+
 func memoryRecallByMode(store *memory.Store, query string, category memory.Category, mode string, projectPath string, limit int) ([]memory.Entry, *memory.AdaptiveRecallPlan, error) {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = "hybrid"
+	result, err := memoryRecallResultByMode(store, query, category, mode, projectPath, limit)
+	if err != nil {
+		return nil, nil, err
 	}
-	switch mode {
-	case "hybrid", "recall":
-		return store.SearchByMode(query, memory.SearchHybrid, category, projectPath, limit), nil, nil
-	case "auto":
-		if !memory.ShouldUseAdaptiveRecall(query) {
-			return store.SearchByMode(query, memory.SearchHybrid, category, projectPath, limit), nil, nil
-		}
-		fallthrough
-	case "adaptive", "hier", "adaptive_hier":
-		rebuildStoreThemes(store)
-		entries, plan := store.RecallAdaptiveHierDebug(query, category, projectPath)
-		if limit > 0 && len(entries) > limit {
-			entries = entries[:limit]
-			if len(plan.ResultEntryIDs) > limit {
-				plan.ResultEntryIDs = plan.ResultEntryIDs[:limit]
-			}
-		}
-		return entries, &plan, nil
-	default:
-		return nil, nil, NewUsageError("unknown memory recall mode: %s (use hybrid|adaptive|auto)", mode)
-	}
+	return result.Entries, result.AdaptivePlan, nil
 }
 
 func rebuildStoreThemes(store *memory.Store) {
-	if store == nil || store.ThemeManager() == nil {
-		return
+	store.EnsureThemesUpToDate()
+}
+
+func memoryCandidates(dataDir string, args []string) error {
+	fs := flag.NewFlagSet("memory candidates", flag.ExitOnError)
+	keyword := fs.String("keyword", "", "filter by keyword")
+	limit := fs.Int("limit", 50, "max candidates")
+	apply := fs.Bool("apply", false, "run candidate consolidation before listing")
+	jsonOut := fs.Bool("json", false, "JSON output")
+	fs.Parse(args)
+
+	kw := *keyword
+	if kw == "" && fs.NArg() > 0 {
+		kw = fs.Arg(0)
 	}
-	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
+
+	store, err := openMemoryStore(dataDir)
+	if err != nil {
+		return err
+	}
+	defer store.Stop()
+
+	var consolidation memory.CandidateConsolidationResult
+	if *apply {
+		consolidation = store.ConsolidateMemoryCandidates(context.Background())
+	}
+	candidates := store.ListMemoryCandidates(kw, *limit)
+
+	if *jsonOut {
+		payload := map[string]interface{}{
+			"candidates": candidates,
+		}
+		if *apply {
+			payload["consolidation"] = consolidation
+		}
+		return PrintJSON(payload)
+	}
+
+	if *apply {
+		fmt.Print(memory.FormatCandidateConsolidationForTool(consolidation))
+	}
+	fmt.Print(memory.FormatMemoryCandidatesForTool(store, kw, *limit))
+	return nil
 }
 
 func memoryThemes(dataDir string, args []string) error {
@@ -270,27 +256,24 @@ func memoryThemes(dataDir string, args []string) error {
 	}
 	defer store.Stop()
 
-	rebuildStoreThemes(store)
+	store.EnsureThemesUpToDate()
 	themes := store.ThemeManager().TopThemes(*limit)
 	var explanations []memory.ThemeExplanation
 	if *evidence > 0 {
 		explanations = store.ThemeExplanations(*limit, *evidence)
 	}
 	var diagnostics memory.ThemeDiagnosticReport
-	if *diagnose {
+	if *diagnose || *plan || *apply {
 		diagnostics = store.ThemeDiagnostics(*issueLimit)
 	}
 	var maintenance memory.ThemeMaintenancePlan
-	if *plan {
-		if !*diagnose {
-			diagnostics = store.ThemeDiagnostics(*issueLimit)
-		}
+	if *plan || *apply {
 		maintenance = memory.PlanThemeMaintenance(diagnostics, *actionLimit)
 	}
 	var maintenanceResult memory.ThemeMaintenanceResult
 	if *apply {
 		maintenanceResult = store.ApplyThemeMaintenancePlan(*issueLimit, *actionLimit)
-		rebuildStoreThemes(store)
+		store.EnsureThemesUpToDate()
 		themes = store.ThemeManager().TopThemes(*limit)
 		diagnostics = store.ThemeDiagnostics(*issueLimit)
 		maintenance = memory.PlanThemeMaintenance(diagnostics, *actionLimit)
@@ -300,23 +283,16 @@ func memoryThemes(dataDir string, args []string) error {
 	}
 	if *jsonOut {
 		if *apply {
-			payload := map[string]interface{}{
-				"result":      maintenanceResult,
-				"diagnostics": diagnostics,
-				"plan":        maintenance,
-			}
+			payload := map[string]interface{}{"result": maintenanceResult, "diagnostics": diagnostics, "plan": maintenance}
 			if *evidence > 0 {
-				payload["explanations"] = store.ThemeExplanations(*limit, *evidence)
+				payload["explanations"] = explanations
 			} else {
 				payload["themes"] = themes
 			}
 			return PrintJSON(payload)
 		}
 		if *plan {
-			payload := map[string]interface{}{
-				"diagnostics": diagnostics,
-				"plan":        maintenance,
-			}
+			payload := map[string]interface{}{"diagnostics": diagnostics, "plan": maintenance}
 			if *evidence > 0 {
 				payload["explanations"] = explanations
 			} else {
@@ -325,9 +301,7 @@ func memoryThemes(dataDir string, args []string) error {
 			return PrintJSON(payload)
 		}
 		if *diagnose {
-			payload := map[string]interface{}{
-				"diagnostics": diagnostics,
-			}
+			payload := map[string]interface{}{"diagnostics": diagnostics}
 			if *evidence > 0 {
 				payload["explanations"] = explanations
 			} else {
@@ -337,160 +311,33 @@ func memoryThemes(dataDir string, args []string) error {
 		}
 		if *evidence > 0 {
 			if *stats {
-				return PrintJSON(map[string]interface{}{
-					"health":       store.ThemeHealth(),
-					"explanations": explanations,
-				})
+				return PrintJSON(map[string]interface{}{"health": store.ThemeHealth(), "explanations": explanations})
 			}
 			return PrintJSON(explanations)
 		}
 		if *stats {
-			return PrintJSON(map[string]interface{}{
-				"health": store.ThemeHealth(),
-				"themes": themes,
-			})
+			return PrintJSON(map[string]interface{}{"health": store.ThemeHealth(), "themes": themes})
 		}
 		return PrintJSON(themes)
 	}
-	if *stats {
-		printThemeHealth(store.ThemeHealth())
-		fmt.Println()
-	}
-	if *diagnose {
-		printThemeDiagnostics(diagnostics)
-		fmt.Println()
+	if *apply {
+		fmt.Print(memory.FormatThemeMaintenanceResultForTool(maintenanceResult))
+		return nil
 	}
 	if *plan {
-		printThemeMaintenancePlan(maintenance)
-		fmt.Println()
+		fmt.Print(memory.FormatThemeMaintenancePlanForTool(maintenance, diagnostics, explanations, *evidence > 0))
+		return nil
 	}
-	if *apply {
-		printThemeMaintenanceResult(maintenanceResult)
-		fmt.Println()
-	}
-	if len(themes) == 0 {
-		fmt.Println("No memory themes found.")
+	if *diagnose {
+		fmt.Print(memory.FormatThemeDiagnosticsForTool(diagnostics, explanations, *evidence > 0))
 		return nil
 	}
 	if *evidence > 0 {
-		printThemeExplanations(explanations)
+		fmt.Print(memory.FormatThemeExplanationsForTool(explanations, store.ThemeHealth(), *stats))
 		return nil
 	}
-	fmt.Printf("%-32s %-7s %-32s %s\n", "ID", "MEMBERS", "TAGS", "SUMMARY")
-	fmt.Println(strings.Repeat("-", 96))
-	for _, theme := range themes {
-		tags := strings.Join(theme.Tags, ",")
-		if len(tags) > 30 {
-			tags = tags[:27] + "..."
-		}
-		summary := strings.ReplaceAll(theme.Summary, "\n", " ")
-		if len(summary) > 60 {
-			summary = summary[:57] + "..."
-		}
-		fmt.Printf("%-32s %-7d %-32s %s\n", theme.ID, theme.MemberCount, tags, summary)
-		if len(theme.Neighbors) > 0 {
-			neighbors := strings.Join(theme.Neighbors, ",")
-			if len(neighbors) > 80 {
-				neighbors = neighbors[:77] + "..."
-			}
-			fmt.Printf("  neighbors: %s\n", neighbors)
-		}
-	}
+	fmt.Print(memory.FormatThemesForTool(themes, store.ThemeHealth(), *stats))
 	return nil
-}
-
-func printThemeExplanations(explanations []memory.ThemeExplanation) {
-	for _, explanation := range explanations {
-		theme := explanation.Theme
-		tags := strings.Join(theme.Tags, ",")
-		fmt.Printf("%s members=%d cohesion=%.2f tags=%s\n", theme.ID, theme.MemberCount, explanation.Cohesion, tags)
-		fmt.Printf("  summary: %s\n", strings.ReplaceAll(theme.Summary, "\n", " "))
-		if len(theme.Neighbors) > 0 {
-			fmt.Printf("  neighbors: %s\n", strings.Join(theme.Neighbors, ","))
-		}
-		for _, ev := range explanation.Evidence {
-			fmt.Printf("  evidence: %s source=%s sim=%.2f access=%d %s\n",
-				ev.EntryID, ev.SourceType, ev.Similarity, ev.AccessCount, ev.ContentPreview)
-			if ev.SourceURL != "" {
-				fmt.Printf("    url: %s\n", ev.SourceURL)
-			}
-		}
-	}
-}
-
-func printThemeMaintenancePlan(plan memory.ThemeMaintenancePlan) {
-	fmt.Println("Theme Maintenance Plan:")
-	if len(plan.Actions) == 0 {
-		fmt.Println("  No maintenance actions recommended.")
-		return
-	}
-	for _, action := range plan.Actions {
-		target := action.ThemeID
-		if target == "" && len(action.EntryIDs) > 0 {
-			target = strings.Join(action.EntryIDs, ",")
-			if len(target) > 80 {
-				target = target[:77] + "..."
-			}
-		}
-		if target == "" {
-			target = "-"
-		}
-		fmt.Printf("  [%s] %s %s\n", action.Priority, action.Action, target)
-		fmt.Printf("    reason: %s\n", action.Reason)
-		if len(action.IssueKinds) > 0 {
-			fmt.Printf("    issues: %s\n", strings.Join(action.IssueKinds, ","))
-		}
-	}
-}
-
-func printThemeMaintenanceResult(result memory.ThemeMaintenanceResult) {
-	fmt.Println("Theme Maintenance Result:")
-	fmt.Printf("  Requested actions:     %d\n", result.RequestedActions)
-	fmt.Printf("  Rebuilt themes:        %v\n", result.RebuiltThemes)
-	fmt.Printf("  Backfilled embeddings: %d\n", result.BackfilledEmbeddings)
-	if len(result.AppliedActions) > 0 {
-		fmt.Printf("  Applied:               %s\n", strings.Join(result.AppliedActions, ","))
-	}
-	if len(result.SkippedActions) > 0 {
-		fmt.Printf("  Skipped:               %s\n", strings.Join(result.SkippedActions, ","))
-	}
-	if len(result.Errors) > 0 {
-		fmt.Printf("  Errors:                %s\n", strings.Join(result.Errors, "; "))
-	}
-	fmt.Printf("  Coverage:              %.2f -> %.2f\n", result.Before.CoverageRate, result.After.CoverageRate)
-}
-
-func printThemeDiagnostics(report memory.ThemeDiagnosticReport) {
-	fmt.Println("Theme Diagnostics:")
-	if len(report.Issues) == 0 {
-		fmt.Println("  No actionable theme issues found.")
-		return
-	}
-	for _, issue := range report.Issues {
-		target := issue.ThemeID
-		if target == "" {
-			target = issue.EntryID
-		}
-		if target == "" {
-			target = "-"
-		}
-		fmt.Printf("  [%s] %s %s: %s\n", issue.Severity, issue.Kind, target, issue.Message)
-		fmt.Printf("    suggestion: %s\n", issue.Suggestion)
-	}
-}
-
-func printThemeHealth(health memory.ThemeHealth) {
-	fmt.Println("Theme Health:")
-	fmt.Printf("  Themes:              %d\n", health.ThemeCount)
-	fmt.Printf("  Active eligible:     %d\n", health.ActiveEligibleEntries)
-	fmt.Printf("  Covered entries:     %d\n", health.CoveredEntries)
-	fmt.Printf("  Uncovered entries:   %d\n", health.UncoveredEntries)
-	fmt.Printf("  Coverage rate:       %.2f\n", health.CoverageRate)
-	fmt.Printf("  Avg theme size:      %.2f\n", health.AverageThemeSize)
-	fmt.Printf("  Max theme size:      %d\n", health.MaxThemeSize)
-	fmt.Printf("  Neighbor links:      %d\n", health.NeighborLinks)
-	fmt.Printf("  Isolated themes:     %d\n", health.IsolatedThemes)
-	fmt.Printf("  Duplicate refs:      %d\n", health.DuplicateEntryRefs)
 }
 
 func memoryEval(dataDir string, args []string) error {
@@ -637,18 +484,19 @@ func memorySave(dataDir string, args []string) error {
 		tagList = strings.Split(*tags, ",")
 	}
 
-	entry := memory.Entry{
-		Content:  *content,
-		Category: memory.Category(*category),
-		Tags:     tagList,
-	}
-	if err := store.Save(entry); err != nil {
-		return err
+	out := memory.HandleTool(store, map[string]interface{}{
+		"action":   "save",
+		"content":  *content,
+		"category": *category,
+		"tags":     tagList,
+	}, memory.ToolOptions{})
+	if strings.HasPrefix(out, "save memory failed:") || strings.HasPrefix(out, "missing ") || strings.HasPrefix(out, "memory candidate rejected:") {
+		return fmt.Errorf("%s", out)
 	}
 	if *jsonOut {
-		return PrintJSON(map[string]string{"status": "saved"})
+		return PrintJSON(map[string]string{"status": "saved", "message": out})
 	}
-	fmt.Println("Memory saved.")
+	fmt.Println(out)
 	return nil
 }
 
@@ -853,63 +701,7 @@ func memoryStats(dataDir string) error {
 		return err
 	}
 	defer store.Stop()
-
-	entries := store.List("", "")
-	total := len(entries)
-	var active, dormant, superseded int
-	var withEmb, withGraph int
-	scopeGlobal, scopeProject := 0, 0
-	catCounts := make(map[memory.Category]int)
-	tierSemantic, tierEpisodic := 0, 0
-
-	for _, e := range entries {
-		catCounts[e.Category]++
-		switch e.Status {
-		case memory.StatusDormant:
-			dormant++
-		case memory.StatusSuperseded:
-			superseded++
-		default:
-			active++
-		}
-		if len(e.Embedding) > 0 {
-			withEmb++
-		}
-		if len(e.RelatedIDs) > 0 {
-			withGraph++
-		}
-		if e.Scope == memory.ScopeGlobal {
-			scopeGlobal++
-		} else {
-			scopeProject++
-		}
-		if e.Category.Tier() == memory.TierSemantic {
-			tierSemantic++
-		} else {
-			tierEpisodic++
-		}
-	}
-
-	fmt.Printf("Memory Store Stats:\n")
-	fmt.Printf("  Total entries:    %d\n", total)
-	fmt.Printf("  Active:           %d\n", active)
-	fmt.Printf("  Dormant:          %d\n", dormant)
-	fmt.Printf("  Superseded:       %d\n", superseded)
-	fmt.Printf("  With embedding:   %d\n", withEmb)
-	fmt.Printf("  With graph links: %d\n", withGraph)
-	fmt.Printf("  Scope global:     %d\n", scopeGlobal)
-	fmt.Printf("  Scope project:    %d\n", scopeProject)
-	fmt.Printf("  Tier semantic:    %d\n", tierSemantic)
-	fmt.Printf("  Tier episodic:    %d\n", tierEpisodic)
-	rebuildStoreThemes(store)
-	health := store.ThemeHealth()
-	fmt.Printf("  Theme count:      %d\n", health.ThemeCount)
-	fmt.Printf("  Theme coverage:   %.2f (%d/%d)\n", health.CoverageRate, health.CoveredEntries, health.ActiveEligibleEntries)
-	fmt.Printf("  Theme isolated:   %d\n", health.IsolatedThemes)
-	fmt.Printf("  Categories:\n")
-	for cat, count := range catCounts {
-		fmt.Printf("    %-25s %d\n", cat, count)
-	}
+	fmt.Print(memory.FormatStoreStatsForTool(store.Stats()))
 	return nil
 }
 

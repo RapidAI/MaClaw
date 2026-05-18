@@ -225,7 +225,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		ToolOutcomes:    make([]toolOutcome, 0, len(opts.ToolCalls)),
 		ToolExecResults: make([]toolExecutionResult, 0, len(opts.ToolCalls)),
 	}
-	for _, tc := range opts.ToolCalls {
+	for tcIdx, tc := range opts.ToolCalls {
 		if opts.Context.IsCancelled() {
 			opts.Context.SetLoopState(LoopStateStopped)
 			result.Response = h.cancelledExitResponse(opts.UserID, result.History, opts.UserText)
@@ -303,6 +303,8 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			InFlightLifecycle:          opts.InFlightLifecycle,
 			RecordToolResult:           opts.RecordToolResult,
 			RecordSystemMessages:       opts.RecordSystemMessages,
+			ParallelGroupIndex:         tcIdx,
+			ParallelGroupTotal:         len(opts.ToolCalls),
 		})
 		result.Conversation = commitResult.Conversation
 		result.History = commitResult.History

@@ -36,7 +36,7 @@ func TestDeviceNotifier_DebouncesCancelsPrevious(t *testing.T) {
 	dn.NotifyDeviceOffline("user1", "m1", "MacBook")
 
 	dn.mu.Lock()
-	entry := dn.debounce["m1"]
+	entry := dn.debounce[tenantUserRuntimeKey("", "user1")+"\x00m1"]
 	dn.mu.Unlock()
 
 	if entry == nil {
@@ -59,7 +59,7 @@ func TestDeviceNotifier_MarkUserActive(t *testing.T) {
 	dn.MarkUserActive("user1", "feishu", "uid1")
 
 	dn.mu.Lock()
-	info, ok := dn.activeUsers["user1"]
+	info, ok := dn.activeUsers[tenantUserRuntimeKey("", "user1")]
 	dn.mu.Unlock()
 
 	if !ok {
@@ -67,6 +67,37 @@ func TestDeviceNotifier_MarkUserActive(t *testing.T) {
 	}
 	if info.PlatformName != "feishu" {
 		t.Fatalf("expected feishu, got %s", info.PlatformName)
+	}
+}
+
+func TestDeviceNotifier_ActiveUsersIsolatedByTenant(t *testing.T) {
+	dn := &DeviceNotifier{
+		debounce:    make(map[string]*debounceEntry),
+		activeUsers: make(map[string]activeUserInfo),
+	}
+
+	dn.MarkUserActiveForTenant("tenant_a", "user1", "feishu", "uid-a")
+	dn.MarkUserActiveForTenant("tenant_b", "user1", "wecom", "uid-b")
+
+	platform, uid, ok := dn.GetActiveUserForTenant("tenant_a", "user1")
+	if !ok || platform != "feishu" || uid != "uid-a" {
+		t.Fatalf("unexpected tenant_a active user: platform=%s uid=%s ok=%v", platform, uid, ok)
+	}
+	platform, uid, ok = dn.GetActiveUserForTenant("tenant_b", "user1")
+	if !ok || platform != "wecom" || uid != "uid-b" {
+		t.Fatalf("unexpected tenant_b active user: platform=%s uid=%s ok=%v", platform, uid, ok)
+	}
+
+	dn.NotifyDeviceOnlineForTenant("tenant_a", "user1", "m1", "MacBook A")
+	dn.NotifyDeviceOnlineForTenant("tenant_b", "user1", "m1", "MacBook B")
+	dn.mu.Lock()
+	entries := len(dn.debounce)
+	for _, entry := range dn.debounce {
+		entry.timer.Stop()
+	}
+	dn.mu.Unlock()
+	if entries != 2 {
+		t.Fatalf("expected separate debounce entries per tenant, got %d", entries)
 	}
 }
 
@@ -80,7 +111,7 @@ func TestDeviceNotifier_DebounceSchedulesTimer(t *testing.T) {
 	dn.NotifyDeviceOnline("user1", "m1", "MacBook")
 
 	dn.mu.Lock()
-	entry := dn.debounce["m1"]
+	entry := dn.debounce[tenantUserRuntimeKey("", "user1")+"\x00m1"]
 	dn.mu.Unlock()
 
 	if entry == nil {
@@ -113,7 +144,7 @@ func TestDeviceNotifier_RapidFlapping(t *testing.T) {
 
 	dn.mu.Lock()
 	count := len(dn.debounce)
-	entry := dn.debounce["m1"]
+	entry := dn.debounce[tenantUserRuntimeKey("", "user1")+"\x00m1"]
 	dn.mu.Unlock()
 
 	// Should only have 1 pending entry (last state wins).
@@ -303,8 +334,8 @@ func TestProperty5_UnrelatedDeviceOffline_SimpleNotification(t *testing.T) {
 		setupState func(ss *spaceStateStore, userID string)
 	}
 	scenarios := []scenario{
-		{func(ss *spaceStateStore, uid string) {}},                                                          // lobby
-		{func(ss *spaceStateStore, uid string) { ss.EnterPrivate(uid, "other-machine", "Other") }},         // private, different target
+		{func(ss *spaceStateStore, uid string) {}},                                                           // lobby
+		{func(ss *spaceStateStore, uid string) { ss.EnterPrivate(uid, "other-machine", "Other") }},           // private, different target
 		{func(ss *spaceStateStore, uid string) { ss.EnterMeeting(uid, "topic", []string{"other-machine"}) }}, // meeting, not a participant
 	}
 

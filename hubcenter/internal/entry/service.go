@@ -258,7 +258,7 @@ func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantID
 		tenantID = strings.TrimSpace(tenantIDOpt[0])
 	}
 	pwaURL := ""
-	if strings.TrimSpace(email) != "" {
+	if strings.TrimSpace(email) != "" || tenantID != "" {
 		pwaURL = BuildPWAURL(hub.BaseURL, email, tenantID)
 	}
 	return HubAccessView{

@@ -156,6 +156,7 @@ func RunMigrations(db *sql.DB) error {
 
 		`CREATE TABLE IF NOT EXISTS admin_audit_logs (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT '',
 			admin_user_id TEXT NOT NULL,
 			action TEXT NOT NULL,
 			payload_json TEXT NOT NULL DEFAULT '{}',
@@ -164,6 +165,7 @@ func RunMigrations(db *sql.DB) error {
 
 		`CREATE TABLE IF NOT EXISTS failure_event_logs (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			category TEXT NOT NULL,
 			event_code TEXT NOT NULL,
 			message TEXT NOT NULL,
@@ -173,8 +175,10 @@ func RunMigrations(db *sql.DB) error {
 			details_json TEXT NOT NULL DEFAULT '{}',
 			created_at TEXT NOT NULL
 		);`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_tenant_created_at ON admin_audit_logs(tenant_id, created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_created_at ON failure_event_logs(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_category_created_at ON failure_event_logs(category, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC);`,
 
 		`CREATE TABLE IF NOT EXISTS invitation_codes (
 			id TEXT PRIMARY KEY,
@@ -285,6 +289,7 @@ func RunMigrations(db *sql.DB) error {
 
 		`CREATE TABLE IF NOT EXISTS workflow_states (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			user_id TEXT NOT NULL,
 			type TEXT NOT NULL,
 			template_type TEXT NOT NULL,
@@ -295,6 +300,7 @@ func RunMigrations(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_states_user ON workflow_states(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_states_tenant_user ON workflow_states(tenant_id, user_id);`,
 
 		`CREATE TABLE IF NOT EXISTS a2a_group_profiles (
 			tenant_id TEXT NOT NULL,
@@ -709,12 +715,18 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN validity_days INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE user_enrollments ADD COLUMN mobile TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN exported INTEGER NOT NULL DEFAULT 0`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_tenant_created_at ON admin_audit_logs(tenant_id, created_at DESC)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC)`)
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN smart_route INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN vip INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE node_executions ADD COLUMN node_type TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE understanding_sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
+	alterStmts = append(alterStmts, `ALTER TABLE workflow_states ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_understanding_sessions_tenant_user_state ON understanding_sessions(tenant_id, user_id, state)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_workflow_states_tenant_user ON workflow_states(tenant_id, user_id)`)
 
 	for _, stmt := range alterStmts {
-		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
 			return fmt.Errorf("run alter migration: %w", err)
 		}
 	}

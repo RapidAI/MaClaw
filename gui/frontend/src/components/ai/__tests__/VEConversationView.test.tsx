@@ -109,6 +109,61 @@ describe("VEConversationView", () => {
         vi.useRealTimers();
     });
 
+    it("uses a friendly direct VE name when the tab title is a raw id", () => {
+        renderConversation({
+            existingSessionId: "test-session-1",
+            lang: "en",
+            veId: "m_b1821505498d817c",
+            veName: "m_b1821505498d817c",
+            initialMessages: [{
+                id: "raw-ve-name-msg",
+                role: "assistant",
+                content: "hello",
+                timestamp: 1,
+            }],
+        });
+
+        const list = screen.getByTestId("ve-message-list");
+        expect(list.textContent).toContain("Digital employee");
+        expect(list.textContent).not.toContain("m_b1821505498d817c");
+        expect(screen.getByTestId("ve-input-textarea").getAttribute("placeholder")).toBe("Message Digital employee...");
+    });
+
+    it("uses the same wrapping rules for direct digital employee replies", () => {
+        renderConversation({
+            existingSessionId: "test-session-1",
+            initialMessages: [{
+                id: "wrap-1",
+                role: "assistant",
+                content: "一段很长的数字员工回复WithoutSpacesWithoutSpacesWithoutSpacesWithoutSpaces\n第二行",
+                timestamp: 1,
+            }],
+        });
+
+        const bubble = screen.getByTestId("ve-msg-content-wrap-1") as HTMLElement;
+        expect(bubble.style.overflowWrap).toBe("anywhere");
+        expect(bubble.style.whiteSpace).toBe("pre-wrap");
+        expect(screen.getByText("第二行")).toBeTruthy();
+    });
+
+    it("renders compact markdown headings in digital employee replies as separate lines", () => {
+        renderConversation({
+            existingSessionId: "test-session-1",
+            initialMessages: [{
+                id: "weather-1",
+                role: "assistant",
+                content: "北京天气：####\u{1f4c5}今天\n晴天 0%####\u{1f4c5}明天\n多云",
+                timestamp: 1,
+            }],
+        });
+
+        expect(screen.getByText("北京天气：")).toBeTruthy();
+        expect(screen.getByText("\u{1f4c5}今天")).toBeTruthy();
+        expect(screen.getByText("晴天 0%")).toBeTruthy();
+        expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+        expect(screen.getByText("多云")).toBeTruthy();
+    });
+
     // --- Utility function tests ---
 
     describe("formatError", () => {
@@ -186,6 +241,13 @@ describe("VEConversationView", () => {
             expect(result).toEqual({ session_id: "s1" });
         });
 
+        it("clears the timeout timer after a fast session resolves", async () => {
+            const result = await createSessionWithTimeout(Promise.resolve("ready"), 5000);
+
+            expect(result).toBe("ready");
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
         it("rejects with timeout error when promise takes too long", async () => {
             vi.useRealTimers(); // Need real timers for this test
             const slowPromise = new Promise((resolve) => setTimeout(resolve, 10000));
@@ -252,6 +314,261 @@ describe("VEConversationView", () => {
             expect(send).toHaveBeenCalledWith("test-session-1", "Hello VE");
         });
 
+        it("ignores duplicate Enter presses while a connected send is in flight", async () => {
+            let resolveSend: (() => void) | undefined;
+            const send = vi.fn(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Send once" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            await act(async () => { resolveSend?.(); });
+        });
+
+        it("ignores duplicate Enter presses while queueing before session ready", async () => {
+            let resolveInit: (value: { session_id: string; ve_id: string; ve_name: string }) => void = () => {};
+            const initiate = vi.fn(() => new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveInit = resolve; }));
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ initiateConversation: initiate, sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Queue once" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => {
+                resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+                await vi.runOnlyPendingTimersAsync();
+            });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getAllByText("Queue once")).toHaveLength(1);
+        });
+
+
+
+        it("closes an open mention popover when the live chat becomes read-only", () => {
+            const props = {
+                existingSessionId: "test-session-1",
+                lang: "en",
+                participants: [{ id: "ve-a", name: "Agent A", online: true }],
+            } satisfies Partial<VEConversationViewProps>;
+            const { rerender } = renderConversation(props);
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+            expect(screen.getByTestId("mention-popover")).toBeTruthy();
+
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    readOnly={true}
+                    {...props}
+                />
+            );
+
+            expect(screen.queryByTestId("mention-popover")).toBeNull();
+        });
+
+        it("ignores external mention inserts in read-only mode", () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                readOnly: true,
+                participants: [{ id: "ve-a", name: "Agent A", online: true }],
+                externalMentionInsert: { name: "Agent A", timestamp: 1 },
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            act(() => { vi.runOnlyPendingTimers(); });
+
+            expect(textarea.value).toBe("");
+            expect(screen.queryByTestId("mention-popover")).toBeNull();
+        });
+
+        it("shows participant suggestions when typing @ in a group chat", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                lang: "en",
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+
+            expect(screen.getByTestId("mention-popover")).toBeTruthy();
+            expect(screen.getByTestId("mention-item-ve-a")).toBeTruthy();
+            expect(screen.getByTestId("mention-item-local-maclaw")).toBeTruthy();
+
+            fireEvent.click(screen.getByTestId("mention-item-local-maclaw"));
+            expect(textarea.value).toBe("@Local AI ");
+        });
+
+        it("filters participant suggestions by the current @ query", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                lang: "en",
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "@Loc", selectionStart: 4 } });
+
+            expect(screen.getByTestId("mention-popover")).toBeTruthy();
+            expect(screen.getByTestId("mention-item-local-maclaw")).toBeTruthy();
+            expect(screen.queryByTestId("mention-item-ve-a")).toBeNull();
+        });
+
+        it("does not match @ suggestions by raw participant ids", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                lang: "en",
+                participants: [
+                    { id: "m_b1821505498d817c", name: "Participant 1", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "@m_b", selectionStart: 4 } });
+
+            expect(screen.queryByTestId("mention-popover")).toBeNull();
+        });
+
+        it("selects a participant from the @ popover with Enter instead of sending", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                lang: "en",
+                sendGroupMessage,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                ],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "@Loc", selectionStart: 4 } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            expect(textarea.value).toBe("@Local AI ");
+            expect(sendGroupMessage).not.toHaveBeenCalled();
+        });
+
+        it("does not show @ suggestions for email-like text", async () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                lang: "en",
+                participants: [{ id: "ve-anna", name: "Anna", online: true }],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "ops@Anna", selectionStart: 8 } });
+
+            expect(screen.queryByTestId("mention-popover")).toBeNull();
+        });
+
+        it("routes group messages with mentioned participant ids", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            const { send } = renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "ve-a", name: "Agent A", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@Agent A please review" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "@Agent A please review", ["ve-a"]);
+            expect(send).not.toHaveBeenCalled();
+        });
+
+        it("does not route raw participant ids as @mentions", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            const { send } = renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "m_b1821505498d817c", name: "Participant 1", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@m_b1821505498d817c please review" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "@m_b1821505498d817c please review", []);
+        });
+
+        it("does not route partial @mention name matches", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "ve-ann", name: "Ann", online: true },
+                    { id: "ve-anna", name: "Anna", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@Anna please review" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "@Anna please review", ["ve-anna"]);
+        });
+
+        it("routes @mentions typed after Chinese text without requiring a leading space", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [{ id: "ve-anna", name: "Anna", online: true }],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "请@Anna看一下" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "请@Anna看一下", ["ve-anna"]);
+        });
+
+        it("does not route email-like text as an @mention", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [{ id: "ve-anna", name: "Anna", online: true }],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "mail Anna at ops@Anna.com" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "mail Anna at ops@Anna.com", []);
+        });
+
         it("adds user message to message list", async () => {
             renderConversation();
             await act(async () => { await vi.runAllTimersAsync(); });
@@ -292,6 +609,140 @@ describe("VEConversationView", () => {
 
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(sendWithAttachments).toHaveBeenCalledWith("test-session-1", "See attachment", ["D:\\cases\\evidence.pdf"]);
+        });
+
+
+        it("drops queued messages when the chat becomes read-only before session init finishes", async () => {
+            let resolveInit: (value: { session_id: string; ve_id: string; ve_name: string }) => void = () => {};
+            const initiate = vi.fn(() => new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveInit = resolve; }));
+            const send = vi.fn().mockResolvedValue(undefined);
+            const props = { initiateConversation: initiate, sendMessage: send } satisfies Partial<VEConversationViewProps>;
+            const { rerender } = renderConversation(props);
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Queued then locked" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            expect(screen.getByText("Queued then locked")).toBeTruthy();
+
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    readOnly={true}
+                    {...props}
+                />
+            );
+
+            await act(async () => {
+                resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+                await vi.runOnlyPendingTimersAsync();
+            });
+
+            expect(send).not.toHaveBeenCalled();
+        });
+
+        it("flushes a message queued before the initial session is ready", async () => {
+            let resolveInit: (value: { session_id: string; ve_id: string; ve_name: string }) => void = () => {};
+            const initiate = vi.fn(() => new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveInit = resolve; }));
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ initiateConversation: initiate, sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Queued before session" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            expect(send).not.toHaveBeenCalled();
+            expect(screen.getByText("Queued before session")).toBeTruthy();
+            await act(async () => {
+                resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+                await vi.runOnlyPendingTimersAsync();
+            });
+
+            expect(send).toHaveBeenCalledWith("test-session-1", "Queued before session");
+        });
+
+        it("marks the exact queued message that fails after the session becomes ready", async () => {
+            let resolveInit: (value: { session_id: string; ve_id: string; ve_name: string }) => void = () => {};
+            const initiate = vi.fn(() => new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveInit = resolve; }));
+            const send = vi
+                .fn()
+                .mockRejectedValueOnce(new Error("first failed"))
+                .mockResolvedValueOnce(undefined);
+            const { container } = renderConversation({ initiateConversation: initiate, sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "first queued" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            fireEvent.change(textarea, { target: { value: "second queued" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            expect(screen.getByText("first queued")).toBeTruthy();
+            expect(screen.getByText("second queued")).toBeTruthy();
+
+            await act(async () => {
+                resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+                await vi.runOnlyPendingTimersAsync();
+            });
+
+            const messageNodes = Array.from(container.querySelectorAll('[data-testid^="ve-msg-"]'));
+            const firstNode = messageNodes.find((node) => node.textContent?.includes("first queued"));
+            const secondNode = messageNodes.find((node) => node.textContent?.includes("second queued"));
+            expect(firstNode?.textContent).toContain("发送失败");
+            expect(secondNode?.textContent).not.toContain("发送失败");
+        });
+
+        it("ignores disconnect events for other sessions", async () => {
+            const { initiate } = renderConversation({ existingSessionId: "test-session-1" });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:disconnected")?.({ session_id: "other-session" });
+            });
+            await act(async () => { vi.advanceTimersByTime(2000); });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            expect(initiate).not.toHaveBeenCalled();
+            expect(screen.queryByText(/Reconnecting/)).toBeNull();
+        });
+
+        it("coalesces repeated disconnect events into one reconnect timer", async () => {
+            const initiate = vi.fn().mockResolvedValue({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+            renderConversation({ existingSessionId: "test-session-1", initiateConversation: initiate, lang: "en" });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:disconnected")?.({ session_id: "test-session-1" });
+                eventHandlers.get("ve:disconnected")?.({ session_id: "test-session-1" });
+            });
+            expect(screen.getByText(/Reconnecting/)).toBeTruthy();
+            await act(async () => { vi.advanceTimersByTime(2000); });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledTimes(1);
+        });
+
+        it("retries reconnect when the first session re-init fails", async () => {
+            const initiate = vi
+                .fn()
+                .mockRejectedValueOnce(new Error("temporary offline"))
+                .mockResolvedValueOnce({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+            renderConversation({ existingSessionId: "test-session-1", initiateConversation: initiate });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:disconnected")?.({ session_id: "test-session-1" });
+            });
+
+            await act(async () => { vi.advanceTimersByTime(2000); });
+            await act(async () => { await Promise.resolve(); });
+            expect(initiate).toHaveBeenCalledTimes(1);
+
+            await act(async () => { vi.advanceTimersByTime(4000); });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledTimes(2);
         });
 
         it("preserves selected attachment paths when sending after reconnect", async () => {
@@ -351,6 +802,37 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("Hello ");
         });
 
+        it("keeps wrapping rules while streaming", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ content: "StreamingWithoutSpacesWithoutSpaces\nsecond line" });
+            });
+
+            const bubble = screen.getByTestId("ve-streaming-content") as HTMLElement;
+            expect(bubble.style.overflowWrap).toBe("anywhere");
+            expect(bubble.style.whiteSpace).toBe("pre-wrap");
+            expect(screen.getByText("second line")).toBeTruthy();
+        });
+
+        it("normalizes compact emoji headings while streaming", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ content: "晴天" });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ content: "####\u{1f4c5}明天\n多云" });
+            });
+
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("晴天");
+            expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+            expect(screen.getByText("多云")).toBeTruthy();
+        });
+
         it("accumulates stream chunks", async () => {
             renderConversation();
             await act(async () => { await vi.runAllTimersAsync(); });
@@ -381,6 +863,81 @@ describe("VEConversationView", () => {
             // Message should be in the list
             const msgList = screen.getByTestId("ve-message-list");
             expect(msgList.textContent).toContain("Complete response");
+        });
+
+        it("splits live stream output when the responding speaker changes", async () => {
+            renderConversation({
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ from_id: "ve-a", from_name: "Agent A", content: "A says hi" });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ from_id: "ve-b", from_name: "Agent B", content: "B replies" });
+            });
+
+            const msgList = screen.getByTestId("ve-message-list");
+            expect(msgList.textContent).toContain("Agent A");
+            expect(msgList.textContent).toContain("A says hi");
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("Agent B");
+            expect(indicator.textContent).toContain("B replies");
+            expect(indicator.textContent).not.toContain("A says hi");
+        });
+
+        it("uses participant names when stream sender names are raw ids", async () => {
+            renderConversation({
+                participants: [
+                    { id: "m_b1821505498d817c", name: "Contract Bot", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ from_id: "m_b1821505498d817c", from_name: "m_b1821505498d817c", content: "Raw speaker hidden" });
+            });
+            let indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("Contract Bot");
+            expect(indicator.textContent).not.toContain("m_b1821505498d817c");
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({});
+            });
+            const msgList = screen.getByTestId("ve-message-list");
+            expect(msgList.textContent).toContain("Contract Bot");
+            expect(msgList.textContent).not.toContain("m_b1821505498d817c");
+        });
+
+        it("clears stale stream sender identity when an empty stream ends", async () => {
+            renderConversation({
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ from_id: "ve-a", from_name: "Agent A", content: "" });
+            });
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("Agent A");
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({});
+            });
+            expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ content: "Next" });
+            });
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("Test VE");
+            expect(indicator.textContent).not.toContain("Agent A");
         });
     });
 

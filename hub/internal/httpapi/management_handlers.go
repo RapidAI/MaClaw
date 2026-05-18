@@ -47,6 +47,7 @@ type CenterConfigRequest struct {
 
 type FailureLogView struct {
 	ID        string         `json:"id"`
+	TenantID  string         `json:"tenant_id"`
 	Category  string         `json:"category"`
 	EventCode string         `json:"event_code"`
 	Message   string         `json:"message"`
@@ -65,12 +66,20 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 		}
 		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
 		offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
-		items, total, err := repo.List(r.Context(), store.FailureEventLogFilter{
+		filter := store.FailureEventLogFilter{
 			Keyword:  strings.TrimSpace(r.URL.Query().Get("keyword")),
 			Category: strings.TrimSpace(r.URL.Query().Get("category")),
 			Offset:   offset,
 			Limit:    limit,
-		})
+		}
+		if admin := AdminFromContext(r.Context()); admin != nil && strings.TrimSpace(admin.Scope) == "tenant" {
+			filter.TenantID = AdminTenantID(r.Context())
+			filter.TenantScoped = true
+		} else if tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id")); tenantID != "" {
+			filter.TenantID = tenantID
+			filter.TenantScoped = true
+		}
+		items, total, err := repo.List(r.Context(), filter)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILURE_LOGS_FAILED", err.Error())
 			return
@@ -86,6 +95,7 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 			}
 			logs = append(logs, FailureLogView{
 				ID:        item.ID,
+				TenantID:  item.TenantID,
 				Category:  item.Category,
 				EventCode: item.EventCode,
 				Message:   item.Message,
@@ -462,6 +472,16 @@ func RegisterCenterHandler(centerSvc *center.Service) http.HandlerFunc {
 
 func filterCenterStatusForTenantAdmin(r *http.Request, status *center.RegistrationState) {
 	if r == nil || status == nil || AdminFromContext(r.Context()) == nil || IsGlobalAdmin(r.Context()) {
+		if r == nil || status == nil || AdminFromContext(r.Context()) == nil || !IsGlobalAdmin(r.Context()) {
+			return
+		}
+		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		if tenantID == "" || status.DigitalEmployeeAuthorizations == nil {
+			return
+		}
+		if authz := status.DigitalEmployeeAuthorizations[tenantID]; authz != nil {
+			status.DigitalEmployeeAuthorization = authz
+		}
 		return
 	}
 	tenantID := AdminTenantID(r.Context())
@@ -500,6 +520,17 @@ func UpdateUserSmartRouteHandler(users store.UserRepository) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "user_id is required")
 			return
 		}
+		if !IsGlobalAdmin(r.Context()) || strings.TrimSpace(r.URL.Query().Get("tenant_id")) != "" {
+			user, err := users.GetByID(r.Context(), req.UserID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "LOOKUP_USER_FAILED", err.Error())
+				return
+			}
+			if user == nil || strings.TrimSpace(user.TenantID) != RequestTenantID(r) {
+				writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found")
+				return
+			}
+		}
 		if err := users.UpdateSmartRoute(r.Context(), req.UserID, req.Enabled); err != nil {
 			writeError(w, http.StatusInternalServerError, "UPDATE_SMART_ROUTE_FAILED", err.Error())
 			return
@@ -511,6 +542,7 @@ func UpdateUserSmartRouteHandler(users store.UserRepository) http.HandlerFunc {
 // GetSmartRouteAllHandler returns the global smart_route_all toggle.
 func GetSmartRouteAllHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		raw, _ := system.Get(r.Context(), smartRouteAllKey)
 		enabled := raw == "true"
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
@@ -520,6 +552,7 @@ func GetSmartRouteAllHandler(system store.SystemSettingsRepository) http.Handler
 // UpdateSmartRouteAllHandler sets the global smart_route_all toggle.
 func UpdateSmartRouteAllHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		var req struct {
 			Enabled bool `json:"enabled"`
 		}

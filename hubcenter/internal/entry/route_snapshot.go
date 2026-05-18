@@ -37,7 +37,7 @@ type routeSnapshot struct {
 	blockedEmails   map[string]struct{}
 	blockedIPs      map[string]struct{}
 	defaultHubIDs   map[string]string
-	adminUserEmails map[string]struct{}
+	adminUserRoutes map[string]struct{}
 	emailRoutes     map[string][]snapshotCandidate
 	domainRoutes    map[string][]snapshotCandidate
 	publicHubs      []snapshotCandidate
@@ -77,7 +77,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		blockedEmails:   map[string]struct{}{},
 		blockedIPs:      map[string]struct{}{},
 		defaultHubIDs:   map[string]string{},
-		adminUserEmails: map[string]struct{}{},
+		adminUserRoutes: map[string]struct{}{},
 		emailRoutes:     map[string][]snapshotCandidate{},
 		domainRoutes:    map[string][]snapshotCandidate{},
 		publicHubs:      make([]snapshotCandidate, 0),
@@ -96,7 +96,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		snap.blockedIPs[strings.TrimSpace(item.IP)] = struct{}{}
 	}
 
-	adminUserLinks := snap.adminUserEmails
+	adminUserLinks := snap.adminUserRoutes
 	for _, link := range linkItems {
 		if link == nil || !isAdminUserLink(link) {
 			continue
@@ -106,7 +106,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		}
 		email := strings.TrimSpace(strings.ToLower(link.Email))
 		if email != "" {
-			adminUserLinks[email] = struct{}{}
+			adminUserLinks[emailTenantRouteKey(email, strings.TrimSpace(link.TenantID))] = struct{}{}
 		}
 	}
 
@@ -122,13 +122,13 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		if hub == nil {
 			continue
 		}
-		email := strings.TrimSpace(strings.ToLower(link.Email))
-		if _, adminManaged := adminUserLinks[email]; adminManaged && !isAdminUserLink(link) {
-			continue
-		}
 		candidate := snapshotCandidate{hub: hub, tenantID: strings.TrimSpace(link.TenantID), rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink}
+		email := strings.TrimSpace(strings.ToLower(link.Email))
 		if candidate.tenantID == "" {
 			candidate.tenantID = tenantIDForHubEmail(hub, email)
+		}
+		if _, adminManaged := adminUserLinks[emailTenantRouteKey(email, candidate.tenantID)]; adminManaged && !isAdminUserLink(link) {
+			continue
 		}
 		snap.emailRoutes[email] = append(snap.emailRoutes[email], candidate)
 		if link.IsDefault && strings.TrimSpace(link.TenantID) == "" {
@@ -160,18 +160,19 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		if domain == "" {
 			continue
 		}
-		key := route.HubID + "|" + domain
+		tenantID := strings.TrimSpace(route.TenantID)
+		key := route.HubID + "|" + tenantID + "|" + domain
 		seenDomainRoute[key] = struct{}{}
 		if isAdminDomainRoute(route) {
 			adminDomainRoutes[domain] = struct{}{}
 		}
-		snap.domainRoutes[domain] = append(snap.domainRoutes[domain], snapshotCandidate{hub: hub, routeDomain: domain, routePriority: route.Priority, rank: rankDomainRoute})
+		snap.domainRoutes[domain] = append(snap.domainRoutes[domain], snapshotCandidate{hub: hub, tenantID: tenantID, routeDomain: domain, routePriority: route.Priority, rank: rankDomainRoute})
 	}
 
 	for _, hub := range activeHubs {
 		legacyDomain := normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
 		if legacyDomain != "" {
-			key := hub.ID + "|" + legacyDomain
+			key := hub.ID + "||" + legacyDomain
 			_, adminManaged := adminDomainRoutes[legacyDomain]
 			if _, ok := seenDomainRoute[key]; !ok && !adminManaged {
 				snap.domainRoutes[legacyDomain] = append(snap.domainRoutes[legacyDomain], snapshotCandidate{hub: hub, routeDomain: legacyDomain, routePriority: 100, rank: rankDomainRoute})
@@ -344,7 +345,7 @@ func (s *routeSnapshot) resolve(email string, clientIP string) (*ResolveResult, 
 		}
 		merge(candidate)
 	}
-	if _, adminManaged := s.adminUserEmails[email]; adminManaged {
+	if s.hasAdminUserRoute(email) {
 		return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
 	}
 	domainCandidates := s.domainRoutes[extractEmailDomain(email)]
@@ -389,6 +390,24 @@ func (s *routeSnapshot) resolveAdminEmail(email string) *ResolveResult {
 	}
 
 	return buildResolveResult(email, resultsByHub, "No available hubs found")
+}
+
+func (s *routeSnapshot) hasAdminUserRoute(email string) bool {
+	if s == nil || len(s.adminUserRoutes) == 0 {
+		return false
+	}
+	prefix := strings.TrimSpace(strings.ToLower(email)) + "\x00"
+	for key := range s.adminUserRoutes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func emailTenantRouteKey(email, tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	return strings.TrimSpace(strings.ToLower(email)) + "\x00" + tenantID
 }
 
 func (s *routeSnapshot) resolveAdminEmailPattern(pattern string) *ResolveResult {
@@ -503,12 +522,13 @@ func (s *routeSnapshot) resolveDomain(domain string) *ResolveResult {
 		if candidate.hub == nil {
 			continue
 		}
-		if _, ok := seen[candidate.hub.ID]; ok {
+		key := virtualHubCandidateKey(candidate)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[candidate.hub.ID] = struct{}{}
+		seen[key] = struct{}{}
 		items = append(items, resolvedCandidate{
-			view:          hubToAccessView(candidate.hub, "", candidate.routeDomain),
+			view:          hubToAccessView(candidate.hub, "", candidate.routeDomain, candidate.tenantID),
 			routePriority: candidate.routePriority,
 			rank:          candidate.rank,
 		})

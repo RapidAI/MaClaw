@@ -47,10 +47,54 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("\u{1f4ac} answer questions and analyze")).toBeTruthy();
     });
 
+    it("splits inline markdown headings emitted by digital employees", () => {
+        render(
+            <div>
+                {renderContentWithCodeBlocks(
+                    "Weather update: ### Today\nSunny and warm 0%###\u{1f4c5}Tomorrow\nCloudy",
+                    lightTheme
+                )}
+            </div>
+        );
+
+        expect(screen.getByText("Weather update:")).toBeTruthy();
+        expect(screen.getByText("Today")).toBeTruthy();
+        expect(screen.getByText("Sunny and warm 0%")).toBeTruthy();
+        expect(screen.getByText("\u{1f4c5}Tomorrow")).toBeTruthy();
+        expect(screen.getByText("Cloudy")).toBeTruthy();
+    });
+
     it("does not split ordinary pictographs used inside a sentence", () => {
         render(<div>{renderContentWithCodeBlocks("Good job \u2705 keep going", lightTheme)}</div>);
 
         expect(screen.getByText("Good job \u2705 keep going")).toBeTruthy();
+    });
+
+    it("normalizes compact markdown headings at the start of a line", () => {
+        render(<div>{renderContentWithCodeBlocks("###\u{1f4c5}Today\nClear", lightTheme)}</div>);
+
+        expect(screen.getByText("\u{1f4c5}Today")).toBeTruthy();
+        expect(screen.getByText("Clear")).toBeTruthy();
+    });
+
+    it("splits compact emoji headings even when the previous text has no punctuation", () => {
+        render(<div>{renderContentWithCodeBlocks("晴天###\u{1f4c5}明天\n多云", lightTheme)}</div>);
+
+        expect(screen.getByText("晴天")).toBeTruthy();
+        expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+        expect(screen.getByText("多云")).toBeTruthy();
+    });
+
+    it("does not treat ordinary hashtags as compact markdown headings", () => {
+        render(<div>{renderContentWithCodeBlocks("#topic remains inline", lightTheme)}</div>);
+
+        expect(screen.getByText("#topic remains inline")).toBeTruthy();
+    });
+
+    it("does not treat C# text as a compact markdown heading", () => {
+        render(<div>{renderContentWithCodeBlocks("熟悉 C# 开发和 .NET", lightTheme)}</div>);
+
+        expect(screen.getByText("熟悉 C# 开发和 .NET")).toBeTruthy();
     });
 
     it("does not split a single capability icon used inline", () => {

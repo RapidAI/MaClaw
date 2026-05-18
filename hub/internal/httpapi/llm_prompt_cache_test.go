@@ -44,6 +44,7 @@ func (s *promptCacheMaintenanceStub) Status(context.Context, time.Time) (*llmcac
 }
 
 func TestLLMPromptCacheableRequiresDeterministicRequestShape(t *testing.T) {
+	resetLLMPromptCacheMetricsForTest()
 	cfg := defaultHubLLMPromptCacheConfig()
 	if !llmPromptCacheable(map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "temperature": 0, "n": 1, "top_p": 1}, cfg) {
 		t.Fatal("expected deterministic request to be cacheable")
@@ -56,6 +57,34 @@ func TestLLMPromptCacheableRequiresDeterministicRequestShape(t *testing.T) {
 	}
 	if !llmPromptCacheable(map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": true}, cfg) {
 		t.Fatal("expected streaming request to be cacheable because Hub forwards upstream as non-streaming JSON")
+	}
+}
+
+func TestLLMPromptCacheRuntimeMetricsAreTenantScoped(t *testing.T) {
+	resetLLMPromptCacheMetricsForTest()
+	cfg := defaultHubLLMPromptCacheConfig()
+	tenantA := withLLMPromptCacheTenant(context.Background(), "tenant_a")
+	tenantB := withLLMPromptCacheTenant(context.Background(), "tenant_b")
+
+	if !llmPromptCacheableForTenant(tenantA, map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}, cfg) {
+		t.Fatal("tenant_a request should be cacheable")
+	}
+	if llmPromptCacheableForTenant(tenantB, map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "temperature": 0.8}, cfg) {
+		t.Fatal("tenant_b sampled request should bypass cache")
+	}
+	recordLLMPromptCacheSingleflightShared(tenantA)
+
+	global := hubLLMPromptCacheRuntimeMetricsSnapshot()
+	if global.CacheableRequests != 1 || global.BypassTemperature != 1 || global.SingleflightSharedHits != 1 || global.SingleflightSavedCalls != 1 {
+		t.Fatalf("unexpected global metrics: %#v", global)
+	}
+	a := hubLLMPromptCacheRuntimeMetricsSnapshotForTenant("tenant_a")
+	if a.CacheableRequests != 1 || a.BypassTemperature != 0 || a.SingleflightSharedHits != 1 || a.SingleflightSavedCalls != 1 {
+		t.Fatalf("unexpected tenant_a metrics: %#v", a)
+	}
+	b := hubLLMPromptCacheRuntimeMetricsSnapshotForTenant("tenant_b")
+	if b.CacheableRequests != 0 || b.BypassTemperature != 1 || b.SingleflightSharedHits != 0 || b.BypassReasons["temperature"] != 1 {
+		t.Fatalf("unexpected tenant_b metrics: %#v", b)
 	}
 }
 
@@ -212,6 +241,31 @@ func TestPutCachedAuthorizedModelResponseSchedulesBackgroundMaintenance(t *testi
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("expected background maintenance to run, deleteExpired=%d trim=%d", stub.deleteExpiredCalls.Load(), stub.trimCalls.Load())
+}
+
+func TestPromptCacheLookupIsTenantScoped(t *testing.T) {
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1 << 20})
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{"provider-a"}}
+	body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "repeat this"}}}
+	cfg := defaultHubLLMPromptCacheConfig()
+	ctxA := withLLMPromptCacheTenant(context.Background(), "tenant_a")
+	ctxB := withLLMPromptCacheTenant(context.Background(), "tenant_b")
+
+	respA := []byte(`{"id":"cached-a","model":"auto","choices":[{"index":0,"message":{"role":"assistant","content":"tenant-a"},"finish_reason":"stop"}]}`)
+	if err := putCachedAuthorizedModelResponse(ctxA, cache, model, body, "auto", respA, http.StatusOK, "provider-a", []string{"group-a"}, corelib.TokenUsageStat{}, cfg); err != nil {
+		t.Fatalf("put tenant a cache: %v", err)
+	}
+
+	if resp, _, _, _, _, ok, err := getCachedAuthorizedModelResponse(ctxB, cache, model, body, "auto", cfg); err != nil || ok || len(resp) != 0 {
+		t.Fatalf("tenant b unexpectedly hit tenant a cache, ok=%v err=%v resp=%s", ok, err, string(resp))
+	}
+	resp, _, _, _, _, ok, err := getCachedAuthorizedModelResponse(ctxA, cache, model, body, "auto", cfg)
+	if err != nil {
+		t.Fatalf("tenant a cache lookup: %v", err)
+	}
+	if !ok || !strings.Contains(string(resp), "tenant-a") {
+		t.Fatalf("expected tenant a cache hit, ok=%v resp=%s", ok, string(resp))
+	}
 }
 
 func TestForwardAuthorizedModelRequestWithCacheCoalescesConcurrentMisses(t *testing.T) {

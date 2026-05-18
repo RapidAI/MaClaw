@@ -117,11 +117,7 @@ func normalizeAdminRole(scope string, role string) string {
 }
 
 func normalizeTenantID(tenantID string) string {
-	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
-		return store.DefaultTenantID
-	}
-	return tenantID
+	return store.NormalizeTenantID(tenantID)
 }
 
 func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query string, args ...any) error {
@@ -252,9 +248,10 @@ func (r *systemRepo) Get(ctx context.Context, key string) (string, error) {
 func (r *adminAuditRepo) Create(ctx context.Context, log *store.AdminAuditLog) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO admin_audit_logs (id, admin_user_id, action, payload_json, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO admin_audit_logs (id, tenant_id, admin_user_id, action, payload_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 		log.ID,
+		strings.TrimSpace(log.TenantID),
 		log.AdminUserID,
 		log.Action,
 		log.PayloadJSON,
@@ -270,6 +267,10 @@ func (r *adminAuditRepo) List(ctx context.Context, filter store.AdminAuditLogFil
 	}
 	where := []string{"1=1"}
 	args := []any{}
+	if filter.TenantScoped {
+		where = append(where, "tenant_id = ?")
+		args = append(args, normalizeTenantID(filter.TenantID))
+	}
 	if action := strings.TrimSpace(filter.Action); action != "" {
 		where = append(where, "action = ?")
 		args = append(args, action)
@@ -288,7 +289,7 @@ func (r *adminAuditRepo) List(ctx context.Context, filter store.AdminAuditLogFil
 		args = append(args, filter.CreatedTo.UTC().Format(time.RFC3339))
 	}
 	args = append(args, limit)
-	rows, err := r.readDB.QueryContext(ctx, fmt.Sprintf(`SELECT id, admin_user_id, action, payload_json, created_at FROM admin_audit_logs WHERE %s ORDER BY created_at DESC LIMIT ?`, strings.Join(where, " AND ")), args...)
+	rows, err := r.readDB.QueryContext(ctx, fmt.Sprintf(`SELECT id, tenant_id, admin_user_id, action, payload_json, created_at FROM admin_audit_logs WHERE %s ORDER BY created_at DESC LIMIT ?`, strings.Join(where, " AND ")), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +298,7 @@ func (r *adminAuditRepo) List(ctx context.Context, filter store.AdminAuditLogFil
 	for rows.Next() {
 		var item store.AdminAuditLog
 		var createdAt string
-		if err := rows.Scan(&item.ID, &item.AdminUserID, &item.Action, &item.PayloadJSON, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.AdminUserID, &item.Action, &item.PayloadJSON, &createdAt); err != nil {
 			return nil, err
 		}
 		if ts, err := time.Parse(time.RFC3339, createdAt); err == nil {
@@ -1823,9 +1824,10 @@ func boolToInt(v bool) int {
 func (r *failureEventLogRepo) Create(ctx context.Context, log *store.FailureEventLog) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO failure_event_logs (id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO failure_event_logs (id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.ID,
+		normalizeTenantID(log.TenantID),
 		log.Category,
 		log.EventCode,
 		log.Message,
@@ -1851,6 +1853,10 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 	category := strings.TrimSpace(filter.Category)
 	where := make([]string, 0, 2)
 	args := make([]any, 0, 8)
+	if filter.TenantScoped {
+		where = append(where, "tenant_id = ?")
+		args = append(args, normalizeTenantID(filter.TenantID))
+	}
 	if category != "" {
 		where = append(where, "category = ?")
 		args = append(args, category)
@@ -1868,7 +1874,7 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM failure_event_logs`+whereSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, category, event_code, message, entity_id, email, client_ip, details_json, created_at FROM failure_event_logs`+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at FROM failure_event_logs`+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1877,7 +1883,7 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 	for rows.Next() {
 		var item store.FailureEventLog
 		var createdAt string
-		if err := rows.Scan(&item.ID, &item.Category, &item.EventCode, &item.Message, &item.EntityID, &item.Email, &item.ClientIP, &item.DetailsJSON, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Category, &item.EventCode, &item.Message, &item.EntityID, &item.Email, &item.ClientIP, &item.DetailsJSON, &createdAt); err != nil {
 			return nil, 0, err
 		}
 		item.CreatedAt = mustParseTime(createdAt)

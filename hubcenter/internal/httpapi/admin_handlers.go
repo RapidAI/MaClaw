@@ -252,6 +252,7 @@ func AdminRoutingDiagnosticsHandler(service routingDiagnosticsReader) http.Handl
 
 type FailureLogView struct {
 	ID        string         `json:"id"`
+	TenantID  string         `json:"tenant_id"`
 	Category  string         `json:"category"`
 	EventCode string         `json:"event_code"`
 	Message   string         `json:"message"`
@@ -271,6 +272,7 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
 		offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
 		items, total, err := repo.List(r.Context(), store.FailureEventLogFilter{
+			TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
 			Keyword:  strings.TrimSpace(r.URL.Query().Get("keyword")),
 			Category: strings.TrimSpace(r.URL.Query().Get("category")),
 			Offset:   offset,
@@ -291,6 +293,7 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 			}
 			logs = append(logs, FailureLogView{
 				ID:        item.ID,
+				TenantID:  item.TenantID,
 				Category:  item.Category,
 				EventCode: item.EventCode,
 				Message:   item.Message,

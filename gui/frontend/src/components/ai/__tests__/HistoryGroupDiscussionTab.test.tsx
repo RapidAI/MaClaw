@@ -4,18 +4,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HistoryGroupDiscussionTab } from "../HistoryGroupDiscussionTab";
 import { lightTheme } from "../aiAssistantPanelTheme";
 
-const { getDetailMock, sendHistoryMessageMock, downloadAttachmentMock, openFileMock, eventHandlers } = vi.hoisted(() => ({
+const { getDetailMock, sendHistoryMessageMock, sendInvitationMock, downloadAttachmentMock, openFileMock, listVirtualEmployeesMock, eventHandlers } = vi.hoisted(() => ({
     getDetailMock: vi.fn(),
     sendHistoryMessageMock: vi.fn(),
+    sendInvitationMock: vi.fn(),
     downloadAttachmentMock: vi.fn(),
     openFileMock: vi.fn(),
+    listVirtualEmployeesMock: vi.fn(),
     eventHandlers: new Map<string, (payload?: any) => void>(),
 }));
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     GroupDiscussionGetConsultationDetail: getDetailMock,
     GroupDiscussionSendHistoryMessage: sendHistoryMessageMock,
+    GroupDiscussionSendInvitation: sendInvitationMock,
     GroupDiscussionDownloadAttachment: downloadAttachmentMock,
+    ListVirtualEmployees: listVirtualEmployeesMock,
     OpenFileOrShowInFolder: openFileMock,
 }));
 
@@ -64,6 +68,10 @@ function detail(overrides: any = {}) {
 beforeEach(() => {
     getDetailMock.mockResolvedValue(detail());
     sendHistoryMessageMock.mockResolvedValue(undefined);
+    sendInvitationMock.mockResolvedValue("invite-1");
+    listVirtualEmployeesMock.mockResolvedValue([
+        { id: "ve-new", machine_id: "machine-new", name: "Contract Helper", online_status: "online" },
+    ]);
     downloadAttachmentMock.mockResolvedValue({ local_path: "D:/maclaw/data/file.pdf" });
     openFileMock.mockResolvedValue(undefined);
     eventHandlers.clear();
@@ -80,7 +88,7 @@ describe("HistoryGroupDiscussionTab", () => {
 
         const input = await screen.findByPlaceholderText("Read-only session");
         expect((input as HTMLTextAreaElement).disabled).toBe(true);
-        expect(screen.getByText("Read-only")).toBeTruthy();
+        expect(screen.getAllByText("Read-only").length).toBeGreaterThan(0);
         expect(sendHistoryMessageMock).not.toHaveBeenCalled();
         expect(screen.queryByTestId("group-add-participant-btn")).toBeNull();
     });
@@ -150,7 +158,221 @@ describe("HistoryGroupDiscussionTab", () => {
         expect(await screen.findByText("Participants")).toBeTruthy();
         expect(screen.getByText("Alice (initiator)")).toBeTruthy();
         expect(screen.getByText("Contract Bot (review)")).toBeTruthy();
-        expect(screen.getByText("external-lawyer (observe)")).toBeTruthy();
+        expect(screen.getByText("Participant 3 (observe)")).toBeTruthy();
+        expect(screen.queryByText("external-lawyer (observe)")).toBeNull();
+    });
+
+    it("uses participant names for message labels when messages only contain ids", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+            messages: [
+                { id: "m1", from_id: "me", content: "hello", created_at: "2026-01-01T00:00:00Z" },
+                { id: "m2", from_id: "ve-a", content: "reviewed", created_at: "2026-01-01T00:00:01Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Participants" readOnly={true} theme={theme} lang="en" />);
+
+        await screen.findByText("hello");
+        expect(screen.getAllByText("Alice").length).toBeGreaterThan(0);
+        expect(screen.getAllByText("Contract Bot").length).toBeGreaterThan(0);
+        expect(screen.queryByText("ve-a")).toBeNull();
+    });
+
+    it("ignores raw message from_name values when resolving message labels", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { participant_ids: ["m_b1821505498d817c"] },
+            session: { participants: [{ id: "m_b1821505498d817c", name: "Contract Bot" }] },
+            messages: [
+                { id: "m1", from_id: "m_b1821505498d817c", from_name: "m_b1821505498d817c", content: "reviewed", created_at: "2026-01-01T00:00:00Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Participants" readOnly={true} theme={theme} lang="en" />);
+
+        await screen.findByText("reviewed");
+        expect(screen.getAllByText("Contract Bot").length).toBeGreaterThan(0);
+        expect(screen.queryByText(/m_b182/)).toBeNull();
+    });
+
+    it("uses friendly participant labels when session names equal raw ids", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { participant_ids: ["m_b1821505498d817c"] },
+            session: { participants: [{ id: "m_b1821505498d817c", name: "m_b1821505498d817c" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Participants" readOnly={true} theme={theme} lang="en" />);
+
+        expect(await screen.findByText("Participant 1")).toBeTruthy();
+        expect(screen.queryByText(/m_b182/)).toBeNull();
+    });
+    it("uses friendly participant labels instead of raw ids when names are unavailable", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { participant_ids: ["m_b1821505498d817c", "m_d64c1196e8d03c53"] },
+            session: { participants: [{ id: "m_b1821505498d817c" }, { id: "m_d64c1196e8d03c53", role_code: "speak" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Participants" readOnly={true} theme={theme} lang="zh" />);
+
+        expect(await screen.findByText("参与者 1")).toBeTruthy();
+        expect(screen.getByText("参与者 2 (speak)")).toBeTruthy();
+        expect(screen.queryByText(/m_b182/)).toBeNull();
+        expect(screen.queryByText(/m_d64/)).toBeNull();
+    });
+
+    it("marks the unified participant panel read-only for invited history sessions", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "owned_ve_invited", readonly: true, participant_ids: ["me", "ve-a"] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Participants" readOnly={true} theme={theme} lang="en" />);
+
+        expect((await screen.findByTestId("group-participant-panel")).textContent).toContain("Read-only");
+    });
+
+    it("lets writable history sessions insert mentions from the unified participant panel", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.contextMenu(screen.getByText("Contract Bot"));
+        fireEvent.click(await screen.findByTestId("context-menu-talk-to"));
+
+        expect(input.value).toBe("@Contract Bot ");
+    });
+
+    it("inserts history mention at the current caret position", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "hello world" } });
+        input.setSelectionRange(5, 5);
+        fireEvent.contextMenu(screen.getByText("Contract Bot"));
+        fireEvent.click(await screen.findByTestId("context-menu-talk-to"));
+
+        expect(input.value).toBe("hello @Contract Bot world");
+    });
+
+    it("mentions the participant name without the displayed role suffix", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "review" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.contextMenu(screen.getByText("Contract Bot (review)"));
+        fireEvent.click(await screen.findByTestId("context-menu-talk-to"));
+
+        expect(input.value).toBe("@Contract Bot ");
+    });
+
+
+    it("closes the mention popover when history detail becomes read-only", async () => {
+        getDetailMock
+            .mockResolvedValueOnce(detail({
+                discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+                session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+            }))
+            .mockResolvedValueOnce(detail({
+                discussion: { status: "closed", participant_ids: ["me", "ve-a"] },
+                session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+            }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "@Con", selectionStart: 4 } });
+        expect(screen.getByTestId("mention-popover")).toBeTruthy();
+
+        fireEvent.click(screen.getByText("Refresh"));
+
+        await screen.findByPlaceholderText("Read-only session");
+        expect(screen.queryByTestId("mention-popover")).toBeNull();
+    });
+
+    it("shows participant suggestions when typing @ in writable history sessions", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "@Con", selectionStart: 4 } });
+
+        expect(screen.getByTestId("mention-popover")).toBeTruthy();
+        expect(screen.getByTestId("mention-item-ve-a")).toBeTruthy();
+        expect(screen.queryByTestId("mention-item-me")).toBeNull();
+
+        fireEvent.keyDown(input, { key: "Enter" });
+        expect(input.value).toBe("@Contract Bot ");
+        expect(sendHistoryMessageMock).not.toHaveBeenCalled();
+    });
+
+    it("does not match history @ suggestions by raw participant ids", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["m_b1821505498d817c"] },
+            session: { participants: [{ id: "m_b1821505498d817c", name: "Participant 1" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "@m_b", selectionStart: 4 } });
+
+        expect(screen.queryByTestId("mention-popover")).toBeNull();
+    });
+
+    it("inserts a fresh history mention every time the participant talk-to action is used", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.contextMenu(screen.getByText("Contract Bot"));
+        fireEvent.click(await screen.findByTestId("context-menu-talk-to"));
+        fireEvent.contextMenu(screen.getByText("Contract Bot"));
+        fireEvent.click(await screen.findByTestId("context-menu-talk-to"));
+
+        expect(input.value).toBe("@Contract Bot @Contract Bot ");
+    });
+
+    it("lets writable history sessions invite participants from the unified participant panel", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        await screen.findByPlaceholderText("Continue discussion...");
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+        await waitFor(() => expect(screen.getByText("Contract Helper")).toBeTruthy());
+        fireEvent.click(screen.getByText("Contract Helper"));
+
+        await waitFor(() => expect(sendInvitationMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({ to_id: "machine-new", role: "speak", trusted: true })));
+        await waitFor(() => expect(getDetailMock).toHaveBeenCalledTimes(2));
+    });
+
+    it("keeps the participant picker open when history invitation fails", async () => {
+        sendInvitationMock.mockRejectedValueOnce(new Error("invite failed"));
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        await screen.findByPlaceholderText("Continue discussion...");
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+        await waitFor(() => expect(screen.getByText("Contract Helper")).toBeTruthy());
+        fireEvent.click(screen.getByText("Contract Helper"));
+
+        await waitFor(() => expect(screen.getByTestId("group-limit-error").textContent).toContain("Failed to add"));
+        expect(screen.getByTestId("group-participant-picker")).toBeTruthy();
+        expect(screen.getByRole("alert").textContent).toContain("invite failed");
     });
 
     it("reloads the discussion after sending a writable history message", async () => {
@@ -224,7 +446,7 @@ describe("HistoryGroupDiscussionTab", () => {
 
         const input = await screen.findByPlaceholderText("Read-only session");
         expect((input as HTMLTextAreaElement).disabled).toBe(true);
-        expect(screen.getByText("Read-only")).toBeTruthy();
+        expect(screen.getAllByText("Read-only").length).toBeGreaterThan(0);
         expect(screen.getByText("Ended - read-only")).toBeTruthy();
         fireEvent.change(input, { target: { value: "should not send" } });
         fireEvent.click(screen.getByText("Send"));
@@ -286,6 +508,24 @@ describe("HistoryGroupDiscussionTab", () => {
 
         await waitFor(() => expect(getDetailMock).toHaveBeenCalledTimes(2));
         expect(await screen.findByText("updated")).toBeTruthy();
+    });
+
+    it("reloads when pushed events use discussion_id instead of session_id", async () => {
+        getDetailMock
+            .mockResolvedValueOnce(detail())
+            .mockResolvedValueOnce(detail({ messages: [
+                { id: "m1", from_id: "me", from_name: "Me", content: "hello", created_at: "2026-01-01T00:00:00Z" },
+                { id: "m2", from_id: "ve-a", from_name: "VE", content: "discussion id update", created_at: "2026-01-01T00:00:01Z" },
+            ] }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Live history" readOnly={true} theme={theme} lang="en" />);
+
+        expect(await screen.findByText("hello")).toBeTruthy();
+        act(() => {
+            eventHandlers.get("ve-event")?.({ payload: { discussion_id: "disc-1", message: { discussion_id: "disc-1" } } });
+        });
+
+        await waitFor(() => expect(getDetailMock).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText("discussion id update")).toBeTruthy();
     });
 
     it("ignores pushed discussion events for other sessions", async () => {

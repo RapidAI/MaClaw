@@ -114,8 +114,54 @@ describe("VEAuthorizationDialog", () => {
 
             const reqEl = screen.getByTestId("ve-auth-request-req-2");
             expect(reqEl.textContent).toContain("Bob");
-            expect(reqEl.textContent).toContain("machine-xyz");
+            expect(reqEl.textContent).not.toContain("machine-xyz");
             expect(reqEl.textContent).toContain("代码审查");
+        });
+
+        it("uses readable fallbacks instead of raw machine ids", () => {
+            render(
+                <VEAuthorizationDialog theme={mockTheme} lang="zh" respondAuthRequest={vi.fn()} />
+            );
+
+            act(() => {
+                eventHandlers.get("ve:auth_request")?.({
+                    id: "req-fallback",
+                    requester_name: "m_b1821505498d817c",
+                    requester_machine_id: "m_b1821505498d817c",
+                    target_ve_id: "ve-raw",
+                    target_ve_name: "ve-raw",
+                });
+            });
+
+            const reqEl = screen.getByTestId("ve-auth-request-req-fallback");
+            expect(reqEl.textContent).toContain("请求者");
+            expect(reqEl.textContent).toContain("数字员工");
+            expect(reqEl.textContent).not.toContain("m_b1821505498d817c");
+            expect(reqEl.textContent).not.toContain("ve-raw");
+            expect(reqEl.textContent).not.toContain("机器ID");
+        });
+
+
+        it("uses readable fallbacks when names look like raw ids but ids differ", () => {
+            render(
+                <VEAuthorizationDialog theme={mockTheme} lang="en" respondAuthRequest={vi.fn()} />
+            );
+
+            act(() => {
+                eventHandlers.get("ve:auth_request")?.({
+                    id: "req-raw-name-diff-id",
+                    requester_name: "m_b1821505498d817c",
+                    requester_machine_id: "profile-1",
+                    target_ve_id: "target-1",
+                    target_ve_name: "ve-raw",
+                });
+            });
+
+            const reqEl = screen.getByTestId("ve-auth-request-req-raw-name-diff-id");
+            expect(reqEl.textContent).toContain("Requester");
+            expect(reqEl.textContent).toContain("Digital employee");
+            expect(reqEl.textContent).not.toContain("m_b1821505498d817c");
+            expect(reqEl.textContent).not.toContain("ve-raw");
         });
 
         it("does not add duplicate requests", () => {

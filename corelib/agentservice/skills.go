@@ -168,6 +168,8 @@ type skillMarketSearchResponse struct {
 
 var invalidSkillDirChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F]`)
 
+const skillHubJSONMaxBytes = 5 << 20
+
 func (s *Service) userSkillsRoot(tenantID, userID string) string {
 	return filepath.Join(s.userRoot(tenantID, userID), "skills")
 }
@@ -834,7 +836,7 @@ func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corel
 		return nil, fmt.Errorf("skill_hub_url and skill_id are required")
 	}
 	endpoint := fmt.Sprintf("%s/api/v1/skills/%s/download", baseURL, url.PathEscape(skillID))
-	body, err := doJSONRequest(ctx, http.MethodGet, endpoint, nil, nil, 4<<20)
+	body, err := doJSONRequest(ctx, http.MethodGet, endpoint, nil, nil, skillHubJSONMaxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -930,7 +932,7 @@ func doJSONRequest(ctx context.Context, method, endpoint string, body io.Reader,
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	data, err := readBoundedJSONResponse(resp.Body, maxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -940,6 +942,20 @@ func doJSONRequest(ctx context.Context, method, endpoint string, body io.Reader,
 			trimmed = resp.Status
 		}
 		return nil, fmt.Errorf("request failed: %s", trimmed)
+	}
+	return data, nil
+}
+
+func readBoundedJSONResponse(body io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxBytes)
 	}
 	return data, nil
 }

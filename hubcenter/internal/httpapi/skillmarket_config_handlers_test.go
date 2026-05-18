@@ -142,10 +142,19 @@ func newSkillMarketPurchaseListTestHandlers(t *testing.T) *SkillMarketHandlers {
 	return &SkillMarketHandlers{store: store, refundSvc: refundSvc}
 }
 
-func seedPurchaseRecord(t *testing.T, h *SkillMarketHandlers, id, buyerEmail, skillID string) {
+func seedPurchaseRecord(t *testing.T, h *SkillMarketHandlers, id, buyerEmail, skillID string, tenant ...string) {
 	t.Helper()
+	hubID, tenantID := "", ""
+	if len(tenant) > 0 {
+		hubID = tenant[0]
+	}
+	if len(tenant) > 1 {
+		tenantID = tenant[1]
+	}
 	err := h.store.CreatePurchase(context.Background(), &skillmarket.PurchaseRecord{
 		ID:               id,
+		HubID:            hubID,
+		TenantID:         tenantID,
 		BuyerEmail:       buyerEmail,
 		BuyerID:          strings.ReplaceAll(buyerEmail, "@", "_"),
 		SkillID:          skillID,
@@ -160,6 +169,20 @@ func seedPurchaseRecord(t *testing.T, h *SkillMarketHandlers, id, buyerEmail, sk
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCapabilityMarketSkillLicensesForTenantFiltersPurchases(t *testing.T) {
+	h := newSkillMarketPurchaseListTestHandlers(t)
+	seedPurchaseRecord(t, h, "pur-tenant-a", "admin@example.com", "skill.alpha", "hub-1", "tenant-a")
+	seedPurchaseRecord(t, h, "pur-tenant-b", "admin@example.com", "skill.beta", "hub-1", "tenant-b")
+
+	items, err := h.CapabilityMarketSkillLicensesForTenant(context.Background(), "admin@example.com", "hub-1", "tenant-a")
+	if err != nil {
+		t.Fatalf("CapabilityMarketSkillLicensesForTenant: %v", err)
+	}
+	if len(items) != 1 || items[0].CapabilityID != "skill.alpha" || items[0].HubID != "hub-1" || items[0].TenantID != "tenant-a" {
+		t.Fatalf("unexpected tenant skill licenses: %+v", items)
 	}
 }
 

@@ -287,12 +287,13 @@ func GenerateLLMProviderTestKeyHandler(identity *auth.IdentityService) http.Hand
 			return
 		}
 
-		user, err := identity.AdminConfirmLoginByEmail(r.Context(), email)
+		ctx := auth.WithTenant(r.Context(), RequestTenantID(r))
+		user, err := identity.AdminConfirmLoginByEmail(ctx, email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_TEST_KEY_USER_FAILED", err.Error())
 			return
 		}
-		token, err := identity.IssueViewerTokenForUser(r.Context(), user.ID)
+		token, err := identity.IssueViewerTokenForUser(ctx, user.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_TEST_KEY_ISSUE_FAILED", err.Error())
 			return
@@ -557,7 +558,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 			return
 		}
 		invalidateLLMRuntimeCaches(system)
-		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_card.create", map[string]any{
+		writeLLMServiceCardAdminAudit(r.Context(), audit, RequestTenantID(r), "llm.service_card.create", map[string]any{
 			"label":             strings.TrimSpace(req.Label),
 			"service_group_ids": append([]string(nil), serviceGroupIDs...),
 			"duration_days":     days,
@@ -751,7 +752,7 @@ func DeleteLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 			return
 		}
 		invalidateLLMRuntimeCaches(system)
-		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_card.delete", map[string]any{"card_id": id, "deleted_grant_ids": removedGrantIDs})
+		writeLLMServiceCardAdminAudit(r.Context(), audit, RequestTenantID(r), "llm.service_card.delete", map[string]any{"card_id": id, "deleted_grant_ids": removedGrantIDs})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted_grant_ids": removedGrantIDs})
 	}
 }
@@ -802,7 +803,7 @@ func DeleteLLMServiceCardsBatchHandler(system store.SystemSettingsRepository, au
 			return
 		}
 		invalidateLLMRuntimeCaches(system)
-		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_card.delete_batch", map[string]any{
+		writeLLMServiceCardAdminAudit(r.Context(), audit, RequestTenantID(r), "llm.service_card.delete_batch", map[string]any{
 			"requested_ids":     append([]string(nil), ids...),
 			"deleted_ids":       append([]string(nil), deleted...),
 			"skipped_ids":       append([]string(nil), skipped...),
@@ -836,7 +837,7 @@ func DeleteLLMServiceGrantHandler(system store.SystemSettingsRepository, audit s
 			return
 		}
 		invalidateLLMRuntimeCaches(system)
-		writeLLMServiceCardAdminAudit(r.Context(), audit, "llm.service_grant.delete", map[string]any{"grant_id": id})
+		writeLLMServiceCardAdminAudit(r.Context(), audit, RequestTenantID(r), "llm.service_grant.delete", map[string]any{"grant_id": id})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 	}
 }
@@ -893,7 +894,8 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			return
 		}
 		system = scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		ctx := withLLMPromptCacheTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID)
+		r = r.WithContext(ctx)
 		status, err := llmservice.ResolveServiceStatus(ctx, system, securitySvc, principal.Email, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
@@ -946,12 +948,15 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 
 func GetLLMServiceEntitlementDiagnosticHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := RequestTenantID(r)
+		system = scopedSystemSettingsForRequest(r, system)
+		ctx := security.WithTenant(r.Context(), tenantID)
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "EMAIL_REQUIRED", "email is required")
 			return
 		}
-		diagnostic, err := llmservice.ExplainEntitlementDiagnostic(r.Context(), system, securitySvc, email, externalLLMBaseURL(r))
+		diagnostic, err := llmservice.ExplainEntitlementDiagnostic(ctx, system, securitySvc, email, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_DIAGNOSTIC_FAILED", err.Error())
 			return
@@ -1655,8 +1660,7 @@ func (g *authorizedModelRequestFlightGroup) do(ctx context.Context, key string, 
 		g.calls = map[string]*authorizedModelRequestFlight{}
 	}
 	if call := g.calls[key]; call != nil {
-		globalLLMPromptCacheMetrics.singleflightSharedHits.Add(1)
-		globalLLMPromptCacheMetrics.singleflightSavedCalls.Add(1)
+		recordLLMPromptCacheSingleflightShared(ctx)
 		g.mu.Unlock()
 		waitCtx := ctx
 		var cancel context.CancelFunc
@@ -1700,12 +1704,13 @@ func forwardAuthorizedModelRequestWithCache(r *http.Request, reg *im.LLMProvider
 		return respBody, statusCode, providerID, serviceGroupIDs, usageStat, true, nil
 	}
 	cacheKey := ""
-	if promptCache != nil && llmPromptCacheable(body, cacheCfg) {
+	if promptCache != nil && llmPromptCacheableForTenant(r.Context(), body, cacheCfg) {
 		var err error
 		cacheKey, _, err = llmPromptCacheKey(model, body, externalModel, cacheCfg)
 		if err != nil {
 			return nil, 0, "", nil, corelib.TokenUsageStat{}, false, err
 		}
+		cacheKey = tenantScopedLLMPromptCacheKey(r.Context(), cacheKey)
 	}
 	var result authorizedModelForwardResult
 	var err error
@@ -2454,7 +2459,7 @@ func collectRechargeCardIDs(cards []llmservice.RechargeCard) []string {
 	return ids
 }
 
-func writeLLMServiceCardAdminAudit(ctx context.Context, audit store.AdminAuditRepository, action string, payload map[string]any) {
+func writeLLMServiceCardAdminAudit(ctx context.Context, audit store.AdminAuditRepository, tenantID, action string, payload map[string]any) {
 	if audit == nil {
 		return
 	}
@@ -2466,8 +2471,16 @@ func writeLLMServiceCardAdminAudit(ctx context.Context, audit store.AdminAuditRe
 	if err != nil {
 		payloadJSON = []byte(`{}`)
 	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = strings.TrimSpace(admin.TenantID)
+	}
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
 	_ = audit.Create(ctx, &store.AdminAuditLog{
 		ID:          fmt.Sprintf("aa_%d", time.Now().UnixNano()),
+		TenantID:    tenantID,
 		AdminUserID: strings.TrimSpace(admin.ID),
 		Action:      action,
 		PayloadJSON: string(payloadJSON),

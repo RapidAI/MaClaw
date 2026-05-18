@@ -23,7 +23,7 @@ type SecurityService struct {
 	system store.SystemSettingsRepository
 	audit  store.AdminAuditRepository
 	users  store.UserRepository // optional; used to discover bound users not yet in any security group
-	cache  sync.Map             // userEmail -> *EffectivePolicy
+	cache  sync.Map             // tenantID + userEmail -> *EffectivePolicy
 
 	// skillSourcesProvider resolves per-user skill source restrictions from the
 	// independent three-level control (global/tenant/user). When set, GetHeartbeatPolicy
@@ -175,6 +175,9 @@ func collectDescendants(groups []*SecurityGroup, parentID string) []string {
 
 // GetGroupTree builds the complete tree structure starting from the root group.
 func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, error) {
+	if tenantIDFromContext(ctx) != store.DefaultTenantID {
+		return s.getGroupTreeUncached(ctx)
+	}
 	now := time.Now()
 	s.groupTreeMu.RLock()
 	if s.groupTreeCached != nil && now.Before(s.groupTreeCachedUntil) {
@@ -184,15 +187,24 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 	}
 	s.groupTreeMu.RUnlock()
 
+	root, err := s.getGroupTreeUncached(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cloned := cloneGroupTreeNode(root)
+	s.groupTreeMu.Lock()
+	s.groupTreeCached = cloneGroupTreeNode(root)
+	s.groupTreeCachedUntil = time.Now().Add(groupTreeCacheTTL)
+	s.groupTreeMu.Unlock()
+	return cloned, nil
+}
+
+func (s *SecurityService) getGroupTreeUncached(ctx context.Context) (*GroupTreeNode, error) {
 	groups, err := s.store.ListGroups(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
 	if len(groups) == 0 {
-		s.groupTreeMu.Lock()
-		s.groupTreeCached = nil
-		s.groupTreeCachedUntil = now.Add(groupTreeCacheTTL)
-		s.groupTreeMu.Unlock()
 		return nil, nil
 	}
 
@@ -231,13 +243,7 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 		root.MemberCount += extra
 	}
 	rollupGroupMemberCounts(root)
-
-	cloned := cloneGroupTreeNode(root)
-	s.groupTreeMu.Lock()
-	s.groupTreeCached = cloneGroupTreeNode(root)
-	s.groupTreeCachedUntil = time.Now().Add(groupTreeCacheTTL)
-	s.groupTreeMu.Unlock()
-	return cloned, nil
+	return root, nil
 }
 
 func (s *SecurityService) GetRootGroupNode(ctx context.Context) (*GroupTreeNode, error) {
@@ -322,6 +328,7 @@ func (s *SecurityService) AssignUser(ctx context.Context, email, groupID string)
 	if err := s.store.AssignUser(ctx, email, groupID); err != nil {
 		return err
 	}
+	s.cache.Delete(securityPolicyCacheKey(ctx, email))
 	s.invalidateGroupTreeCache()
 	return nil
 }
@@ -360,7 +367,7 @@ func (s *SecurityService) listUnassignedEmails(ctx context.Context) []string {
 	if s.users == nil {
 		return nil
 	}
-	allUsers, err := s.users.List(ctx)
+	allUsers, err := s.users.ListByTenant(ctx, tenantIDFromContext(ctx))
 	if err != nil {
 		return nil
 	}
@@ -535,7 +542,7 @@ func (s *SecurityService) UpdateGroupPolicy(ctx context.Context, groupID string,
 	if err := s.store.SetGroupPolicy(ctx, groupID, policy); err != nil {
 		return fmt.Errorf("set group policy: %w", err)
 	}
-	s.InvalidateCacheForSubtree(groupID)
+	s.InvalidateCacheForSubtree(ctx, groupID)
 	return nil
 }
 
@@ -544,8 +551,8 @@ func (s *SecurityService) UpdateGroupPolicy(ctx context.Context, groupID string,
 // GetEffectivePolicy computes the effective policy for a user by walking
 // from Root_Group to the user's group, merging policies along the way.
 func (s *SecurityService) GetEffectivePolicy(ctx context.Context, email string) (*EffectivePolicy, error) {
-	// Check cache first
-	if cached, ok := s.cache.Load(email); ok {
+	cacheKey := securityPolicyCacheKey(ctx, email)
+	if cached, ok := s.cache.Load(cacheKey); ok {
 		return cached.(*EffectivePolicy), nil
 	}
 
@@ -559,7 +566,7 @@ func (s *SecurityService) GetEffectivePolicy(ctx context.Context, email string) 
 		return nil, err
 	}
 
-	s.cache.Store(email, policy)
+	s.cache.Store(cacheKey, policy)
 	return policy, nil
 }
 
@@ -971,13 +978,18 @@ func (s *SecurityService) AssignNewUser(ctx context.Context, email, selectedGrou
 
 // InvalidateCache removes the cached effective policy for a specific user.
 func (s *SecurityService) InvalidateCache(email string) {
-	s.cache.Delete(email)
+	s.cache.Delete(securityPolicyCacheKey(context.Background(), email))
+}
+
+func securityPolicyCacheKey(ctx context.Context, email string) string {
+	tenantID := tenantIDFromContext(ctx)
+	return tenantID + "\x00" + strings.TrimSpace(strings.ToLower(email))
 }
 
 // InvalidateCacheForSubtree invalidates the cache for all members in the
 // given group and all its descendant groups.
-func (s *SecurityService) InvalidateCacheForSubtree(groupID string) {
-	ctx := context.Background()
+func (s *SecurityService) InvalidateCacheForSubtree(ctx context.Context, groupID string) {
+	ctx = WithTenant(context.Background(), tenantIDFromContext(ctx))
 	allGroups, err := s.store.ListGroups(ctx)
 	if err != nil {
 		return
@@ -993,7 +1005,7 @@ func (s *SecurityService) InvalidateCacheForSubtree(groupID string) {
 			continue
 		}
 		for _, email := range members {
-			s.cache.Delete(email)
+			s.cache.Delete(securityPolicyCacheKey(ctx, email))
 		}
 	}
 }
@@ -1110,6 +1122,7 @@ func (s *SecurityService) writeAuditLog(ctx context.Context, adminUserID, action
 	payloadJSON, _ := json.Marshal(payload)
 	_ = s.audit.Create(ctx, &store.AdminAuditLog{
 		ID:          uuid.New().String(),
+		TenantID:    TenantIDFromContext(ctx),
 		AdminUserID: adminUserID,
 		Action:      action,
 		PayloadJSON: string(payloadJSON),

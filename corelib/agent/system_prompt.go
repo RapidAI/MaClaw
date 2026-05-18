@@ -348,76 +348,12 @@ func appendCodingWorkflowRules(b *strings.Builder, hasCodingSessions bool) {
 
 // appendMemoryRecall appends proactive memory recall to the system prompt.
 func appendMemoryRecall(b *strings.Builder, store *memory.Store, userMessage string, isFirstTurn bool) {
-	// User fact summary.
-	if summary := store.UserFactSummary(400); summary != "" {
-		fmt.Fprintf(b, "\n\n## 用户记忆\n用户信息: %s\n", summary)
-	}
+	b.WriteString(store.UserFactSummaryForPrompt(memory.UserInfoPromptOptions("\n\n" + memory.PromptSectionUserMemory)))
 
-	// Primary recall via RecallDynamic.
-	recalled := store.RecallDynamic(userMessage, "", "")
+	promptContext, _ := store.ProactiveContextForPrompt(userMessage, memory.CoreAgentProactivePromptOptions())
+	b.WriteString(promptContext)
 
-	// Supplementary entity-based recall.
-	expanded := memory.ExpandQuery(userMessage)
-	if len(expanded.Entities) > 0 && len(recalled) < 8 {
-		seen := make(map[string]bool, len(recalled))
-		for _, e := range recalled {
-			seen[e.ID] = true
-		}
-		entities := expanded.Entities
-		if len(entities) > 3 {
-			entities = entities[:3]
-		}
-		for _, entity := range entities {
-			extra := store.RecallDynamic(entity, "", "")
-			for _, e := range extra {
-				if !seen[e.ID] {
-					seen[e.ID] = true
-					recalled = append(recalled, e)
-				}
-			}
-		}
-	}
-
-	// Filter out user_fact, self_identity, session_checkpoint.
-	var relevant []memory.Entry
-	for _, e := range recalled {
-		canonical := memory.MapToCanonical(e.Category)
-		if canonical == memory.CategoryUserFact || canonical == memory.CategorySelfIdentity {
-			continue
-		}
-		if e.Category == memory.CategorySessionCheckpoint || e.Category == memory.CategoryConversationSummary {
-			continue
-		}
-		relevant = append(relevant, e)
-	}
-
-	const maxProactiveRecall = 12
-	if len(relevant) > maxProactiveRecall {
-		relevant = relevant[:maxProactiveRecall]
-	}
-
-	if sceneNav := memory.FormatSceneIndexForPrompt(store.SceneIndex(3), 3, 2); sceneNav != "" {
-		b.WriteString("\n[Scene Index]\n")
-		b.WriteString(sceneNav)
-		b.WriteString("\n")
-	}
-
-	if len(relevant) > 0 {
-		b.WriteString("\n相关记忆（自动召回）:\n")
-		for _, e := range relevant {
-			b.WriteString(memory.FormatRecallEntryForPrompt(e, 200))
-			b.WriteString("\n")
-		}
-		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。请直接使用以上信息。）\n")
-	}
-
-	b.WriteString("如需更多记忆，可通过 memory(action: recall, query: \"关键词\") 召回。\n")
-
-	// Proactive memory prompt for first turn.
-	if isFirstTurn {
-		b.WriteString("\n")
-		b.WriteString(memory.BuildTUIProactiveMemoryPrompt())
-	}
+	b.WriteString(store.StaticMemorySectionForPrompt(memory.RecallHintAndGuidePromptOptions(isFirstTurn, memory.BuildTUIProactiveMemoryPrompt())))
 }
 
 // --- Steering helpers ---

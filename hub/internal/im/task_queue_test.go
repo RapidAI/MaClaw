@@ -167,6 +167,38 @@ func TestTaskDispatcher_PerUserIsolation(t *testing.T) {
 	}
 }
 
+func TestTaskDispatcher_PerTenantIsolation(t *testing.T) {
+	var maxConcurrent atomic.Int32
+	var running atomic.Int32
+	release := make(chan struct{})
+
+	executor := func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
+		current := running.Add(1)
+		for {
+			max := maxConcurrent.Load()
+			if current <= max || maxConcurrent.CompareAndSwap(max, current) {
+				break
+			}
+		}
+		<-release
+		running.Add(-1)
+		return &GenericResponse{StatusCode: 200, Body: task.TenantID}, nil
+	}
+	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {}
+
+	d := NewIMTaskDispatcher(3, executor, delivery)
+	defer d.Shutdown()
+
+	d.Enqueue(&IMTask{TenantID: "tenant_a", UserID: "u1", PlatformName: "test", PlatformUID: "p1", Text: "a"})
+	d.Enqueue(&IMTask{TenantID: "tenant_b", UserID: "u1", PlatformName: "test", PlatformUID: "p2", Text: "b"})
+
+	time.Sleep(50 * time.Millisecond)
+	if maxConcurrent.Load() < 2 {
+		t.Fatalf("expected same userID in different tenants to use separate workers, max concurrent=%d", maxConcurrent.Load())
+	}
+	close(release)
+}
+
 func TestTaskDispatcher_Stats(t *testing.T) {
 	executor := func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
 		time.Sleep(100 * time.Millisecond)

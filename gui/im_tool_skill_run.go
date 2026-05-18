@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -21,6 +22,17 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	}
 	b.WriteString(fmt.Sprintf("- skill: %s\n", status.Skill))
 	b.WriteString(fmt.Sprintf("- status: %s\n", status.Status))
+	// Include elapsed time when the skill is still running. This serves two purposes:
+	// 1. Gives the LLM useful context about how long the task has been running
+	// 2. Makes each status poll return a different result (elapsed changes),
+	//    preventing the drift detector's freqResultsAreProgressing from
+	//    seeing identical results and triggering a false frequency anomaly.
+	if status.IsRunning() && status.StartedAt != "" {
+		if startT, err := time.Parse(time.RFC3339, status.StartedAt); err == nil {
+			elapsed := time.Since(startT).Truncate(time.Second)
+			b.WriteString(fmt.Sprintf("- elapsed: %s\n", elapsed))
+		}
+	}
 	if len(status.Warnings) > 0 {
 		b.WriteString("## Warnings\n")
 		for _, warning := range status.Warnings {
@@ -315,8 +327,12 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 	if name == "" {
 		return "缺少 name 参数"
 	}
-	if h.emitSkillRunAgentViewIfNeeded(name, args) {
-		return fmt.Sprintf("Skill「%s」需要补充结构化参数。请在右侧任务面板填写后提交。", name)
+	// When the agent (LLM) calls run_skill with missing parameters, return a
+	// structured error so the LLM can extract the required info from user
+	// context and retry. Do NOT pop up an AgentView form — the agent should
+	// auto-fill parameters, not delegate to the user.
+	if errMsg := h.checkSkillRunMissingParams(name, args); errMsg != "" {
+		return errMsg
 	}
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("🚀 正在启动 Skill「%s」...", name))
@@ -373,4 +389,66 @@ func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
 		return nil
 	}
 	return runArgs
+}
+
+// checkSkillRunMissingParams checks whether the agent-provided args satisfy
+// all required parameters for the skill. If not, it returns a structured error
+// message that tells the LLM exactly which parameters are missing and how to
+// provide them. Returns "" when all parameters are satisfied.
+//
+// This replaces the old emitSkillRunAgentViewIfNeeded approach which popped up
+// a UI form for the user to fill — a mechanism-level error because the agent
+// should auto-fill parameters from user context, not delegate to the user.
+func (h *IMMessageHandler) checkSkillRunMissingParams(name string, args map[string]interface{}) string {
+	if h == nil || h.app == nil {
+		return ""
+	}
+	target := h.app.findSkillForAgentView(name)
+	if target == nil {
+		return ""
+	}
+	runArgs := buildRunSkillArgs(args)
+	vars := normalizeSkillRunVars(runArgs)
+	// Apply the same input inference that PrepareRunnerExecution uses.
+	// Without this, we'd false-positive on params that can be inferred from
+	// aliases (e.g. "text" → "input", "query" → "input").
+	cskill.ApplyRunInputInference(target, vars, runArgs)
+	params, missing := skillRunParameterContract(target, vars, runArgs)
+	if len(missing) == 0 {
+		return ""
+	}
+	// Build a structured error message that the LLM can act on.
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("❌ Skill「%s」缺少必要参数，无法执行。\n", name))
+	b.WriteString("\n## 缺少的参数\n")
+	for _, key := range missing {
+		desc := findParamDescription(params, key)
+		if desc != "" {
+			b.WriteString(fmt.Sprintf("- **%s**: %s\n", key, desc))
+		} else {
+			b.WriteString(fmt.Sprintf("- **%s**\n", key))
+		}
+	}
+	b.WriteString("\n## 如何修复\n")
+	b.WriteString("请从用户的对话上下文中提取所需信息，然后重新调用：\n")
+	b.WriteString(fmt.Sprintf("```\nmanage_skill(action=\"run\", name=\"%s\"", name))
+	for _, key := range missing {
+		b.WriteString(fmt.Sprintf(", %s=\"<从用户请求中提取>\"", key))
+	}
+	b.WriteString(")\n```\n")
+	if desc := strings.TrimSpace(target.Description); desc != "" {
+		b.WriteString(fmt.Sprintf("\n## Skill 描述\n%s\n", desc))
+	}
+	b.WriteString("\n[action: provide_args]")
+	return b.String()
+}
+
+// findParamDescription looks up the description for a parameter by name.
+func findParamDescription(params []corelib.NLSkillParam, name string) string {
+	for _, p := range params {
+		if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(name)) {
+			return strings.TrimSpace(p.Description)
+		}
+	}
+	return ""
 }

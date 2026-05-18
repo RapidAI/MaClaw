@@ -47,6 +47,58 @@ func createTestUser(t *testing.T, store *Store, email string, credits int64) *Sk
 
 // ── Task 1.4: 数据模型单元测试 ──────────────────────────────────────────
 
+func TestStoreMigrationAddsTenantPurchaseColumnsToExistingTable(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	_, err = db.Exec(`CREATE TABLE sm_purchase_records (
+		id TEXT PRIMARY KEY,
+		buyer_email TEXT NOT NULL,
+		buyer_id TEXT NOT NULL,
+		skill_id TEXT NOT NULL,
+		purchased_version INTEGER NOT NULL DEFAULT 1,
+		purchase_type TEXT NOT NULL DEFAULT 'purchase',
+		amount_paid INTEGER NOT NULL DEFAULT 0,
+		platform_fee INTEGER NOT NULL DEFAULT 0,
+		seller_earning INTEGER NOT NULL DEFAULT 0,
+		seller_id TEXT NOT NULL,
+		key_status TEXT NOT NULL DEFAULT '',
+		api_key_id TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'active',
+		created_at TEXT NOT NULL
+	);`)
+	if err != nil {
+		t.Fatalf("create legacy purchase table: %v", err)
+	}
+	if _, err := NewStore(db, db); err != nil {
+		t.Fatalf("NewStore should migrate legacy purchase table: %v", err)
+	}
+	rows, err := db.Query(`PRAGMA table_info(sm_purchase_records)`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info rows: %v", err)
+	}
+	if !columns["hub_id"] || !columns["tenant_id"] {
+		t.Fatalf("migration did not add tenant purchase columns: %#v", columns)
+	}
+}
 func TestUserRepository_CRUD(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

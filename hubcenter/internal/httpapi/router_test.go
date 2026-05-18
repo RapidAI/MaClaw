@@ -765,6 +765,7 @@ func TestListFailureLogsHandlerReturnsFilteredLogs(t *testing.T) {
 	for _, item := range []*store.FailureEventLog{
 		{
 			ID:          "center_fail_register_1",
+			TenantID:    "tenant_a",
 			Category:    "registration",
 			EventCode:   "HUB_REGISTER_VALIDATE_FAILED",
 			Message:     "hub registration validation failed",
@@ -776,6 +777,7 @@ func TestListFailureLogsHandlerReturnsFilteredLogs(t *testing.T) {
 		},
 		{
 			ID:          "center_fail_ha_1",
+			TenantID:    "tenant_b",
 			Category:    "ha",
 			EventCode:   "HA_APPLY_FAILED",
 			Message:     "ha apply failed",
@@ -813,6 +815,18 @@ func TestListFailureLogsHandlerReturnsFilteredLogs(t *testing.T) {
 	}
 	if strings.Contains(body, `"details_json"`) {
 		t.Fatalf("expected decoded details payload, body=%s", body)
+	}
+
+	tenantResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/failure-logs?tenant_id=tenant_a&limit=5", nil, token)
+	if tenantResp.Code != http.StatusOK {
+		t.Fatalf("expected tenant filtered 200, got %d body=%s", tenantResp.Code, tenantResp.Body.String())
+	}
+	tenantBody := tenantResp.Body.String()
+	if !strings.Contains(tenantBody, `"tenant_id":"tenant_a"`) || !strings.Contains(tenantBody, `"total":1`) {
+		t.Fatalf("expected tenant_a failure log, body=%s", tenantBody)
+	}
+	if strings.Contains(tenantBody, "HA_APPLY_FAILED") || strings.Contains(tenantBody, `"tenant_id":"tenant_b"`) {
+		t.Fatalf("tenant filter leaked other tenant log, body=%s", tenantBody)
 	}
 }
 

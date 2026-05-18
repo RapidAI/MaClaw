@@ -354,9 +354,9 @@ func TestServiceGetGroupTree_CountsAssignableUsersAndDescendants(t *testing.T) {
 		t.Fatal(err)
 	}
 	users := &mockUserRepo{items: []*store.User{
-		{ID: "u1", Email: "active@test.com", Status: "active"},
-		{ID: "u2", Email: "pending@test.com", Status: "pending"},
-		{ID: "u3", Email: "disabled@test.com", Status: "disabled"},
+		{ID: "u1", TenantID: store.DefaultTenantID, Email: "active@test.com", Status: "active"},
+		{ID: "u2", TenantID: store.DefaultTenantID, Email: "pending@test.com", Status: "pending"},
+		{ID: "u3", TenantID: store.DefaultTenantID, Email: "disabled@test.com", Status: "disabled"},
 	}}
 	svc := NewSecurityService(st, newMockSystemSettings(), &mockAuditRepo{}, users)
 	root, _ := svc.store.GetRootGroup(ctx)
@@ -882,6 +882,78 @@ func TestServiceCacheInvalidation(t *testing.T) {
 	p3, _ := svc.GetEffectivePolicy(ctx, "user@test.com")
 	if p3.GossipEnabled {
 		t.Fatal("expected gossip_enabled=false after cache invalidation")
+	}
+}
+
+func TestServiceEffectivePolicyCacheIsTenantScoped(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctxA := WithTenant(context.Background(), "tenant_a")
+	ctxB := WithTenant(context.Background(), "tenant_b")
+
+	if err := svc.store.InitRootGroup(ctxA); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.InitRootGroup(ctxB); err != nil {
+		t.Fatal(err)
+	}
+	rootA, _ := svc.store.GetRootGroup(ctxA)
+	rootB, _ := svc.store.GetRootGroup(ctxB)
+	if err := svc.AssignUser(ctxA, "same@example.com", rootA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AssignUser(ctxB, "same@example.com", rootB.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UpdateGroupPolicy(ctxA, rootA.ID, map[string]interface{}{"gossip_enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+
+	policyA, err := svc.GetEffectivePolicy(ctxA, "same@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyB, err := svc.GetEffectivePolicy(ctxB, "same@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policyA.GossipEnabled {
+		t.Fatalf("expected tenant A gossip disabled")
+	}
+	if !policyB.GossipEnabled {
+		t.Fatalf("expected tenant B to keep default gossip enabled")
+	}
+}
+
+func TestServiceGroupTreeCacheIsTenantScoped(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctxA := WithTenant(context.Background(), "tenant_a")
+	ctxB := WithTenant(context.Background(), "tenant_b")
+
+	if err := svc.store.InitRootGroup(ctxA); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.InitRootGroup(ctxB); err != nil {
+		t.Fatal(err)
+	}
+	rootA, _ := svc.store.GetRootGroup(ctxA)
+	rootB, _ := svc.store.GetRootGroup(ctxB)
+	if _, err := svc.CreateGroup(ctxA, "Only A", rootA.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	treeA, err := svc.GetGroupTree(ctxA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	treeB, err := svc.GetGroupTree(ctxB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if treeA == nil || treeA.ID != rootA.ID || len(treeA.Children) != 1 {
+		t.Fatalf("unexpected tenant A tree: %#v", treeA)
+	}
+	if treeB == nil || treeB.ID != rootB.ID || len(treeB.Children) != 0 {
+		t.Fatalf("tenant B tree should not reuse tenant A cache: %#v", treeB)
 	}
 }
 

@@ -44,7 +44,7 @@ type cachedSearchResult struct {
 
 const (
 	maxCacheEntries = 100
-	maxDownloadSize = 1 << 20 // 1 MB
+	maxDownloadSize = 5 << 20 // Skill JSON includes base64 file content; 1 MB packages expand beyond 1 MB on the wire.
 )
 
 // SkillHubClient queries the hub's own SkillHub API for skill search, download, and recommendations.

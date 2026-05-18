@@ -24,6 +24,14 @@ type agentLoopToolCommitOptions struct {
 	InFlightLifecycle          *imInFlightLifecycle
 	RecordToolResult           func(string, interface{})
 	RecordSystemMessages       func(int, []interface{})
+	// ParallelGroupIndex is the 0-based index of the current tool_call
+	// within the parallel group. Used to defer drift detection responses
+	// until the entire group has been executed.
+	ParallelGroupIndex int
+	// ParallelGroupTotal is the total number of tool_calls in the current
+	// parallel group. When > 1, drift detection that would interrupt the
+	// loop (NeedHumanHelp=true) is deferred until the last tool_call.
+	ParallelGroupTotal int
 }
 
 type agentLoopToolCommitResult struct {
@@ -59,7 +67,20 @@ func (h *IMMessageHandler) commitAgentLoopToolResult(opts agentLoopToolCommitOpt
 	conversation = handleOversizedFailedToolArguments(conversation, tc, opts.Execution)
 	conversation = updateWriteFileRecoveryHint(conversation, opts.Execution, opts.ConsecutiveWriteFileErrors)
 
-	conversation, resp := h.observeToolCommitDrift(opts.UserID, tc, opts.TruncatedResult, history, conversation, opts.Phase, opts.DriftDetector, opts.RecordSystemMessages)
+	// Drift detection: defer ALL drift responses when in the middle of a
+	// parallel tool_calls group. Both interrupting (NeedHumanHelp=true) and
+	// non-interrupting (recover prompt injection) responses are unsafe mid-group:
+	//
+	// 1. Interrupting: remaining tool_calls won't have tool_results → orphaned
+	// 2. Non-interrupting: system message between tool_results causes
+	//    sanitizeOrphanedToolCalls to break scanning early → false orphan detection
+	//
+	// Mechanism: always record the tool call into the drift detector window
+	// (for accurate frequency/pattern tracking), but only allow drift responses
+	// on the LAST tool_call of the group. Deferred drift will be re-detected
+	// when the last tool_call is committed.
+	isLastInGroup := opts.ParallelGroupTotal <= 1 || opts.ParallelGroupIndex >= opts.ParallelGroupTotal-1
+	conversation, resp := h.observeToolCommitDrift(opts.UserID, tc, opts.TruncatedResult, history, conversation, opts.Phase, opts.DriftDetector, opts.RecordSystemMessages, isLastInGroup)
 	if resp != nil {
 		return agentLoopToolCommitResult{Conversation: conversation, History: history, Response: resp}
 	}
@@ -129,6 +150,7 @@ func (h *IMMessageHandler) observeToolCommitDrift(
 	phase *agentLoopPhase,
 	detector *DriftDetector,
 	recordSystemMessages func(int, []interface{}),
+	isLastInGroup bool,
 ) ([]interface{}, *IMAgentResponse) {
 	if detector == nil {
 		return conversation, nil
@@ -146,6 +168,27 @@ func (h *IMMessageHandler) observeToolCommitDrift(
 
 	driftResult := detector.DetectDrift()
 	if !driftResult.Drifted {
+		return conversation, nil
+	}
+
+	// If drift requires human help (interrupting response) but we're in the
+	// middle of a parallel tool_calls group, defer the interruption.
+	// Interrupting mid-group leaves orphaned tool_calls in the conversation
+	// (assistant message has N tool_calls but only M < N tool_results follow),
+	// which causes API proxies to reject the next request with HTTP 400.
+	//
+	// Non-interrupting drift (recover prompt injection) is ALSO unsafe mid-group
+	// because sanitizeOrphanedToolCalls scans tool_results by breaking on any
+	// non-tool message. A system message injected between tool_results causes
+	// the sanitizer to see an incomplete group and strip the tool_calls.
+	//
+	// Both cases are deferred: undo the replanCount increment and let the
+	// remaining tool_calls execute. The drift will be re-detected on the last
+	// tool_call of the group (or on the next iteration).
+	if !isLastInGroup {
+		log.Printf("[Harness] drift detected pattern=%s needHuman=%v but deferring: parallel group not complete (tool=%s)",
+			driftResult.Pattern, driftResult.NeedHumanHelp, driftResult.DriftedTool)
+		detector.UndoLastReplan()
 		return conversation, nil
 	}
 

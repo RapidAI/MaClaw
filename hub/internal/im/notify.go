@@ -359,7 +359,7 @@ func (b *NotifyBroadcaster) SendToActiveForTenant(ctx context.Context, tenantID,
 
 // UserLookup resolves an internal user ID to an email address.
 type UserLookup interface {
-	GetEmail(ctx context.Context, userID string) (string, error)
+	GetEmail(ctx context.Context, tenantID, userID string) (string, error)
 }
 
 // ProactiveSender implements ws.IMProactiveSender by resolving userID → email
@@ -377,22 +377,24 @@ func NewProactiveSender(broadcaster *NotifyBroadcaster, users UserLookup) *Proac
 // SendProactiveMessage resolves the user's email and sends the text to the
 // user's last active IM platform. Falls back to broadcasting if no active
 // platform is known.
-func (p *ProactiveSender) SendProactiveMessage(ctx context.Context, userID, text string) error {
-	email, err := p.users.GetEmail(ctx, userID)
+func (p *ProactiveSender) SendProactiveMessage(ctx context.Context, tenantID, userID, text string) error {
+	tenantID = normalizeTenantID(tenantID)
+	email, err := p.users.GetEmail(ctx, tenantID, userID)
 	if err != nil {
 		return fmt.Errorf("resolve user email for %s: %w", userID, err)
 	}
-	p.broadcaster.SendToActive(ctx, userID, email, "MaClaw 通知", text)
+	p.broadcaster.SendToActiveForTenant(ctx, tenantID, userID, email, "MaClaw 通知", text)
 	return nil
 }
 
 // SendProactiveFile resolves the user's email and broadcasts a file to all IM channels.
 // Used for Swarm PDF document delivery.
-func (p *ProactiveSender) SendProactiveFile(ctx context.Context, userID, b64Data, fileName, mimeType, message string) error {
-	email, err := p.users.GetEmail(ctx, userID)
+func (p *ProactiveSender) SendProactiveFile(ctx context.Context, tenantID, userID, b64Data, fileName, mimeType, message string) error {
+	tenantID = normalizeTenantID(tenantID)
+	email, err := p.users.GetEmail(ctx, tenantID, userID)
 	if err != nil {
 		return fmt.Errorf("resolve user email for %s: %w", userID, err)
 	}
-	p.broadcaster.BroadcastFile(ctx, email, b64Data, fileName, mimeType, message)
+	p.broadcaster.BroadcastFileForTenant(ctx, tenantID, email, b64Data, fileName, mimeType, message)
 	return nil
 }

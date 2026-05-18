@@ -294,8 +294,10 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 		}
 	}
 	for _, item := range snap.Purchases {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_purchase_records (id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_purchase_records (id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
+				hub_id = excluded.hub_id,
+				tenant_id = excluded.tenant_id,
 				buyer_email = excluded.buyer_email,
 				buyer_id = excluded.buyer_id,
 				skill_id = excluded.skill_id,
@@ -320,7 +322,7 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 					ELSE excluded.status
 				END,
 				created_at = excluded.created_at`,
-			item.ID, item.BuyerEmail, canonicalSnapshotUserID(userIDAliases, item.BuyerID), item.SkillID, item.PurchasedVersion, item.PurchaseType, item.AmountPaid, item.PlatformFee, item.SellerEarning, canonicalSnapshotUserID(userIDAliases, item.SellerID), item.KeyStatus, item.APIKeyID, item.Status, fmtTime(item.CreatedAt),
+			item.ID, item.HubID, item.TenantID, item.BuyerEmail, canonicalSnapshotUserID(userIDAliases, item.BuyerID), item.SkillID, item.PurchasedVersion, item.PurchaseType, item.AmountPaid, item.PlatformFee, item.SellerEarning, canonicalSnapshotUserID(userIDAliases, item.SellerID), item.KeyStatus, item.APIKeyID, item.Status, fmtTime(item.CreatedAt),
 		); err != nil {
 			return fmt.Errorf("insert sm_purchase_records: %w", err)
 		}
@@ -571,7 +573,7 @@ func (s *Store) dumpSubmissions(ctx context.Context) ([]SkillSubmission, error) 
 }
 
 func (s *Store) dumpPurchases(ctx context.Context) ([]PurchaseRecord, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records ORDER BY created_at, id`)
+	rows, err := s.readDB.QueryContext(ctx, `SELECT id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}

@@ -528,3 +528,14 @@ func (d *DriftDetector) PreviewDrift() DriftResult {
 func (d *DriftDetector) ResetWindow() {
 	d.records = nil
 }
+
+// UndoLastReplan decrements the replan counter by one. Used when a drift
+// detection result is deferred (e.g., mid-parallel-group) and the detection
+// will be re-evaluated later. Without this, the deferred detection's
+// replanCount increment would cause the next detection to immediately
+// escalate to NeedHumanHelp=true.
+func (d *DriftDetector) UndoLastReplan() {
+	if d.replanCount > 0 {
+		d.replanCount--
+	}
+}

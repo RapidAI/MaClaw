@@ -9,7 +9,7 @@ import (
 
 func TestMemoryThemesCommandRuns(t *testing.T) {
 	dir := t.TempDir()
-	store, err := memory.NewStore(filepath.Join(dir, "memories.json"))
+	store, err := memory.NewStoreWithMode(filepath.Join(dir, "memory"), memory.StoreModeAuto)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,28 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
+
+type coordinatorTenantContextKey struct{}
+
+func WithTenant(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, coordinatorTenantContextKey{}, normalizeTenantID(tenantID))
+}
+
+func tenantIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return store.DefaultTenantID
+	}
+	if tenantID, ok := ctx.Value(coordinatorTenantContextKey{}).(string); ok {
+		return normalizeTenantID(tenantID)
+	}
+	return store.DefaultTenantID
+}
+
+func tenantUserRuntimeKey(tenantID, userID string) string {
+	return normalizeTenantID(tenantID) + "\x00" + strings.TrimSpace(userID)
+}
 
 const hubDirectAnswerTimeout = 15 * time.Second
 
@@ -39,12 +60,12 @@ type Coordinator struct {
 	convContext *conversationContextStore
 	spaceState  *spaceStateStore
 
-	// Workflow engine removed — all workflow logic is handled by the device-side
+	// Workflow engine removed 鈥?all workflow logic is handled by the device-side
 	// agent (corelib/workflow). Hub is a pure message proxy.
 
-	mu             sync.Mutex
-	routeHistory   map[string][]routeHistoryEntry // userID → recent 3
-	welcomedUsers  map[string]bool                // users who got the welcome msg
+	mu            sync.Mutex
+	routeHistory  map[string][]routeHistoryEntry // userID 鈫?recent 3
+	welcomedUsers map[string]bool                // users who got the welcome msg
 }
 
 // NewCoordinator creates a Coordinator wired to the given router and config.
@@ -121,14 +142,14 @@ func (c *Coordinator) SetSmartRouteChecker(checker SmartRouteChecker) {
 // IsUserSmartRouteEnabled checks if a specific user has smart route permission.
 func (c *Coordinator) IsUserSmartRouteEnabled(ctx context.Context, userID string) bool {
 	if c.smartRouteCheck == nil {
-		return true // no checker wired → allow all (backward compat)
+		return true // no checker wired 鈫?allow all (backward compat)
 	}
 	return c.smartRouteCheck.IsSmartRouteEnabled(ctx, userID)
 }
 
 // HandleDeviceProfileUpdate is called by the WebSocket gateway when a machine
 // sends a device.profile_update message. It parses the profile and updates the cache.
-func (c *Coordinator) HandleDeviceProfileUpdate(userID string, payload json.RawMessage) {
+func (c *Coordinator) HandleDeviceProfileUpdate(tenantID, userID string, payload json.RawMessage) {
 	var profile DeviceProfile
 	if err := json.Unmarshal(payload, &profile); err != nil {
 		log.Printf("[Coordinator] device profile parse error for user=%s: %v", userID, err)
@@ -138,8 +159,8 @@ func (c *Coordinator) HandleDeviceProfileUpdate(userID string, payload json.RawM
 		log.Printf("[Coordinator] device profile missing machine_id for user=%s", userID)
 		return
 	}
-	c.profileCache.Update(userID, profile)
-	log.Printf("[Coordinator] device profile updated: user=%s machine=%s name=%s", userID, profile.MachineID, profile.Name)
+	c.profileCache.UpdateForTenant(tenantID, userID, profile)
+	log.Printf("[Coordinator] device profile updated: tenant=%s user=%s machine=%s name=%s", tenantID, userID, profile.MachineID, profile.Name)
 }
 
 // TryFastAnswer attempts to handle a message without device routing.
@@ -153,11 +174,11 @@ func (c *Coordinator) TryFastAnswer(
 ) *GenericResponse {
 	machines := c.devices.FindAllOnlineMachinesForUser(ctx, userID)
 
-	// No devices online — answer immediately, no point queuing.
+	// No devices online 鈥?answer immediately, no point queuing.
 	if len(machines) == 0 {
 		return &GenericResponse{
 			StatusCode: 503,
-			StatusIcon: "📴",
+			StatusIcon: "offline",
 			Title:      "设备不在线",
 			Body:       "您的设备当前不在线，无法处理请求。\n\n请确认 MaClaw 客户端已启动并连接到 Hub。",
 		}
@@ -165,7 +186,7 @@ func (c *Coordinator) TryFastAnswer(
 
 	// Everything else goes through the task queue. The queue executor calls
 	// Coordinate which handles intent classification, hub direct answer,
-	// device routing, etc. — all in a background worker goroutine so the
+	// device routing, etc. 鈥?all in a background worker goroutine so the
 	// HandleMessage path returns immediately.
 	return nil
 }
@@ -181,7 +202,7 @@ func (c *Coordinator) Coordinate(
 	if len(machines) == 0 {
 		return &GenericResponse{
 			StatusCode: 503,
-			StatusIcon: "📴",
+			StatusIcon: "offline",
 			Title:      "设备不在线",
 			Body:       "您的设备当前不在线，无法处理请求。\n\n请确认 MaClaw 客户端已启动并连接到 Hub。",
 		}, nil
@@ -193,8 +214,8 @@ func (c *Coordinator) Coordinate(
 		return c.router.RouteToAgent(ctx, userID, platformName, platformUID, text)
 	}
 
-	// Single device online → no space model, pure passthrough to lobby logic.
-	state := c.spaceState.GetOrCreate(userID)
+	// Single device online 鈫?no space model, pure passthrough to lobby logic.
+	state := c.spaceState.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
 
 	switch state.State {
 	case SpacePrivate:
@@ -212,9 +233,9 @@ func (c *Coordinator) classifyAndRoute(
 	userID, platformName, platformUID, text string,
 	machines []OnlineMachineInfo,
 ) (*GenericResponse, error) {
-	profiles := c.profileCache.GetAll(userID)
+	profiles := c.profileCache.GetAllForTenant(tenantIDFromContext(ctx), userID)
 	if len(profiles) == 0 {
-		// No profiles reported yet — build minimal ones from OnlineMachineInfo.
+		// No profiles reported yet 鈥?build minimal ones from OnlineMachineInfo.
 		for _, m := range machines {
 			profiles = append(profiles, DeviceProfile{
 				MachineID:     m.MachineID,
@@ -225,10 +246,10 @@ func (c *Coordinator) classifyAndRoute(
 	}
 
 	// Inject conversation context into classification.
-	cc := c.convContext.GetOrCreate(userID)
+	cc := c.convContext.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
 	convRounds := cc.GetRecentSummaries(3)
 
-	history := c.getRecentHistory(userID)
+	history := c.getRecentHistory(ctx, userID)
 	result, err := c.intentClassifier.Classify(ctx, userID, text, profiles, history, convRounds)
 	if err != nil {
 		log.Printf("[Coordinator] classify error: %v, falling back to RouteToAgent", err)
@@ -236,7 +257,7 @@ func (c *Coordinator) classifyAndRoute(
 	}
 
 	// Record routing decision in history.
-	c.recordHistory(userID, text, result)
+	c.recordHistory(ctx, userID, text, result)
 
 	switch result.Type {
 	case IntentDirectAnswer:
@@ -264,17 +285,17 @@ func (c *Coordinator) classifyAndRoute(
 		for _, m := range machines {
 			participantIDs = append(participantIDs, m.MachineID)
 		}
-		_ = c.spaceState.EnterMeeting(userID, topic, participantIDs)
+		_ = c.spaceState.EnterMeetingForTenant(tenantIDFromContext(ctx), userID, topic, participantIDs)
 		return c.router.StartDiscussion(ctx, userID, platformName, platformUID, topic), nil
 
 	case IntentNeedClarification:
 		msg := result.Message
 		if msg == "" {
-			msg = "请补充更多信息，以便我判断应该发给哪台设备。"
+			msg = "请补充更多信息，以便判断应该发给哪台设备。"
 		}
 		return &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "❓",
+			StatusIcon: "info",
 			Title:      "需要更多信息",
 			Body:       msg,
 		}, nil
@@ -303,7 +324,7 @@ func (c *Coordinator) routeToTargetWithContext(
 	if targetMachine == nil {
 		return &GenericResponse{
 			StatusCode: 404,
-			StatusIcon: "📴",
+			StatusIcon: "offline",
 			Title:      "设备不在线",
 			Body:       "目标设备已离线。",
 		}, nil
@@ -311,14 +332,14 @@ func (c *Coordinator) routeToTargetWithContext(
 	if !targetMachine.LLMConfigured {
 		return &GenericResponse{
 			StatusCode: 503,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Title:      "Agent 未就绪",
 			Body:       fmt.Sprintf("设备 %s 的 LLM 未配置，Agent 无法运行。", targetMachine.Name),
 		}, nil
 	}
 
-	// Check for device handoff — if last conversation was on a different device.
-	cc := c.convContext.GetOrCreate(userID)
+	// Check for device handoff 鈥?if last conversation was on a different device.
+	cc := c.convContext.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
 	lastRounds := cc.GetRecentSummaries(1)
 	handoffCtx := ""
 	if len(lastRounds) > 0 && lastRounds[0].TargetDevice != targetID && lastRounds[0].TargetDevice != "" {
@@ -328,7 +349,7 @@ func (c *Coordinator) routeToTargetWithContext(
 	// Inject handoff context into the message text if switching devices.
 	routeText := text
 	if handoffCtx != "" {
-		routeText = fmt.Sprintf("[上下文切换]\n%s\n---\n%s", handoffCtx, text)
+		routeText = fmt.Sprintf("[涓婁笅鏂囧垏鎹\n%s\n---\n%s", handoffCtx, text)
 		log.Printf("[Coordinator] session handoff for user=%s: from=%s to=%s", userID, lastRounds[0].DeviceName, targetMachine.Name)
 	}
 
@@ -362,11 +383,11 @@ func (c *Coordinator) notifyRouting(ctx context.Context, userID, platformName, p
 	var msg string
 	switch result.Type {
 	case IntentRouteSingle:
-		msg = fmt.Sprintf("📍 %s", result.Reason)
+		msg = fmt.Sprintf("馃搷 %s", result.Reason)
 	case IntentBroadcast:
-		msg = fmt.Sprintf("📢 %s", result.Reason)
+		msg = fmt.Sprintf("馃摙 %s", result.Reason)
 	case IntentDiscuss:
-		msg = fmt.Sprintf("🗣️ 检测到讨论意图，已自动发起多设备讨论")
+		msg = "检测到讨论意图，已自动发起多设备讨论。"
 	}
 	if msg != "" {
 		go c.router.deliverProgress(ctx, userID, platformName, platformUID, msg)
@@ -376,12 +397,13 @@ func (c *Coordinator) notifyRouting(ctx context.Context, userID, platformName, p
 // maybeWelcome sends a one-time welcome message when a user first enters
 // seamless smart mode (LLM enabled + multiple devices).
 func (c *Coordinator) maybeWelcome(ctx context.Context, userID, platformName, platformUID string) {
+	key := routerRuntimeKey(ctx, userID)
 	c.mu.Lock()
-	if c.welcomedUsers[userID] {
+	if c.welcomedUsers[key] {
 		c.mu.Unlock()
 		return
 	}
-	c.welcomedUsers[userID] = true
+	c.welcomedUsers[key] = true
 	c.mu.Unlock()
 
 	machines := c.devices.FindAllOnlineMachinesForUser(ctx, userID)
@@ -390,10 +412,7 @@ func (c *Coordinator) maybeWelcome(ctx context.Context, userID, platformName, pl
 		names = append(names, m.Name)
 	}
 
-	msg := fmt.Sprintf("🤖 无感智能模式已启用\n\n"+
-		"在线设备：%s\n\n"+
-		"直接发消息即可，系统会自动判断发给谁。\n"+
-		"也可以使用命令手动控制：/call、/call all、/discuss、/help",
+	msg := fmt.Sprintf("智能模式已启用\n\n在线设备：%s\n\n直接发送消息即可，系统会自动判断发给哪台设备。也可以使用 /call、/call all、/discuss、/help 手动控制。",
 		strings.Join(names, "、"))
 
 	go c.router.deliverProgress(ctx, userID, platformName, platformUID, msg)
@@ -422,16 +441,16 @@ func (c *Coordinator) handlePrivateMessage(
 		}
 	}
 	if !online {
-		c.spaceState.Reset(userID)
+		c.spaceState.ResetForTenant(tenantIDFromContext(ctx), userID)
 		go c.router.deliverProgress(ctx, userID, platformName, platformUID,
-			fmt.Sprintf("📴 私聊目标 %s 已离线，已返回大厅。", state.PrivateName))
+			fmt.Sprintf("私聊目标 %s 已离线，已返回大厅。", state.PrivateName))
 		return c.handleLobbyMessage(ctx, userID, platformName, platformUID, text, machines)
 	}
 
 	// Increment message count and send periodic reminder.
-	count := c.spaceState.IncrementMessageCount(userID)
+	count := c.spaceState.IncrementMessageCountForTenant(tenantIDFromContext(ctx), userID)
 	if count > 0 && count%5 == 0 {
-		reminder := fmt.Sprintf("💡 当前私聊模式 → %s（第 %d 条消息）。发送 /call all 返回大厅。", state.PrivateName, count)
+		reminder := fmt.Sprintf("当前私聊模式 -> %s（第 %d 条消息）。发送 /call all 返回大厅。", state.PrivateName, count)
 		go c.router.deliverProgress(ctx, userID, platformName, platformUID, reminder)
 	}
 
@@ -447,11 +466,11 @@ func (c *Coordinator) handleMeetingMessage(
 	userID, platformName, platformUID, text string,
 	state *SpaceState,
 ) (*GenericResponse, error) {
-	if !c.router.IsInDiscussion(userID) {
-		// No active discussion — defensive reset to lobby.
-		c.spaceState.Reset(userID)
+	if !c.router.IsInDiscussionForTenant(tenantIDFromContext(ctx), userID) {
+		// No active discussion 鈥?defensive reset to lobby.
+		c.spaceState.ResetForTenant(tenantIDFromContext(ctx), userID)
 		go c.router.deliverProgress(ctx, userID, platformName, platformUID,
-			"📋 会议已结束，已返回大厅。")
+			"会议已结束，已返回大厅。")
 		machines := c.devices.FindAllOnlineMachinesForUser(ctx, userID)
 		return c.handleLobbyMessage(ctx, userID, platformName, platformUID, text, machines)
 	}
@@ -460,17 +479,17 @@ func (c *Coordinator) handleMeetingMessage(
 	names, body := ParseMentions(text)
 	if len(names) == 0 {
 		// No @: inject into discussion.
-		if c.router.InjectUserInput(userID, text) {
+		if c.router.InjectUserInputForTenant(tenantIDFromContext(ctx), userID, text) {
 			return &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "🗣️",
+				StatusIcon: "ok",
 				Title:      "已注入会议",
 				Body:       "消息已注入当前讨论。",
 			}, nil
 		}
 		return &GenericResponse{
 			StatusCode: 429,
-			StatusIcon: "⏳",
+			StatusIcon: "busy",
 			Title:      "缓冲已满",
 			Body:       "发言过多，请稍后再试。",
 		}, nil
@@ -504,9 +523,9 @@ func (c *Coordinator) handleMeetingMessage(
 	if len(notFound) > 0 && len(targets) == 0 {
 		return &GenericResponse{
 			StatusCode: 400,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Title:      "参与者未找到",
-			Body:       fmt.Sprintf("未找到会议参与者: %s", strings.Join(notFound, "、")),
+			Body:       fmt.Sprintf("未找到会议参与者：%s", strings.Join(notFound, "、")),
 		}, nil
 	}
 
@@ -518,7 +537,7 @@ func (c *Coordinator) handleMeetingMessage(
 	for _, t := range targets {
 		resp, err := c.router.routeToSingleMachine(ctx, userID, platformName, platformUID, body, t.MachineID, "")
 		if err != nil {
-			replies = append(replies, fmt.Sprintf("[%s] ❌ %v", t.Name, err))
+			replies = append(replies, fmt.Sprintf("[%s] %v", t.Name, err))
 		} else if resp != nil {
 			replies = append(replies, fmt.Sprintf("[%s] %s", t.Name, resp.Body))
 		}
@@ -529,24 +548,24 @@ func (c *Coordinator) handleMeetingMessage(
 	for _, t := range targets {
 		targetNames = append(targetNames, t.Name)
 	}
-	sideChatMsg := fmt.Sprintf("💬 小会（%s）：\n用户: %s\n%s",
+	sideChatMsg := fmt.Sprintf("小会（%s）：\n用户: %s\n%s",
 		strings.Join(targetNames, "、"), truncate(body, 80), strings.Join(replies, "\n"))
-	c.router.InjectUserInput(userID, sideChatMsg)
+	c.router.InjectUserInputForTenant(tenantIDFromContext(ctx), userID, sideChatMsg)
 
 	return &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "💬",
+		StatusIcon: "ok",
 		Title:      "小会回复",
 		Body:       sideChatMsg,
 	}, nil
 }
 
 // handleLobbyMessage handles messages in lobby mode (default).
-// - ParseMentions: @ at start → directed send to @'d devices.
-// - No @: RuleEngine → IntentClassifier → dispatch.
-// - direct_answer → hubDirectAnswer.
-// - discuss → enter meeting state.
-// - route_single → routeToTarget with handoff detection.
+// - ParseMentions: @ at start 鈫?directed send to @'d devices.
+// - No @: RuleEngine 鈫?IntentClassifier 鈫?dispatch.
+// - direct_answer 鈫?hubDirectAnswer.
+// - discuss 鈫?enter meeting state.
+// - route_single 鈫?routeToTarget with handoff detection.
 // - Async RecordRound to ConversationContext.
 func (c *Coordinator) handleLobbyMessage(
 	ctx context.Context,
@@ -572,7 +591,7 @@ func (c *Coordinator) handleLobbyMessage(
 		return c.handleLobbyMention(ctx, userID, platformName, platformUID, names, body, text, machines)
 	}
 
-	selected, _ := c.router.GetSelectedMachine(userID)
+	selected, _ := c.router.GetSelectedMachineForTenant(tenantIDFromContext(ctx), userID)
 	decision := c.ruleEngine.Evaluate(text, machines, selected, llmEnabled, smartRouteSingle)
 
 	switch decision.Action {
@@ -614,7 +633,7 @@ func (c *Coordinator) handleLobbyMention(
 	}
 
 	if len(targets) == 0 {
-		// No valid targets — fall back to normal routing.
+		// No valid targets 鈥?fall back to normal routing.
 		return c.classifyAndRoute(ctx, userID, platformName, platformUID, originalText, machines)
 	}
 
@@ -636,7 +655,7 @@ func (c *Coordinator) handleLobbyMention(
 }
 
 // hubDirectAnswer uses the Hub LLM to directly answer a user question
-// without routing to any device. 15s timeout → degrade to broadcast.
+// without routing to any device. 15s timeout 鈫?degrade to broadcast.
 func (c *Coordinator) hubDirectAnswer(
 	ctx context.Context,
 	userID, platformName, platformUID, text string,
@@ -648,22 +667,22 @@ func (c *Coordinator) hubDirectAnswer(
 	}
 
 	// Build prompt with recent conversation context.
-	cc := c.convContext.GetOrCreate(userID)
+	cc := c.convContext.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
 	recent := cc.GetRecentSummaries(5)
 
 	var contextBlock string
 	if len(recent) > 0 {
 		var b strings.Builder
-		b.WriteString("\n\n最近对话上下文：\n")
+		b.WriteString("\n\n鏈€杩戝璇濅笂涓嬫枃锛歕n")
 		for _, r := range recent {
-			fmt.Fprintf(&b, "- [%s] 用户: %s → 摘要: %s\n", r.DeviceName, truncate(r.UserText, 50), truncate(r.Summary, 60))
+			fmt.Fprintf(&b, "- [%s] 鐢ㄦ埛: %s 鈫?鎽樿: %s\n", r.DeviceName, truncate(r.UserText, 50), truncate(r.Summary, 60))
 		}
 		contextBlock = b.String()
 	}
 
-	systemPrompt := `你是一个编程助手，直接回答用户的技术问题。回答要简洁准确。
-如果问题需要访问用户的项目文件、代码或运行命令，请回复 JSON: {"need_device": true}
-否则直接回答问题。` + contextBlock
+	systemPrompt := "你是一个编程助手，直接回答用户的技术问题。回答要简洁准确。" +
+		"如果问题需要访问用户的项目文件、代码或运行命令，请回复 JSON: {\"need_device\": true}。" +
+		"否则直接回答问题。" + contextBlock
 
 	messages := []interface{}{
 		map[string]string{"role": "system", "content": systemPrompt},
@@ -716,9 +735,9 @@ func (c *Coordinator) hubDirectAnswer(
 
 		return &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "🤖",
+			StatusIcon: "馃",
 			Title:      "Hub AI",
-			Body:       content + "\n\n — Hub AI",
+			Body:       content + "\n\n 鈥?Hub AI",
 		}, nil
 
 	case <-answerCtx.Done():
@@ -739,10 +758,11 @@ func (c *Coordinator) classifyAndRouteNonDirect(
 
 // --- route history helpers ---
 
-func (c *Coordinator) getRecentHistory(userID string) []routeHistoryEntry {
+func (c *Coordinator) getRecentHistory(ctx context.Context, userID string) []routeHistoryEntry {
+	key := routerRuntimeKey(ctx, userID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	h := c.routeHistory[userID]
+	h := c.routeHistory[key]
 	if len(h) == 0 {
 		return nil
 	}
@@ -752,7 +772,8 @@ func (c *Coordinator) getRecentHistory(userID string) []routeHistoryEntry {
 	return out
 }
 
-func (c *Coordinator) recordHistory(userID, text string, result *IntentResult) {
+func (c *Coordinator) recordHistory(ctx context.Context, userID, text string, result *IntentResult) {
+	key := routerRuntimeKey(ctx, userID)
 	target := string(result.Type)
 	if result.TargetID != "" {
 		target = result.TargetID
@@ -764,10 +785,10 @@ func (c *Coordinator) recordHistory(userID, text string, result *IntentResult) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	h := c.routeHistory[userID]
+	h := c.routeHistory[key]
 	h = append(h, entry)
 	if len(h) > 3 {
 		h = h[len(h)-3:]
 	}
-	c.routeHistory[userID] = h
+	c.routeHistory[key] = h
 }

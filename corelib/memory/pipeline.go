@@ -12,18 +12,19 @@ import (
 
 // PipelineResult holds the combined outcome of a full maintenance cycle.
 type PipelineResult struct {
-	Compress      *CompressResult          `json:"compress,omitempty"`
-	Promote       *PromoteResult           `json:"promote,omitempty"`
-	Reflect       *ReflectResult           `json:"reflect,omitempty"`
-	Experience    *ExperienceDistillResult `json:"experience,omitempty"`
-	Consolidation []ConsolidationResult    `json:"consolidation,omitempty"`
-	Profile       *ConsolidationResult     `json:"profile,omitempty"`
-	Profiles      []ConsolidationResult    `json:"profiles,omitempty"`
-	Dormant       int                      `json:"dormant_marked"`
-	Duration      string                   `json:"duration"`
+	Compress      *CompressResult               `json:"compress,omitempty"`
+	Promote       *PromoteResult                `json:"promote,omitempty"`
+	Reflect       *ReflectResult                `json:"reflect,omitempty"`
+	Experience    *ExperienceDistillResult      `json:"experience,omitempty"`
+	Consolidation []ConsolidationResult         `json:"consolidation,omitempty"`
+	Profile       *ConsolidationResult          `json:"profile,omitempty"`
+	Profiles      []ConsolidationResult         `json:"profiles,omitempty"`
+	Dormant       int                           `json:"dormant_marked"`
+	Candidates    *CandidateConsolidationResult `json:"candidates,omitempty"`
+	Duration      string                        `json:"duration"`
 }
 
-// PromoteResult holds the outcome of an episodic→semantic promotion run.
+// PromoteResult holds the outcome of an episodic-to-semantic promotion run.
 type PromoteResult struct {
 	Promoted int    `json:"promoted"`
 	Error    string `json:"error,omitempty"`
@@ -61,7 +62,7 @@ type Pipeline struct {
 
 // NewPipeline creates a Pipeline. Any component can be nil (skipped).
 // The second and third positional parameters are deprecated (formerly Promoter
-// and Reflector) — use SetSynthesizer to wire the combined module.
+// and Reflector) - use SetSynthesizer to wire the combined module.
 func NewPipeline(store *Store, compressor *Compressor, _ interface{}, _ interface{}, emitter corelib.EventEmitter) *Pipeline {
 	return &Pipeline{
 		store:      store,
@@ -102,6 +103,18 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		merged := p.store.ProcessPendingDedup(ctx)
 		if merged > 0 {
 			log.Printf("[pipeline] semantic dedup merged %d entries", merged)
+		}
+	}
+
+	// Step 1a: Revisit quarantined memory candidates before lossy maintenance.
+	if ctx.Err() == nil {
+		candidates := p.store.ConsolidateMemoryCandidates(ctx)
+		if candidates.Scanned > 0 {
+			result.Candidates = &candidates
+			if candidates.Promoted > 0 || candidates.Merged > 0 || candidates.Rejected > 0 {
+				log.Printf("[pipeline] memory candidates: scanned=%d promoted=%d merged=%d rejected=%d kept=%d",
+					candidates.Scanned, candidates.Promoted, candidates.Merged, candidates.Rejected, candidates.Kept)
+			}
 		}
 	}
 

@@ -143,6 +143,7 @@ func applyHubLLMPromptCacheRuntimeConfig(cacheSource any, cfg HubLLMPromptCacheC
 
 func GetHubLLMPromptCacheConfigHandler(system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		cfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)
 		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cfg)
 		writeJSON(w, http.StatusOK, cfg)
@@ -151,6 +152,7 @@ func GetHubLLMPromptCacheConfigHandler(system store.SystemSettingsRepository, pr
 
 func UpdateHubLLMPromptCacheConfigHandler(system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		var cfg HubLLMPromptCacheConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -171,6 +173,22 @@ func ClearHubLLMPromptCacheHandler(promptCacheSources ...any) http.HandlerFunc {
 		cache := firstPromptCacheSource(promptCacheSources)
 		if cache == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"purged": 0})
+			return
+		}
+		if promptCacheTenantScoped(r) {
+			purger, ok := cache.(interface {
+				PurgeTenant(context.Context, string) (int64, error)
+			})
+			if !ok {
+				writeJSON(w, http.StatusOK, map[string]any{"purged": 0})
+				return
+			}
+			purged, err := purger.PurgeTenant(r.Context(), promptCacheTenantScope(r))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "HUB_LLM_PROMPT_CACHE_CLEAR_FAILED", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"purged": purged})
 			return
 		}
 		purger, ok := cache.(interface {
@@ -201,7 +219,12 @@ func GetHubLLMPromptCacheEntryHandler(promptCacheSource any) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "HUB_LLM_PROMPT_CACHE_ENTRY_NOT_FOUND", "cache entry not found")
 			return
 		}
-		entry, err := repo.Get(r.Context(), cacheKey)
+		scopedKey, ok := promptCacheScopedKeyForRequest(r, cacheKey)
+		if !ok {
+			writeError(w, http.StatusNotFound, "HUB_LLM_PROMPT_CACHE_ENTRY_NOT_FOUND", "cache entry not found")
+			return
+		}
+		entry, err := repo.Get(r.Context(), scopedKey)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "HUB_LLM_PROMPT_CACHE_ENTRY_FAILED", err.Error())
 			return
@@ -252,11 +275,16 @@ func DeleteHubLLMPromptCacheEntryHandler(promptCacheSource any) http.HandlerFunc
 			writeJSON(w, http.StatusOK, map[string]any{"deleted": false, "cache_key": cacheKey})
 			return
 		}
-		if err := deleter.Delete(r.Context(), cacheKey); err != nil {
+		scopedKey, ok := promptCacheScopedKeyForRequest(r, cacheKey)
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"deleted": false, "cache_key": cacheKey})
+			return
+		}
+		if err := deleter.Delete(r.Context(), scopedKey); err != nil {
 			writeError(w, http.StatusInternalServerError, "HUB_LLM_PROMPT_CACHE_DELETE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "cache_key": cacheKey})
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "cache_key": scopedKey})
 	}
 }
 
@@ -291,6 +319,9 @@ func GetHubLLMPromptCacheEntriesHandler(promptCacheSource any) http.HandlerFunc 
 		all := make([]hubLLMPromptCacheEntryView, 0, len(items))
 		for _, item := range items {
 			if item == nil {
+				continue
+			}
+			if !promptCacheEntryVisibleToRequest(r, item.CacheKey) {
 				continue
 			}
 			if item.ProviderID != "" {
@@ -350,6 +381,62 @@ func GetHubLLMPromptCacheEntriesHandler(promptCacheSource any) http.HandlerFunc 
 		hasMore := end < len(all)
 		writeJSON(w, http.StatusOK, hubLLMPromptCacheEntriesResponse{Entries: all[start:end], Providers: providers, Models: models, Page: page, Limit: limit, Total: len(all), HasMore: hasMore})
 	}
+}
+
+func promptCacheTenantScope(r *http.Request) string {
+	return strings.TrimSpace(RequestTenantID(r))
+}
+
+func promptCacheTenantScoped(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if !IsGlobalAdmin(r.Context()) {
+		return true
+	}
+	return strings.TrimSpace(r.URL.Query().Get("tenant_id")) != ""
+}
+
+func promptCacheScopedKeyForRequest(r *http.Request, cacheKey string) (string, bool) {
+	cacheKey = strings.TrimSpace(cacheKey)
+	if cacheKey == "" {
+		return "", false
+	}
+	if !promptCacheTenantScoped(r) {
+		return cacheKey, true
+	}
+	tenantID := promptCacheTenantScope(r)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	if tenantID == store.DefaultTenantID {
+		if strings.HasPrefix(cacheKey, "tenant:") {
+			return "", false
+		}
+		return cacheKey, true
+	}
+	prefix := "tenant:" + tenantID + ":"
+	if strings.HasPrefix(cacheKey, "tenant:") {
+		if !strings.HasPrefix(cacheKey, prefix) {
+			return "", false
+		}
+		return cacheKey, true
+	}
+	return prefix + cacheKey, true
+}
+
+func promptCacheEntryVisibleToRequest(r *http.Request, cacheKey string) bool {
+	if !promptCacheTenantScoped(r) {
+		return true
+	}
+	tenantID := promptCacheTenantScope(r)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	if tenantID == store.DefaultTenantID {
+		return !strings.HasPrefix(cacheKey, "tenant:")
+	}
+	return strings.HasPrefix(cacheKey, "tenant:"+tenantID+":")
 }
 
 func promptCacheEntryDeleter(source any) (interface {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -422,35 +423,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolTTS(args) })
 
 	// --- Long-term memory (unified) ---
-	reg("memory", "管理长期记忆（action: recall/themes/save/list/delete）。recall 按需检索相关记忆，themes 查看主题层，save 保存新记忆。",
-		ToolCategoryBuiltin, []string{"memory", "save", "remember", "list", "search", "delete", "recall"},
-		map[string]interface{}{
-			"action":   map[string]string{"type": "string", "description": "操作: recall(按需召回)/themes(查看主题层)/save(保存)/list(列出或搜索)/delete(删除)"},
-			"query":    map[string]string{"type": "string", "description": "检索关键词（recall 时必填，由你提炼的精准检索词，非用户原始消息）"},
-			"content":  map[string]string{"type": "string", "description": "记忆内容（save 时必填）"},
-			"category": map[string]string{"type": "string", "description": "类别: user_fact/preference/project_knowledge/instruction（save 时必填，recall/list 时可选过滤）"},
-			"mode":     map[string]string{"type": "string", "description": "recall mode: dynamic, hybrid, adaptive, auto"},
-			"debug":    map[string]string{"type": "boolean", "description": "include adaptive recall plan when adaptive recall is used"},
-			"stats":    map[string]string{"type": "boolean", "description": "include theme health diagnostics for action=themes"},
-			"tags": map[string]interface{}{
-				"type":        "array",
-				"description": "3-5 个具体实体名用于搜索召回（如主机名、工具名、项目名）。必须是专有名词或标识符，不要用泛词如'服务器'、'配置'",
-				"items":       map[string]string{"type": "string"},
-			},
-			"keyword": map[string]string{"type": "string", "description": "按关键词搜索（list 时可选）"},
-			"limit":   map[string]string{"type": "integer", "description": "themes 返回的最大主题数"},
-			"evidence": map[string]string{
-				"type":        "boolean",
-				"description": "themes 时包含每个主题的代表性原始记忆",
-			},
-			"evidence_limit": map[string]string{"type": "integer", "description": "每个主题返回的代表性记忆数量"},
-			"diagnose":       map[string]string{"type": "boolean", "description": "themes 时返回主题健康诊断和修复建议"},
-			"issue_limit":    map[string]string{"type": "integer", "description": "themes 诊断最多返回的问题数"},
-			"plan":           map[string]string{"type": "boolean", "description": "themes 时返回非破坏性的主题维护计划"},
-			"action_limit":   map[string]string{"type": "integer", "description": "themes 维护计划最多返回的动作数"},
-			"apply":          map[string]string{"type": "boolean", "description": "themes 时执行安全维护：可用时补 embedding 并重建主题层"},
-			"id":             map[string]string{"type": "string", "description": "记忆条目 ID（delete 时必填）"},
-		}, []string{"action"},
+	memoryTool := corememory.ToolDefinitionSchema()
+	reg("memory", memoryTool.Description,
+		ToolCategoryBuiltin, memoryTool.Tags,
+		memoryTool.Properties, memoryTool.Required,
 		func(args map[string]interface{}) string { return h.toolMemory(args) })
 
 	// --- Experience learning governance ---

@@ -26,6 +26,7 @@ type activeUserInfo struct {
 }
 
 type debounceEntry struct {
+	tenantID  string
 	userID    string
 	machineID string
 	name      string
@@ -49,8 +50,12 @@ func NewDeviceNotifier(adapter *Adapter, coordinator *Coordinator) *DeviceNotifi
 // which platform to send notifications to. Called by the Adapter on
 // each incoming message.
 func (dn *DeviceNotifier) MarkUserActive(userID, platformName, platformUID string) {
+	dn.MarkUserActiveForTenant("", userID, platformName, platformUID)
+}
+
+func (dn *DeviceNotifier) MarkUserActiveForTenant(tenantID, userID, platformName, platformUID string) {
 	dn.mu.Lock()
-	dn.activeUsers[userID] = activeUserInfo{
+	dn.activeUsers[tenantUserRuntimeKey(tenantID, userID)] = activeUserInfo{
 		PlatformName: platformName,
 		PlatformUID:  platformUID,
 	}
@@ -60,8 +65,12 @@ func (dn *DeviceNotifier) MarkUserActive(userID, platformName, platformUID strin
 // GetActiveUser returns the last active IM platform info for a user.
 // Returns ("", "", false) if the user has no recorded IM activity.
 func (dn *DeviceNotifier) GetActiveUser(userID string) (platformName, platformUID string, ok bool) {
+	return dn.GetActiveUserForTenant("", userID)
+}
+
+func (dn *DeviceNotifier) GetActiveUserForTenant(tenantID, userID string) (platformName, platformUID string, ok bool) {
 	dn.mu.Lock()
-	info, ok := dn.activeUsers[userID]
+	info, ok := dn.activeUsers[tenantUserRuntimeKey(tenantID, userID)]
 	dn.mu.Unlock()
 	if !ok {
 		return "", "", false
@@ -69,33 +78,44 @@ func (dn *DeviceNotifier) GetActiveUser(userID string) (platformName, platformUI
 	return info.PlatformName, info.PlatformUID, true
 }
 
-
 // NotifyDeviceOnline queues an online notification with debouncing.
 func (dn *DeviceNotifier) NotifyDeviceOnline(userID, machineID, name string) {
-	dn.scheduleNotification(userID, machineID, name, true)
+	dn.NotifyDeviceOnlineForTenant("", userID, machineID, name)
+}
+
+func (dn *DeviceNotifier) NotifyDeviceOnlineForTenant(tenantID, userID, machineID, name string) {
+	dn.scheduleNotification(tenantID, userID, machineID, name, true)
 }
 
 // NotifyDeviceOffline queues an offline notification with debouncing.
 func (dn *DeviceNotifier) NotifyDeviceOffline(userID, machineID, name string) {
-	dn.scheduleNotification(userID, machineID, name, false)
+	dn.NotifyDeviceOfflineForTenant("", userID, machineID, name)
 }
 
-func (dn *DeviceNotifier) scheduleNotification(userID, machineID, name string, online bool) {
+func (dn *DeviceNotifier) NotifyDeviceOfflineForTenant(tenantID, userID, machineID, name string) {
+	dn.scheduleNotification(tenantID, userID, machineID, name, false)
+}
+
+func (dn *DeviceNotifier) scheduleNotification(tenantID, userID, machineID, name string, online bool) {
+	tenantID = normalizeTenantID(tenantID)
+	userKey := tenantUserRuntimeKey(tenantID, userID)
+	debounceKey := userKey + "\x00" + machineID
 	dn.mu.Lock()
 	defer dn.mu.Unlock()
 
 	// Check if user is active.
-	if _, ok := dn.activeUsers[userID]; !ok {
+	if _, ok := dn.activeUsers[userKey]; !ok {
 		return
 	}
 
 	// Cancel any pending notification for this machine.
-	if existing, ok := dn.debounce[machineID]; ok {
+	if existing, ok := dn.debounce[debounceKey]; ok {
 		existing.timer.Stop()
-		delete(dn.debounce, machineID)
+		delete(dn.debounce, debounceKey)
 	}
 
 	entry := &debounceEntry{
+		tenantID:  tenantID,
 		userID:    userID,
 		machineID: machineID,
 		name:      name,
@@ -104,14 +124,14 @@ func (dn *DeviceNotifier) scheduleNotification(userID, machineID, name string, o
 	entry.timer = time.AfterFunc(debounceDuration, func() {
 		dn.fireNotification(entry)
 	})
-	dn.debounce[machineID] = entry
+	dn.debounce[debounceKey] = entry
 }
 
 func (dn *DeviceNotifier) fireNotification(entry *debounceEntry) {
 	dn.mu.Lock()
 	// Remove from debounce map.
-	delete(dn.debounce, entry.machineID)
-	info, ok := dn.activeUsers[entry.userID]
+	delete(dn.debounce, tenantUserRuntimeKey(entry.tenantID, entry.userID)+"\x00"+entry.machineID)
+	info, ok := dn.activeUsers[tenantUserRuntimeKey(entry.tenantID, entry.userID)]
 	dn.mu.Unlock()
 
 	if !ok {
@@ -127,7 +147,7 @@ func (dn *DeviceNotifier) fireNotification(entry *debounceEntry) {
 
 	// Deliver via progress (lightweight, no response expected).
 	if dn.adapter != nil {
-		dn.adapter.DeliverProgress(context.Background(), info.PlatformName, entry.userID, info.PlatformUID, msg)
+		dn.adapter.DeliverProgress(WithTenant(context.Background(), entry.tenantID), info.PlatformName, entry.userID, info.PlatformUID, msg)
 	} else {
 		log.Printf("[DeviceNotifier] adapter not wired, dropping notification for user=%s", entry.userID)
 	}
@@ -142,26 +162,26 @@ func (dn *DeviceNotifier) buildOfflineMessage(entry *debounceEntry) string {
 	}
 
 	ss := dn.coordinator.SpaceStateStore()
-	state := ss.GetOrCreate(entry.userID)
+	state := ss.GetOrCreateForTenant(entry.tenantID, entry.userID)
 
 	switch state.State {
 	case SpacePrivate:
 		if state.PrivateTarget == entry.machineID {
-			if err := ss.ExitPrivate(entry.userID); err != nil {
+			if err := ss.ExitPrivateForTenant(entry.tenantID, entry.userID); err != nil {
 				log.Printf("[DeviceNotifier] ExitPrivate failed for user=%s: %v", entry.userID, err)
 				return fmt.Sprintf("📴 %s 已离线", entry.name)
 			}
-			dn.coordinator.router.ClearSelectedMachine(entry.userID)
+			dn.coordinator.router.ClearSelectedMachineForTenant(entry.tenantID, entry.userID)
 			return fmt.Sprintf("📴 %s 已离线，已自动返回大厅。", entry.name)
 		}
 
 	case SpaceMeeting:
 		if containsParticipant(state.Participants, entry.machineID) {
-			remaining := ss.RemoveParticipant(entry.userID, entry.machineID)
+			remaining := ss.RemoveParticipantForTenant(entry.tenantID, entry.userID, entry.machineID)
 			switch {
 			case remaining == 0:
-				_ = ss.ExitMeeting(entry.userID)
-				dn.coordinator.router.StopDiscussion(entry.userID)
+				_ = ss.ExitMeetingForTenant(entry.tenantID, entry.userID)
+				dn.coordinator.router.StopDiscussionForTenant(entry.tenantID, entry.userID)
 				return "📴 所有会议设备已离线，会议已结束，已返回大厅。"
 			case remaining == 1:
 				return fmt.Sprintf("📴 %s 已离线，会议仅剩 1 台设备参与。", entry.name)

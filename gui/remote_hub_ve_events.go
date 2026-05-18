@@ -102,7 +102,7 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	targetRole = strings.TrimSpace(targetRole)
 	sessionID := firstNonEmptyGroupString(envelope.SessionID, envelope.Message.SessionID, msg.SessionID)
 	content := envelope.Message.Content
-	eventPayload := map[string]any{"session_id": sessionID, "content": content, "chunk": content}
+	eventPayload := buildVEDiscussionStreamEventPayload(envelope, sessionID, content)
 
 	// Dedup: if this session has a local executor that emits stream events directly
 	// to the frontend, skip re-emitting stream chunks/ends that originated from
@@ -148,6 +148,19 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 		}
 	}
 	runtime.EventsEmit(c.app.ctx, "ve-event", map[string]any{"type": msg.Type, "ts": msg.TS, "payload": envelope})
+}
+
+func buildVEDiscussionStreamEventPayload(envelope a2a.GroupEnvelope, sessionID string, content string) map[string]any {
+	payload := map[string]any{"session_id": sessionID, "content": content, "chunk": content}
+	if envelope.Message == nil {
+		return payload
+	}
+	fromID := strings.TrimSpace(firstNonEmptyGroupString(envelope.Message.FromID, envelope.FromID))
+	if fromID != "" {
+		payload["from_id"] = fromID
+		payload["sender_id"] = fromID
+	}
+	return payload
 }
 
 func (c *RemoteHubClient) cachePushedVEDiscussionMessage(envelope a2a.GroupEnvelope) {

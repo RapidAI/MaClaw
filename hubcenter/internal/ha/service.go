@@ -99,7 +99,12 @@ func (s *Service) recordFailure(ctx context.Context, category, eventCode, messag
 	if s == nil || s.recorder == nil {
 		return
 	}
+	tenantID := ""
+	if raw, ok := details["tenant_id"]; ok {
+		tenantID = strings.TrimSpace(fmt.Sprint(raw))
+	}
 	s.recorder.Record(ctx, diagnostics.FailureEventInput{
+		TenantID:  tenantID,
 		Category:  category,
 		EventCode: eventCode,
 		Message:   message,

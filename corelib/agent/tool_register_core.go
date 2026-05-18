@@ -194,42 +194,13 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Handler:  func(args map[string]interface{}) string { return ToolOpen(args) },
 	})
 
+	memoryTool := memory.ToolDefinitionSchema()
 	r.Register(ToolEntry{
 		Name:        "memory",
-		Description: "Manage long-term memory with actions save, recall, themes, list, and delete.",
-		Properties: map[string]interface{}{
-			"action":   map[string]string{"type": "string", "description": "Action: save, recall, themes, list, delete"},
-			"content":  map[string]string{"type": "string", "description": "Memory content for save"},
-			"category": map[string]string{"type": "string", "description": "Optional category for save (user_fact, project_knowledge, preference, instruction)"},
-			"tags": map[string]interface{}{
-				"type":        "array",
-				"items":       map[string]string{"type": "string"},
-				"description": "3-5 specific entity names for search recall (e.g. hostnames, tool names, project names). Must be proper nouns or identifiers, NOT generic words like 'server' or 'config'.",
-			},
-			"query": map[string]string{"type": "string", "description": "Search query for recall"},
-			"mode":  map[string]string{"type": "string", "description": "Recall mode: dynamic, hybrid, adaptive, or auto"},
-			"debug": map[string]string{"type": "boolean", "description": "Include adaptive recall debug plan when adaptive recall is used"},
-			"stats": map[string]string{"type": "boolean", "description": "Include theme health diagnostics for action=themes"},
-			"project_path": map[string]string{
-				"type":        "string",
-				"description": "Optional project path for scoped recall",
-			},
-			"keyword": map[string]string{"type": "string", "description": "Optional keyword for list"},
-			"limit":   map[string]string{"type": "integer", "description": "Optional result limit for themes"},
-			"evidence": map[string]string{
-				"type":        "boolean",
-				"description": "For action=themes, include representative source memories for each theme",
-			},
-			"evidence_limit": map[string]string{"type": "integer", "description": "Representative evidence entries per theme"},
-			"diagnose":       map[string]string{"type": "boolean", "description": "For action=themes, include actionable theme diagnostics"},
-			"issue_limit":    map[string]string{"type": "integer", "description": "Maximum diagnostic issues for action=themes"},
-			"plan":           map[string]string{"type": "boolean", "description": "For action=themes, include a non-destructive maintenance plan"},
-			"action_limit":   map[string]string{"type": "integer", "description": "Maximum maintenance actions for action=themes"},
-			"apply":          map[string]string{"type": "boolean", "description": "For action=themes, apply safe theme maintenance: embedding backfill when available and theme rebuild"},
-			"id":             map[string]string{"type": "string", "description": "Memory ID for delete"},
-		},
-		Required: []string{"action"},
-		Handler:  func(args map[string]interface{}) string { return ToolMemory(deps.MemoryStore, args) },
+		Description: memoryTool.Description,
+		Properties:  memoryTool.Properties,
+		Required:    memoryTool.Required,
+		Handler:     func(args map[string]interface{}) string { return ToolMemory(deps.MemoryStore, args) },
 	})
 
 	r.Register(ToolEntry{

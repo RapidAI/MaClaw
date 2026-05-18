@@ -1929,6 +1929,10 @@ export function SendVEMessage(arg1, arg2) {
   return window['go']['main']['App']['SendVEMessage'](arg1, arg2);
 }
 
+export function SendVEGroupMessage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendVEGroupMessage'](arg1, arg2, arg3);
+}
+
 export function SendVEMessageWithAttachments(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendVEMessageWithAttachments'](arg1, arg2, arg3);
 }

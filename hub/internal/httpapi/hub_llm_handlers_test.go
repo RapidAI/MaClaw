@@ -195,6 +195,7 @@ func TestHubLLMStatusIncludesMemoryAndDiskCacheStatusFromRuntimeCache(t *testing
 }
 
 func TestHubLLMPromptCacheStatusIncludesRuntimeMetrics(t *testing.T) {
+	resetLLMPromptCacheMetricsForTest()
 	settings := &testSystemSettingsRepo{}
 	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
 	globalLLMPromptCacheMetrics.cacheableRequests.Store(7)
@@ -233,6 +234,38 @@ func TestHubLLMPromptCacheStatusIncludesRuntimeMetrics(t *testing.T) {
 	}
 	if body.PromptCache.Runtime.BypassReasons["streaming"] != 3 {
 		t.Fatalf("bypass_reasons = %#v", body.PromptCache.Runtime.BypassReasons)
+	}
+}
+
+func TestHubLLMPromptCacheStatusUsesTenantRuntimeMetrics(t *testing.T) {
+	resetLLMPromptCacheMetricsForTest()
+	settings := &testSystemSettingsRepo{}
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
+	cfg := defaultHubLLMPromptCacheConfig()
+	_ = llmPromptCacheableForTenant(withLLMPromptCacheTenant(context.Background(), "tenant_a"), map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}, cfg)
+	_ = llmPromptCacheableForTenant(withLLMPromptCacheTenant(context.Background(), "tenant_b"), map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "temperature": 0.8}, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_status", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rr := httptest.NewRecorder()
+	HubLLMStatusHandler(func() string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		PromptCache struct {
+			Runtime struct {
+				CacheableRequests int64            `json:"cacheable_requests"`
+				BypassTemperature int64            `json:"bypass_temperature"`
+				BypassReasons     map[string]int64 `json:"bypass_reasons"`
+			} `json:"runtime"`
+		} `json:"prompt_cache"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.PromptCache.Runtime.CacheableRequests != 1 || body.PromptCache.Runtime.BypassTemperature != 0 || len(body.PromptCache.Runtime.BypassReasons) != 0 {
+		t.Fatalf("unexpected tenant runtime metrics: %#v", body.PromptCache.Runtime)
 	}
 }
 
@@ -278,6 +311,95 @@ func TestHubLLMPromptCacheConfigHandlersRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	globalCfg := HubLLMPromptCacheConfig{Enabled: true, TTLSeconds: 1800, MemoryMaxEntries: 8, MemoryMaxBytes: 1024, DiskMaxBytes: 4096}
+	if _, err := SaveHubLLMPromptCacheConfig(context.Background(), settings, globalCfg); err != nil {
+		t.Fatalf("save global config: %v", err)
+	}
+	tenantReq := httptest.NewRequest(http.MethodPut, "/api/admin/hub_llm_prompt_cache_config", strings.NewReader(`{"enabled":false,"ttl_seconds":60,"memory_max_entries":3,"memory_max_bytes":256,"disk_max_bytes":512}`))
+	tenantReq = tenantReq.WithContext(context.WithValue(tenantReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	tenantRR := httptest.NewRecorder()
+	UpdateHubLLMPromptCacheConfigHandler(settings).ServeHTTP(tenantRR, tenantReq)
+	if tenantRR.Code != http.StatusOK {
+		t.Fatalf("tenant update status = %d body=%s", tenantRR.Code, tenantRR.Body.String())
+	}
+
+	globalReq := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil)
+	globalRR := httptest.NewRecorder()
+	GetHubLLMPromptCacheConfigHandler(settings).ServeHTTP(globalRR, globalReq)
+	if globalRR.Code != http.StatusOK {
+		t.Fatalf("global get status = %d body=%s", globalRR.Code, globalRR.Body.String())
+	}
+	var gotGlobal HubLLMPromptCacheConfig
+	if err := json.Unmarshal(globalRR.Body.Bytes(), &gotGlobal); err != nil {
+		t.Fatalf("decode global: %v", err)
+	}
+	if gotGlobal.TTLSeconds != 1800 || gotGlobal.MemoryMaxEntries != 8 || !gotGlobal.Enabled {
+		t.Fatalf("global config leaked tenant update: %#v", gotGlobal)
+	}
+
+	tenantGet := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil)
+	tenantGet = tenantGet.WithContext(context.WithValue(tenantGet.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	tenantGetRR := httptest.NewRecorder()
+	GetHubLLMPromptCacheConfigHandler(settings).ServeHTTP(tenantGetRR, tenantGet)
+	if tenantGetRR.Code != http.StatusOK {
+		t.Fatalf("tenant get status = %d body=%s", tenantGetRR.Code, tenantGetRR.Body.String())
+	}
+	var gotTenant HubLLMPromptCacheConfig
+	if err := json.Unmarshal(tenantGetRR.Body.Bytes(), &gotTenant); err != nil {
+		t.Fatalf("decode tenant: %v", err)
+	}
+	if gotTenant.Enabled || gotTenant.TTLSeconds != 60 || gotTenant.MemoryMaxEntries != 3 {
+		t.Fatalf("unexpected tenant config: %#v", gotTenant)
+	}
+}
+
+func TestHubLLMConfigHandlersScopeTenantAdmin(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	globalCfg := im.HubLLMConfig{Enabled: true, APIURL: "https://global.example/v1", APIKey: "global-key", Model: "global-model"}
+	data, _ := json.Marshal(globalCfg)
+	if err := settings.Set(context.Background(), hubLLMConfigKey, string(data)); err != nil {
+		t.Fatalf("save global llm config: %v", err)
+	}
+	tenantReq := httptest.NewRequest(http.MethodPut, "/api/admin/hub_llm_config", strings.NewReader(`{"enabled":true,"api_url":"https://tenant-a.example/v1","api_key":"tenant-key","model":"tenant-model"}`))
+	tenantReq = tenantReq.WithContext(context.WithValue(tenantReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	tenantRR := httptest.NewRecorder()
+	UpdateHubLLMConfigHandler(settings).ServeHTTP(tenantRR, tenantReq)
+	if tenantRR.Code != http.StatusOK {
+		t.Fatalf("tenant update status = %d body=%s", tenantRR.Code, tenantRR.Body.String())
+	}
+
+	globalReq := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_config", nil)
+	globalRR := httptest.NewRecorder()
+	GetHubLLMConfigHandler(settings).ServeHTTP(globalRR, globalReq)
+	if globalRR.Code != http.StatusOK {
+		t.Fatalf("global get status = %d body=%s", globalRR.Code, globalRR.Body.String())
+	}
+	var gotGlobal map[string]any
+	if err := json.Unmarshal(globalRR.Body.Bytes(), &gotGlobal); err != nil {
+		t.Fatalf("decode global: %v", err)
+	}
+	if gotGlobal["api_url"] != "https://global.example/v1" || gotGlobal["model"] != "global-model" {
+		t.Fatalf("global llm config leaked tenant update: %#v", gotGlobal)
+	}
+
+	tenantGet := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_config", nil)
+	tenantGet = tenantGet.WithContext(context.WithValue(tenantGet.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	tenantGetRR := httptest.NewRecorder()
+	GetHubLLMConfigHandler(settings).ServeHTTP(tenantGetRR, tenantGet)
+	if tenantGetRR.Code != http.StatusOK {
+		t.Fatalf("tenant get status = %d body=%s", tenantGetRR.Code, tenantGetRR.Body.String())
+	}
+	var gotTenant map[string]any
+	if err := json.Unmarshal(tenantGetRR.Body.Bytes(), &gotTenant); err != nil {
+		t.Fatalf("decode tenant: %v", err)
+	}
+	if gotTenant["api_url"] != "https://tenant-a.example/v1" || gotTenant["model"] != "tenant-model" || gotTenant["has_api_key"] != true {
+		t.Fatalf("unexpected tenant llm config: %#v", gotTenant)
+	}
+}
+
 func TestClearHubLLMPromptCacheHandlerPurgesRuntimeCache(t *testing.T) {
 	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
 	now := time.Now().UTC()
@@ -305,6 +427,44 @@ func TestClearHubLLMPromptCacheHandlerPurgesRuntimeCache(t *testing.T) {
 	}
 	if status.MemoryEntries != 0 || status.MemoryBytes != 0 {
 		t.Fatalf("cache not purged: %#v", status)
+	}
+}
+
+func TestClearHubLLMPromptCacheHandlerTenantAdminPurgesOwnEntries(t *testing.T) {
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "cache-clear-tenant.db"), WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	defer provider.Close()
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("migrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	cache := llmcache.New(st.LLMPromptCache, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 4096})
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, key := range []string{"tenant:tenant_a:hit-a", "tenant:tenant_b:hit-b", "legacy-default"} {
+		if err := cache.Put(context.Background(), &store.LLMPromptCacheEntry{CacheKey: key, Payload: []byte("pong"), PayloadBytes: 4, CreatedAt: now, AccessedAt: now}); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/hub_llm_prompt_cache_clear", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rr := httptest.NewRecorder()
+	ClearHubLLMPromptCacheHandler(cache).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got, err := st.LLMPromptCache.Get(context.Background(), "tenant:tenant_a:hit-a"); err != nil || got != nil {
+		t.Fatalf("tenant_a entry should be purged, got=%#v err=%v", got, err)
+	}
+	for _, key := range []string{"tenant:tenant_b:hit-b", "legacy-default"} {
+		got, err := st.LLMPromptCache.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("get %s: %v", key, err)
+		}
+		if got == nil {
+			t.Fatalf("%s should remain", key)
+		}
 	}
 }
 
@@ -379,6 +539,67 @@ func TestGetHubLLMPromptCacheEntryHandlerReturnsStoredDetails(t *testing.T) {
 	}
 }
 
+func TestHubLLMPromptCacheEntryHandlersScopeTenantAdmin(t *testing.T) {
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "cache-entry-tenant.db"), WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	defer provider.Close()
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("migrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, key := range []string{"tenant:tenant_a:key-a", "tenant:tenant_b:key-b", "legacy-default"} {
+		if err := st.LLMPromptCache.Put(context.Background(), &store.LLMPromptCacheEntry{CacheKey: key, ProviderID: "provider-a", Model: "auto", Kind: "chat_completion_response", InputHash: key, Payload: []byte("{}"), PayloadBytes: 2, CreatedAt: now, AccessedAt: now}); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	adminCtx := context.WithValue(context.Background(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_entry?cache_key=key-a", nil).WithContext(adminCtx)
+	getRR := httptest.NewRecorder()
+	GetHubLLMPromptCacheEntryHandler(st.LLMPromptCache).ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get own status = %d body=%s", getRR.Code, getRR.Body.String())
+	}
+	var getBody struct {
+		CacheKey string `json:"cache_key"`
+	}
+	if err := json.Unmarshal(getRR.Body.Bytes(), &getBody); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if getBody.CacheKey != "tenant:tenant_a:key-a" {
+		t.Fatalf("cache_key = %q", getBody.CacheKey)
+	}
+
+	otherReq := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_entry?cache_key=tenant:tenant_b:key-b", nil).WithContext(adminCtx)
+	otherRR := httptest.NewRecorder()
+	GetHubLLMPromptCacheEntryHandler(st.LLMPromptCache).ServeHTTP(otherRR, otherReq)
+	if otherRR.Code != http.StatusNotFound {
+		t.Fatalf("get other status = %d body=%s", otherRR.Code, otherRR.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/admin/hub_llm_prompt_cache_entry?cache_key=key-a", nil).WithContext(adminCtx)
+	deleteRR := httptest.NewRecorder()
+	DeleteHubLLMPromptCacheEntryHandler(st.LLMPromptCache).ServeHTTP(deleteRR, deleteReq)
+	if deleteRR.Code != http.StatusOK {
+		t.Fatalf("delete own status = %d body=%s", deleteRR.Code, deleteRR.Body.String())
+	}
+	if got, err := st.LLMPromptCache.Get(context.Background(), "tenant:tenant_a:key-a"); err != nil || got != nil {
+		t.Fatalf("tenant_a entry should be deleted, got=%#v err=%v", got, err)
+	}
+	for _, key := range []string{"tenant:tenant_b:key-b", "legacy-default"} {
+		got, err := st.LLMPromptCache.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("get %s: %v", key, err)
+		}
+		if got == nil {
+			t.Fatalf("%s should remain", key)
+		}
+	}
+}
+
 func TestDeleteHubLLMPromptCacheEntryHandlerDeletesEntry(t *testing.T) {
 	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "cache-delete.db"), WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
 	if err != nil {
@@ -407,6 +628,53 @@ func TestDeleteHubLLMPromptCacheEntryHandlerDeletesEntry(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("expected deleted entry, got %#v", got)
+	}
+}
+
+func TestGetHubLLMPromptCacheEntriesHandlerFiltersTenantAdmin(t *testing.T) {
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "cache-entries-tenant.db"), WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	defer provider.Close()
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("migrations: %v", err)
+	}
+	st := sqlite.NewStore(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+	entries := []*store.LLMPromptCacheEntry{
+		{CacheKey: "tenant:tenant_a:a", ProviderID: "provider-a", Model: "auto", Kind: "chat_completion_response", InputHash: "a", Payload: []byte("{}"), PayloadBytes: 2, CreatedAt: now, AccessedAt: now},
+		{CacheKey: "tenant:tenant_b:b", ProviderID: "provider-b", Model: "gpt-4.1", Kind: "chat_completion_response", InputHash: "b", Payload: []byte("{}"), PayloadBytes: 2, CreatedAt: now.Add(time.Minute), AccessedAt: now.Add(time.Minute)},
+		{CacheKey: "legacy-default", ProviderID: "provider-default", Model: "auto", Kind: "chat_completion_response", InputHash: "legacy", Payload: []byte("{}"), PayloadBytes: 2, CreatedAt: now.Add(2 * time.Minute), AccessedAt: now.Add(2 * time.Minute)},
+	}
+	for _, entry := range entries {
+		if err := st.LLMPromptCache.Put(context.Background(), entry); err != nil {
+			t.Fatalf("put %s: %v", entry.CacheKey, err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_entries?limit=10", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rr := httptest.NewRecorder()
+	GetHubLLMPromptCacheEntriesHandler(st.LLMPromptCache).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Entries []struct {
+			CacheKey string `json:"cache_key"`
+		} `json:"entries"`
+		Providers []string `json:"providers"`
+		Models    []string `json:"models"`
+		Total     int      `json:"total"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Total != 1 || len(body.Entries) != 1 || body.Entries[0].CacheKey != "tenant:tenant_a:a" {
+		t.Fatalf("unexpected entries: %#v", body)
+	}
+	if len(body.Providers) != 1 || body.Providers[0] != "provider-a" || len(body.Models) != 1 || body.Models[0] != "auto" {
+		t.Fatalf("unexpected metadata: %#v", body)
 	}
 }
 

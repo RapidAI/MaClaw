@@ -2,10 +2,35 @@ package store
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
 const DefaultTenantID = "tenant_default"
+
+type tenantContextKey struct{}
+
+func WithTenant(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, tenantContextKey{}, NormalizeTenantID(tenantID))
+}
+
+func TenantIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return DefaultTenantID
+	}
+	if tenantID, ok := ctx.Value(tenantContextKey{}).(string); ok {
+		return NormalizeTenantID(tenantID)
+	}
+	return DefaultTenantID
+}
+
+func NormalizeTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return DefaultTenantID
+	}
+	return tenantID
+}
 
 type Tenant struct {
 	ID               string
@@ -36,6 +61,7 @@ type AdminUser struct {
 
 type AdminAuditLog struct {
 	ID          string
+	TenantID    string
 	AdminUserID string
 	Action      string
 	PayloadJSON string
@@ -43,15 +69,18 @@ type AdminAuditLog struct {
 }
 
 type AdminAuditLogFilter struct {
-	Limit       int
-	Action      string
-	Query       string
-	CreatedFrom time.Time
-	CreatedTo   time.Time
+	TenantID     string
+	TenantScoped bool
+	Limit        int
+	Action       string
+	Query        string
+	CreatedFrom  time.Time
+	CreatedTo    time.Time
 }
 
 type FailureEventLog struct {
 	ID          string
+	TenantID    string
 	Category    string
 	EventCode   string
 	Message     string
@@ -63,10 +92,12 @@ type FailureEventLog struct {
 }
 
 type FailureEventLogFilter struct {
-	Keyword  string
-	Category string
-	Offset   int
-	Limit    int
+	TenantID     string
+	TenantScoped bool
+	Keyword      string
+	Category     string
+	Offset       int
+	Limit        int
 }
 
 type User struct {
@@ -283,6 +314,7 @@ type InvitationCodeRepository interface {
 type EmailInviteRepository interface {
 	Create(ctx context.Context, item *EmailInvite) error
 	List(ctx context.Context) ([]*EmailInvite, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]*EmailInvite, error)
 	GetByID(ctx context.Context, id string) (*EmailInvite, error)
 	DeleteByID(ctx context.Context, id string) error
 }
@@ -377,6 +409,7 @@ type WorkflowRepository interface {
 // import cycles with the im package.
 type UnderstandingSessionRow struct {
 	ID         string
+	TenantID   string
 	UserID     string
 	IntentJSON string
 	RoundsJSON string
@@ -389,6 +422,7 @@ type UnderstandingSessionRow struct {
 // state. JSON fields are stored as opaque strings.
 type WorkflowStateRow struct {
 	ID               string
+	TenantID         string
 	UserID           string
 	Type             string
 	TemplateType     string

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -182,6 +181,11 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
+	data, err := readLimitedHubCenterBody(resp.Body, maxDownloadSize)
+	if err != nil {
+		return nil, err
+	}
+
 	var full struct {
 		ID          string            `json:"id"`
 		Name        string            `json:"name"`
@@ -192,7 +196,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 		Steps       []json.RawMessage `json:"steps"`
 		Files       map[string]string `json:"files"` // path 鈫?base64 content
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 5<<20)).Decode(&full); err != nil {
+	if err := json.Unmarshal(data, &full); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 

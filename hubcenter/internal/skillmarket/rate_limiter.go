@@ -8,8 +8,8 @@ import (
 
 const (
 	// configMaxUploadsPerHour 是管理员可配置的全局每小时上传 Skill 数限制。
-	// 当设置为 >0 时，覆盖等级默认的 MaxPerHour 限制（取两者中较小值）。
-	// 设置为 0 或未设置时，仅使用等级默认限制。
+	// 当设置为 >0 时，直接覆盖等级默认的 MaxPerHour 限制。
+	// 设置为 0 或未设置时，使用等级默认限制。
 	configMaxUploadsPerHour = "max_skill_uploads_per_hour"
 )
 
@@ -36,9 +36,10 @@ func (rl *RateLimiter) CheckRateLimit(ctx context.Context, email, userID string)
 	}
 	limits := rl.tierSvc.GetLimits(tier.Tier)
 
-	// 管理员配置的全局每小时限制（取等级限制和全局限制中较小值）
+	// 管理员配置的全局每小时限制：设置后直接覆盖等级默认限制。
+	// 设置为 0 或未设置时，使用等级默认限制。
 	maxPerHour := limits.MaxPerHour
-	if globalLimit := rl.getGlobalMaxUploadsPerHour(ctx); globalLimit > 0 && globalLimit < maxPerHour {
+	if globalLimit := rl.getGlobalMaxUploadsPerHour(ctx); globalLimit > 0 {
 		maxPerHour = globalLimit
 	}
 

@@ -2,6 +2,36 @@ import { useCallback } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 
+const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
+    lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
+);
+
+function looksLikeRawParticipantId(value: string): boolean {
+    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+}
+
+function participantTitleName(tab: AITab, participantId: string, index: number, lang?: string): string {
+    if (participantId === "local-maclaw") return textForTabLang(lang, "Local AI", "本机AI", "本機AI");
+    const mapped = String(tab.participantNames?.[participantId] || "").trim();
+    if (mapped && mapped !== participantId && !looksLikeRawParticipantId(mapped)) return mapped.replace(/\s+\([^()]+\)$/, "").trim();
+    const tabTitle = String(tab.title || "").trim();
+    if (participantId === tab.veId && tabTitle && tabTitle !== participantId && !looksLikeRawParticipantId(tabTitle)) return tabTitle;
+    return textForTabLang(lang, `Participant ${index + 1}`, `参与者 ${index + 1}`, `參與者 ${index + 1}`);
+}
+
+function directVETitleName(tab: AITab, lang?: string): string {
+    const title = String(tab.title || "").trim();
+    const id = String(tab.veId || "").trim();
+    if (title && title !== id && !looksLikeRawParticipantId(title)) return title;
+    return textForTabLang(lang, "Digital employee", "数字员工", "數字員工");
+}
+
+export function getAITabDisplayTitle(tab: AITab, lang?: string): string {
+    if (tab.type === "ve") return directVETitleName(tab, lang);
+    if (tab.type !== "group" || !tab.veId || !tab.participants?.length) return tab.title;
+    const names = tab.participants.map((id, index) => participantTitleName(tab, id, index, lang));
+    return names.join(", ");
+}
 export interface AITabItemProps {
     tab: AITab;
     active: boolean;
@@ -45,7 +75,8 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
     // group tabs are always considered "online".
     const isOnline = isGroup || (isVE && tab.onlineStatus !== "offline");
     const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
-    const accessibleTitle = readOnlyLabel ? `${tab.title} - ${readOnlyLabel}` : tab.title;
+    const displayTitle = getAITabDisplayTitle(tab, lang);
+    const accessibleTitle = readOnlyLabel ? `${displayTitle} - ${readOnlyLabel}` : displayTitle;
 
     // Tab icon by type — inline SVG for consistent cross-platform rendering
     // Each tab type has a distinct silhouette for instant recognition.
@@ -114,7 +145,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         >
             {tabIconElement}
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                {tab.title}
+                {displayTitle}
             </span>
             {readOnlyLabel && (
                 <span style={{ flexShrink: 0, fontSize: 10, lineHeight: 1, padding: "2px 4px", borderRadius: 4, border: `1px solid ${theme.divider}`, color: theme.textMuted }}>

@@ -278,6 +278,7 @@ func DeprecatedEmailInviteHandler() http.HandlerFunc {
 
 type emailInviteResponse struct {
 	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
 	Email     string `json:"email"`
 	Role      string `json:"role"`
 	Status    string `json:"status"`
@@ -288,6 +289,7 @@ type emailInviteResponse struct {
 func toEmailInviteResponse(item *store.EmailInvite) emailInviteResponse {
 	return emailInviteResponse{
 		ID:        item.ID,
+		TenantID:  item.TenantID,
 		Email:     item.Email,
 		Role:      item.Role,
 		Status:    item.Status,
@@ -330,6 +332,7 @@ func CreateEmailInviteHandler(repo store.EmailInviteRepository) http.HandlerFunc
 		now := time.Now()
 		item := &store.EmailInvite{
 			ID:        emailInviteID(),
+			TenantID:  RequestTenantID(r),
 			Email:     req.Email,
 			Role:      req.Role,
 			Status:    "pending",
@@ -346,7 +349,15 @@ func CreateEmailInviteHandler(repo store.EmailInviteRepository) http.HandlerFunc
 
 func ListEmailInvitesHandler(repo store.EmailInviteRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := repo.List(r.Context())
+		var (
+			items []*store.EmailInvite
+			err   error
+		)
+		if isTenantScopedAdminRequest(r) {
+			items, err = repo.ListByTenant(r.Context(), RequestTenantID(r))
+		} else {
+			items, err = repo.List(r.Context())
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -372,6 +383,10 @@ func DeleteEmailInviteHandler(repo store.EmailInviteRepository) http.HandlerFunc
 			return
 		}
 		if existing == nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "invite not found")
+			return
+		}
+		if isTenantScopedAdminRequest(r) && strings.TrimSpace(existing.TenantID) != RequestTenantID(r) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "invite not found")
 			return
 		}

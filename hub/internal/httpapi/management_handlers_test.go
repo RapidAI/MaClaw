@@ -234,6 +234,7 @@ func TestListFailureLogsHandlerReturnsStoredLogs(t *testing.T) {
 	for _, item := range []*store.FailureEventLog{
 		{
 			ID:          "log_hub_register_1",
+			TenantID:    "tenant_a",
 			Category:    "registration",
 			EventCode:   "REGISTER_FORWARD_FAILED",
 			Message:     "hub register forward failed",
@@ -245,6 +246,7 @@ func TestListFailureLogsHandlerReturnsStoredLogs(t *testing.T) {
 		},
 		{
 			ID:          "log_hub_heartbeat_1",
+			TenantID:    "tenant_b",
 			Category:    "heartbeat",
 			EventCode:   "HEARTBEAT_PUSH_FAILED",
 			Message:     "hub heartbeat push failed",
@@ -281,6 +283,62 @@ func TestListFailureLogsHandlerReturnsStoredLogs(t *testing.T) {
 	}
 	if strings.Contains(body, "HEARTBEAT_PUSH_FAILED") {
 		t.Fatalf("expected category filter to exclude heartbeat log, body=%s", body)
+	}
+}
+
+func TestListFailureLogsHandlerFiltersTenantAdminLogs(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, services.handler)
+
+	createResp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"id":                     "tenant_acme",
+		"slug":                   "acme",
+		"name":                   "Acme",
+		"initial_admin_username": "acme-admin",
+		"initial_admin_password": "TenantPass123!",
+		"initial_admin_email":    "admin@acme.com",
+		"initial_admin_name":     "Acme Admin",
+		"primary_domain":         "acme.example.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status=%d body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "acme-admin",
+		"password": "TenantPass123!",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant login status=%d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+
+	now := time.Date(2026, 4, 25, 8, 30, 0, 0, time.UTC)
+	logs := []*store.FailureEventLog{
+		{ID: "log_tenant", TenantID: "tenant_acme", Category: "registration", EventCode: "TENANT_FAILED", Message: "tenant failure", Email: "admin@acme.com", DetailsJSON: `{}`, CreatedAt: now},
+		{ID: "log_other", TenantID: "tenant_other", Category: "registration", EventCode: "OTHER_FAILED", Message: "other failure", Email: "admin@other.com", DetailsJSON: `{}`, CreatedAt: now.Add(time.Minute)},
+	}
+	for _, item := range logs {
+		if err := services.store.FailureLogs.Create(context.Background(), item); err != nil {
+			t.Fatalf("create failure log %s: %v", item.ID, err)
+		}
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/failure-logs?category=registration&limit=10", nil, loginPayload.AccessToken)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.String()
+	if !containsAll(body, `"total":1`, `"tenant_id":"tenant_acme"`, `"event_code":"TENANT_FAILED"`) {
+		t.Fatalf("unexpected tenant filtered body=%s", body)
+	}
+	if strings.Contains(body, "OTHER_FAILED") {
+		t.Fatalf("tenant admin should not see other tenant log, body=%s", body)
 	}
 }
 

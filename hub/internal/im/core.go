@@ -94,6 +94,25 @@ type IdentityResolver interface {
 	ResolveUser(ctx context.Context, platformName, platformUID string) (string, error)
 }
 
+// TenantAwareIdentityResolver resolves both tenant and user identity. IM plugins
+// that persist tenant-aware bindings implement this path so incoming messages can
+// carry tenant scope through Hub runtime caches and routing.
+type TenantAwareIdentityResolver interface {
+	ResolveUserWithTenant(ctx context.Context, platformName, platformUID string) (tenantID, userID string, err error)
+}
+
+func resolveIdentity(ctx context.Context, resolver IdentityResolver, platformName, platformUID string) (string, string, error) {
+	if resolver == nil {
+		return normalizeTenantID(""), "", fmt.Errorf("im: identity resolver not configured")
+	}
+	if tenantAware, ok := resolver.(TenantAwareIdentityResolver); ok {
+		tenantID, userID, err := tenantAware.ResolveUserWithTenant(ctx, platformName, platformUID)
+		return normalizeTenantID(tenantID), userID, err
+	}
+	userID, err := resolver.ResolveUser(ctx, platformName, platformUID)
+	return normalizeTenantID(""), userID, err
+}
+
 // ---------------------------------------------------------------------------
 // Rate limiter (token-bucket, 30 tokens/min per user)
 // ---------------------------------------------------------------------------
@@ -248,9 +267,9 @@ func (a *Adapter) SetContentAuditor(ca *ContentAuditor) {
 func (a *Adapter) InitTaskDispatcher(capacity int) {
 	executor := func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
 		// Re-stash attachments so routeToSingleMachine can pick them up.
-		a.messageRouter.StashMessageType(task.UserID, task.MessageType)
+		a.messageRouter.StashMessageTypeForTenant(task.TenantID, task.UserID, task.MessageType)
 		if len(task.Attachments) > 0 {
-			a.messageRouter.StashAttachments(task.UserID, task.Attachments)
+			a.messageRouter.StashAttachmentsForTenant(task.TenantID, task.UserID, task.Attachments)
 		}
 		if a.coordinator != nil {
 			return a.coordinator.Coordinate(ctx, task.UserID, task.PlatformName, task.PlatformUID, task.Text)
@@ -323,7 +342,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	log.Printf("[IM Adapter] HandleMessage: platform=%s uid=%s text_len=%d", msg.PlatformName, msg.PlatformUID, len(msg.Text))
 
 	// 1. Identity mapping
-	unifiedID, err := a.identity.ResolveUser(ctx, msg.PlatformName, msg.PlatformUID)
+	tenantID, unifiedID, err := resolveIdentity(ctx, a.identity, msg.PlatformName, msg.PlatformUID)
 	if err != nil {
 		log.Printf("[IM Adapter] ResolveUser FAILED: platform=%s uid=%s err=%v", msg.PlatformName, msg.PlatformUID, err)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
@@ -336,16 +355,17 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		})
 		return
 	}
+	ctx = WithTenant(ctx, tenantID)
 	msg.UnifiedUserID = unifiedID
 	target.UnifiedUserID = unifiedID
 
 	// Mark user as active for device notifications.
 	if a.deviceNotifier != nil {
-		a.deviceNotifier.MarkUserActive(unifiedID, msg.PlatformName, msg.PlatformUID)
+		a.deviceNotifier.MarkUserActiveForTenant(tenantID, unifiedID, msg.PlatformName, msg.PlatformUID)
 	}
 
 	// 2. Rate limiting
-	if !a.limiter.allow(unifiedID) {
+	if !a.limiter.allow(tenantUserRuntimeKey(tenantID, unifiedID)) {
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 429,
 			StatusIcon: "⏳",
@@ -383,7 +403,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			})
 			return
 		}
-		selected, _ := a.messageRouter.GetSelectedMachine(unifiedID)
+		selected, _ := a.messageRouter.GetSelectedMachineForTenant(tenantID, unifiedID)
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("🖥 在线设备 (%d 台):\n\n", len(machines)))
 		for _, m := range machines {
@@ -427,7 +447,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		// SpaceState validation.
 		if a.coordinator != nil {
 			ss := a.coordinator.SpaceStateStore()
-			state := ss.GetOrCreate(unifiedID)
+			state := ss.GetOrCreateForTenant(tenantID, unifiedID)
 			if state.State == SpaceMeeting {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 400,
@@ -439,8 +459,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			}
 			if state.State == SpacePrivate && strings.EqualFold(name, "all") {
 				// /call all in private mode → exit private, return to lobby.
-				ss.ExitPrivate(unifiedID)
-				a.messageRouter.ClearSelectedMachine(unifiedID)
+				ss.ExitPrivateForTenant(tenantID, unifiedID)
+				a.messageRouter.ClearSelectedMachineForTenant(tenantID, unifiedID)
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 200,
 					StatusIcon: "🏠",
@@ -452,8 +472,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		}
 
 		// If a discussion is running, stop it before switching device.
-		if a.messageRouter.IsInDiscussion(unifiedID) {
-			a.messageRouter.StopDiscussion(unifiedID)
+		if a.messageRouter.IsInDiscussionForTenant(tenantID, unifiedID) {
+			a.messageRouter.StopDiscussionForTenant(tenantID, unifiedID)
 		}
 
 		result := a.messageRouter.SelectMachine(ctx, unifiedID, name)
@@ -467,14 +487,14 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		// Enter private mode on successful /call <name> (not "all").
 		if result.OK && !strings.EqualFold(name, "all") && a.coordinator != nil {
 			ss := a.coordinator.SpaceStateStore()
-			ss.EnterPrivate(unifiedID, result.MachineID, result.MachineName)
+			ss.EnterPrivateForTenant(tenantID, unifiedID, result.MachineID, result.MachineName)
 		}
 		// /call all → exit private if in private mode.
 		if result.OK && strings.EqualFold(name, "all") && a.coordinator != nil {
 			ss := a.coordinator.SpaceStateStore()
-			state := ss.GetOrCreate(unifiedID)
+			state := ss.GetOrCreateForTenant(tenantID, unifiedID)
 			if state.State == SpacePrivate {
-				ss.ExitPrivate(unifiedID)
+				ss.ExitPrivateForTenant(tenantID, unifiedID)
 			}
 		}
 
@@ -502,7 +522,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		// SpaceState validation.
 		if a.coordinator != nil {
 			ss := a.coordinator.SpaceStateStore()
-			state := ss.GetOrCreate(unifiedID)
+			state := ss.GetOrCreateForTenant(tenantID, unifiedID)
 			if state.State == SpacePrivate {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 400,
@@ -527,7 +547,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			for _, m := range machines {
 				participantIDs = append(participantIDs, m.MachineID)
 			}
-			ss.EnterMeeting(unifiedID, topic, participantIDs)
+			ss.EnterMeetingForTenant(tenantID, unifiedID, topic, participantIDs)
 		}
 		resp := a.messageRouter.StartDiscussion(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, topic)
 		a.sendResponse(ctx, plugin, target, resp)
@@ -575,13 +595,13 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 
 	// 3c. Handle /stop command — stop active discussion + exit meeting.
 	if text == "/stop" {
-		resp := a.messageRouter.StopDiscussion(unifiedID)
+		resp := a.messageRouter.StopDiscussionForTenant(tenantID, unifiedID)
 		// Also exit meeting state if in meeting.
 		if a.coordinator != nil {
 			ss := a.coordinator.SpaceStateStore()
-			state := ss.GetOrCreate(unifiedID)
+			state := ss.GetOrCreateForTenant(tenantID, unifiedID)
 			if state.State == SpaceMeeting {
-				ss.ExitMeeting(unifiedID)
+				ss.ExitMeetingForTenant(tenantID, unifiedID)
 				if resp.Body != "" {
 					resp.Body += "\n🏠 已退出会议，返回大厅。"
 				} else {
@@ -660,7 +680,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			})
 			return
 		}
-		cc := a.coordinator.ConvContext().GetOrCreate(unifiedID)
+		cc := a.coordinator.ConvContext().GetOrCreateForTenant(tenantID, unifiedID)
 		if text == "/context clear" {
 			cc.Clear()
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
@@ -683,7 +703,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// 3e. Handle /help command.
 	if text == "/help" {
 		machines := a.messageRouter.devices.FindAllOnlineMachinesForUser(ctx, unifiedID)
-		selected, _ := a.messageRouter.GetSelectedMachine(unifiedID)
+		selected, _ := a.messageRouter.GetSelectedMachineForTenant(tenantID, unifiedID)
 		llmEnabled := a.coordinator != nil && a.coordinator.IsLLMEnabled()
 		helpText := BuildHelpMessage(len(machines), selected, llmEnabled)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
@@ -716,7 +736,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			})
 			return
 		}
-		a.messageRouter.SetDiscussionRounds(unifiedID, n)
+		a.messageRouter.SetDiscussionRoundsForTenant(tenantID, unifiedID, n)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 200,
 			StatusIcon: "✅",
@@ -737,7 +757,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			})
 			return
 		}
-		stats := a.taskDispatcher.Stats(unifiedID)
+		stats := a.taskDispatcher.StatsForTenant(tenantID, unifiedID)
 		var body string
 		if stats.Running {
 			body = fmt.Sprintf("🔄 正在执行 1 个任务，队列中还有 %d 个等待。（容量 %d）", stats.Pending, stats.Capacity)
@@ -761,8 +781,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if text == "/workflow" || strings.HasPrefix(text, "/workflow ") {
 		// Forward as a regular message — the device's handleIMMessageWithLoop
 		// will process it via its workflow engine.
-		a.messageRouter.StashMessageType(unifiedID, msg.MessageType)
-		a.messageRouter.StashAttachments(unifiedID, msg.Attachments)
+		a.messageRouter.StashMessageTypeForTenant(tenantID, unifiedID, msg.MessageType)
+		a.messageRouter.StashAttachmentsForTenant(tenantID, unifiedID, msg.Attachments)
 		resp, err := a.messageRouter.RouteToAgent(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text)
 		if err != nil {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
@@ -795,10 +815,10 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// 3h. If user is in discussion mode, handle accordingly.
 	// When LLM is active, skip this — Coordinator handles meeting messages.
 	llmActive := a.coordinator != nil && a.coordinator.IsLLMEnabled()
-	if !llmActive && !strings.HasPrefix(text, "/") && a.messageRouter.IsInDiscussion(unifiedID) {
-		if a.messageRouter.IsDiscussionRunning(unifiedID) {
+	if !llmActive && !strings.HasPrefix(text, "/") && a.messageRouter.IsInDiscussionForTenant(tenantID, unifiedID) {
+		if a.messageRouter.IsDiscussionRunningForTenant(tenantID, unifiedID) {
 			// Discussion is running — inject as human interjection.
-			if a.messageRouter.InjectUserInput(unifiedID, text) {
+			if a.messageRouter.InjectUserInputForTenant(tenantID, unifiedID, text) {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 200,
 					StatusIcon: "💬",
@@ -849,6 +869,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 
 		// --- Slow-path: queue for background processing ---
 		task := &IMTask{
+			TenantID:     tenantID,
 			UserID:       unifiedID,
 			PlatformName: msg.PlatformName,
 			PlatformUID:  msg.PlatformUID,
@@ -864,7 +885,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if queueResp.StatusCode == 429 || queueResp.StatusCode != 202 {
 			// 429 = queue full, non-202 = error — user needs to know.
 			a.sendResponse(ctx, plugin, target, queueResp)
-		} else if stats := a.taskDispatcher.Stats(unifiedID); stats.Pending > 0 {
+		} else if stats := a.taskDispatcher.StatsForTenant(tenantID, unifiedID); stats.Pending > 0 {
 			// Task is queued behind others — tell the user their position.
 			a.sendResponse(ctx, plugin, target, queueResp)
 		}
@@ -876,8 +897,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// --- Legacy synchronous path (no task dispatcher) ---
 	// Stash message metadata so routeToSingleMachine can include it in the
 	// WebSocket payload without changing the routing API signatures.
-	a.messageRouter.StashMessageType(unifiedID, msg.MessageType)
-	a.messageRouter.StashAttachments(unifiedID, msg.Attachments)
+	a.messageRouter.StashMessageTypeForTenant(tenantID, unifiedID, msg.MessageType)
+	a.messageRouter.StashAttachmentsForTenant(tenantID, unifiedID, msg.Attachments)
 
 	var routeResp *GenericResponse
 	var routeErr error

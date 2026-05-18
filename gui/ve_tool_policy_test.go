@@ -60,6 +60,9 @@ func TestIsVEToolActionBlocked_MemoryRecallAllowed(t *testing.T) {
 	if isVEToolActionBlocked("memory", "recall") {
 		t.Error("memory recall should be allowed in VE mode")
 	}
+	if isVEToolActionBlocked("memory", "candidates") {
+		t.Error("memory candidates should be allowed in VE mode")
+	}
 }
 
 func TestIsVEToolActionBlocked_MemorySaveBlocked(t *testing.T) {
@@ -396,7 +399,6 @@ func TestFilterToolsForVEWithConfig_OtherBlockedToolsStayBlocked(t *testing.T) {
 		}
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Property-Based Test: Conditional tool unblocking

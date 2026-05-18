@@ -130,6 +130,35 @@ func TestDecodeVEDiscussionPayloadWrappedAndLegacy(t *testing.T) {
 	}
 }
 
+func TestBuildVEDiscussionStreamEventPayloadIncludesSenderIdentity(t *testing.T) {
+	payload := buildVEDiscussionStreamEventPayload(a2a.GroupEnvelope{
+		FromID:    "envelope-sender",
+		SessionID: "disc-1",
+		Message: &a2a.GroupDiscussionMessage{
+			FromID:  "ve-a",
+			Content: "hello",
+		},
+	}, "disc-1", "hello")
+
+	if payload["session_id"] != "disc-1" || payload["content"] != "hello" || payload["chunk"] != "hello" {
+		t.Fatalf("payload content fields = %+v", payload)
+	}
+	if payload["from_id"] != "ve-a" || payload["sender_id"] != "ve-a" {
+		t.Fatalf("payload sender fields = %+v", payload)
+	}
+}
+
+func TestBuildVEDiscussionStreamEventPayloadFallsBackToEnvelopeSender(t *testing.T) {
+	payload := buildVEDiscussionStreamEventPayload(a2a.GroupEnvelope{
+		FromID:  "envelope-sender",
+		Message: &a2a.GroupDiscussionMessage{Content: "hello"},
+	}, "disc-1", "hello")
+
+	if payload["from_id"] != "envelope-sender" || payload["sender_id"] != "envelope-sender" {
+		t.Fatalf("payload sender fallback = %+v", payload)
+	}
+}
+
 func TestCachePushedVEDiscussionSnapshotFallsBackToRemoteClientID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("participant_id"); got != "client-1" {

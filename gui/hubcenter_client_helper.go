@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -106,7 +107,12 @@ func (a *App) getHubCenterJSONFromCandidates(ctx context.Context, client *http.C
 			}
 			reader := io.Reader(resp.Body)
 			if limit > 0 {
-				reader = io.LimitReader(resp.Body, limit)
+				data, err := readLimitedHubCenterBody(resp.Body, limit)
+				if err != nil {
+					lastErr = err
+					return
+				}
+				reader = bytes.NewReader(data)
 			}
 			if err := json.NewDecoder(reader).Decode(dest); err != nil {
 				lastErr = err
@@ -147,11 +153,10 @@ func (a *App) getHubCenterBytes(ctx context.Context, client *http.Client, path s
 				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 				return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 			}
-			reader := io.Reader(resp.Body)
 			if limit > 0 {
-				reader = io.LimitReader(resp.Body, limit)
+				return readLimitedHubCenterBody(resp.Body, limit)
 			}
-			return io.ReadAll(reader)
+			return io.ReadAll(resp.Body)
 		}()
 		if readErr != nil {
 			lastErr = readErr
@@ -164,4 +169,18 @@ func (a *App) getHubCenterBytes(ctx context.Context, client *http.Client, path s
 		return "", bases, nil, lastErr
 	}
 	return "", bases, nil, fmt.Errorf("no reachable hubcenter")
+}
+
+func readLimitedHubCenterBody(body io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("hubcenter response exceeds %d bytes", limit)
+	}
+	return data, nil
 }

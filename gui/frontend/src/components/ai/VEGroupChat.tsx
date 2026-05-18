@@ -54,7 +54,7 @@ export interface VEGroupChatProps {
     /** Current max group participants limit */
     maxGroupParticipants?: number;
     /** Callback to add a VE to the group */
-    onAddParticipant?: (veId: string) => Promise<void>;
+    onAddParticipant?: (veId: string) => Promise<unknown> | unknown;
     /** Callback to update tab title */
     onTitleChange?: (title: string) => void;
     /** Override for testing - list available digital employees */
@@ -65,6 +65,8 @@ export interface VEGroupChatProps {
     onDownloadAttachment?: (attachment: GroupMessageAttachment, message: GroupMessage) => void;
     /** Whether the header should expose the participant add control */
     allowParticipantAdd?: boolean;
+    /** Whether to render the compact participant-count header above messages */
+    showHeader?: boolean;
 }
 
 // --- Constants ---
@@ -111,6 +113,43 @@ export function getParticipantColor(index: number): string {
     return PARTICIPANT_COLORS[index % PARTICIPANT_COLORS.length];
 }
 
+export function virtualEmployeeParticipantId(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id">): string {
+    return String(ve.machine_id || ve.id || "").trim();
+}
+
+export function virtualEmployeeDisplayName(
+    ve: Pick<VirtualEmployeeEntry, "id" | "machine_id" | "name">,
+    index?: number,
+    lang?: string,
+): string {
+    const rawName = String(ve.name || "").trim();
+    const rawId = String(ve.id || "").trim();
+    const machineId = String(ve.machine_id || "").trim();
+    if (rawName && rawName !== rawId && rawName !== machineId && !looksLikeRawParticipantId(rawName)) return rawName;
+    const ordinal = typeof index === "number" ? " " + (index + 1) : "";
+    return !lang || lang.startsWith("zh") ? "数字员工" + ordinal : "Digital employee" + ordinal;
+}
+
+function looksLikeRawParticipantId(value: string): boolean {
+    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+}
+
+function readableGroupSpeakerName(
+    candidate: string | undefined,
+    fromId: string | undefined,
+    participantName: string | undefined,
+    isUser: boolean | undefined,
+    lang: string | undefined,
+): string {
+    const name = String(candidate || "").trim();
+    const id = String(fromId || "").trim();
+    const participant = String(participantName || "").trim();
+    if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
+    if (participant && participant !== id && !looksLikeRawParticipantId(participant)) return participant;
+    if (isUser) return !lang || lang.startsWith("zh") ? "我" : "Me";
+    return !lang || lang.startsWith("zh") ? "数字员工" : "Digital employee";
+}
+
 // --- Hook: useGroupConfig ---
 
 /**
@@ -143,17 +182,16 @@ export function useGroupConfig(initialMax?: number): GroupChatConfig {
 // --- Component: ParticipantSelector ---
 
 export interface ParticipantSelectorProps {
-    sessionId: string;
+    sessionId?: string;
     currentParticipants: GroupParticipant[];
     maxGroupParticipants: number;
     theme: Theme;
     lang?: string;
-    onAdd: (ve: VirtualEmployeeEntry) => void;
+    onAdd: (ve: VirtualEmployeeEntry) => Promise<unknown> | unknown;
     listVirtualEmployees?: () => Promise<VirtualEmployeeEntry[]>;
 }
 
 export function ParticipantSelector({
-    sessionId,
     currentParticipants,
     maxGroupParticipants,
     theme,
@@ -165,9 +203,20 @@ export function ParticipantSelector({
     const [available, setAvailable] = useState<VirtualEmployeeEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [addingId, setAddingId] = useState("");
+    const addingIdRef = useRef("");
+    const mountedRef = useRef(true);
+    const limitErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const popoverRef = useRef<HTMLDivElement>(null);
 
     const isZh = !lang || lang.startsWith("zh");
+
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+        };
+    }, []);
 
     // Check if limit is reached
     const limitReached = currentParticipants.length >= maxGroupParticipants;
@@ -185,27 +234,33 @@ export function ParticipantSelector({
             // Filter out digital employees already in the group
             const currentIds = new Set(currentParticipants.map((p) => p.id));
             const filtered = (all || []).filter((ve) => {
-                const machineId = ve.machine_id || ve.id;
-                return !currentIds.has(ve.id) && !currentIds.has(machineId) && ve.online_status === "online";
+                const participantId = virtualEmployeeParticipantId(ve);
+                return !currentIds.has(ve.id) && !currentIds.has(participantId) && ve.online_status === "online";
             });
+            if (!mountedRef.current) return;
             setAvailable(filtered);
         } catch {
+            if (!mountedRef.current) return;
             setError(isZh ? "\u83b7\u53d6\u5217\u8868\u5931\u8d25" : "Failed to load");
             setAvailable([]);
         } finally {
-            setLoading(false);
+            if (mountedRef.current) setLoading(false);
         }
     }, [currentParticipants, listVirtualEmployees, isZh]);
 
     const handleToggle = useCallback(() => {
+        if (addingIdRef.current) return;
         if (limitReached) {
             setError(
                 isZh
                     ? `\u7fa4\u804a\u4eba\u6570\u5df2\u6ee1\uff08\u6700\u591a ${maxGroupParticipants} \u4eba\uff09`
                     : `Group is full (max ${maxGroupParticipants})`
             );
-            // Show error briefly then clear
-            setTimeout(() => setError(""), 3000);
+            if (limitErrorTimerRef.current) clearTimeout(limitErrorTimerRef.current);
+            limitErrorTimerRef.current = setTimeout(() => {
+                setError("");
+                limitErrorTimerRef.current = null;
+            }, 3000);
             return;
         }
         if (!open) {
@@ -214,10 +269,15 @@ export function ParticipantSelector({
         setOpen(!open);
     }, [open, limitReached, maxGroupParticipants, isZh, fetchAvailable]);
 
+    useEffect(() => () => {
+        if (limitErrorTimerRef.current) clearTimeout(limitErrorTimerRef.current);
+    }, []);
+
     // Close popover on outside click
     useEffect(() => {
         if (!open) return;
         const handler = (e: MouseEvent) => {
+            if (addingIdRef.current) return;
             if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
                 setOpen(false);
             }
@@ -232,13 +292,15 @@ export function ParticipantSelector({
             <button
                 data-testid="group-add-participant-btn"
                 onClick={handleToggle}
+                disabled={!!addingId}
                 style={{
                     border: `1px solid ${theme.divider}`,
                     background: theme.fieldBg,
                     borderRadius: "50%",
                     width: 28,
                     height: 28,
-                    cursor: "pointer",
+                    cursor: addingId ? "default" : "pointer",
+                    opacity: addingId ? 0.6 : 1,
                     fontSize: 16,
                     color: theme.text,
                     display: "flex",
@@ -304,17 +366,32 @@ export function ParticipantSelector({
                         </div>
                     )}
                     {!loading &&
-                        available.map((ve) => (
+                        available.map((ve, index) => (
                             <div
                                 key={ve.id}
                                 data-testid={`group-picker-item-${ve.id}`}
-                                onClick={() => {
-                                    onAdd(ve);
-                                    setOpen(false);
+                                onClick={async () => {
+                                    if (addingIdRef.current) return;
+                                    addingIdRef.current = ve.id;
+                                    setAddingId(ve.id);
+                                    setError("");
+                                    try {
+                                        const result = await onAdd(ve);
+                                        if (result === false || result === null) {
+                                            throw new Error("participant_add_failed");
+                                        }
+                                        if (mountedRef.current) setOpen(false);
+                                    } catch {
+                                        if (mountedRef.current) setError(isZh ? "添加失败" : "Failed to add");
+                                    } finally {
+                                        addingIdRef.current = "";
+                                        if (mountedRef.current) setAddingId("");
+                                    }
                                 }}
                                 style={{
                                     padding: "6px 12px",
-                                    cursor: "pointer",
+                                    cursor: addingId ? "default" : "pointer",
+                                    opacity: addingId && addingId !== ve.id ? 0.55 : 1,
                                     fontSize: 13,
                                     color: theme.text,
                                     display: "flex",
@@ -337,7 +414,7 @@ export function ParticipantSelector({
                                         flexShrink: 0,
                                     }}
                                 />
-                                <span>{ve.name}</span>
+                                <span>{addingId === ve.id ? (isZh ? "添加中..." : "Adding...") : virtualEmployeeDisplayName(ve, index, lang)}</span>
                             </div>
                         ))}
                 </div>
@@ -354,9 +431,10 @@ export interface GroupMessageBubbleProps {
     theme: Theme;
     isUser?: boolean;
     onDownloadAttachment?: (attachment: GroupMessageAttachment, message: GroupMessage) => void;
+    displayName?: string;
 }
 
-export function GroupMessageBubble({ message, participantIndex, theme, isUser, onDownloadAttachment }: GroupMessageBubbleProps) {
+export function GroupMessageBubble({ message, participantIndex, theme, isUser, onDownloadAttachment, displayName }: GroupMessageBubbleProps) {
     const color = isUser ? theme.text : getParticipantColor(participantIndex);
     const hasAttachments = !!message.attachments?.length;
     const hasContent = message.content.trim().length > 0;
@@ -377,7 +455,7 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                     paddingLeft: 4,
                 }}
             >
-                {message.fromName}
+                {displayName || message.fromName}
             </div>
             {/* Message content */}
             {(hasContent || !hasAttachments) && <div
@@ -390,6 +468,8 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                     fontSize: 13,
                     color: theme.text,
                     wordBreak: "break-word",
+                    overflowWrap: "anywhere",
+                    whiteSpace: "pre-wrap",
                 }}
             >
                 <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />
@@ -462,6 +542,7 @@ export function VEGroupChatView({
     addVEToGroup,
     onDownloadAttachment,
     allowParticipantAdd = true,
+    showHeader = true,
 }: VEGroupChatProps) {
     const { maxGroupParticipants } = useGroupConfig(initialMax);
     const [offlineNotices, setOfflineNotices] = useState<string[]>([]);
@@ -499,20 +580,24 @@ export function VEGroupChatView({
         async (ve: VirtualEmployeeEntry) => {
             // Check limit before adding
             if (participants.length >= maxGroupParticipants) {
-                return; // ParticipantSelector already shows the error
+                return false; // ParticipantSelector already shows the error
             }
             try {
                 if (addVEToGroup) {
-                    await addVEToGroup(sessionId, ve.id);
+                    await addVEToGroup(sessionId, virtualEmployeeParticipantId(ve));
+                    return true;
                 } else if (onAddParticipant) {
-                    await onAddParticipant(ve.id);
+                    const result = await onAddParticipant(virtualEmployeeParticipantId(ve));
+                    return result === false || result === null ? false : true;
                 } else {
                     const mod = await import("../../../wailsjs/go/main/App");
-                    await (mod as any).AddVEToGroup(sessionId, ve.id);
+                    await (mod as any).AddVEToGroup(sessionId, virtualEmployeeParticipantId(ve));
+                    return true;
                 }
             } catch (err: any) {
                 // Error handling is done by the caller
                 console.error("Failed to add participant:", err);
+                return false;
             }
         },
         [sessionId, participants.length, maxGroupParticipants, addVEToGroup, onAddParticipant]
@@ -527,33 +612,34 @@ export function VEGroupChatView({
             data-testid="ve-group-chat-view"
             style={{ display: "flex", flexDirection: "column", height: "100%" }}
         >
-            {/* Header with participant selector */}
-            <div
-                data-testid="group-chat-header"
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "6px 12px",
-                    borderBottom: `1px solid ${theme.divider}`,
-                    background: theme.inputBarBg,
-                }}
-            >
-                <div style={{ fontSize: 12, color: theme.textMuted }}>
-                    {isZh ? `${participants.length} \u4f4d\u53c2\u4e0e\u8005` : `${participants.length} participants`}
+            {showHeader && (
+                <div
+                    data-testid="group-chat-header"
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "6px 12px",
+                        borderBottom: `1px solid ${theme.divider}`,
+                        background: theme.inputBarBg,
+                    }}
+                >
+                    <div style={{ fontSize: 12, color: theme.textMuted }}>
+                        {isZh ? `${participants.length} \u4f4d\u53c2\u4e0e\u8005` : `${participants.length} participants`}
+                    </div>
+                    {allowParticipantAdd && (
+                        <ParticipantSelector
+                            sessionId={sessionId}
+                            currentParticipants={participants}
+                            maxGroupParticipants={maxGroupParticipants}
+                            theme={theme}
+                            lang={lang}
+                            onAdd={handleAdd}
+                            listVirtualEmployees={listVirtualEmployees}
+                        />
+                    )}
                 </div>
-                {allowParticipantAdd && (
-                    <ParticipantSelector
-                        sessionId={sessionId}
-                        currentParticipants={participants}
-                        maxGroupParticipants={maxGroupParticipants}
-                        theme={theme}
-                        lang={lang}
-                        onAdd={handleAdd}
-                        listVirtualEmployees={listVirtualEmployees}
-                    />
-                )}
-            </div>
+            )}
 
             {/* Message list */}
             <div
@@ -561,8 +647,10 @@ export function VEGroupChatView({
                 style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}
             >
                 {messages.map((msg) => {
+                    const participant = participants.find((p) => p.id === msg.fromId);
                     const pIdx = participantIndexMap.get(msg.fromId) ?? 0;
-                    const isUser = !participants.some((p) => p.id === msg.fromId);
+                    const isUser = !participant;
+                    const displayName = readableGroupSpeakerName(msg.fromName, msg.fromId, participant?.name, isUser, lang);
                     return (
                         <GroupMessageBubble
                             key={msg.id}
@@ -571,6 +659,7 @@ export function VEGroupChatView({
                             theme={theme}
                             isUser={isUser}
                             onDownloadAttachment={onDownloadAttachment}
+                            displayName={displayName}
                         />
                     );
                 })}

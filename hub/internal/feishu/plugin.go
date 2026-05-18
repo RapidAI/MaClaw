@@ -596,11 +596,16 @@ func (p *FeishuPlugin) SendUrgentText(ctx context.Context, target im.UserTarget,
 // ResolveUser maps a Feishu open_id to the unified internal user ID.
 // Reuses the existing resolveUserID logic (open_id → email → userID).
 func (p *FeishuPlugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {
-	userID := p.notifier.resolveUserID(platformUID)
+	_, userID, err := p.ResolveUserWithTenant(ctx, platformUID)
+	return userID, err
+}
+
+func (p *FeishuPlugin) ResolveUserWithTenant(ctx context.Context, platformUID string) (string, string, error) {
+	tenantID, userID := p.notifier.resolveUserTenantID(platformUID)
 	if userID == "" {
-		return "", fmt.Errorf("feishu: cannot resolve user for open_id %s (not bound)", platformUID)
+		return "", "", fmt.Errorf("feishu: cannot resolve user for open_id %s (not bound)", platformUID)
 	}
-	return userID, nil
+	return tenantID, userID, nil
 }
 
 // LookupByEmail returns the Feishu open_id bound to the given email, or "".

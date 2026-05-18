@@ -31,6 +31,18 @@ export interface VETabProps {
 
 // --- Helpers ---
 
+function looksLikeRawParticipantId(value: string): boolean {
+    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+}
+
+function readableVirtualEmployeeName(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id" | "name">, index: number, lang?: string): string {
+    const name = String(ve.name || "").trim();
+    const id = String(ve.id || "").trim();
+    const machineId = String(ve.machine_id || "").trim();
+    if (name && name !== id && name !== machineId && !looksLikeRawParticipantId(name)) return name;
+    return !lang || lang.startsWith("zh") ? "数字员工 " + (index + 1) : "Digital employee " + (index + 1);
+}
+
 /** Truncate a string to maxLen characters, appending ellipsis if exceeded. */
 export function truncateText(text: string, maxLen: number): string {
     if (!text) return "";
@@ -207,7 +219,9 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
     return (
         <div style={{ position: "relative", overflow: "auto", height: "100%" }} data-testid="ve-list-container">
-            {employees.map((ve) => (
+            {employees.map((ve, index) => {
+                const displayName = readableVirtualEmployeeName(ve, index, lang);
+                return (
                 <div
                     key={ve.id}
                     data-testid={`ve-item-${ve.id}`}
@@ -216,7 +230,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         e.preventDefault();
                         setContextMenu({ x: e.clientX, y: e.clientY, ve });
                     }}
-                    title={ve.skill_description || ve.name}
+                    title={ve.skill_description || displayName}
                     style={{
                         display: "flex",
                         alignItems: "center",
@@ -245,7 +259,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             <span style={{ color: theme.text, fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                {truncateText(ve.name, 20)}
+                                {truncateText(displayName, 20)}
                             </span>
                             <span style={{ fontSize: 12 }} title={ve.access_policy}>{policyIcon(ve.access_policy)}</span>
                             {ve.access_policy === "per_request" && (
@@ -270,7 +284,8 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         </div>
                     </div>
                 </div>
-            ))}
+                );
+            })}
 
             {/* Context menu */}
             {contextMenu && (() => {

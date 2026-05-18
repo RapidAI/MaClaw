@@ -58,6 +58,7 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS hub_domain_routes (
 			id TEXT PRIMARY KEY,
 			hub_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL DEFAULT '',
 			domain TEXT NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			priority INTEGER NOT NULL DEFAULT 100,
@@ -87,6 +88,7 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 		`CREATE TABLE IF NOT EXISTS failure_event_logs (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT '',
 			category TEXT NOT NULL,
 			event_code TEXT NOT NULL,
 			message TEXT NOT NULL,
@@ -98,6 +100,7 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_created_at ON failure_event_logs(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_category_created_at ON failure_event_logs(category, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC);`,
 		`CREATE TABLE IF NOT EXISTS gossip_posts (
 			id TEXT PRIMARY KEY,
 			machine_id TEXT NOT NULL,
@@ -158,6 +161,9 @@ func RunMigrations(db *sql.DB) error {
 	if err := ensureHubDomainRoutesTable(db); err != nil {
 		return err
 	}
+	if err := ensureHubDomainRoutesTenantIDColumn(db); err != nil {
+		return err
+	}
 	if err := backfillPrimaryHubRoutes(db); err != nil {
 		return err
 	}
@@ -184,6 +190,9 @@ func RunMigrations(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_domain_routes_domain_enabled_priority ON hub_domain_routes(domain, enabled, priority, updated_at DESC)`); err != nil {
 		return fmt.Errorf("create hub_domain_routes domain index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_domain_routes_tenant_domain ON hub_domain_routes(tenant_id, domain, enabled, priority, updated_at DESC)`); err != nil {
+		return fmt.Errorf("create hub_domain_routes tenant domain index: %w", err)
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_domain_routes_hub_id ON hub_domain_routes(hub_id)`); err != nil {
 		return fmt.Errorf("create hub_domain_routes hub_id index: %w", err)
@@ -244,6 +253,47 @@ func RunMigrations(db *sql.DB) error {
 	}
 	if err := ensureGossipFlaggedColumn(db); err != nil {
 		return err
+	}
+	if err := ensureFailureLogsTenantIDColumn(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureFailureLogsTenantIDColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(failure_event_logs)`)
+	if err != nil {
+		return fmt.Errorf("inspect failure_event_logs columns: %w", err)
+	}
+	defer rows.Close()
+
+	hasTenantID := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan failure_event_logs column: %w", err)
+		}
+		if name == "tenant_id" {
+			hasTenantID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate failure_event_logs columns: %w", err)
+	}
+	if !hasTenantID {
+		if _, err := db.Exec(`ALTER TABLE failure_event_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add failure_event_logs tenant_id: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC)`); err != nil {
+		return fmt.Errorf("create failure_event_logs tenant index: %w", err)
 	}
 	return nil
 }
@@ -309,6 +359,38 @@ func ensureHubUserLinksTenantIDColumn(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE hub_user_links ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add hub_user_links tenant_id: %w", err)
+	}
+	return nil
+}
+
+func ensureHubDomainRoutesTenantIDColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(hub_domain_routes)`)
+	if err != nil {
+		return fmt.Errorf("inspect hub_domain_routes columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan hub_domain_routes column: %w", err)
+		}
+		if name == "tenant_id" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hub_domain_routes columns: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE hub_domain_routes ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add hub_domain_routes tenant_id: %w", err)
 	}
 	return nil
 }
@@ -425,6 +507,7 @@ func ensureHubDomainRoutesTable(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS hub_domain_routes (
 		id TEXT PRIMARY KEY,
 		hub_id TEXT NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT '',
 		domain TEXT NOT NULL,
 		enabled INTEGER NOT NULL DEFAULT 1,
 		priority INTEGER NOT NULL DEFAULT 100,
@@ -438,8 +521,8 @@ func ensureHubDomainRoutesTable(db *sql.DB) error {
 
 func backfillPrimaryHubRoutes(db *sql.DB) error {
 	if _, err := db.Exec(`
-		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
-		SELECT 'hdr_primary_' || id, id, LOWER(TRIM(TRIM(corporate_email_domain, '@'), '.')), 1, 100, created_at, updated_at
+		INSERT INTO hub_domain_routes (id, hub_id, tenant_id, domain, enabled, priority, created_at, updated_at)
+		SELECT 'hdr_primary_' || id, id, '', LOWER(TRIM(TRIM(corporate_email_domain, '@'), '.')), 1, 100, created_at, updated_at
 		FROM hub_instances
 		WHERE TRIM(corporate_email_domain) <> ''
 		  AND NOT EXISTS (

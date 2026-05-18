@@ -29,6 +29,7 @@ type AdminAuditLog struct {
 
 type FailureEventLog struct {
 	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id,omitempty"`
 	Category    string    `json:"category"`
 	EventCode   string    `json:"event_code"`
 	Message     string    `json:"message"`
@@ -40,6 +41,7 @@ type FailureEventLog struct {
 }
 
 type FailureEventLogFilter struct {
+	TenantID string
 	Keyword  string
 	Category string
 	Offset   int
@@ -86,6 +88,7 @@ type HubUserLink struct {
 type HubDomainRoute struct {
 	ID        string    `json:"id"`
 	HubID     string    `json:"hub_id"`
+	TenantID  string    `json:"tenant_id,omitempty"`
 	Domain    string    `json:"domain"`
 	Enabled   bool      `json:"enabled"`
 	Priority  int       `json:"priority"`

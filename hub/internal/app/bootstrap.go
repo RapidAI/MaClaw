@@ -342,10 +342,10 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	gateway.SetIMProactiveSender(proactiveSender)
 
 	// When a user's second device comes online, push a quick multi-device guide.
-	deviceService.OnMultiDeviceOnline = func(userID string, machineNames []string) {
+	deviceService.OnMultiDeviceOnline = func(tenantID, userID string, machineNames []string) {
 		names := strings.Join(machineNames, ", ")
 		guide := fmt.Sprintf("You now have %d devices online: %s\n\nUse /call <name> to switch devices, /call all for group mode, /machines to view online devices, and /discuss <topic> for multi-device AI discussion.", len(machineNames), names)
-		if err := proactiveSender.SendProactiveMessage(context.Background(), userID, guide); err != nil {
+		if err := proactiveSender.SendProactiveMessage(context.Background(), tenantID, userID, guide); err != nil {
 			log.Printf("[bootstrap] multi-device guide send failed for user=%s: %v", userID, err)
 		}
 	}
@@ -501,13 +501,20 @@ type userEmailLookup struct {
 	}
 }
 
-func (u *userEmailLookup) GetEmail(ctx context.Context, userID string) (string, error) {
+func (u *userEmailLookup) GetEmail(ctx context.Context, tenantID, userID string) (string, error) {
 	user, err := u.users.GetByID(ctx, userID)
 	if err != nil {
 		return "", err
 	}
 	if user == nil {
 		return "", fmt.Errorf("user not found: %s", userID)
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	if strings.TrimSpace(user.TenantID) != "" && strings.TrimSpace(user.TenantID) != tenantID {
+		return "", fmt.Errorf("user %s is not in tenant %s", userID, tenantID)
 	}
 	return user.Email, nil
 }

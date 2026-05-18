@@ -45,6 +45,7 @@ type fakeSyncRecorder struct {
 	deletedHubInstances []string
 	deletedHubLinks     []string
 	deletedHubRoutes    []string
+	appendedHubRoutes   []*store.HubDomainRoute
 }
 
 func (f *fakeSyncRecorder) SyncHubHeartbeat(context.Context, string)                {}
@@ -56,7 +57,9 @@ func (f *fakeSyncRecorder) AppendHubInstance(context.Context, *store.HubInstance
 func (f *fakeSyncRecorder) DeleteHubInstance(_ context.Context, hubID string) {
 	f.deletedHubInstances = append(f.deletedHubInstances, hubID)
 }
-func (f *fakeSyncRecorder) AppendHubDomainRoute(context.Context, *store.HubDomainRoute) {}
+func (f *fakeSyncRecorder) AppendHubDomainRoute(_ context.Context, route *store.HubDomainRoute) {
+	f.appendedHubRoutes = append(f.appendedHubRoutes, route)
+}
 func (f *fakeSyncRecorder) DeleteHubDomainRoute(_ context.Context, routeID string) {
 	f.deletedHubRoutes = append(f.deletedHubRoutes, routeID)
 }
@@ -281,6 +284,93 @@ func TestUserRegistrationReportGroupsByHubWithRecentWindows(t *testing.T) {
 	}
 }
 
+func TestUserRegistrationReportIncludesTenantVirtualHubRows(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_tenant_report", OwnerEmail: "owner@example.com", Name: "Tenant Report Hub", BaseURL: "https://hub.example.com", Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	today := startOfDay(now)
+	links := []*store.HubUserLink{
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_a", "same@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "same@example.com", CreatedAt: today.Add(time.Hour), UpdatedAt: today.Add(time.Hour)},
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_b", "same@example.com"), HubID: hub.ID, TenantID: "tenant_b", Email: "same@example.com", CreatedAt: today.Add(2 * time.Hour), UpdatedAt: today.Add(2 * time.Hour)},
+		{ID: primaryUserLinkIDForTenant(hub.ID, "tenant_a", "alice@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "alice@example.com", CreatedAt: today.AddDate(0, 0, -1), UpdatedAt: today.AddDate(0, 0, -1)},
+	}
+	for _, link := range links {
+		if err := st.HubUserLinks.Create(ctx, link); err != nil {
+			t.Fatalf("seed link %s: %v", link.ID, err)
+		}
+	}
+
+	report, err := svc.UserRegistrationReport(ctx)
+	if err != nil {
+		t.Fatalf("UserRegistrationReport: %v", err)
+	}
+	if report.TotalUsers != 3 {
+		t.Fatalf("total users should count same email in different tenants separately, got %d", report.TotalUsers)
+	}
+	byTenant := map[string]UserRegistrationHubReport{}
+	for _, item := range report.Hubs {
+		byTenant[item.TenantID] = item
+	}
+	if byTenant[""].TotalUsers != 3 {
+		t.Fatalf("physical hub total = %+v", byTenant[""])
+	}
+	if byTenant["tenant_a"].TotalUsers != 2 || byTenant["tenant_b"].TotalUsers != 1 {
+		t.Fatalf("tenant report rows = %+v", byTenant)
+	}
+}
+
+func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	hub := &store.HubInstance{
+		ID:         "hub_tenant_dashboard",
+		OwnerEmail: "owner@example.com",
+		Name:       "Tenant Hub",
+		BaseURL:    "https://hub.example.com",
+		Status:     "online",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		LastSeenAt: &now,
+		CapabilitiesJSON: mustJSON(map[string]any{
+			"user_count":            3,
+			"machine_count":         4,
+			"tenant_user_counts":    map[string]any{"tenant_a": 2, "tenant_b": 1},
+			"tenant_machine_counts": map[string]any{"tenant_a": 3, "tenant_b": 1},
+			"tenant_domains":        map[string]any{"tenant_a": []any{"acme.example"}, "tenant_b": []any{"beta.example"}},
+		}),
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("seed hub: %v", err)
+	}
+
+	items, err := svc.ListUserDashboard(ctx)
+	if err != nil {
+		t.Fatalf("ListUserDashboard: %v", err)
+	}
+	byTenant := map[string]HubUserDashboardItem{}
+	for _, item := range items {
+		byTenant[item.TenantID] = item
+	}
+	if byTenant[""].UserCount != 3 || byTenant[""].MachineCount != 4 {
+		t.Fatalf("unexpected physical hub dashboard row: %+v", byTenant[""])
+	}
+	if byTenant["tenant_a"].UserCount != 2 || byTenant["tenant_a"].MachineCount != 3 || byTenant["tenant_a"].CorporateEmailDomain != "acme.example" {
+		t.Fatalf("unexpected tenant_a dashboard row: %+v", byTenant["tenant_a"])
+	}
+	if byTenant["tenant_b"].UserCount != 1 || byTenant["tenant_b"].MachineCount != 1 || byTenant["tenant_b"].CorporateEmailDomain != "beta.example" {
+		t.Fatalf("unexpected tenant_b dashboard row: %+v", byTenant["tenant_b"])
+	}
+}
+
 func TestMigrateUserMakesTargetHubDefault(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
@@ -334,6 +424,48 @@ func TestMigrateUserMakesTargetHubDefault(t *testing.T) {
 	}
 	if !foundExistingTarget {
 		t.Fatalf("expected existing target hub link to be preserved, got %+v", links)
+	}
+}
+
+func TestMigrateUserCanTargetOneTenantForSameEmail(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	svc.SetRouteSnapshotRefresher(entrySvc)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	for _, link := range []*store.HubUserLink{
+		{ID: primaryUserLinkIDForTenant("hub_a", "tenant_a", "same@example.com"), HubID: "hub_a", TenantID: "tenant_a", Email: "same@example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: primaryUserLinkIDForTenant("hub_a", "tenant_b", "same@example.com"), HubID: "hub_a", TenantID: "tenant_b", Email: "same@example.com", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubUserLinks.Upsert(ctx, link); err != nil {
+			t.Fatalf("seed link %s: %v", link.ID, err)
+		}
+	}
+
+	if _, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "same@example.com", TenantID: "tenant_a", ToHubID: "hub_b"}); err != nil {
+		t.Fatalf("MigrateUser: %v", err)
+	}
+	resolved, err := entrySvc.ResolveByEmail(ctx, "same@example.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	seen := map[string]string{}
+	for _, item := range resolved.Hubs {
+		seen[item.TenantID] = item.HubID
+	}
+	if seen["tenant_a"] != "hub_b" || seen["tenant_b"] != "hub_a" {
+		t.Fatalf("expected tenant_a migrated and tenant_b preserved, got %+v", resolved.Hubs)
 	}
 }
 
@@ -1126,6 +1258,84 @@ func resultHasHub(result *entry.ResolveResult, hubID string) bool {
 	}
 	return false
 }
+
+func TestHeartbeatSyncsTenantDomainRoutes(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	sync := &fakeSyncRecorder{}
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	hubService.SetSyncRecorder(sync)
+	ctx := context.Background()
+	now := time.Now()
+
+	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{OwnerEmail: "owner@example.com", Name: "Tenant Domain Hub", BaseURL: "https://hub.example.com", Visibility: "shared"})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+	hub, err := st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	hub.Status = "online"
+	hub.HubSecretHash = hashToken(result.HubSecret)
+	if err := st.Hubs.UpdateRegistration(ctx, hub); err != nil {
+		t.Fatalf("activate hub: %v", err)
+	}
+	staleRouteID := tenantDomainRouteID(result.HubID, "tenant_a", 1)
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: staleRouteID, HubID: result.HubID, TenantID: "tenant_a", Domain: "old.example", Enabled: true, Priority: 201, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed stale tenant route: %v", err)
+	}
+
+	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil, &HeartbeatHubUpdate{
+		BaseURL:    "https://hub.example.com",
+		Visibility: "shared",
+		Capabilities: map[string]any{
+			"tenant_domains": map[string]any{
+				"tenant_a": []any{"Acme.Example"},
+				"tenant_b": []any{"Beta.Example"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("HeartbeatHubWithSecret: %v", err)
+	}
+
+	routes, err := st.HubDomainRoutes.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("ListAll routes: %v", err)
+	}
+	byTenant := map[string]string{}
+	for _, route := range routes {
+		if route.HubID != result.HubID || route.TenantID == "" {
+			continue
+		}
+		byTenant[route.TenantID] = route.Domain
+		if route.ID == staleRouteID {
+			t.Fatalf("expected stale tenant route to be removed, got %+v", routes)
+		}
+	}
+	if byTenant["tenant_a"] != "acme.example" || byTenant["tenant_b"] != "beta.example" {
+		t.Fatalf("unexpected tenant routes: %+v", routes)
+	}
+	deletedStale := false
+	for _, routeID := range sync.deletedHubRoutes {
+		if routeID == staleRouteID {
+			deletedStale = true
+		}
+	}
+	if !deletedStale {
+		t.Fatalf("expected HA delete for stale tenant route, got %+v", sync.deletedHubRoutes)
+	}
+	appendedTenants := map[string]string{}
+	for _, route := range sync.appendedHubRoutes {
+		if route != nil && route.TenantID != "" {
+			appendedTenants[route.TenantID] = route.Domain
+		}
+	}
+	if appendedTenants["tenant_a"] != "acme.example" || appendedTenants["tenant_b"] != "beta.example" {
+		t.Fatalf("expected HA append for tenant routes, got %+v", sync.appendedHubRoutes)
+	}
+}
+
 func TestDisabledHubStaysDisabledAfterHeartbeat(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)

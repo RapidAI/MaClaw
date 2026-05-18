@@ -167,6 +167,59 @@ describe('useAITabManager', () => {
             expect(tab.participants).toEqual(["me", "ve-1"]);
         });
 
+        it('merges participant display names when refreshing an existing group tab', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("history-disc-names", "Open case", ["me", "ve-a"], {
+                    discussionId: "disc-names",
+                    participantNames: { me: "Alice" },
+                });
+            });
+            act(() => {
+                result.current.createGroupTab("history-disc-names", "Open case", ["me", "ve-a"], {
+                    discussionId: "disc-names",
+                    participantNames: { "ve-a": "Contract Bot" },
+                });
+            });
+
+            expect(result.current.activeTab.participantNames).toEqual({ me: "Alice", "ve-a": "Contract Bot" });
+        });
+
+        it('uses a readable fallback title when history discussion has only a raw id', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        lang: "zh-Hans",
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabState: manager.getTabState,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            rerender({
+                pending: {
+                    id: "disc-raw-123",
+                    status: "open",
+                    participant_ids: ["m_b1821505498d817c"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.title).toBe("\u7fa4\u7ec4\u8ba8\u8bba");
+            expect(result.current.activeTab.title).not.toContain("disc-raw-123");
+        });
+
         it('activates an existing VE session tab when opening the same history discussion', async () => {
             const onHandled = vi.fn();
             const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(

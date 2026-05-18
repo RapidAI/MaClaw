@@ -367,9 +367,9 @@ func TestAdminAuditRepositoryListFilters(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	logs := []*store.AdminAuditLog{
-		{ID: "audit-1", AdminUserID: "adm-1", Action: "security.group.create", PayloadJSON: `{"group_id":"dept-a","name":"Dept A"}`, CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC)},
-		{ID: "audit-2", AdminUserID: "adm-2", Action: "capability.recommendation.create", PayloadJSON: `{"capability_ref":"skill-a","scope":{"type":"global"}}`, CreatedAt: time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)},
-		{ID: "audit-3", AdminUserID: "adm-3", Action: "security.group.delete", PayloadJSON: `{"group_id":"dept-b"}`, CreatedAt: time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)},
+		{ID: "audit-1", TenantID: "tenant_a", AdminUserID: "adm-1", Action: "security.group.create", PayloadJSON: `{"group_id":"dept-a","name":"Dept A"}`, CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC)},
+		{ID: "audit-2", TenantID: "tenant_a", AdminUserID: "adm-2", Action: "capability.recommendation.create", PayloadJSON: `{"capability_ref":"skill-a","scope":{"type":"global"}}`, CreatedAt: time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)},
+		{ID: "audit-3", TenantID: "tenant_b", AdminUserID: "adm-3", Action: "security.group.delete", PayloadJSON: `{"group_id":"dept-b"}`, CreatedAt: time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)},
 	}
 	for _, log := range logs {
 		if err := st.AdminAudit.Create(ctx, log); err != nil {
@@ -391,5 +391,13 @@ func TestAdminAuditRepositoryListFilters(t *testing.T) {
 	}
 	if len(items) != 2 || items[0].ID != "audit-3" || items[1].ID != "audit-1" {
 		t.Fatalf("query/order/limit items = %+v", items)
+	}
+
+	items, err = st.AdminAudit.List(ctx, store.AdminAuditLogFilter{TenantID: "tenant_a", TenantScoped: true, Query: "dept", Limit: 10})
+	if err != nil {
+		t.Fatalf("list tenant audit logs: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "audit-1" || items[0].TenantID != "tenant_a" {
+		t.Fatalf("tenant filtered audit items = %+v, want tenant_a/audit-1", items)
 	}
 }

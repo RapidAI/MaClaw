@@ -139,19 +139,24 @@ func newConversationContextStore() *conversationContextStore {
 
 // GetOrCreate returns the user's conversation context, creating one if absent.
 func (s *conversationContextStore) GetOrCreate(userID string) *ConversationContext {
+	return s.GetOrCreateForTenant("", userID)
+}
+
+func (s *conversationContextStore) GetOrCreateForTenant(tenantID, userID string) *ConversationContext {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.RLock()
-	cc := s.data[userID]
+	cc := s.data[key]
 	s.mu.RUnlock()
 	if cc != nil {
 		return cc
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if cc = s.data[userID]; cc != nil {
+	if cc = s.data[key]; cc != nil {
 		return cc
 	}
 	cc = &ConversationContext{}
-	s.data[userID] = cc
+	s.data[key] = cc
 	return cc
 }
 

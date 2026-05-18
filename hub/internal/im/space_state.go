@@ -9,9 +9,9 @@ import (
 type SpaceStateType string
 
 const (
-	SpaceLobby    SpaceStateType = "lobby"
-	SpacePrivate  SpaceStateType = "private"
-	SpaceMeeting  SpaceStateType = "meeting"
+	SpaceLobby   SpaceStateType = "lobby"
+	SpacePrivate SpaceStateType = "private"
+	SpaceMeeting SpaceStateType = "meeting"
 )
 
 // SpaceState holds the user's current space state and associated metadata.
@@ -36,30 +36,40 @@ func newSpaceStateStore() *spaceStateStore {
 
 // GetOrCreate returns the user's space state, creating a default lobby state if absent.
 func (s *spaceStateStore) GetOrCreate(userID string) *SpaceState {
+	return s.GetOrCreateForTenant("", userID)
+}
+
+func (s *spaceStateStore) GetOrCreateForTenant(tenantID, userID string) *SpaceState {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.RLock()
-	st := s.data[userID]
+	st := s.data[key]
 	s.mu.RUnlock()
 	if st != nil {
 		return st
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st = s.data[userID]; st != nil {
+	if st = s.data[key]; st != nil {
 		return st
 	}
 	st = &SpaceState{State: SpaceLobby}
-	s.data[userID] = st
+	s.data[key] = st
 	return st
 }
 
 // EnterPrivate transitions from lobby to private. Returns error if not in lobby.
 func (s *spaceStateStore) EnterPrivate(userID, machineID, name string) error {
+	return s.EnterPrivateForTenant("", userID, machineID, name)
+}
+
+func (s *spaceStateStore) EnterPrivateForTenant(tenantID, userID, machineID, name string) error {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.data[userID]
+	st := s.data[key]
 	if st == nil {
 		st = &SpaceState{State: SpaceLobby}
-		s.data[userID] = st
+		s.data[key] = st
 	}
 	if st.State == SpaceMeeting {
 		return fmt.Errorf("会议进行中，无法切换私聊。使用 /ask <设备名> <消息> 临时交互，或 /stop 结束会议。")
@@ -76,9 +86,14 @@ func (s *spaceStateStore) EnterPrivate(userID, machineID, name string) error {
 
 // ExitPrivate transitions from private back to lobby.
 func (s *spaceStateStore) ExitPrivate(userID string) error {
+	return s.ExitPrivateForTenant("", userID)
+}
+
+func (s *spaceStateStore) ExitPrivateForTenant(tenantID, userID string) error {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.data[userID]
+	st := s.data[key]
 	if st == nil || st.State != SpacePrivate {
 		return fmt.Errorf("当前不在私聊模式")
 	}
@@ -91,12 +106,17 @@ func (s *spaceStateStore) ExitPrivate(userID string) error {
 
 // EnterMeeting transitions from lobby to meeting. Returns error if not in lobby.
 func (s *spaceStateStore) EnterMeeting(userID, topic string, participants []string) error {
+	return s.EnterMeetingForTenant("", userID, topic, participants)
+}
+
+func (s *spaceStateStore) EnterMeetingForTenant(tenantID, userID, topic string, participants []string) error {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.data[userID]
+	st := s.data[key]
 	if st == nil {
 		st = &SpaceState{State: SpaceLobby}
-		s.data[userID] = st
+		s.data[key] = st
 	}
 	if st.State == SpacePrivate {
 		return fmt.Errorf("私聊模式中，无法发起会议。发送 /call all 返回大厅后再发起。")
@@ -112,9 +132,14 @@ func (s *spaceStateStore) EnterMeeting(userID, topic string, participants []stri
 
 // ExitMeeting transitions from meeting back to lobby.
 func (s *spaceStateStore) ExitMeeting(userID string) error {
+	return s.ExitMeetingForTenant("", userID)
+}
+
+func (s *spaceStateStore) ExitMeetingForTenant(tenantID, userID string) error {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.data[userID]
+	st := s.data[key]
 	if st == nil || st.State != SpaceMeeting {
 		return fmt.Errorf("当前不在会议模式")
 	}
@@ -127,9 +152,14 @@ func (s *spaceStateStore) ExitMeeting(userID string) error {
 // RemoveParticipant removes a device from the meeting participant list.
 // Returns the number of remaining participants.
 func (s *spaceStateStore) RemoveParticipant(userID, machineID string) int {
+	return s.RemoveParticipantForTenant("", userID, machineID)
+}
+
+func (s *spaceStateStore) RemoveParticipantForTenant(tenantID, userID, machineID string) int {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.data[userID]
+	st := s.data[key]
 	if st == nil || st.State != SpaceMeeting {
 		return 0
 	}
@@ -145,17 +175,26 @@ func (s *spaceStateStore) RemoveParticipant(userID, machineID string) int {
 
 // Reset resets the user's space state to lobby.
 func (s *spaceStateStore) Reset(userID string) {
+	s.ResetForTenant("", userID)
+}
+
+func (s *spaceStateStore) ResetForTenant(tenantID, userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data[userID] = &SpaceState{State: SpaceLobby}
+	s.data[tenantUserRuntimeKey(tenantID, userID)] = &SpaceState{State: SpaceLobby}
 }
 
 // IncrementMessageCount increments the private mode message counter and
 // returns the new count.
 func (s *spaceStateStore) IncrementMessageCount(userID string) int {
+	return s.IncrementMessageCountForTenant("", userID)
+}
+
+func (s *spaceStateStore) IncrementMessageCountForTenant(tenantID, userID string) int {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.data[userID]
+	st := s.data[key]
 	if st == nil {
 		return 0
 	}

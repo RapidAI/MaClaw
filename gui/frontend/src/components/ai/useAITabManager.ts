@@ -35,6 +35,7 @@ export interface CreateGroupTabOptions {
     discussionId?: string;
     readOnly?: boolean;
     role?: string;
+    participantNames?: Record<string, string>;
 }
 
 /** Tab index entry shape returned by the backend LoadProjectTabIndex binding. */
@@ -71,7 +72,7 @@ export interface UseAITabManagerResult {
     /** Get the current tab list (reads from ref, always fresh) */
     getTabs: () => AITab[];
     /** Upgrade a VE tab to a group tab when participants are added */
-    upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string) => AITab | null;
+    upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string, participantNames?: Record<string, string>) => AITab | null;
     /** Error message when max tabs exceeded (cleared after reading) */
     tabLimitError: string | null;
     /** Clear the tab limit error */
@@ -364,6 +365,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 discussionId: options.discussionId ?? existing.discussionId,
                 readOnly: options.readOnly ?? existing.readOnly,
                 role: options.role ?? existing.role,
+                participantNames: options.participantNames
+                    ? { ...(existing.participantNames || {}), ...options.participantNames }
+                    : existing.participantNames,
             };
             updateTabState(() => ({
                 ...prev,
@@ -381,6 +385,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             discussionId: options.discussionId,
             readOnly: options.readOnly,
             role: options.role,
+            participantNames: options.participantNames,
             closable: true,
         };
 
@@ -539,7 +544,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
      *  React does remount, we explicitly snapshot the current tab state before
      *  changing the type.
      */
-    const upgradeVETabToGroup = useCallback((tabId: string, participants: string[], discussionId?: string): AITab | null => {
+    const upgradeVETabToGroup = useCallback((tabId: string, participants: string[], discussionId?: string, participantNames?: Record<string, string>): AITab | null => {
         const prev = tabStateRef.current;
         const tab = prev.tabs.find(t => t.id === tabId);
         if (!tab || (tab.type !== "ve" && tab.type !== "group")) return null;
@@ -558,6 +563,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             type: "group",
             participants: participants,
             discussionId: discussionId || tab.discussionId,
+            participantNames: participantNames ? { ...(tab.participantNames || {}), ...participantNames } : tab.participantNames,
         };
         updateTabState(() => ({
             ...prev,

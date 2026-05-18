@@ -143,6 +143,57 @@ func TestWorkflowStateCRUD(t *testing.T) {
 	}
 }
 
+func TestWorkflowRepoTenantIsolation(t *testing.T) {
+	st := newTestWorkflowStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	ctxA := store.WithTenant(context.Background(), "tenant_a")
+	ctxB := store.WithTenant(context.Background(), "tenant_b")
+
+	if err := st.WorkflowRepo.SaveUnderstandingSession(ctxA, &store.UnderstandingSessionRow{ID: "us_a", UserID: "user_1", IntentJSON: `{"tenant":"a"}`, RoundsJSON: `[]`, State: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("save tenant A session: %v", err)
+	}
+	if err := st.WorkflowRepo.SaveUnderstandingSession(ctxB, &store.UnderstandingSessionRow{ID: "us_b", UserID: "user_1", IntentJSON: `{"tenant":"b"}`, RoundsJSON: `[]`, State: "active", CreatedAt: now, UpdatedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("save tenant B session: %v", err)
+	}
+
+	gotA, err := st.WorkflowRepo.GetActiveUnderstandingSession(ctxA, "user_1")
+	if err != nil {
+		t.Fatalf("get tenant A session: %v", err)
+	}
+	if gotA == nil || gotA.ID != "us_a" || gotA.TenantID != "tenant_a" {
+		t.Fatalf("unexpected tenant A session: %+v", gotA)
+	}
+	gotB, err := st.WorkflowRepo.GetActiveUnderstandingSession(ctxB, "user_1")
+	if err != nil {
+		t.Fatalf("get tenant B session: %v", err)
+	}
+	if gotB == nil || gotB.ID != "us_b" || gotB.TenantID != "tenant_b" {
+		t.Fatalf("unexpected tenant B session: %+v", gotB)
+	}
+
+	if err := st.WorkflowRepo.SaveWorkflowState(ctxA, &store.WorkflowStateRow{ID: "wf_a", UserID: "user_1", Type: "coding", TemplateType: "coding", IntentJSON: `{}`, CurrentPhase: "a", PhaseOutputsJSON: `{}`, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("save tenant A workflow: %v", err)
+	}
+	if err := st.WorkflowRepo.SaveWorkflowState(ctxB, &store.WorkflowStateRow{ID: "wf_b", UserID: "user_1", Type: "coding", TemplateType: "coding", IntentJSON: `{}`, CurrentPhase: "b", PhaseOutputsJSON: `{}`, CreatedAt: now, UpdatedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("save tenant B workflow: %v", err)
+	}
+
+	wfA, err := st.WorkflowRepo.GetActiveWorkflowState(ctxA, "user_1")
+	if err != nil {
+		t.Fatalf("get tenant A workflow: %v", err)
+	}
+	if wfA == nil || wfA.ID != "wf_a" || wfA.TenantID != "tenant_a" || wfA.CurrentPhase != "a" {
+		t.Fatalf("unexpected tenant A workflow: %+v", wfA)
+	}
+	wfB, err := st.WorkflowRepo.GetActiveWorkflowState(ctxB, "user_1")
+	if err != nil {
+		t.Fatalf("get tenant B workflow: %v", err)
+	}
+	if wfB == nil || wfB.ID != "wf_b" || wfB.TenantID != "tenant_b" || wfB.CurrentPhase != "b" {
+		t.Fatalf("unexpected tenant B workflow: %+v", wfB)
+	}
+}
+
 func TestCleanupExpired(t *testing.T) {
 	st := newTestWorkflowStore(t)
 	ctx := context.Background()

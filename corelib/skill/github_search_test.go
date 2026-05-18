@@ -170,6 +170,21 @@ func TestSearchGitHubReturnsCombinedCandidates(t *testing.T) {
 	}
 }
 
+func TestGitHubHTTPGetRejectsOversizedResponseClearly(t *testing.T) {
+	gs := NewGitHubSearcher("")
+	gs.client = fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		return newHTTPResponse(200, bytes.Repeat([]byte("a"), githubHTTPGetMaxBytes+1), nil), nil
+	})
+
+	_, err := gs.httpGet("https://raw.githubusercontent.com/octo/skills/main/skill.md")
+	if err == nil {
+		t.Fatal("httpGet should reject oversized response")
+	}
+	if !strings.Contains(err.Error(), "GitHub response exceeds") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestImportFromRepoURLLoadsSkillMarkdownFromTree(t *testing.T) {
 	gs := NewGitHubSearcher("")
 	gs.client = fakeHTTPClient(func(req *http.Request) (*http.Response, error) {

@@ -189,6 +189,24 @@ describe('VirtualEmployeeTab', () => {
             expect(screen.getByTestId("ve-item-ve-3")).toBeTruthy();
         });
 
+        it('uses readable list names instead of raw ids', async () => {
+            renderVETab({}, [{
+                id: "profile-raw",
+                machine_id: "machine-raw",
+                name: "m_b1821505498d817c",
+                skill_description: "",
+                access_policy: "public",
+                status: "active",
+                online_status: "online",
+            }]);
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const item = screen.getByTestId("ve-item-profile-raw");
+            expect(item.textContent).toContain("数字员工 1");
+            expect(item.textContent).not.toContain("m_b1821505498d817c");
+            expect(item.getAttribute("title")).toBe("数字员工 1");
+        });
+
         it('shows green dot for online and gray dot for offline', async () => {
             renderVETab();
             await act(async () => { await vi.runAllTimersAsync(); });

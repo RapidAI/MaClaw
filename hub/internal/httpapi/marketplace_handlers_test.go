@@ -223,8 +223,9 @@ func TestAdminCapabilityDeploymentCreateWritesAudit(t *testing.T) {
 
 func TestAdminAuditLogsHandlerListsAuditLogs(t *testing.T) {
 	audit := &testAdminAuditRepo{}
-	audit.logs = []*store.AdminAuditLog{{ID: "audit-1", AdminUserID: "adm-1", Action: "security.group.create", PayloadJSON: `{"group_id":"dept-a","name":"Dept A"}`, CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC)}}
+	audit.logs = []*store.AdminAuditLog{{ID: "audit-1", TenantID: "tenant_a", AdminUserID: "adm-1", Action: "security.group.create", PayloadJSON: `{"group_id":"dept-a","name":"Dept A"}`, CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC)}}
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs?limit=10&q=dept-a&action=security.group.create&from=2026-05-15&to=2026-05-16", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
 	rec := httptest.NewRecorder()
 
 	AdminAuditLogsHandler(audit)(rec, req)
@@ -234,8 +235,9 @@ func TestAdminAuditLogsHandlerListsAuditLogs(t *testing.T) {
 	}
 	var resp struct {
 		Items []struct {
-			Action  string         `json:"action"`
-			Payload map[string]any `json:"payload"`
+			TenantID string         `json:"tenant_id"`
+			Action   string         `json:"action"`
+			Payload  map[string]any `json:"payload"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -244,10 +246,13 @@ func TestAdminAuditLogsHandlerListsAuditLogs(t *testing.T) {
 	if len(resp.Items) != 1 || resp.Items[0].Action != "security.group.create" {
 		t.Fatalf("unexpected audit items: %+v", resp.Items)
 	}
+	if resp.Items[0].TenantID != "tenant_a" {
+		t.Fatalf("tenant id not returned: %+v", resp.Items[0])
+	}
 	if resp.Items[0].Payload["group_id"] != "dept-a" {
 		t.Fatalf("payload not decoded: %+v", resp.Items[0].Payload)
 	}
-	if audit.lastFilter.Limit != 10 || audit.lastFilter.Query != "dept-a" || audit.lastFilter.Action != "security.group.create" {
+	if audit.lastFilter.Limit != 10 || audit.lastFilter.Query != "dept-a" || audit.lastFilter.Action != "security.group.create" || audit.lastFilter.TenantID != "tenant_a" || !audit.lastFilter.TenantScoped {
 		t.Fatalf("filter not passed through: %+v", audit.lastFilter)
 	}
 	if audit.lastFilter.CreatedFrom.IsZero() || audit.lastFilter.CreatedTo.IsZero() {

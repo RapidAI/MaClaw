@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +23,8 @@ type llmPromptCacheStore interface {
 	TrimDiskToBytes(ctx context.Context, maxBytes int64) (int64, error)
 	Status(ctx context.Context, now time.Time) (*llmcache.Status, error)
 }
+
+type llmPromptCacheTenantContextKey struct{}
 
 type cachedAuthorizedModelResponse struct {
 	StatusCode        int                    `json:"status_code"`
@@ -58,7 +61,7 @@ var globalLLMPromptCacheMaintenance struct {
 	lastRun atomic.Int64
 }
 
-var globalLLMPromptCacheMetrics struct {
+type llmPromptCacheMetricCounters struct {
 	cacheableRequests      atomic.Int64
 	bypassDisabled         atomic.Int64
 	bypassEmptyBody        atomic.Int64
@@ -72,9 +75,22 @@ var globalLLMPromptCacheMetrics struct {
 	singleflightSavedCalls atomic.Int64
 }
 
+var globalLLMPromptCacheMetrics llmPromptCacheMetricCounters
+
+var tenantLLMPromptCacheMetrics struct {
+	mu       sync.RWMutex
+	counters map[string]*llmPromptCacheMetricCounters
+}
+
 func llmPromptCacheable(body map[string]any, cfg HubLLMPromptCacheConfig) bool {
 	reason, cacheable := llmPromptCacheDecision(body, cfg)
 	recordLLMPromptCacheDecision(reason, cacheable)
+	return cacheable
+}
+
+func llmPromptCacheableForTenant(ctx context.Context, body map[string]any, cfg HubLLMPromptCacheConfig) bool {
+	reason, cacheable := llmPromptCacheDecision(body, cfg)
+	recordLLMPromptCacheDecisionForTenant(ctx, reason, cacheable)
 	return cacheable
 }
 
@@ -84,49 +100,72 @@ func llmPromptCacheDecision(body map[string]any, cfg HubLLMPromptCacheConfig) (s
 }
 
 func recordLLMPromptCacheDecision(reason string, cacheable bool) {
+	recordLLMPromptCacheDecisionOn(&globalLLMPromptCacheMetrics, reason, cacheable)
+}
+
+func recordLLMPromptCacheDecisionForTenant(ctx context.Context, reason string, cacheable bool) {
+	recordLLMPromptCacheDecision(reason, cacheable)
+	recordLLMPromptCacheDecisionOn(tenantLLMPromptCacheMetricCounters(llmPromptCacheTenant(ctx)), reason, cacheable)
+}
+
+func recordLLMPromptCacheDecisionOn(metrics *llmPromptCacheMetricCounters, reason string, cacheable bool) {
+	if metrics == nil {
+		return
+	}
 	if cacheable {
-		globalLLMPromptCacheMetrics.cacheableRequests.Add(1)
+		metrics.cacheableRequests.Add(1)
 		return
 	}
 	switch reason {
 	case "disabled":
-		globalLLMPromptCacheMetrics.bypassDisabled.Add(1)
+		metrics.bypassDisabled.Add(1)
 	case "empty_body":
-		globalLLMPromptCacheMetrics.bypassEmptyBody.Add(1)
+		metrics.bypassEmptyBody.Add(1)
 	case "streaming":
-		globalLLMPromptCacheMetrics.bypassStreaming.Add(1)
+		metrics.bypassStreaming.Add(1)
 	case "multi_choice":
-		globalLLMPromptCacheMetrics.bypassMultiChoice.Add(1)
+		metrics.bypassMultiChoice.Add(1)
 	case "temperature":
-		globalLLMPromptCacheMetrics.bypassTemperature.Add(1)
+		metrics.bypassTemperature.Add(1)
 	case "top_p":
-		globalLLMPromptCacheMetrics.bypassTopP.Add(1)
+		metrics.bypassTopP.Add(1)
 	case "presence_penalty":
-		globalLLMPromptCacheMetrics.bypassPresencePenalty.Add(1)
+		metrics.bypassPresencePenalty.Add(1)
 	case "frequency_penalty":
-		globalLLMPromptCacheMetrics.bypassFrequencyPenalty.Add(1)
+		metrics.bypassFrequencyPenalty.Add(1)
 	}
 }
 
 func hubLLMPromptCacheRuntimeMetricsSnapshot() llmPromptCacheRuntimeMetrics {
+	return llmPromptCacheRuntimeMetricsFromCounters(&globalLLMPromptCacheMetrics)
+}
+
+func hubLLMPromptCacheRuntimeMetricsSnapshotForTenant(tenantID string) llmPromptCacheRuntimeMetrics {
+	return llmPromptCacheRuntimeMetricsFromCounters(tenantLLMPromptCacheMetricCounters(tenantID))
+}
+
+func llmPromptCacheRuntimeMetricsFromCounters(counters *llmPromptCacheMetricCounters) llmPromptCacheRuntimeMetrics {
 	bypassReasons := map[string]int64{}
 	addReason := func(name string, value int64) {
 		if value > 0 {
 			bypassReasons[name] = value
 		}
 	}
+	if counters == nil {
+		return llmPromptCacheRuntimeMetrics{}
+	}
 	metrics := llmPromptCacheRuntimeMetrics{
-		CacheableRequests:      globalLLMPromptCacheMetrics.cacheableRequests.Load(),
-		BypassDisabled:         globalLLMPromptCacheMetrics.bypassDisabled.Load(),
-		BypassEmptyBody:        globalLLMPromptCacheMetrics.bypassEmptyBody.Load(),
-		BypassStreaming:        globalLLMPromptCacheMetrics.bypassStreaming.Load(),
-		BypassMultiChoice:      globalLLMPromptCacheMetrics.bypassMultiChoice.Load(),
-		BypassTemperature:      globalLLMPromptCacheMetrics.bypassTemperature.Load(),
-		BypassTopP:             globalLLMPromptCacheMetrics.bypassTopP.Load(),
-		BypassPresencePenalty:  globalLLMPromptCacheMetrics.bypassPresencePenalty.Load(),
-		BypassFrequencyPenalty: globalLLMPromptCacheMetrics.bypassFrequencyPenalty.Load(),
-		SingleflightSharedHits: globalLLMPromptCacheMetrics.singleflightSharedHits.Load(),
-		SingleflightSavedCalls: globalLLMPromptCacheMetrics.singleflightSavedCalls.Load(),
+		CacheableRequests:      counters.cacheableRequests.Load(),
+		BypassDisabled:         counters.bypassDisabled.Load(),
+		BypassEmptyBody:        counters.bypassEmptyBody.Load(),
+		BypassStreaming:        counters.bypassStreaming.Load(),
+		BypassMultiChoice:      counters.bypassMultiChoice.Load(),
+		BypassTemperature:      counters.bypassTemperature.Load(),
+		BypassTopP:             counters.bypassTopP.Load(),
+		BypassPresencePenalty:  counters.bypassPresencePenalty.Load(),
+		BypassFrequencyPenalty: counters.bypassFrequencyPenalty.Load(),
+		SingleflightSharedHits: counters.singleflightSharedHits.Load(),
+		SingleflightSavedCalls: counters.singleflightSavedCalls.Load(),
 	}
 	addReason("disabled", metrics.BypassDisabled)
 	addReason("empty_body", metrics.BypassEmptyBody)
@@ -142,6 +181,61 @@ func hubLLMPromptCacheRuntimeMetricsSnapshot() llmPromptCacheRuntimeMetrics {
 	return metrics
 }
 
+func tenantLLMPromptCacheMetricCounters(tenantID string) *llmPromptCacheMetricCounters {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	tenantLLMPromptCacheMetrics.mu.RLock()
+	counters := tenantLLMPromptCacheMetrics.counters[tenantID]
+	tenantLLMPromptCacheMetrics.mu.RUnlock()
+	if counters != nil {
+		return counters
+	}
+	tenantLLMPromptCacheMetrics.mu.Lock()
+	defer tenantLLMPromptCacheMetrics.mu.Unlock()
+	if tenantLLMPromptCacheMetrics.counters == nil {
+		tenantLLMPromptCacheMetrics.counters = map[string]*llmPromptCacheMetricCounters{}
+	}
+	if counters = tenantLLMPromptCacheMetrics.counters[tenantID]; counters == nil {
+		counters = &llmPromptCacheMetricCounters{}
+		tenantLLMPromptCacheMetrics.counters[tenantID] = counters
+	}
+	return counters
+}
+
+func recordLLMPromptCacheSingleflightShared(ctx context.Context) {
+	globalLLMPromptCacheMetrics.singleflightSharedHits.Add(1)
+	globalLLMPromptCacheMetrics.singleflightSavedCalls.Add(1)
+	tenantCounters := tenantLLMPromptCacheMetricCounters(llmPromptCacheTenant(ctx))
+	tenantCounters.singleflightSharedHits.Add(1)
+	tenantCounters.singleflightSavedCalls.Add(1)
+}
+
+func resetLLMPromptCacheMetricsForTest() {
+	resetLLMPromptCacheMetricCounters(&globalLLMPromptCacheMetrics)
+	tenantLLMPromptCacheMetrics.mu.Lock()
+	tenantLLMPromptCacheMetrics.counters = map[string]*llmPromptCacheMetricCounters{}
+	tenantLLMPromptCacheMetrics.mu.Unlock()
+}
+
+func resetLLMPromptCacheMetricCounters(counters *llmPromptCacheMetricCounters) {
+	if counters == nil {
+		return
+	}
+	counters.cacheableRequests.Store(0)
+	counters.bypassDisabled.Store(0)
+	counters.bypassEmptyBody.Store(0)
+	counters.bypassStreaming.Store(0)
+	counters.bypassMultiChoice.Store(0)
+	counters.bypassTemperature.Store(0)
+	counters.bypassTopP.Store(0)
+	counters.bypassPresencePenalty.Store(0)
+	counters.bypassFrequencyPenalty.Store(0)
+	counters.singleflightSharedHits.Store(0)
+	counters.singleflightSavedCalls.Store(0)
+}
+
 func llmPromptCacheKey(model *llmservice.AuthorizedModel, body map[string]any, externalModel string, cfg HubLLMPromptCacheConfig) (string, string, error) {
 	if model == nil {
 		return "", "", fmt.Errorf("authorized model is required")
@@ -149,14 +243,41 @@ func llmPromptCacheKey(model *llmservice.AuthorizedModel, body map[string]any, e
 	return corelib.LLMPromptCacheKey(model.Name, externalModel, body, hubPromptCacheOptions(cfg))
 }
 
+func withLLMPromptCacheTenant(ctx context.Context, tenantID string) context.Context {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	return context.WithValue(ctx, llmPromptCacheTenantContextKey{}, tenantID)
+}
+
+func llmPromptCacheTenant(ctx context.Context) string {
+	if ctx == nil {
+		return store.DefaultTenantID
+	}
+	if tenantID, ok := ctx.Value(llmPromptCacheTenantContextKey{}).(string); ok && strings.TrimSpace(tenantID) != "" {
+		return strings.TrimSpace(tenantID)
+	}
+	return store.DefaultTenantID
+}
+
+func tenantScopedLLMPromptCacheKey(ctx context.Context, cacheKey string) string {
+	tenantID := llmPromptCacheTenant(ctx)
+	if tenantID == store.DefaultTenantID || strings.TrimSpace(cacheKey) == "" {
+		return cacheKey
+	}
+	return "tenant:" + tenantID + ":" + cacheKey
+}
+
 func getCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheStore, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, cfg HubLLMPromptCacheConfig) ([]byte, int, string, []string, corelib.TokenUsageStat, bool, error) {
-	if cache == nil || !llmPromptCacheable(body, cfg) {
+	if cache == nil || !llmPromptCacheableForTenant(ctx, body, cfg) {
 		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, nil
 	}
 	cacheKey, _, err := llmPromptCacheKey(model, body, externalModel, cfg)
 	if err != nil {
 		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, err
 	}
+	cacheKey = tenantScopedLLMPromptCacheKey(ctx, cacheKey)
 	entry, err := cache.Get(ctx, cacheKey)
 	if err != nil || entry == nil {
 		return nil, 0, "", nil, corelib.TokenUsageStat{}, false, err
@@ -173,13 +294,14 @@ func getCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheS
 }
 
 func putCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheStore, model *llmservice.AuthorizedModel, body map[string]any, externalModel string, respBody []byte, statusCode int, providerID string, serviceGroupIDs []string, usage corelib.TokenUsageStat, cfg HubLLMPromptCacheConfig) error {
-	if cache == nil || !llmPromptCacheable(body, cfg) || statusCode < 200 || statusCode >= 400 || len(respBody) == 0 {
+	if cache == nil || !llmPromptCacheableForTenant(ctx, body, cfg) || statusCode < 200 || statusCode >= 400 || len(respBody) == 0 {
 		return nil
 	}
 	cacheKey, inputHash, err := llmPromptCacheKey(model, body, externalModel, cfg)
 	if err != nil {
 		return err
 	}
+	cacheKey = tenantScopedLLMPromptCacheKey(ctx, cacheKey)
 	now := time.Now().UTC()
 	orderedProviders := []string(nil)
 	if model != nil {

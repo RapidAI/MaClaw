@@ -13,6 +13,7 @@ package skill
 //   3. GitHub    — via GitHubSearcher (already in this package)
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -32,6 +33,8 @@ import (
 // ClawHubMirrorURL is the China mirror for ClawHub skill search.
 // Used by all search and install paths.
 const ClawHubMirrorURL = "https://cn.clawhub-mirror.com"
+
+const hubClientJSONMaxBytes = 5 << 20
 
 // ────────────────────────────────────────────────────────────────────────────
 // Unified search result
@@ -378,7 +381,25 @@ func (c *HubClient) getJSON(ctx context.Context, endpoint string, dest interface
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(dest)
+	data, err := readBoundedHubJSON(resp.Body, hubClientJSONMaxBytes)
+	if err != nil {
+		return err
+	}
+	return json.NewDecoder(bytes.NewReader(data)).Decode(dest)
+}
+
+func readBoundedHubJSON(body io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("hub response exceeds %d bytes", maxBytes)
+	}
+	return data, nil
 }
 
 // ── SkillHub response types ──

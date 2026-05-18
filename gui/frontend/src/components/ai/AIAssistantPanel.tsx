@@ -30,6 +30,8 @@ import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTur
 import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
 import { AITabBar } from "./AITabBar";
 import { useAITabManager } from "./useAITabManager";
+import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
+import { useAddLocalMaclawToTab } from "./useAddLocalMaclawToTab";
 import { useProjectContextLoader } from "./useProjectContextLoader";
 import { AssistantActiveTabContent } from "./AssistantActiveTabContent";
 import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
@@ -346,7 +348,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return options === undefined ? sendMessage(text) : sendMessage(text, options);
     }, [sendMessage, activeTab]);
+    const addParticipantToTab = useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup });
+    const addLocalMaclawToTab = useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup });
     usePendingAssistantTabOpen({
+        lang,
         createVETab,
         createGroupTab,
         createProjectTab: createProjectTabWithContext,
@@ -741,38 +746,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     const tabSt = getTabState(tab.id);
                     const sessionId = tabSt?.sessionId || tab.discussionId;
                     const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-                    upgradeVETabToGroup(tab.id, currentParticipants, sessionId);
+                    const title = String(tab.title || "").trim();
+                    const veId = String(tab.veId || "").trim();
+                    const titleLooksRaw = /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+)$/.test(title);
+                    const participantNames = veId && title && title !== veId && !titleLooksRaw ? { [veId]: title } : undefined;
+                    upgradeVETabToGroup(tab.id, currentParticipants, sessionId, participantNames);
                 }
                 activateTab(tab.id);
-            }} onAddLocalMaclawToTab={(tab) => {
-                if (tab.participants?.includes("local-maclaw")) return;
-                const tabSt = getTabState(tab.id);
-                const sessionId = tabSt?.sessionId || tab.discussionId;
-                if (!sessionId) {
-                    const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-                    upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"]);
-                    return;
-                }
-                import("../../../wailsjs/go/main/App").then((mod) => {
-                    const registerFn = (mod as any).RegisterLocalExecutorInGroup;
-                    if (!registerFn) {
-                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-                        upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
-                        return;
-                    }
-                    registerFn(sessionId).then(() => {
-                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-                        upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
-                    }).catch((err: unknown) => {
-                        console.error("[AddLocalMaclaw] Hub registration failed, upgrading tab UI anyway:", err);
-                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-                        upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
-                    });
-                }).catch(() => {
-                    const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-                    upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
-                });
-            }} lang={lang} getLastActiveAt={getLastActiveAt} />
+            }} onAddLocalMaclawToTab={addLocalMaclawToTab} lang={lang} getLastActiveAt={getLastActiveAt} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
@@ -783,7 +764,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 </div>
                 <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={!!inline} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />
             </>}
-            <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} />
+            <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
             </div>
             <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} inline={!!inline} lang={lang} onToggleMaximize={onToggleMaximize} selectCodeFile={selectCodeFile} submitAgentView={submitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
         </div>

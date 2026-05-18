@@ -16,6 +16,8 @@ type AssistantActiveTabContentProps = {
     getTabState?: (tabId: string) => AITabState | undefined;
     /** Save state for a tab (from useAITabManager) */
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
+    /** Add a remote digital employee to an existing live group tab. */
+    onAddParticipantToTab?: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
 };
 
 /**
@@ -25,7 +27,7 @@ type AssistantActiveTabContentProps = {
  * (sharing the same AssistantConversationBody + AssistantInputStack layout but
  * with independent state). This component only handles VE and group tab types.
  */
-export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState }: AssistantActiveTabContentProps) {
+export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState, onAddParticipantToTab }: AssistantActiveTabContentProps) {
     const contentTabs = useMemo(() => {
         const sourceTabs = tabs && tabs.length > 0 ? tabs : [activeTab];
         return sourceTabs.filter(tab =>
@@ -45,6 +47,7 @@ export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, i
                     theme={theme}
                     getTabState={getTabState}
                     saveTabState={saveTabState}
+                    onAddParticipantToTab={onAddParticipantToTab}
                 />
             ))}
         </>
@@ -62,9 +65,25 @@ type AssistantTabContentPaneProps = {
     theme: Theme;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
+    onAddParticipantToTab?: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
 };
 
-function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTabState }: AssistantTabContentPaneProps) {
+const mentionLabelFromName = (value: string): string =>
+    String(value || "").trim().replace(/\s+\([^()]+\)$/, "").trim();
+
+const looksLikeRawParticipantId = (value: string): boolean =>
+    /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+
+const friendlyParticipantName = (index: number, lang?: string): string =>
+    lang?.startsWith("en") ? "Participant " + (index + 1) : "参与者 " + (index + 1);
+
+const readableParticipantName = (name: string | undefined, id: string, index: number, lang?: string): string => {
+    const candidate = String(name || "").trim();
+    if (candidate && candidate !== id && !looksLikeRawParticipantId(candidate)) return candidate;
+    return friendlyParticipantName(index, lang);
+};
+
+function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTabState, onAddParticipantToTab }: AssistantTabContentPaneProps) {
     let content: React.ReactNode = null;
 
     if (tab.type === "ve" && tab.veId) {
@@ -78,6 +97,7 @@ function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTa
                 lang={lang}
                 getTabState={getTabState}
                 saveTabState={saveTabState}
+                onAddParticipantToTab={onAddParticipantToTab}
             />
         );
     } else if (tab.type === "group") {
@@ -94,6 +114,7 @@ function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTa
                     lang={lang}
                     getTabState={getTabState}
                     saveTabState={saveTabState}
+                    onAddParticipantToTab={onAddParticipantToTab}
                 />
             );
         } else {
@@ -171,9 +192,10 @@ interface UnifiedVEGroupWrapperProps {
     lang: string;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
+    onAddParticipantToTab?: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
 }
 
-function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState }: UnifiedVEGroupWrapperProps) {
+function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, onAddParticipantToTab }: UnifiedVEGroupWrapperProps) {
     const veRef = useVEStatePersistence(tab.id, saveTabState);
 
     const savedState = getTabState?.(tab.id);
@@ -186,8 +208,10 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState }: 
         saveTabState?.(tab.id, { ...current, sessionId });
     }, [getTabState, saveTabState, tab.id]);
 
-    // Determine if we're in group mode (show participant panel)
-    const isGroupMode = Array.isArray(tab.participants) && tab.participants.length > 1;
+    // Determine if we're in group mode (show participant panel).
+    // A freshly converted group can briefly have only the original VE; the panel
+    // still needs to be visible so the user can pick the next participant.
+    const isGroupMode = tab.type === "group";
 
     // External @mention insert state (triggered by right-click "Talk to" in participant panel)
     const [externalMentionInsert, setExternalMentionInsert] = useState<{ name: string; timestamp: number } | null>(null);
@@ -196,35 +220,36 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState }: 
     const handleTalkTo = useCallback((participant: Participant) => {
         const displayName = participant.isLocal
             ? (lang?.startsWith("zh") || !lang ? "本机AI" : "Local AI")
-            : participant.name;
+            : mentionLabelFromName(String(participant.name || ""));
+        if (!displayName) return;
         setExternalMentionInsert({ name: displayName, timestamp: Date.now() });
     }, [lang]);
 
     // Memoize participant list for GroupParticipantPanel display
     const panelParticipants: Participant[] = useMemo(() =>
-        (tab.participants || []).map((pid) => ({
+        (tab.participants || []).map((pid, index) => ({
             id: pid,
             name: pid === "local-maclaw"
                 ? "" // GroupParticipantPanel uses isLocal flag for display name
-                : (pid === tab.veId ? tab.title : pid),
+                : readableParticipantName(tab.participantNames?.[pid] || (pid === tab.veId ? tab.title : ""), pid, index, lang),
             online: true,
             isLocal: pid === "local-maclaw",
         })),
-        [tab.participants, tab.veId, tab.title]
+        [tab.participants, tab.veId, tab.title, tab.participantNames, lang]
     );
 
     // Participants for @mention popover: all participants are mentionable.
     // In group chat, the user (human operator) is the message sender, NOT a participant.
     // Both remote VE and local AI are participants that can be @mentioned.
     const mentionParticipants = useMemo(() =>
-        (tab.participants || []).map((pid) => ({
+        (tab.participants || []).map((pid, index) => ({
             id: pid,
             name: pid === "local-maclaw"
                 ? (lang?.startsWith("zh") || !lang ? "本机AI" : "Local AI")
-                : (pid === tab.veId ? tab.title : pid),
+                : mentionLabelFromName(readableParticipantName(tab.participantNames?.[pid] || (pid === tab.veId ? tab.title : ""), pid, index, lang)),
             online: true,
         })),
-        [tab.participants, tab.veId, tab.title, lang]
+        [tab.participants, tab.veId, tab.title, tab.participantNames, lang]
     );
 
     // CRITICAL: Always use the same DOM structure regardless of isGroupMode.
@@ -256,6 +281,7 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState }: 
                     existingSessionId={savedSessionId}
                     initialMessages={savedMessages}
                     initialInputText={savedInputText}
+                    readOnly={!!tab.readOnly}
                     participants={isGroupMode ? mentionParticipants : undefined}
                     externalMentionInsert={isGroupMode ? externalMentionInsert : undefined}
                     onSessionIdChange={handleSessionIdChange}
@@ -267,6 +293,8 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState }: 
                     theme={theme}
                     lang={lang}
                     sessionId={savedSessionId}
+                    readOnly={!!tab.readOnly}
+                    onAddParticipant={onAddParticipantToTab ? ((veId, veName) => onAddParticipantToTab(tab, veId, veName)) : undefined}
                     onTalkTo={handleTalkTo}
                 />
             )}

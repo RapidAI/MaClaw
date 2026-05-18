@@ -351,6 +351,119 @@ func TestListLLMServiceCardsHandlerPaginatesAndFilters(t *testing.T) {
 	}
 }
 
+func TestLLMServiceCardsAdminHandlersScopeByTenant(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	tenantASettings := scopedSystemSettingsForTenant("tenant_a", system)
+	tenantBSettings := scopedSystemSettingsForTenant("tenant_b", system)
+	if err := llmservice.SaveRegistry(ctx, tenantASettings, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-tenant-a", Label: "Tenant A", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := llmservice.SaveRegistry(ctx, tenantBSettings, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-tenant-b", Label: "Tenant B", ServiceGroupIDs: []string{"coding-basic"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards?status=all", nil)
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	listRec := httptest.NewRecorder()
+	ListLLMServiceCardsHandler(system).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Items) != 1 || listResp.Items[0].ID != "card-tenant-a" {
+		t.Fatalf("tenant A list leaked cards: %#v", listResp.Items)
+	}
+
+	createBody := []byte(`{"label":"Issued","service_group_ids":["coding-basic"],"duration_days":30,"credits":100,"count":1}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards", bytes.NewReader(createBody))
+	createReq = createReq.WithContext(context.WithValue(createReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	createRec := httptest.NewRecorder()
+	CreateLLMServiceCardHandler(system, nil).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+
+	tenantAReg, err := llmservice.LoadRegistry(ctx, tenantASettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantBReg, err := llmservice.LoadRegistry(ctx, tenantBSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultReg, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tenantAReg.Cards) != 2 {
+		t.Fatalf("tenant A cards = %d, want 2", len(tenantAReg.Cards))
+	}
+	if len(tenantBReg.Cards) != 1 || tenantBReg.Cards[0].ID != "card-tenant-b" {
+		t.Fatalf("tenant B registry changed: %#v", tenantBReg.Cards)
+	}
+	if len(defaultReg.Cards) != 0 {
+		t.Fatalf("default registry received tenant cards: %#v", defaultReg.Cards)
+	}
+
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/admin/llm/service-cards/export?status=all&format=txt", nil)
+	exportReq = exportReq.WithContext(context.WithValue(exportReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	exportRec := httptest.NewRecorder()
+	ExportLLMServiceCardsHandler(system).ServeHTTP(exportRec, exportReq)
+	if exportRec.Code != http.StatusOK {
+		t.Fatalf("export status = %d, body = %s", exportRec.Code, exportRec.Body.String())
+	}
+	exportText := exportRec.Body.String()
+	if !strings.Contains(exportText, "card-tenant-a") || strings.Contains(exportText, "card-tenant-b") {
+		t.Fatalf("tenant A export leaked cards: %s", exportText)
+	}
+}
+
+func TestCreateLLMServiceCardHandlerAuditsGlobalAdminTenantQuery(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, scopedSystemSettingsForTenant("tenant_a", system), &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	audit := &testAdminAuditRepo{}
+	body := []byte(`{"label":"Tenant Audit","service_group_ids":["coding-basic"],"duration_days":30,"credits":100,"count":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/service-cards?tenant_id=tenant_a", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "global-admin", Scope: "global"}))
+	rec := httptest.NewRecorder()
+
+	CreateLLMServiceCardHandler(system, audit).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(audit.logs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(audit.logs))
+	}
+	if audit.logs[0].TenantID != "tenant_a" || audit.logs[0].AdminUserID != "global-admin" {
+		t.Fatalf("unexpected audit tenant/admin: %#v", audit.logs[0])
+	}
+}
+
 func TestListLLMServiceCardsHandlerClampsPageToLastPage(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()

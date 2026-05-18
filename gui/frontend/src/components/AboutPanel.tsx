@@ -75,14 +75,11 @@ export function AboutPanel({
 
     // Override product name for TigerClaw brand on About panel
     const productName = brandInfo?.id === 'qianxin'
-        ? '\u864e\u722a\u00b7\u7a0b\u542f TigerClaw'
+        ? '\u864e\u722a 6 \u7a0b\u542f'
         : t("aboutProductName");
 
     // Render product name with Monoton-styled "6"
     const renderProductName = () => {
-        if (brandInfo?.id === 'qianxin') {
-            return <>{productName}</>;
-        }
         const raw = productName;
         const sixIndex = raw.indexOf('6');
         if (sixIndex === -1) {

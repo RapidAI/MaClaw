@@ -34,7 +34,15 @@ func AdminAuditLogsHandler(audit store.AdminAuditRepository) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_AUDIT_RANGE", "from must be before or equal to to")
 			return
 		}
-		items, err := audit.List(r.Context(), store.AdminAuditLogFilter{Limit: limit, Action: r.URL.Query().Get("action"), Query: r.URL.Query().Get("q"), CreatedFrom: createdFrom, CreatedTo: createdTo})
+		filter := store.AdminAuditLogFilter{Limit: limit, Action: r.URL.Query().Get("action"), Query: r.URL.Query().Get("q"), CreatedFrom: createdFrom, CreatedTo: createdTo}
+		if admin := AdminFromContext(r.Context()); admin != nil && strings.TrimSpace(admin.Scope) == "tenant" {
+			filter.TenantID = AdminTenantID(r.Context())
+			filter.TenantScoped = true
+		} else if tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id")); tenantID != "" {
+			filter.TenantID = tenantID
+			filter.TenantScoped = true
+		}
+		items, err := audit.List(r.Context(), filter)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "ADMIN_AUDIT_LIST_FAILED", err.Error())
 			return
@@ -48,7 +56,7 @@ func AdminAuditLogsHandler(audit store.AdminAuditRepository) http.HandlerFunc {
 			if raw := strings.TrimSpace(item.PayloadJSON); raw != "" {
 				_ = json.Unmarshal([]byte(raw), &payload)
 			}
-			resp = append(resp, map[string]any{"id": item.ID, "admin_user_id": item.AdminUserID, "action": item.Action, "payload": payload, "payload_json": item.PayloadJSON, "created_at": item.CreatedAt})
+			resp = append(resp, map[string]any{"id": item.ID, "tenant_id": item.TenantID, "admin_user_id": item.AdminUserID, "action": item.Action, "payload": payload, "payload_json": item.PayloadJSON, "created_at": item.CreatedAt})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": resp})
 	}
@@ -93,5 +101,9 @@ func writeAdminAuditLog(ctx context.Context, audit store.AdminAuditRepository, a
 	if err != nil {
 		payloadJSON = []byte("{}")
 	}
-	_ = audit.Create(ctx, &store.AdminAuditLog{ID: uuid.New().String(), AdminUserID: adminUserID, Action: action, PayloadJSON: string(payloadJSON), CreatedAt: time.Now().UTC()})
+	tenantID := ""
+	if admin := AdminFromContext(ctx); admin != nil && strings.TrimSpace(admin.Scope) == "tenant" {
+		tenantID = AdminTenantID(ctx)
+	}
+	_ = audit.Create(ctx, &store.AdminAuditLog{ID: uuid.New().String(), TenantID: tenantID, AdminUserID: adminUserID, Action: action, PayloadJSON: string(payloadJSON), CreatedAt: time.Now().UTC()})
 }

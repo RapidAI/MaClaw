@@ -186,7 +186,7 @@ func scanHubDomainRoute(scanner interface{ Scan(dest ...any) error }) (*store.Hu
 	var enabled int
 	var createdAt string
 	var updatedAt string
-	if err := scanner.Scan(&item.ID, &item.HubID, &item.Domain, &enabled, &item.Priority, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&item.ID, &item.HubID, &item.TenantID, &item.Domain, &enabled, &item.Priority, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	item.Enabled = enabled == 1
@@ -688,6 +688,7 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 	}
 	var remove []*store.HubUserLink
 	targetExists := false
+	targetTenantID := strings.TrimSpace(link.TenantID)
 	for rows.Next() {
 		item, scanErr := scanHubUserLink(rows)
 		if scanErr != nil {
@@ -695,6 +696,9 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 			return nil, nil, scanErr
 		}
 		if item == nil || strings.HasPrefix(strings.TrimSpace(item.ID), "hul_owner_") {
+			continue
+		}
+		if strings.TrimSpace(item.TenantID) != targetTenantID {
 			continue
 		}
 		if strings.TrimSpace(item.HubID) == strings.TrimSpace(link.HubID) {
@@ -822,10 +826,11 @@ func (r *hubUserLinkRepo) MigrateEmailPatternToHub(ctx context.Context, pattern,
 
 func (r *hubDomainRouteRepo) Upsert(ctx context.Context, route *store.HubDomainRoute) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO hub_domain_routes (id, hub_id, tenant_id, domain, enabled, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			hub_id = excluded.hub_id,
+			tenant_id = excluded.tenant_id,
 			domain = excluded.domain,
 			enabled = excluded.enabled,
 			priority = excluded.priority,
@@ -834,6 +839,7 @@ func (r *hubDomainRouteRepo) Upsert(ctx context.Context, route *store.HubDomainR
 	`,
 		route.ID,
 		route.HubID,
+		strings.TrimSpace(route.TenantID),
 		route.Domain,
 		boolToInt(route.Enabled),
 		route.Priority,
@@ -845,7 +851,7 @@ func (r *hubDomainRouteRepo) Upsert(ctx context.Context, route *store.HubDomainR
 
 func (r *hubDomainRouteRepo) ListAll(ctx context.Context) ([]*store.HubDomainRoute, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
-		SELECT id, hub_id, domain, enabled, priority, created_at, updated_at
+		SELECT id, hub_id, tenant_id, domain, enabled, priority, created_at, updated_at
 		FROM hub_domain_routes
 		ORDER BY priority ASC, updated_at DESC, id ASC
 	`)
@@ -894,7 +900,7 @@ func (r *hubDomainRouteRepo) MigrateDomainToHub(ctx context.Context, domain, fro
 	}()
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, hub_id, domain, enabled, priority, created_at, updated_at
+		SELECT id, hub_id, tenant_id, domain, enabled, priority, created_at, updated_at
 		FROM hub_domain_routes
 		WHERE domain = ?
 		ORDER BY priority ASC, updated_at DESC, id ASC
@@ -910,6 +916,9 @@ func (r *hubDomainRouteRepo) MigrateDomainToHub(ctx context.Context, domain, fro
 			return nil, scanErr
 		}
 		if item == nil || strings.TrimSpace(item.ID) == strings.TrimSpace(route.ID) {
+			continue
+		}
+		if strings.TrimSpace(item.TenantID) != strings.TrimSpace(route.TenantID) {
 			continue
 		}
 		if strings.TrimSpace(item.HubID) == strings.TrimSpace(route.HubID) {
@@ -928,16 +937,17 @@ func (r *hubDomainRouteRepo) MigrateDomainToHub(ctx context.Context, domain, fro
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO hub_domain_routes (id, hub_id, tenant_id, domain, enabled, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			hub_id = excluded.hub_id,
+			tenant_id = excluded.tenant_id,
 			domain = excluded.domain,
 			enabled = excluded.enabled,
 			priority = excluded.priority,
 			created_at = excluded.created_at,
 			updated_at = excluded.updated_at
-	`, route.ID, route.HubID, route.Domain, boolToInt(route.Enabled), route.Priority, route.CreatedAt.Format(time.RFC3339), route.UpdatedAt.Format(time.RFC3339)); err != nil {
+	`, route.ID, route.HubID, strings.TrimSpace(route.TenantID), route.Domain, boolToInt(route.Enabled), route.Priority, route.CreatedAt.Format(time.RFC3339), route.UpdatedAt.Format(time.RFC3339)); err != nil {
 		return nil, err
 	}
 	for _, item := range remove {
@@ -965,7 +975,7 @@ func (r *hubDomainRouteRepo) MigrateDomainAndEmailPatternToHub(ctx context.Conte
 	}()
 
 	routeRows, err := tx.QueryContext(ctx, `
-		SELECT id, hub_id, domain, enabled, priority, created_at, updated_at
+		SELECT id, hub_id, tenant_id, domain, enabled, priority, created_at, updated_at
 		FROM hub_domain_routes
 		WHERE domain = ?
 		ORDER BY priority ASC, updated_at DESC, id ASC
@@ -981,6 +991,9 @@ func (r *hubDomainRouteRepo) MigrateDomainAndEmailPatternToHub(ctx context.Conte
 			return nil, nil, nil, scanErr
 		}
 		if item == nil || strings.TrimSpace(item.ID) == strings.TrimSpace(route.ID) {
+			continue
+		}
+		if strings.TrimSpace(item.TenantID) != strings.TrimSpace(route.TenantID) {
 			continue
 		}
 		if strings.TrimSpace(item.HubID) == strings.TrimSpace(route.HubID) {
@@ -1034,16 +1047,17 @@ func (r *hubDomainRouteRepo) MigrateDomainAndEmailPatternToHub(ctx context.Conte
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hub_domain_routes (id, hub_id, domain, enabled, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO hub_domain_routes (id, hub_id, tenant_id, domain, enabled, priority, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			hub_id = excluded.hub_id,
+			tenant_id = excluded.tenant_id,
 			domain = excluded.domain,
 			enabled = excluded.enabled,
 			priority = excluded.priority,
 			created_at = excluded.created_at,
 			updated_at = excluded.updated_at
-	`, route.ID, route.HubID, route.Domain, boolToInt(route.Enabled), route.Priority, route.CreatedAt.Format(time.RFC3339), route.UpdatedAt.Format(time.RFC3339)); err != nil {
+	`, route.ID, route.HubID, strings.TrimSpace(route.TenantID), route.Domain, boolToInt(route.Enabled), route.Priority, route.CreatedAt.Format(time.RFC3339), route.UpdatedAt.Format(time.RFC3339)); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -1571,9 +1585,9 @@ func (r *gossipRepo) HasRated(ctx context.Context, postID, machineID string) (bo
 
 func (r *failureEventLogRepo) Create(ctx context.Context, log *store.FailureEventLog) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO failure_event_logs (id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, log.ID, log.Category, log.EventCode, log.Message, log.EntityID, log.Email, log.ClientIP, log.DetailsJSON, log.CreatedAt.Format(time.RFC3339))
+		INSERT INTO failure_event_logs (id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, log.ID, strings.TrimSpace(log.TenantID), log.Category, log.EventCode, log.Message, log.EntityID, log.Email, log.ClientIP, log.DetailsJSON, log.CreatedAt.Format(time.RFC3339))
 	return err
 }
 
@@ -1588,8 +1602,13 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 	}
 	keyword := strings.TrimSpace(filter.Keyword)
 	category := strings.TrimSpace(filter.Category)
+	tenantID := strings.TrimSpace(filter.TenantID)
 	where := make([]string, 0, 2)
 	args := make([]any, 0, 8)
+	if tenantID != "" {
+		where = append(where, "tenant_id = ?")
+		args = append(args, tenantID)
+	}
 	if category != "" {
 		where = append(where, "category = ?")
 		args = append(args, category)
@@ -1607,7 +1626,7 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 	if err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM failure_event_logs`+whereSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, category, event_code, message, entity_id, email, client_ip, details_json, created_at FROM failure_event_logs`+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at FROM failure_event_logs`+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1616,7 +1635,7 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 	for rows.Next() {
 		var item store.FailureEventLog
 		var createdAt string
-		if err := rows.Scan(&item.ID, &item.Category, &item.EventCode, &item.Message, &item.EntityID, &item.Email, &item.ClientIP, &item.DetailsJSON, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Category, &item.EventCode, &item.Message, &item.EntityID, &item.Email, &item.ClientIP, &item.DetailsJSON, &createdAt); err != nil {
 			return nil, 0, err
 		}
 		item.CreatedAt = mustParseTime(createdAt)

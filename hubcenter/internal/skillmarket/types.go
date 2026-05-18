@@ -8,14 +8,14 @@ import "time"
 type SkillMarketUser struct {
 	ID                string    `json:"id"`
 	Email             string    `json:"email"`
-	Status            string    `json:"status"`              // "unverified", "verified"
-	VerifyMethod      string    `json:"verify_method"`       // "email", "phone", ""
-	Credits           int64     `json:"credits"`             // 买家可用余额
-	SettledCredits    int64     `json:"settled_credits"`     // 卖家已交付收益（可提现）
-	PendingSettlement int64     `json:"pending_settlement"`  // 卖家待交付收益（不可提现）
-	Debt              int64     `json:"debt"`                // 退款负债
-	VoucherCount      int       `json:"voucher_count"`       // 体验券剩余次数
-	VoucherExpiresAt  time.Time `json:"voucher_expires_at"`  // 体验券过期时间
+	Status            string    `json:"status"`             // "unverified", "verified"
+	VerifyMethod      string    `json:"verify_method"`      // "email", "phone", ""
+	Credits           int64     `json:"credits"`            // 买家可用余额
+	SettledCredits    int64     `json:"settled_credits"`    // 卖家已交付收益（可提现）
+	PendingSettlement int64     `json:"pending_settlement"` // 卖家待交付收益（不可提现）
+	Debt              int64     `json:"debt"`               // 退款负债
+	VoucherCount      int       `json:"voucher_count"`      // 体验券剩余次数
+	VoucherExpiresAt  time.Time `json:"voucher_expires_at"` // 体验券过期时间
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 	VerifiedAt        time.Time `json:"verified_at,omitempty"`
@@ -57,6 +57,8 @@ type SkillSubmission struct {
 // PurchaseRecord 记录一次 Skill 购买。
 type PurchaseRecord struct {
 	ID               string    `json:"id"`
+	HubID            string    `json:"hub_id,omitempty"`
+	TenantID         string    `json:"tenant_id,omitempty"`
 	BuyerEmail       string    `json:"buyer_email"`
 	BuyerID          string    `json:"buyer_id"`
 	SkillID          string    `json:"skill_id"`
@@ -103,10 +105,10 @@ type AdminConfig struct {
 
 // UploaderTier 记录上传者的信誉等级。
 type UploaderTier struct {
-	UserID         string  `json:"user_id"`
-	Tier           int     `json:"tier"` // 1-4
-	PublishedCount int     `json:"published_count"`
-	AvgRating      float64 `json:"avg_rating"`
-	TotalDownloads int     `json:"total_downloads"`
+	UserID         string    `json:"user_id"`
+	Tier           int       `json:"tier"` // 1-4
+	PublishedCount int       `json:"published_count"`
+	AvgRating      float64   `json:"avg_rating"`
+	TotalDownloads int       `json:"total_downloads"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }

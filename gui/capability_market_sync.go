@@ -16,6 +16,8 @@ import (
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
+const capabilityManagedSyncMinRetry = 5 * time.Minute
+
 type CapabilitySyncStatus struct {
 	ManagedChecked   int      `json:"managed_checked"`
 	ManagedInstalled int      `json:"managed_installed"`
@@ -26,6 +28,12 @@ type CapabilitySyncStatus struct {
 }
 
 func (a *App) TriggerHubManagedCapabilitySync(reason string) {
+	now := time.Now()
+	if !isCapabilitySyncImmediateReason(reason) {
+		if next, ok := a.capabilitySyncNextAttempt.Load().(time.Time); ok && now.Before(next) {
+			return
+		}
+	}
 	// Fast path: if hub was probed and doesn't support marketplace, skip.
 	// The goroutine will re-check with the actual URL from config (which it
 	// already loads for creating the client) and invalidate if URL changed.
@@ -69,11 +77,27 @@ func (a *App) TriggerHubManagedCapabilitySync(reason string) {
 					return
 				}
 			}
-			log.Printf("[capability-market] managed sync reason=%s errors=%v", reason, status.Errors)
+			nextAttempt := time.Now().Add(capabilityManagedSyncRetryDelay(status.Errors))
+			a.capabilitySyncNextAttempt.Store(nextAttempt)
+			log.Printf("[capability-market] managed sync reason=%s errors=%v next_retry=%s", reason, status.Errors, nextAttempt.Format(time.RFC3339))
 			return
 		}
+		a.capabilitySyncNextAttempt.Store(time.Time{})
 		log.Printf("[capability-market] managed sync reason=%s checked=%d installed=%d needs_config=%d", reason, status.ManagedChecked, status.ManagedInstalled, len(status.NeedsUserConfig))
 	}()
+}
+
+func isCapabilitySyncImmediateReason(reason string) bool {
+	switch strings.TrimSpace(strings.ToLower(reason)) {
+	case "hub-connect", "hub-config-update", "manual", "user", "install", "startup":
+		return true
+	default:
+		return false
+	}
+}
+
+func capabilityManagedSyncRetryDelay(errs []string) time.Duration {
+	return capabilityManagedSyncMinRetry
 }
 func (a *App) SyncHubManagedCapabilities() CapabilitySyncStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)

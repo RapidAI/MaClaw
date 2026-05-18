@@ -53,7 +53,7 @@ type Service struct {
 	// OnMultiDeviceOnline is called (in a goroutine) when a user's second
 	// device comes online. The callback receives the userID and a list of
 	// all online machine display names. Used to push IM usage guidance.
-	OnMultiDeviceOnline func(userID string, machineNames []string)
+	OnMultiDeviceOnline func(tenantID, userID string, machineNames []string)
 }
 
 func (s *Service) IsMachineOnline(machineID string) bool {
@@ -315,7 +315,11 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 	// When the second device comes online, push a usage guide to the user's IM.
 	if len(onlineNames) == 2 && s.OnMultiDeviceOnline != nil {
 		userID := safeConnUserID(conn)
-		go s.OnMultiDeviceOnline(userID, onlineNames)
+		tenantID := ""
+		if conn != nil {
+			tenantID = conn.TenantID
+		}
+		go s.OnMultiDeviceOnline(tenantID, userID, onlineNames)
 	}
 
 	if s.repo == nil {
@@ -595,7 +599,16 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 
 func (s *Service) ListMachinesByTenant(ctx context.Context, tenantID string) ([]MachineRuntimeInfo, error) {
 	if s.repo == nil {
-		return s.ListOnlineMachines(), nil
+		s.runtime.mu.RLock()
+		defer s.runtime.mu.RUnlock()
+		out := make([]MachineRuntimeInfo, 0, len(s.runtime.desktopsByMachine))
+		for machineID, conn := range s.runtime.desktopsByMachine {
+			if conn == nil || strings.TrimSpace(conn.TenantID) != tenantID {
+				continue
+			}
+			out = append(out, s.runtimeOnlyMachineInfo(machineID, conn))
+		}
+		return out, nil
 	}
 	items, err := s.repo.ListByTenant(ctx, tenantID)
 	if err != nil {
@@ -604,16 +617,11 @@ func (s *Service) ListMachinesByTenant(ctx context.Context, tenantID string) ([]
 	s.runtime.mu.RLock()
 	defer s.runtime.mu.RUnlock()
 	out := make([]MachineRuntimeInfo, 0, len(items))
-	seenUsers := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		out = append(out, s.mergeMachineInfo(item))
-		seenUsers[item.UserID] = struct{}{}
 	}
 	for machineID, conn := range s.runtime.desktopsByMachine {
-		if conn == nil || conn.UserID == "" {
-			continue
-		}
-		if _, ok := seenUsers[conn.UserID]; !ok {
+		if conn == nil || strings.TrimSpace(conn.TenantID) != tenantID {
 			continue
 		}
 		if _, exists := findMachineInfo(out, machineID); exists {

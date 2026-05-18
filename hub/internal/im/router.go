@@ -44,6 +44,7 @@ type OnlineMachineInfo struct {
 // PendingIMRequest represents a message waiting for the Agent's reply.
 type PendingIMRequest struct {
 	RequestID   string
+	TenantID    string
 	UserID      string
 	PlatformUID string // original platform-specific user ID for progress delivery
 	Text        string
@@ -185,36 +186,46 @@ func NewMessageRouter(devices DeviceFinder) *MessageRouter {
 // Called by the IM Adapter before RouteToAgent so that routeToSingleMachine
 // can include them in the WebSocket payload without changing the routing API.
 func (r *MessageRouter) StashAttachments(userID string, attachments []MessageAttachment) {
+	r.StashAttachmentsForTenant("", userID, attachments)
+}
+
+func (r *MessageRouter) StashAttachmentsForTenant(tenantID, userID string, attachments []MessageAttachment) {
 	if len(attachments) == 0 {
 		return
 	}
 	r.mu.Lock()
-	r.pendingAttachments[userID] = attachments
+	r.pendingAttachments[tenantUserRuntimeKey(tenantID, userID)] = attachments
 	r.mu.Unlock()
 }
 
 // popAttachments retrieves and removes stashed attachments for a user.
-func (r *MessageRouter) popAttachments(userID string) []MessageAttachment {
+func (r *MessageRouter) popAttachments(ctx context.Context, userID string) []MessageAttachment {
+	key := routerRuntimeKey(ctx, userID)
 	r.mu.Lock()
-	att := r.pendingAttachments[userID]
-	delete(r.pendingAttachments, userID)
+	att := r.pendingAttachments[key]
+	delete(r.pendingAttachments, key)
 	r.mu.Unlock()
 	return att
 }
 
 // StashMessageType stores the structural input modality for the current routed message.
 func (r *MessageRouter) StashMessageType(userID, messageType string) {
+	r.StashMessageTypeForTenant("", userID, messageType)
+}
+
+func (r *MessageRouter) StashMessageTypeForTenant(tenantID, userID, messageType string) {
 	if messageType == "" {
 		messageType = "text"
 	}
 	r.mu.Lock()
-	r.pendingMessageTypes[userID] = messageType
+	r.pendingMessageTypes[tenantUserRuntimeKey(tenantID, userID)] = messageType
 	r.mu.Unlock()
 }
 
-func (r *MessageRouter) currentMessageType(userID string) string {
+func (r *MessageRouter) currentMessageType(ctx context.Context, userID string) string {
+	key := routerRuntimeKey(ctx, userID)
 	r.mu.Lock()
-	messageType := r.pendingMessageTypes[userID]
+	messageType := r.pendingMessageTypes[key]
 	r.mu.Unlock()
 	if messageType == "" {
 		return "text"
@@ -260,8 +271,13 @@ type MachineSelectResult struct {
 // indicate that the user is in broadcast mode (/call all).
 const broadcastMachineID = "__all__"
 
+func routerRuntimeKey(ctx context.Context, userID string) string {
+	return tenantUserRuntimeKey(tenantIDFromContext(ctx), userID)
+}
+
 // SelectMachine explicitly sets the target machine for a user (via /call).
 func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) MachineSelectResult {
+	key := routerRuntimeKey(ctx, userID)
 	machines := r.devices.FindAllOnlineMachinesForUser(ctx, userID)
 	if len(machines) == 0 {
 		return MachineSelectResult{OK: false, Message: i18n.T(i18n.MsgNoOnlineDevices, "zh")}
@@ -273,7 +289,7 @@ func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) 
 	// "/call all" — enter broadcast mode.
 	if strings.EqualFold(name, "all") {
 		r.mu.Lock()
-		r.selectedMachine[userID] = broadcastMachineID
+		r.selectedMachine[key] = broadcastMachineID
 		r.mu.Unlock()
 		var names []string
 		for _, m := range machines {
@@ -311,7 +327,7 @@ func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) 
 	}
 
 	r.mu.Lock()
-	r.selectedMachine[userID] = matched[0].MachineID
+	r.selectedMachine[key] = matched[0].MachineID
 	r.mu.Unlock()
 
 	return MachineSelectResult{
@@ -326,6 +342,7 @@ func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) 
 // Returns (true, response) if the text matched a machine name (switch or error).
 // Returns (false, nil) if no match — caller should route as normal message.
 func (r *MessageRouter) TrySelectByName(ctx context.Context, userID, text string) (handled bool, resp *GenericResponse) {
+	key := routerRuntimeKey(ctx, userID)
 	machines := r.devices.FindAllOnlineMachinesForUser(ctx, userID)
 	// Only attempt name-based switching when multiple machines are online.
 	if len(machines) <= 1 {
@@ -357,7 +374,7 @@ func (r *MessageRouter) TrySelectByName(ctx context.Context, userID, text string
 	// If the matched machine is already the current selection, don't intercept —
 	// let the text pass through to the Agent as a normal message.
 	r.mu.Lock()
-	current := r.selectedMachine[userID]
+	current := r.selectedMachine[key]
 	r.mu.Unlock()
 	if current == matched[0].MachineID {
 		return false, nil
@@ -365,7 +382,7 @@ func (r *MessageRouter) TrySelectByName(ctx context.Context, userID, text string
 
 	// Switch to the new machine.
 	r.mu.Lock()
-	r.selectedMachine[userID] = matched[0].MachineID
+	r.selectedMachine[key] = matched[0].MachineID
 	r.mu.Unlock()
 
 	return true, &GenericResponse{
@@ -378,16 +395,24 @@ func (r *MessageRouter) TrySelectByName(ctx context.Context, userID, text string
 
 // GetSelectedMachine returns the currently selected machine for a user.
 func (r *MessageRouter) GetSelectedMachine(userID string) (machineID string, ok bool) {
+	return r.GetSelectedMachineForTenant("", userID)
+}
+
+func (r *MessageRouter) GetSelectedMachineForTenant(tenantID, userID string) (machineID string, ok bool) {
 	r.mu.Lock()
-	mid, ok := r.selectedMachine[userID]
+	mid, ok := r.selectedMachine[tenantUserRuntimeKey(tenantID, userID)]
 	r.mu.Unlock()
 	return mid, ok
 }
 
 // ClearSelectedMachine removes the machine selection for a user.
 func (r *MessageRouter) ClearSelectedMachine(userID string) {
+	r.ClearSelectedMachineForTenant("", userID)
+}
+
+func (r *MessageRouter) ClearSelectedMachineForTenant(tenantID, userID string) {
 	r.mu.Lock()
-	delete(r.selectedMachine, userID)
+	delete(r.selectedMachine, tenantUserRuntimeKey(tenantID, userID))
 	r.mu.Unlock()
 }
 
@@ -436,6 +461,8 @@ func (r *MessageRouter) Stop() {
 // Preconditions: identity mapping and rate limiting have already been applied
 // by the Adapter before calling this method.
 func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, platformUID, text string) (*GenericResponse, error) {
+	tenantID := tenantIDFromContext(ctx)
+	key := tenantUserRuntimeKey(tenantID, userID)
 	// 0. Parse @name prefix for targeted send in broadcast mode.
 	var targetName string
 	if strings.HasPrefix(text, "@") {
@@ -484,7 +511,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 		// Single machine — auto-select.
 		m := machines[0]
 		r.mu.Lock()
-		r.selectedMachine[userID] = m.MachineID
+		r.selectedMachine[key] = m.MachineID
 		r.mu.Unlock()
 		if !m.LLMConfigured {
 			return &GenericResponse{
@@ -499,7 +526,10 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 
 	// Multiple machines.
 	r.mu.Lock()
-	selected := r.selectedMachine[userID]
+	selected := r.selectedMachine[key]
+	if selected == "" && tenantID == normalizeTenantID("") {
+		selected = r.selectedMachine[userID]
+	}
 	r.mu.Unlock()
 
 	if selected == "" {
@@ -534,7 +564,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 
 	// Selected machine went offline.
 	r.mu.Lock()
-	delete(r.selectedMachine, userID)
+	delete(r.selectedMachine, key)
 	r.mu.Unlock()
 	list := r.formatMachineList(machines)
 	return &GenericResponse{
@@ -554,6 +584,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 	now := time.Now()
 	pending := &PendingIMRequest{
 		RequestID:    requestID,
+		TenantID:     tenantIDFromContext(ctx),
 		UserID:       userID,
 		PlatformUID:  platformUID,
 		Text:         text,
@@ -580,7 +611,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 	if len(extraAttachments) > 0 && len(extraAttachments[0]) > 0 {
 		attachments = extraAttachments[0]
 	} else {
-		attachments = r.popAttachments(userID)
+		attachments = r.popAttachments(ctx, userID)
 	}
 	wsMsg := map[string]interface{}{
 		"type":       "im.user_message",
@@ -589,7 +620,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 		"payload": map[string]interface{}{
 			"user_id":      userID,
 			"platform":     platformName,
-			"message_type": r.currentMessageType(userID),
+			"message_type": r.currentMessageType(ctx, userID),
 			"text":         text,
 			"lang":         "zh",
 		},
@@ -755,7 +786,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 
 	// Pop attachments once and re-stash for each target device so every
 	// device receives the same attachments (popAttachments is destructive).
-	broadcastAttachments := r.popAttachments(userID)
+	broadcastAttachments := r.popAttachments(ctx, userID)
 
 	for _, m := range targets {
 		go func(m OnlineMachineInfo, atts []MessageAttachment) {
@@ -972,14 +1003,15 @@ func isIntermediateStatusProgress(text string) bool {
 // user's selected machine so the client-side agent loop is aborted.
 // Returns the number of cancelled requests and the text of the first one.
 func (r *MessageRouter) CancelPendingForUser(ctx context.Context, userID string) (int, string) {
+	key := routerRuntimeKey(ctx, userID)
 	r.mu.Lock()
 	var toCancel []*PendingIMRequest
 	for _, req := range r.pendingReqs {
-		if req.UserID == userID {
+		if tenantUserRuntimeKey(req.TenantID, req.UserID) == key {
 			toCancel = append(toCancel, req)
 		}
 	}
-	selectedMachine := r.selectedMachine[userID]
+	selectedMachine := r.selectedMachine[key]
 	r.mu.Unlock()
 
 	var taskText string

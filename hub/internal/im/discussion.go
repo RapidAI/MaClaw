@@ -54,6 +54,7 @@ func (d *DiscussionState) stopped() bool {
 // and delivers each round's results to the user via IM progress delivery.
 // Returns immediately with a status message.
 func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformName, platformUID, topic string) *GenericResponse {
+	key := routerRuntimeKey(ctx, userID)
 	machines := r.devices.FindAllOnlineMachinesForUser(ctx, userID)
 
 	// Filter LLM-configured machines.
@@ -73,7 +74,7 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 	}
 
 	r.mu.Lock()
-	existing := r.discussions[userID]
+	existing := r.discussions[key]
 	if existing != nil && existing.Running {
 		r.mu.Unlock()
 		return &GenericResponse{
@@ -100,7 +101,7 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 			UserInputCh: make(chan string, 8),
 			StartedAt:   time.Now(),
 		}
-		r.discussions[userID] = ds
+		r.discussions[key] = ds
 		r.mu.Unlock()
 		// Pass the DiscussionState's StopCh so /stop can terminate the conductor.
 		return r.conductor.StartConductedDiscussion(ctx, userID, platformName, platformUID, topic, targets, prevSummary, ds.StopCh)
@@ -115,7 +116,7 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 		UserInputCh: make(chan string, 8),
 		StartedAt:   time.Now(),
 	}
-	r.discussions[userID] = ds
+	r.discussions[key] = ds
 	r.mu.Unlock()
 
 	var names []string
@@ -124,7 +125,7 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 	}
 
 	// Launch the discussion loop in background.
-	go r.runDiscussion(userID, platformName, platformUID, ds, targets)
+	go r.runDiscussion(tenantIDFromContext(ctx), userID, platformName, platformUID, ds, targets)
 
 	return &GenericResponse{
 		StatusCode: 200,
@@ -140,7 +141,8 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 const discussionTimeout = 20 * time.Minute
 
 // runDiscussion executes the multi-round discussion loop.
-func (r *MessageRouter) runDiscussion(userID, platformName, platformUID string, ds *DiscussionState, targets []OnlineMachineInfo) {
+func (r *MessageRouter) runDiscussion(tenantID, userID, platformName, platformUID string, ds *DiscussionState, targets []OnlineMachineInfo) {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	defer func() {
 		if rv := recover(); rv != nil {
 			r.deliverProgress(context.Background(), userID, platformName, platformUID,
@@ -148,12 +150,13 @@ func (r *MessageRouter) runDiscussion(userID, platformName, platformUID string, 
 		}
 		r.mu.Lock()
 		ds.Running = false
-		delete(r.discussions, userID)
+		delete(r.discussions, key)
 		r.mu.Unlock()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), discussionTimeout)
 	defer cancel()
+	ctx = WithTenant(ctx, tenantID)
 
 	// Build the first-round prompt.
 	prompt := ds.Topic
@@ -205,7 +208,7 @@ func (r *MessageRouter) runDiscussion(userID, platformName, platformUID string, 
 
 		// Drain any human interjections received during this round.
 		var userInputs []string
-		drainLoop:
+	drainLoop:
 		for {
 			select {
 			case msg := <-ds.UserInputCh:
@@ -307,8 +310,13 @@ type discussionRoundResult struct {
 
 // StopDiscussion stops the active discussion for a user.
 func (r *MessageRouter) StopDiscussion(userID string) *GenericResponse {
+	return r.StopDiscussionForTenant("", userID)
+}
+
+func (r *MessageRouter) StopDiscussionForTenant(tenantID, userID string) *GenericResponse {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	r.mu.Lock()
-	ds := r.discussions[userID]
+	ds := r.discussions[key]
 	r.mu.Unlock()
 
 	if ds == nil {
@@ -332,7 +340,7 @@ func (r *MessageRouter) StopDiscussion(userID string) *GenericResponse {
 
 	// Not running — clear the discussion state entirely.
 	r.mu.Lock()
-	delete(r.discussions, userID)
+	delete(r.discussions, key)
 	r.mu.Unlock()
 
 	return &GenericResponse{
@@ -347,8 +355,13 @@ func (r *MessageRouter) StopDiscussion(userID string) *GenericResponse {
 // It will be picked up between rounds and added to the next prompt.
 // Returns true if the message was accepted.
 func (r *MessageRouter) InjectUserInput(userID, text string) bool {
+	return r.InjectUserInputForTenant("", userID, text)
+}
+
+func (r *MessageRouter) InjectUserInputForTenant(tenantID, userID, text string) bool {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	r.mu.Lock()
-	ds := r.discussions[userID]
+	ds := r.discussions[key]
 	r.mu.Unlock()
 
 	if ds == nil || !ds.Running {
@@ -368,24 +381,39 @@ func (r *MessageRouter) InjectUserInput(userID, text string) bool {
 // not cleared) discussion session. Used by HandleMessage to route follow-up
 // messages as new discussion topics.
 func (r *MessageRouter) IsInDiscussion(userID string) bool {
+	return r.IsInDiscussionForTenant("", userID)
+}
+
+func (r *MessageRouter) IsInDiscussionForTenant(tenantID, userID string) bool {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	r.mu.Lock()
-	ds := r.discussions[userID]
+	ds := r.discussions[key]
 	r.mu.Unlock()
 	return ds != nil
 }
 
 // IsDiscussionRunning returns true if a discussion loop is actively executing.
 func (r *MessageRouter) IsDiscussionRunning(userID string) bool {
+	return r.IsDiscussionRunningForTenant("", userID)
+}
+
+func (r *MessageRouter) IsDiscussionRunningForTenant(tenantID, userID string) bool {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	r.mu.Lock()
-	ds := r.discussions[userID]
+	ds := r.discussions[key]
 	r.mu.Unlock()
 	return ds != nil && ds.Running
 }
 
 // SetDiscussionRounds adjusts the remaining rounds for an active discussion.
 func (r *MessageRouter) SetDiscussionRounds(userID string, rounds int) {
+	r.SetDiscussionRoundsForTenant("", userID, rounds)
+}
+
+func (r *MessageRouter) SetDiscussionRoundsForTenant(tenantID, userID string, rounds int) {
+	key := tenantUserRuntimeKey(tenantID, userID)
 	r.mu.Lock()
-	ds := r.discussions[userID]
+	ds := r.discussions[key]
 	r.mu.Unlock()
 	if ds != nil {
 		ds.MaxRounds = ds.Round + rounds

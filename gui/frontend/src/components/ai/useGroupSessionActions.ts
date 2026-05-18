@@ -98,6 +98,15 @@ function t(lang: string | undefined, zh: string, en: string): string {
     return (!lang || lang.startsWith("zh")) ? zh : en;
 }
 
+function readableAvailableVEName(ve: any, index: number, lang: string | undefined): string {
+    const name = String(ve?.name || "").trim();
+    const id = String(ve?.id || "").trim();
+    const machineId = String(ve?.machine_id || "").trim();
+    if (name && name !== id && name !== machineId && !/^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+)$/.test(name)) return name;
+    const ordinal = index + 1;
+    return t(lang, "数字员工 " + ordinal, "Digital employee " + ordinal);
+}
+
 // --- Hook ---
 
 export function useGroupSessionActions(options: UseGroupSessionActionsOptions = {}): UseGroupSessionActionsResult {
@@ -192,9 +201,9 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
                     const machineId = ve.machine_id || ve.id;
                     return !currentIds.has(ve.id) && !currentIds.has(machineId) && ve.online_status === "online";
                 })
-                .map((ve: any) => ({
+                .map((ve: any, index: number) => ({
                     id: ve.id,
-                    name: ve.name || ve.id,
+                    name: readableAvailableVEName(ve, index, optRef.current.lang),
                     machineId: ve.machine_id,
                 }));
 

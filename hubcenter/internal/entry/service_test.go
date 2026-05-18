@@ -940,6 +940,76 @@ func TestResolveByEmailKeepsSameHubTenantCandidates(t *testing.T) {
 	}
 }
 
+func TestAdminTenantRouteDoesNotHideOtherTenantSameEmail(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hubA := &store.HubInstance{ID: "hub_tenant_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret-a", CreatedAt: now, UpdatedAt: now}
+	hubB := &store.HubInstance{ID: "hub_tenant_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret-b", CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{hubA, hubB} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{ID: "hul_admin_tenant_a", HubID: hubA.ID, TenantID: "tenant_a", Email: "same@example.com", IsDefault: false, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create admin tenant link: %v", err)
+	}
+	if err := st.HubUserLinks.Create(ctx, &store.HubUserLink{ID: "link_tenant_b", HubID: hubB.ID, TenantID: "tenant_b", Email: "same@example.com", IsDefault: false, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant b link: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByEmail(ctx, "same@example.com")
+	if err != nil {
+		t.Fatalf("ResolveByEmail: %v", err)
+	}
+	seen := map[string]string{}
+	for _, item := range result.Hubs {
+		seen[item.TenantID] = item.HubID
+	}
+	if seen["tenant_a"] != hubA.ID || seen["tenant_b"] != hubB.ID {
+		t.Fatalf("expected admin route to hide only its tenant, got %+v", result.Hubs)
+	}
+}
+
+func TestResolveByDomainReturnsTenantVirtualHubRoutes(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_multi_tenant_domain", OwnerEmail: "owner@example.com", Name: "Multi Tenant Domain", BaseURL: "https://hub.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	for _, route := range []*store.HubDomainRoute{
+		{ID: "route_tenant_a", HubID: hub.ID, TenantID: "tenant_a", Domain: "acme.example", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now},
+		{ID: "route_tenant_b", HubID: hub.ID, TenantID: "tenant_b", Domain: "acme.example", Enabled: true, Priority: 101, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubDomainRoutes.Upsert(ctx, route); err != nil {
+			t.Fatalf("upsert route %s: %v", route.ID, err)
+		}
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByDomain(ctx, "acme.example")
+	if err != nil {
+		t.Fatalf("ResolveByDomain: %v", err)
+	}
+	if result == nil || result.Mode != "multiple" || len(result.Hubs) != 2 {
+		t.Fatalf("expected two tenant virtual hub routes, got %+v", result)
+	}
+	seen := map[string]bool{}
+	for _, item := range result.Hubs {
+		seen[item.TenantID] = true
+		if item.HubID != hub.ID || item.PWAURL == "" || !strings.Contains(item.PWAURL, "tenant_id=") {
+			t.Fatalf("unexpected tenant domain candidate: %+v", item)
+		}
+	}
+	if !seen["tenant_a"] || !seen["tenant_b"] {
+		t.Fatalf("missing tenant domain routes: %+v", result.Hubs)
+	}
+}
+
 func resultHasHub(result *ResolveResult, hubID string) bool {
 	if result == nil {
 		return false

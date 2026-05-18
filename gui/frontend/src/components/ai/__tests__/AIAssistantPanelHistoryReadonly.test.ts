@@ -50,6 +50,78 @@ describe('isHistoryDiscussionReadOnly', () => {
         expect(screen.getByRole('tab', { name: 'Case review - Read-only' })).toBeTruthy();
     });
 
+    it('shows invite action only for VE tabs because group tabs use the unified participant panel', () => {
+        const onInvite = () => {};
+        const { rerender } = render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'group-1', type: 'group', title: 'Existing group', veId: 've-a', participants: ['ve-a'], closable: true },
+            ] as any,
+            activeTabId: 'group-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onInviteToTab: onInvite,
+            lang: 'en',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: 'Existing group' }));
+        expect(screen.queryByTestId('tab-menu-invite-ve')).toBeNull();
+
+        rerender(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 've-1', type: 've', title: 'Solo helper', veId: 've-a', closable: true },
+            ] as any,
+            activeTabId: 've-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onInviteToTab: onInvite,
+            lang: 'en',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: 'Solo helper' }));
+        expect(screen.getByTestId('tab-menu-invite-ve')).toBeTruthy();
+    });
+
+    it('does not show add-local action for writable history group tabs', () => {
+        render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'history-1', type: 'group', title: 'Writable history', participants: ['me', 've-a'], closable: true, readOnly: false, discussionId: 'disc-1' },
+            ] as any,
+            activeTabId: 'history-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onAddLocalMaclawToTab: () => {},
+            lang: 'en',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: 'Writable history' }));
+        expect(screen.queryByTestId('tab-menu-add-local')).toBeNull();
+        expect(screen.getByTestId('tab-menu-close')).toBeTruthy();
+    });
+
+    it('shows add-local action for live VE group tabs', () => {
+        render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'group-1', type: 'group', title: 'Live helper', veId: 've-a', participants: ['ve-a'], closable: true, readOnly: false },
+            ] as any,
+            activeTabId: 'group-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onAddLocalMaclawToTab: () => {},
+            lang: 'en',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: 'Live helper' }));
+        expect(screen.getByTestId('tab-menu-add-local')).toBeTruthy();
+    });
+
     it('marks read-only history tabs inside the overflow menu', async () => {
         render(createElement(AITabBar, {
             tabs: [

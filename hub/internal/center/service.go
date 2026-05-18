@@ -185,6 +185,7 @@ func (s *Service) recordFailure(ctx context.Context, category, eventCode, messag
 		return
 	}
 	s.recorder.Record(ctx, diagnostics.FailureEventInput{
+		TenantID:  store.DefaultTenantID,
 		Category:  category,
 		EventCode: eventCode,
 		Message:   message,
@@ -1171,6 +1172,7 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 		if users, err := s.users.ListUsers(ctx); err == nil {
 			seen := map[string]struct{}{}
 			tenantSeen := map[string]map[string]struct{}{}
+			tenantDomainSeen := map[string]map[string]struct{}{}
 			for _, user := range users {
 				if user == nil || strings.TrimSpace(user.Email) == "" {
 					continue
@@ -1188,6 +1190,13 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 					tenantSeen[tenantID] = map[string]struct{}{}
 				}
 				tenantSeen[tenantID][email] = struct{}{}
+				domain := extractEmailDomain(email)
+				if domain != "" {
+					if tenantDomainSeen[tenantID] == nil {
+						tenantDomainSeen[tenantID] = map[string]struct{}{}
+					}
+					tenantDomainSeen[tenantID][domain] = struct{}{}
+				}
 			}
 			emails := make([]string, 0, len(seen))
 			for email := range seen {
@@ -1196,6 +1205,7 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 			sort.Strings(emails)
 			tenantEmails := map[string][]string{}
 			tenantCounts := map[string]int{}
+			tenantDomains := map[string][]string{}
 			for tenantID, values := range tenantSeen {
 				items := make([]string, 0, len(values))
 				for email := range values {
@@ -1205,15 +1215,33 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 				tenantEmails[tenantID] = items
 				tenantCounts[tenantID] = len(items)
 			}
+			for tenantID, values := range tenantDomainSeen {
+				items := make([]string, 0, len(values))
+				for domain := range values {
+					items = append(items, domain)
+				}
+				sort.Strings(items)
+				tenantDomains[tenantID] = items
+			}
 			caps["user_count"] = len(seen)
 			caps["user_emails"] = emails
 			caps["tenant_user_counts"] = tenantCounts
 			caps["tenant_user_emails"] = tenantEmails
+			caps["tenant_domains"] = tenantDomains
 		}
 	}
 	if s != nil && s.machines != nil {
 		if machines, err := s.machines.ListAllMachines(ctx); err == nil {
+			tenantMachineCounts := map[string]int{}
+			for _, machine := range machines {
+				tenantID := strings.TrimSpace(machine.TenantID)
+				if tenantID == "" {
+					tenantID = store.DefaultTenantID
+				}
+				tenantMachineCounts[tenantID]++
+			}
 			caps["machine_count"] = len(machines)
+			caps["tenant_machine_counts"] = tenantMachineCounts
 		}
 	}
 	return caps
@@ -1464,6 +1492,15 @@ func normalizeCorporateEmailDomain(v string) string {
 	v = strings.TrimPrefix(v, "@")
 	v = strings.TrimPrefix(v, ".")
 	return strings.TrimSpace(v)
+}
+
+func extractEmailDomain(email string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+	at := strings.LastIndex(email, "@")
+	if at < 0 || at == len(email)-1 {
+		return ""
+	}
+	return normalizeCorporateEmailDomain(email[at+1:])
 }
 
 func normalizeCorporateEmailDomains(values []string) []string {

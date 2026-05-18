@@ -7,6 +7,7 @@ type imMemoryRecallMode string
 const (
 	imMemoryRecallModeDynamic  imMemoryRecallMode = "dynamic"
 	imMemoryRecallModeHybrid   imMemoryRecallMode = "hybrid"
+	imMemoryRecallModeLightMem imMemoryRecallMode = "lightmem"
 	imMemoryRecallModeAuto     imMemoryRecallMode = "auto"
 	imMemoryRecallModeAdaptive imMemoryRecallMode = "adaptive"
 	imMemoryRecallModeInvalid  imMemoryRecallMode = "invalid"
@@ -18,6 +19,8 @@ func normalizeIMMemoryRecallMode(value string) imMemoryRecallMode {
 		return imMemoryRecallModeDynamic
 	case "hybrid", "recall":
 		return imMemoryRecallModeHybrid
+	case "lightmem", "light_mem", "planned":
+		return imMemoryRecallModeLightMem
 	case "auto":
 		return imMemoryRecallModeAuto
 	case "adaptive", "hier", "adaptive_hier":

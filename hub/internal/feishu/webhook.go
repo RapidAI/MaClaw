@@ -299,24 +299,29 @@ func welcomeOrHelp(n *Notifier, openID string) string {
 
 // resolveUserID returns the Hub userID for the given open_id via the email binding.
 func (n *Notifier) resolveUserID(openID string) string {
+	_, userID := n.resolveUserTenantID(openID)
+	return userID
+}
+
+func (n *Notifier) resolveUserTenantID(openID string) (string, string) {
 	// Find email for this open_id.
 	n.oidMu.RLock()
-	var email string
-	for e, info := range n.oidCache {
+	var binding BindingInfo
+	for _, info := range n.oidCache {
 		if info.OpenID == openID {
-			email = e
+			binding = info
 			break
 		}
 	}
 	n.oidMu.RUnlock()
-	if email == "" {
-		return ""
+	if binding.Email == "" && binding.TenantID == "" {
+		return "", ""
 	}
-	user, err := n.users.GetByTenantEmail(context.Background(), store.DefaultTenantID, email)
+	user, err := n.users.GetByTenantEmail(context.Background(), normalizeFeishuTenantID(binding.TenantID), binding.Email)
 	if err != nil || user == nil {
-		return ""
+		return "", ""
 	}
-	return user.ID
+	return normalizeFeishuTenantID(binding.TenantID), user.ID
 }
 
 func handleListMachines(n *Notifier, openID string) {

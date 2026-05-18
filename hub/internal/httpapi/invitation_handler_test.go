@@ -26,6 +26,16 @@ func (r *stubEmailInviteRepo) List(_ context.Context) ([]*store.EmailInvite, err
 	return r.items, nil
 }
 
+func (r *stubEmailInviteRepo) ListByTenant(_ context.Context, tenantID string) ([]*store.EmailInvite, error) {
+	out := make([]*store.EmailInvite, 0, len(r.items))
+	for _, item := range r.items {
+		if item != nil && item.TenantID == tenantID {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 func (r *stubEmailInviteRepo) GetByID(_ context.Context, id string) (*store.EmailInvite, error) {
 	for _, item := range r.items {
 		if item.ID == id {

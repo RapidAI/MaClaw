@@ -22,6 +22,7 @@ var taskIDCounter atomic.Uint64
 // IMTask represents a single queued message that needs device routing.
 type IMTask struct {
 	ID           uint64
+	TenantID     string
 	UserID       string
 	PlatformName string
 	PlatformUID  string
@@ -158,14 +159,16 @@ func NewIMTaskDispatcher(capacity int, executor TaskExecutor, delivery func(ctx 
 // If the queue is full, returns an error response.
 func (d *IMTaskDispatcher) Enqueue(task *IMTask) *GenericResponse {
 	task.ID = taskIDCounter.Add(1)
+	task.TenantID = normalizeTenantID(task.TenantID)
 	task.EnqueuedAt = time.Now()
+	queueKey := tenantUserRuntimeKey(task.TenantID, task.UserID)
 
 	d.mu.Lock()
-	q, exists := d.queues[task.UserID]
+	q, exists := d.queues[queueKey]
 	if !exists {
 		q = newUserQueue(d.capacity)
-		d.queues[task.UserID] = q
-		go d.runWorker(task.UserID, q)
+		d.queues[queueKey] = q
+		go d.runWorker(queueKey, q)
 	}
 	d.mu.Unlock()
 
@@ -200,8 +203,13 @@ func (d *IMTaskDispatcher) Enqueue(task *IMTask) *GenericResponse {
 
 // Stats returns queue statistics for a user.
 func (d *IMTaskDispatcher) Stats(userID string) TaskQueueStats {
+	return d.StatsForTenant("", userID)
+}
+
+func (d *IMTaskDispatcher) StatsForTenant(tenantID, userID string) TaskQueueStats {
+	queueKey := tenantUserRuntimeKey(tenantID, userID)
 	d.mu.Lock()
-	q, exists := d.queues[userID]
+	q, exists := d.queues[queueKey]
 	d.mu.Unlock()
 	if !exists {
 		return TaskQueueStats{Capacity: d.capacity}
@@ -268,6 +276,7 @@ func (d *IMTaskDispatcher) runWorker(userID string, q *userQueue) {
 func (d *IMTaskDispatcher) executeTask(task *IMTask) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAgentTimeout+30*time.Second)
 	defer cancel()
+	ctx = WithTenant(ctx, task.TenantID)
 
 	log.Printf("[TaskDispatcher] executing task #%d for user=%s text_len=%d", task.ID, task.UserID, len(task.Text))
 

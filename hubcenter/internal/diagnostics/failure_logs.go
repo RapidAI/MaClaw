@@ -15,6 +15,7 @@ type FailureEventRecorder struct {
 }
 
 type FailureEventInput struct {
+	TenantID  string
 	Category  string
 	EventCode string
 	Message   string
@@ -40,6 +41,7 @@ func (r *FailureEventRecorder) Record(ctx context.Context, input FailureEventInp
 	}
 	_ = r.repo.Create(ctx, &store.FailureEventLog{
 		ID:          fmt.Sprintf("fl_%d", time.Now().UnixNano()),
+		TenantID:    strings.TrimSpace(input.TenantID),
 		Category:    strings.TrimSpace(input.Category),
 		EventCode:   strings.TrimSpace(input.EventCode),
 		Message:     strings.TrimSpace(input.Message),

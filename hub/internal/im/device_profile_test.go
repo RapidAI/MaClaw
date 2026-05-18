@@ -95,6 +95,29 @@ func TestDeviceProfileCache_IsolationBetweenUsers(t *testing.T) {
 	}
 }
 
+func TestDeviceProfileCache_IsolationBetweenTenants(t *testing.T) {
+	c := NewDeviceProfileCache()
+	c.UpdateForTenant("tenant_a", "user1", DeviceProfile{MachineID: "m1", Name: "A"})
+	c.UpdateForTenant("tenant_b", "user1", DeviceProfile{MachineID: "m1", Name: "B"})
+
+	a := c.GetAllForTenant("tenant_a", "user1")
+	if len(a) != 1 || a[0].Name != "A" {
+		t.Fatalf("tenant_a profile leaked or missing: %+v", a)
+	}
+	b := c.GetAllForTenant("tenant_b", "user1")
+	if len(b) != 1 || b[0].Name != "B" {
+		t.Fatalf("tenant_b profile leaked or missing: %+v", b)
+	}
+
+	c.RemoveForTenant("tenant_a", "user1", "m1")
+	if got := c.GetAllForTenant("tenant_a", "user1"); got != nil {
+		t.Fatalf("tenant_a should be empty after remove, got %+v", got)
+	}
+	if got := c.GetAllForTenant("tenant_b", "user1"); len(got) != 1 || got[0].Name != "B" {
+		t.Fatalf("tenant_b should remain untouched, got %+v", got)
+	}
+}
+
 func TestDeviceProfileCache_ConcurrentSafety(t *testing.T) {
 	c := NewDeviceProfileCache()
 	var wg sync.WaitGroup

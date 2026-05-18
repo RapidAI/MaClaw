@@ -123,6 +123,26 @@ func (r *llmPromptCacheRepo) Purge(ctx context.Context) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+func (r *llmPromptCacheRepo) PurgeByKeyPrefix(ctx context.Context, prefix string) (int64, error) {
+	if prefix == "" {
+		return 0, nil
+	}
+	res, err := r.db.ExecContext(ctx, `DELETE FROM llm_prompt_cache WHERE substr(cache_key, 1, ?) = ?`, len(prefix), prefix)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (r *llmPromptCacheRepo) PurgeDefaultTenant(ctx context.Context) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM llm_prompt_cache WHERE cache_key NOT LIKE 'tenant:%'`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *llmPromptCacheRepo) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM llm_prompt_cache WHERE expires_at IS NOT NULL AND expires_at <= ?`, now.UTC().Format(time.RFC3339))
 	if err != nil {

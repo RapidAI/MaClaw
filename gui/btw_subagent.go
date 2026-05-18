@@ -207,50 +207,17 @@ func buildBtwSystemPrompt(h *IMMessageHandler, userText string) string {
 
 	// --- User fact summary (who the user is, no management guide) ---
 	if h.memoryStore != nil {
-		if summary := h.memoryStore.UserFactSummary(400); summary != "" {
-			fmt.Fprintf(&b, "\n## 用户信息\n%s\n", summary)
-		}
+		b.WriteString(h.memoryStore.UserFactSummaryForPrompt(corememory.UserFactPromptOptions("\n## \u7528\u6237\u4fe1\u606f")))
 	}
 
 	// --- Proactive memory recall (read-only, no tool pinning side effect) ---
-	// We call RecallDynamic directly instead of appendProactiveRecall to
-	// avoid the ActivateSessionTool side effect on the main agent's router.
 	if h.memoryStore != nil && userText != "" {
 		projectPath := ""
 		if h.contextResolver != nil {
 			projectPath, _ = h.contextResolver.ResolveProject()
 		}
-		recalled := h.memoryStore.RecallDynamic(userText, "", projectPath)
-
-		// Filter out internal categories.
-		var relevant []corememory.Entry
-		for _, e := range recalled {
-			cat := corememory.MapToCanonical(e.Category)
-			if cat == corememory.CategoryUserFact || cat == corememory.CategorySelfIdentity {
-				continue
-			}
-			if e.Category == corememory.CategorySessionCheckpoint || e.Category == corememory.CategoryConversationSummary {
-				continue
-			}
-			relevant = append(relevant, e)
-		}
-		if len(relevant) > 8 {
-			relevant = relevant[:8]
-		}
-		if len(relevant) > 0 {
-			b.WriteString("\n## 相关记忆（自动召回）\n")
-			for _, e := range relevant {
-				text := e.Content
-				if e.CompactForm != "" {
-					text = e.CompactForm
-				}
-				runes := []rune(text)
-				if len(runes) > 200 {
-					text = string(runes[:200]) + "…"
-				}
-				fmt.Fprintf(&b, "- [%s] %s\n", e.Category, text)
-			}
-		}
+		promptContext, _ := h.memoryStore.ProactiveContextForPrompt(userText, corememory.BtwProactivePromptOptions(projectPath, "\n## \u76f8\u5173\u8bb0\u5fc6\uff08\u81ea\u52a8\u53ec\u56de\uff09"))
+		b.WriteString(promptContext)
 	}
 
 	return b.String()
@@ -290,12 +257,12 @@ func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 		return fmt.Sprintf("参数解析失败: %v", err)
 	}
 
-	// Mechanism-level enforcement: memory tool is recall-only in /btw.
+	// Mechanism-level enforcement: memory tool is read-only in /btw.
 	// This is not a prompt-level suggestion — the LLM cannot bypass it.
 	if name == "memory" {
 		action, _ := args["action"].(string)
 		if !normalizeMemoryToolAction(action).IsRecallOnlyAllowed() {
-			return "错误: /btw 侧查询中 memory 工具仅支持 action=\"recall\"（只读查询）"
+			return "错误: /btw 侧查询中 memory 工具仅支持只读操作（recall/themes/scenes/trace/candidates）"
 		}
 	}
 
@@ -356,35 +323,34 @@ var btwToolNames = map[string]bool{
 // buildBtwToolDefinitions constructs the minimal tool definitions for /btw.
 func buildBtwToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
-		btwToolDef("web_search", "搜索互联网获取最新信息",
+		btwToolDef("web_search", "Search the web for fresh information.",
 			map[string]interface{}{
-				"query":       map[string]string{"type": "string", "description": "搜索关键词"},
-				"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8）"},
+				"query":       map[string]string{"type": "string", "description": "Search query"},
+				"max_results": map[string]string{"type": "integer", "description": "Maximum number of results"},
 			}, []string{"query"}),
-		btwToolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文",
+		btwToolDef("web_fetch", "Fetch and extract text from a URL.",
 			map[string]interface{}{
-				"url":       map[string]string{"type": "string", "description": "要抓取的 URL"},
-				"max_chars": map[string]string{"type": "integer", "description": "最多返回字符数（可选）"},
+				"url":       map[string]string{"type": "string", "description": "URL to fetch"},
+				"max_chars": map[string]string{"type": "integer", "description": "Maximum returned characters"},
 			}, []string{"url"}),
-		btwToolDef("read_file", "读取本地文件内容",
+		btwToolDef("read_file", "Read a local file.",
 			map[string]interface{}{
-				"path":   map[string]string{"type": "string", "description": "文件路径"},
-				"lines":  map[string]string{"type": "integer", "description": "读取行数（可选）"},
-				"offset": map[string]string{"type": "integer", "description": "从末尾倒数行数开始读取（可选）"},
+				"path":   map[string]string{"type": "string", "description": "File path"},
+				"lines":  map[string]string{"type": "integer", "description": "Number of lines to read"},
+				"offset": map[string]string{"type": "integer", "description": "Line offset"},
 			}, []string{"path"}),
-		btwToolDef("memory", "查询长期记忆（仅支持 recall）",
+		btwToolDef("memory", "Recall long-term memory entries.",
 			map[string]interface{}{
-				"action": map[string]string{"type": "string", "description": "操作: recall（仅支持 recall）"},
-				"query":  map[string]string{"type": "string", "description": "查询关键词"},
+				"action": map[string]string{"type": "string", "description": "Action: recall"},
+				"query":  map[string]string{"type": "string", "description": "Recall query"},
 			}, []string{"action", "query"}),
-		btwToolDef("agent_status", "查询主 Agent 的运行时状态，包括本地后台任务、SSH 后台任务、编程会话、SSH 连接等。当用户询问任务进度、下载是否完成、后台任务状态时使用此工具。",
+		btwToolDef("agent_status", "Inspect local agent task, coding session, and SSH session status.",
 			map[string]interface{}{
-				"category": map[string]string{"type": "string", "description": "查询类别: all（全部状态）、local_tasks（本地后台任务）、ssh_tasks（SSH 后台任务）、sessions（编程会话）、ssh_sessions（SSH 连接）。默认 all"},
-				"task_id":  map[string]string{"type": "string", "description": "指定任务 ID 查看详情和日志尾部（可选）"},
+				"category": map[string]string{"type": "string", "description": "Category: all, local_tasks, ssh_tasks, sessions, or ssh_sessions"},
+				"task_id":  map[string]string{"type": "string", "description": "Optional task ID"},
 			}, nil),
 	}
 }
-
 func btwToolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
 	return agent.ToolDef(name, desc, props, required)
 }

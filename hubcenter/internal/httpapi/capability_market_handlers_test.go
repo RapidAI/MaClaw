@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -127,6 +128,24 @@ func TestCapabilityMarketCustomerAccountUsesSettingsAndRequest(t *testing.T) {
 	}
 }
 
+func TestCapabilityMarketCustomerAccountUsesTenantVirtualHub(t *testing.T) {
+	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capability-market/customer-account?hub_id=hub-1&tenant_id=tenant-a&admin_email=admin@example.com", nil)
+	rec := httptest.NewRecorder()
+	CapabilityMarketCustomerAccountHandler(settings)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var account CapabilityMarketCustomerAccount
+	if err := json.Unmarshal(rec.Body.Bytes(), &account); err != nil {
+		t.Fatalf("decode account: %v", err)
+	}
+	if account.CustomerID != "hub-1:tenant-a" || account.HubID != "hub-1" || account.TenantID != "tenant-a" || account.IdentitySource != "request" {
+		t.Fatalf("unexpected tenant virtual hub account: %+v", account)
+	}
+}
+
 func TestCapabilityMarketCustomerAccountFallsBackToAdminEmail(t *testing.T) {
 	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
 	if err := settings.Set(context.Background(), "admin_email", `{"value":"owner@example.com"}`); err != nil {
@@ -165,7 +184,7 @@ func TestCapabilityMarketMCPPurchaseRequiresAdminEmailForPaid(t *testing.T) {
 		t.Fatalf("missing admin status=%d body=%s", missingRec.Code, missingRec.Body.String())
 	}
 
-	purchaseReq := httptest.NewRequest(http.MethodPost, "/api/capability-market/mcp/paid-mcp/purchase", bytes.NewReader([]byte(`{"hub_id":"hub-1","admin_email":"admin@example.com","request_id":"req-1"}`)))
+	purchaseReq := httptest.NewRequest(http.MethodPost, "/api/capability-market/mcp/paid-mcp/purchase", bytes.NewReader([]byte(`{"hub_id":"hub-1","tenant_id":"tenant-a","admin_email":"admin@example.com","request_id":"req-1"}`)))
 	purchaseReq.SetPathValue("id", "paid-mcp")
 	purchaseRec := httptest.NewRecorder()
 	CapabilityMarketMCPPurchaseHandler(settings)(purchaseRec, purchaseReq)
@@ -176,10 +195,10 @@ func TestCapabilityMarketMCPPurchaseRequiresAdminEmailForPaid(t *testing.T) {
 	if err := json.Unmarshal(purchaseRec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode purchase: %v", err)
 	}
-	if resp["status"] != "purchased" || resp["admin_email"] != "admin@example.com" {
+	if resp["status"] != "purchased" || resp["admin_email"] != "admin@example.com" || resp["tenant_id"] != "tenant-a" {
 		t.Fatalf("unexpected purchase response: %+v", resp)
 	}
-	licensesReq := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1", nil)
+	licensesReq := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1&tenant_id=tenant-a", nil)
 	licensesRec := httptest.NewRecorder()
 	CapabilityMarketBillingLicensesHandler(settings)(licensesRec, licensesReq)
 	if licensesRec.Code != http.StatusOK {
@@ -191,11 +210,23 @@ func TestCapabilityMarketMCPPurchaseRequiresAdminEmailForPaid(t *testing.T) {
 	if err := json.Unmarshal(licensesRec.Body.Bytes(), &licenses); err != nil {
 		t.Fatalf("decode licenses: %v", err)
 	}
-	if len(licenses.Items) != 1 || licenses.Items[0].CapabilityID != "paid-mcp" || licenses.Items[0].HubID != "hub-1" {
+	if len(licenses.Items) != 1 || licenses.Items[0].CapabilityID != "paid-mcp" || licenses.Items[0].HubID != "hub-1" || licenses.Items[0].TenantID != "tenant-a" {
 		t.Fatalf("unexpected licenses: %+v", licenses.Items)
 	}
+	otherTenantReq := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1&tenant_id=tenant-b", nil)
+	otherTenantRec := httptest.NewRecorder()
+	CapabilityMarketBillingLicensesHandler(settings)(otherTenantRec, otherTenantReq)
+	var otherTenant struct {
+		Items []CapabilityMarketMCPPurchaseRecord `json:"items"`
+	}
+	if err := json.Unmarshal(otherTenantRec.Body.Bytes(), &otherTenant); err != nil {
+		t.Fatalf("decode other tenant licenses: %v", err)
+	}
+	if len(otherTenant.Items) != 0 {
+		t.Fatalf("expected tenant-b to be isolated from tenant-a purchase, got %+v", otherTenant.Items)
+	}
 	skillProvider := fakeSkillLicenseProvider{items: []CapabilityMarketLicenseRecord{{CapabilityType: corelib.CapabilityTypeSkill, CapabilityID: "paid-skill", Source: corelib.CapabilitySourceHubCenter, PurchaseID: "pur-skill", BuyerEmail: "admin@example.com", AdminEmail: "admin@example.com", Status: "active"}}}
-	combinedReq := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1&admin_email=admin@example.com", nil)
+	combinedReq := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1&tenant_id=tenant-a&admin_email=admin@example.com", nil)
 	combinedRec := httptest.NewRecorder()
 	CapabilityMarketBillingLicensesHandler(settings, skillProvider)(combinedRec, combinedReq)
 	if combinedRec.Code != http.StatusOK {
@@ -209,6 +240,55 @@ func TestCapabilityMarketMCPPurchaseRequiresAdminEmailForPaid(t *testing.T) {
 	}
 	if len(combined.Items) != 2 {
 		t.Fatalf("expected MCP + Skill licenses, got %+v", combined.Items)
+	}
+	for _, item := range combined.Items {
+		if item.HubID != "hub-1" || item.TenantID != "tenant-a" {
+			t.Fatalf("expected combined licenses to carry tenant virtual hub identity, got %+v", combined.Items)
+		}
+	}
+}
+
+func TestCapabilityMarketMCPPurchaseRequestIDIsTenantScoped(t *testing.T) {
+	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
+	upsertReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/mcp", bytes.NewReader([]byte(`{"capability_id":"paid-mcp","display_name":"Paid MCP","pricing":{"mode":"paid"},"mcp":{"endpoint_url":"https://paid.example.com/mcp"}}`)))
+	upsertRec := httptest.NewRecorder()
+	AdminCapabilityMarketMCPUpsertHandler(settings)(upsertRec, upsertReq)
+	if upsertRec.Code != http.StatusOK {
+		t.Fatalf("upsert status=%d body=%s", upsertRec.Code, upsertRec.Body.String())
+	}
+
+	for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+		body, err := json.Marshal(map[string]string{"hub_id": "hub-1", "tenant_id": tenantID, "admin_email": "admin@example.com", "request_id": "same-request"})
+		if err != nil {
+			t.Fatalf("marshal purchase: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/capability-market/mcp/paid-mcp/purchase", bytes.NewReader(body))
+		req.SetPathValue("id", "paid-mcp")
+		rec := httptest.NewRecorder()
+		CapabilityMarketMCPPurchaseHandler(settings)(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("purchase %s status=%d body=%s", tenantID, rec.Code, rec.Body.String())
+		}
+	}
+
+	licensesReq := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1", nil)
+	licensesRec := httptest.NewRecorder()
+	CapabilityMarketBillingLicensesHandler(settings)(licensesRec, licensesReq)
+	var licenses struct {
+		Items []CapabilityMarketMCPPurchaseRecord `json:"items"`
+	}
+	if err := json.Unmarshal(licensesRec.Body.Bytes(), &licenses); err != nil {
+		t.Fatalf("decode licenses: %v", err)
+	}
+	if len(licenses.Items) != 2 {
+		t.Fatalf("expected duplicate request_id to coexist across tenants, got %+v", licenses.Items)
+	}
+	seen := map[string]bool{}
+	for _, item := range licenses.Items {
+		seen[item.TenantID] = true
+	}
+	if !seen["tenant-a"] || !seen["tenant-b"] {
+		t.Fatalf("missing tenant purchases: %+v", licenses.Items)
 	}
 }
 
@@ -278,6 +358,18 @@ func (f fakeSkillLicenseProvider) CapabilityMarketSkillLicenses(ctx context.Cont
 		if buyerEmail == "" || item.BuyerEmail == buyerEmail || item.AdminEmail == buyerEmail {
 			items = append(items, item)
 		}
+	}
+	return items, nil
+}
+
+func (f fakeSkillLicenseProvider) CapabilityMarketSkillLicensesForTenant(ctx context.Context, buyerEmail, hubID, tenantID string) ([]CapabilityMarketLicenseRecord, error) {
+	items, err := f.CapabilityMarketSkillLicenses(ctx, buyerEmail)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].HubID = strings.TrimSpace(hubID)
+		items[i].TenantID = strings.TrimSpace(tenantID)
 	}
 	return items, nil
 }

@@ -29,7 +29,22 @@ function isConversationMessage(value: unknown): value is { role?: unknown } {
     return !!value && typeof value === "object";
 }
 
+const textForPendingTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
+    lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
+);
+
+function looksLikeRawDiscussionTitle(value: string): boolean {
+    return /^(disc|discussion|consultation|session)[-_][A-Za-z0-9-]+$|^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function readableHistoryDiscussionTitle(discussion: PendingHistoryDiscussionOpen, discussionId: string, lang?: string): string {
+    const candidate = String(discussion?.topic || discussion?.question || "").trim();
+    if (candidate && candidate !== discussionId && !looksLikeRawDiscussionTitle(candidate)) return candidate;
+    return textForPendingTabLang(lang, "Group discussion", "\u7fa4\u7ec4\u8ba8\u8bba", "\u7fa4\u7ec4\u8ba8\u8bba");
+}
+
 interface PendingAssistantTabOpenOptions {
+    lang?: string;
     createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline") => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string) => AITab | null;
@@ -47,6 +62,7 @@ interface PendingAssistantTabOpenOptions {
 }
 
 export function usePendingAssistantTabOpen({
+    lang,
     createVETab,
     createGroupTab,
     createProjectTab,
@@ -92,10 +108,10 @@ export function usePendingAssistantTabOpen({
             }
         }
 
-        const title = discussion?.topic || discussion?.question || discussionId;
+        const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
         const role = discussion?.local_relation || discussion?.role;
         createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role });
-    }, [activateTab, createGroupTab, getTabList, getTabState]);
+    }, [activateTab, createGroupTab, getTabList, getTabState, lang]);
 
     useEffect(() => {
         if (!pendingVEOpen) return;

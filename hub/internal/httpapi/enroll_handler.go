@@ -29,6 +29,10 @@ type EnrollStartRequest struct {
 	GroupID              string `json:"group_id"`
 }
 
+type tenantResolver interface {
+	ResolveTenantByEmail(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error)
+}
+
 type EmailRequestLoginRequest struct {
 	Email string `json:"email"`
 }
@@ -56,7 +60,11 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
-		tenantID := tenantIDFromClientHint(r)
+		tenantID, err := tenantIDForEmailRequest(r, identity, req.Email)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+			return
+		}
 		ctx := auth.WithTenant(r.Context(), tenantID)
 
 		enrollStart := time.Now()
@@ -229,7 +237,13 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
-		ctx := auth.WithTenant(r.Context(), tenantIDFromClientHint(r))
+		tenantID, err := tenantIDForEmailRequest(r, identity, req.Email)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+			return
+		}
+
+		ctx := auth.WithTenant(r.Context(), tenantID)
 		resp, err := identity.RequestEmailLogin(ctx, req.Email)
 		if err != nil {
 			switch {
@@ -311,4 +325,30 @@ func tenantIDFromClientHint(r *http.Request) string {
 		return tenantID
 	}
 	return DefaultTenantID
+}
+
+func tenantIDForEmailRequest(r *http.Request, resolver tenantResolver, email string) (string, error) {
+	if r == nil {
+		return DefaultTenantID, nil
+	}
+	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
+		return tenantID, nil
+	}
+	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
+		return tenantID, nil
+	}
+	if resolver == nil {
+		return DefaultTenantID, nil
+	}
+	tenantID, found, ambiguous, err := resolver.ResolveTenantByEmail(r.Context(), email)
+	if err != nil {
+		return DefaultTenantID, err
+	}
+	if ambiguous {
+		return "", errors.New("email is associated with multiple tenants; tenant_id is required")
+	}
+	if found && tenantID != "" {
+		return tenantID, nil
+	}
+	return DefaultTenantID, nil
 }

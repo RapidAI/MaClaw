@@ -20,6 +20,7 @@ import (
 const (
 	githubDefinitionYAML    = "yaml"
 	githubDefinitionSkillMD = "skill_md"
+	githubHTTPGetMaxBytes   = 5 << 20
 )
 
 // GitHubSkillCandidate represents a skill found via GitHub search.
@@ -616,7 +617,18 @@ func (gs *GitHubSearcher) httpGet(reqURL string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, reqURL)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	return readLimitedGitHubBody(resp.Body, githubHTTPGetMaxBytes)
+}
+
+func readLimitedGitHubBody(body io.Reader, maxBytes int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("GitHub response exceeds %d bytes", maxBytes)
+	}
+	return data, nil
 }
 
 // parseClaudeSKILLMDForGitHub parses a Claude-format SKILL.md from a GitHub

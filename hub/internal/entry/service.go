@@ -125,3 +125,10 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 		InvitationCodeRequired: invCodeRequired,
 	}, nil
 }
+
+func (s *Service) ResolveTenantByEmail(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error) {
+	if s == nil || s.identity == nil {
+		return "", false, false, nil
+	}
+	return s.identity.ResolveTenantByEmail(ctx, email)
+}

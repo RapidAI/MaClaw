@@ -5512,3 +5512,55 @@ Guards 防止误杀合法 session 交互：
 - 所有 TestWorkflow* 测试通过
 - corelib/workflow 所有测试通过
 - GUI go vet 通过
+
+
+### 97. Skill 运行时 AgentView 表单拦截 Agent 自动执行——参数缺失应返回结构化错误让 LLM 补全
+
+**来源**：用户测试 drawio-skill，Agent 调用 `run_skill(name="drawio-skill")` 时因缺少 `input` 参数，系统弹出 AgentView 表单让用户手动填写，而不是让 Agent 从对话上下文中提取参数后重试。
+
+**根因**：`toolRunSkill()` 中调用 `emitSkillRunAgentViewIfNeeded(name, args)`，当 skill 有必需参数未提供时，直接弹出 UI 表单（AgentView）并返回"请在右侧任务面板填写后提交"。这是**职责错位**——Agent（LLM）应该自动从用户对话上下文中提取所需参数并重试调用，而不是把填表的责任推给用户。
+
+**机制性问题**：
+1. LLM 的 `run_skill` 工具定义只有通用的 `input (string, optional)` 参数描述，不知道具体 skill 需要什么参数
+2. 参数缺失时系统选择"弹表单让用户填"而不是"告诉 LLM 缺什么参数让它补全"
+3. LLM 收到"请在右侧任务面板填写"后进入死胡同——它无法代替用户填表单
+4. 用户已经在对话中说了要做什么（如"画一个北京5环图"），这个信息应该由 Agent 自动提取
+
+**修复**：
+
+#### 1. Agent 路径：参数缺失返回结构化错误（`gui/im_tool_skill_run.go`）
+
+- `toolRunSkill()` 中将 `emitSkillRunAgentViewIfNeeded` 替换为 `checkSkillRunMissingParams`
+- 新增 `checkSkillRunMissingParams()` 方法：检测缺失参数后返回结构化错误信息，包含：
+  - 缺少的参数名和描述
+  - 如何修复的示例调用
+  - Skill 描述（帮助 LLM 理解参数语义）
+  - `[action: provide_args]` 标记（与 corelib 的 `FormatMissingRequiredArgsMessage` 一致）
+- LLM 收到错误后从用户对话上下文中提取信息，重新调用 `run_skill` 并补全参数
+
+#### 2. 用户路径：AgentView 表单保留（`gui/agent_view_skill.go`）
+
+- `emitSkillRunAgentViewIfNeeded` 保留但不再从 Agent 路径调用
+- `handleSkillRunAgentViewSubmit` 保留——用户从技能面板手动点击"运行"时仍使用表单
+- `buildSkillRunAgentView` 保留——用户主动触发时构建表单
+
+**设计原则**：
+- **Agent 路径**（LLM 调用 `run_skill`）：参数缺失 → 返回结构化错误 → LLM 补全后重试
+- **用户路径**（用户在技能面板点击"运行"）：参数缺失 → 显示表单 → 用户填写后提交
+- 两条路径的区别：Agent 有对话上下文可以自动推断参数，用户需要 UI 引导
+
+**正确的执行链路（修复后）**：
+```
+用户: "用 drawio-skill 画一个北京5环图"
+  → LLM 调用 manage_skill(action="run", name="drawio-skill")  [缺少 input]
+  → checkSkillRunMissingParams 返回: "缺少参数 input (描述要画的图表内容)"
+  → LLM 从对话上下文提取: input="北京5环地图，标注各环路名称"
+  → LLM 重新调用 manage_skill(action="run", name="drawio-skill", input="北京5环地图...")
+  → 参数齐全 → 执行
+```
+
+**验收标准**：
+- Agent 调用 `run_skill` 缺少参数时 → 返回结构化错误信息，不弹 AgentView 表单
+- LLM 收到错误后能从上下文补全参数并重试
+- 用户在技能面板手动点击"运行" → 仍显示 AgentView 表单（行为不变）
+- GUI 编译通过

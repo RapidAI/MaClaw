@@ -12,11 +12,29 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 type fakeSettingsRepo struct {
 	mu     sync.Mutex
 	values map[string]string
+}
+
+type fakeCenterUsers struct {
+	items []*store.User
+}
+
+func (f fakeCenterUsers) ListUsers(context.Context) ([]*store.User, error) {
+	return f.items, nil
+}
+
+type fakeCenterMachines struct {
+	items []device.MachineRuntimeInfo
+}
+
+func (f fakeCenterMachines) ListAllMachines(context.Context) ([]device.MachineRuntimeInfo, error) {
+	return f.items, nil
 }
 
 func newFakeSettingsRepo() *fakeSettingsRepo {
@@ -90,6 +108,35 @@ func TestSyncUserRouteUsesStoredRegistration(t *testing.T) {
 		t.Fatalf("email = %q, want %q", gotEmail, "user@example.com")
 	}
 }
+
+func TestRegistrationCapabilitiesIncludesTenantCounts(t *testing.T) {
+	svc := NewService(config.Default(), newFakeSettingsRepo())
+	svc.users = fakeCenterUsers{items: []*store.User{
+		{Email: "alice@Acme.Example", TenantID: "tenant_a"},
+		{Email: "bob@acme.example", TenantID: "tenant_a"},
+		{Email: "cara@beta.example", TenantID: "tenant_b"},
+	}}
+	svc.machines = fakeCenterMachines{items: []device.MachineRuntimeInfo{
+		{MachineID: "machine-a1", TenantID: "tenant_a"},
+		{MachineID: "machine-a2", TenantID: "tenant_a"},
+		{MachineID: "machine-b1", TenantID: "tenant_b"},
+	}}
+
+	caps := svc.registrationCapabilities(context.Background())
+	tenantUserCounts, ok := caps["tenant_user_counts"].(map[string]int)
+	if !ok || tenantUserCounts["tenant_a"] != 2 || tenantUserCounts["tenant_b"] != 1 {
+		t.Fatalf("tenant_user_counts = %#v", caps["tenant_user_counts"])
+	}
+	tenantMachineCounts, ok := caps["tenant_machine_counts"].(map[string]int)
+	if !ok || tenantMachineCounts["tenant_a"] != 2 || tenantMachineCounts["tenant_b"] != 1 {
+		t.Fatalf("tenant_machine_counts = %#v", caps["tenant_machine_counts"])
+	}
+	tenantDomains, ok := caps["tenant_domains"].(map[string][]string)
+	if !ok || len(tenantDomains["tenant_a"]) != 1 || tenantDomains["tenant_a"][0] != "acme.example" || tenantDomains["tenant_b"][0] != "beta.example" {
+		t.Fatalf("tenant_domains = %#v", caps["tenant_domains"])
+	}
+}
+
 func TestAdvertisedEndpointPrefersConfiguredPublicBaseURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.PublicBaseURL = "https://hub.example.com"

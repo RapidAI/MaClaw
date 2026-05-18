@@ -3,6 +3,7 @@ package llmcache
 import (
 	"container/list"
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,6 +132,47 @@ func (c *Cache) Purge(ctx context.Context) (int64, error) {
 	}
 	return memoryCount + diskCount, nil
 }
+
+func (c *Cache) PurgeTenant(ctx context.Context, tenantID string) (int64, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	prefix := "tenant:" + tenantID + ":"
+	defaultTenant := tenantID == store.DefaultTenantID
+	memoryCount := c.purgeMemory(func(cacheKey string) bool {
+		if defaultTenant {
+			return !strings.HasPrefix(cacheKey, "tenant:")
+		}
+		return strings.HasPrefix(cacheKey, prefix)
+	})
+	if c.repo == nil {
+		return memoryCount, nil
+	}
+	if defaultTenant {
+		if purger, ok := c.repo.(interface {
+			PurgeDefaultTenant(context.Context) (int64, error)
+		}); ok {
+			diskCount, err := purger.PurgeDefaultTenant(ctx)
+			if err != nil {
+				return memoryCount, err
+			}
+			return memoryCount + diskCount, nil
+		}
+		return memoryCount, nil
+	}
+	if purger, ok := c.repo.(interface {
+		PurgeByKeyPrefix(context.Context, string) (int64, error)
+	}); ok {
+		diskCount, err := purger.PurgeByKeyPrefix(ctx, prefix)
+		if err != nil {
+			return memoryCount, err
+		}
+		return memoryCount + diskCount, nil
+	}
+	return memoryCount, nil
+}
+
 func (c *Cache) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
 	c.deleteExpiredMemory(now)
 	if c.repo == nil {
@@ -242,6 +284,22 @@ func (c *Cache) deleteExpiredMemory(now time.Time) {
 		}
 		elem = prev
 	}
+}
+
+func (c *Cache) purgeMemory(match func(string) bool) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var removed int64
+	for elem := c.ll.Back(); elem != nil; {
+		prev := elem.Prev()
+		item := elem.Value.(*memoryEntry)
+		if match(item.entry.CacheKey) {
+			c.removeElement(elem)
+			removed++
+		}
+		elem = prev
+	}
+	return removed
 }
 
 func (c *Cache) removeElement(elem *list.Element) {

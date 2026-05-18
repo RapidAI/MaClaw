@@ -118,7 +118,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	// Initialize memory store (shared with GUI 鈥?same ~/.maclaw/memory/).
 	memoryDir := filepath.Join(dataDir, "memory")
 	os.MkdirAll(memoryDir, 0755)
-	memStore, err := memory.NewStore(memoryDir)
+	memStore, err := memory.NewStoreWithMode(memoryDir, memory.StoreModeAuto)
 	if err != nil {
 		logger.Warn("memory store init failed: %v", err)
 	}
@@ -2140,7 +2140,7 @@ func (c *tuiCallbacks) ShouldStop() bool {
 
 // ---------------------------------------------------------------------------
 // tuiBtwCallbacks implements agent.LoopCallbacks for /btw side queries.
-// Minimal tool set: web_search, web_fetch, read_file, memory (recall only).
+// Minimal tool set: web_search, web_fetch, read_file, memory (read-only).
 // Independent conversation 鈥?does not pollute the main chat history.
 // ---------------------------------------------------------------------------
 
@@ -2189,7 +2189,7 @@ func (c *tuiBtwCallbacks) GetMaxIterations() int {
 }
 
 func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
-	// Build a focused system prompt for /btw 鈥?identity + memory recall only.
+	// Build a focused system prompt for /btw: identity + read-only memory context.
 	// Does NOT call agent.BuildSystemPrompt (which injects coding workflow,
 	// memory management guide, and other multi-turn noise).
 	return buildTuiBtwSystemPrompt(c.app, userText)
@@ -2233,42 +2233,16 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 
 	// User fact summary.
 	if app.memoryStore != nil {
-		if summary := app.memoryStore.UserFactSummary(400); summary != "" {
-			fmt.Fprintf(&b, tuiBtwSectionFormat(lang, "userInfo"), summary)
-		}
+		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(memory.UserFactSummaryPromptOptions{
+			Template: tuiBtwSectionFormat(lang, "userInfo"),
+			MaxRunes: 400,
+		}))
 	}
 
 	// Proactive memory recall (read-only, no side effects).
 	if app.memoryStore != nil && userText != "" {
-		recalled := app.memoryStore.RecallDynamic(userText, "", "")
-		var relevant []memory.Entry
-		for _, e := range recalled {
-			cat := memory.MapToCanonical(e.Category)
-			if cat == memory.CategoryUserFact || cat == memory.CategorySelfIdentity {
-				continue
-			}
-			if e.Category == memory.CategorySessionCheckpoint || e.Category == memory.CategoryConversationSummary {
-				continue
-			}
-			relevant = append(relevant, e)
-		}
-		if len(relevant) > 8 {
-			relevant = relevant[:8]
-		}
-		if len(relevant) > 0 {
-			b.WriteString(tuiBtwSectionHeader(lang, "relevantMemory"))
-			for _, e := range relevant {
-				text := e.Content
-				if e.CompactForm != "" {
-					text = e.CompactForm
-				}
-				runes := []rune(text)
-				if len(runes) > 200 {
-					text = string(runes[:200]) + "..."
-				}
-				fmt.Fprintf(&b, "- [%s] %s\n", e.Category, text)
-			}
-		}
+		promptContext, _ := app.memoryStore.ProactiveContextForPrompt(userText, memory.BtwProactivePromptOptions("", tuiBtwSectionHeader(lang, "relevantMemory")))
+		b.WriteString(promptContext)
 	}
 
 	return b.String()
@@ -2291,10 +2265,10 @@ func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
 		return tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
 	}
 
-	// Mechanism-level enforcement: memory tool is recall-only in /btw.
+	// Mechanism-level enforcement: memory tool is read-only in /btw.
 	if name == "memory" {
 		action, _ := args["action"].(string)
-		if action != "recall" {
+		if !memory.NormalizeMemoryToolAction(action).IsRecallOnlyAllowed() {
 			return tuiText(tuiConfigLang(c.app.appConfig), "btwMemoryReadOnly")
 		}
 	}

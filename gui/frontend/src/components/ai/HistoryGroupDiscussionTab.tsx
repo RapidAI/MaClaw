@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, GroupDiscussionSendHistoryMessage, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
+import { GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, GroupDiscussionSendHistoryMessage, GroupDiscussionSendInvitation, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
+import { GroupParticipantPanel } from "./GroupParticipantPanel";
+import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEGroupChat";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
@@ -55,10 +57,15 @@ const eventDiscussionId = (event: any): string => {
     const { payload, message } = eventDiscussionPayload(event);
     return String(
         event?.session_id ||
+        event?.discussion_id ||
         payload?.session_id ||
+        payload?.discussion_id ||
         payload?.SessionID ||
+        payload?.DiscussionID ||
         message?.session_id ||
+        message?.discussion_id ||
         message?.SessionID ||
+        message?.DiscussionID ||
         ""
     ).trim();
 };
@@ -68,6 +75,40 @@ const eventDiscussionKind = (event: any): string => {
     return String(message?.kind || message?.Kind || "").trim().toLowerCase();
 };
 
+const mentionLabelFromParticipant = (participant: Pick<GroupParticipant, "id" | "name">): string => {
+    const name = String(participant.name || participant.id || "").trim();
+    return name.replace(/\s+\([^()]+\)$/, "").trim() || String(participant.id || "").trim();
+};
+
+const looksLikeRawParticipantId = (value: string): boolean =>
+    /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+
+const readableHistorySpeakerName = (
+    candidate: string | undefined,
+    fromId: string,
+    participants: GroupParticipant[],
+    fallback: string,
+): string => {
+    const name = String(candidate || "").trim();
+    const participant = participants.find((p) => p.id === fromId);
+    if (name && name !== fromId && !looksLikeRawParticipantId(name)) return name;
+    return participant ? mentionLabelFromParticipant(participant) : fallback;
+};
+
+const MENTION_TRIGGER_PATTERN = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/;
+
+const participantFallbackName = (id: string, index: number, lang: string | undefined): string => {
+    const normalized = String(id || "").trim();
+    if (normalized === "me" || normalized === "user") return textForLang(lang, "Me", "我", "我");
+    if (normalized === "local-maclaw") return textForLang(lang, "Local AI", "本机AI", "本機AI");
+    return textForLang(lang, `Participant ${index + 1}`, `参与者 ${index + 1}`, `參與者 ${index + 1}`);
+};
+
+const readableParticipantName = (name: string | undefined, id: string, index: number, lang: string | undefined): string => {
+    const candidate = String(name || "").trim();
+    if (candidate && candidate !== id && !looksLikeRawParticipantId(candidate)) return candidate;
+    return participantFallbackName(id, index, lang);
+};
 export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme, lang }: HistoryGroupDiscussionTabProps) {
     const [detail, setDetail] = useState<HistoryDiscussionDetail | null>(null);
     const [loading, setLoading] = useState(false);
@@ -76,6 +117,12 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     const [sending, setSending] = useState(false);
     const [downloadingKey, setDownloadingKey] = useState("");
     const [downloadedPaths, setDownloadedPaths] = useState<Record<string, string>>({});
+    const [mentionOpen, setMentionOpen] = useState(false);
+    const [mentionQuery, setMentionQuery] = useState("");
+    const [mentionStart, setMentionStart] = useState(-1);
+    const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+    const inputRef = useRef<HTMLTextAreaElement | null>(null);
+    const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadSeqRef = useRef(0);
 
     const load = useCallback(async (options?: { silent?: boolean }) => {
@@ -95,6 +142,10 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     }, [discussionId]);
 
     useEffect(() => { void load(); }, [load]);
+
+    useEffect(() => () => {
+        if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    }, []);
 
     useEffect(() => {
         if (!discussionId) return;
@@ -123,6 +174,16 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     const detailAccessReadOnly = detailHasAccessState ? isHistoryDiscussionReadOnly(detail.discussion) : false;
     const effectiveReadOnly = detailHasAccessState ? detailAccessReadOnly : readOnly;
 
+    const scheduleInputFocus = useCallback((position?: number) => {
+        if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+        focusTimerRef.current = setTimeout(() => {
+            focusTimerRef.current = null;
+            const target = position ?? inputRef.current?.value.length ?? 0;
+            inputRef.current?.focus();
+            inputRef.current?.setSelectionRange(target, target);
+        }, 0);
+    }, []);
+
     const send = useCallback(async () => {
         const content = input.trim();
         if (!content || effectiveReadOnly || sending) return;
@@ -132,41 +193,139 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
             await GroupDiscussionSendHistoryMessage(discussionId, { kind: "statement", content, created_at: new Date().toISOString() });
             setInput("");
             await load();
+            return true;
         } catch (e) {
             setError(String(e));
+            return false;
         } finally {
             setSending(false);
         }
     }, [discussionId, effectiveReadOnly, input, load, sending]);
 
+    const insertMention = useCallback((participant: GroupParticipant) => {
+        if (effectiveReadOnly) return;
+        const name = mentionLabelFromParticipant(participant);
+        if (!name) return;
+        const mention = `@${name} `;
+        const textarea = inputRef.current;
+        const caret = textarea?.selectionStart ?? input.length;
+        const prefix = input.slice(0, caret);
+        const suffix = input.slice(caret).replace(/^\s+/, "");
+        const spacer = prefix && !prefix.endsWith(" ") ? " " : "";
+        const next = `${prefix}${spacer}${mention}${suffix}`;
+        setInput(next);
+        scheduleInputFocus(prefix.length + spacer.length + mention.length);
+    }, [effectiveReadOnly, input, scheduleInputFocus]);
+    const addHistoryParticipant = useCallback(async (veId: string) => {
+        const toId = String(veId || "").trim();
+        if (!toId || effectiveReadOnly || sending) return false;
+        setSending(true);
+        setError("");
+        try {
+            await GroupDiscussionSendInvitation(discussionId, { to_id: toId, role: "speak", trusted: true });
+            await load();
+            return true;
+        } catch (e) {
+            setError(String(e));
+            return false;
+        } finally {
+            setSending(false);
+        }
+    }, [discussionId, effectiveReadOnly, load, sending]);
+
     const participants: GroupParticipant[] = useMemo(() => {
+        const messageNameMap = new Map<string, string>();
+        for (const m of detail?.messages || []) {
+            const fromId = String(m.from_id || "").trim();
+            const fromName = String(m.from_name || "").trim();
+            if (fromId && fromName && fromName !== fromId && !looksLikeRawParticipantId(fromName)) {
+                messageNameMap.set(fromId, fromName);
+            }
+        }
+
         const sessionParticipants = detail?.session?.participants || [];
         if (sessionParticipants.length > 0) {
             return sessionParticipants
                 .filter((p) => String(p.id || "").trim())
-                .map((p) => {
+                .map((p, index) => {
                     const id = String(p.id || "").trim();
-                    const name = String(p.name || "").trim() || id;
+                    const resolvedName = readableParticipantName(p.name || messageNameMap.get(id), id, index, lang);
                     const role = String(p.role_code || "").trim();
-                    return { id, name: role ? `${name} (${role})` : name, online: true };
+                    return { id, name: role ? `${resolvedName} (${role})` : resolvedName, online: true };
                 });
         }
-        // Fallback: build name map from message from_name fields, then use
-        // participant_ids with resolved names. This avoids showing raw machine IDs.
-        const nameMap = new Map<string, string>();
-        for (const m of detail?.messages || []) {
-            const fromId = String(m.from_id || "").trim();
-            const fromName = String(m.from_name || "").trim();
-            if (fromId && fromName && fromName !== fromId) {
-                nameMap.set(fromId, fromName);
-            }
-        }
-        return (detail?.discussion?.participant_ids || []).map((id) => {
-            const resolved = nameMap.get(id);
-            const displayName = resolved || id;
+
+        return (detail?.discussion?.participant_ids || []).map((id, index) => {
+            const resolved = messageNameMap.get(id);
+            const displayName = resolved || participantFallbackName(id, index, lang);
             return { id, name: displayName, online: true };
         });
-    }, [detail?.discussion?.participant_ids, detail?.messages, detail?.session?.participants]);
+    }, [detail?.discussion?.participant_ids, detail?.messages, detail?.session?.participants, lang]);
+
+    const closeMentionPopover = useCallback(() => {
+        setMentionOpen(false);
+        setMentionQuery("");
+        setMentionStart(-1);
+        setMentionSelectedIndex(0);
+    }, []);
+
+    const mentionParticipants: MentionParticipant[] = useMemo(() =>
+        participants.map((p) => ({ id: p.id, name: mentionLabelFromParticipant(p), online: p.online })),
+        [participants]
+    );
+
+    const updateMentionState = useCallback((value: string, caret: number | null | undefined) => {
+        if (effectiveReadOnly || !mentionParticipants.length || caret == null) {
+            closeMentionPopover();
+            return;
+        }
+        const beforeCaret = value.slice(0, caret);
+        const match = beforeCaret.match(MENTION_TRIGGER_PATTERN);
+        if (!match) {
+            closeMentionPopover();
+            return;
+        }
+        const query = match[2] || "";
+        const normalizedQuery = query.trim().toLowerCase();
+        const hasMatches = !normalizedQuery || mentionParticipants.some((p) =>
+            p.name.toLowerCase().includes(normalizedQuery)
+        );
+        if (!hasMatches) {
+            closeMentionPopover();
+            return;
+        }
+        setMentionStart(beforeCaret.length - query.length - 1);
+        setMentionQuery(query);
+        setMentionSelectedIndex(0);
+        setMentionOpen(true);
+    }, [closeMentionPopover, effectiveReadOnly, mentionParticipants]);
+
+    const mentionFiltered = useMemo(() => {
+        const query = mentionQuery.trim().toLowerCase();
+        if (!query) return mentionParticipants;
+        return mentionParticipants.filter((p) =>
+            p.name.toLowerCase().includes(query)
+        );
+    }, [mentionParticipants, mentionQuery]);
+
+    const insertMentionParticipant = useCallback((participant: MentionParticipant) => {
+        if (effectiveReadOnly) return;
+        const textarea = inputRef.current;
+        const caret = textarea?.selectionStart ?? input.length;
+        const start = mentionStart >= 0 ? mentionStart : caret;
+        const mention = `@${participant.name} `;
+        const next = `${input.slice(0, start)}${mention}${input.slice(caret)}`;
+        const nextCaret = start + mention.length;
+        setInput(next);
+        closeMentionPopover();
+        scheduleInputFocus(nextCaret);
+    }, [closeMentionPopover, effectiveReadOnly, input, mentionStart, scheduleInputFocus]);
+
+    const mentionKeyDown = useMentionKeyboard(mentionOpen, mentionFiltered, mentionSelectedIndex, setMentionSelectedIndex, insertMentionParticipant, closeMentionPopover);
+
+    useEffect(() => {
+        if (effectiveReadOnly) closeMentionPopover();
+    }, [closeMentionPopover, effectiveReadOnly]);
 
     const buildMessageAttachments = useCallback((m: NonNullable<HistoryDiscussionDetail["messages"]>[number]): NonNullable<GroupMessage["attachments"]> => {
         const attachments: NonNullable<GroupMessage["attachments"]> = [];
@@ -218,7 +377,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
             const message: GroupMessage = {
                 id: m.id || `m-${idx}`,
                 fromId,
-                fromName: m.from_name || m.from_id || textForLang(lang, "Unknown", "\u672a\u77e5", "\u672a\u77e5"),
+                fromName: readableHistorySpeakerName(m.from_name, fromId, participants, participantFallbackName(fromId, idx, lang)),
                 content,
                 timestamp: m.created_at ? Date.parse(m.created_at) || Date.now() : Date.now(),
                 attachments,
@@ -234,7 +393,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         });
 
         return merged;
-    }, [buildMessageAttachments, detail?.messages, lang]);
+    }, [buildMessageAttachments, detail?.messages, lang, participants]);
 
     const downloadAttachment = useCallback(async (attachment: NonNullable<GroupMessage["attachments"]>[number], message: GroupMessage) => {
         if (attachment.localPath) {
@@ -280,17 +439,31 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
             <button type="button" onClick={() => void load()} disabled={loading} style={{ border: `1px solid ${theme.fieldBorder}`, background: theme.fieldBg, color: theme.text, borderRadius: 6, padding: "4px 10px", cursor: loading ? "default" : "pointer", fontSize: 12 }}>{loading ? "..." : textForLang(lang, "Refresh", "\u5237\u65b0", "\u91cd\u65b0\u6574\u7406")}</button>
         </div>
 
-        {participants.length > 0 && <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "6px 12px", borderBottom: `1px solid ${theme.divider}`, background: theme.bg }}>
-            <span style={{ color: theme.textMuted, fontSize: 11 }}>{textForLang(lang, "Participants", "\u53c2\u4e0e\u8005", "\u53c3\u8207\u8005")}</span>
-            {participants.map((p) => <span key={p.id} title={p.id} style={{ border: `1px solid ${theme.fieldBorder}`, borderRadius: 999, padding: "2px 7px", color: theme.text, background: theme.fieldBg, fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>)}
-        </div>}
-
         {error && <div role="alert" style={{ padding: "7px 12px", color: theme.errorText, background: theme.errorBg, borderBottom: `1px solid ${theme.errorBorder}`, fontSize: 12 }}>{error}</div>}
         {loading && !detail
             ? <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: theme.textMuted }}>{textForLang(lang, "Loading...", "\u52a0\u8f7d\u4e2d...", "\u8f09\u5165\u4e2d...")}</div>
-            : <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}><VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={!effectiveReadOnly} /></div>}
+            : <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "row" }}>
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                    <VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={false} showHeader={false} />
+                </div>
+                <GroupParticipantPanel participants={participants} theme={theme} lang={lang} sessionId={discussionId} readOnly={effectiveReadOnly} onTalkTo={insertMention} onAddParticipant={addHistoryParticipant} />
+            </div>}
         <div style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
-            <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={effectiveReadOnly || sending} placeholder={effectiveReadOnly ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00") : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...")} rows={1} style={{ flex: 1, resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }} />
+            <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+                {mentionOpen && (
+                    <MentionPopover
+                        filtered={mentionFiltered}
+                        selectedIndex={mentionSelectedIndex}
+                        onSelect={insertMentionParticipant}
+                        onHover={setMentionSelectedIndex}
+                        onClose={closeMentionPopover}
+                        anchorRef={inputRef}
+                        theme={theme}
+                        lang={lang}
+                    />
+                )}
+                <textarea ref={inputRef} value={input} onChange={(e) => { setInput(e.target.value); updateMentionState(e.target.value, e.currentTarget.selectionStart); }} onClick={(e) => updateMentionState(input, e.currentTarget.selectionStart)} onKeyUp={(e) => { if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key)) return; updateMentionState(e.currentTarget.value, e.currentTarget.selectionStart); }} onKeyDown={(e) => { if (mentionKeyDown(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={effectiveReadOnly || sending} placeholder={effectiveReadOnly ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00") : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...")} rows={1} style={{ width: "100%", resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }} />
+            </div>
             <button type="button" onClick={() => void send()} disabled={effectiveReadOnly || sending || !input.trim()} style={{ border: "none", background: theme.sendBtnBg, color: theme.sendBtnColor, borderRadius: 6, padding: "6px 14px", cursor: effectiveReadOnly || sending || !input.trim() ? "default" : "pointer", opacity: effectiveReadOnly || sending || !input.trim() ? 0.4 : 1, fontSize: 13, fontWeight: 500, transition: "opacity 0.15s" }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
         </div>
     </div>;

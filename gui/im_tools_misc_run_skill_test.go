@@ -124,8 +124,16 @@ func TestToolRunSkill_OpensAgentViewForMissingRequiredParams(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 
 	got := h.toolRunSkill(map[string]interface{}{"name": "needs-input"}, nil)
-	if !strings.Contains(got, "需要补充结构化参数") {
-		t.Fatalf("expected task panel parameter prompt, got %s", got)
+	// After mechanism fix (#97): missing params return a structured error for
+	// the LLM to auto-fill, instead of popping an AgentView form.
+	if !strings.Contains(got, "缺少必要参数") {
+		t.Fatalf("expected missing params error, got %s", got)
+	}
+	if !strings.Contains(got, "input") {
+		t.Fatalf("expected 'input' in missing params list, got %s", got)
+	}
+	if !strings.Contains(got, "[action: provide_args]") {
+		t.Fatalf("expected [action: provide_args] marker, got %s", got)
 	}
 }
 

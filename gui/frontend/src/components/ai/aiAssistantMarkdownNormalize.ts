@@ -43,6 +43,10 @@ export function normalizeInlineListMarkers(content: string): string {
         }
         let normalized = withWindowsPathsProtected(parts[i], (segment) => segment
             .replace(escapedNewlinePattern, "\n")
+            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,4}\s+)/g, "$1\n$2")
+            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,4})(?=[^#\s])/g, "$1\n$2 ")
+            .replace(/([^#\n\s])\s*(#{2,4})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
+            .replace(/(^|\n)(#{3,4})(?=[^#\s])/g, "$1$2 ")
             .replace(/([\uff1a:])\s*(-\s+)/g, "$1\n$2")
             .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
             .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")

@@ -467,7 +467,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "memory",
-			Description: "Save information to or recall from long-term memory. Actions: save (store a fact/preference/knowledge), recall (search memory by query), list (show recent entries), delete (remove an entry by ID).",
+			Description: memory.ToolDefinitionSchema().Description,
 			Enabled:     c.memory != nil,
 			DisabledReason: func() string {
 				if c.memory == nil {
@@ -476,17 +476,12 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				return ""
 			}(),
 			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":   map[string]interface{}{"type": "string", "description": "Action: save, recall, list, delete"},
-					"content":  map[string]interface{}{"type": "string", "description": "Content to save (for save action)"},
-					"category": map[string]interface{}{"type": "string", "description": "Category: user_fact, project_knowledge, preference, instruction"},
-					"query":    map[string]interface{}{"type": "string", "description": "Search query (for recall action)"},
-					"id":       map[string]interface{}{"type": "string", "description": "Entry ID (for delete action)"},
-				},
-				"required": []string{"action"},
+				"type":       "object",
+				"properties": memory.ToolDefinitionSchema().Properties,
+				"required":   memory.ToolDefinitionSchema().Required,
 			},
 		},
+
 		{
 			Name:        "read_file",
 			Description: "Read the contents of a file. Supports line ranges (start_line, lines) and tail reading (offset). Files are scoped to the instance workspace.",

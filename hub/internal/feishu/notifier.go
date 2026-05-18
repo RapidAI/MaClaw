@@ -41,10 +41,7 @@ func newLarkBot(appID, appSecret string) *lark.Bot {
 const openIDMapKey = "feishu_openid_map"
 
 func tenantBindingKey(tenantID, email string) string {
-	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
-		tenantID = store.DefaultTenantID
-	}
+	tenantID = normalizeFeishuTenantID(tenantID)
 	email = strings.TrimSpace(strings.ToLower(email))
 	if tenantID == store.DefaultTenantID {
 		return email
@@ -52,9 +49,25 @@ func tenantBindingKey(tenantID, email string) string {
 	return tenantID + "\x00" + email
 }
 
+func normalizeFeishuTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return store.DefaultTenantID
+	}
+	return tenantID
+}
+
+func emailFromTenantBindingKey(key string) string {
+	if i := strings.IndexByte(key, '\x00'); i >= 0 {
+		return strings.TrimSpace(strings.ToLower(key[i+1:]))
+	}
+	return strings.TrimSpace(strings.ToLower(key))
+}
+
 // BindingInfo holds the open_id and optional mobile for a Feishu binding.
 type BindingInfo struct {
 	OpenID   string `json:"open_id"`
+	Email    string `json:"email,omitempty"`
 	TenantID string `json:"tenant_id,omitempty"`
 	Mobile   string `json:"mobile,omitempty"`
 }
@@ -296,12 +309,10 @@ func (n *Notifier) BindOpenIDForTenant(tenantID, email, openID, mobile string) {
 	if email == "" || openID == "" {
 		return
 	}
-	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
-		tenantID = store.DefaultTenantID
-	}
+	tenantID = normalizeFeishuTenantID(tenantID)
+	email = strings.TrimSpace(strings.ToLower(email))
 	n.oidMu.Lock()
-	n.oidCache[tenantBindingKey(tenantID, email)] = BindingInfo{OpenID: openID, TenantID: tenantID, Mobile: mobile}
+	n.oidCache[tenantBindingKey(tenantID, email)] = BindingInfo{OpenID: openID, Email: email, TenantID: tenantID, Mobile: mobile}
 	n.oidMu.Unlock()
 	n.saveOpenIDMap()
 	log.Printf("[feishu] bound open_id for tenant=%s email=%s", tenantID, email)
@@ -352,16 +363,19 @@ func (n *Notifier) loadOpenIDMap() {
 	// Try new format first: map[string]BindingInfo (values are JSON objects).
 	var m map[string]BindingInfo
 	if err := json.Unmarshal([]byte(raw), &m); err == nil {
+		normalized := make(map[string]BindingInfo, len(m))
 		for key, info := range m {
-			if strings.TrimSpace(info.TenantID) == "" {
-				info.TenantID = store.DefaultTenantID
-				m[key] = info
+			info.TenantID = normalizeFeishuTenantID(info.TenantID)
+			if strings.TrimSpace(info.Email) == "" {
+				info.Email = emailFromTenantBindingKey(key)
 			}
+			info.Email = strings.TrimSpace(strings.ToLower(info.Email))
+			normalized[tenantBindingKey(info.TenantID, info.Email)] = info
 		}
 		n.oidMu.Lock()
-		n.oidCache = m
+		n.oidCache = normalized
 		n.oidMu.Unlock()
-		log.Printf("[feishu] loaded %d open_id binding(s)", len(m))
+		log.Printf("[feishu] loaded %d open_id binding(s)", len(normalized))
 		return
 	}
 	// Fallback: old format map[string]string (email → open_id).
@@ -371,7 +385,8 @@ func (n *Notifier) loadOpenIDMap() {
 	}
 	migrated := make(map[string]BindingInfo, len(legacy))
 	for email, oid := range legacy {
-		migrated[tenantBindingKey(store.DefaultTenantID, email)] = BindingInfo{OpenID: oid, TenantID: store.DefaultTenantID}
+		normalizedEmail := strings.TrimSpace(strings.ToLower(email))
+		migrated[tenantBindingKey(store.DefaultTenantID, normalizedEmail)] = BindingInfo{OpenID: oid, Email: normalizedEmail, TenantID: store.DefaultTenantID}
 	}
 	n.oidMu.Lock()
 	n.oidCache = migrated

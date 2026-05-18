@@ -98,7 +98,7 @@ func runPrompt(promptText string) {
 	// Initialize memory store.
 	memoryDir := filepath.Join(dataDir, "memory")
 	os.MkdirAll(memoryDir, 0755)
-	memStore, _ := memory.NewStore(memoryDir)
+	memStore, _ := memory.NewStoreWithMode(memoryDir, memory.StoreModeAuto)
 
 	// Initialize SSH manager.
 	sshMgr := remote.NewSSHSessionManager(nil)

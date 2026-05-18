@@ -159,7 +159,11 @@ func BindQueryHandler(identity *auth.IdentityService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
-		tenantID := tenantIDFromClientHint(r)
+		tenantID, err := tenantIDForEmailRequest(r, identity, email)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+			return
+		}
 		ctx := auth.WithTenant(r.Context(), tenantID)
 		user, err := identity.LookupUserByEmail(ctx, email)
 		if err != nil {
@@ -207,7 +211,11 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 		}
 
 		// Must be a bound user
-		tenantID := tenantIDFromClientHint(r)
+		tenantID, err := tenantIDForEmailRequest(r, identity, email)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+			return
+		}
 		ctx := auth.WithTenant(r.Context(), tenantID)
 		user, err := identity.LookupUserByEmail(ctx, email)
 		if err != nil || user == nil {
@@ -281,7 +289,11 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			return
 		}
 
-		tenantID := tenantIDFromClientHint(r)
+		tenantID, err := tenantIDForEmailRequest(r, identity, email)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+			return
+		}
 		ok, locked := consumeVerifyCode(tenantID, email, code)
 		if locked {
 			writeError(w, http.StatusTooManyRequests, "TOO_MANY_ATTEMPTS", "Too many wrong attempts, please request a new code")

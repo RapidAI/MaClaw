@@ -120,3 +120,55 @@ func TestRateLimiter_SizeLimit(t *testing.T) {
 		t.Error("15MB should exceed tier 1 limit")
 	}
 }
+
+func TestRateLimiter_GlobalLimitOverridesTierLimit(t *testing.T) {
+	store, rl := setupRateLimiterTest(t)
+	ctx := context.Background()
+
+	u := createTestUser(t, store, "global@test.com", 0)
+	// Tier 1 默认: 5/hour
+	_ = rl.TierSvc().RecalculateTier(ctx, u.ID, 0, 0, 0)
+
+	// 设置全局限制为 100（大于 Tier 1 的 5）
+	if err := store.SetConfig(ctx, configMaxUploadsPerHour, "100"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 创建 6 个提交（超过 Tier 1 的 5，但在全局 100 以内）
+	now := time.Now()
+	for i := 0; i < 6; i++ {
+		sub := &SkillSubmission{
+			ID: generateID(), Email: u.Email, UserID: u.ID,
+			Status: "pending", ZipPath: "/tmp/test.zip",
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if err := store.CreateSubmission(ctx, sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 全局限制 100 覆盖 Tier 1 的 5，6 个应该允许
+	if err := rl.CheckRateLimit(ctx, u.Email, u.ID); err != nil {
+		t.Errorf("global limit 100 should override tier 1 limit 5: %v", err)
+	}
+
+	// 设置全局限制为 3（小于 Tier 1 的 5）
+	if err := store.SetConfig(ctx, configMaxUploadsPerHour, "3"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 已有 6 个提交，全局限制 3，应被拒绝
+	if err := rl.CheckRateLimit(ctx, u.Email, u.ID); err == nil {
+		t.Error("global limit 3 should reject when 6 submissions exist")
+	}
+
+	// 设置全局限制为 0（回退到等级默认）
+	if err := store.SetConfig(ctx, configMaxUploadsPerHour, "0"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 全局限制 0 回退到 Tier 1 的 5，已有 6 个，应被拒绝
+	if err := rl.CheckRateLimit(ctx, u.Email, u.ID); err == nil {
+		t.Error("global limit 0 should fallback to tier limit 5, rejecting 6 submissions")
+	}
+}

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -164,6 +165,25 @@ describe("ParticipantSelector", () => {
         });
     });
 
+    it("loads the participant picker under React StrictMode", async () => {
+        render(
+            <StrictMode>
+                <ParticipantSelector
+                    sessionId="session-1"
+                    currentParticipants={mockParticipants}
+                    maxGroupParticipants={5}
+                    theme={testTheme}
+                    onAdd={vi.fn()}
+                    listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+                />
+            </StrictMode>
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        await waitFor(() => expect(screen.getByTestId("group-picker-item-ve-3")).toBeTruthy());
+    });
+
     it("filters out VEs already in the group", async () => {
         render(
             <ParticipantSelector
@@ -213,6 +233,52 @@ describe("ParticipantSelector", () => {
         expect(screen.getByTestId("group-limit-error").textContent).toContain("群聊人数已满（最多");
     });
 
+    it("does not expose raw ids for unnamed available VEs", async () => {
+        const unnamedVEs: VirtualEmployeeEntry[] = [
+            { id: "m_b1821505498d817c", name: "", skill_description: "", access_policy: "public", status: "active", online_status: "online" },
+        ];
+
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={[]}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                lang="zh"
+                onAdd={vi.fn()}
+                listVirtualEmployees={() => Promise.resolve(unnamedVEs)}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        await waitFor(() => expect(screen.getByText("数字员工 1")).toBeTruthy());
+        expect(screen.queryByText("m_b1821505498d817c")).toBeNull();
+    });
+
+    it("does not expose raw-looking available VE names even when ids differ", async () => {
+        const rawNamedVEs: VirtualEmployeeEntry[] = [
+            { id: "profile-raw", machine_id: "machine-raw", name: "m_b1821505498d817c", skill_description: "", access_policy: "public", status: "active", online_status: "online" },
+        ];
+
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={[]}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                lang="en"
+                onAdd={vi.fn()}
+                listVirtualEmployees={() => Promise.resolve(rawNamedVEs)}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        await waitFor(() => expect(screen.getByText("Digital employee 1")).toBeTruthy());
+        expect(screen.queryByText("m_b1821505498d817c")).toBeNull();
+    });
+
     it("calls onAdd when a VE is selected", async () => {
         const onAdd = vi.fn();
         render(
@@ -237,6 +303,88 @@ describe("ParticipantSelector", () => {
         expect(onAdd).toHaveBeenCalledWith(
             expect.objectContaining({ id: "ve-3", name: "数字员工C" })
         );
+    });
+
+    it("keeps the picker open while an async participant add is pending", async () => {
+        let resolveAdd: (() => void) | undefined;
+        const onAdd = vi.fn(() => new Promise<void>((resolve) => { resolveAdd = resolve; }));
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={mockParticipants}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                lang="en"
+                onAdd={onAdd}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+        await waitFor(() => expect(screen.getByTestId("group-picker-item-ve-3")).toBeTruthy());
+        fireEvent.click(screen.getByTestId("group-picker-item-ve-3"));
+
+        expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ id: "ve-3" }));
+        expect(screen.getByTestId("group-participant-picker")).toBeTruthy();
+        expect(screen.getByText("Adding...")).toBeTruthy();
+
+        await act(async () => { resolveAdd?.(); });
+        await waitFor(() => expect(screen.queryByTestId("group-participant-picker")).toBeNull());
+    });
+
+    it("ignores outside clicks while an async participant add is pending", async () => {
+        let resolveAdd: (() => void) | undefined;
+        const onAdd = vi.fn(() => new Promise<void>((resolve) => { resolveAdd = resolve; }));
+        render(
+            <div>
+                <button data-testid="outside-button">Outside</button>
+                <ParticipantSelector
+                    sessionId="session-1"
+                    currentParticipants={mockParticipants}
+                    maxGroupParticipants={5}
+                    theme={testTheme}
+                    lang="en"
+                    onAdd={onAdd}
+                    listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+                />
+            </div>
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+        await waitFor(() => expect(screen.getByTestId("group-picker-item-ve-3")).toBeTruthy());
+        fireEvent.click(screen.getByTestId("group-picker-item-ve-3"));
+
+        expect(screen.getByText("Adding...")).toBeTruthy();
+        fireEvent.mouseDown(screen.getByTestId("outside-button"));
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        expect(screen.getByTestId("group-participant-picker")).toBeTruthy();
+        expect((screen.getByTestId("group-add-participant-btn") as HTMLButtonElement).disabled).toBe(true);
+
+        await act(async () => { resolveAdd?.(); });
+        await waitFor(() => expect(screen.queryByTestId("group-participant-picker")).toBeNull());
+    });
+
+    it("keeps the picker open and shows an error when async participant add fails", async () => {
+        const onAdd = vi.fn().mockResolvedValue(null);
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={mockParticipants}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                lang="en"
+                onAdd={onAdd}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+        await waitFor(() => expect(screen.getByTestId("group-picker-item-ve-3")).toBeTruthy());
+        fireEvent.click(screen.getByTestId("group-picker-item-ve-3"));
+
+        await waitFor(() => expect(screen.getByTestId("group-limit-error").textContent).toContain("Failed to add"));
+        expect(screen.getByTestId("group-participant-picker")).toBeTruthy();
     });
 
     it("shows empty state when no VEs available", async () => {
@@ -300,6 +448,30 @@ describe("GroupMessageBubble", () => {
         );
 
         expect(screen.getByTestId("group-msg-msg-2").textContent).toContain("Test content");
+    });
+
+    it("renders compact markdown headings in group digital employee messages", () => {
+        const msg: GroupMessage = {
+            id: "msg-weather",
+            fromId: "ve-1",
+            fromName: "Weather Bot",
+            content: "天气：####\u{1f4c5}今天\n晴 0%####\u{1f4c5}明天\n多云",
+            timestamp: 3000,
+        };
+
+        render(
+            <GroupMessageBubble
+                message={msg}
+                participantIndex={0}
+                theme={testTheme}
+            />
+        );
+
+        expect(screen.getByText("天气：")).toBeTruthy();
+        expect(screen.getByText("\u{1f4c5}今天")).toBeTruthy();
+        expect(screen.getByText("晴 0%")).toBeTruthy();
+        expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+        expect(screen.getByText("多云")).toBeTruthy();
     });
 
     it("renders attachments when present", () => {
@@ -396,6 +568,29 @@ describe("VEGroupChatView", () => {
         expect(screen.getByTestId("group-message-list")).toBeTruthy();
     });
 
+    it("adds participants by machine_id when discoverable id differs", async () => {
+        const onAddParticipant = vi.fn().mockResolvedValue(undefined);
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={mockParticipants}
+                messages={[]}
+                theme={testTheme}
+                lang="en"
+                onAddParticipant={onAddParticipant}
+                listVirtualEmployees={() => Promise.resolve([
+                    { id: "profile-3", machine_id: "machine-3", name: "Machine Bot", skill_description: "Review", access_policy: "public", status: "active", online_status: "online" },
+                ])}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+        await waitFor(() => expect(screen.getByText("Machine Bot")).toBeTruthy());
+        fireEvent.click(screen.getByText("Machine Bot"));
+
+        await waitFor(() => expect(onAddParticipant).toHaveBeenCalledWith("machine-3"));
+    });
+
     it("displays participant count in header", () => {
         render(
             <VEGroupChatView
@@ -429,6 +624,39 @@ describe("VEGroupChatView", () => {
         expect(screen.getByTestId("group-msg-label-msg-1").textContent).toBe("User");
         expect(screen.getByTestId("group-msg-label-msg-2").textContent).toBe("Assistant A");
         expect(screen.getByTestId("group-msg-label-msg-3").textContent).toBe("Assistant B");
+    });
+
+    it("uses participant names when group message labels are raw ids", () => {
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={[{ id: "m_b1821505498d817c", name: "Contract Bot", online: true }]}
+                messages={[{ id: "raw-msg", fromId: "m_b1821505498d817c", fromName: "m_b1821505498d817c", content: "reviewed", timestamp: 1000 }]}
+                theme={testTheme}
+                lang="en"
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        expect(screen.getByTestId("group-msg-label-raw-msg").textContent).toBe("Contract Bot");
+        expect(screen.getByTestId("group-message-list").textContent).not.toContain("m_b1821505498d817c");
+    });
+
+    it("keeps wrapping rules for group message bubbles", () => {
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={mockParticipants}
+                messages={[{ id: "wrap-msg", fromId: "ve-1", fromName: "Assistant A", content: "LongWordWithoutSpaces\nsecond line", timestamp: 1000 }]}
+                theme={testTheme}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        const bubble = screen.getByTestId("group-msg-content-wrap-msg") as HTMLElement;
+        expect(bubble.style.overflowWrap).toBe("anywhere");
+        expect(bubble.style.whiteSpace).toBe("pre-wrap");
+        expect(screen.getByText("second line")).toBeTruthy();
     });
 
     it("calls onTitleChange when participants change", () => {

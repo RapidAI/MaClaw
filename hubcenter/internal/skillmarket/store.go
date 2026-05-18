@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,6 +75,8 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_sm_submissions_email ON sm_submissions(email, created_at);`,
 		`CREATE TABLE IF NOT EXISTS sm_purchase_records (
 			id                TEXT PRIMARY KEY,
+			hub_id            TEXT NOT NULL DEFAULT '',
+			tenant_id         TEXT NOT NULL DEFAULT '',
 			buyer_email       TEXT NOT NULL,
 			buyer_id          TEXT NOT NULL,
 			skill_id          TEXT NOT NULL,
@@ -88,7 +91,10 @@ func (s *Store) migrate() error {
 			status            TEXT NOT NULL DEFAULT 'active',
 			created_at        TEXT NOT NULL
 		);`,
+		`ALTER TABLE sm_purchase_records ADD COLUMN hub_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sm_purchase_records ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_buyer_skill ON sm_purchase_records(buyer_id, skill_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_hub_tenant_buyer ON sm_purchase_records(hub_id, tenant_id, buyer_email);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_seller ON sm_purchase_records(seller_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_pending_key ON sm_purchase_records(key_status) WHERE key_status = 'pending_key';`,
 		// 鈹€鈹€ Ratings 鈹€鈹€
@@ -118,6 +124,9 @@ func (s *Store) migrate() error {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
+			if isDuplicateColumnError(stmt, err) {
+				continue
+			}
 			return fmt.Errorf("exec %q: %w", stmt[:min(len(stmt), 60)], err)
 		}
 	}
@@ -135,6 +144,13 @@ func (s *Store) DB() *sql.DB { return s.db }
 
 // ReadDB 杩斿洖璇绘暟鎹簱杩炴帴銆?
 func (s *Store) ReadDB() *sql.DB { return s.readDB }
+
+func isDuplicateColumnError(stmt string, err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "ALTER TABLE") && strings.Contains(strings.ToLower(err.Error()), "duplicate column")
+}
 
 func parseTime(v string) time.Time {
 	if v == "" {

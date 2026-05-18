@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -135,12 +136,14 @@ type HeartbeatHubUpdate struct {
 
 type MigrateUserRequest struct {
 	Email     string `json:"email"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	FromHubID string `json:"from_hub_id,omitempty"`
 	ToHubID   string `json:"to_hub_id"`
 }
 
 type MigrateDomainRequest struct {
 	Domain    string `json:"domain"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	FromHubID string `json:"from_hub_id,omitempty"`
 	ToHubID   string `json:"to_hub_id"`
 }
@@ -180,6 +183,7 @@ type RefreshUserInventoryResult struct {
 }
 type HubUserDashboardItem struct {
 	HubID                 string     `json:"hub_id"`
+	TenantID              string     `json:"tenant_id,omitempty"`
 	HubName               string     `json:"hub_name"`
 	BaseURL               string     `json:"base_url"`
 	Status                string     `json:"status"`
@@ -200,6 +204,7 @@ type UserRegistrationBucket struct {
 
 type UserRegistrationHubReport struct {
 	HubID        string                   `json:"hub_id"`
+	TenantID     string                   `json:"tenant_id,omitempty"`
 	HubName      string                   `json:"hub_name"`
 	BaseURL      string                   `json:"base_url"`
 	TotalUsers   int                      `json:"total_users"`
@@ -263,7 +268,12 @@ func (s *Service) recordFailure(ctx context.Context, category, eventCode, messag
 	if s == nil || s.recorder == nil {
 		return
 	}
+	tenantID := ""
+	if raw, ok := details["tenant_id"]; ok {
+		tenantID = strings.TrimSpace(fmt.Sprint(raw))
+	}
 	s.recorder.Record(ctx, diagnostics.FailureEventInput{
+		TenantID:  tenantID,
 		Category:  category,
 		EventCode: eventCode,
 		Message:   message,
@@ -603,10 +613,12 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 			if link == nil || strings.TrimSpace(link.HubID) == "" || strings.TrimSpace(link.Email) == "" {
 				continue
 			}
-			if userCounts[link.HubID] == nil {
-				userCounts[link.HubID] = map[string]struct{}{}
+			hubID := strings.TrimSpace(link.HubID)
+			tenantID := strings.TrimSpace(link.TenantID)
+			if userCounts[hubID] == nil {
+				userCounts[hubID] = map[string]struct{}{}
 			}
-			userCounts[link.HubID][normalizeEmail(link.Email)] = struct{}{}
+			userCounts[hubID][tenantEmailCountKey(tenantID, normalizeEmail(link.Email))] = struct{}{}
 		}
 	}
 	out := make([]HubUserDashboardItem, 0, len(hubItems))
@@ -614,6 +626,7 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 		if hub == nil {
 			continue
 		}
+		caps := hubCapabilities(hub)
 		domains := hubCorporateDomains(hub)
 		signupMode := "restricted"
 		if len(domains) > 0 {
@@ -621,20 +634,49 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 		} else if hub.AcceptPublicSignup {
 			signupMode = "public_signup"
 		}
+		userCount := hubUserCountFromCapabilities(caps, hubUserCountFallback(userCounts, hub.ID, ""))
+		machineCount := hubMachineCountFromCapabilities(caps)
 		out = append(out, HubUserDashboardItem{
 			HubID:                 hub.ID,
 			HubName:               hub.Name,
 			BaseURL:               hub.BaseURL,
 			Status:                hub.Status,
 			IsDisabled:            hub.IsDisabled,
-			UserCount:             hubUserCount(hub, len(userCounts[hub.ID])),
-			MachineCount:          hubMachineCount(hub),
+			UserCount:             userCount,
+			MachineCount:          machineCount,
 			CorporateEmailDomain:  hub.CorporateEmailDomain,
 			CorporateEmailDomains: domains,
 			AcceptPublicSignup:    hub.AcceptPublicSignup,
 			SignupMode:            signupMode,
 			LastSeenAt:            hub.LastSeenAt,
 		})
+		for _, tenantID := range dashboardTenantIDs(caps, userCounts[hub.ID]) {
+			if tenantID == "" {
+				continue
+			}
+			tenantDomains := tenantDashboardDomains(caps, tenantID)
+			tenantSignupMode := "restricted"
+			if len(tenantDomains) > 0 {
+				tenantSignupMode = "corporate_domain"
+			} else if hub.AcceptPublicSignup {
+				tenantSignupMode = "public_signup"
+			}
+			out = append(out, HubUserDashboardItem{
+				HubID:                 hub.ID,
+				TenantID:              tenantID,
+				HubName:               hub.Name,
+				BaseURL:               hub.BaseURL,
+				Status:                hub.Status,
+				IsDisabled:            hub.IsDisabled,
+				UserCount:             tenantUserCountFromCapabilities(caps, tenantID, hubUserCountFallback(userCounts, hub.ID, tenantID)),
+				MachineCount:          tenantMachineCountFromCapabilities(caps, tenantID),
+				CorporateEmailDomain:  firstString(tenantDomains),
+				CorporateEmailDomains: tenantDomains,
+				AcceptPublicSignup:    hub.AcceptPublicSignup,
+				SignupMode:            tenantSignupMode,
+				LastSeenAt:            hub.LastSeenAt,
+			})
+		}
 	}
 	return out, nil
 }
@@ -653,7 +695,7 @@ func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationR
 		hubsByID[hub.ID] = hub
 	}
 	if s.links == nil {
-		report.Hubs = buildUserRegistrationHubReports(hubItems, nil, time.Now())
+		report.Hubs = buildUserRegistrationHubReports(hubItems, nil, nil, time.Now())
 		return report, nil
 	}
 	links, err := s.links.ListAll(ctx)
@@ -662,11 +704,13 @@ func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationR
 	}
 	firstSeen := map[string]time.Time{}
 	hubFirstSeen := map[string]map[string]time.Time{}
+	hubTenantFirstSeen := map[string]map[string]map[string]time.Time{}
 	for _, link := range links {
 		if link == nil {
 			continue
 		}
 		hubID := strings.TrimSpace(link.HubID)
+		tenantID := strings.TrimSpace(link.TenantID)
 		if hubID == "" {
 			continue
 		}
@@ -681,14 +725,26 @@ func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationR
 		if createdAt.IsZero() {
 			continue
 		}
-		if existing, ok := firstSeen[email]; !ok || createdAt.Before(existing) {
-			firstSeen[email] = createdAt
+		userKey := tenantEmailCountKey(tenantID, email)
+		if existing, ok := firstSeen[userKey]; !ok || createdAt.Before(existing) {
+			firstSeen[userKey] = createdAt
 		}
 		if hubFirstSeen[hubID] == nil {
 			hubFirstSeen[hubID] = map[string]time.Time{}
 		}
-		if existing, ok := hubFirstSeen[hubID][email]; !ok || createdAt.Before(existing) {
-			hubFirstSeen[hubID][email] = createdAt
+		if existing, ok := hubFirstSeen[hubID][userKey]; !ok || createdAt.Before(existing) {
+			hubFirstSeen[hubID][userKey] = createdAt
+		}
+		if tenantID != "" {
+			if hubTenantFirstSeen[hubID] == nil {
+				hubTenantFirstSeen[hubID] = map[string]map[string]time.Time{}
+			}
+			if hubTenantFirstSeen[hubID][tenantID] == nil {
+				hubTenantFirstSeen[hubID][tenantID] = map[string]time.Time{}
+			}
+			if existing, ok := hubTenantFirstSeen[hubID][tenantID][email]; !ok || createdAt.Before(existing) {
+				hubTenantFirstSeen[hubID][tenantID][email] = createdAt
+			}
 		}
 	}
 	report.TotalUsers = len(firstSeen)
@@ -718,31 +774,53 @@ func (s *Service) UserRegistrationReport(ctx context.Context) (UserRegistrationR
 		month := monthStart.AddDate(0, -i, 0).Format("2006-01")
 		report.Monthly = append(report.Monthly, UserRegistrationBucket{Period: month, Count: monthlyCounts[month]})
 	}
-	report.Hubs = buildUserRegistrationHubReports(hubItems, hubFirstSeen, now)
+	report.Hubs = buildUserRegistrationHubReports(hubItems, hubFirstSeen, hubTenantFirstSeen, now)
 	for hubID := range hubFirstSeen {
 		if _, ok := hubsByID[hubID]; ok {
 			continue
 		}
-		report.Hubs = append(report.Hubs, buildUserRegistrationHubReport(&store.HubInstance{ID: hubID}, hubFirstSeen[hubID], now))
+		hub := &store.HubInstance{ID: hubID}
+		report.Hubs = append(report.Hubs, buildUserRegistrationHubReport(hub, "", hubFirstSeen[hubID], now))
+		report.Hubs = append(report.Hubs, buildTenantUserRegistrationHubReports(hub, hubTenantFirstSeen[hubID], now)...)
 	}
 	return report, nil
 }
 
-func buildUserRegistrationHubReports(hubs []*store.HubInstance, hubFirstSeen map[string]map[string]time.Time, now time.Time) []UserRegistrationHubReport {
+func buildUserRegistrationHubReports(hubs []*store.HubInstance, hubFirstSeen map[string]map[string]time.Time, hubTenantFirstSeen map[string]map[string]map[string]time.Time, now time.Time) []UserRegistrationHubReport {
 	out := make([]UserRegistrationHubReport, 0, len(hubs))
 	for _, hub := range hubs {
 		if hub == nil || strings.TrimSpace(hub.ID) == "" {
 			continue
 		}
-		out = append(out, buildUserRegistrationHubReport(hub, hubFirstSeen[hub.ID], now))
+		out = append(out, buildUserRegistrationHubReport(hub, "", hubFirstSeen[hub.ID], now))
+		out = append(out, buildTenantUserRegistrationHubReports(hub, hubTenantFirstSeen[hub.ID], now)...)
 	}
 	return out
 }
 
-func buildUserRegistrationHubReport(hub *store.HubInstance, firstSeen map[string]time.Time, now time.Time) UserRegistrationHubReport {
+func buildTenantUserRegistrationHubReports(hub *store.HubInstance, tenants map[string]map[string]time.Time, now time.Time) []UserRegistrationHubReport {
+	if len(tenants) == 0 {
+		return nil
+	}
+	tenantIDs := make([]string, 0, len(tenants))
+	for tenantID := range tenants {
+		if strings.TrimSpace(tenantID) != "" {
+			tenantIDs = append(tenantIDs, tenantID)
+		}
+	}
+	sort.Strings(tenantIDs)
+	out := make([]UserRegistrationHubReport, 0, len(tenantIDs))
+	for _, tenantID := range tenantIDs {
+		out = append(out, buildUserRegistrationHubReport(hub, tenantID, tenants[tenantID], now))
+	}
+	return out
+}
+
+func buildUserRegistrationHubReport(hub *store.HubInstance, tenantID string, firstSeen map[string]time.Time, now time.Time) UserRegistrationHubReport {
 	report := UserRegistrationHubReport{}
 	if hub != nil {
 		report.HubID = hub.ID
+		report.TenantID = strings.TrimSpace(tenantID)
 		report.HubName = hub.Name
 		report.BaseURL = hub.BaseURL
 	}
@@ -775,6 +853,7 @@ func buildUserRegistrationHubReport(hub *store.HubInstance, firstSeen map[string
 
 func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*MigrationResult, error) {
 	email := normalizeEmailPattern(req.Email)
+	tenantID := strings.TrimSpace(req.TenantID)
 	toHubID := strings.TrimSpace(req.ToHubID)
 	fromHubID := strings.TrimSpace(req.FromHubID)
 	if email == "" || toHubID == "" {
@@ -803,7 +882,7 @@ func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*Mig
 	}
 
 	now := time.Now()
-	link := &store.HubUserLink{ID: adminUserLinkID(email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
+	link := &store.HubUserLink{ID: adminUserLinkIDForTenant(tenantID, email), HubID: toHubID, TenantID: tenantID, Email: email, IsDefault: tenantID == "", CreatedAt: now, UpdatedAt: now}
 	var removedLinks []*store.HubUserLink
 	var upsertedLink *store.HubUserLink
 	if migrator, ok := s.links.(transactionalUserMigrator); ok {
@@ -892,6 +971,7 @@ func (s *Service) migrateUserPattern(ctx context.Context, pattern, fromHubID, to
 
 func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (*MigrationResult, error) {
 	domain := normalizeCorporateEmailDomain(req.Domain)
+	tenantID := strings.TrimSpace(req.TenantID)
 	toHubID := strings.TrimSpace(req.ToHubID)
 	fromHubID := strings.TrimSpace(req.FromHubID)
 	if domain == "" || toHubID == "" {
@@ -902,6 +982,9 @@ func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (
 	}
 	if s.routes == nil {
 		return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID}, nil
+	}
+	if tenantID != "" {
+		return s.migrateTenantDomain(ctx, domain, tenantID, fromHubID, toHubID)
 	}
 	sources, err := s.collectUserMigrationSources(ctx, "*@"+domain, fromHubID, toHubID)
 	if err != nil {
@@ -969,6 +1052,37 @@ func (s *Service) MigrateDomain(ctx context.Context, req MigrateDomainRequest) (
 		return nil, err
 	}
 	return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: upserted}, nil
+}
+
+func (s *Service) migrateTenantDomain(ctx context.Context, domain, tenantID, fromHubID, toHubID string) (*MigrationResult, error) {
+	now := time.Now()
+	route := &store.HubDomainRoute{ID: adminTenantDomainRouteID(tenantID, domain), HubID: toHubID, TenantID: tenantID, Domain: domain, Enabled: true, Priority: 0, CreatedAt: now, UpdatedAt: now}
+	removedRoutes := []*store.HubDomainRoute{}
+	if migrator, ok := s.routes.(transactionalDomainMigrator); ok {
+		var err error
+		removedRoutes, err = migrator.MigrateDomainToHub(ctx, domain, fromHubID, route)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, errors.New("transactional domain migration is not supported by this store")
+	}
+	removed := make([]string, 0, len(removedRoutes))
+	for _, item := range removedRoutes {
+		if item != nil {
+			removed = append(removed, item.ID)
+		}
+	}
+	if s.sync != nil {
+		for _, item := range removedRoutes {
+			if item != nil {
+				s.sync.DeleteHubDomainRoute(ctx, item.ID)
+			}
+		}
+		s.sync.AppendHubDomainRoute(ctx, route)
+	}
+	s.refreshRoutes(ctx)
+	return &MigrationResult{Mode: "domain", Domain: domain, ToHubID: toHubID, RemovedIDs: removed, UpsertedIDs: []string{route.ID}}, nil
 }
 
 func (s *Service) RefreshUserInventory(ctx context.Context) (RefreshUserInventoryResult, error) {
@@ -1957,16 +2071,166 @@ func tenantUserEmailCapabilityMap(caps map[string]any) map[string][]string {
 	}
 	return byTenant
 }
+
+func tenantDomainCapabilityMap(caps map[string]any) map[string][]string {
+	byTenant := map[string][]string{}
+	if caps == nil {
+		return byTenant
+	}
+	if raw, ok := caps["tenant_domains"].(map[string]any); ok {
+		for tenantID, value := range raw {
+			domains := normalizeCorporateEmailDomains(capabilityStringList(value))
+			if len(domains) > 0 {
+				byTenant[strings.TrimSpace(tenantID)] = domains
+			}
+		}
+	}
+	return byTenant
+}
+
+func hubCapabilities(hub *store.HubInstance) map[string]any {
+	caps := map[string]any{}
+	if hub == nil || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return caps
+	}
+	_ = json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps)
+	return caps
+}
+
+func dashboardTenantIDs(caps map[string]any, fallback map[string]struct{}) []string {
+	seen := map[string]struct{}{}
+	for tenantID := range tenantUserEmailCapabilityMap(caps) {
+		if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
+			seen[tenantID] = struct{}{}
+		}
+	}
+	collectTenantIDsFromNumericMap(seen, caps["tenant_user_counts"])
+	collectTenantIDsFromNumericMap(seen, caps["tenant_machine_counts"])
+	for key := range fallback {
+		tenantID, _ := splitTenantEmailCountKey(key)
+		if tenantID != "" {
+			seen[tenantID] = struct{}{}
+		}
+	}
+	items := make([]string, 0, len(seen))
+	for tenantID := range seen {
+		items = append(items, tenantID)
+	}
+	sort.Strings(items)
+	return items
+}
+
+func collectTenantIDsFromNumericMap(seen map[string]struct{}, value any) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	for tenantID := range raw {
+		if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
+			seen[tenantID] = struct{}{}
+		}
+	}
+}
+
+func tenantDashboardDomains(caps map[string]any, tenantID string) []string {
+	items := tenantDomainCapabilityMap(caps)[strings.TrimSpace(tenantID)]
+	return normalizeCorporateEmailDomains(items)
+}
+
+func tenantUserCountFromCapabilities(caps map[string]any, tenantID string, fallback int) int {
+	if n, ok := tenantCountFromCapability(caps["tenant_user_counts"], tenantID); ok {
+		return n
+	}
+	if emails := tenantUserEmailCapabilityMap(caps)[strings.TrimSpace(tenantID)]; len(emails) > 0 {
+		return len(emails)
+	}
+	return fallback
+}
+
+func tenantMachineCountFromCapabilities(caps map[string]any, tenantID string) int {
+	if n, ok := tenantCountFromCapability(caps["tenant_machine_counts"], tenantID); ok {
+		return n
+	}
+	return 0
+}
+
+func tenantCountFromCapability(value any, tenantID string) (int, bool) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	return numericCapability(raw[strings.TrimSpace(tenantID)])
+}
+
+func hubUserCountFallback(counts map[string]map[string]struct{}, hubID, tenantID string) int {
+	items := counts[strings.TrimSpace(hubID)]
+	if len(items) == 0 {
+		return 0
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		seen := map[string]struct{}{}
+		for key := range items {
+			_, email := splitTenantEmailCountKey(key)
+			if email != "" {
+				seen[email] = struct{}{}
+			}
+		}
+		return len(seen)
+	}
+	count := 0
+	for key := range items {
+		itemTenantID, email := splitTenantEmailCountKey(key)
+		if itemTenantID == tenantID && email != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func tenantEmailCountKey(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	email = normalizeEmail(email)
+	if email == "" {
+		return ""
+	}
+	return tenantID + "\x00" + email
+}
+
+func splitTenantEmailCountKey(key string) (string, string) {
+	parts := strings.SplitN(key, "\x00", 2)
+	if len(parts) != 2 {
+		return "", normalizeEmail(key)
+	}
+	return strings.TrimSpace(parts[0]), normalizeEmail(parts[1])
+}
+
+func firstString(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return items[0]
+}
+
 func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, domains []string, now time.Time) error {
 	if s.routes == nil || hub == nil {
 		return nil
 	}
+	tenantDomains := tenantDomainCapabilityMap(hubCapabilities(hub))
 	preservedAdminRoutes := make([]*store.HubDomainRoute, 0)
+	removedRouteIDs := make([]string, 0)
+	existingRoutesListed := false
 	if existing, err := s.routes.ListAll(ctx); err == nil {
+		existingRoutesListed = true
 		for _, route := range existing {
-			if route != nil && route.HubID == hub.ID && strings.HasPrefix(strings.TrimSpace(route.ID), adminDomainRoutePrefix) {
-				preservedAdminRoutes = append(preservedAdminRoutes, route)
+			if route == nil || route.HubID != hub.ID {
+				continue
 			}
+			if strings.HasPrefix(strings.TrimSpace(route.ID), adminDomainRoutePrefix) {
+				preservedAdminRoutes = append(preservedAdminRoutes, route)
+				continue
+			}
+			removedRouteIDs = append(removedRouteIDs, route.ID)
 		}
 	}
 	domains = normalizeCorporateEmailDomains(domains)
@@ -1980,8 +2244,14 @@ func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, 
 		return err
 	}
 	if s.sync != nil {
-		for idx := 0; idx < 16; idx++ {
-			s.sync.DeleteHubDomainRoute(ctx, domainRouteID(hub.ID, idx))
+		if existingRoutesListed {
+			for _, routeID := range removedRouteIDs {
+				s.sync.DeleteHubDomainRoute(ctx, routeID)
+			}
+		} else {
+			for idx := 0; idx < 16; idx++ {
+				s.sync.DeleteHubDomainRoute(ctx, domainRouteID(hub.ID, idx))
+			}
 		}
 	}
 	for idx, domain := range domains {
@@ -1991,6 +2261,21 @@ func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, 
 		}
 		if s.sync != nil {
 			s.sync.AppendHubDomainRoute(ctx, route)
+		}
+	}
+	for tenantID, values := range tenantDomains {
+		tenantID = strings.TrimSpace(tenantID)
+		if tenantID == "" || len(values) == 0 {
+			continue
+		}
+		for idx, domain := range values {
+			route := &store.HubDomainRoute{ID: tenantDomainRouteID(hub.ID, tenantID, idx), HubID: hub.ID, TenantID: tenantID, Domain: domain, Enabled: true, Priority: 200 + idx, CreatedAt: now, UpdatedAt: now}
+			if err := s.routes.Upsert(ctx, route); err != nil {
+				return err
+			}
+			if s.sync != nil {
+				s.sync.AppendHubDomainRoute(ctx, route)
+			}
 		}
 	}
 	for _, route := range preservedAdminRoutes {
@@ -2231,6 +2516,10 @@ func hubMachineCount(hub *store.HubInstance) int {
 	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
 		return 0
 	}
+	return hubMachineCountFromCapabilities(caps)
+}
+
+func hubMachineCountFromCapabilities(caps map[string]any) int {
 	for _, key := range []string{"machine_count", "machines_count", "machineCount", "machinesCount", "machine_total", "machines"} {
 		if n, ok := numericCapability(caps[key]); ok {
 			return n
@@ -2247,6 +2536,10 @@ func hubUserCount(hub *store.HubInstance, fallback int) int {
 	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
 		return fallback
 	}
+	return hubUserCountFromCapabilities(caps, fallback)
+}
+
+func hubUserCountFromCapabilities(caps map[string]any, fallback int) int {
 	for _, key := range []string{"user_count", "users_count", "userCount", "usersCount", "user_total", "users"} {
 		if n, ok := numericCapability(caps[key]); ok {
 			return n
@@ -2326,7 +2619,15 @@ func primaryUserLinkIDForTenant(hubID, tenantID, email string) string {
 }
 
 func adminUserLinkID(email string) string {
-	return adminUserLinkPrefix + hashToken(normalizeEmail(email))[:20]
+	return adminUserLinkIDForTenant("", email)
+}
+
+func adminUserLinkIDForTenant(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return adminUserLinkPrefix + hashToken(normalizeEmail(email))[:20]
+	}
+	return adminUserLinkPrefix + hashToken(tenantID)[:8] + "_" + hashToken(normalizeEmail(email))[:16]
 }
 
 func startOfDay(t time.Time) time.Time {
@@ -2338,8 +2639,16 @@ func domainRouteID(hubID string, index int) string {
 	return fmt.Sprintf("hdr_%s_%d", strings.TrimSpace(hubID), index)
 }
 
+func tenantDomainRouteID(hubID, tenantID string, index int) string {
+	return fmt.Sprintf("hdr_tenant_%s_%s_%d", strings.TrimSpace(hubID), hashToken(strings.TrimSpace(tenantID))[:8], index)
+}
+
 func adminDomainRouteID(domain string) string {
 	return adminDomainRoutePrefix + hashToken(normalizeCorporateEmailDomain(domain))[:20]
+}
+
+func adminTenantDomainRouteID(tenantID, domain string) string {
+	return adminDomainRoutePrefix + hashToken(strings.TrimSpace(tenantID))[:8] + "_" + hashToken(normalizeCorporateEmailDomain(domain))[:20]
 }
 
 func isPublicSignupVisibility(v string) bool {

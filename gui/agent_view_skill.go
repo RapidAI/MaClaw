@@ -12,15 +12,17 @@ import (
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
-func (h *IMMessageHandler) emitSkillRunAgentViewIfNeeded(name string, args map[string]interface{}) bool {
-	if h == nil || h.app == nil {
+// emitSkillRunAgentViewForUser emits a parameter form for user-initiated skill
+// runs (e.g. user clicks "Run" in the skill panel). This is NOT used by the
+// agent (LLM) path — see checkSkillRunMissingParams in im_tool_skill_run.go.
+func (a *App) emitSkillRunAgentViewForUser(name string, runArgs map[string]interface{}) bool {
+	if a == nil {
 		return false
 	}
-	target := h.app.findSkillForAgentView(name)
+	target := a.findSkillForAgentView(name)
 	if target == nil {
 		return false
 	}
-	runArgs := buildRunSkillArgs(args)
 	vars := normalizeSkillRunVars(runArgs)
 	params, missing := skillRunParameterContract(target, vars, runArgs)
 	if len(missing) == 0 {
@@ -30,7 +32,7 @@ func (h *IMMessageHandler) emitSkillRunAgentViewIfNeeded(name string, args map[s
 	if view == nil {
 		return false
 	}
-	h.app.emitAgentView(view)
+	a.emitAgentView(view)
 	return true
 }
 

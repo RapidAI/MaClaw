@@ -21,7 +21,7 @@ func NewRefundService(store *Store, creditsSvc *CreditsService, mailer mail.Mail
 func (s *RefundService) ProcessRefund(ctx context.Context, purchaseRecordID, adminEmail, reason string) error {
 	var pr PurchaseRecord
 	var createdAt string
-	err := s.store.readDB.QueryRowContext(ctx, `SELECT id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE id = ?`, purchaseRecordID).Scan(&pr.ID, &pr.BuyerEmail, &pr.BuyerID, &pr.SkillID, &pr.PurchasedVersion, &pr.PurchaseType, &pr.AmountPaid, &pr.PlatformFee, &pr.SellerEarning, &pr.SellerID, &pr.KeyStatus, &pr.APIKeyID, &pr.Status, &createdAt)
+	err := s.store.readDB.QueryRowContext(ctx, `SELECT id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE id = ?`, purchaseRecordID).Scan(&pr.ID, &pr.HubID, &pr.TenantID, &pr.BuyerEmail, &pr.BuyerID, &pr.SkillID, &pr.PurchasedVersion, &pr.PurchaseType, &pr.AmountPaid, &pr.PlatformFee, &pr.SellerEarning, &pr.SellerID, &pr.KeyStatus, &pr.APIKeyID, &pr.Status, &createdAt)
 	if err != nil {
 		return fmt.Errorf("purchase record not found: %w", err)
 	}
@@ -111,7 +111,7 @@ func (s *RefundService) ListPurchases(ctx context.Context, buyerEmail, skillID s
 	copy(countArgs, args)
 	_ = s.store.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_purchase_records WHERE `+where, countArgs...).Scan(&total)
 	args = append(args, limit, offset)
-	rows, err := s.store.readDB.QueryContext(ctx, `SELECT id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE `+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, args...)
+	rows, err := s.store.readDB.QueryContext(ctx, `SELECT id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE `+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -120,7 +120,7 @@ func (s *RefundService) ListPurchases(ctx context.Context, buyerEmail, skillID s
 	for rows.Next() {
 		var r PurchaseRecord
 		var ca string
-		if err := rows.Scan(&r.ID, &r.BuyerEmail, &r.BuyerID, &r.SkillID, &r.PurchasedVersion, &r.PurchaseType, &r.AmountPaid, &r.PlatformFee, &r.SellerEarning, &r.SellerID, &r.KeyStatus, &r.APIKeyID, &r.Status, &ca); err != nil {
+		if err := rows.Scan(&r.ID, &r.HubID, &r.TenantID, &r.BuyerEmail, &r.BuyerID, &r.SkillID, &r.PurchasedVersion, &r.PurchaseType, &r.AmountPaid, &r.PlatformFee, &r.SellerEarning, &r.SellerID, &r.KeyStatus, &r.APIKeyID, &r.Status, &ca); err != nil {
 			return nil, 0, err
 		}
 		r.CreatedAt = parseTime(ca)

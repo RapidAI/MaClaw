@@ -1,41 +1,21 @@
 package main
 
-import "strings"
+import corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 
-type memoryToolAction string
+type memoryToolAction = corememory.MemoryToolAction
 
 const (
-	memoryToolActionUnknown memoryToolAction = ""
-	memoryToolActionRecall  memoryToolAction = "recall"
-	memoryToolActionThemes  memoryToolAction = "themes"
-	memoryToolActionScenes  memoryToolAction = "scenes"
-	memoryToolActionTrace   memoryToolAction = "trace"
-	memoryToolActionSave    memoryToolAction = "save"
-	memoryToolActionList    memoryToolAction = "list"
-	memoryToolActionDelete  memoryToolAction = "delete"
+	memoryToolActionUnknown    = corememory.MemoryToolActionUnknown
+	memoryToolActionRecall     = corememory.MemoryToolActionRecall
+	memoryToolActionThemes     = corememory.MemoryToolActionThemes
+	memoryToolActionScenes     = corememory.MemoryToolActionScenes
+	memoryToolActionTrace      = corememory.MemoryToolActionTrace
+	memoryToolActionCandidates = corememory.MemoryToolActionCandidates
+	memoryToolActionSave       = corememory.MemoryToolActionSave
+	memoryToolActionList       = corememory.MemoryToolActionList
+	memoryToolActionDelete     = corememory.MemoryToolActionDelete
 )
 
 func normalizeMemoryToolAction(action string) memoryToolAction {
-	switch memoryToolAction(strings.ToLower(strings.TrimSpace(action))) {
-	case memoryToolActionRecall:
-		return memoryToolActionRecall
-	case memoryToolActionThemes:
-		return memoryToolActionThemes
-	case memoryToolActionScenes, "scene_index":
-		return memoryToolActionScenes
-	case memoryToolActionTrace, "recall_trace":
-		return memoryToolActionTrace
-	case memoryToolActionSave:
-		return memoryToolActionSave
-	case memoryToolActionList:
-		return memoryToolActionList
-	case memoryToolActionDelete:
-		return memoryToolActionDelete
-	default:
-		return memoryToolActionUnknown
-	}
-}
-
-func (a memoryToolAction) IsRecallOnlyAllowed() bool {
-	return a == memoryToolActionRecall || a == memoryToolActionThemes || a == memoryToolActionScenes || a == memoryToolActionTrace
+	return corememory.NormalizeMemoryToolAction(action)
 }

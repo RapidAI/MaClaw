@@ -190,7 +190,8 @@ func (s *Service) GetCodeByTenantEmail(ctx context.Context, tenantID, email stri
 
 	now := time.Now()
 	s.vipLookupMu.RLock()
-	if entry, ok := s.vipLookupCache[email]; ok && now.Before(entry.expiresAt) {
+	cacheKey := vipLookupCacheKey(tenantID, email)
+	if entry, ok := s.vipLookupCache[cacheKey]; ok && now.Before(entry.expiresAt) {
 		cached := cloneInvitationCode(entry.code)
 		s.vipLookupMu.RUnlock()
 		return cached, nil
@@ -201,17 +202,25 @@ func (s *Service) GetCodeByTenantEmail(ctx context.Context, tenantID, email stri
 	if err != nil {
 		return nil, err
 	}
-	s.cacheVIPLookup(email, item)
+	s.cacheVIPLookup(tenantID, email, item)
 	return cloneInvitationCode(item), nil
 }
 
-func (s *Service) cacheVIPLookup(email string, item *store.InvitationCode) {
+func (s *Service) cacheVIPLookup(tenantID, email string, item *store.InvitationCode) {
 	s.vipLookupMu.Lock()
 	defer s.vipLookupMu.Unlock()
-	s.vipLookupCache[email] = vipLookupCacheEntry{
+	s.vipLookupCache[vipLookupCacheKey(tenantID, email)] = vipLookupCacheEntry{
 		code:      cloneInvitationCode(item),
 		expiresAt: time.Now().Add(vipLookupCacheTTL),
 	}
+}
+
+func vipLookupCacheKey(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	return tenantID + "\x00" + strings.TrimSpace(strings.ToLower(email))
 }
 
 func cloneInvitationCode(item *store.InvitationCode) *store.InvitationCode {

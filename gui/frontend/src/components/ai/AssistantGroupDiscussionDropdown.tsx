@@ -86,10 +86,28 @@ function SafeHandoff({ bindGroupDiscussionPress, copiedHandoff, copySafeHandoff,
     </div>;
 }
 
+function inviteTextForLang(lang: string, en: string, zh: string): string {
+    return lang === "en" ? en : zh;
+}
+
+function readableInviteName(name?: string, id?: string, lang = "zh"): string {
+    const trimmed = String(name || "").trim();
+    const rawId = String(id || "").trim();
+    if (trimmed && trimmed !== rawId && !/^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+)$/.test(trimmed)) return trimmed;
+    return inviteTextForLang(lang, "Inviter", "邀请者");
+}
+
+function fallbackInviteTitle(topic?: string, lang = "zh"): string {
+    const trimmed = String(topic || "").trim();
+    return trimmed || inviteTextForLang(lang, "Discussion invite", "讨论邀请");
+}
+
 function InviteRow(props: Props & { invite: GroupDiscussionInvite; dangerTextColor: string; dangerBorderColor: string }) {
     const { bindGroupDiscussionPress, groupDiscussion, groupDiscussionBusy, invite, lang, runGroupDiscussionAction, theme: t, themeMode } = props;
     const inviteID = invite.invite_id || invite.id || "";
-    return <div style={{ padding: "8px 0", borderTop: `1px solid ${t.divider}` }}><div style={{ fontSize: "11px", fontWeight: 600, marginBottom: "2px" }}>{invite.topic || invite.consultation_id || (lang === "en" ? "Discussion invite" : "\u8ba8\u8bba\u9080\u8bf7")}</div><div style={{ fontSize: "10px", color: t.textMuted, marginBottom: "6px" }}>{invite.from_name || invite.from_id || "MaClaw"}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: themeMode === "dark" ? "#86efac" : "#047857", borderColor: themeMode === "dark" ? "rgba(134, 239, 172, 0.45)" : "#86efac" }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("accept", () => groupDiscussion.onAcceptInvite?.(inviteID)))}>{lang === "en" ? "Accept" : "\u63a5\u53d7"}</button><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: props.dangerTextColor, borderColor: props.dangerBorderColor }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("reject", () => groupDiscussion.onRejectInvite?.(inviteID)))}>{lang === "en" ? "Reject" : "\u62d2\u7edd"}</button></div></div>;
+    const title = fallbackInviteTitle(invite.topic, lang);
+    const sender = readableInviteName(invite.from_name, invite.from_id, lang);
+    return <div style={{ padding: "8px 0", borderTop: `1px solid ${t.divider}` }}><div data-testid="group-discussion-invite-title" style={{ fontSize: "11px", fontWeight: 600, marginBottom: "2px" }}>{title}</div><div data-testid="group-discussion-invite-sender" style={{ fontSize: "10px", color: t.textMuted, marginBottom: "6px" }}>{sender}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: themeMode === "dark" ? "#86efac" : "#047857", borderColor: themeMode === "dark" ? "rgba(134, 239, 172, 0.45)" : "#86efac" }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("accept", () => groupDiscussion.onAcceptInvite?.(inviteID)))}>{lang === "en" ? "Accept" : "\u63a5\u53d7"}</button><button type="button" style={{ ...miniActionButtonStyle, background: t.fieldBg, color: props.dangerTextColor, borderColor: props.dangerBorderColor }} disabled={!!groupDiscussionBusy} {...bindGroupDiscussionPress(() => runGroupDiscussionAction("reject", () => groupDiscussion.onRejectInvite?.(inviteID)))}>{lang === "en" ? "Reject" : "\u62d2\u7edd"}</button></div></div>;
 }
 
 function actionButtonStyle(t: Theme, themeMode: "light" | "dark", enabled: boolean): CSSProperties {

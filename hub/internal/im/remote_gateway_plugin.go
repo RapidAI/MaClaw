@@ -156,17 +156,23 @@ func (p *RemoteGatewayPlugin) SendVoice(ctx context.Context, target UserTarget, 
 }
 
 func (p *RemoteGatewayPlugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {
+	_, userID, err := p.ResolveUserWithTenant(ctx, platformUID)
+	return userID, err
+}
+
+func (p *RemoteGatewayPlugin) ResolveUserWithTenant(ctx context.Context, platformUID string) (string, string, error) {
 	p.bindMu.RLock()
-	email, ok := p.bindings[platformUID]
+	raw, ok := p.bindings[platformUID]
 	p.bindMu.RUnlock()
-	if !ok || email == "" {
-		return "", fmt.Errorf("%s: user %s not bound", p.platform, platformUID)
+	info := decodeRemoteBindingValue(raw)
+	if !ok || info.Email == "" {
+		return "", "", fmt.Errorf("%s: user %s not bound", p.platform, platformUID)
 	}
-	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
+	user, err := p.users.GetByTenantEmail(ctx, info.TenantID, info.Email)
 	if err != nil || user == nil {
-		return "", fmt.Errorf("%s: no hub user for email %s", p.platform, email)
+		return "", "", fmt.Errorf("%s: no hub user for email %s", p.platform, info.Email)
 	}
-	return user.ID, nil
+	return info.TenantID, user.ID, nil
 }
 
 func (p *RemoteGatewayPlugin) Capabilities() CapabilityDeclaration {

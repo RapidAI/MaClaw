@@ -53,6 +53,10 @@ func DebugListMachinesHandler(devices *device.Service, users machineUserLookup) 
 		}
 
 		if userID != "" {
+			if !canAccessUser(r.Context(), r, users, userID) {
+				writeError(w, http.StatusForbidden, "FORBIDDEN", "user is outside current tenant")
+				return
+			}
 			items, err := devices.ListMachines(r.Context(), userID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
@@ -118,12 +122,16 @@ func DebugListMachineEventsHandler(devices *device.Service) http.HandlerFunc {
 	}
 }
 
-func DebugListSessionsHandler(svc *session.Service) http.HandlerFunc {
+func DebugListSessionsHandler(svc *session.Service, users machineUserLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		machineID := strings.TrimSpace(r.URL.Query().Get("machine_id"))
 		userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
 		if machineID == "" || userID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "machine_id and user_id are required")
+			return
+		}
+		if !canAccessUser(r.Context(), r, users, userID) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "user is outside current tenant")
 			return
 		}
 
@@ -212,13 +220,17 @@ func lookupUserTenantID(ctx context.Context, users machineUserLookup, userID str
 	return tenantID, true, nil
 }
 
-func DebugGetSessionHandler(svc *session.Service) http.HandlerFunc {
+func DebugGetSessionHandler(svc *session.Service, users machineUserLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		machineID := strings.TrimSpace(r.URL.Query().Get("machine_id"))
 		userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
 		sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 		if machineID == "" || userID == "" || sessionID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "machine_id, user_id and session_id are required")
+			return
+		}
+		if !canAccessUser(r.Context(), r, users, userID) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "user is outside current tenant")
 			return
 		}
 
@@ -373,6 +385,20 @@ func canManageMachine(ctx context.Context, r *http.Request, devices *device.Serv
 		return false
 	}
 	return strings.TrimSpace(info.TenantID) == RequestTenantID(r)
+}
+
+func canAccessUser(ctx context.Context, r *http.Request, users machineUserLookup, userID string) bool {
+	if !isTenantScopedAdminRequest(r) {
+		return true
+	}
+	if users == nil {
+		return false
+	}
+	user, err := users.GetByID(ctx, userID)
+	if err != nil || user == nil {
+		return false
+	}
+	return strings.TrimSpace(user.TenantID) == RequestTenantID(r)
 }
 
 func isTenantScopedAdminRequest(r *http.Request) bool {

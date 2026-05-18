@@ -38,6 +38,7 @@ type InvitationCodeValidator interface {
 // LoginNotifier sends login confirmation links to bound IM channels.
 type LoginNotifier interface {
 	BroadcastLoginLink(ctx context.Context, email, confirmURL string) []string
+	BroadcastLoginLinkForTenant(ctx context.Context, tenantID, email, confirmURL string) []string
 }
 
 // UserRouteSyncer pushes confirmed user-to-hub bindings to Hub Center when available.
@@ -88,6 +89,10 @@ func WithTenant(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantContextKey{}, normalizeTenantIDValue(tenantID))
 }
 
+func TenantIDFromContext(ctx context.Context) string {
+	return tenantIDFromContext(ctx)
+}
+
 func tenantIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return store.DefaultTenantID
@@ -99,11 +104,7 @@ func tenantIDFromContext(ctx context.Context) string {
 }
 
 func normalizeTenantIDValue(tenantID string) string {
-	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
-		return store.DefaultTenantID
-	}
-	return tenantID
+	return store.NormalizeTenantID(tenantID)
 }
 
 type MachinePrincipal struct {
@@ -434,7 +435,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 
 	// 2. Send to bound IM channels
 	if s.loginNotifier != nil {
-		imChannels := s.loginNotifier.BroadcastLoginLink(ctx, email, confirmURL)
+		imChannels := s.loginNotifier.BroadcastLoginLinkForTenant(ctx, tenantID, email, confirmURL)
 		channels = append(channels, imChannels...)
 	}
 
@@ -636,6 +637,35 @@ func (s *IdentityService) LookupUserByEmail(ctx context.Context, email string) (
 	return s.users.GetByTenantEmail(ctx, tenantIDFromContext(ctx), email)
 }
 
+func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return "", false, false, ErrInvalidEmail
+	}
+	items, err := s.users.List(ctx)
+	if err != nil {
+		return "", false, false, err
+	}
+	seen := map[string]struct{}{}
+	for _, user := range items {
+		if user == nil || !strings.EqualFold(normalizeEmail(user.Email), email) {
+			continue
+		}
+		id := normalizeTenantIDValue(user.TenantID)
+		seen[id] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return "", false, false, nil
+	}
+	if len(seen) > 1 {
+		return "", true, true, nil
+	}
+	for id := range seen {
+		return id, true, false, nil
+	}
+	return "", false, false, nil
+}
+
 // LookupUserByMobile finds a user by mobile number. It first looks up the
 // enrollment record to get the email, then resolves the user from the users table.
 // It tries exact match first, then with +86 prefix for Chinese numbers.
@@ -647,24 +677,32 @@ func (s *IdentityService) LookupUserByMobile(ctx context.Context, mobile string)
 		return nil, fmt.Errorf("mobile is required")
 	}
 
-	// Try exact match first.
-	enrollment, err := s.enrollments.GetByMobile(ctx, mobile)
+	variants := []string{mobile}
+	if len(mobile) == 11 && mobile[0] == '1' {
+		variants = append(variants, "+86"+mobile)
+	}
+	if strings.HasPrefix(mobile, "+86") && len(mobile) == 14 {
+		variants = append(variants, mobile[3:])
+	}
+
+	items, err := s.enrollments.ListAllByTenant(ctx, tenantIDFromContext(ctx))
 	if err != nil {
 		return nil, err
 	}
-
-	// If not found and looks like a bare Chinese number, try with +86 prefix.
-	if enrollment == nil && len(mobile) == 11 && mobile[0] == '1' {
-		enrollment, err = s.enrollments.GetByMobile(ctx, "+86"+mobile)
-		if err != nil {
-			return nil, err
+	var enrollment *store.UserEnrollment
+	for _, item := range items {
+		if item == nil {
+			continue
 		}
-	}
-	// Also try stripping +86 if the input has it but DB stores bare number.
-	if enrollment == nil && strings.HasPrefix(mobile, "+86") && len(mobile) == 14 {
-		enrollment, err = s.enrollments.GetByMobile(ctx, mobile[3:])
-		if err != nil {
-			return nil, err
+		itemMobile := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(item.Mobile), " ", ""), "-", "")
+		for _, variant := range variants {
+			if itemMobile == variant {
+				enrollment = item
+				break
+			}
+		}
+		if enrollment != nil {
+			break
 		}
 	}
 
@@ -939,6 +977,21 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 
 // RejectEnrollment rejects a pending enrollment request.
 func (s *IdentityService) RejectEnrollment(ctx context.Context, id string) error {
+	tenantID := tenantIDFromContext(ctx)
+	pending, err := s.enrollments.ListPendingByTenant(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, item := range pending {
+		if item != nil && item.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("enrollment not found or not pending: %s", id)
+	}
 	return s.enrollments.Reject(ctx, id, time.Now())
 }
 

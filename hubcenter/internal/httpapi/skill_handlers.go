@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
+
+const maxSkillPublishJSONBytes = 5 << 20
 
 type SkillHandlers struct {
 	store     *skill.SkillStore
@@ -97,7 +100,12 @@ func (h *SkillHandlers) PopularSkills(w http.ResponseWriter, r *http.Request) {
 
 func (h *SkillHandlers) PublishSkill(w http.ResponseWriter, r *http.Request) {
 	var s skill.HubSkillFull
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&s); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSkillPublishJSONBytes)).Decode(&s); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			skillError(w, http.StatusRequestEntityTooLarge, "skill JSON body exceeds 5MB limit")
+			return
+		}
 		skillError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

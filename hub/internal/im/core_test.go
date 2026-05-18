@@ -255,7 +255,7 @@ func TestHandleMessage_RateLimited(t *testing.T) {
 
 	// Exhaust rate limit for unified_uid1.
 	adapter.limiter.mu.Lock()
-	adapter.limiter.buckets["unified_uid1"] = &rateBucket{
+	adapter.limiter.buckets[tenantUserRuntimeKey("", "unified_uid1")] = &rateBucket{
 		tokens:   0,
 		refillAt: time.Now().Add(1 * time.Minute),
 	}

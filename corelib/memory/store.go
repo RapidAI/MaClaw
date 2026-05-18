@@ -1768,14 +1768,14 @@ func recallStrictProjectEntryAllowed(e Entry, projectLower string) bool {
 // ---------------------------------------------------------------------------
 
 // SearchByMode dispatches to the appropriate search strategy based on mode.
-func (s *Store) SearchByMode(query string, mode SearchMode, category Category, projectPath string, limit int) []Entry {
+func (s *Store) SearchByMode(query string, mode SearchMode, category Category, projectPath string, limit int, ownerID ...string) []Entry {
 	switch mode {
 	case SearchDirect:
 		return s.SearchDirectByIDForProject(query, category, projectPath)
 	case SearchKeywordOnly:
 		return s.SearchKeywordForProject(query, category, projectPath, limit)
 	default:
-		return limitSearchResults(s.RecallDynamic(query, category, projectPath), limit)
+		return limitSearchResults(s.RecallDynamic(query, category, projectPath, ownerID...), limit)
 	}
 }
 

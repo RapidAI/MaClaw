@@ -21,6 +21,8 @@ export interface AITab {
     veId?: string;
     /** Group chat participant IDs (only for type="group") */
     participants?: string[];
+    /** Display names for group chat participants keyed by participant ID */
+    participantNames?: Record<string, string>;
     /** Hub discussion/consultation ID for group history tabs */
     discussionId?: string;
     /** Whether this group history tab is view-only */

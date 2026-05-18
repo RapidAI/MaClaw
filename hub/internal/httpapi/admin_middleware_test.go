@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -337,5 +340,216 @@ func TestTenantAdminRoutesRequireGlobalAdminForTenantCreate(t *testing.T) {
 	centerRegister := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/center/register", map[string]any{}, loginPayload.AccessToken)
 	if centerRegister.Code != http.StatusForbidden {
 		t.Fatalf("tenant admin center register status = %d body=%s", centerRegister.Code, centerRegister.Body.String())
+	}
+}
+
+func TestTenantAdminLLMProviderTestKeyUsesTenantScope(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, ctx.handler)
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "acme",
+		"name":                   "Acme Corp",
+		"initial_admin_username": "acme-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@acme.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "acme-owner",
+		"password": "StrongPassword123!",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/llm/providers/test-key", map[string]any{"email": "dev@acme.com"}, loginPayload.AccessToken)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("provider test key status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		AccessToken string `json:"access_token"`
+		Email       string `json:"email"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode provider test key: %v", err)
+	}
+	if payload.AccessToken == "" || payload.Email != "dev@acme.com" {
+		t.Fatalf("unexpected provider test key payload: %#v", payload)
+	}
+	user, err := ctx.store.Users.GetByTenantEmail(context.Background(), "tenant_acme", "dev@acme.com")
+	if err != nil {
+		t.Fatalf("get tenant user: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected test key user in tenant_acme")
+	}
+	defaultUser, err := ctx.store.Users.GetByTenantEmail(context.Background(), store.DefaultTenantID, "dev@acme.com")
+	if err != nil {
+		t.Fatalf("get default user: %v", err)
+	}
+	if defaultUser != nil {
+		t.Fatalf("test key should not create default tenant user: %#v", defaultUser)
+	}
+	tokenHash := sha256.Sum256([]byte(payload.AccessToken))
+	principal, err := ctx.store.ViewerTokens.GetByTokenHash(context.Background(), hex.EncodeToString(tokenHash[:]))
+	if err != nil {
+		t.Fatalf("get viewer token: %v", err)
+	}
+	if principal == nil || principal.TenantID != "tenant_acme" || principal.UserID != user.ID {
+		t.Fatalf("viewer token not tenant scoped: %#v user=%#v", principal, user)
+	}
+}
+
+func TestTenantAdminEmailInvitesAreTenantScoped(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, ctx.handler)
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "acme",
+		"name":                   "Acme Corp",
+		"initial_admin_username": "acme-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@acme.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "acme-owner",
+		"password": "StrongPassword123!",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+
+	globalInvite := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invites", map[string]any{"email": "global@example.com", "role": "viewer"}, globalToken)
+	if globalInvite.Code != http.StatusOK {
+		t.Fatalf("global invite status = %d body=%s", globalInvite.Code, globalInvite.Body.String())
+	}
+	tenantInvite := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invites", map[string]any{"email": "tenant@example.com", "role": "viewer"}, loginPayload.AccessToken)
+	if tenantInvite.Code != http.StatusOK {
+		t.Fatalf("tenant invite status = %d body=%s", tenantInvite.Code, tenantInvite.Body.String())
+	}
+	var tenantPayload struct {
+		ID       string `json:"id"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal(tenantInvite.Body.Bytes(), &tenantPayload); err != nil {
+		t.Fatalf("decode tenant invite: %v", err)
+	}
+	if tenantPayload.TenantID != "tenant_acme" {
+		t.Fatalf("tenant invite tenant_id = %q", tenantPayload.TenantID)
+	}
+
+	listResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/invites", nil, loginPayload.AccessToken)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("tenant list invites status = %d body=%s", listResp.Code, listResp.Body.String())
+	}
+	var listPayload struct {
+		Invites []struct {
+			ID       string `json:"id"`
+			TenantID string `json:"tenant_id"`
+			Email    string `json:"email"`
+		} `json:"invites"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode tenant list: %v", err)
+	}
+	if len(listPayload.Invites) != 1 || listPayload.Invites[0].Email != "tenant@example.com" || listPayload.Invites[0].TenantID != "tenant_acme" {
+		t.Fatalf("unexpected tenant invites: %#v", listPayload.Invites)
+	}
+
+	var globalPayload struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(globalInvite.Body.Bytes(), &globalPayload); err != nil {
+		t.Fatalf("decode global invite: %v", err)
+	}
+	deleteGlobal := doHubAdminJSONRequest(t, ctx.handler, http.MethodDelete, "/api/admin/invites/"+globalPayload.ID, nil, loginPayload.AccessToken)
+	if deleteGlobal.Code != http.StatusNotFound {
+		t.Fatalf("tenant delete global invite status = %d body=%s", deleteGlobal.Code, deleteGlobal.Body.String())
+	}
+	deleteOwn := doHubAdminJSONRequest(t, ctx.handler, http.MethodDelete, "/api/admin/invites/"+tenantPayload.ID, nil, loginPayload.AccessToken)
+	if deleteOwn.Code != http.StatusOK {
+		t.Fatalf("tenant delete own invite status = %d body=%s", deleteOwn.Code, deleteOwn.Body.String())
+	}
+}
+
+func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, ctx.handler)
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "acme",
+		"name":                   "Acme Corp",
+		"initial_admin_username": "acme-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@acme.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "acme-owner",
+		"password": "StrongPassword123!",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+
+	globalSmart := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/smart_route_all", map[string]any{"enabled": true}, globalToken)
+	if globalSmart.Code != http.StatusOK {
+		t.Fatalf("global smart route status = %d body=%s", globalSmart.Code, globalSmart.Body.String())
+	}
+	tenantSmart := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/smart_route_all", map[string]any{"enabled": false}, loginPayload.AccessToken)
+	if tenantSmart.Code != http.StatusOK {
+		t.Fatalf("tenant smart route status = %d body=%s", tenantSmart.Code, tenantSmart.Body.String())
+	}
+	globalGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, globalToken)
+	tenantGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, loginPayload.AccessToken)
+	if !bytes.Contains(globalGet.Body.Bytes(), []byte(`"enabled":true`)) {
+		t.Fatalf("global smart route leaked tenant update: %s", globalGet.Body.String())
+	}
+	if !bytes.Contains(tenantGet.Body.Bytes(), []byte(`"enabled":false`)) {
+		t.Fatalf("tenant smart route = %s", tenantGet.Body.String())
+	}
+
+	globalAudit := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/content_audit/config", map[string]any{"program_path": "global-audit", "timeout_seconds": 3, "timeout_policy": "pass"}, globalToken)
+	if globalAudit.Code != http.StatusOK {
+		t.Fatalf("global content audit status = %d body=%s", globalAudit.Code, globalAudit.Body.String())
+	}
+	tenantAudit := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/content_audit/config", map[string]any{"program_path": "tenant-audit", "timeout_seconds": 5, "timeout_policy": "block"}, loginPayload.AccessToken)
+	if tenantAudit.Code != http.StatusOK {
+		t.Fatalf("tenant content audit status = %d body=%s", tenantAudit.Code, tenantAudit.Body.String())
+	}
+	globalAuditGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/content_audit/config", nil, globalToken)
+	tenantAuditGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/content_audit/config", nil, loginPayload.AccessToken)
+	if !bytes.Contains(globalAuditGet.Body.Bytes(), []byte(`"program_path":"global-audit"`)) {
+		t.Fatalf("global content audit leaked tenant update: %s", globalAuditGet.Body.String())
+	}
+	if !bytes.Contains(tenantAuditGet.Body.Bytes(), []byte(`"program_path":"tenant-audit"`)) {
+		t.Fatalf("tenant content audit = %s", tenantAuditGet.Body.String())
 	}
 }

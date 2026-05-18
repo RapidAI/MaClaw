@@ -20,7 +20,13 @@ func EntryProbeHandler(service *entry.Service) http.HandlerFunc {
 			return
 		}
 
-		resp, err := service.ProbeByEmail(auth.WithTenant(r.Context(), tenantIDFromClientHint(r)), req.Email)
+		tenantID, err := tenantIDForEmailRequest(r, service, req.Email)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+			return
+		}
+
+		resp, err := service.ProbeByEmail(auth.WithTenant(r.Context(), tenantID), req.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "ENTRY_PROBE_FAILED", err.Error())
 			return

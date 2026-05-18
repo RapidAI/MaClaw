@@ -13,6 +13,7 @@ const contentAuditConfigKey = "content_audit_config"
 // GetContentAuditConfigHandler reads the content audit config from SystemSettings.
 func GetContentAuditConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		raw, err := system.Get(r.Context(), contentAuditConfigKey)
 		if err != nil || raw == "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -27,6 +28,7 @@ func GetContentAuditConfigHandler(system store.SystemSettingsRepository) http.Ha
 // UpdateContentAuditConfigHandler writes the content audit config to SystemSettings.
 func UpdateContentAuditConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		var cfg im.ContentAuditDynamicConfig
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {

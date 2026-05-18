@@ -354,18 +354,7 @@ func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFir
 		return
 	}
 
-	summary := h.memoryStore.UserFactSummary(400)
-
-	b.WriteString("\n" + corememory.PromptSectionUserMemory + "\n")
-	if summary != "" {
-		b.WriteString(fmt.Sprintf("用户信息: %s\n", summary))
-	}
-
-	b.WriteString("如需更多记忆，可通过 " + corememory.PromptActionRecallColon + ", query: \"关键词\") 召回。\n")
-
-	if isFirstTurn {
-		b.WriteString("\n" + corememory.BuildIMMemoryGuidePrompt() + "\n")
-	}
+	b.WriteString(h.memoryStore.StaticMemorySectionForPrompt(corememory.StaticUserMemoryPromptOptions("\n"+corememory.PromptSectionUserMemory, isFirstTurn, corememory.BuildIMMemoryGuidePrompt())))
 }
 
 // isProjectTabUserID returns true when the userID was synthesized for a
@@ -398,172 +387,18 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string,
 		projectPath, _ = h.contextResolver.ResolveProject()
 	}
 
-	// When strictProject mode is active (Project Tab) and projectPath is
-	// non-empty, use RecallDynamicStrict which excludes other projects'
-	// entries. Otherwise use the standard RecallDynamic (soft filtering).
-	var recalled []corememory.Entry
-	if strictProject && projectPath != "" {
-		recalled = h.memoryStore.RecallDynamicStrict(msg, "", projectPath)
-	} else {
-		recalled = h.memoryStore.RecallDynamic(msg, "", projectPath)
-	}
+	promptContext, relevant := h.memoryStore.ProactiveContextForPrompt(msg, corememory.IMProactivePromptOptions(projectPath, strictProject))
 	primaryRecallElapsed := time.Since(recallStart)
-	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, strictProject=%v, recalled=%d entries took=%v", len(msg), projectPath, strictProject, len(recalled), primaryRecallElapsed)
-
-	// Supplementary recall: ExpandQuery extracts key entities (e.g. "4090服务器",
-	// "GPU", "api服务器") from the user message. When the full message is long
-	// and noisy, BM25 may dilute the score for these entities. Run a focused
-	// recall on top entities and merge results to improve hit rate.
-	// Keep this bounded: prompt construction is on the interactive path, so a
-	// single user message should not fan out into several full recall pipelines.
-	expanded := corememory.ExpandQuery(msg)
-	if len(expanded.Entities) > 0 && len(recalled) < 8 {
-		seen := make(map[string]bool, len(recalled))
-		for _, e := range recalled {
-			seen[e.ID] = true
-		}
-		// Limit to the strongest entity and only when the primary recall left room.
-		entities := expanded.Entities
-		if len(entities) > 1 {
-			entities = entities[:1]
-		}
-		for _, entity := range entities {
-			var extra []corememory.Entry
-			if strictProject && projectPath != "" {
-				extra = h.memoryStore.RecallDynamicStrict(entity, "", projectPath)
-			} else {
-				extra = h.memoryStore.RecallDynamic(entity, "", projectPath)
-			}
-			for _, e := range extra {
-				if !seen[e.ID] {
-					seen[e.ID] = true
-					recalled = append(recalled, e)
-					if len(recalled) >= 12 {
-						break
-					}
-				}
-			}
-			if len(recalled) >= 12 {
-				break
-			}
-		}
-		log.Printf("[proactive_recall] after entity supplement: %d entries (entities=%v)", len(recalled), entities)
-	}
-
-	// RecallDynamic already excludes user_fact, self_identity,
-	// session_checkpoint, and conversation_summary when category="" (the
-	// default for proactive recall). No additional filtering needed here.
-	// This was previously a separate filter that wasted RecallDynamic's
-	// 15-entry budget on categories that would be discarded.
-	relevant := recalled
-
-	// Cap at 12 entries to control prompt size.
-	const maxProactiveRecall = 12
-	if len(relevant) > maxProactiveRecall {
-		relevant = relevant[:maxProactiveRecall]
-	}
-	// --- Memory Index Layer (inspired by GenericAgent L1) ---
-	// Always inject the store-level index, even when proactive recall
-	// returned zero entries. The index tells the LLM what categories of
-	// knowledge exist in the memory store, enabling targeted recall via
-	// memory(action=recall, category="..."). Without this, the LLM has
-	// no way to know that memories exist when BM25 scores are too low
-	// for the current message to trigger proactive recall.
-	index := h.buildMemoryIndex(strictProject, projectPath)
-	if index != "" {
-		b.WriteString("\n[记忆索引] ")
-		b.WriteString(index)
-		b.WriteString("\n")
-	}
-
-	if sceneNav := h.buildSceneNavigation(strictProject, projectPath); sceneNav != "" {
-		b.WriteString("\n[Scene Index]\n")
-		b.WriteString(sceneNav)
-		b.WriteString("\n")
-	}
-
+	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, strictProject=%v, recalled=%d entries took=%v", len(msg), projectPath, strictProject, len(relevant), primaryRecallElapsed)
+	b.WriteString(promptContext)
 	if len(relevant) > 0 {
-		b.WriteString("\n相关记忆（自动召回）:\n")
-		for _, e := range relevant {
-			b.WriteString(corememory.FormatRecallEntryForPrompt(e, 200))
-			b.WriteString("\n")
-		}
 		log.Printf("[proactive_recall] injected %d entries (with index) into system prompt", len(relevant))
-		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
-
-		// Recalled memory is prompt context only. It must not session-pin
-		// conditional tools; current-message semantic routing or actual
-		// successful tool use owns that decision.
-	}
-
-	// Multi-hop inference: inject derived facts as reasoning chains.
-	if h.memoryStore != nil {
-		derivedFacts := h.memoryStore.LastDerivedFacts()
-		if len(derivedFacts) > 0 {
-			inferenceSection := corememory.FormatDerivedFactsForPrompt(derivedFacts, 5)
-			if inferenceSection != "" {
-				b.WriteString(inferenceSection)
-			}
-		}
 	}
 
 	totalRecallElapsed := time.Since(recallStart)
 	if totalRecallElapsed > 200*time.Millisecond {
 		log.Printf("[proactive_recall] total_elapsed=%v (primary_recall=%v)", totalRecallElapsed, primaryRecallElapsed)
 	}
-}
-
-func (h *IMMessageHandler) buildSceneNavigation(strictProject bool, projectPath string) string {
-	if h.memoryStore == nil {
-		return ""
-	}
-	scenes := h.memoryStore.SceneIndex(5)
-	if strictProject && projectPath != "" {
-		filtered := scenes[:0]
-		for _, scene := range scenes {
-			if strings.EqualFold(scene.ProjectPath, projectPath) {
-				filtered = append(filtered, scene)
-			}
-		}
-		scenes = filtered
-	}
-	return corememory.FormatSceneIndexForPrompt(scenes, 3, 2)
-}
-
-// buildMemoryIndex creates a compact one-line index of the FULL memory store,
-// grouped by category with key tags. This is a true index layer (inspired by
-// GenericAgent's L1 Insight Index): it reflects the entire memory contents,
-// not just what was recalled for the current query. The LLM can see "偏好: 5条"
-// even if proactive recall only returned project_knowledge entries, and decide
-// whether to call memory(action=recall, category="preference") for more.
-//
-// Example output:
-//
-//	"项目: 3条(C++游戏, SSH服务器) | 偏好: 2条 | 任务产出: 1条(需求文档)"
-func (h *IMMessageHandler) buildMemoryIndex(strictProject bool, projectPath string) string {
-	if h.memoryStore == nil {
-		return ""
-	}
-
-	var stats []corememory.CategoryStat
-	if strictProject && projectPath != "" {
-		stats = h.memoryStore.CategoryStatsForProject(projectPath)
-	} else {
-		stats = h.memoryStore.CategoryStats()
-	}
-	if len(stats) == 0 {
-		return ""
-	}
-
-	var parts []string
-	for _, st := range stats {
-		part := fmt.Sprintf("%s: %d条", st.Category.DisplayName(), st.Count)
-		if len(st.Tags) > 0 {
-			part += "(" + strings.Join(st.Tags, ", ") + ")"
-		}
-		parts = append(parts, part)
-	}
-	return strings.Join(parts, " | ")
 }
 
 // RefreshMemorySnapshot regenerates the cached memory snapshot for the given

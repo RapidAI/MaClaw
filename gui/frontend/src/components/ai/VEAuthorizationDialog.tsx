@@ -23,6 +23,23 @@ export interface VEAuthorizationDialogProps {
 
 // --- Component ---
 
+function authTextForLang(isZh: boolean, en: string, zh: string): string {
+    return isZh ? zh : en;
+}
+
+function readableAuthName(
+    name: string | undefined,
+    id: string | undefined,
+    isZh: boolean,
+    fallbackEn: string,
+    fallbackZh: string,
+): string {
+    const trimmed = String(name || "").trim();
+    const rawId = String(id || "").trim();
+    if (trimmed && trimmed !== rawId && !/^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+)$/.test(trimmed)) return trimmed;
+    return authTextForLang(isZh, fallbackEn, fallbackZh);
+}
+
 export function VEAuthorizationDialog({
     theme,
     lang,
@@ -153,21 +170,13 @@ export function VEAuthorizationDialog({
                                 <span style={{ color: theme.textMuted, fontSize: 12 }}>
                                     {isZh ? "请求者：" : "Requester: "}
                                 </span>
-                                <strong>{req.requester_name || req.requester_machine_id}</strong>
-                            </div>
-                            <div style={{ marginBottom: 4 }}>
-                                <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                                    {isZh ? "机器ID：" : "Machine ID: "}
-                                </span>
-                                <span style={{ fontSize: 11, fontFamily: "monospace" }}>
-                                    {req.requester_machine_id}
-                                </span>
+                                <strong>{readableAuthName(req.requester_name, req.requester_machine_id, isZh, "Requester", "请求者")}</strong>
                             </div>
                             <div>
                                 <span style={{ color: theme.textMuted, fontSize: 12 }}>
                                     {isZh ? "目标数字员工：" : "Target digital employee: "}
                                 </span>
-                                <strong>{req.target_ve_name}</strong>
+                                <strong>{readableAuthName(req.target_ve_name, req.target_ve_id, isZh, "Digital employee", "数字员工")}</strong>
                             </div>
                         </div>
 

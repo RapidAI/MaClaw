@@ -106,6 +106,7 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 	if s.audit != nil {
 		_ = s.audit.Create(ctx, &store.AdminAuditLog{
 			ID:          newID("aa"),
+			TenantID:    admin.TenantID,
 			AdminUserID: admin.ID,
 			Action:      "admin.setup",
 			PayloadJSON: mustJSON(map[string]any{"username": admin.Username, "email": admin.Email}),
@@ -117,7 +118,7 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 }
 
 func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username, password, email, displayName, role string) (*store.AdminUser, error) {
-	tenantID = strings.TrimSpace(tenantID)
+	tenantID = normalizeTenantIDValue(tenantID)
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant id is required")
 	}
@@ -153,6 +154,7 @@ func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username
 	if s.audit != nil {
 		_ = s.audit.Create(ctx, &store.AdminAuditLog{
 			ID:          newID("aa"),
+			TenantID:    admin.TenantID,
 			AdminUserID: admin.ID,
 			Action:      "tenant_admin.created",
 			PayloadJSON: mustJSON(map[string]any{"username": admin.Username, "email": admin.Email, "tenant_id": admin.TenantID, "role": admin.Role}),
@@ -197,6 +199,7 @@ func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, pass
 	if s.audit != nil {
 		_ = s.audit.Create(ctx, &store.AdminAuditLog{
 			ID:          newID("aa"),
+			TenantID:    admin.TenantID,
 			AdminUserID: admin.ID,
 			Action:      "admin.reset_credentials",
 			PayloadJSON: mustJSON(map[string]any{"username": admin.Username, "email": admin.Email}),
@@ -227,6 +230,7 @@ func (s *AdminService) Login(ctx context.Context, username, password string) (st
 	if s.audit != nil {
 		_ = s.audit.Create(ctx, &store.AdminAuditLog{
 			ID:          newID("aa"),
+			TenantID:    admin.TenantID,
 			AdminUserID: admin.ID,
 			Action:      "admin.login",
 			PayloadJSON: `{}`,
@@ -290,6 +294,7 @@ func (s *AdminService) ChangePassword(ctx context.Context, username, currentPass
 	if s.audit != nil {
 		_ = s.audit.Create(ctx, &store.AdminAuditLog{
 			ID:          newID("aa"),
+			TenantID:    admin.TenantID,
 			AdminUserID: admin.ID,
 			Action:      "admin.change_password",
 			PayloadJSON: mustJSON(map[string]any{"username": admin.Username}),
@@ -335,6 +340,7 @@ func (s *AdminService) UpdateEmail(ctx context.Context, username, email string) 
 	if s.audit != nil {
 		_ = s.audit.Create(ctx, &store.AdminAuditLog{
 			ID:          newID("aa"),
+			TenantID:    admin.TenantID,
 			AdminUserID: admin.ID,
 			Action:      "admin.update_email",
 			PayloadJSON: mustJSON(map[string]any{"username": admin.Username, "email": admin.Email}),

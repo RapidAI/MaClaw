@@ -37,6 +37,8 @@ type RemoteImporter struct {
 	client *http.Client
 }
 
+const remoteImportMaxBytes = 5 << 20
+
 func NewRemoteImporter() *RemoteImporter {
 	return &RemoteImporter{
 		client: &http.Client{Timeout: 30 * time.Second},
@@ -513,7 +515,21 @@ func (ri *RemoteImporter) httpGet(url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 5<<20)) // 5MB limit
+	return readLimitedRemoteImportBody(resp.Body, remoteImportMaxBytes)
+}
+
+func readLimitedRemoteImportBody(body io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("remote import response exceeds %d bytes", limit)
+	}
+	return data, nil
 }
 
 func generateImportID() string {

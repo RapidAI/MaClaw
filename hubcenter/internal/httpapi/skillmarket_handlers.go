@@ -438,6 +438,8 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 		smError(w, http.StatusBadRequest, "email is required")
 		return
 	}
+	hubID := strings.TrimSpace(r.URL.Query().Get("hub_id"))
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 
 	ctx := r.Context()
 
@@ -484,7 +486,7 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 
 		if !voucherUsed {
 			// 检查版本升级折扣
-			isUpgrade, _ := h.checkUpgradePurchase(ctx, buyer.ID, skillID)
+			isUpgrade, _ := h.checkUpgradePurchase(ctx, buyer.ID, skillID, hubID, tenantID)
 			actualPrice := price
 			if isUpgrade {
 				actualPrice = price / 2 // 50% 折扣
@@ -522,7 +524,7 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 				}
 
 				// 创建 Purchase Record
-				if err := h.createPurchaseRecord(ctx, purchaseID, buyer, skillID, purchaseType, amountPaid, platformFee, sellerEarning, uploaderID); err != nil {
+				if err := h.createPurchaseRecord(ctx, purchaseID, buyer, skillID, purchaseType, amountPaid, platformFee, sellerEarning, uploaderID, hubID, tenantID); err != nil {
 					log.Printf("[skillmarket] WARN: create purchase record failed: %v (purchaseID=%s)", err, purchaseID)
 				}
 			}
@@ -582,17 +584,23 @@ func (h *SkillMarketHandlers) useVoucher(ctx context.Context, userID string) err
 	return nil
 }
 
-func (h *SkillMarketHandlers) checkUpgradePurchase(ctx context.Context, buyerID, skillID string) (bool, error) {
+func (h *SkillMarketHandlers) checkUpgradePurchase(ctx context.Context, buyerID, skillID, hubID, tenantID string) (bool, error) {
 	var count int
-	err := h.store.ReadDB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sm_purchase_records WHERE buyer_id = ? AND skill_id = ? AND status = 'active'`,
-		buyerID, skillID).Scan(&count)
+	where := `buyer_id = ? AND skill_id = ? AND status = 'active'`
+	args := []any{buyerID, skillID}
+	if strings.TrimSpace(hubID) != "" || strings.TrimSpace(tenantID) != "" {
+		where += ` AND hub_id = ? AND tenant_id = ?`
+		args = append(args, strings.TrimSpace(hubID), strings.TrimSpace(tenantID))
+	}
+	err := h.store.ReadDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_purchase_records WHERE `+where, args...).Scan(&count)
 	return count > 0, err
 }
 
-func (h *SkillMarketHandlers) createPurchaseRecord(ctx context.Context, id string, buyer *skillmarket.SkillMarketUser, skillID, purchaseType string, amountPaid, platformFee, sellerEarning int64, sellerID string) error {
+func (h *SkillMarketHandlers) createPurchaseRecord(ctx context.Context, id string, buyer *skillmarket.SkillMarketUser, skillID, purchaseType string, amountPaid, platformFee, sellerEarning int64, sellerID, hubID, tenantID string) error {
 	return h.store.CreatePurchase(ctx, &skillmarket.PurchaseRecord{
 		ID:               id,
+		HubID:            strings.TrimSpace(hubID),
+		TenantID:         strings.TrimSpace(tenantID),
 		BuyerEmail:       buyer.Email,
 		BuyerID:          buyer.ID,
 		SkillID:          skillID,
@@ -1064,6 +1072,39 @@ func (h *SkillMarketHandlers) CapabilityMarketSkillLicenses(ctx context.Context,
 			CapabilityID:   rec.SkillID,
 			Source:         corelib.CapabilitySourceHubCenter,
 			PurchaseID:     rec.ID,
+			BuyerEmail:     rec.BuyerEmail,
+			AdminEmail:     rec.BuyerEmail,
+			Status:         rec.Status,
+			Pricing:        map[string]any{"mode": corelib.CapabilityPricingPaid, "credits": rec.AmountPaid},
+			License:        map[string]any{"purchase_type": rec.PurchaseType, "purchased_version": rec.PurchasedVersion, "key_status": rec.KeyStatus},
+			CreatedAt:      rec.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return items, nil
+}
+
+func (h *SkillMarketHandlers) CapabilityMarketSkillLicensesForTenant(ctx context.Context, buyerEmail, hubID, tenantID string) ([]CapabilityMarketLicenseRecord, error) {
+	if h == nil || h.store == nil {
+		return []CapabilityMarketLicenseRecord{}, nil
+	}
+	hubID = strings.TrimSpace(hubID)
+	tenantID = strings.TrimSpace(tenantID)
+	records, _, err := h.store.ListPurchasesByTenant(ctx, hubID, tenantID, strings.TrimSpace(buyerEmail), "", 0, 200)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]CapabilityMarketLicenseRecord, 0, len(records))
+	for _, rec := range records {
+		if rec.Status != "active" {
+			continue
+		}
+		items = append(items, CapabilityMarketLicenseRecord{
+			CapabilityType: corelib.CapabilityTypeSkill,
+			CapabilityID:   rec.SkillID,
+			Source:         corelib.CapabilitySourceHubCenter,
+			PurchaseID:     rec.ID,
+			HubID:          rec.HubID,
+			TenantID:       rec.TenantID,
 			BuyerEmail:     rec.BuyerEmail,
 			AdminEmail:     rec.BuyerEmail,
 			Status:         rec.Status,

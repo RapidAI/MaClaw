@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"hash/fnv"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ type CapabilityMarketCustomerAccount struct {
 	Status           string         `json:"status"`
 	CustomerID       string         `json:"customer_id,omitempty"`
 	HubID            string         `json:"hub_id,omitempty"`
+	TenantID         string         `json:"tenant_id,omitempty"`
 	AdminEmail       string         `json:"admin_email,omitempty"`
 	BillingEmail     string         `json:"billing_email,omitempty"`
 	IdentitySource   string         `json:"identity_source,omitempty"`
@@ -37,9 +40,13 @@ func CapabilityMarketCustomerAccountHandler(settings store.SystemSettingsReposit
 	return func(w http.ResponseWriter, r *http.Request) {
 		account := loadCapabilityMarketCustomerAccount(r.Context(), settings)
 		queryHubID := strings.TrimSpace(r.URL.Query().Get("hub_id"))
+		queryTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 		queryEmail := strings.TrimSpace(firstCapabilityMarketNonEmpty(r.URL.Query().Get("admin_email"), r.URL.Query().Get("buyer_email"), r.URL.Query().Get("email")))
 		if queryHubID != "" {
 			account.HubID = queryHubID
+		}
+		if queryTenantID != "" {
+			account.TenantID = queryTenantID
 		}
 		if queryEmail != "" {
 			account.AdminEmail = queryEmail
@@ -54,10 +61,10 @@ func CapabilityMarketCustomerAccountHandler(settings store.SystemSettingsReposit
 			account.BillingEmail = account.AdminEmail
 		}
 		if account.CustomerID == "" {
-			account.CustomerID = firstCapabilityMarketNonEmpty(account.HubID, account.AdminEmail)
+			account.CustomerID = capabilityMarketCustomerID(account.HubID, account.TenantID, account.AdminEmail)
 		}
 		if account.IdentitySource == "" {
-			if queryHubID != "" || queryEmail != "" {
+			if queryHubID != "" || queryTenantID != "" || queryEmail != "" {
 				account.IdentitySource = "request"
 			} else if account.CustomerID != "" || account.AdminEmail != "" {
 				account.IdentitySource = "settings"
@@ -92,12 +99,17 @@ type capabilityMarketSkillLicenseProvider interface {
 	CapabilityMarketSkillLicenses(ctx context.Context, buyerEmail string) ([]CapabilityMarketLicenseRecord, error)
 }
 
+type capabilityMarketTenantSkillLicenseProvider interface {
+	CapabilityMarketSkillLicensesForTenant(ctx context.Context, buyerEmail, hubID, tenantID string) ([]CapabilityMarketLicenseRecord, error)
+}
+
 type CapabilityMarketLicenseRecord struct {
 	CapabilityType string         `json:"capability_type"`
 	CapabilityID   string         `json:"capability_id"`
 	Source         string         `json:"source"`
 	PurchaseID     string         `json:"purchase_id"`
 	HubID          string         `json:"hub_id,omitempty"`
+	TenantID       string         `json:"tenant_id,omitempty"`
 	BuyerEmail     string         `json:"buyer_email,omitempty"`
 	AdminEmail     string         `json:"admin_email,omitempty"`
 	VersionKey     string         `json:"version_key,omitempty"`
@@ -125,19 +137,28 @@ func CapabilityMarketBillingLicensesHandler(deps ...any) http.HandlerFunc {
 			return
 		}
 		hubID := strings.TrimSpace(r.URL.Query().Get("hub_id"))
+		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 		adminEmail := strings.TrimSpace(firstCapabilityMarketNonEmpty(r.URL.Query().Get("admin_email"), r.URL.Query().Get("buyer_email"), r.URL.Query().Get("email")))
 		items := make([]CapabilityMarketLicenseRecord, 0, len(purchases.Items))
 		for _, item := range purchases.Items {
 			if hubID != "" && item.HubID != hubID {
 				continue
 			}
+			if tenantID != "" && item.TenantID != tenantID {
+				continue
+			}
 			if adminEmail != "" && !strings.EqualFold(item.AdminEmail, adminEmail) {
 				continue
 			}
-			items = append(items, CapabilityMarketLicenseRecord{CapabilityType: corelib.CapabilityTypeMCP, CapabilityID: item.CapabilityID, Source: corelib.CapabilitySourceHubCenter, PurchaseID: item.PurchaseID, HubID: item.HubID, AdminEmail: item.AdminEmail, VersionKey: item.VersionKey, Status: item.Status, Pricing: item.Pricing, License: item.License, CreatedAt: item.CreatedAt})
+			items = append(items, CapabilityMarketLicenseRecord{CapabilityType: corelib.CapabilityTypeMCP, CapabilityID: item.CapabilityID, Source: corelib.CapabilitySourceHubCenter, PurchaseID: item.PurchaseID, HubID: item.HubID, TenantID: item.TenantID, AdminEmail: item.AdminEmail, VersionKey: item.VersionKey, Status: item.Status, Pricing: item.Pricing, License: item.License, CreatedAt: item.CreatedAt})
 		}
 		if skillLicenses != nil {
-			skillItems, err := skillLicenses.CapabilityMarketSkillLicenses(r.Context(), adminEmail)
+			var skillItems []CapabilityMarketLicenseRecord
+			if tenantProvider, ok := skillLicenses.(capabilityMarketTenantSkillLicenseProvider); ok {
+				skillItems, err = tenantProvider.CapabilityMarketSkillLicensesForTenant(r.Context(), adminEmail, hubID, tenantID)
+			} else {
+				skillItems, err = skillLicenses.CapabilityMarketSkillLicenses(r.Context(), adminEmail)
+			}
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "SKILL_PURCHASES_LOAD_FAILED", err.Error())
 				return
@@ -183,6 +204,7 @@ type capabilityMarketMCPCatalog struct {
 type CapabilityMarketMCPPurchaseRecord struct {
 	PurchaseID   string         `json:"purchase_id"`
 	HubID        string         `json:"hub_id,omitempty"`
+	TenantID     string         `json:"tenant_id,omitempty"`
 	AdminEmail   string         `json:"admin_email,omitempty"`
 	RequestID    string         `json:"request_id,omitempty"`
 	CapabilityID string         `json:"capability_id"`
@@ -242,6 +264,7 @@ func CapabilityMarketMCPDetailHandler(settings store.SystemSettingsRepository) h
 
 type capabilityMarketMCPPurchaseRequest struct {
 	HubID        string         `json:"hub_id,omitempty"`
+	TenantID     string         `json:"tenant_id,omitempty"`
 	AdminEmail   string         `json:"admin_email,omitempty"`
 	RequestID    string         `json:"request_id,omitempty"`
 	BuyerContext map[string]any `json:"buyer_context,omitempty"`
@@ -269,10 +292,10 @@ func CapabilityMarketMCPPurchaseHandler(settings store.SystemSettingsRepository)
 				writeError(w, http.StatusBadRequest, "ADMIN_EMAIL_REQUIRED", "admin_email is required for paid MCP purchase")
 				return
 			}
-			purchaseID := "mcp_pur_" + time.Now().UTC().Format("20060102150405")
+			now := time.Now().UTC()
 			record := CapabilityMarketMCPPurchaseRecord{
-				PurchaseID:   purchaseID,
 				HubID:        strings.TrimSpace(req.HubID),
+				TenantID:     strings.TrimSpace(req.TenantID),
 				AdminEmail:   strings.TrimSpace(req.AdminEmail),
 				RequestID:    strings.TrimSpace(req.RequestID),
 				CapabilityID: item.CapabilityID,
@@ -280,16 +303,18 @@ func CapabilityMarketMCPPurchaseHandler(settings store.SystemSettingsRepository)
 				Pricing:      item.Pricing,
 				License:      item.License,
 				Status:       "purchased",
-				CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+				CreatedAt:    now.Format(time.RFC3339),
 			}
+			record.PurchaseID = capabilityMarketMCPPurchaseID(record)
 			if err := appendCapabilityMarketMCPPurchase(r.Context(), settings, record); err != nil {
 				writeError(w, http.StatusInternalServerError, "MCP_PURCHASE_SAVE_FAILED", err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"purchase_id": purchaseID,
+				"purchase_id": record.PurchaseID,
 				"status":      "purchased",
 				"hub_id":      record.HubID,
+				"tenant_id":   record.TenantID,
 				"admin_email": record.AdminEmail,
 				"request_id":  record.RequestID,
 				"pricing":     item.Pricing,
@@ -520,13 +545,42 @@ func appendCapabilityMarketMCPPurchase(ctx context.Context, settings store.Syste
 		return err
 	}
 	for i := range purchases.Items {
-		if purchases.Items[i].PurchaseID == record.PurchaseID || (record.RequestID != "" && purchases.Items[i].RequestID == record.RequestID) {
+		if purchases.Items[i].PurchaseID == record.PurchaseID || capabilityMarketSamePurchaseRequest(purchases.Items[i], record) {
 			purchases.Items[i] = record
 			return saveCapabilityMarketMCPPurchases(ctx, settings, purchases)
 		}
 	}
 	purchases.Items = append(purchases.Items, record)
 	return saveCapabilityMarketMCPPurchases(ctx, settings, purchases)
+}
+
+func capabilityMarketMCPPurchaseID(record CapabilityMarketMCPPurchaseRecord) string {
+	parts := []string{
+		strings.TrimSpace(record.HubID),
+		strings.TrimSpace(record.TenantID),
+		strings.TrimSpace(record.AdminEmail),
+		strings.TrimSpace(record.RequestID),
+		strings.TrimSpace(record.CapabilityID),
+	}
+	if parts[3] == "" {
+		return uniqueID("mcp_pur")
+	}
+	return "mcp_pur_" + hashCapabilityMarketID(strings.Join(parts, "|"))
+}
+
+func hashCapabilityMarketID(value string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(value))
+	return strconv.FormatUint(h.Sum64(), 36)
+}
+
+func capabilityMarketSamePurchaseRequest(existing, next CapabilityMarketMCPPurchaseRecord) bool {
+	if strings.TrimSpace(next.RequestID) == "" || strings.TrimSpace(existing.RequestID) != strings.TrimSpace(next.RequestID) {
+		return false
+	}
+	return strings.TrimSpace(existing.HubID) == strings.TrimSpace(next.HubID) &&
+		strings.TrimSpace(existing.TenantID) == strings.TrimSpace(next.TenantID) &&
+		strings.EqualFold(strings.TrimSpace(existing.AdminEmail), strings.TrimSpace(next.AdminEmail))
 }
 
 func saveCapabilityMarketMCPCatalog(ctx context.Context, settings store.SystemSettingsRepository, catalog capabilityMarketMCPCatalog) error {
@@ -653,6 +707,15 @@ func firstCapabilityMarketNonEmpty(values ...string) string {
 	return ""
 }
 
+func capabilityMarketCustomerID(hubID, tenantID, adminEmail string) string {
+	hubID = strings.TrimSpace(hubID)
+	tenantID = strings.TrimSpace(tenantID)
+	adminEmail = strings.TrimSpace(adminEmail)
+	if hubID != "" && tenantID != "" {
+		return hubID + ":" + tenantID
+	}
+	return firstCapabilityMarketNonEmpty(hubID, adminEmail)
+}
 
 // AdminMCPValidateHandler validates an MCP Server's connectivity, tool availability,
 // schema correctness, and runtime health. Returns a combined ValidationReport.
@@ -783,7 +846,7 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 					if hubSkill.TrustLevel == "" {
 						hubSkill.TrustLevel = "community"
 					}
-					// Convert NLSkillStep → HubSkillStep
+					// Convert NLSkillStep to HubSkillStep
 					for _, step := range entry.Steps {
 						hubSkill.Steps = append(hubSkill.Steps, skill.HubSkillStep{
 							Action:  step.Action,

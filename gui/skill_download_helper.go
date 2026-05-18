@@ -23,7 +23,7 @@ func downloadSkillJSONFromHubCenterToDir(ctx context.Context, app *App, path, ta
 	if app == nil {
 		return nil, fmt.Errorf("app is nil")
 	}
-	_, _, data, err := app.getHubCenterBytes(ctx, &http.Client{Timeout: 30 * time.Second}, path, 5<<20)
+	_, _, data, err := app.getHubCenterBytes(ctx, &http.Client{Timeout: 30 * time.Second}, path, maxDownloadSize)
 	if err != nil {
 		return nil, err
 	}

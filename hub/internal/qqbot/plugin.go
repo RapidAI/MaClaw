@@ -320,17 +320,23 @@ func (p *Plugin) SendFile(ctx context.Context, target im.UserTarget, fileData, f
 }
 
 func (p *Plugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {
+	_, userID, err := p.ResolveUserWithTenant(ctx, platformUID)
+	return userID, err
+}
+
+func (p *Plugin) ResolveUserWithTenant(ctx context.Context, platformUID string) (string, string, error) {
 	p.bindMu.RLock()
-	email, ok := p.bindings[platformUID]
+	raw, ok := p.bindings[platformUID]
 	p.bindMu.RUnlock()
-	if !ok || email == "" {
-		return "", fmt.Errorf("qqbot: user %s not bound, please send your email to bind", platformUID)
+	info := decodeBindingValue(raw)
+	if !ok || info.Email == "" {
+		return "", "", fmt.Errorf("qqbot: user %s not bound, please send your email to bind", platformUID)
 	}
-	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
+	user, err := p.users.GetByTenantEmail(ctx, info.TenantID, info.Email)
 	if err != nil || user == nil {
-		return "", fmt.Errorf("qqbot: no hub user found for email %s", email)
+		return "", "", fmt.Errorf("qqbot: no hub user found for email %s", info.Email)
 	}
-	return user.ID, nil
+	return info.TenantID, user.ID, nil
 }
 
 func (p *Plugin) Capabilities() im.CapabilityDeclaration {

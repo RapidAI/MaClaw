@@ -139,6 +139,7 @@ type App struct {
 	hubSecurityCache           hubSecurityCache
 	digitalEmployeeAuthCache   digitalEmployeeAuthorizationCache
 	capabilitySyncRunning      atomic.Bool
+	capabilitySyncNextAttempt  atomic.Value // stores time.Time; throttles heartbeat-triggered managed sync retries
 	hubMarketplaceUnsupported  atomic.Bool  // capability discovery: hub doesn't have marketplace API
 	hubMarketplace404URL       atomic.Value // stores the hub URL (string) that returned 404
 	managedDeploymentIDs       sync.Map     // capability_ref (string) → true; cached from last sync

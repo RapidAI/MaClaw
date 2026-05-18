@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { AITabItem } from "./AITabItem";
+import { AITabItem, getAITabDisplayTitle } from "./AITabItem";
 
 export interface AITabBarProps {
     tabs: AITab[];
@@ -200,7 +200,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                                 {tab.type === "project" ? (tab.archived ? "\u{1F4E6}" : "\u{1F4C1}") : tab.type === "ve" ? "\u{1F916}" : "\u{1F4AC}"}
                             </span>
                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {tab.title}
+                                {getAITabDisplayTitle(tab, lang)}
                             </span>
                             {tab.readOnly && (
                                 <span style={{ flexShrink: 0, fontSize: 10, lineHeight: 1, padding: "2px 4px", borderRadius: 4, border: `1px solid ${theme.divider}`, color: theme.textMuted }}>
@@ -237,7 +237,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                         padding: "4px 0",
                     }}
                 >
-                    {onInviteToTab && (
+                    {onInviteToTab && tabContextMenu.tab.type === "ve" && (
                         <div
                             data-testid="tab-menu-invite-ve"
                             role="menuitem"
@@ -249,7 +249,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             {isZh ? "\u2795 \u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "\u2795 Invite digital employee"}
                         </div>
                     )}
-                    {onAddLocalMaclawToTab && !tabContextMenu.tab.participants?.includes("local-maclaw") && (
+                    {onAddLocalMaclawToTab && !!tabContextMenu.tab.veId && !tabContextMenu.tab.participants?.includes("local-maclaw") && (
                         <div
                             data-testid="tab-menu-add-local"
                             role="menuitem"

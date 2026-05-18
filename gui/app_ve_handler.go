@@ -670,86 +670,12 @@ func (c *veAgentCallbacks) appendVEMemoryRecall(b *strings.Builder, msg string) 
 	// user_fact entries are excluded from
 	// RecallDynamic (they're injected separately in the main AI assistant via
 	// UserFactSummary). VE must also inject them to answer personal questions.
-	if summary := memStore.UserFactSummary(400); summary != "" {
-		b.WriteString("\n## Owner Information\n")
-		b.WriteString(summary)
-		b.WriteString("\n")
-	}
+	b.WriteString(memStore.UserFactSummaryForPrompt(corememory.UserFactPromptOptions("\n## Owner Information")))
 
-	// --- Memory Index: tell the LLM what categories of knowledge exist ---
-	stats := memStore.CategoryStats()
-	if len(stats) > 0 {
-		var parts []string
-		for _, st := range stats {
-			part := fmt.Sprintf("%s: %d entries", st.Category.DisplayName(), st.Count)
-			if len(st.Tags) > 0 {
-				part += "(" + strings.Join(st.Tags, ", ") + ")"
-			}
-			parts = append(parts, part)
-		}
-		b.WriteString("\n[Memory Index] ")
-		b.WriteString(strings.Join(parts, " | "))
-		b.WriteString("\n")
-	}
+	// --- Dynamic memory context: index plus optional proactive recall. ---
+	promptContext, _ := memStore.ProactiveContextForPrompt(msg, corememory.VEProactivePromptOptions())
+	b.WriteString(promptContext)
 
-	// --- Proactive Recall: find memories relevant to the user's question ---
-	if msg == "" {
-		return
-	}
-	recalled := memStore.RecallDynamic(msg, "", "")
-
-	// Supplementary entity-based recall for short/noisy messages
-	if len(recalled) < 8 {
-		expanded := corememory.ExpandQuery(msg)
-		if len(expanded.Entities) > 0 {
-			seen := make(map[string]bool, len(recalled))
-			for _, e := range recalled {
-				seen[e.ID] = true
-			}
-			entities := expanded.Entities
-			if len(entities) > 1 {
-				entities = entities[:1]
-			}
-			for _, entity := range entities {
-				extra := memStore.RecallDynamic(entity, "", "")
-				for _, e := range extra {
-					if !seen[e.ID] {
-						seen[e.ID] = true
-						recalled = append(recalled, e)
-						if len(recalled) >= 10 {
-							break
-						}
-					}
-				}
-				if len(recalled) >= 10 {
-					break
-				}
-			}
-		}
-	}
-
-	// Cap at 10 entries to control prompt size (VE has simpler prompts, less budget)
-	const maxVERecall = 10
-	if len(recalled) > maxVERecall {
-		recalled = recalled[:maxVERecall]
-	}
-
-	if len(recalled) > 0 {
-		b.WriteString("\n## Owner Memory (auto recall)\n")
-		b.WriteString("The following information comes from the owner memory store and may be relevant. Use it together with knowledge-base context.\n")
-		for _, e := range recalled {
-			text := e.CompactForm
-			if text == "" {
-				text = e.Content
-			}
-			runes := []rune(text)
-			if len(runes) > 200 {
-				text = string(runes[:200]) + "..."
-			}
-			b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
-		}
-		b.WriteString("Call memory(action: recall, query: <keywords>) if more owner memory is needed.\n")
-	}
 }
 
 func (c *veAgentCallbacks) BuildTools(userText string) []map[string]interface{} {

@@ -19,6 +19,7 @@ func InitWorkflowTables(db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS understanding_sessions (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			user_id TEXT NOT NULL,
 			intent_json TEXT NOT NULL DEFAULT '{}',
 			rounds_json TEXT NOT NULL DEFAULT '[]',
@@ -27,8 +28,10 @@ func InitWorkflowTables(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_understanding_sessions_user_state ON understanding_sessions(user_id, state);`,
+		`CREATE INDEX IF NOT EXISTS idx_understanding_sessions_tenant_user_state ON understanding_sessions(tenant_id, user_id, state);`,
 		`CREATE TABLE IF NOT EXISTS workflow_states (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			user_id TEXT NOT NULL,
 			type TEXT NOT NULL,
 			template_type TEXT NOT NULL,
@@ -39,6 +42,7 @@ func InitWorkflowTables(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_states_user ON workflow_states(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_states_tenant_user ON workflow_states(tenant_id, user_id);`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -53,15 +57,21 @@ func InitWorkflowTables(db *sql.DB) error {
 // ---------------------------------------------------------------------------
 
 func (r *workflowRepo) SaveUnderstandingSession(ctx context.Context, s *store.UnderstandingSessionRow) error {
+	tenantID := store.NormalizeTenantID(s.TenantID)
+	if tenantID == store.DefaultTenantID {
+		tenantID = store.TenantIDFromContext(ctx)
+	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO understanding_sessions (id, user_id, intent_json, rounds_json, state, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO understanding_sessions (id, tenant_id, user_id, intent_json, rounds_json, state, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
+		   tenant_id   = excluded.tenant_id,
 		   intent_json = excluded.intent_json,
 		   rounds_json = excluded.rounds_json,
 		   state       = excluded.state,
 		   updated_at  = excluded.updated_at`,
 		s.ID,
+		tenantID,
 		s.UserID,
 		s.IntentJSON,
 		s.RoundsJSON,
@@ -74,17 +84,18 @@ func (r *workflowRepo) SaveUnderstandingSession(ctx context.Context, s *store.Un
 
 func (r *workflowRepo) GetActiveUnderstandingSession(ctx context.Context, userID string) (*store.UnderstandingSessionRow, error) {
 	row := r.readDB.QueryRowContext(ctx,
-		`SELECT id, user_id, intent_json, rounds_json, state, created_at, updated_at
+		`SELECT id, tenant_id, user_id, intent_json, rounds_json, state, created_at, updated_at
 		 FROM understanding_sessions
-		 WHERE user_id = ? AND state = 'active'
+		 WHERE tenant_id = ? AND user_id = ? AND state = 'active'
 		 ORDER BY updated_at DESC LIMIT 1`,
+		store.TenantIDFromContext(ctx),
 		userID,
 	)
 	var (
 		s                    store.UnderstandingSessionRow
 		createdAt, updatedAt string
 	)
-	if err := row.Scan(&s.ID, &s.UserID, &s.IntentJSON, &s.RoundsJSON, &s.State, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.TenantID, &s.UserID, &s.IntentJSON, &s.RoundsJSON, &s.State, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -105,15 +116,21 @@ func (r *workflowRepo) DeleteUnderstandingSession(ctx context.Context, id string
 // ---------------------------------------------------------------------------
 
 func (r *workflowRepo) SaveWorkflowState(ctx context.Context, ws *store.WorkflowStateRow) error {
+	tenantID := store.NormalizeTenantID(ws.TenantID)
+	if tenantID == store.DefaultTenantID {
+		tenantID = store.TenantIDFromContext(ctx)
+	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO workflow_states (id, user_id, type, template_type, intent_json, current_phase, phase_outputs_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO workflow_states (id, tenant_id, user_id, type, template_type, intent_json, current_phase, phase_outputs_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
+		   tenant_id          = excluded.tenant_id,
 		   intent_json        = excluded.intent_json,
 		   current_phase      = excluded.current_phase,
 		   phase_outputs_json = excluded.phase_outputs_json,
 		   updated_at         = excluded.updated_at`,
 		ws.ID,
+		tenantID,
 		ws.UserID,
 		ws.Type,
 		ws.TemplateType,
@@ -128,17 +145,18 @@ func (r *workflowRepo) SaveWorkflowState(ctx context.Context, ws *store.Workflow
 
 func (r *workflowRepo) GetActiveWorkflowState(ctx context.Context, userID string) (*store.WorkflowStateRow, error) {
 	row := r.readDB.QueryRowContext(ctx,
-		`SELECT id, user_id, type, template_type, intent_json, current_phase, phase_outputs_json, created_at, updated_at
+		`SELECT id, tenant_id, user_id, type, template_type, intent_json, current_phase, phase_outputs_json, created_at, updated_at
 		 FROM workflow_states
-		 WHERE user_id = ?
+		 WHERE tenant_id = ? AND user_id = ?
 		 ORDER BY updated_at DESC LIMIT 1`,
+		store.TenantIDFromContext(ctx),
 		userID,
 	)
 	var (
 		ws                   store.WorkflowStateRow
 		createdAt, updatedAt string
 	)
-	if err := row.Scan(&ws.ID, &ws.UserID, &ws.Type, &ws.TemplateType, &ws.IntentJSON, &ws.CurrentPhase, &ws.PhaseOutputsJSON, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&ws.ID, &ws.TenantID, &ws.UserID, &ws.Type, &ws.TemplateType, &ws.IntentJSON, &ws.CurrentPhase, &ws.PhaseOutputsJSON, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}

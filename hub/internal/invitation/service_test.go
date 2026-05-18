@@ -19,7 +19,7 @@ type memInvitationCodeRepo struct {
 
 func (m *memInvitationCodeRepo) Create(_ context.Context, item *store.InvitationCode) error {
 	for _, c := range m.codes {
-		if c.Code == item.Code {
+		if c.TenantID == item.TenantID && c.Code == item.Code {
 			return errors.New("UNIQUE constraint failed")
 		}
 	}
@@ -46,7 +46,12 @@ func (m *memInvitationCodeRepo) GetByCode(_ context.Context, code string) (*stor
 }
 
 func (m *memInvitationCodeRepo) GetByTenantCode(ctx context.Context, tenantID, code string) (*store.InvitationCode, error) {
-	return m.GetByCode(ctx, code)
+	for _, c := range m.codes {
+		if c.TenantID == tenantID && c.Code == code {
+			return c, nil
+		}
+	}
+	return nil, errors.New("not found")
 }
 
 func (m *memInvitationCodeRepo) List(_ context.Context, status string, search string) ([]*store.InvitationCode, error) {
@@ -89,7 +94,28 @@ func (m *memInvitationCodeRepo) ListPaged(_ context.Context, status string, sear
 }
 
 func (m *memInvitationCodeRepo) ListPagedByTenant(ctx context.Context, tenantID string, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
-	return m.ListPaged(ctx, status, search, offset, limit)
+	var all []*store.InvitationCode
+	for _, c := range m.codes {
+		if c.TenantID != tenantID {
+			continue
+		}
+		if status != "" && c.Status != status {
+			continue
+		}
+		if search != "" && !strings.Contains(c.Code, search) && !strings.Contains(c.UsedByEmail, search) {
+			continue
+		}
+		all = append(all, c)
+	}
+	total := len(all)
+	if offset >= total {
+		return nil, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return all[offset:end], total, nil
 }
 
 func (m *memInvitationCodeRepo) MarkUsed(_ context.Context, id string, email string, usedAt time.Time) error {
@@ -142,7 +168,17 @@ func (m *memInvitationCodeRepo) DeleteByEmail(_ context.Context, email string) (
 }
 
 func (m *memInvitationCodeRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) (int64, error) {
-	return m.DeleteByEmail(ctx, email)
+	var kept []*store.InvitationCode
+	var count int64
+	for _, c := range m.codes {
+		if c.TenantID == tenantID && c.UsedByEmail == email && c.Status == "used" {
+			count++
+		} else {
+			kept = append(kept, c)
+		}
+	}
+	m.codes = kept
+	return count, nil
 }
 
 func (m *memInvitationCodeRepo) GetByEmail(_ context.Context, email string) (*store.InvitationCode, error) {
@@ -158,7 +194,15 @@ func (m *memInvitationCodeRepo) GetByEmail(_ context.Context, email string) (*st
 }
 
 func (m *memInvitationCodeRepo) GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.InvitationCode, error) {
-	return m.GetByEmail(ctx, email)
+	var latest *store.InvitationCode
+	for _, c := range m.codes {
+		if c.TenantID == tenantID && c.UsedByEmail == email && c.Status == "used" {
+			if latest == nil || (c.UsedAt != nil && (latest.UsedAt == nil || c.UsedAt.After(*latest.UsedAt))) {
+				latest = c
+			}
+		}
+	}
+	return latest, nil
 }
 
 func (m *memInvitationCodeRepo) ListUnused(_ context.Context, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
@@ -190,7 +234,17 @@ func (m *memInvitationCodeRepo) ListUnused(_ context.Context, exportedFilter str
 }
 
 func (m *memInvitationCodeRepo) ListUnusedByTenant(ctx context.Context, tenantID, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
-	return m.ListUnused(ctx, exportedFilter, vipOnly...)
+	all, err := m.ListUnused(ctx, exportedFilter, vipOnly...)
+	if err != nil {
+		return nil, err
+	}
+	var out []*store.InvitationCode
+	for _, c := range all {
+		if c.TenantID == tenantID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (m *memInvitationCodeRepo) MarkExported(_ context.Context, ids []string) error {
@@ -401,6 +455,33 @@ func TestDeleteCodeByEmail(t *testing.T) {
 	deleted, _ = svc.DeleteCodeByEmail(ctx, "")
 	if deleted != 0 {
 		t.Errorf("expected 0 for empty email, got %d", deleted)
+	}
+}
+
+func TestGetCodeByTenantEmailCacheIsTenantScoped(t *testing.T) {
+	repo := &memInvitationCodeRepo{}
+	svc := NewService(repo, newMemSettingsRepo())
+	ctx := context.Background()
+	now := time.Now()
+
+	repo.codes = append(repo.codes,
+		&store.InvitationCode{ID: "a", TenantID: "tenant_a", Code: "AAAAAAAAAA", Status: "used", UsedByEmail: "same@example.com", UsedAt: &now, VIP: true, CreatedAt: now},
+		&store.InvitationCode{ID: "b", TenantID: "tenant_b", Code: "BBBBBBBBBB", Status: "used", UsedByEmail: "same@example.com", UsedAt: &now, VIP: false, CreatedAt: now},
+	)
+
+	first, err := svc.GetCodeByTenantEmail(ctx, "tenant_a", "same@example.com")
+	if err != nil {
+		t.Fatalf("tenant a lookup: %v", err)
+	}
+	second, err := svc.GetCodeByTenantEmail(ctx, "tenant_b", "same@example.com")
+	if err != nil {
+		t.Fatalf("tenant b lookup: %v", err)
+	}
+	if first == nil || first.Code != "AAAAAAAAAA" || !first.VIP {
+		t.Fatalf("unexpected tenant a code: %#v", first)
+	}
+	if second == nil || second.Code != "BBBBBBBBBB" || second.VIP {
+		t.Fatalf("unexpected tenant b code: %#v", second)
 	}
 }
 

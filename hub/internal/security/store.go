@@ -25,6 +25,10 @@ func WithTenant(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantContextKey{}, normalizeTenantID(tenantID))
 }
 
+func TenantIDFromContext(ctx context.Context) string {
+	return tenantIDFromContext(ctx)
+}
+
 func tenantIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return store.DefaultTenantID

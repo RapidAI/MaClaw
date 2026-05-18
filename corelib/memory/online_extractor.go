@@ -23,6 +23,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -41,7 +42,7 @@ type OnlineExtractor struct {
 	mu          sync.Mutex
 	cooldown    time.Duration
 	lastExtract time.Time
-	lastSuccess time.Time // set only when ≥1 fact was actually applied (ADD/UPDATE/DELETE)
+	lastSuccess time.Time // set only when at least one fact was applied (ADD/UPDATE/DELETE)
 }
 
 // NewOnlineExtractor creates an OnlineExtractor with a 3-minute cooldown.
@@ -309,10 +310,11 @@ func (oe *OnlineExtractor) classifyAndApply(
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
 		}
-		if err := oe.store.Save(entry); err != nil {
+		if op, err := oe.saveGovernedExtractedEntry(entry); err != nil {
 			return "", fmt.Errorf("save new entry: %w", err)
+		} else {
+			return op, nil
 		}
-		return OpAdd, nil
 	}
 
 	// Similar memories exist -> LLM classifies operation.
@@ -329,8 +331,8 @@ func (oe *OnlineExtractor) classifyAndApply(
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
 		}
-		_ = oe.store.Save(entry)
-		return OpAdd, nil
+		op, _ := oe.saveGovernedExtractedEntry(entry)
+		return op, nil
 	}
 
 	// Execute the classified operation.
@@ -345,16 +347,17 @@ func (oe *OnlineExtractor) classifyAndApply(
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
 		}
-		if err := oe.store.Save(entry); err != nil {
+		if op, err := oe.saveGovernedExtractedEntry(entry); err != nil {
 			return "", fmt.Errorf("save new entry: %w", err)
+		} else {
+			return op, nil
 		}
-		return OpAdd, nil
 
 	case OpUpdate:
 		if classified.TargetID != "" && classified.MergedText != "" {
 			// Use Store.Update to ensure all indices are updated consistently.
 			// Merge tags from the new fact into the existing entry's tags.
-			// Preserve the target entry's original category — UPDATE means
+			// Preserve the target entry original category: UPDATE augments existing memory.
 			// "augment existing memory", not "reclassify it".
 			mergedTags := tags
 			targetCat := cat // fallback to new fact's category if target not found
@@ -379,8 +382,8 @@ func (oe *OnlineExtractor) classifyAndApply(
 					ValidAt:  validAt,
 					OwnerID:  ownerID,
 				}
-				_ = oe.store.Save(entry)
-				return OpAdd, nil
+				op, _ := oe.saveGovernedExtractedEntry(entry)
+				return op, nil
 			}
 
 			// Update entities on the target entry (Store.Update doesn't handle Entities).
@@ -417,8 +420,8 @@ func (oe *OnlineExtractor) classifyAndApply(
 			ValidAt:  validAt,
 			OwnerID:  ownerID,
 		}
-		_ = oe.store.Save(entry)
-		return OpAdd, nil
+		op, _ := oe.saveGovernedExtractedEntry(entry)
+		return op, nil
 
 	case OpDelete:
 		if classified.TargetID != "" {
@@ -443,7 +446,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 				InvalidAt: invalidAt,
 				OwnerID:   ownerID,
 			}
-			_ = oe.store.Save(entry)
+			_, _ = oe.saveGovernedExtractedEntry(entry)
 		}
 		return OpDelete, nil
 
@@ -453,6 +456,22 @@ func (oe *OnlineExtractor) classifyAndApply(
 	default:
 		return OpNoop, nil
 	}
+}
+
+func (oe *OnlineExtractor) saveGovernedExtractedEntry(entry Entry) (MemoryOperation, error) {
+	decision, err := oe.store.SaveGovernedWithContext(entry, "")
+	if err != nil {
+		if errors.Is(err, ErrMemoryCandidateRejected) {
+			log.Printf("[online_extractor] rejected memory candidate score=%d reasons=%v", decision.Score, decision.Reasons)
+			return OpNoop, nil
+		}
+		return "", err
+	}
+	if decision.Action == MemoryGovernanceQuarantine {
+		log.Printf("[online_extractor] quarantined memory candidate score=%d reasons=%v", decision.Score, decision.Reasons)
+		return OpNoop, nil
+	}
+	return OpAdd, nil
 }
 
 // classifyOperation asks the LLM to determine the correct operation for a

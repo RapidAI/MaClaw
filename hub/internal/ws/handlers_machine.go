@@ -231,9 +231,9 @@ type IMAgentResponseHandler interface {
 // IMProactiveSender sends proactive messages to a user's IM channels.
 // Used for scheduled task notifications and other non-request-based messages.
 type IMProactiveSender interface {
-	SendProactiveMessage(ctx context.Context, userID, text string) error
+	SendProactiveMessage(ctx context.Context, tenantID, userID, text string) error
 	// SendProactiveFile sends a file to the user's IM channels (e.g. Swarm PDF documents).
-	SendProactiveFile(ctx context.Context, userID, b64Data, fileName, mimeType, message string) error
+	SendProactiveFile(ctx context.Context, tenantID, userID, b64Data, fileName, mimeType, message string) error
 }
 
 // IMGatewayPlugin handles gateway claim/release and message forwarding for
@@ -247,7 +247,7 @@ type IMGatewayPlugin interface {
 }
 
 // DeviceProfileUpdaterFunc is called when a machine sends device.profile_update.
-type DeviceProfileUpdaterFunc func(userID string, profile json.RawMessage)
+type DeviceProfileUpdaterFunc func(tenantID, userID string, profile json.RawMessage)
 
 // DeviceNotifyHook is called on machine connect/disconnect for IM notifications.
 type DeviceNotifyHook struct {
@@ -1203,7 +1203,7 @@ func (g *Gateway) handleIMProactiveMessage(ctx *ConnContext, msg Envelope) error
 	if payload.Text == "" {
 		return nil
 	}
-	if err := g.IMProactive.SendProactiveMessage(context.Background(), ctx.UserID, payload.Text); err != nil {
+	if err := g.IMProactive.SendProactiveMessage(context.Background(), ctx.TenantID, ctx.UserID, payload.Text); err != nil {
 		log.Printf("[ws] handleIMProactiveMessage: send failed for user_id=%s: %v", ctx.UserID, err)
 	}
 	return nil
@@ -1232,7 +1232,7 @@ func (g *Gateway) handleIMProactiveFile(ctx *ConnContext, msg Envelope) error {
 	if payload.FileData == "" || payload.FileName == "" {
 		return nil
 	}
-	if err := g.IMProactive.SendProactiveFile(context.Background(), ctx.UserID, payload.FileData, payload.FileName, payload.MimeType, payload.Message); err != nil {
+	if err := g.IMProactive.SendProactiveFile(context.Background(), ctx.TenantID, ctx.UserID, payload.FileData, payload.FileName, payload.MimeType, payload.Message); err != nil {
 		log.Printf("[ws] handleIMProactiveFile: send failed for user_id=%s: %v", ctx.UserID, err)
 	}
 	return nil
@@ -1486,7 +1486,7 @@ func (g *Gateway) handleDeviceProfileUpdate(ctx *ConnContext, msg Envelope) erro
 		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
 	}
 	if g.DeviceProfileUpdater != nil {
-		g.DeviceProfileUpdater(ctx.UserID, msg.Payload)
+		g.DeviceProfileUpdater(ctx.TenantID, ctx.UserID, msg.Payload)
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
 }

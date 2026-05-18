@@ -9,9 +9,10 @@
  * Designed to be rendered alongside the group chat message area in a flex row.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { ParticipantSelector, useGroupConfig, virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
 
 export interface Participant {
     id: string;
@@ -20,14 +21,33 @@ export interface Participant {
     isLocal?: boolean; // true for "local-maclaw"
 }
 
+function looksLikeRawParticipantId(value: string): boolean {
+    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+}
+
+function participantFallbackName(index: number, isZh: boolean): string {
+    return isZh ? "参与者 " + (index + 1) : "Participant " + (index + 1);
+}
+
+function participantDisplayNameFor(p: Participant, index: number, isZh: boolean): string {
+    if (p.isLocal) return isZh ? "本机AI" : "Local AI";
+    const name = String(p.name || "").trim();
+    const id = String(p.id || "").trim();
+    if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
+    return participantFallbackName(index, isZh);
+}
 export interface GroupParticipantPanelProps {
     participants: Participant[];
     theme: Theme;
     lang?: string;
+    /** Whether the discussion is view-only. */
+    readOnly?: boolean;
     /** Max participants allowed (from Hub config) */
     maxParticipants?: number;
     /** Callback when user clicks invite button */
     onInvite?: () => void;
+    /** Callback when a VE is selected from the unified participant panel. */
+    onAddParticipant?: (veId: string, veName: string) => Promise<unknown> | unknown;
     /** Session ID for listening to status changes */
     sessionId?: string;
     /** Callback when user right-clicks "Talk to" on a participant */
@@ -38,11 +58,16 @@ export function GroupParticipantPanel({
     participants,
     theme,
     lang,
+    readOnly = false,
     maxParticipants = 5,
     onInvite,
+    onAddParticipant,
+    sessionId,
     onTalkTo,
 }: GroupParticipantPanelProps) {
     const isZh = !lang || lang.startsWith("zh");
+    const { maxGroupParticipants } = useGroupConfig(maxParticipants);
+    const participantIdSet = useMemo(() => new Set(participants.map((p) => p.id)), [participants]);
 
     // Online status overlay: tracks status changes from events without
     // duplicating the participants array in state. Key = participant ID, value = online.
@@ -73,14 +98,14 @@ export function GroupParticipantPanel({
 
     const handleContextMenu = useCallback((e: React.MouseEvent, participant: Participant) => {
         e.preventDefault();
-        if (!onTalkTo) return;
+        if (readOnly || !onTalkTo) return;
         // Clamp position to keep menu within viewport
         const menuHeight = 32; // approximate single-item menu height
         const menuWidth = 100;
         const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
         const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
         setContextMenu({ x, y, participant });
-    }, [onTalkTo]);
+    }, [onTalkTo, readOnly]);
 
     const handleTalkTo = useCallback(() => {
         if (contextMenu && onTalkTo) {
@@ -93,11 +118,11 @@ export function GroupParticipantPanel({
     useEffect(() => {
         const unsub = EventsOn("ve:status_change", (data: any) => {
             if (!data) return;
-            const id = data.ve_id || data.id;
+            const id = String(data.ve_id || data.id || "").trim();
+            if (!id || !participantIdSet.has(id)) return;
             const online = data.online_status === "online";
-            // Only update if it's a participant we care about
             setStatusOverlay(prev => {
-                if (prev[id] === online) return prev; // no change, skip re-render
+                if (prev[id] === online) return prev;
                 return { ...prev, [id]: online };
             });
         });
@@ -105,7 +130,19 @@ export function GroupParticipantPanel({
             if (typeof unsub === "function") unsub();
             else EventsOff("ve:status_change");
         };
-    }, []);
+    }, [participantIdSet]);
+
+    useEffect(() => {
+        setStatusOverlay(prev => {
+            let changed = false;
+            const next: Record<string, boolean> = {};
+            for (const [id, online] of Object.entries(prev)) {
+                if (participantIdSet.has(id)) next[id] = online;
+                else changed = true;
+            }
+            return changed ? next : prev;
+        });
+    }, [participantIdSet]);
 
     // Merge prop data with status overlay
     const resolvedParticipants = participants.map(p => ({
@@ -113,7 +150,8 @@ export function GroupParticipantPanel({
         online: statusOverlay[p.id] !== undefined ? statusOverlay[p.id] : p.online,
     }));
 
-    const limitReached = resolvedParticipants.length >= maxParticipants;
+    const limitReached = resolvedParticipants.length >= maxGroupParticipants;
+
 
     return (
         <div
@@ -130,13 +168,24 @@ export function GroupParticipantPanel({
         >
             {/* Header */}
             <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
                 padding: "8px 10px",
                 fontSize: 11,
                 fontWeight: 600,
                 color: theme.textMuted,
                 borderBottom: `1px solid ${theme.divider}`,
             }}>
-                {isZh ? `参与者 (${resolvedParticipants.length})` : `Participants (${resolvedParticipants.length})`}
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {isZh ? `参与者 (${resolvedParticipants.length})` : `Participants (${resolvedParticipants.length})`}
+                </span>
+                {readOnly && (
+                    <span style={{ flexShrink: 0, border: `1px solid ${theme.divider}`, borderRadius: 4, padding: "1px 4px", fontSize: 10, fontWeight: 500, color: theme.textMuted }}>
+                        {isZh ? "只读" : "Read-only"}
+                    </span>
+                )}
             </div>
 
             {/* Participant list */}
@@ -145,7 +194,9 @@ export function GroupParticipantPanel({
                 overflowY: "auto",
                 padding: "4px 0",
             }}>
-                {resolvedParticipants.map(p => (
+                {resolvedParticipants.map((p, index) => {
+                    const displayName = participantDisplayNameFor(p, index, isZh);
+                    return (
                     <div
                         key={p.id}
                         onContextMenu={(e) => handleContextMenu(e, p)}
@@ -156,9 +207,9 @@ export function GroupParticipantPanel({
                             padding: "5px 10px",
                             fontSize: 12,
                             color: theme.text,
-                            cursor: onTalkTo ? "context-menu" : "default",
+                            cursor: !readOnly && onTalkTo ? "context-menu" : "default",
                         }}
-                        title={p.id}
+                        title={displayName}
                     >
                         {/* Online indicator */}
                         <span style={{
@@ -175,10 +226,11 @@ export function GroupParticipantPanel({
                             whiteSpace: "nowrap",
                             flex: 1,
                         }}>
-                            {p.isLocal ? (isZh ? "本机AI" : "Local AI") : p.name}
+                            {displayName}
                         </span>
                     </div>
-                ))}
+                    );
+                })}
 
                 {resolvedParticipants.length === 0 && (
                     <div style={{
@@ -193,12 +245,21 @@ export function GroupParticipantPanel({
             </div>
 
             {/* Invite button */}
-            {onInvite && (
+            {(onInvite || onAddParticipant) && !readOnly && (
                 <div style={{
                     padding: "6px 10px",
                     borderTop: `1px solid ${theme.divider}`,
                 }}>
-                    <button
+                    {onAddParticipant ? (
+                        <ParticipantSelector
+                            sessionId={sessionId}
+                            currentParticipants={resolvedParticipants}
+                            maxGroupParticipants={maxGroupParticipants}
+                            theme={theme}
+                            lang={lang}
+                            onAdd={(ve) => onAddParticipant(virtualEmployeeParticipantId(ve), virtualEmployeeDisplayName(ve, undefined, lang))}
+                        />
+                    ) : <button
                         data-testid="group-panel-invite-btn"
                         onClick={onInvite}
                         disabled={limitReached}
@@ -214,12 +275,12 @@ export function GroupParticipantPanel({
                             opacity: limitReached ? 0.5 : 1,
                         }}
                         title={limitReached
-                            ? (isZh ? `已达上限 (${maxParticipants})` : `Limit reached (${maxParticipants})`)
+                            ? (isZh ? `已达上限 (${maxGroupParticipants})` : `Limit reached (${maxGroupParticipants})`)
                             : (isZh ? "邀请数字员工" : "Invite")
                         }
                     >
                         {isZh ? "＋ 邀请" : "+ Invite"}
-                    </button>
+                    </button>}
                 </div>
             )}
 
