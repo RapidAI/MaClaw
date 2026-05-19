@@ -1,0 +1,77 @@
+//go:build windows
+
+package main
+
+import (
+	"os"
+	stdruntime "runtime"
+	"time"
+
+	"github.com/energye/systray"
+	"github.com/wailsapp/wails/v2/pkg/menu"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+var UpdateTrayVisibility = func(bool) {}
+
+func setupTray(app *App, appOptions *options.App) {
+	editMenu := menu.NewMenu()
+	editMenu.Append(menu.EditMenu())
+	appOptions.Menu = editMenu
+
+	go func() {
+		stdruntime.LockOSThread()
+		systray.Run(func() {
+			systray.SetIcon(trayIcon)
+			systray.SetTitle("TigerProxy")
+			systray.SetTooltip("TigerProxy")
+			visible := true
+
+			mShowHide := systray.AddMenuItem("隐藏", "显示/隐藏主界面")
+			mQuit := systray.AddMenuItem("退出", "退出 TigerProxy")
+
+			update := func() {
+				if visible {
+					mShowHide.SetTitle("隐藏")
+				} else {
+					mShowHide.SetTitle("显示")
+				}
+			}
+			UpdateTrayVisibility = func(v bool) {
+				visible = v
+				update()
+			}
+			update()
+
+			toggle := func() {
+				if app.ctx == nil {
+					return
+				}
+				if visible {
+					runtime.WindowHide(app.ctx)
+					visible = false
+				} else {
+					runtime.WindowShow(app.ctx)
+					runtime.WindowSetAlwaysOnTop(app.ctx, true)
+					runtime.WindowSetAlwaysOnTop(app.ctx, false)
+					visible = true
+				}
+				app.setShown(visible)
+				update()
+			}
+
+			systray.SetOnDClick(func(menu systray.IMenu) { go toggle() })
+			mShowHide.Click(func() { go toggle() })
+			mQuit.Click(func() {
+				go func() {
+					if app.ctx != nil {
+						runtime.Quit(app.ctx)
+						time.Sleep(500 * time.Millisecond)
+					}
+					systray.Quit()
+				}()
+			})
+		}, func() { os.Exit(0) })
+	}()
+}

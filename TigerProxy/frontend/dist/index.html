@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TigerProxy</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="topbar">
+      <div>
+        <h1>TigerProxy</h1>
+        <p>CodeGen 本地协议转发</p>
+      </div>
+      <div class="status-group">
+        <span id="loginChip" class="chip muted">未登录</span>
+        <span id="statusBadge" class="badge">启动中</span>
+        <button id="hideBtn" class="window-hide" title="隐藏主界面">隐藏</button>
+      </div>
+    </section>
+
+    <section class="hero panel">
+      <div class="hero-copy">
+        <h2>连接状态</h2>
+        <p id="loginState">读取状态中...</p>
+      </div>
+      <div class="actions hero-actions">
+        <button id="loginBtn" class="primary">SSO 登录</button>
+        <button id="logoutBtn" class="ghost danger">退出登录</button>
+      </div>
+    </section>
+
+    <section class="layout-grid">
+      <section class="panel config-panel">
+        <div class="section-head">
+          <h2>配置</h2>
+          <button id="saveBtn" class="primary compact">保存并重启</button>
+        </div>
+
+        <div class="field-stack">
+          <div class="field">
+            <label>监听地址</label>
+            <input id="listenAddress" spellcheck="false" />
+            <p class="hint">默认监听全部地址，可用 127.0.0.1 或局域网 IP 访问。</p>
+          </div>
+
+          <div class="field">
+            <label>API Key</label>
+            <div class="inline"><input id="apiKey" spellcheck="false" /><button id="genKeyBtn" class="ghost">生成</button></div>
+            <p class="hint">OpenAI 与 Anthropic 共用同一个本地 API Key。</p>
+          </div>
+
+          <div class="field">
+            <label>上游 Base URL</label>
+            <input id="baseURL" spellcheck="false" />
+          </div>
+
+          <div class="two-fields">
+            <div class="field">
+              <label>默认模型</label>
+              <select id="modelID"></select>
+            </div>
+            <div class="field">
+              <label>账号</label>
+              <input id="email" disabled />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel endpoint-panel">
+        <div class="section-head endpoints-head"><h2>协议地址</h2></div>
+        <div class="endpoint-list">
+          <div class="endpoint"><span>OpenAI</span><code id="openaiURL" class="full-url"></code><button data-copy="openaiURL">复制</button></div>
+          <div class="endpoint"><span>Anthropic</span><code id="anthropicURL" class="full-url"></code><button data-copy="anthropicURL">复制</button></div>
+          <div class="endpoint"><span>Health</span><code id="healthURL" class="full-url"></code><button data-copy="healthURL">复制</button></div>
+        </div>
+
+        <div class="lan-block">
+          <h3>局域网地址</h3>
+          <div id="lanURLs" class="lan"></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel notes">
+      <div><strong>OpenAI</strong><code id="openaiEnv" class="full-url"></code></div>
+      <div><strong>Anthropic</strong><code id="anthropicEnv" class="full-url"></code></div>
+      <p>请求中的 model 字段会透传到 CodeGen，agent 可继续使用 <code>/model</code> 查看和切换模型。</p>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="./app.js"></script>
+</body>
+</html>
