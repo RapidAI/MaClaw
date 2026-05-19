@@ -1333,6 +1333,9 @@ func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.Deep
 
 	// Create onProgress callback that emits Wails events
 	onProgress := func(progress knowledge.DeepCrawlProgress) {
+		if progress.Mode == "" {
+			progress.Mode = "crawl"
+		}
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", progress)
 		}
@@ -1340,24 +1343,6 @@ func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.Deep
 
 	engine := knowledge.NewDeepCrawlEngine(store, onProgress)
 	result, err := engine.StartCrawl(ctx, req)
-
-	// Emit final status event
-	if a.ctx != nil {
-		finalStatus := "completed"
-		if err != nil {
-			finalStatus = "failed"
-		} else if result.Status != "" {
-			finalStatus = result.Status
-		}
-		runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", knowledge.DeepCrawlProgress{
-			JobID:           result.JobID,
-			Status:          finalStatus,
-			TotalDiscovered: result.TotalDiscovered,
-			Completed:       result.TotalSaved,
-			Failed:          result.Failed,
-			Skipped:         result.Skipped,
-		})
-	}
 
 	return result, err
 }
@@ -1395,6 +1380,9 @@ func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowled
 
 	// Create onProgress callback that emits Wails events
 	onProgress := func(progress knowledge.DeepCrawlProgress) {
+		if progress.Mode == "" {
+			progress.Mode = "preview"
+		}
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", progress)
 		}
@@ -1402,20 +1390,6 @@ func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowled
 
 	engine := knowledge.NewDeepCrawlEngine(store, onProgress)
 	result, err := engine.Preview(ctx, req)
-
-	// Emit final status event
-	if a.ctx != nil {
-		finalStatus := "completed"
-		if err != nil {
-			finalStatus = "failed"
-		} else if result.Status != "" {
-			finalStatus = result.Status
-		}
-		runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", knowledge.DeepCrawlProgress{
-			Status:          finalStatus,
-			TotalDiscovered: result.TotalDiscovered,
-		})
-	}
 
 	return result, err
 }

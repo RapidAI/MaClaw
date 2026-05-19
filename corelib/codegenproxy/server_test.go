@@ -286,3 +286,53 @@ func TestResolveAPIKey_Priority(t *testing.T) {
 		t.Fatalf("got %q, want fallback", got)
 	}
 }
+
+func TestNormalizeModelsResponseOpenAIStripsProviderPrefix(t *testing.T) {
+	body := []byte(`{"data":[{"id":"qax-codegen/Qwen-Flash","name":"Qwen-Flash","provider":"qax-codegen"}]}`)
+	got, err := normalizeModelsResponse(body, "openai")
+	if err != nil {
+		t.Fatalf("normalizeModelsResponse error: %v", err)
+	}
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(got, &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "Qwen-Flash" {
+		t.Fatalf("model id = %+v, want Qwen-Flash", resp.Data)
+	}
+}
+
+func TestNormalizeOpenAIModelInBodyStripsProviderPrefix(t *testing.T) {
+	got := normalizeOpenAIModelInBody([]byte(`{"model":"qax-codegen/Qwen-Flash","messages":[]}`))
+	var payload map[string]interface{}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["model"] != "Qwen-Flash" {
+		t.Fatalf("model = %q, want Qwen-Flash", payload["model"])
+	}
+}
+
+func TestNormalizeModelsResponseAnthropicStripsProviderPrefix(t *testing.T) {
+	body := []byte(`{"models":[{"id":"qax-codegen/Qwen-Flash","name":"Qwen-Flash"}]}`)
+	got, err := normalizeModelsResponse(body, "anthropic")
+	if err != nil {
+		t.Fatalf("normalizeModelsResponse error: %v", err)
+	}
+	var resp struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(got, &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "Qwen-Flash" || resp.Data[0].DisplayName != "Qwen-Flash" {
+		t.Fatalf("model = %+v, want Qwen-Flash", resp.Data)
+	}
+}

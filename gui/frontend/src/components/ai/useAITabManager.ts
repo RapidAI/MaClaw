@@ -3,6 +3,7 @@ import type { AITab, AITabType, AITabState, AIAssistantPanelTabState } from "./A
 import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
 import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -27,7 +28,7 @@ function simpleHash(input: string): string {
 
 export interface UseAITabManagerOptions {
     maxVETabs?: number;
-    /** Called when a VE tab is closed; should end the A2A session */
+    /** Deprecated compatibility option; closing VE tabs keeps sessions resumable. */
     onCloseVESession?: (sessionId: string) => Promise<void>;
 }
 
@@ -48,6 +49,70 @@ interface BackendTabIndexEntry {
     archived?: boolean;
 }
 
+function normalizeTabParticipantId(value: string | undefined): string {
+    return normalizeParticipantId(value);
+}
+
+function canonicalVETabId(veId: string): string {
+    return `ve-${normalizeTabParticipantId(veId)}`;
+}
+
+function sameTabParticipantId(a: string | undefined, b: string | undefined): boolean {
+    const left = normalizeTabParticipantId(a);
+    const right = normalizeTabParticipantId(b);
+    return !!left && left === right;
+}
+
+function nonLocalHumanParticipantIds(ids: string[] | undefined): string[] {
+    return (ids || []).map(normalizeTabParticipantId).filter(id => id && !isLocalHumanParticipantId(id));
+}
+
+function isSingleParticipantGroupForVE(tab: AITab, veId: string): boolean {
+    if (tab.type !== "group" || tab.veId) return false;
+    const participants = nonLocalHumanParticipantIds(tab.participants);
+    return participants.length === 1 && sameTabParticipantId(participants[0], veId);
+}
+
+function isVEIdentityTab(tab: AITab, veId: string): boolean {
+    if ((tab.type === "ve" || tab.type === "group") && sameTabParticipantId(tab.veId, veId)) return true;
+    return isSingleParticipantGroupForVE(tab, veId);
+}
+
+function isLiveVETab(tab: AITab): boolean {
+    return tab.type === "ve" || (tab.type === "group" && !!tab.veId);
+}
+
+function evictClosedTabStates(states: Map<string, AITabState>, openTabIds: Set<string>, prefix: string, maxClosed: number) {
+    const closedStates: [string, AITabState][] = [];
+    for (const [id, state] of states.entries()) {
+        if (id.startsWith(prefix) && !openTabIds.has(id)) {
+            closedStates.push([id, state]);
+        }
+    }
+    if (closedStates.length <= maxClosed) return;
+    closedStates.sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0));
+    const toEvict = closedStates.length - maxClosed;
+    for (let i = 0; i < toEvict; i++) {
+        states.delete(closedStates[i][0]);
+    }
+}
+
+function mergeTabStateForIdentity(target: AITabState, source: AITabState | undefined): AITabState {
+    if (!source) return target;
+    return {
+        ...source,
+        ...target,
+        history: target.history?.length ? target.history : (source.history || []),
+        scrollTop: target.scrollTop || source.scrollTop || 0,
+        inputText: target.inputText || source.inputText || "",
+        sessionId: target.sessionId || source.sessionId,
+        discussionId: target.discussionId || source.discussionId,
+        readOnly: target.readOnly ?? source.readOnly,
+        projectPath: target.projectPath || source.projectPath,
+        lastActiveAt: Math.max(target.lastActiveAt || 0, source.lastActiveAt || 0, Date.now()),
+    };
+}
+
 export interface UseAITabManagerResult {
     tabState: AIAssistantPanelTabState;
     activeTab: AITab;
@@ -61,6 +126,8 @@ export interface UseAITabManagerResult {
     createProjectTab: (projectPath: string, taskTitle: string) => AITab | null;
     /** Close a tab by ID */
     closeTab: (tabId: string) => void;
+    /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
+    clearTabConversation: (tabId: string) => void;
     /** Save state for the current active tab before switching */
     saveTabState: (tabId: string, state: Partial<AITabState>) => void;
     /** Get saved state for a tab */
@@ -152,7 +219,7 @@ function sanitizeProjectTabTitle(title: string, projectPath?: string): string {
  * immediately — it's loaded on-demand when a Tab is activated.
  */
 export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabManagerResult {
-    const { maxVETabs = DEFAULT_MAX_VE_TABS, onCloseVESession } = options;
+    const { maxVETabs = DEFAULT_MAX_VE_TABS } = options;
 
     // Use a ref to track the current state synchronously for createVETab/createGroupTab
     const tabStateRef = useRef<AIAssistantPanelTabState>(createInitialTabState(maxVETabs));
@@ -250,12 +317,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             if (!veId || !status) return;
 
             updateTabState(prev => {
-                const hasMatch = prev.tabs.some(t => t.type === "ve" && t.veId === veId && t.onlineStatus !== status);
+                const hasMatch = prev.tabs.some(t => (t.type === "ve" || t.type === "group") && sameTabParticipantId(t.veId, veId) && t.onlineStatus !== status);
                 if (!hasMatch) return prev;
                 return {
                     ...prev,
                     tabs: prev.tabs.map(t =>
-                        t.type === "ve" && t.veId === veId ? { ...t, onlineStatus: status } : t
+                        (t.type === "ve" || t.type === "group") && sameTabParticipantId(t.veId, veId) ? { ...t, onlineStatus: status } : t
                     ),
                 };
             });
@@ -288,28 +355,58 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
     const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline"): AITab | null => {
         const prev = tabStateRef.current;
+        const canonicalVEId = String(veId || "").trim();
+        if (!canonicalVEId) return null;
+
+        const canonicalTabId = canonicalVETabId(canonicalVEId);
 
         // Check for duplicate: if a tab with same veId exists, activate it.
         // A VE tab may already have been upgraded to a live group tab, so include both.
-        const existing = prev.tabs.find(t => (t.type === "ve" || t.type === "group") && t.veId === veId);
+        const existing = prev.tabs.find(t => t.id === canonicalTabId && isVEIdentityTab(t, canonicalVEId))
+            || prev.tabs.find(t => isVEIdentityTab(t, canonicalVEId));
         if (existing) {
+            const identityTabs = prev.tabs.filter(t => isVEIdentityTab(t, canonicalVEId));
             const saved = tabStatesRef.current.get(existing.id) || { history: [], scrollTop: 0, inputText: "" };
-            tabStatesRef.current.set(existing.id, {
+            const shouldPromoteHistoryGroup = isSingleParticipantGroupForVE(existing, canonicalVEId);
+            const targetTabId = shouldPromoteHistoryGroup ? canonicalTabId : existing.id;
+            let nextSaved: AITabState = {
                 ...saved,
                 ...(sessionId ? { sessionId } : {}),
                 lastActiveAt: Date.now(),
-            });
-            const updated = existing.type === "ve" && onlineStatus ? { ...existing, onlineStatus } : existing;
+            };
+            for (const duplicate of identityTabs) {
+                if (duplicate.id === existing.id) continue;
+                nextSaved = mergeTabStateForIdentity(nextSaved, tabStatesRef.current.get(duplicate.id));
+                tabStatesRef.current.delete(duplicate.id);
+            }
+            tabStatesRef.current.set(targetTabId, nextSaved);
+            if (targetTabId !== existing.id) tabStatesRef.current.delete(existing.id);
+            const updated: AITab = shouldPromoteHistoryGroup
+                ? {
+                    ...existing,
+                    id: targetTabId,
+                    title: veName || existing.title,
+                    veId: canonicalVEId,
+                    participants: existing.participants?.length ? existing.participants : [canonicalVEId],
+                    participantNames: veName ? { ...(existing.participantNames || {}), [canonicalVEId]: veName } : existing.participantNames,
+                    onlineStatus: onlineStatus || existing.onlineStatus || "online",
+                    readOnly: false,
+                }
+                : existing.type === "ve" && onlineStatus
+                    ? { ...existing, onlineStatus }
+                    : existing;
             updateTabState(() => ({
                 ...prev,
-                tabs: prev.tabs.map(t => t.id === existing.id ? updated : t),
-                activeTabId: existing.id,
+                tabs: prev.tabs
+                    .filter(t => t.id === existing.id || (t.id !== targetTabId && !identityTabs.some(duplicate => duplicate.id === t.id)))
+                    .map(t => t.id === existing.id ? updated : t),
+                activeTabId: targetTabId,
             }));
             return updated;
         }
 
         // Check max VE tab limit
-        const veTabCount = prev.tabs.filter(t => t.type === "ve").length;
+        const veTabCount = prev.tabs.filter(isLiveVETab).length;
         if (veTabCount >= prev.maxVETabs) {
             setTabLimitError(`Digital employee tab limit reached (max ${prev.maxVETabs})`);
             return null;
@@ -317,31 +414,23 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
         // Create new tab
         const newTab: AITab = {
-            id: `ve-${veId}-${Date.now()}`,
+            id: canonicalTabId,
             type: "ve",
             title: veName,
-            veId,
+            veId: canonicalVEId,
             onlineStatus: onlineStatus || "online",
             closable: true,
         };
 
-        // Store session ID in tab state
-        if (sessionId) {
-            tabStatesRef.current.set(newTab.id, {
-                history: [],
-                scrollTop: 0,
-                inputText: "",
-                sessionId,
-                lastActiveAt: Date.now(),
-            });
-        } else {
-            tabStatesRef.current.set(newTab.id, {
-                history: [],
-                scrollTop: 0,
-                inputText: "",
-                lastActiveAt: Date.now(),
-            });
-        }
+        const cachedState = tabStatesRef.current.get(newTab.id);
+        tabStatesRef.current.set(newTab.id, {
+            history: [],
+            scrollTop: 0,
+            inputText: "",
+            ...cachedState,
+            ...(sessionId ? { sessionId } : {}),
+            lastActiveAt: Date.now(),
+        });
 
         updateTabState(() => ({
             ...prev,
@@ -458,22 +547,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const tab = prev.tabs.find(t => t.id === tabId);
             if (!tab || !tab.closable) return prev;
 
-            // End A2A session if applicable
-            const savedState = tabStatesRef.current.get(tabId);
-            if (savedState?.sessionId && onCloseVESession) {
-                onCloseVESession(savedState.sessionId).catch(() => {});
-            }
-
             // For project tabs, call backend to persist session state.
             if (tab.type === "project") {
                 Promise.resolve().then(() => CloseProjectTabSession(tabId)).catch(() => {});
-            }
-
-            // Remove tab state for ve/group tabs (ephemeral sessions).
-            // Project tabs retain their state in the cache so reopening the
-            // same task restores the conversation without a backend round-trip.
-            if (tab.type !== "project") {
-                tabStatesRef.current.delete(tabId);
             }
 
             const newTabs = prev.tabs.filter(t => t.id !== tabId);
@@ -487,24 +563,26 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 activeTabId: newActiveId,
             };
         });
-        // LRU eviction: prevent unbounded memory growth from cached project tab states.
-        // Keep at most 32 cached project states; evict the least recently active.
-        const MAX_CACHED_PROJECT_STATES = 32;
+        // LRU eviction: prevent unbounded memory growth from cached closed tab states.
         const openTabIds = new Set(tabStateRef.current.tabs.map(t => t.id));
-        const closedProjectStates: [string, AITabState][] = [];
-        for (const [id, state] of tabStatesRef.current.entries()) {
-            if (id.startsWith("proj-") && !openTabIds.has(id)) {
-                closedProjectStates.push([id, state]);
-            }
-        }
-        if (closedProjectStates.length > MAX_CACHED_PROJECT_STATES) {
-            closedProjectStates.sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0));
-            const toEvict = closedProjectStates.length - MAX_CACHED_PROJECT_STATES;
-            for (let i = 0; i < toEvict; i++) {
-                tabStatesRef.current.delete(closedProjectStates[i][0]);
-            }
-        }
-    }, [onCloseVESession, updateTabState]);
+        evictClosedTabStates(tabStatesRef.current, openTabIds, "proj-", 32);
+        evictClosedTabStates(tabStatesRef.current, openTabIds, "ve-", 32);
+        evictClosedTabStates(tabStatesRef.current, openTabIds, "history-", 32);
+        evictClosedTabStates(tabStatesRef.current, openTabIds, "group-", 32);
+    }, [updateTabState]);
+
+    const clearTabConversation = useCallback((tabId: string) => {
+        tabStatesRef.current.set(tabId, {
+            history: [],
+            scrollTop: 0,
+            inputText: "",
+            lastActiveAt: Date.now(),
+        });
+        updateTabState(prev => ({
+            ...prev,
+            tabs: prev.tabs.map(t => t.id === tabId ? { ...t, discussionId: undefined, conversationResetSeq: (t.conversationResetSeq || 0) + 1 } : t),
+        }));
+    }, [updateTabState]);
 
     const saveTabState = useCallback((tabId: string, state: Partial<AITabState>) => {
         const openTab = tabStateRef.current.tabs.find(t => t.id === tabId);
@@ -585,6 +663,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         createGroupTab,
         createProjectTab,
         closeTab,
+        clearTabConversation,
         saveTabState,
         getTabState,
         getLastActiveAt,

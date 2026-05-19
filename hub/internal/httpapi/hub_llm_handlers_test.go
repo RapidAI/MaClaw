@@ -313,6 +313,7 @@ func TestHubLLMPromptCacheConfigHandlersRoundTrip(t *testing.T) {
 
 func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
+	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
 	globalCfg := HubLLMPromptCacheConfig{Enabled: true, TTLSeconds: 1800, MemoryMaxEntries: 8, MemoryMaxBytes: 1024, DiskMaxBytes: 4096}
 	if _, err := SaveHubLLMPromptCacheConfig(context.Background(), settings, globalCfg); err != nil {
 		t.Fatalf("save global config: %v", err)
@@ -320,9 +321,16 @@ func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
 	tenantReq := httptest.NewRequest(http.MethodPut, "/api/admin/hub_llm_prompt_cache_config", strings.NewReader(`{"enabled":false,"ttl_seconds":60,"memory_max_entries":3,"memory_max_bytes":256,"disk_max_bytes":512}`))
 	tenantReq = tenantReq.WithContext(context.WithValue(tenantReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
 	tenantRR := httptest.NewRecorder()
-	UpdateHubLLMPromptCacheConfigHandler(settings).ServeHTTP(tenantRR, tenantReq)
+	UpdateHubLLMPromptCacheConfigHandler(settings, cache).ServeHTTP(tenantRR, tenantReq)
 	if tenantRR.Code != http.StatusOK {
 		t.Fatalf("tenant update status = %d body=%s", tenantRR.Code, tenantRR.Body.String())
+	}
+	status, err := cache.Status(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("cache status: %v", err)
+	}
+	if status.MemoryMaxEntries != 8 || status.MemoryMaxBytes != 1024 {
+		t.Fatalf("tenant config should not rewrite shared runtime cache limits: %#v", status)
 	}
 
 	globalReq := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil)
@@ -342,7 +350,7 @@ func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
 	tenantGet := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil)
 	tenantGet = tenantGet.WithContext(context.WithValue(tenantGet.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
 	tenantGetRR := httptest.NewRecorder()
-	GetHubLLMPromptCacheConfigHandler(settings).ServeHTTP(tenantGetRR, tenantGet)
+	GetHubLLMPromptCacheConfigHandler(settings, cache).ServeHTTP(tenantGetRR, tenantGet)
 	if tenantGetRR.Code != http.StatusOK {
 		t.Fatalf("tenant get status = %d body=%s", tenantGetRR.Code, tenantGetRR.Body.String())
 	}

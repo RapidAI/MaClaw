@@ -30,6 +30,7 @@ type Server struct {
 	mu          sync.RWMutex
 	upstreamURL string // CodeGen OpenAI-compatible base URL
 	apiKey      string // CodeGen access token
+	clientKey   string // optional local proxy API key for OpenAI/Anthropic clients
 }
 
 // NewServer creates a new codegen proxy server.
@@ -55,10 +56,20 @@ func (s *Server) SetUpstream(baseURL, apiKey string) {
 	s.mu.Unlock()
 }
 
-func (s *Server) getUpstream() (string, string) {
+// SetClientAPIKey configures the optional API key that local OpenAI and
+// Anthropic clients must send to the proxy. When this key is set, incoming
+// credentials are validated locally and are not forwarded to CodeGen; the
+// SSO access token configured by SetUpstream is used for upstream requests.
+func (s *Server) SetClientAPIKey(apiKey string) {
+	s.mu.Lock()
+	s.clientKey = strings.TrimSpace(apiKey)
+	s.mu.Unlock()
+}
+
+func (s *Server) getConfig() (string, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.upstreamURL, s.apiKey
+	return s.upstreamURL, s.apiKey, s.clientKey
 }
 
 // resolveAPIKey determines the API key to use for the upstream request.
@@ -75,25 +86,57 @@ func resolveAPIKey(r *http.Request, fallback string) string {
 	return fallback
 }
 
+func requestAPIKey(r *http.Request) string {
+	if k := r.Header.Get("x-api-key"); k != "" {
+		return k
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
+}
+
+func (s *Server) authorizeClient(r *http.Request, configuredClientKey string) bool {
+	if strings.TrimSpace(configuredClientKey) == "" {
+		return true
+	}
+	return requestAPIKey(r) == configuredClientKey
+}
+
 // Start starts the HTTP server. It blocks until the server is stopped.
 func (s *Server) Start(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", s.addr, err)
+	}
+	return s.Serve(ctx, listener)
+}
+
+// Serve starts the HTTP server on a listener created by the caller. This lets
+// desktop wrappers bind synchronously, report failures immediately, and then
+// hand the already-bound socket to the proxy.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
+	shutdownDone := make(chan struct{})
+	defer close(shutdownDone)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", s.handleOpenAIChatCompletions)
+	mux.HandleFunc("/v1/models", s.handleOpenAIModels)
+	mux.HandleFunc("/models", s.handleOpenAIModels)
 	mux.HandleFunc("/anthropic/v1/messages", s.handleMessages)
 	mux.HandleFunc("/anthropic/v1/models", s.handleModels)
 	mux.HandleFunc("/health", s.handleHealth)
 
-	var err error
-	s.listener, err = net.Listen("tcp", s.addr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", s.addr, err)
-	}
+	s.listener = listener
 
 	s.srv = &http.Server{Handler: mux}
 	log.Printf("[codegenproxy] listening on %s (Anthropic→OpenAI adapter)", s.listener.Addr())
 
 	go func() {
-		<-ctx.Done()
-		s.srv.Shutdown(context.Background())
+		select {
+		case <-ctx.Done():
+			_ = s.srv.Shutdown(context.Background())
+		case <-shutdownDone:
+		}
 	}()
 
 	if err := s.srv.Serve(s.listener); err != http.ErrServerClosed {
@@ -119,16 +162,36 @@ func (s *Server) Addr() net.Addr {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	upURL, _, _ := s.getConfig()
+	status := "ok"
+	if upURL == "" {
+		status = "not_configured"
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": status})
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	upURL, fallbackKey := s.getUpstream()
+	s.handleModelsForProtocol(w, r, "anthropic")
+}
+
+func (s *Server) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
+	s.handleModelsForProtocol(w, r, "openai")
+}
+
+func (s *Server) handleModelsForProtocol(w http.ResponseWriter, r *http.Request, protocol string) {
+	upURL, fallbackKey, clientKey := s.getConfig()
 	if upURL == "" {
 		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
 		return
 	}
-	apiKey := resolveAPIKey(r, fallbackKey)
+	if !s.authorizeClient(r, clientKey) {
+		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
+		return
+	}
+	apiKey := fallbackKey
+	if clientKey == "" {
+		apiKey = resolveAPIKey(r, fallbackKey)
+	}
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, upURL+"/models", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := s.client.Do(req)
@@ -137,9 +200,77 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "read upstream models: "+err.Error())
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(body)
+		return
+	}
+	normalized, err := normalizeModelsResponse(body, protocol)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "parse upstream models: "+err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = w.Write(normalized)
+}
+
+// handleOpenAIChatCompletions forwards OpenAI-compatible chat completion
+// requests directly to CodeGen. The request body, including model name, is
+// passed through unchanged so agent-side /model commands can select models
+// without TigerProxy rewriting them.
+func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+
+	upURL, fallbackKey, clientKey := s.getConfig()
+	if upURL == "" {
+		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
+		return
+	}
+	if !s.authorizeClient(r, clientKey) {
+		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
+		return
+	}
+	apiKey := fallbackKey
+	if clientKey == "" {
+		apiKey = resolveAPIKey(r, fallbackKey)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	body = normalizeOpenAIModelInBody(body)
+
+	upReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, upURL+"/chat/completions", bytes.NewReader(body))
+	upReq.Header.Set("Content-Type", "application/json")
+	upReq.Header.Set("Accept", r.Header.Get("Accept"))
+	upReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	upResp, err := s.client.Do(upReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "upstream: "+err.Error())
+		return
+	}
+	defer upResp.Body.Close()
+
+	if ct := upResp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(upResp.StatusCode)
+	_, _ = io.Copy(w, upResp.Body)
 }
 
 // handleMessages receives Anthropic Messages API requests, converts to
@@ -150,15 +281,22 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upURL, fallbackKey := s.getUpstream()
+	upURL, fallbackKey, clientKey := s.getConfig()
 	if upURL == "" {
 		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
+		return
+	}
+	if !s.authorizeClient(r, clientKey) {
+		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
 		return
 	}
 
 	// Claude Code sends token via x-api-key / Authorization: Bearer.
 	// Fall back to the server-configured key (from SSO) if absent.
-	apiKey := resolveAPIKey(r, fallbackKey)
+	apiKey := fallbackKey
+	if clientKey == "" {
+		apiKey = resolveAPIKey(r, fallbackKey)
+	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
 	if err != nil {
@@ -171,6 +309,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "parse body: "+err.Error())
 		return
 	}
+	anthReq.Model = normalizeModelIdentifier(anthReq.Model)
 
 	// Convert Anthropic → OpenAI
 	openaiReq := convertAnthropicToOpenAI(anthReq)
@@ -413,4 +552,115 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func normalizeOpenAIModelInBody(body []byte) []byte {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	if model, ok := payload["model"].(string); ok {
+		payload["model"] = normalizeModelIdentifier(model)
+		if out, err := json.Marshal(payload); err == nil {
+			return out
+		}
+	}
+	return body
+}
+
+func normalizeModelIdentifier(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return model
+	}
+	if i := strings.LastIndex(model, "/"); i >= 0 && i+1 < len(model) {
+		return strings.TrimSpace(model[i+1:])
+	}
+	return model
+}
+
+func normalizeModelsResponse(body []byte, protocol string) ([]byte, error) {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	entries, ok := modelEntries(raw)
+	if !ok {
+		return body, nil
+	}
+	if protocol == "anthropic" {
+		return json.Marshal(map[string]interface{}{"data": normalizeAnthropicModels(entries)})
+	}
+	out := make(map[string]interface{}, len(raw)+1)
+	for k, v := range raw {
+		out[k] = v
+	}
+	out["object"] = "list"
+	out["data"] = normalizeOpenAIModels(entries)
+	delete(out, "models")
+	return json.Marshal(out)
+}
+
+func modelEntries(raw map[string]interface{}) ([]interface{}, bool) {
+	if data, ok := raw["data"].([]interface{}); ok {
+		return data, true
+	}
+	if models, ok := raw["models"].([]interface{}); ok {
+		return models, true
+	}
+	return nil, false
+}
+
+func normalizeOpenAIModels(entries []interface{}) []map[string]interface{} {
+	models := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id := normalizeModelIdentifier(modelField(m, "id", "name"))
+		if id == "" {
+			continue
+		}
+		models = append(models, map[string]interface{}{
+			"id":       id,
+			"object":   "model",
+			"created":  0,
+			"owned_by": modelField(m, "provider"),
+		})
+	}
+	return models
+}
+
+func normalizeAnthropicModels(entries []interface{}) []map[string]interface{} {
+	models := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id := normalizeModelIdentifier(modelField(m, "id", "name"))
+		if id == "" {
+			continue
+		}
+		display := modelField(m, "display_name", "name")
+		if display == "" {
+			display = id
+		}
+		models = append(models, map[string]interface{}{
+			"id":           id,
+			"display_name": display,
+			"type":         "model",
+		})
+	}
+	return models
+}
+
+func modelField(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

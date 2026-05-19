@@ -137,6 +137,7 @@ func (d *CapabilityGapDetector) Resolve(
 			return "", "", fmt.Errorf("search hub: %w", err)
 		}
 	}
+	lang := d.skillConfirmLang()
 	if len(candidates) == 0 {
 		// Fallback: search GitHub for skill.yaml files (if allowed).
 		if !cskill.IsSourceAllowed("github", allowedSources) {
@@ -179,10 +180,10 @@ func (d *CapabilityGapDetector) Resolve(
 				riskDetails := FormatScanReportForUser(scanReport, imported.Name)
 				confirmed := d.confirmCallback == nil
 				if d.confirmCallback != nil {
-					sendStatus(fmt.Sprintf("鈿狅笍 瀹夊叏璀﹀憡: %s", scanReport.Summary))
+					sendStatus(localizedSkillInstallReviewStatus(lang, scanReport.Summary))
 					confirmed = d.confirmCallback(imported.Name, riskDetails)
 				} else {
-					sendStatus(fmt.Sprintf("No confirmation channel available; current policy records and allows Skill %s.", imported.Name))
+					sendStatus(localizedSkillInstallNoConfirmationStatus(lang, imported.Name))
 				}
 				if !confirmed {
 					if d.auditLog != nil {
@@ -195,7 +196,7 @@ func (d *CapabilityGapDetector) Resolve(
 							Result:       fmt.Sprintf("rejected github skill %s: %s", imported.Name, scanReport.Summary),
 						})
 					}
-					return "", "", fmt.Errorf("GitHub Skill 安全审查未通过，已拒绝自动安装")
+					return "", "", fmt.Errorf("%s", localizedSkillInstallScanRejectedError(lang, true))
 				}
 				if d.auditLog != nil {
 					_ = d.auditLog.Log(security.AuditEntry{
@@ -218,7 +219,7 @@ func (d *CapabilityGapDetector) Resolve(
 
 		// Override source to indicate auto-installation by CapabilityGapDetector.
 		imported.Source = "auto_github"
-		sendStatus(fmt.Sprintf("正在从 GitHub 安装 Skill: %s ...", imported.Name))
+		sendStatus(localizedSkillInstallInstallingStatus(lang, imported.Name, true))
 		if err := d.skillExecutor.Register(*imported); err != nil {
 			return "", "", fmt.Errorf("register github skill: %w", err)
 		}
@@ -256,7 +257,7 @@ func (d *CapabilityGapDetector) Resolve(
 	}
 
 	// Step 4: Download Skill into staging; final install happens after scan.
-	sendStatus(fmt.Sprintf("正在安装 Skill: %s ...", chosen.Name))
+	sendStatus(localizedSkillInstallInstallingStatus(lang, chosen.Name, false))
 	stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(chosen.ID, chosen.Name, "capability-gap-skill"))
 	if err != nil {
 		return "", "", fmt.Errorf("create skill staging dir: %w", err)
@@ -291,10 +292,10 @@ func (d *CapabilityGapDetector) Resolve(
 			riskDetails := FormatScanReportForUser(scanReport, chosen.Name)
 			confirmed := d.confirmCallback == nil
 			if d.confirmCallback != nil {
-				sendStatus(fmt.Sprintf("鈿狅笍 瀹夊叏璀﹀憡: %s", scanReport.Summary))
+				sendStatus(localizedSkillInstallReviewStatus(lang, scanReport.Summary))
 				confirmed = d.confirmCallback(chosen.Name, riskDetails)
 			} else {
-				sendStatus(fmt.Sprintf("No confirmation channel available; current policy records and allows Skill %s.", chosen.Name))
+				sendStatus(localizedSkillInstallNoConfirmationStatus(lang, chosen.Name))
 			}
 			if !confirmed {
 				cskill.CleanupStaging(stagingDir)
@@ -308,7 +309,7 @@ func (d *CapabilityGapDetector) Resolve(
 						Result:       fmt.Sprintf("rejected skill %s: %s", chosen.Name, scanReport.Summary),
 					})
 				}
-				return "", "", fmt.Errorf("Skill 安全审查未通过，已拒绝自动安装")
+				return "", "", fmt.Errorf("%s", localizedSkillInstallScanRejectedError(lang, false))
 			}
 			if d.auditLog != nil {
 				_ = d.auditLog.Log(security.AuditEntry{
@@ -360,7 +361,7 @@ func (d *CapabilityGapDetector) Resolve(
 	}
 
 	// Step 7: Execute immediately.
-	sendStatus(fmt.Sprintf("正在执行 Skill: %s ...", skill.Name))
+	sendStatus(localizedSkillInstallExecutingStatus(lang, skill.Name))
 	execResult, execErr := d.skillExecutor.ExecuteWithArgs(skill.Name, skillExecutionRunArgs(userMessage))
 
 	// Audit log.

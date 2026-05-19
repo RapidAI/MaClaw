@@ -98,6 +98,7 @@ func TestDeepCrawl_FullFlow(t *testing.T) {
 		SeedURL:        testFakeBase + "/",
 		MaxDepth:       2,
 		SameDomainOnly: true,
+		ClientRunID:    "test-crawl-run",
 	})
 	if err != nil {
 		t.Fatalf("StartCrawl: %v", err)
@@ -118,12 +119,27 @@ func TestDeepCrawl_FullFlow(t *testing.T) {
 		}
 		urlSet[item.URL] = true
 	}
-	// Verify progress events were emitted
+	// Verify progress events were emitted before the first fetch completes.
 	mu.Lock()
 	eventCount := len(progressEvents)
-	mu.Unlock()
 	if eventCount == 0 {
+		mu.Unlock()
 		t.Fatal("expected progress events to be emitted")
+	}
+	firstProgress := progressEvents[0]
+	mu.Unlock()
+	if firstProgress.Mode != "crawl" || firstProgress.ClientRunID != "test-crawl-run" || firstProgress.Status != "crawling" || firstProgress.Pending != 1 || firstProgress.CurrentURL == "" {
+		t.Fatalf("first progress should announce crawl start, got %+v", firstProgress)
+	}
+	queuedProgressSeen := false
+	for _, progress := range progressEvents {
+		if progress.Status == "crawling" && progress.TotalDiscovered >= 3 && progress.Pending >= 2 {
+			queuedProgressSeen = true
+			break
+		}
+	}
+	if !queuedProgressSeen {
+		t.Fatalf("expected progress update after newly discovered URLs are queued, got %+v", progressEvents)
 	}
 	// Verify ByDepth is populated
 	if len(result.ByDepth) == 0 {
@@ -144,6 +160,12 @@ func TestDeepCrawl_FullFlow(t *testing.T) {
 	mu.Lock()
 	finalProgress := progressEvents[len(progressEvents)-1]
 	mu.Unlock()
+	if finalProgress.Mode != "crawl" {
+		t.Fatalf("final progress Mode=%q, want crawl", finalProgress.Mode)
+	}
+	if finalProgress.ClientRunID != "test-crawl-run" {
+		t.Fatalf("final progress ClientRunID=%q, want test-crawl-run", finalProgress.ClientRunID)
+	}
 	if finalProgress.TotalDiscovered != result.TotalDiscovered {
 		t.Fatalf("final progress TotalDiscovered=%d, want result total %d", finalProgress.TotalDiscovered, result.TotalDiscovered)
 	}
@@ -174,6 +196,7 @@ func TestDeepCrawl_PreviewNoSaves(t *testing.T) {
 		MaxDepth:       2,
 		SameDomainOnly: true,
 		PreviewOnly:    true,
+		ClientRunID:    "test-preview-run",
 	})
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
@@ -214,6 +237,145 @@ func TestDeepCrawl_PreviewNoSaves(t *testing.T) {
 	if eventCount == 0 {
 		t.Fatal("expected progress events in preview mode")
 	}
+	for _, progress := range progressEvents {
+		if progress.Mode != "preview" {
+			t.Fatalf("preview progress Mode=%q, want preview: %+v", progress.Mode, progress)
+		}
+		if progress.ClientRunID != "test-preview-run" {
+			t.Fatalf("preview progress ClientRunID=%q, want test-preview-run: %+v", progress.ClientRunID, progress)
+		}
+	}
+}
+
+func TestDeepCrawl_PreviewReportsLimitReachedWhenTruncated(t *testing.T) {
+	ts := buildTestSiteWithBase(testFakeBase)
+	defer ts.Close()
+
+	var progressEvents []DeepCrawlProgress
+	engine := NewDeepCrawlEngine(nil, func(progress DeepCrawlProgress) {
+		progressEvents = append(progressEvents, progress)
+	})
+	engine.requestDelay = 10 * time.Millisecond
+	engine.perURLTimeout = 5 * time.Second
+	engine.sessionTimeout = 30 * time.Second
+	engine.skipPublicCheck = true
+	engine.fetchFunc = testFetchFunc(ts, testFakeBase)
+	engine.maxURLs = 1
+
+	result, err := engine.Preview(context.Background(), DeepCrawlRequest{
+		SeedURL:        testFakeBase + "/",
+		MaxDepth:       2,
+		SameDomainOnly: true,
+		PreviewOnly:    true,
+		ClientRunID:    "preview-limit-run",
+	})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if result.Status != "limit_reached" {
+		t.Fatalf("expected preview status limit_reached, got %q", result.Status)
+	}
+	if len(progressEvents) == 0 {
+		t.Fatal("expected preview progress events")
+	}
+	finalProgress := progressEvents[len(progressEvents)-1]
+	if finalProgress.Mode != "preview" || finalProgress.ClientRunID != "preview-limit-run" || finalProgress.Status != "limit_reached" {
+		t.Fatalf("unexpected final preview progress: %+v", finalProgress)
+	}
+}
+
+func TestDeepCrawl_PreviewLimitReachedOnlyWhenCandidatesAreTruncated(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body><p>No links.</p></body></html>`)
+	})
+	mux.HandleFunc("/with-links", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><body><a href="%s/a">A</a></body></html>`, testFakeBase)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	engine := NewDeepCrawlEngine(nil, nil)
+	engine.requestDelay = 10 * time.Millisecond
+	engine.perURLTimeout = 5 * time.Second
+	engine.sessionTimeout = 30 * time.Second
+	engine.skipPublicCheck = true
+	engine.fetchFunc = testFetchFunc(ts, testFakeBase)
+	engine.maxURLs = 1
+
+	result, err := engine.Preview(context.Background(), DeepCrawlRequest{
+		SeedURL:        testFakeBase + "/",
+		MaxDepth:       2,
+		SameDomainOnly: true,
+		PreviewOnly:    true,
+	})
+	if err != nil {
+		t.Fatalf("Preview without links: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed when preview maxURLs exactly equals natural discovery size, got %q", result.Status)
+	}
+
+	result, err = engine.Preview(context.Background(), DeepCrawlRequest{
+		SeedURL:        testFakeBase + "/with-links",
+		MaxDepth:       2,
+		SameDomainOnly: true,
+		PreviewOnly:    true,
+	})
+	if err != nil {
+		t.Fatalf("Preview with links: %v", err)
+	}
+	if result.Status != "limit_reached" {
+		t.Fatalf("expected limit_reached when preview candidates are truncated, got %q", result.Status)
+	}
+}
+
+func TestDeepCrawl_LimitReachedOnlyWhenCandidatesAreTruncated(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body><p>No links.</p></body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	engine := NewDeepCrawlEngine(nil, nil)
+	engine.requestDelay = 10 * time.Millisecond
+	engine.perURLTimeout = 5 * time.Second
+	engine.sessionTimeout = 30 * time.Second
+	engine.skipPublicCheck = true
+	engine.fetchFunc = testFetchFunc(ts, testFakeBase)
+	engine.maxURLs = 1
+
+	result, err := engine.StartCrawl(context.Background(), DeepCrawlRequest{
+		SeedURL:        testFakeBase + "/",
+		MaxDepth:       2,
+		SameDomainOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("StartCrawl: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed when maxURLs exactly equals natural crawl size, got %q", result.Status)
+	}
+
+	mux.HandleFunc("/with-links", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><body><a href="%s/a">A</a></body></html>`, testFakeBase)
+	})
+	result, err = engine.StartCrawl(context.Background(), DeepCrawlRequest{
+		SeedURL:        testFakeBase + "/with-links",
+		MaxDepth:       2,
+		SameDomainOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("StartCrawl with links: %v", err)
+	}
+	if result.Status != "limit_reached" {
+		t.Fatalf("expected limit_reached when undiscovered candidates are truncated, got %q", result.Status)
+	}
 }
 
 func TestDeepCrawl_Cancellation(t *testing.T) {
@@ -249,8 +411,9 @@ func TestDeepCrawl_Cancellation(t *testing.T) {
 	engine.sessionTimeout = 30 * time.Second
 	engine.skipPublicCheck = true
 	engine.fetchFunc = testFetchFunc(slowServer, testFakeBase)
+	engine.maxURLs = 1
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	result, err := engine.StartCrawl(ctx, DeepCrawlRequest{
@@ -261,9 +424,8 @@ func TestDeepCrawl_Cancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartCrawl with cancellation: %v", err)
 	}
-	// Should be cancelled or timeout
-	if result.Status != "cancelled" && result.Status != "timeout" && result.Status != "completed" {
-		t.Fatalf("unexpected status: %q", result.Status)
+	if result.Status != "timeout" {
+		t.Fatalf("expected timeout status for deadline cancellation, got %q", result.Status)
 	}
 	requestMu.Lock()
 	totalRequests := requestCount
@@ -271,7 +433,7 @@ func TestDeepCrawl_Cancellation(t *testing.T) {
 	if totalRequests == 0 {
 		t.Fatal("expected at least some requests before cancellation")
 	}
-	// With 200ms/request and 500ms timeout, should not process all 9 pages
+	// With 200ms/request and 50ms timeout, should not process all 9 pages
 	if totalRequests >= 9 {
 		t.Fatalf("expected cancellation before all pages, got %d requests", totalRequests)
 	}

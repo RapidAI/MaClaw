@@ -100,6 +100,24 @@ describe('useAITabManager', () => {
             expect(result.current.tabState.tabs).toHaveLength(2); // local + 1 VE tab
         });
 
+        it('deduplicates VE tabs by normalized participant identity', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tab1: AITab | null = null;
+            let tab2: AITab | null = null;
+            act(() => {
+                tab1 = result.current.createVETab(" VE-A ", "Agent A");
+            });
+            act(() => {
+                tab2 = result.current.createVETab("ve-a", "Agent A", "session-a", "offline");
+            });
+
+            expect(tab1!.id).toBe(tab2!.id);
+            expect(result.current.tabState.tabs).toHaveLength(2);
+            expect(result.current.activeTab.id).toBe(tab1!.id);
+            expect(result.current.getTabState(tab1!.id)?.sessionId).toBe("session-a");
+        });
+
         it('allows different veIds to create separate tabs', () => {
             const { result } = renderHook(() => useAITabManager());
 
@@ -150,6 +168,68 @@ describe('useAITabManager', () => {
             expect(result.current.getTabState(tabId)?.sessionId).toBe("session-group");
         });
 
+        it('promotes an existing single-participant history tab when reopening the same VE', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("history-disc-1", "Agent A history", ["me", "ve-a"], { discussionId: "disc-1", readOnly: true });
+                result.current.activateTab("local");
+            });
+
+            let reopened: AITab | null = null;
+            act(() => {
+                reopened = result.current.createVETab("ve-a", "Agent A", "disc-1");
+            });
+
+            expect(reopened!.id).toBe("ve-ve-a");
+            expect(result.current.activeTab.id).toBe("ve-ve-a");
+            expect(reopened!.type).toBe("group");
+            expect(reopened!.veId).toBe("ve-a");
+            expect(reopened!.title).toBe("Agent A");
+            expect(reopened!.readOnly).toBe(false);
+            expect(result.current.tabState.tabs.filter(t => t.veId === "ve-a")).toHaveLength(1);
+            expect(result.current.tabState.tabs).toHaveLength(2);
+            expect(result.current.getTabState("history-disc-1")).toBeUndefined();
+            expect(result.current.getTabState("ve-ve-a")?.sessionId).toBe("disc-1");
+
+            act(() => {
+                result.current.saveTabState("ve-ve-a", { history: [{ role: "assistant", content: "saved" }] });
+                result.current.closeTab("ve-ve-a");
+            });
+            act(() => {
+                reopened = result.current.createVETab("ve-a", "Agent A");
+            });
+
+            expect(reopened!.id).toBe("ve-ve-a");
+            expect(result.current.getTabState("ve-ve-a")?.history).toEqual([{ role: "assistant", content: "saved" }]);
+        });
+
+        it('collapses stale duplicate VE/history identity tabs when reopening the VE', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let direct: AITab | null = null;
+            act(() => {
+                direct = result.current.createVETab("ve-a", "Agent A");
+            });
+            act(() => {
+                result.current.saveTabState(direct!.id, { history: [{ role: "assistant", content: "live" }] });
+                result.current.createGroupTab("history-disc-1", "Agent A history", ["me", "ve-a"], { discussionId: "disc-1", readOnly: true });
+            });
+            act(() => {
+                result.current.saveTabState("history-disc-1", { sessionId: "disc-1", history: [{ role: "assistant", content: "history" }] });
+            });
+
+            act(() => {
+                result.current.createVETab("ve-a", "Agent A");
+            });
+
+            expect(result.current.activeTab.id).toBe(direct!.id);
+            expect(result.current.tabState.tabs.some(t => t.id === "history-disc-1")).toBe(false);
+            expect(result.current.tabState.tabs.filter(t => t.type === "ve" || t.type === "group")).toHaveLength(1);
+            expect(result.current.getTabState(direct!.id)?.history).toEqual([{ role: "assistant", content: "live" }]);
+            expect(result.current.getTabState(direct!.id)?.sessionId).toBe("disc-1");
+        });
+
         it('refreshes metadata when reopening an existing group tab', () => {
             const { result } = renderHook(() => useAITabManager());
 
@@ -198,6 +278,7 @@ describe('useAITabManager', () => {
                         createProjectTab: manager.createProjectTab,
                         activateTab: manager.activateTab,
                         getTabState: manager.getTabState,
+                        saveTabState: manager.saveTabState,
                         getTabList: manager.getTabs,
                         pendingHistoryDiscussionOpen: pending,
                         onPendingHistoryDiscussionOpenHandled: onHandled,
@@ -218,6 +299,52 @@ describe('useAITabManager', () => {
             await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
             expect(result.current.activeTab.title).toBe("\u7fa4\u7ec4\u8ba8\u8bba");
             expect(result.current.activeTab.title).not.toContain("disc-raw-123");
+        });
+
+        it('activates an existing direct VE tab by participant when history opens before session id is saved', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabState: manager.getTabState,
+                        saveTabState: manager.saveTabState,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            let veTab: AITab | null = null;
+            act(() => {
+                veTab = result.current.createVETab("ve-a", "Agent A");
+                result.current.activateTab("local");
+            });
+
+            rerender({
+                pending: {
+                    id: "disc-early",
+                    topic: "Vendor audit",
+                    local_relation: "owned_ve_invited",
+                    readonly: true,
+                    status: "open",
+                    participant_ids: ["me", "ve-a"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.id).toBe(veTab!.id);
+            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-early")).toHaveLength(0);
+            expect(result.current.tabState.tabs).toHaveLength(2);
+            expect(result.current.getTabState(veTab!.id)?.sessionId).toBe("disc-early");
+            expect(result.current.getTabState(veTab!.id)?.discussionId).toBe("disc-early");
         });
 
         it('activates an existing VE session tab when opening the same history discussion', async () => {
@@ -494,20 +621,58 @@ describe('useAITabManager', () => {
             expect(result.current.activeTab.id).toBe("local");
         });
 
-        it('calls onCloseVESession when closing a tab with sessionId', async () => {
+        it('keeps a VE session alive when closing a tab so it can be resumed', async () => {
             const onCloseVESession = vi.fn().mockResolvedValue(undefined);
             const { result } = renderHook(() => useAITabManager({ onCloseVESession }));
 
             let tab: AITab | null = null;
             act(() => {
-                tab = result.current.createVETab("ve-1", "助手", "session-abc");
+                tab = result.current.createVETab("ve-1", "Assistant", "session-abc");
+                result.current.saveTabState(tab!.id, {
+                    history: [{ id: "m1", role: "user", content: "hello" }],
+                    scrollTop: 0,
+                    inputText: "draft",
+                    sessionId: "session-abc",
+                });
             });
 
             act(() => {
                 result.current.closeTab(tab!.id);
             });
 
-            expect(onCloseVESession).toHaveBeenCalledWith("session-abc");
+            expect(onCloseVESession).not.toHaveBeenCalled();
+
+            let reopened: AITab | null = null;
+            act(() => {
+                reopened = result.current.createVETab("ve-1", "Assistant");
+            });
+
+            expect(reopened!.id).toBe(tab!.id);
+            expect(result.current.getTabState(reopened!.id)?.sessionId).toBe("session-abc");
+            expect(result.current.getTabState(reopened!.id)?.history).toHaveLength(1);
+        });
+
+        it('explicit clear resets cached VE state without closing the tab', async () => {
+            const onCloseVESession = vi.fn().mockResolvedValue(undefined);
+            const { result } = renderHook(() => useAITabManager({ onCloseVESession }));
+
+            let tab: AITab | null = null;
+            act(() => {
+                tab = result.current.createVETab("ve-1", "Assistant", "session-abc");
+                result.current.saveTabState(tab!.id, {
+                    history: [{ id: "m1", role: "user", content: "hello" }],
+                    scrollTop: 10,
+                    inputText: "draft",
+                    sessionId: "session-abc",
+                });
+                result.current.clearTabConversation(tab!.id);
+            });
+
+            expect(result.current.tabState.tabs.some(t => t.id === tab!.id)).toBe(true);
+            expect(result.current.tabState.tabs.find(t => t.id === tab!.id)?.conversationResetSeq).toBe(1);
+            expect(result.current.getTabState(tab!.id)?.history).toEqual([]);
+            expect(result.current.getTabState(tab!.id)?.sessionId).toBeUndefined();
+            expect(onCloseVESession).not.toHaveBeenCalled();
         });
 
         it('does not affect other tabs when closing one', () => {
@@ -553,6 +718,21 @@ describe('useAITabManager', () => {
 
             expect(tab3).toBeNull();
             expect(result.current.tabState.tabs).toHaveLength(3); // local + 2 VE
+            expect(result.current.tabLimitError).not.toBeNull();
+        });
+
+        it('counts upgraded live group tabs toward the VE tab limit', () => {
+            const { result } = renderHook(() => useAITabManager({ maxVETabs: 1 }));
+
+            let tab2: AITab | null = null;
+            act(() => {
+                const tab1 = result.current.createVETab("ve-1", "Agent 1");
+                result.current.upgradeVETabToGroup(tab1!.id, ["ve-1", "local-maclaw"]);
+                tab2 = result.current.createVETab("ve-2", "Agent 2");
+            });
+
+            expect(tab2).toBeNull();
+            expect(result.current.tabState.tabs).toHaveLength(2);
             expect(result.current.tabLimitError).not.toBeNull();
         });
 
@@ -643,7 +823,7 @@ describe('useAITabManager', () => {
             expect(result.current.getTabState("non-existent")).toBeUndefined();
         });
 
-        it('removes tab state when tab is closed', () => {
+        it('keeps VE tab state when tab is closed', () => {
             const { result } = renderHook(() => useAITabManager());
 
             let tab: AITab | null = null;
@@ -664,10 +844,10 @@ describe('useAITabManager', () => {
                 result.current.closeTab(tab!.id);
             });
 
-            expect(result.current.getTabState(tab!.id)).toBeUndefined();
+            expect(result.current.getTabState(tab!.id)?.inputText).toBe("test");
         });
 
-        it('ignores late state saves after a closed VE tab unmounts', () => {
+        it('accepts late state saves after a closed VE tab unmounts for resume', () => {
             const { result } = renderHook(() => useAITabManager());
 
             let tab: AITab | null = null;
@@ -685,7 +865,7 @@ describe('useAITabManager', () => {
                 });
             });
 
-            expect(result.current.getTabState(tab!.id)).toBeUndefined();
+            expect(result.current.getTabState(tab!.id)?.inputText).toBe("late");
         });
 
         it('keeps allowing cached project tab state updates after close', () => {

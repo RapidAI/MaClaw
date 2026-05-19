@@ -34,11 +34,13 @@ func (a *App) emitSkillInstallProgress(skillName, phase, status string, report *
 	if a == nil {
 		return
 	}
+	lang := a.skillConfirmLang()
 	payload := map[string]interface{}{
 		"skill":   skillName,
 		"phase":   phase,
 		"status":  status,
 		"percent": skillInstallProgressPercent(phase),
+		"lang":    lang,
 	}
 	if report != nil {
 		payload["level"] = string(report.FinalLevel)
@@ -139,7 +141,7 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 		ctx = context.Background()
 	}
 
-	confirmID := fmt.Sprintf("skill_install_%d", time.Now().UnixNano())
+	confirmID := nextSkillConfirmID("skill_install")
 	entry := &pendingCriticalConfirmEntry{
 		Ch: make(chan criticalRiskConfirmResponse, 1),
 	}
@@ -158,12 +160,19 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 	if emitFactors == nil {
 		emitFactors = []string{}
 	}
+	lang := a.skillConfirmLang()
+	confirmLabel, rejectLabel := localizedSkillInstallActionLabels(lang)
 	payload := map[string]interface{}{
 		"confirm_id": confirmID,
 		"skill_name": skillName,
 		"source":     source,
 		"level":      string(level),
-		"factors":    emitFactors,
+		"factors":    localizeSkillRiskFactors(lang, emitFactors),
+		"lang":       lang,
+		"labels": map[string]string{
+			"confirm": confirmLabel,
+			"reject":  rejectLabel,
+		},
 	}
 	a.emitEvent("skill-install-risk-confirm", payload)
 	log.Printf("[skill-install-confirm] desktop event emitted confirm_id=%s skill=%q level=%s", confirmID, skillName, level)

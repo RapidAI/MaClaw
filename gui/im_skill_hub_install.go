@@ -315,7 +315,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 				})
 			}
 			return skillInstallExecutionResult{
-				Text:          FormatScanReportForUser(scanReport, displayName) + fmt.Sprintf("\nSkill %s was blocked by current security policy and not installed.", displayName),
+				Text:          FormatScanReportForUser(scanReport, displayName) + "\n" + localizedSkillInstallBlockedMessage(h.skillConfirmLang(), displayName, false),
 				SilentFailure: true,
 			}
 		}
@@ -337,7 +337,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 					})
 				}
 				return skillInstallExecutionResult{
-					Text:          FormatScanReportForUser(scanReport, displayName) + fmt.Sprintf("\nSkill %s was rejected by user and not installed.", displayName),
+					Text:          FormatScanReportForUser(scanReport, displayName) + "\n" + localizedSkillInstallRejectedMessage(h.skillConfirmLang(), displayName),
 					SilentFailure: true,
 				}
 			}

@@ -344,7 +344,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 				})
 			}
 			return FormatScanReportForUser(scanReport, entry.Name) +
-				fmt.Sprintf("\nSkill %q was blocked by current security policy before installation.", entry.Name)
+				"\n" + localizedSkillInstallBlockedMessage(h.skillConfirmLang(), entry.Name, true)
 		}
 		if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(scanReport) {
 			platform := ""
@@ -380,7 +380,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 					})
 				}
 				return FormatScanReportForUser(scanReport, entry.Name) +
-					fmt.Sprintf("\n⚠️ Skill %q 已拒绝安装。", entry.Name)
+					"\n" + localizedSkillInstallRejectedMessage(h.skillConfirmLang(), entry.Name)
 			}
 
 			// User confirmed override.
@@ -479,12 +479,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		}
 	}
 
+	lang := h.skillConfirmLang()
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("✅ 已成功安装 Skill「%s」\n描述: %s\n来源: %s\n信任等级: %s\n",
-		entry.Name, entry.Description, hubURL, entry.TrustLevel))
+	b.WriteString(localizedSkillInstallSuccessSummary(lang, entry.Name, entry.Description, hubURL, entry.TrustLevel))
 
 	if autoRun {
-		b.WriteString(fmt.Sprintf("\n正在立即执行 Skill「%s」...\n", entry.Name))
+		b.WriteString(localizedSkillInstallAutoRunStarting(lang, entry.Name))
 		// Pass user-supplied run arguments (input, output, args, etc.) to the
 		// skill runner so the auto-run after install actually has the parameters
 		// the user intended. Previously this passed nil, causing skills that
@@ -502,7 +502,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			}
 		}
 	} else {
-		b.WriteString(fmt.Sprintf("\n可以使用 manage_skill(action=\"run\", name=\"%s\") 执行", entry.Name))
+		b.WriteString(localizedSkillInstallRunHint(lang, entry.Name))
 	}
 
 	return b.String()

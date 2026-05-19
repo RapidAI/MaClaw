@@ -1036,3 +1036,44 @@ func TestGatewaySessionImageInputErrorForwardsToViewer(t *testing.T) {
 		t.Fatalf("unexpected error: %q", errMsg.Payload.Error)
 	}
 }
+
+type tenantCaptureGatewayPlugin struct {
+	data chan json.RawMessage
+}
+
+func (p *tenantCaptureGatewayPlugin) Name() string { return "telegram" }
+func (p *tenantCaptureGatewayPlugin) ClaimGatewayForTenant(tenantID, machineID, userID string) (bool, string, uint64) {
+	return true, "", 1
+}
+func (p *tenantCaptureGatewayPlugin) ReleaseAllForTenantMachine(tenantID, machineID string) {}
+func (p *tenantCaptureGatewayPlugin) ReleaseAllForTenantMachineBySeq(tenantID, machineID string, seqs map[string]uint64) {
+}
+func (p *tenantCaptureGatewayPlugin) HandleGatewayMessage(machineID string, payload json.RawMessage) {
+	p.data <- payload
+}
+
+func TestHandleIMGatewayMessageInjectsConnectionTenant(t *testing.T) {
+	plugin := &tenantCaptureGatewayPlugin{data: make(chan json.RawMessage, 1)}
+	gateway := &Gateway{IMGatewayPlugins: map[string]IMGatewayPlugin{"telegram": plugin}}
+	inner := json.RawMessage(`{"platform_uid":"platform-a","text":"hello","tenant_id":"tenant_b"}`)
+	payload, err := json.Marshal(map[string]any{"platform": "telegram", "data": inner})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	ctx := &ConnContext{Role: "machine", TenantID: "tenant_a", MachineID: "machine-a", UserID: "user-a"}
+	if err := gateway.handleIMGatewayMessage(ctx, Envelope{Payload: payload}); err != nil {
+		t.Fatalf("handle gateway message: %v", err)
+	}
+	select {
+	case got := <-plugin.data:
+		var message map[string]any
+		if err := json.Unmarshal(got, &message); err != nil {
+			t.Fatalf("unmarshal forwarded data: %v", err)
+		}
+		if message["tenant_id"] != "tenant_a" {
+			t.Fatalf("tenant_id = %v, want tenant_a from connection context", message["tenant_id"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for forwarded gateway message")
+	}
+}

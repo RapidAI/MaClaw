@@ -610,6 +610,9 @@ func requestGroupDiscussionTenantID(r *http.Request) string {
 	if r == nil {
 		return store.DefaultTenantID
 	}
+	if AdminFromContext(r.Context()) != nil {
+		return store.NormalizeTenantID(RequestTenantID(r))
+	}
 	for _, key := range []string{"X-Hub-Tenant-ID", "X-Tenant-ID"} {
 		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
 			return store.NormalizeTenantID(value)

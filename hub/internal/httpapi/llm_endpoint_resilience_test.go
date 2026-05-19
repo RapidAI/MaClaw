@@ -13,6 +13,19 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
 
+func TestLLMEndpointUserRateLimitCanBeTenantScoped(t *testing.T) {
+	limiter := newLLMEndpointUserLimiter()
+	reg := &im.LLMProviderRegistry{UserRateLimitPerMinute: 1, UserRateLimitBurst: 1}
+	if !limiter.allowForRegistry("tenant_a\x00same@example.com", reg) {
+		t.Fatal("first tenant_a request should be allowed")
+	}
+	if limiter.allowForRegistry("tenant_a\x00same@example.com", reg) {
+		t.Fatal("second tenant_a request should be rate limited")
+	}
+	if !limiter.allowForRegistry("tenant_b\x00same@example.com", reg) {
+		t.Fatal("tenant_b should have an independent rate bucket")
+	}
+}
 func TestLLMV1ChatCompletionsHandlerUserRateLimit(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "ratelimit@example.com")

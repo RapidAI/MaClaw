@@ -15,12 +15,15 @@ type DeepCrawlRequest struct {
 	PreviewOnly    bool     `json:"preview_only"` // true=仅预览不保存
 	OwnerID        string   `json:"owner_id,omitempty"`
 	ProjectPath    string   `json:"project_path,omitempty"`
+	ClientRunID    string   `json:"client_run_id,omitempty"`
 }
 
 // DeepCrawlProgress 进度事件数据
 type DeepCrawlProgress struct {
 	JobID           string `json:"job_id"`
-	Status          string `json:"status"` // discovering/crawling/completed/cancelled/failed
+	Mode            string `json:"mode,omitempty"`          // preview/crawl
+	ClientRunID     string `json:"client_run_id,omitempty"` // caller-provided UI run correlation
+	Status          string `json:"status"`                  // discovering/crawling/completed/cancelled/failed
 	CurrentDepth    int    `json:"current_depth"`
 	MaxDepth        int    `json:"max_depth"`
 	TotalDiscovered int    `json:"total_discovered"`
@@ -71,11 +74,12 @@ type bfsLevel struct {
 
 // crawlState 抓取状态（引擎内部）
 type crawlState struct {
-	mu          sync.Mutex
-	visited     map[string]struct{} // 已访问/已入队的 URL（normalized）
-	results     []DeepCrawlItem
-	totalQueued int
-	completed   int
-	failed      int
-	skipped     int
+	mu           sync.Mutex
+	visited      map[string]struct{} // 已访问/已入队的 URL（normalized）
+	results      []DeepCrawlItem
+	totalQueued  int
+	limitReached bool
+	completed    int
+	failed       int
+	skipped      int
 }

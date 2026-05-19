@@ -243,9 +243,9 @@ type IMProactiveSender interface {
 // client-side IM gateways (QQ Bot, Telegram). Each platform registers one.
 type IMGatewayPlugin interface {
 	Name() string
-	ClaimGateway(machineID, userID string) (ok bool, reason string, seq uint64)
-	ReleaseAllForMachine(machineID string)
-	ReleaseAllForMachineBySeq(machineID string, seqs map[string]uint64)
+	ClaimGatewayForTenant(tenantID, machineID, userID string) (ok bool, reason string, seq uint64)
+	ReleaseAllForTenantMachine(tenantID, machineID string)
+	ReleaseAllForTenantMachineBySeq(tenantID, machineID string, seqs map[string]uint64)
 	HandleGatewayMessage(machineID string, payload json.RawMessage)
 }
 
@@ -1297,7 +1297,7 @@ func (g *Gateway) handleIMGatewayClaim(ctx *ConnContext, msg Envelope) error {
 		})
 		return nil
 	}
-	ok, reason, seq := plugin.ClaimGateway(ctx.MachineID, ctx.UserID)
+	ok, reason, seq := plugin.ClaimGatewayForTenant(ctx.TenantID, ctx.MachineID, ctx.UserID)
 	if ok {
 		// Record the claim seq on this connection so cleanup releases the
 		// correct generation.
@@ -1340,10 +1340,15 @@ func (g *Gateway) handleIMGatewayUnclaim(ctx *ConnContext, msg Envelope) error {
 		log.Printf("[ws] handleIMGatewayUnclaim: unknown platform %s", payload.Platform)
 		return nil
 	}
-	plugin.ReleaseAllForMachine(ctx.MachineID)
-	// Also clear the claim seq so connection cleanup won't double-release.
 	if ctx.gwClaimSeqs != nil {
-		delete(ctx.gwClaimSeqs, payload.Platform)
+		if seq, ok := ctx.gwClaimSeqs[payload.Platform]; ok {
+			plugin.ReleaseAllForTenantMachineBySeq(ctx.TenantID, ctx.MachineID, map[string]uint64{payload.Platform: seq})
+			delete(ctx.gwClaimSeqs, payload.Platform)
+		} else {
+			plugin.ReleaseAllForTenantMachine(ctx.TenantID, ctx.MachineID)
+		}
+	} else {
+		plugin.ReleaseAllForTenantMachine(ctx.TenantID, ctx.MachineID)
 	}
 	log.Printf("[ws] im.gateway_unclaim: platform=%s machine=%s", payload.Platform, ctx.MachineID)
 	_ = writeWSJSON(ctx.Conn, map[string]any{
@@ -1376,6 +1381,20 @@ func (g *Gateway) handleIMGatewayMessage(ctx *ConnContext, msg Envelope) error {
 		log.Printf("[ws] handleIMGatewayMessage: unknown platform %s", payload.Platform)
 		return nil
 	}
+	data := payload.Data
+	if ctx.TenantID != "" && len(data) > 0 {
+		var message map[string]any
+		if err := json.Unmarshal(data, &message); err == nil {
+			// The authenticated WebSocket connection is the authority for tenant
+			// isolation. Older clients omit tenant_id, and newer clients must not
+			// be able to spoof a different tenant in the nested payload.
+			message["tenant_id"] = ctx.TenantID
+			if patched, marshalErr := json.Marshal(message); marshalErr == nil {
+				data = patched
+			}
+		}
+	}
+
 	// Run in a goroutine to avoid blocking the WS read loop.
 	// HandleGatewayMessage → IM Adapter → routeToSingleMachine blocks until
 	// the Agent replies (up to 180s). If we block here, the read loop cannot
@@ -1387,7 +1406,7 @@ func (g *Gateway) handleIMGatewayMessage(ctx *ConnContext, msg Envelope) error {
 				log.Printf("[ws] handleIMGatewayMessage: panic in HandleGatewayMessage (platform=%s machine=%s): %v", payload.Platform, machineID, r)
 			}
 		}()
-		plugin.HandleGatewayMessage(machineID, payload.Data)
+		plugin.HandleGatewayMessage(machineID, data)
 	}()
 	return nil
 }
@@ -1405,12 +1424,12 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 		// claim seq to avoid releasing a newer claim from a reconnected client.
 		if len(ctx.gwClaimSeqs) > 0 {
 			for _, plugin := range g.IMGatewayPlugins {
-				plugin.ReleaseAllForMachineBySeq(ctx.MachineID, ctx.gwClaimSeqs)
+				plugin.ReleaseAllForTenantMachineBySeq(ctx.TenantID, ctx.MachineID, ctx.gwClaimSeqs)
 			}
 		} else {
 			// Fallback for connections that never claimed any gateway.
 			for _, plugin := range g.IMGatewayPlugins {
-				plugin.ReleaseAllForMachine(ctx.MachineID)
+				plugin.ReleaseAllForTenantMachine(ctx.TenantID, ctx.MachineID)
 			}
 		}
 		// Clean up cached machine data.

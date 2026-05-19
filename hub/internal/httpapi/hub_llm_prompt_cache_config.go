@@ -145,7 +145,9 @@ func GetHubLLMPromptCacheConfigHandler(system store.SystemSettingsRepository, pr
 	return func(w http.ResponseWriter, r *http.Request) {
 		system = scopedSystemSettingsForRequest(r, system)
 		cfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)
-		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cfg)
+		if shouldReloadSharedRuntimeForRequest(r) {
+			applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cfg)
+		}
 		writeJSON(w, http.StatusOK, cfg)
 	}
 }
@@ -163,7 +165,9 @@ func UpdateHubLLMPromptCacheConfigHandler(system store.SystemSettingsRepository,
 			writeError(w, http.StatusInternalServerError, "HUB_LLM_PROMPT_CACHE_CONFIG_SAVE_FAILED", err.Error())
 			return
 		}
-		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), saved)
+		if shouldReloadSharedRuntimeForRequest(r) {
+			applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), saved)
+		}
 		writeJSON(w, http.StatusOK, saved)
 	}
 }

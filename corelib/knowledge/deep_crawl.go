@@ -101,6 +101,7 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 	var byDepth []DeepCrawlDepthSummary
 	var items []DeepCrawlItem
 	totalDiscovered := 0
+	limitReached := false
 
 	// 4. BFS loop: process at most maxPreviewDepth levels
 	for depth := 0; depth < maxPreviewDepth && len(currentLevel) > 0; depth++ {
@@ -137,11 +138,6 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 				}, nil
 			}
 
-			// Check max URL limit
-			if totalDiscovered+len(nextLevel) >= e.maxURLs {
-				break
-			}
-
 			// Add item as discovered
 			items = append(items, DeepCrawlItem{
 				URL:    pageURL,
@@ -152,6 +148,8 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 			// Emit progress
 			if e.onProgress != nil {
 				e.onProgress(DeepCrawlProgress{
+					Mode:            "preview",
+					ClientRunID:     req.ClientRunID,
 					Status:          "discovering",
 					CurrentDepth:    depth,
 					MaxDepth:        maxPreviewDepth,
@@ -167,12 +165,18 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 				continue
 			}
 
-			// Extract links using DiscoverURLsFromText
+			// Ask for one candidate beyond the remaining capacity so limit_reached
+			// means a real, normalized URL was truncated instead of merely reaching
+			// the exact natural crawl size.
+			discoveryLimit := e.maxURLs - totalDiscovered - len(nextLevel) + 1
+			if discoveryLimit < 1 {
+				discoveryLimit = 1
+			}
 			discoveryResult := DiscoverURLsFromText(URLDiscoveryRequest{
 				Text:           htmlContent,
 				BaseURL:        pageURL,
 				SameDomainOnly: req.SameDomainOnly,
-				Limit:          e.maxURLs - totalDiscovered - len(nextLevel),
+				Limit:          discoveryLimit,
 			})
 
 			// Filter and deduplicate discovered URLs
@@ -203,6 +207,7 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 
 				// Max URL limit
 				if totalDiscovered+len(nextLevel) >= e.maxURLs {
+					limitReached = true
 					break
 				}
 
@@ -235,10 +240,17 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 		byDepth = append(byDepth, depthSummary)
 	}
 
+	finalStatus := "completed"
+	if limitReached {
+		finalStatus = "limit_reached"
+	}
+
 	// Emit final progress
 	if e.onProgress != nil {
 		e.onProgress(DeepCrawlProgress{
-			Status:          "completed",
+			Mode:            "preview",
+			ClientRunID:     req.ClientRunID,
+			Status:          finalStatus,
 			CurrentDepth:    maxPreviewDepth,
 			MaxDepth:        maxPreviewDepth,
 			TotalDiscovered: totalDiscovered,
@@ -246,7 +258,7 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 	}
 
 	return DeepCrawlResult{
-		Status:          "completed",
+		Status:          finalStatus,
 		TotalDiscovered: totalDiscovered,
 		Items:           items,
 		ByDepth:         byDepth,

@@ -54,8 +54,7 @@ describe("GroupParticipantPanel", () => {
             />
         );
 
-        const participantRow = screen.getByText("Agent 1").parentElement as HTMLElement;
-        const dot = participantRow.firstElementChild as HTMLElement;
+        const dot = screen.getByTestId("participant-status-ve-1");
         expect(dot.style.background).toBe("rgb(34, 197, 94)");
 
         act(() => {
@@ -70,8 +69,26 @@ describe("GroupParticipantPanel", () => {
                 handler({ ve_id: "ve-1", online_status: "offline" });
             }
         });
-        expect((screen.getByText("Agent 1").parentElement?.firstElementChild as HTMLElement).style.background).toBe("rgb(107, 114, 128)");
+        expect(screen.getByTestId("participant-status-ve-1").style.background).toBe("rgb(107, 114, 128)");
     });
+    it("shows type icons for remote and local participants", () => {
+        render(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "ve-1", name: "Agent 1", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true, isLocal: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        expect(screen.getByLabelText("Digital employee")).toBeTruthy();
+        expect(screen.getByLabelText("Local AI")).toBeTruthy();
+        expect(screen.getByTestId("participant-status-ve-1")).toBeTruthy();
+        expect(screen.getByTestId("participant-status-local-maclaw")).toBeTruthy();
+    });
+
     it("uses participant names instead of ids in row titles", () => {
         render(
             <GroupParticipantPanel

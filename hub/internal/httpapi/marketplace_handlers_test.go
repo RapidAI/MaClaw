@@ -282,13 +282,49 @@ func TestAdminAuditLogsHandlerRejectsInvertedDateRange(t *testing.T) {
 	}
 }
 
-type fakeMarketplaceViewerAuth struct{}
+type fakeMarketplaceViewerAuth struct {
+	tenantID string
+	userID   string
+	email    string
+}
 
-func (fakeMarketplaceViewerAuth) AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error) {
+func (f fakeMarketplaceViewerAuth) AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error) {
 	if rawToken != "viewer-token" {
 		return nil, auth.ErrInvalidUserCredentials
 	}
-	return &auth.ViewerPrincipal{UserID: "user-1", Email: "user@example.com"}, nil
+	return &auth.ViewerPrincipal{TenantID: f.tenantID, UserID: firstNonEmpty(f.userID, "user-1"), Email: firstNonEmpty(f.email, "user@example.com")}, nil
+}
+
+func TestCapabilityInstallIntentUsesAuthenticatedTenantOverHeader(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	settings := &testSystemSettingsRepo{}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/paid-mcp/install-intent", bytes.NewReader([]byte(`{"capability_type":"mcp","source":"hubcenter","pricing":"paid","price":{"amount_cents":9900}}`)))
+	req.SetPathValue("id", "paid-mcp")
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("X-Tenant-ID", "tenant_b")
+	rec := httptest.NewRecorder()
+
+	CapabilityInstallIntentHandler(svc, settings, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-a"})(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	tenantARequests, err := svc.ListAcquisitionRequests(capability.WithTenant(context.Background(), "tenant_a"), "pending_review")
+	if err != nil || len(tenantARequests) != 1 {
+		t.Fatalf("tenant_a requests=%+v err=%v", tenantARequests, err)
+	}
+	if tenantARequests[0].RequesterUserID != "anonymous" || tenantARequests[0].SourceCapabilityKey != "paid-mcp" {
+		t.Fatalf("unexpected tenant_a request: %+v", tenantARequests[0])
+	}
+	tenantBRequests, err := svc.ListAcquisitionRequests(capability.WithTenant(context.Background(), "tenant_b"), "pending_review")
+	if err != nil {
+		t.Fatalf("list tenant_b requests: %v", err)
+	}
+	if len(tenantBRequests) != 0 {
+		t.Fatalf("spoofed header tenant should not receive request: %+v", tenantBRequests)
+	}
 }
 
 type fakeCapabilityGroupResolver struct {
@@ -1063,6 +1099,52 @@ func TestAdminBillingCustomerAccountAndLicenses(t *testing.T) {
 	}
 }
 
+func TestAdminBillingForwardsTenantIDToHubCenter(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	if err := settings.Set(context.Background(), "admin_email", `{"value":"admin@example.com"}`); err != nil {
+		t.Fatalf("set admin email: %v", err)
+	}
+	accountCalled := false
+	licenseCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/capability-market/customer-account":
+			accountCalled = true
+			if r.URL.Query().Get("hub_id") != "hub-1" || r.URL.Query().Get("admin_email") != "admin@example.com" || r.URL.Query().Get("tenant_id") != "tenant_a" {
+				t.Fatalf("unexpected account query: %s", r.URL.RawQuery)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": "configured", "tenant_id": "tenant_a"})
+		case "/api/capability-market/billing/licenses":
+			licenseCalled = true
+			if r.URL.Query().Get("hub_id") != "hub-1" || r.URL.Query().Get("admin_email") != "admin@example.com" || r.URL.Query().Get("tenant_id") != "tenant_a" {
+				t.Fatalf("unexpected licenses query: %s", r.URL.RawQuery)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": []any{map[string]any{"capability_id": "tenant-mcp", "tenant_id": "tenant_a"}}})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	centerStatus := fakeCapabilityMarketCenterStatus{state: &center.RegistrationState{ActiveBaseURL: server.URL, HubID: "hub-1"}}
+	ctx := context.WithValue(context.Background(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Email: "admin@example.com", Scope: "tenant", TenantID: "tenant_a"})
+
+	accountReq := httptest.NewRequest(http.MethodGet, "/api/admin/billing/customer-account", nil).WithContext(ctx)
+	accountRec := httptest.NewRecorder()
+	AdminBillingCustomerAccountHandler(settings, centerStatus)(accountRec, accountReq)
+	if accountRec.Code != http.StatusOK {
+		t.Fatalf("account status=%d body=%s", accountRec.Code, accountRec.Body.String())
+	}
+
+	licensesReq := httptest.NewRequest(http.MethodGet, "/api/admin/billing/licenses", nil).WithContext(ctx)
+	licensesRec := httptest.NewRecorder()
+	AdminBillingLicensesHandler(settings, centerStatus)(licensesRec, licensesReq)
+	if licensesRec.Code != http.StatusOK {
+		t.Fatalf("licenses status=%d body=%s", licensesRec.Code, licensesRec.Body.String())
+	}
+	if !accountCalled || !licenseCalled {
+		t.Fatalf("expected both HubCenter billing endpoints to be called, account=%v license=%v", accountCalled, licenseCalled)
+	}
+}
 func TestAdminCapabilityExternalSearchSourcePolicy(t *testing.T) {
 	forbiddenReq := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=unknown&type=skill", nil)
 	forbiddenRec := httptest.NewRecorder()

@@ -214,8 +214,10 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 			return
 		}
 		invalidateLLMRuntimeCaches(system)
-		applyLLMEndpointDownstreamConfig(&req)
-		applyLLMEndpointUserRateLimitConfig(&req)
+		if shouldReloadSharedRuntimeForRequest(r) {
+			applyLLMEndpointDownstreamConfig(&req)
+			applyLLMEndpointUserRateLimitConfig(&req)
+		}
 		_ = syncLegacyHubLLMConfig(r.Context(), system, &req)
 		writeJSON(w, http.StatusOK, registryResponse(r, &req, collectLLMServiceProviderReferenceIssues(serviceReg, &req)))
 	}
@@ -1047,13 +1049,13 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
 		}
-		if !acquireLLMEndpointDownstreamSlot(r.Context(), providerReg) {
+		downstreamSem, acquired := acquireLLMEndpointDownstreamSlot(r.Context(), principal.TenantID, providerReg)
+		if !acquired {
 			writeError(w, http.StatusServiceUnavailable, "LLM_ENDPOINT_CONCURRENCY_FULL", "llm endpoint is busy, please retry shortly")
 			return
 		}
-		defer globalLLMEndpointDownstreamSemaphore.Release()
-		applyLLMEndpointUserRateLimitConfig(providerReg)
-		if !globalLLMEndpointUserLimiter.allow(principal.Email) {
+		defer downstreamSem.Release()
+		if !globalLLMEndpointUserLimiter.allowForRegistry(principal.TenantID+"\x00"+principal.Email, providerReg) {
 			writeError(w, http.StatusTooManyRequests, "LLM_ENDPOINT_USER_RATE_LIMITED", "user request rate exceeded, please retry shortly")
 			return
 		}

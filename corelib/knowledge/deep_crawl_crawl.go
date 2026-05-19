@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -105,6 +106,20 @@ func (e *DeepCrawlEngine) StartCrawl(ctx context.Context, req DeepCrawlRequest) 
 	state.visited[normalizedSeed] = struct{}{}
 	state.totalQueued = 1
 
+	if e.onProgress != nil {
+		e.onProgress(DeepCrawlProgress{
+			JobID:           jobID,
+			Mode:            "crawl",
+			ClientRunID:     req.ClientRunID,
+			Status:          "crawling",
+			CurrentDepth:    0,
+			MaxDepth:        maxDepth,
+			TotalDiscovered: state.totalQueued,
+			Pending:         state.totalQueued,
+			CurrentURL:      normalizedSeed,
+		})
+	}
+
 	// 7. Initialize rate limiter and semaphore
 	rateLimiter := newHostRateLimiter(e.requestDelay)
 	semaphore := make(chan struct{}, e.maxConcurrency)
@@ -115,8 +130,10 @@ func (e *DeepCrawlEngine) StartCrawl(ctx context.Context, req DeepCrawlRequest) 
 
 	for depth := 0; depth <= maxDepth && len(currentLevel) > 0; depth++ {
 		// Check session context cancellation between levels
-		if sessionCtx.Err() != nil {
-			return e.buildPartialResult(jobID, "cancelled", state, byDepth), nil
+		if err := sessionCtx.Err(); err != nil {
+			finalStatus := crawlStatusFromContextErr(err)
+			e.emitCrawlFinalProgress(jobID, req.ClientRunID, finalStatus, maxDepth, state)
+			return e.buildPartialResult(jobID, finalStatus, state, byDepth), nil
 		}
 
 		depthSummary := DeepCrawlDepthSummary{
@@ -230,22 +247,7 @@ func (e *DeepCrawlEngine) StartCrawl(ctx context.Context, req DeepCrawlRequest) 
 			nextLevelCandidates = append(nextLevelCandidates, wr.newURLs...)
 
 			// Emit progress
-			if e.onProgress != nil {
-				state.mu.Lock()
-				e.onProgress(DeepCrawlProgress{
-					JobID:           jobID,
-					Status:          "crawling",
-					CurrentDepth:    depth,
-					MaxDepth:        maxDepth,
-					TotalDiscovered: state.totalQueued,
-					Completed:       state.completed,
-					Pending:         state.totalQueued - state.completed - state.failed - state.skipped,
-					Failed:          state.failed,
-					Skipped:         state.skipped,
-					CurrentURL:      wr.item.URL,
-				})
-				state.mu.Unlock()
-			}
+			e.emitCrawlRunningProgress(jobID, req.ClientRunID, depth, maxDepth, wr.item.URL, state)
 		}
 
 		byDepth = append(byDepth, depthSummary)
@@ -262,6 +264,7 @@ func (e *DeepCrawlEngine) StartCrawl(ctx context.Context, req DeepCrawlRequest) 
 				continue
 			}
 			if state.totalQueued >= e.maxURLs {
+				state.limitReached = true
 				break
 			}
 			// Domain policy check (single-threaded here to avoid DB lock contention in workers)
@@ -276,39 +279,81 @@ func (e *DeepCrawlEngine) StartCrawl(ctx context.Context, req DeepCrawlRequest) 
 		}
 		state.mu.Unlock()
 
+		if len(nextLevel) > 0 {
+			e.emitCrawlRunningProgress(jobID, req.ClientRunID, depth+1, maxDepth, nextLevel[0], state)
+		}
+
 		currentLevel = nextLevel
 	}
 
 	// 9. Determine final status
 	finalStatus := "completed"
-	if sessionCtx.Err() != nil {
-		finalStatus = "timeout"
+	if err := sessionCtx.Err(); err != nil {
+		finalStatus = crawlStatusFromContextErr(err)
 	}
 
 	state.mu.Lock()
-	if state.totalQueued >= e.maxURLs {
+	if finalStatus == "completed" && state.limitReached {
 		finalStatus = "limit_reached"
 	}
 	state.mu.Unlock()
 
 	// 10. Emit final progress
-	if e.onProgress != nil {
-		state.mu.Lock()
-		e.onProgress(DeepCrawlProgress{
-			JobID:           jobID,
-			Status:          finalStatus,
-			CurrentDepth:    maxDepth,
-			MaxDepth:        maxDepth,
-			TotalDiscovered: state.totalQueued,
-			Completed:       state.completed,
-			Pending:         0,
-			Failed:          state.failed,
-			Skipped:         state.skipped,
-		})
-		state.mu.Unlock()
-	}
+	e.emitCrawlFinalProgress(jobID, req.ClientRunID, finalStatus, maxDepth, state)
 
 	return e.buildPartialResult(jobID, finalStatus, state, byDepth), nil
+}
+
+func (e *DeepCrawlEngine) emitCrawlRunningProgress(jobID, clientRunID string, currentDepth, maxDepth int, currentURL string, state *crawlState) {
+	if e.onProgress == nil {
+		return
+	}
+	state.mu.Lock()
+	progress := DeepCrawlProgress{
+		JobID:           jobID,
+		Mode:            "crawl",
+		ClientRunID:     clientRunID,
+		Status:          "crawling",
+		CurrentDepth:    currentDepth,
+		MaxDepth:        maxDepth,
+		TotalDiscovered: state.totalQueued,
+		Completed:       state.completed,
+		Pending:         state.totalQueued - state.completed - state.failed - state.skipped,
+		Failed:          state.failed,
+		Skipped:         state.skipped,
+		CurrentURL:      currentURL,
+	}
+	state.mu.Unlock()
+	e.onProgress(progress)
+}
+
+func crawlStatusFromContextErr(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "cancelled"
+}
+
+func (e *DeepCrawlEngine) emitCrawlFinalProgress(jobID, clientRunID, finalStatus string, maxDepth int, state *crawlState) {
+	if e.onProgress == nil {
+		return
+	}
+	state.mu.Lock()
+	progress := DeepCrawlProgress{
+		JobID:           jobID,
+		Mode:            "crawl",
+		ClientRunID:     clientRunID,
+		Status:          finalStatus,
+		CurrentDepth:    maxDepth,
+		MaxDepth:        maxDepth,
+		TotalDiscovered: state.totalQueued,
+		Completed:       state.completed,
+		Pending:         0,
+		Failed:          state.failed,
+		Skipped:         state.skipped,
+	}
+	state.mu.Unlock()
+	e.onProgress(progress)
 }
 
 // saveContent 保存单个 URL 的内容到知识库

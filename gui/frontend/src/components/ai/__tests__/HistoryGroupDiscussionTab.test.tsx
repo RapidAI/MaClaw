@@ -157,6 +157,39 @@ describe("HistoryGroupDiscussionTab", () => {
         }));
     });
 
+    it("hides my initiator identity from the history participant panel", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["human-a", "ve-a"] },
+            session: { participants: [
+                { id: "human-a", name: "Alice", role_code: "initiator" },
+                { id: "ve-a", name: "Contract Bot", role_code: "speak" },
+            ] },
+            messages: [
+                { id: "m1", from_id: "human-a", from_name: "Alice", content: "hello", created_at: "2026-01-01T00:00:00Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        await screen.findByText("hello");
+        const panel = screen.getByTestId("group-participant-panel");
+
+        expect(panel.textContent).toContain("Participants (1)");
+        expect(panel.textContent).toContain("Contract Bot");
+        expect(panel.textContent).not.toContain("Alice");
+        expect(screen.getByTestId("group-msg-label-m1").textContent).toBe("Me");
+    });
+
+    it("keeps the history composer from overlapping the send button", async () => {
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        const sendButton = screen.getByText("Send") as HTMLButtonElement;
+
+        expect(input.style.boxSizing).toBe("border-box");
+        expect(sendButton.style.flexShrink).toBe("0");
+        expect(sendButton.style.minWidth).toBe("54px");
+    });
+
     it("keeps the composer inside the chat column beside the participant panel", async () => {
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
 

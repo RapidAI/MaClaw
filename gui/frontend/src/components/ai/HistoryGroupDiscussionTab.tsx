@@ -309,6 +309,16 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         return [...ids];
     }, [detail?.discussion?.local_relation, detail?.session?.participants]);
 
+    const visibleParticipants = useMemo(() => {
+        const localIDs = new Set(localHistoryUserIds.map(normalizeHistoryParticipantId));
+        return participants
+            .filter((participant) => !localIDs.has(normalizeHistoryParticipantId(participant.id)))
+            .map((participant) => ({
+                ...participant,
+                isLocal: isLocalParticipantId(participant.id) || isLocalAIName(participant.name),
+            }));
+    }, [localHistoryUserIds, participants]);
+
     const closeMentionPopover = useCallback(() => {
         setMentionOpen(false);
         setMentionQuery("");
@@ -317,8 +327,8 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     }, []);
 
     const mentionParticipants: MentionParticipant[] = useMemo(() =>
-        participants.map((p) => ({ id: p.id, name: mentionLabelFromParticipant(p), online: p.online })),
-        [participants]
+        visibleParticipants.map((p) => ({ id: p.id, name: mentionLabelFromParticipant(p), online: p.online })),
+        [visibleParticipants]
     );
 
     useEffect(() => {
@@ -425,10 +435,13 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                 return;
             }
 
+            const isLocalHistoryUser = localHistoryUserIds.some((id) => normalizeHistoryParticipantId(id) === normalizeHistoryParticipantId(fromId));
             const message: GroupMessage = {
                 id: m.id || `m-${idx}`,
                 fromId,
-                fromName: readableHistorySpeakerName(m.from_name, fromId, participants, participantFallbackName(fromId, idx, lang)),
+                fromName: isLocalHistoryUser
+                    ? textForLang(lang, "Me", "我", "我")
+                    : readableHistorySpeakerName(m.from_name, fromId, participants, participantFallbackName(fromId, idx, lang)),
                 content,
                 timestamp: m.created_at ? Date.parse(m.created_at) || Date.now() : Date.now(),
                 attachments,
@@ -444,7 +457,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         });
 
         return merged;
-    }, [buildMessageAttachments, detail?.messages, lang, participants]);
+    }, [buildMessageAttachments, detail?.messages, lang, localHistoryUserIds, participants]);
 
     const downloadAttachment = useCallback(async (attachment: NonNullable<GroupMessage["attachments"]>[number], message: GroupMessage) => {
         if (attachment.localPath) {
@@ -484,8 +497,8 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00")
         : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...");
 
-    const composer = <div data-testid="history-group-composer-row" style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
-        <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+    const composer = <div data-testid="history-group-composer-row" style={{ display: "flex", alignItems: "flex-end", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
+        <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0, display: "flex" }}>
             {mentionOpen && (
                 <MentionPopover
                     filtered={mentionFiltered}
@@ -520,10 +533,10 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                 disabled={composerDisabled}
                 placeholder={composerPlaceholder}
                 rows={1}
-                style={{ width: "100%", resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }}
+                style={{ width: "100%", boxSizing: "border-box", display: "block", resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }}
             />
         </div>
-        <button type="button" onClick={() => void send()} disabled={sendDisabled} style={{ border: "none", background: theme.sendBtnBg, color: theme.sendBtnColor, borderRadius: 6, padding: "6px 14px", cursor: sendDisabled ? "default" : "pointer", opacity: sendDisabled ? 0.4 : 1, fontSize: 13, fontWeight: 500, transition: "opacity 0.15s", flexShrink: 0 }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
+        <button type="button" onClick={() => void send()} disabled={sendDisabled} style={{ border: "none", background: theme.sendBtnBg, color: theme.sendBtnColor, borderRadius: 6, width: 54, minWidth: 54, height: 34, padding: "0 10px", cursor: sendDisabled ? "default" : "pointer", opacity: sendDisabled ? 0.4 : 1, fontSize: 13, fontWeight: 500, transition: "opacity 0.15s", flexShrink: 0, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
     </div>;
 
     return <div data-testid={`ai-history-group-tab-${discussionId}`} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, background: theme.bg }}>
@@ -546,7 +559,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                     <VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={false} showHeader={false} localUserIds={localHistoryUserIds} containerStyle={{ flex: 1, minHeight: 0 }} />
                     {composer}
                 </div>
-                <GroupParticipantPanel participants={participants} theme={theme} lang={lang} sessionId={discussionId} readOnly={effectiveReadOnly} onTalkTo={insertMention} onAddParticipant={addHistoryParticipant} />
+                <GroupParticipantPanel participants={visibleParticipants} theme={theme} lang={lang} sessionId={discussionId} readOnly={effectiveReadOnly} onTalkTo={insertMention} onAddParticipant={addHistoryParticipant} />
             </div>}
     </div>;
 }

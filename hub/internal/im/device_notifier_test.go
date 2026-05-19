@@ -188,7 +188,7 @@ func TestProperty1_PrivateTargetOffline_ReturnsToLobby(t *testing.T) {
 		// Setup: user in private mode with this machine
 		ss.EnterPrivate(userID, machineID, name)
 		coord.router.mu.Lock()
-		coord.router.selectedMachine[userID] = machineID
+		coord.router.selectedMachine[tenantUserRuntimeKey("", userID)] = machineID
 		coord.router.mu.Unlock()
 
 		entry := &debounceEntry{userID: userID, machineID: machineID, name: name}

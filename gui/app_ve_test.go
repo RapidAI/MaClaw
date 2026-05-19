@@ -311,6 +311,57 @@ func TestSendVEGroupMessageRemoteMentionTargetsRemoteParticipant(t *testing.T) {
 	}
 }
 
+func TestSendVEGroupMessageLocalMentionTextFallbackDoesNotBroadcast(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.remoteSessions = NewRemoteSessionManager(app)
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	app.remoteSessions.SetHubClient(client)
+	client.groupChatDispatcher().RegisterSession("session-1")
+
+	if err := app.SendVEGroupMessage("session-1", "@本机AI 你是?", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		if len(got) != 1 || got[0] != "machine-1" {
+			t.Fatalf("to_ids = %v, want [machine-1]", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for local-targeted Hub sync")
+	}
+}
+
 func TestSendVEGroupMessageLocalMentionSyncsInputAsLocalTarget(t *testing.T) {
 	gotToIDs := make(chan []string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -433,7 +484,7 @@ func TestResolveVEGroupMentionTargetsUsesCanonicalParticipants(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	targets, err := app.resolveVEGroupMentionTargets("session-1", []string{" profile-ve ", "machine-ve", "MACHINE-1"})
+	targets, err := app.resolveVEGroupMentionTargets("session-1", "", []string{" profile-ve ", "machine-ve", "MACHINE-1"})
 	if err != nil {
 		t.Fatalf("resolveVEGroupMentionTargets: %v", err)
 	}
@@ -450,6 +501,22 @@ func TestIsLocalGroupMentionIDAcceptsCanonicalAndDisplayAliases(t *testing.T) {
 	for _, id := range cases {
 		if !isLocalGroupMentionID(id, "machine-1") {
 			t.Fatalf("isLocalGroupMentionID(%q) = false, want true", id)
+		}
+	}
+}
+
+func TestContentMentionsLocalGroupAIRequiresMentionBoundary(t *testing.T) {
+	positive := []string{"@\u672c\u673aAI \u4f60\u662f?", "@\u672c\u673a AI\u4f60\u662f?", "\u8bf7@\u672c\u673aAI\u770b\u4e00\u4e0b", "@machine-1, please"}
+	for _, content := range positive {
+		if !contentMentionsLocalGroupAI(content, "machine-1") {
+			t.Fatalf("contentMentionsLocalGroupAI(%q) = false, want true", content)
+		}
+	}
+
+	negative := []string{"@\u672c\u673aAI2 \u4f60\u662f?", "@machine-10 please", "ops@localai.example", "@local-ai_extra"}
+	for _, content := range negative {
+		if contentMentionsLocalGroupAI(content, "machine-1") {
+			t.Fatalf("contentMentionsLocalGroupAI(%q) = true, want false", content)
 		}
 	}
 }
@@ -478,7 +545,7 @@ func TestResolveVEGroupMentionTargetsRejectsUnknownParticipant(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	if _, err := app.resolveVEGroupMentionTargets("session-1", []string{"missing-ve"}); err == nil {
+	if _, err := app.resolveVEGroupMentionTargets("session-1", "", []string{"missing-ve"}); err == nil {
 		t.Fatal("expected unknown participant error")
 	}
 }

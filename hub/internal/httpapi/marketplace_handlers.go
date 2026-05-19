@@ -30,9 +30,9 @@ func MarketplacePageHandler(product string) http.HandlerFunc {
 	}
 }
 
-func CapabilityListHandler(svc *capability.Service) http.HandlerFunc {
+func CapabilityListHandler(svc *capability.Service, identityOpt ...viewerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := marketplaceRequestContext(r)
+		ctx := marketplaceRequestContext(r, identityOpt...)
 		items, err := svc.List(ctx, r.URL.Query().Get("type"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_LIST_FAILED", err.Error())
@@ -42,9 +42,9 @@ func CapabilityListHandler(svc *capability.Service) http.HandlerFunc {
 	}
 }
 
-func CapabilityDetailHandler(svc *capability.Service) http.HandlerFunc {
+func CapabilityDetailHandler(svc *capability.Service, identityOpt ...viewerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := marketplaceRequestContext(r)
+		ctx := marketplaceRequestContext(r, identityOpt...)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY_ID", "capability id is required")
@@ -63,9 +63,9 @@ func CapabilityDetailHandler(svc *capability.Service) http.HandlerFunc {
 	}
 }
 
-func CapabilityVersionsHandler(svc *capability.Service) http.HandlerFunc {
+func CapabilityVersionsHandler(svc *capability.Service, identityOpt ...viewerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := marketplaceRequestContext(r)
+		ctx := marketplaceRequestContext(r, identityOpt...)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY_ID", "capability id is required")
@@ -275,10 +275,21 @@ func AdminMCPMarketplaceUpsertHandler(svc *capability.Service) http.HandlerFunc 
 	}
 }
 
-func CapabilityInstallIntentHandler(svc *capability.Service, settings store.SystemSettingsRepository, centerStatuses ...capabilityMarketCenterStatusProvider) http.HandlerFunc {
+func CapabilityInstallIntentHandler(svc *capability.Service, settings store.SystemSettingsRepository, deps ...any) http.HandlerFunc {
+	var identity viewerAuthenticator
+	var centerStatuses []capabilityMarketCenterStatusProvider
+	for _, dep := range deps {
+		switch v := dep.(type) {
+		case nil:
+		case viewerAuthenticator:
+			identity = v
+		case capabilityMarketCenterStatusProvider:
+			centerStatuses = append(centerStatuses, v)
+		}
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := marketplaceRequestContext(r)
-		settings = scopedSystemSettingsForTenant(capabilityTenantIDFromRequest(r), settings)
+		ctx := marketplaceRequestContext(r, identity)
+		settings = scopedSystemSettingsForTenant(capabilityTenantIDFromRequest(r, identity), settings)
 		var req capabilityInstallIntentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
@@ -458,9 +469,9 @@ func capabilityOriginMatchesInstallIntent(req capabilityInstallIntentRequest, me
 	originSource := strings.TrimSpace(strings.ToLower(stringFromAny(metadata["origin_source"])))
 	return originSource == source
 }
-func CapabilityManagedDeploymentsHandler(svc *capability.Service) http.HandlerFunc {
+func CapabilityManagedDeploymentsHandler(svc *capability.Service, identityOpt ...viewerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := marketplaceRequestContext(r)
+		ctx := marketplaceRequestContext(r, identityOpt...)
 		items, err := svc.ListManagedDeployments(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MANAGED_DEPLOYMENTS_LIST_FAILED", err.Error())
@@ -470,9 +481,9 @@ func CapabilityManagedDeploymentsHandler(svc *capability.Service) http.HandlerFu
 	}
 }
 
-func CapabilityRecommendationsHandler(svc *capability.Service) http.HandlerFunc {
+func CapabilityRecommendationsHandler(svc *capability.Service, identityOpt ...viewerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := marketplaceRequestContext(r)
+		ctx := marketplaceRequestContext(r, identityOpt...)
 		items, err := svc.ListRecommendations(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "RECOMMENDATIONS_LIST_FAILED", err.Error())
@@ -1347,7 +1358,7 @@ func AdminBillingCustomerAccountHandler(deps ...any) http.HandlerFunc {
 			"hub_id":      hubCenterStateHubID(state),
 			"hubcenter":   hubCenterStateBaseURL(state),
 		}
-		if centerAccount, err := fetchHubCenterCustomerAccount(r.Context(), centerStatus, hubCenterStateHubID(state), adminEmail); err == nil {
+		if centerAccount, err := fetchHubCenterCustomerAccount(r.Context(), centerStatus, hubCenterStateHubID(state), adminEmail, capabilityBillingTenantIDFromRequest(r)); err == nil {
 			for key, value := range centerAccount {
 				account[key] = value
 			}
@@ -1359,11 +1370,14 @@ func AdminBillingCustomerAccountHandler(deps ...any) http.HandlerFunc {
 			}
 			account["hubcenter"] = hubCenterStateBaseURL(state)
 		}
+		if tenantID := capabilityBillingTenantIDFromRequest(r); tenantID != "" {
+			account["tenant_id"] = tenantID
+		}
 		writeJSON(w, http.StatusOK, account)
 	}
 }
 
-func fetchHubCenterCustomerAccount(ctx context.Context, centerStatus capabilityMarketCenterStatusProvider, hubID, adminEmail string) (map[string]any, error) {
+func fetchHubCenterCustomerAccount(ctx context.Context, centerStatus capabilityMarketCenterStatusProvider, hubID, adminEmail, tenantID string) (map[string]any, error) {
 	baseURL, err := hubCenterMarketplaceBaseURL(ctx, centerStatus)
 	if err != nil {
 		return nil, err
@@ -1377,6 +1391,9 @@ func fetchHubCenterCustomerAccount(ctx context.Context, centerStatus capabilityM
 	}
 	if strings.TrimSpace(adminEmail) != "" {
 		values.Set("admin_email", strings.TrimSpace(adminEmail))
+	}
+	if strings.TrimSpace(tenantID) != "" {
+		values.Set("tenant_id", store.NormalizeTenantID(tenantID))
 	}
 	endpoint := baseURL + "/api/capability-market/customer-account"
 	if encoded := values.Encode(); encoded != "" {
@@ -1400,6 +1417,26 @@ func fetchHubCenterCustomerAccount(ctx context.Context, centerStatus capabilityM
 	}
 	return payload, nil
 }
+func capabilityBillingTenantIDFromContext(ctx context.Context) string {
+	admin := AdminFromContext(ctx)
+	if admin == nil {
+		return ""
+	}
+	if strings.TrimSpace(admin.Scope) == "tenant" && strings.TrimSpace(admin.TenantID) != "" {
+		return store.NormalizeTenantID(admin.TenantID)
+	}
+	return ""
+}
+
+func capabilityBillingTenantIDFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id")); tenantID != "" {
+		return store.NormalizeTenantID(tenantID)
+	}
+	return capabilityBillingTenantIDFromContext(r.Context())
+}
 func AdminBillingLicensesHandler(settings store.SystemSettingsRepository, centerStatus capabilityMarketCenterStatusProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		baseURL, err := hubCenterMarketplaceBaseURL(r.Context(), centerStatus)
@@ -1419,6 +1456,9 @@ func AdminBillingLicensesHandler(settings store.SystemSettingsRepository, center
 		}
 		if adminEmail != "" {
 			values.Set("admin_email", adminEmail)
+		}
+		if tenantID := capabilityBillingTenantIDFromRequest(r); tenantID != "" {
+			values.Set("tenant_id", tenantID)
 		}
 		endpoint := baseURL + "/api/capability-market/billing/licenses"
 		if encoded := values.Encode(); encoded != "" {
@@ -1450,6 +1490,9 @@ func AdminBillingLicensesHandler(settings store.SystemSettingsRepository, center
 			payload["hub_id"] = state.HubID
 		}
 		payload["admin_email"] = adminEmail
+		if tenantID := capabilityBillingTenantIDFromRequest(r); tenantID != "" {
+			payload["tenant_id"] = tenantID
+		}
 		writeJSON(w, http.StatusOK, payload)
 	}
 }
@@ -2319,9 +2362,9 @@ func AdminCapabilityMarketPolicyUpdateHandler(settings store.SystemSettingsRepos
 	}
 }
 
-func MCPSecretRequirementsHandler(svc *capability.Service) http.HandlerFunc {
+func MCPSecretRequirementsHandler(svc *capability.Service, identityOpt ...viewerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := marketplaceRequestContext(r)
+		ctx := marketplaceRequestContext(r, identityOpt...)
 		items, err := svc.ListMCPSecretRequirements(ctx, r.PathValue("id"), r.URL.Query().Get("version_key"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MCP_SECRET_REQUIREMENTS_LIST_FAILED", err.Error())
@@ -2482,9 +2525,16 @@ func authenticateMarketplaceViewer(r *http.Request, identity viewerAuthenticator
 	return &marketplaceViewerPrincipal{TenantID: principal.TenantID, UserID: principal.UserID, Email: principal.Email}, nil
 }
 
-func capabilityTenantIDFromRequest(r *http.Request) string {
+func capabilityTenantIDFromRequest(r *http.Request, identityOpt ...viewerAuthenticator) string {
 	if r == nil {
 		return store.DefaultTenantID
+	}
+	if len(identityOpt) > 0 && identityOpt[0] != nil {
+		if principal, err := authenticateMarketplaceViewer(r, identityOpt[0]); err == nil {
+			if tenantID := strings.TrimSpace(principal.TenantID); tenantID != "" {
+				return tenantID
+			}
+		}
 	}
 	if tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID")); tenantID != "" {
 		return tenantID
@@ -2492,8 +2542,8 @@ func capabilityTenantIDFromRequest(r *http.Request) string {
 	return RequestTenantID(r)
 }
 
-func marketplaceRequestContext(r *http.Request) context.Context {
-	return capability.WithTenant(r.Context(), capabilityTenantIDFromRequest(r))
+func marketplaceRequestContext(r *http.Request, identityOpt ...viewerAuthenticator) context.Context {
+	return capability.WithTenant(r.Context(), capabilityTenantIDFromRequest(r, identityOpt...))
 }
 
 func capabilityAdminContext(r *http.Request) context.Context {

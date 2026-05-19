@@ -9,7 +9,7 @@
  * Designed to be rendered alongside the group chat message area in a flex row.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { ParticipantSelector, useGroupConfig, virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
@@ -33,6 +33,59 @@ function participantDisplayNameFor(p: Participant, index: number, isZh: boolean,
     const id = String(p.id || "").trim();
     if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
     return participantFallbackName(index, isZh);
+}
+
+function participantIconStyle(p: Participant, theme: Theme): CSSProperties {
+    const isLocal = !!p.isLocal;
+    return {
+        position: "relative",
+        width: 18,
+        height: 18,
+        borderRadius: 6,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        color: isLocal ? "#34d399" : theme.btnColor,
+        background: isLocal ? "rgba(52, 211, 153, 0.12)" : "rgba(99, 102, 241, 0.12)",
+        border: `1px solid ${isLocal ? "rgba(52, 211, 153, 0.28)" : "rgba(99, 102, 241, 0.24)"}`,
+    };
+}
+
+function ParticipantTypeIcon({ participant, theme }: { participant: Participant; theme: Theme }) {
+    const stroke = "currentColor";
+    const title = participant.isLocal ? "Local AI" : "Digital employee";
+    return (
+        <span aria-label={title} title={title} style={participantIconStyle(participant, theme)}>
+            {participant.isLocal ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                    <rect x="3" y="4" width="10" height="8" rx="2" stroke={stroke} strokeWidth="1.4" />
+                    <path d="M6 2.5v1.5M10 2.5v1.5M6 12v1.5M10 12v1.5" stroke={stroke} strokeWidth="1.3" strokeLinecap="round" />
+                    <path d="M6.3 7h.01M9.7 7h.01M6.2 9.1h3.6" stroke={stroke} strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+            ) : (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                    <circle cx="8" cy="5.2" r="2.4" stroke={stroke} strokeWidth="1.4" />
+                    <path d="M3.8 13c.55-2.15 2.1-3.4 4.2-3.4s3.65 1.25 4.2 3.4" stroke={stroke} strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+            )}
+            <span
+                data-testid={`participant-status-${participant.id}`}
+                aria-hidden="true"
+                style={{
+                    position: "absolute",
+                    right: -2,
+                    bottom: -2,
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: participant.online ? "#22c55e" : "#6b7280",
+                    border: `1.5px solid ${theme.titleBarBg}`,
+                    boxSizing: "border-box",
+                }}
+            />
+        </span>
+    );
 }
 export interface GroupParticipantPanelProps {
     participants: Participant[];
@@ -209,14 +262,7 @@ export function GroupParticipantPanel({
                         }}
                         title={displayName}
                     >
-                        {/* Online indicator */}
-                        <span style={{
-                            width: 7,
-                            height: 7,
-                            borderRadius: "50%",
-                            background: p.online ? "#22c55e" : "#6b7280",
-                            flexShrink: 0,
-                        }} />
+                        <ParticipantTypeIcon participant={p} theme={theme} />
                         {/* Name */}
                         <span style={{
                             overflow: "hidden",

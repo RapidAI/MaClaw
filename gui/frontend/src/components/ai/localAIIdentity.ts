@@ -16,6 +16,13 @@ export function normalizeParticipantId(value: string | null | undefined): string
     return String(value || "").trim().toLowerCase();
 }
 
+const LOCAL_HUMAN_PARTICIPANT_IDS = new Set(["me", "user", "local", "local-user", "operator", "desktop-user", "initiator"]);
+
+export function isLocalHumanParticipantId(value: string | null | undefined): boolean {
+    const normalized = normalizeParticipantId(value);
+    return !!normalized && LOCAL_HUMAN_PARTICIPANT_IDS.has(normalized);
+}
+
 function compactLocalAIName(value: string): string {
     return value.replace(/\s+/g, "").toLowerCase();
 }

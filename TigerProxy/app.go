@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -28,7 +28,8 @@ const (
 type App struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
-	ssoCtx    context.Context`n`tssoCancel context.CancelFunc
+	ssoCtx    context.Context
+	ssoCancel context.CancelFunc
 	server    *codegenproxy.Server
 	listen    string
 	lastError string
@@ -151,6 +152,7 @@ func (a *App) StartSSOLogin() (LoginStartResult, error) {
 	a.cancelSSOLogin()
 	ctx, cancel := context.WithTimeout(context.Background(), oauth.CodeGenTimeout)
 	a.mu.Lock()
+	a.ssoCtx = ctx
 	a.ssoCancel = cancel
 	a.mu.Unlock()
 
@@ -167,7 +169,13 @@ func (a *App) StartSSOLogin() (LoginStartResult, error) {
 
 func (a *App) CompleteSSOLogin() (Status, error) {
 	defer a.cancelSSOLogin()
-	a.mu.Lock()`n`tctx := a.ssoCtx`n`ta.mu.Unlock()`n`tif ctx == nil {`n`t`tctx = context.Background()`n`t}`n`tresult, err := oauth.WaitForCodeGenSSOCallbackContext(ctx, oauth.CodeGenTimeout)
+	a.mu.Lock()
+	ctx := a.ssoCtx
+	a.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result, err := oauth.WaitForCodeGenSSOCallbackContext(ctx, oauth.CodeGenTimeout)
 	if err != nil {
 		return Status{}, err
 	}
@@ -190,6 +198,7 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 func (a *App) cancelSSOLogin() {
 	a.mu.Lock()
 	cancel := a.ssoCancel
+	a.ssoCtx = nil
 	a.ssoCancel = nil
 	a.mu.Unlock()
 	if cancel != nil {
@@ -248,6 +257,16 @@ func (a *App) OpenURL(url string) error {
 	return nil
 }
 
+func (a *App) ShowMainWindow() {
+	if a.ctx == nil {
+		return
+	}
+	runtime.WindowUnminimise(a.ctx)
+	runtime.WindowShow(a.ctx)
+	runtime.WindowSetAlwaysOnTop(a.ctx, true)
+	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	a.setShown(true)
+}
 func (a *App) WindowHide() {
 	if a.ctx == nil {
 		return
@@ -536,4 +555,3 @@ func normalizeModelID(id string) string {
 	}
 	return id
 }
-

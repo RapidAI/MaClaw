@@ -1,4 +1,4 @@
-﻿const api = window.go?.main?.App;
+const api = window.go?.main?.App;
 const $ = (id) => document.getElementById(id);
 let toastTimer;
 let loginInProgress = false;
@@ -93,7 +93,9 @@ async function save(options = {}) {
       email: $("email").value,
     });
     await refresh();
-    if (!options.silent) {`n      notify("已保存并重启代理");`n    }
+    if (!options.silent) {
+      notify("已保存并重启代理");
+    }
   } finally {
     setBusy(saveBtn, false);
   }
@@ -129,4 +131,3 @@ document.querySelectorAll("button[data-copy]").forEach((btn) => {
 });
 
 refresh();
-

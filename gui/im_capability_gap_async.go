@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 )
@@ -51,6 +50,7 @@ func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userI
 		Success:   installResult.Success,
 		Timestamp: time.Now(),
 	})
+	lang := h.skillConfirmLang()
 	if installResult.Success {
 		log.Printf("[skill-auto-async] skill %q installed successfully, result pending for next turn", best.Name)
 		if h.app != nil {
@@ -61,7 +61,8 @@ func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userI
 			h.emitAppEvent("skill-install-result", map[string]interface{}{
 				"name":    best.Name,
 				"success": true,
-				"message": fmt.Sprintf("✅ Skill「%s」安装成功。", best.Name),
+				"lang":    lang,
+				"message": localizedSkillInstallResultMessage(lang, best.Name, true, ""),
 			})
 		}
 		return
@@ -69,7 +70,7 @@ func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userI
 	log.Printf("[skill-auto-async] skill install/execute finished without success: %s", installResult.Text)
 	// Only emit failure feedback for cases where the user did NOT already see
 	// inline feedback from the confirmation buttons. The frontend's executeAction
-	// already shows "❌ 已拒绝安装。" when the user clicks reject, so we skip
+	// already shows the localized rejection text when the user clicks reject, so we skip
 	// the event for user-initiated rejections to avoid duplicate messages.
 	if !installResult.SilentFailure && h.app != nil {
 		// Truncate long error text for the chat message (full text is in logs).
@@ -80,7 +81,8 @@ func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userI
 		h.emitAppEvent("skill-install-result", map[string]interface{}{
 			"name":    best.Name,
 			"success": false,
-			"message": fmt.Sprintf("❌ Skill「%s」安装未成功：%s", best.Name, errText),
+			"lang":    lang,
+			"message": localizedSkillInstallResultMessage(lang, best.Name, false, errText),
 		})
 	}
 }

@@ -272,6 +272,34 @@ describe("AssistantActiveTabContent", () => {
         expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@Local AI @Local AI ");
     });
 
+    it("persists an explicit VE clear command to tab state immediately", async () => {
+        const liveTab: AITab = { id: "ve-clear", type: "ve", title: "Agent A", veId: "ve-a", closable: true };
+        const saveTabState = vi.fn();
+
+        render(
+            <AssistantActiveTabContent
+                activeTab={liveTab}
+                tabs={[LOCAL_TAB, liveTab]}
+                isLocalTabActive={false}
+                isProjectTabActive={false}
+                lang="en"
+                theme={theme}
+                getTabState={() => ({ sessionId: "session-old", history: [{ id: "old", role: "assistant", content: "old answer" }], inputText: "", scrollTop: 0 })}
+                saveTabState={saveTabState}
+            />
+        );
+
+        expect(screen.getByText("old answer")).toBeTruthy();
+        const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+        fireEvent.change(textarea, { target: { value: "/clear" } });
+        fireEvent.keyDown(textarea, { key: "Enter" });
+
+        await waitFor(() => expect(saveTabState).toHaveBeenCalledWith(
+            liveTab.id,
+            expect.objectContaining({ history: [], inputText: "", sessionId: undefined, discussionId: undefined })
+        ));
+    });
+
     it("lets the unified participant panel add a live group participant", async () => {
         const groupTab: AITab = { id: "group-live", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a", "local-maclaw"], closable: true };
         const onAddParticipantToTab = vi.fn();

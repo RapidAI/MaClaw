@@ -29,7 +29,14 @@ func main() {
 		AssetServer:              &assetserver.Options{Assets: assets},
 		OnStartup:                app.startup,
 		OnShutdown:               app.shutdown,
-		Bind:                     []interface{}{app},
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId: "tigerproxy-lock",
+			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
+				_ = secondInstanceData
+				go app.ShowMainWindow()
+			},
+		},
+		Bind: []interface{}{app},
 	}
 	setupTray(app, appOptions)
 	if err := wails.Run(appOptions); err != nil {

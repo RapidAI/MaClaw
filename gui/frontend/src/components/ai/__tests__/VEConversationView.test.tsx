@@ -1,3 +1,4 @@
+import { createRef } from "react";
 import { act, render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,7 +9,7 @@ import {
     fileNameFromPath,
     createSessionWithTimeout,
 } from "../VEConversationView";
-import type { VEConversationViewProps, VEConversationError } from "../VEConversationView";
+import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
 import { SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
 
@@ -988,6 +989,18 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-send-button")).toBeTruthy();
         });
 
+        it("keeps the textarea from overlapping the send button", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            const sendButton = screen.getByTestId("ve-send-button") as HTMLButtonElement;
+
+            expect(textarea.style.boxSizing).toBe("border-box");
+            expect(sendButton.style.flexShrink).toBe("0");
+            expect(sendButton.style.minWidth).toBe("54px");
+        });
+
         it("renders attachment button", async () => {
             renderConversation();
             await act(async () => { await vi.runAllTimersAsync(); });
@@ -1004,6 +1017,142 @@ describe("VEConversationView", () => {
 
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(textarea.value).toBe("");
+        });
+
+        it("syncs a late existing session id into the mounted view", async () => {
+            const ref = createRef<VEConversationHandle>();
+            const initiate = vi.fn().mockResolvedValue({ session_id: "created-session", ve_id: "ve-1", ve_name: "Test VE" });
+            const { rerender } = render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    initialOnlineStatus="offline"
+                    initiateConversation={initiate}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                />
+            );
+
+            expect(ref.current?.getState().sessionId).toBeNull();
+            rerender(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    initialOnlineStatus="offline"
+                    existingSessionId="history-session"
+                    initiateConversation={initiate}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                />
+            );
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(initiate).not.toHaveBeenCalled();
+            expect(ref.current?.getState().sessionId).toBe("history-session");
+        });
+
+        it("clears VE history with an explicit /clear command", async () => {
+            const close = vi.fn().mockResolvedValue(undefined);
+            const onConversationCleared = vi.fn();
+            renderConversation({
+                existingSessionId: "test-session-1",
+                closeSession: close,
+                onConversationCleared,
+                initialMessages: [{ id: "old-msg", role: "assistant", content: "old answer", timestamp: 1 }],
+            });
+
+            expect(screen.getByText("old answer")).toBeTruthy();
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "/clear" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(screen.queryByText("old answer")).toBeNull();
+            expect(textarea.value).toBe("");
+            expect(close).toHaveBeenCalledWith("test-session-1");
+            expect(onConversationCleared).toHaveBeenCalledTimes(1);
+        });
+
+        it("starts a fresh group session with all remote participants after clear", async () => {
+            const initiateGroupConversation = vi.fn().mockResolvedValue({ session_id: "group-session-2", ve_id: "ve-1,ve-2", ve_name: "Group" });
+            const registerLocalExecutorInGroup = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local AI" });
+            const close = vi.fn().mockResolvedValue(undefined);
+            const { rerender } = renderConversation({
+                existingSessionId: "group-session-1",
+                closeSession: close,
+                initiateGroupConversation,
+                registerLocalExecutorInGroup,
+                participants: [
+                    { id: "ve-1", name: "Agent A", online: true },
+                    { id: "ve-2", name: "Agent B", online: true },
+                    { id: "machine-local", name: "Local AI", online: true },
+                ],
+                initialMessages: [{ id: "old-msg", role: "assistant", content: "old answer", timestamp: 1 }],
+                clearSignal: 0,
+            });
+
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Agent A"
+                    theme={mockTheme}
+                    lang="en"
+                    existingSessionId="group-session-1"
+                    initiateConversation={vi.fn()}
+                    initiateGroupConversation={initiateGroupConversation}
+                    registerLocalExecutorInGroup={registerLocalExecutorInGroup}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={close}
+                    participants={[
+                        { id: "ve-1", name: "Agent A", online: true },
+                        { id: "ve-2", name: "Agent B", online: true },
+                        { id: "machine-local", name: "Local AI", online: true },
+                    ]}
+                    clearSignal={1}
+                />
+            );
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(close).toHaveBeenCalledWith("group-session-1");
+            expect(initiateGroupConversation).toHaveBeenCalledWith(["ve-1", "ve-2"]);
+            expect(registerLocalExecutorInGroup).toHaveBeenCalledWith("group-session-2");
+        });
+
+        it("clears VE history when the tab manager sends a clear signal", async () => {
+            const close = vi.fn().mockResolvedValue(undefined);
+            const { rerender } = renderConversation({
+                existingSessionId: "test-session-1",
+                closeSession: close,
+                initialMessages: [{ id: "old-msg", role: "assistant", content: "old answer", timestamp: 1 }],
+                clearSignal: 0,
+            });
+
+            expect(screen.getByText("old answer")).toBeTruthy();
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn().mockResolvedValue({ session_id: "test-session-2", ve_id: "ve-1", ve_name: "Test VE" })}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={close}
+                    clearSignal={1}
+                />
+            );
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(screen.queryByText("old answer")).toBeNull();
+            expect(close).toHaveBeenCalledWith("test-session-1");
         });
     });
 });

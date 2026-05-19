@@ -115,6 +115,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         createGroupTab,
         createProjectTab,
         closeTab,
+        clearTabConversation,
         saveTabState,
         getTabState,
         getLastActiveAt,
@@ -124,6 +125,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         tabLimitError,
         clearTabLimitError,
     } = useAITabManager();
+    const clearActiveHistory = useCallback(async () => {
+        if (activeTab.type === "ve" || (activeTab.type === "group" && !!activeTab.veId)) {
+            clearTabConversation(activeTab.id);
+            return;
+        }
+        await clearHistory();
+    }, [activeTab.id, activeTab.type, activeTab.veId, clearHistory, clearTabConversation]);
+
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const showChatUI = isLocalTabActive || isProjectTabActive;
@@ -358,6 +367,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         createProjectTab: createProjectTabWithContext,
         activateTab,
         getTabState,
+        saveTabState,
         getTabList: getTabs,
         hasProjectTab,
         sendMessage: sendMessageForTab,
@@ -740,7 +750,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     '--wails-draggable': 'drag',
                 } as any} />
             )}
-            <AssistantTitleBar clearHistory={clearHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onHideWindow={onHideWindow} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onHideWindow={onHideWindow} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} />
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
             <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateTab} onClose={closeTab} onInviteToTab={(tab) => {
                 if (tab.type === "ve") {

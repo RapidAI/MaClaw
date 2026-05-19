@@ -527,9 +527,6 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 	// Multiple machines.
 	r.mu.Lock()
 	selected := r.selectedMachine[key]
-	if selected == "" && tenantID == normalizeTenantID("") {
-		selected = r.selectedMachine[userID]
-	}
 	r.mu.Unlock()
 
 	if selected == "" {

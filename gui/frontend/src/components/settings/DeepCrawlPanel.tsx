@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import { colors, radius } from '../remote/styles';
 import { EventsOn, EventsOff } from '../../../wailsjs/runtime';
@@ -26,11 +26,14 @@ export interface DeepCrawlConfig {
     saveScope: string;
     topicHint: string;
     labels: string[];
+    clientRunID?: string;
 }
 
 export interface DeepCrawlProgress {
     job_id: string;
-    status: 'discovering' | 'crawling' | 'completed' | 'cancelled' | 'failed';
+    mode?: 'preview' | 'crawl';
+    client_run_id?: string;
+    status: 'discovering' | 'crawling' | 'completed' | 'cancelled' | 'failed' | 'timeout' | 'limit_reached';
     current_depth: number;
     max_depth: number;
     total_discovered: number;
@@ -48,6 +51,16 @@ export interface DeepCrawlPreviewResult {
         urls: string[];
     }>;
     total_discovered?: number;
+    status?: DeepCrawlProgress['status'];
+}
+
+export interface DeepCrawlRunResult {
+    job_id?: string;
+    status?: DeepCrawlProgress['status'];
+    total_discovered?: number;
+    total_saved?: number;
+    failed?: number;
+    skipped?: number;
 }
 
 export interface DeepCrawlPanelProps {
@@ -55,7 +68,7 @@ export interface DeepCrawlPanelProps {
     /** Called when user clicks "Preview". Receives the current config. */
     onPreview?: (config: DeepCrawlConfig) => Promise<DeepCrawlPreviewResult | void> | DeepCrawlPreviewResult | void;
     /** Called when user clicks "Start Crawl". Receives the current config. */
-    onStartCrawl?: (config: DeepCrawlConfig) => Promise<void> | void;
+    onStartCrawl?: (config: DeepCrawlConfig) => Promise<DeepCrawlRunResult | void> | DeepCrawlRunResult | void;
     /** Whether a crawl/preview is currently in progress. Disables buttons. */
     busy?: boolean;
 }
@@ -96,6 +109,11 @@ export function previewTotalDiscovered(result: DeepCrawlPreviewResult | null): n
     return (result.by_depth || []).reduce((sum, level) => sum + (level.total || level.urls?.length || 0), 0);
 }
 
+function previewStatusText(lang: string | undefined, result: DeepCrawlPreviewResult): string {
+    if (result.status !== 'limit_reached') return '';
+    return t(lang, 'Limit reached; showing the first discovered URLs', '已达到抓取上限，当前仅展示先发现的 URL');
+}
+
 export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCrawlPanelProps) {
     const [seedURL, setSeedURL] = useState('');
     const [maxDepth, setMaxDepth] = useState(2);
@@ -108,6 +126,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
     // Progress state (task 6.2)
     const [progress, setProgress] = useState<DeepCrawlProgress | null>(null);
     const [isCrawling, setIsCrawling] = useState(false);
+    const activeClientRunIDRef = useRef<string | null>(null);
 
     // Preview results state (task 6.3)
     const [previewResult, setPreviewResult] = useState<DeepCrawlPreviewResult | null>(null);
@@ -120,12 +139,22 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
     useEffect(() => {
         const unsub = EventsOn('knowledge:deep-crawl-progress', (data: DeepCrawlProgress) => {
             if (!data) return;
+            // Preview and crawl share the backend transport, but they are distinct UI lifecycles.
+            // Preview progress is represented by the preview result/busy state and must not
+            // start or finish the crawl UI, especially when an older preview event arrives late.
+            if (data.mode === 'preview') return;
+            if (activeClientRunIDRef.current && data.client_run_id !== activeClientRunIDRef.current) {
+                return;
+            }
+
             setProgress(data);
             if (data.status === 'discovering' || data.status === 'crawling') {
                 setIsCrawling(true);
             } else {
-                // completed, cancelled, or failed
                 setIsCrawling(false);
+                if (data.client_run_id === activeClientRunIDRef.current) {
+                    activeClientRunIDRef.current = null;
+                }
             }
         });
         return () => {
@@ -156,32 +185,86 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
         }
     }, [urlValid, onPreview, buildConfig]);
 
+    const createClientRunID = useCallback(() => `deep-crawl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, []);
+
+    const initialCrawlProgress = useCallback((config: DeepCrawlConfig, totalHint = 1): DeepCrawlProgress => ({
+        job_id: '',
+        mode: 'crawl',
+        client_run_id: config.clientRunID,
+        status: 'crawling',
+        current_depth: 0,
+        max_depth: config.maxDepth,
+        total_discovered: Math.max(1, totalHint),
+        completed: 0,
+        pending: Math.max(1, totalHint),
+        failed: 0,
+        skipped: 0,
+        current_url: config.seedURL,
+    }), []);
+
+    const completeCrawlFromResult = useCallback((config: DeepCrawlConfig, result: DeepCrawlRunResult | void, totalHint = 1) => {
+        if (!result || activeClientRunIDRef.current !== config.clientRunID) return;
+        const totalDiscovered = Math.max(1, result.total_discovered ?? totalHint);
+        setProgress({
+            job_id: result.job_id || '',
+            mode: 'crawl',
+            client_run_id: config.clientRunID,
+            status: result.status || 'completed',
+            current_depth: config.maxDepth,
+            max_depth: config.maxDepth,
+            total_discovered: totalDiscovered,
+            completed: result.total_saved ?? 0,
+            pending: 0,
+            failed: result.failed ?? 0,
+            skipped: result.skipped ?? 0,
+        });
+        setIsCrawling(false);
+        activeClientRunIDRef.current = null;
+    }, []);
+
+    const markCrawlFailed = useCallback((config: DeepCrawlConfig) => {
+        setProgress(prev => ({
+            ...(prev || initialCrawlProgress(config)),
+            status: 'failed',
+            pending: 0,
+        }));
+        setIsCrawling(false);
+        if (!config.clientRunID || config.clientRunID === activeClientRunIDRef.current) {
+            activeClientRunIDRef.current = null;
+        }
+    }, [initialCrawlProgress]);
+
     const handleStartCrawl = useCallback(async () => {
         if (!urlValid || !onStartCrawl) return;
+        const config = { ...buildConfig(), clientRunID: createClientRunID() };
+        activeClientRunIDRef.current = config.clientRunID;
         setPreviewResult(null);
-        setProgress(null);
+        setProgress(initialCrawlProgress(config));
         setIsCrawling(true);
         try {
-            await onStartCrawl(buildConfig());
-        } finally {
-            // If the call finishes before any final progress event is emitted,
-            // reset isCrawling to avoid permanently stuck UI.
-            setIsCrawling(false);
+            const result = await onStartCrawl(config);
+            completeCrawlFromResult(config, result);
+        } catch {
+            markCrawlFailed(config);
         }
-    }, [urlValid, onStartCrawl, buildConfig]);
+    }, [urlValid, onStartCrawl, buildConfig, createClientRunID, initialCrawlProgress, completeCrawlFromResult, markCrawlFailed]);
 
     // Confirm & Start Crawl from preview (Req 4.4)
     const handleConfirmPreview = useCallback(async () => {
         if (!onStartCrawl) return;
+        const config = { ...buildConfig(), clientRunID: createClientRunID() };
+        activeClientRunIDRef.current = config.clientRunID;
+        const totalHint = previewTotalDiscovered(previewResult);
         setPreviewResult(null);
-        setProgress(null);
+        setProgress(initialCrawlProgress(config, totalHint));
         setIsCrawling(true);
         try {
-            await onStartCrawl(buildConfig());
-        } finally {
-            setIsCrawling(false);
+            const result = await onStartCrawl(config);
+            completeCrawlFromResult(config, result, totalHint);
+        } catch {
+            markCrawlFailed(config);
         }
-    }, [onStartCrawl, buildConfig]);
+    }, [onStartCrawl, buildConfig, createClientRunID, previewResult, initialCrawlProgress, completeCrawlFromResult, markCrawlFailed]);
 
     // Discard preview data (Req 4.5)
     const handleDiscardPreview = useCallback(() => {
@@ -209,13 +292,15 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
     }, []);
 
     // Compute progress percentage (Req 3.2)
+    const processedCount = progress ? progress.completed + progress.failed + progress.skipped : 0;
     const progressPercent = progress && progress.total_discovered > 0
-        ? Math.round((progress.completed / progress.total_discovered) * 100)
+        ? Math.min(100, Math.round((processedCount / progress.total_discovered) * 100))
         : 0;
 
-    const showProgress = isCrawling || (progress && (progress.status === 'discovering' || progress.status === 'crawling'));
+    const showProgress = !!progress;
     const showPreview = previewResult && !isCrawling;
     const previewTotal = previewTotalDiscovered(previewResult);
+    const previewStatus = previewResult ? previewStatusText(lang, previewResult) : '';
 
     return (
         <div style={panelStyle}>
@@ -331,6 +416,8 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
 
                     {/* Status text (Req 3.1) */}
                     <div style={progressStatusStyle}>
+                        {t(lang, 'Status', '状态')}: {progress.status}
+                        {' | '}
                         {t(lang, 'Depth', '深度')} {progress.current_depth}/{progress.max_depth}
                         {' | '}
                         {t(lang, 'Discovered', '已发现')}: {progress.total_discovered}
@@ -348,13 +435,15 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                     )}
 
                     {/* Cancel button (Req 3.5) */}
-                    <button
-                        type="button"
-                        style={cancelButtonStyle}
-                        onClick={handleCancel}
-                    >
-                        {t(lang, 'Cancel', '取消')}
-                    </button>
+                    {isCrawling && (
+                        <button
+                            type="button"
+                            style={cancelButtonStyle}
+                            onClick={handleCancel}
+                        >
+                            {t(lang, 'Cancel', '取消')}
+                        </button>
+                    )}
                 </div>
             )}
 
@@ -366,6 +455,11 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                         {t(lang,
                             `Found ${previewTotal} URLs across ${previewResult.by_depth.length} levels`,
                             `发现 ${previewTotal} 个 URL，共 ${previewResult.by_depth.length} 层`
+                        )}
+                        {previewStatus && (
+                            <span style={previewStatusStyle}>
+                                {previewStatus}
+                            </span>
                         )}
                     </div>
 
@@ -591,6 +685,16 @@ const previewHeaderStyle: CSSProperties = {
     fontSize: 12,
     fontWeight: 700,
     color: colors.text,
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+    alignItems: 'center',
+};
+
+const previewStatusStyle: CSSProperties = {
+    fontSize: 12,
+    fontWeight: 500,
+    color: colors.textSecondary,
 };
 
 const depthListStyle: CSSProperties = {

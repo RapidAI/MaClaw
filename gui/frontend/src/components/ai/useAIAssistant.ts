@@ -1848,6 +1848,29 @@ function samePinnedNews(left: ChatMessage, right: ChatMessage): boolean {
         && leftNews.icon === rightNews.icon;
 }
 
+function isTraditionalSkillConfirmLang(lang: string): boolean {
+    const normalized = lang.trim().toLowerCase();
+    return normalized.startsWith('zh-hant') || normalized.startsWith('zh-tw') || normalized.startsWith('zh-hk');
+}
+
+function criticalConfirmFeedback(lang: string, confirmed: boolean): string {
+    const normalized = lang.trim().toLowerCase();
+    if (normalized === 'en' || normalized.startsWith('en-')) {
+        return confirmed ? '\n\n✅ Confirmed. Installing...' : '\n\n❌ Installation rejected.';
+    }
+    if (isTraditionalSkillConfirmLang(normalized)) {
+        return confirmed ? '\n\n✅ 已確認，正在安裝...' : '\n\n❌ 已拒絕安裝。';
+    }
+    return confirmed ? '\n\n✅ 已确认，正在安装...' : '\n\n❌ 已拒绝安装。';
+}
+
+function inferCriticalConfirmLangFromMessage(message: ChatMessage): string {
+    const content = message.content || '';
+    if (content.includes('Security warning') || content.includes('Risk factors')) return 'en';
+    if (content.includes('風險') || content.includes('確認安裝') || content.includes('拒絕安裝')) return 'zh-Hant';
+    return 'zh-Hans';
+}
+
 export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void>; activeSessionKey?: string }) {
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
@@ -2762,21 +2785,19 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const executeAction = useCallback(async (command: string) => {
         // Handle critical-risk skill installation confirmation responses.
-        const criticalConfirmMatch = command.match(/^__resolve_critical_confirm__\s+(\S+)\s+(confirm|reject)$/);
+        const criticalConfirmMatch = command.match(/^__resolve_critical_confirm__\s+(\S+)\s+(confirm|reject)(?:\s+(\S+))?$/);
         if (criticalConfirmMatch) {
             const confirmID = criticalConfirmMatch[1] || '';
             const confirmed = criticalConfirmMatch[2] === 'confirm';
+            const commandLang = criticalConfirmMatch[3] || '';
             // Remove buttons from the confirmation message immediately so the
-            // user sees their click was registered. This is not a workaround —
-            // it's the standard UI pattern for one-shot action buttons.
-            const feedbackText = confirmed
-                ? '\n\n✅ 已确认，正在安装...'
-                : '\n\n❌ 已拒绝安装。';
-            setMessages(prev => prev.map(m =>
-                m.actions?.some(a => a.command.includes(confirmID))
-                    ? { ...m, actions: undefined, content: m.content + feedbackText }
-                    : m
-            ));
+            // user sees their click was registered. This is the standard UI
+            // pattern for one-shot action buttons.
+            setMessages(prev => prev.map(m => {
+                if (!m.actions?.some(a => a.command.includes(confirmID))) return m;
+                const feedbackLang = commandLang || inferCriticalConfirmLangFromMessage(m);
+                return { ...m, actions: undefined, content: m.content + criticalConfirmFeedback(feedbackLang, confirmed) };
+            }));
             try {
                 await ResolveCriticalConfirm(confirmID, confirmed);
             } catch (err: any) {
@@ -2910,14 +2931,21 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const data = payload as Record<string, unknown>;
             const confirmID = typeof data.confirm_id === 'string' ? data.confirm_id : '';
             const summary = typeof data.summary === 'string' ? data.summary : '';
+            const eventLang = typeof data.lang === 'string' ? data.lang : '';
+            const normalizedEventLang = eventLang.trim().toLowerCase();
+            const actionPayload = Array.isArray(data.actions) ? data.actions as Array<Record<string, unknown>> : [];
+            const fallbackConfirmLabel = normalizedEventLang === 'en' ? 'Confirm install' : (normalizedEventLang.startsWith('zh-hant') || normalizedEventLang.startsWith('zh-tw') || normalizedEventLang.startsWith('zh-hk')) ? '確認安裝' : '确认安装';
+            const fallbackRejectLabel = normalizedEventLang === 'en' ? 'Reject install' : (normalizedEventLang.startsWith('zh-hant') || normalizedEventLang.startsWith('zh-tw') || normalizedEventLang.startsWith('zh-hk')) ? '拒絕安裝' : '拒绝安装';
+            const confirmLabel = typeof actionPayload[0]?.label === 'string' ? actionPayload[0].label : fallbackConfirmLabel;
+            const rejectLabel = typeof actionPayload[1]?.label === 'string' ? actionPayload[1].label : fallbackRejectLabel;
             if (!confirmID) return;
             const msg: ChatMessage = {
                 id: nextId(),
                 role: 'assistant',
                 content: summary,
                 actions: [
-                    { label: '✅ 确认安装', command: `__resolve_critical_confirm__ ${confirmID} confirm`, style: 'default' as const },
-                    { label: '❌ 拒绝安装', command: `__resolve_critical_confirm__ ${confirmID} reject`, style: 'danger' as const },
+                    { label: confirmLabel, command: `__resolve_critical_confirm__ ${confirmID} confirm ${eventLang || 'zh-Hans'}`, style: 'default' as const },
+                    { label: rejectLabel, command: `__resolve_critical_confirm__ ${confirmID} reject ${eventLang || 'zh-Hans'}`, style: 'danger' as const },
                 ],
                 timestamp: Date.now(),
             };

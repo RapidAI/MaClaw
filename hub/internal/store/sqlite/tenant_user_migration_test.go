@@ -318,7 +318,11 @@ func TestTenantUserMigrationMovesIMBindings(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &remote); err != nil {
 		t.Fatalf("decode remote bindings: %v", err)
 	}
-	remoteInfo := decodeTenantMigrationBindingValue(remote["tg-1"])
+	remoteKey := tenantMigrationRemoteBindingKey("tenant_a", "tg-1")
+	if _, ok := remote["tg-1"]; ok {
+		t.Fatalf("legacy remote binding key should have been removed: %+v", remote)
+	}
+	remoteInfo := decodeTenantMigrationBindingValue(remote[remoteKey])
 	if remoteInfo.TenantID != "tenant_a" || remoteInfo.Email != "alice@example.com" {
 		t.Fatalf("unexpected remote bindings: %+v", remote)
 	}
@@ -490,5 +494,55 @@ func TestTenantUserMigrationMovesA2AGroupState(t *testing.T) {
 	}
 	if moved["tenant_id"] != "tenant_a" {
 		t.Fatalf("moved session tenant_id = %v, want tenant_a; raw=%s", moved["tenant_id"], raw)
+	}
+}
+
+func TestTenantUserMigrationRemoteBindingCollisionFails(t *testing.T) {
+	provider := newTenantMigrationProvider(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	remoteKey := tenantMigrationRemoteBindingKey("tenant_a", "tg-1")
+	bindings := map[string]string{
+		"tg-1":    "alice@example.com",
+		remoteKey: `{"email":"bob@example.com","tenant_id":"tenant_a"}`,
+	}
+	raw, err := json.Marshal(bindings)
+	if err != nil {
+		t.Fatalf("marshal bindings: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES ('im_telegram_bindings', ?, ?)`, string(raw), now); err != nil {
+		t.Fatalf("insert remote bindings: %v", err)
+	}
+	tx, err := provider.Write.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := moveRemoteGatewayBindingSetting(ctx, tx, "im_telegram_bindings", store.DefaultTenantID, "tenant_a", "alice@example.com"); err == nil {
+		t.Fatal("expected remote binding collision error")
+	}
+}
+
+func TestTenantUserMigrationRemotePlainKeyValueTenantIsHonored(t *testing.T) {
+	provider := newTenantMigrationProvider(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	bindings := map[string]string{
+		"tg-1": `{"email":"alice@example.com","tenant_id":"tenant_b"}`,
+	}
+	raw, err := json.Marshal(bindings)
+	if err != nil {
+		t.Fatalf("marshal bindings: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES ('im_telegram_bindings', ?, ?)`, string(raw), now); err != nil {
+		t.Fatalf("insert remote bindings: %v", err)
+	}
+	tx, err := provider.Write.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	if moved, err := moveRemoteGatewayBindingSetting(ctx, tx, "im_telegram_bindings", store.DefaultTenantID, "tenant_a", "alice@example.com"); err != nil || moved != 0 {
+		t.Fatalf("moved = %d err=%v, want 0 nil", moved, err)
 	}
 }

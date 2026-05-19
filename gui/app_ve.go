@@ -272,7 +272,7 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 		CreatedAt: time.Now(),
 	}
 
-	targets, err := a.resolveVEGroupMentionTargets(sessionID, mentionedIds)
+	targets, err := a.resolveVEGroupMentionTargets(sessionID, content, mentionedIds)
 	if err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ type veGroupMentionTargets struct {
 	RemoteToIDs []string
 }
 
-func (a *App) resolveVEGroupMentionTargets(sessionID string, mentionedIds []string) (veGroupMentionTargets, error) {
+func (a *App) resolveVEGroupMentionTargets(sessionID, content string, mentionedIds []string) (veGroupMentionTargets, error) {
 	var targets veGroupMentionTargets
 	localID := ""
 	if cfg, err := a.LoadConfig(); err == nil {
@@ -355,7 +355,49 @@ func (a *App) resolveVEGroupMentionTargets(sessionID string, mentionedIds []stri
 		seenRemote[key] = struct{}{}
 		targets.RemoteToIDs = append(targets.RemoteToIDs, canonical)
 	}
+	if !targets.Explicit && contentMentionsLocalGroupAI(content, localID) {
+		targets.Explicit = true
+		targets.Local = true
+	}
 	return targets, nil
+}
+
+func contentMentionsLocalGroupAI(content, localID string) bool {
+	compactContent := strings.ToLower(strings.Join(strings.Fields(content), ""))
+	if compactContent == "" {
+		return false
+	}
+	labels := []string{"local-maclaw", "localai", "local-ai", "\u672c\u673aAI", "\u672c\u6a5fAI"}
+	if strings.TrimSpace(localID) != "" {
+		labels = append(labels, strings.TrimSpace(localID))
+	}
+	for _, label := range labels {
+		compactLabel := strings.ToLower(strings.Join(strings.Fields(label), ""))
+		if compactLabel != "" && compactGroupMentionLabelMatches(compactContent, compactLabel) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactGroupMentionLabelMatches(compactContent, compactLabel string) bool {
+	needle := "@" + strings.ToLower(compactLabel)
+	for offset := 0; offset < len(compactContent); {
+		idx := strings.Index(compactContent[offset:], needle)
+		if idx < 0 {
+			return false
+		}
+		end := offset + idx + len(needle)
+		if end >= len(compactContent) || !isASCIIGroupMentionContinuation(compactContent[end]) {
+			return true
+		}
+		offset = end
+	}
+	return false
+}
+
+func isASCIIGroupMentionContinuation(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.'
 }
 
 func (a *App) groupDiscussionParticipantIDs(sessionID, localID string) map[string]string {

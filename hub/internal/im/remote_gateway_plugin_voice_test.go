@@ -21,7 +21,7 @@ func TestRemoteGatewaySendVoiceUsesVoiceReplyType(t *testing.T) {
 	plugin := &RemoteGatewayPlugin{
 		platform: "weixin",
 		sender:   sender,
-		owner:    &gatewayOwner{MachineID: "machine-1"},
+		owner:    &gatewayOwner{TenantID: "tenant_default", MachineID: "machine-1"},
 	}
 
 	if err := plugin.SendVoice(context.Background(), UserTarget{PlatformUID: "user-1"}, "base64-audio", "voice.wav", "audio/wav"); err != nil {

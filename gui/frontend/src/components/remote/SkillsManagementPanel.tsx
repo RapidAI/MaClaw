@@ -51,6 +51,22 @@ import {
     ResolveCriticalConfirm,
 } from "../../../wailsjs/go/main/App";
 
+function localizeSkillInstallRiskLevel(level: string, localizeText: (en: string, zhHans: string, zhHant: string) => string): string {
+    const normalized = level.trim().toLowerCase();
+    switch (normalized) {
+        case "critical":
+            return localizeText("critical", "严重", "嚴重");
+        case "high":
+            return localizeText("high", "高", "高");
+        case "medium":
+            return localizeText("medium", "中", "中");
+        case "low":
+            return localizeText("low", "低", "低");
+        default:
+            return level;
+    }
+}
+
 interface NLSkillStep {
     action: string;
     params: Record<string, any>;
@@ -434,28 +450,39 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             const factors = Array.isArray(data.factors) ? (data.factors as string[]) : [];
             if (!confirmID) return;
 
-            // Build localized message from structured data.
-            let message = localizeText(
-                `Security warning: Skill "${skillName}" was assessed as ${level} risk.`,
-                `安全警告：技能「${skillName}」被评估为 ${level} 风险。`,
-                `安全警告：技能「${skillName}」被評估為 ${level} 風險。`,
+            const eventLang = typeof data.lang === "string" ? data.lang : "";
+            const normalizedEventLang = eventLang.trim().toLowerCase();
+            const labels = data.labels && typeof data.labels === "object" ? data.labels as Record<string, unknown> : {};
+            const eventLocalizeText = normalizedEventLang === "en"
+                ? (en: string, _zhHans: string, _zhHant: string) => en
+                : normalizedEventLang.startsWith("zh-hant") || normalizedEventLang.startsWith("zh-tw") || normalizedEventLang.startsWith("zh-hk")
+                    ? (_en: string, _zhHans: string, zhHant: string) => zhHant
+                    : normalizedEventLang.startsWith("zh")
+                        ? (_en: string, zhHans: string, _zhHant: string) => zhHans
+                        : localizeText;
+
+            const localizedLevel = localizeSkillInstallRiskLevel(level, eventLocalizeText);
+            let message = eventLocalizeText(
+                `Security warning: Skill "${skillName}" was assessed as ${localizedLevel} risk.`,
+                `安全警告：技能「${skillName}」被评估为${localizedLevel}风险。`,
+                `安全警告：技能「${skillName}」被評估為${localizedLevel}風險。`,
             );
             if (factors.length > 0) {
-                message += "\n\n" + localizeText("Risk factors:", "风险因素:", "風險因素:");
+                message += "\n\n" + eventLocalizeText("Risk factors:", "风险因素：", "風險因素：");
                 for (const f of factors) {
-                    message += `\n  • ${f}`;
+                    message += `\n  - ${f}`;
                 }
             }
-            message += "\n\n" + localizeText(
+            message += "\n\n" + eventLocalizeText(
                 "Do you want to allow this installation?",
                 "是否允许安装此技能？",
                 "是否允許安裝此技能？",
             );
 
-            const confirmed = await showConfirm(
-                message,
-                localizeText("⚠️ Security Risk", "⚠️ 安全风险", "⚠️ 安全風險"),
-            );
+            const confirmTitle = eventLocalizeText("Security Risk", "安全风险", "安全風險");
+            const confirmButton = typeof labels.confirm === "string" ? labels.confirm : eventLocalizeText("Confirm install", "确认安装", "確認安裝");
+            const rejectButton = typeof labels.reject === "string" ? labels.reject : eventLocalizeText("Reject install", "拒绝安装", "拒絕安裝");
+            const confirmed = await showConfirm(message, confirmTitle, { confirmText: confirmButton, cancelText: rejectButton });
             try {
                 await ResolveCriticalConfirm(confirmID, confirmed);
             } catch {
@@ -1075,7 +1102,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         )}
                     </div>
 
-                    <SkillInstallProgressPanel active={importing || installingSkills.size > 0 || (busy && showForm)} />
+                    <SkillInstallProgressPanel active={importing || installingSkills.size > 0 || (busy && showForm)} localizeText={localizeText} />
                     {/* Diagnose results */}
                     {diagEntries && diagEntries.length > 0 && (
                         <div style={{ ...remoteInfoPanelStyle, fontSize: "0.76rem" }}>

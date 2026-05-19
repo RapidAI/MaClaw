@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlPanel } from './DeepCrawlPanel';
-import type { DeepCrawlConfig, DeepCrawlPreviewResult } from './DeepCrawlPanel';
+import type { DeepCrawlConfig, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import {
     KnowledgeCapabilities,
     KnowledgeBackfillSourceAutoLabels,
@@ -1190,6 +1190,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
         save_scope: config.saveScope || '',
         topic_hint: config.topicHint || '',
         labels: config.labels || [],
+        client_run_id: config.clientRunID || '',
     }), []);
 
     const handleDeepCrawlPreview = useCallback(async (config: DeepCrawlConfig): Promise<DeepCrawlPreviewResult | void> => {
@@ -1207,13 +1208,14 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
         }
     }, [mapConfigToRequest]);
 
-    const handleDeepCrawlStart = useCallback(async (config: DeepCrawlConfig): Promise<void> => {
+    const handleDeepCrawlStart = useCallback(async (config: DeepCrawlConfig): Promise<DeepCrawlRunResult | void> => {
         setDeepCrawlBusy(true);
         setError('');
         try {
-            await KnowledgeDeepCrawl(mapConfigToRequest(config));
+            return await KnowledgeDeepCrawl(mapConfigToRequest(config)) as DeepCrawlRunResult;
         } catch (err: any) {
             setError(err?.message || String(err));
+            throw err;
         } finally {
             setDeepCrawlBusy(false);
         }

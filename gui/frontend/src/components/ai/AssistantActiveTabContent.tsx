@@ -207,6 +207,19 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
         saveTabState?.(tab.id, { ...current, sessionId });
     }, [getTabState, saveTabState, tab.id]);
 
+    const handleConversationCleared = useCallback(() => {
+        const current = getTabState?.(tab.id);
+        saveTabState?.(tab.id, {
+            ...current,
+            history: [],
+            scrollTop: 0,
+            inputText: "",
+            sessionId: undefined,
+            discussionId: undefined,
+            lastActiveAt: Date.now(),
+        });
+    }, [getTabState, saveTabState, tab.id]);
+
     // Determine if we're in group mode (show participant panel).
     // A freshly converted group can briefly have only the original VE; the panel
     // still needs to be visible so the user can pick the next participant.
@@ -281,9 +294,11 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
                     initialMessages={savedMessages}
                     initialInputText={savedInputText}
                     readOnly={!!tab.readOnly}
+                    clearSignal={tab.conversationResetSeq || 0}
                     participants={isGroupMode ? mentionParticipants : undefined}
                     externalMentionInsert={isGroupMode ? externalMentionInsert : undefined}
                     onSessionIdChange={handleSessionIdChange}
+                    onConversationCleared={handleConversationCleared}
                 />
             </div>
             {isGroupMode && (

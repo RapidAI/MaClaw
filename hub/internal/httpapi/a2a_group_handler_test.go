@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,13 @@ func TestRequestGroupDiscussionTenantIDUsesMachineHeaderAndDefaultTenant(t *test
 	tenantReq.Header.Set("X-Hub-Tenant-ID", "tenant_acme")
 	if got := requestGroupDiscussionTenantID(tenantReq); got != "tenant_acme" {
 		t.Fatalf("header tenant = %q, want tenant_acme", got)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/api/admin/a2a/group-discussions?tenant_id=tenant_query", nil)
+	adminReq.Header.Set("X-Tenant-ID", "tenant_spoof")
+	adminReq = adminReq.WithContext(context.WithValue(adminReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-tenant", Scope: "tenant", TenantID: "tenant_real"}))
+	if got := requestGroupDiscussionTenantID(adminReq); got != "tenant_real" {
+		t.Fatalf("tenant admin tenant = %q, want tenant_real", got)
 	}
 }
 

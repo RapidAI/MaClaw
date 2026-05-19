@@ -76,8 +76,12 @@ export interface VEConversationViewProps {
     initialInputText?: string;
     /** View-only mode: history/invited sessions can render messages without allowing edits. */
     readOnly?: boolean;
+    /** Incrementing signal from the tab manager to clear the current transcript and start fresh. */
+    clearSignal?: number;
     /** Override for testing Wails bindings. */
     initiateConversation?: (veId: string) => Promise<{ session_id: string; ve_id: string; ve_name: string }>;
+    initiateGroupConversation?: (veIds: string[]) => Promise<{ session_id: string; ve_id: string; ve_name: string }>;
+    registerLocalExecutorInGroup?: (sessionId: string) => Promise<unknown>;
     sendMessage?: (sessionId: string, content: string) => Promise<void>;
     sendGroupMessage?: (sessionId: string, content: string, mentionedIds: string[]) => Promise<void>;
     sendMessageWithAttachments?: (sessionId: string, content: string, filePaths: string[]) => Promise<void>;
@@ -88,6 +92,8 @@ export interface VEConversationViewProps {
     externalMentionInsert?: { name: string; timestamp: number } | null;
     /** Notifies the parent as soon as a backend session is known. */
     onSessionIdChange?: (sessionId: string) => void;
+    /** Notifies the parent that the visible transcript and cached session were explicitly cleared. */
+    onConversationCleared?: () => void;
 }
 
 /**
@@ -173,6 +179,11 @@ function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function isExplicitVEHistoryResetCommand(content: string): boolean {
+    const trimmed = String(content || "").trim().toLowerCase();
+    return trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear";
+}
+
 function hasMention(content: string, label: string): boolean {
     const escaped = escapeRegExp(label);
     return new RegExp(`(^|[^A-Za-z0-9_.-])@${escaped}(?=$|[^A-Za-z0-9_.-])`).test(content);
@@ -204,6 +215,28 @@ function mentionedParticipantIds(content: string, participants: MentionParticipa
     return [...mentioned];
 }
 
+function isLocalGroupParticipant(participant: MentionParticipant): boolean {
+    const id = normalizeMentionParticipantId(participant.id);
+    return id === LEGACY_LOCAL_AI_PARTICIPANT_ID || isLocalAIName(participant.name);
+}
+
+function groupSessionVEIds(primaryVEId: string, participants: MentionParticipant[] | undefined): string[] {
+    const ids: string[] = [];
+    const add = (value: string | undefined) => {
+        const id = String(value || "").trim();
+        if (!id) return;
+        const normalized = normalizeMentionParticipantId(id);
+        if (ids.some(existing => normalizeMentionParticipantId(existing) === normalized)) return;
+        ids.push(id);
+    };
+    add(primaryVEId);
+    for (const participant of participants || []) {
+        if (isLocalGroupParticipant(participant)) continue;
+        add(participant.id);
+    }
+    return ids;
+}
+
 // --- Component ---
 
 export const VEConversationView = forwardRef<VEConversationHandle, VEConversationViewProps>(function VEConversationView({
@@ -216,7 +249,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     initialMessages,
     initialInputText,
     readOnly = false,
+    clearSignal = 0,
     initiateConversation,
+    initiateGroupConversation,
+    registerLocalExecutorInGroup,
     sendMessage,
     sendGroupMessage,
     sendMessageWithAttachments,
@@ -224,6 +260,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     participants,
     externalMentionInsert,
     onSessionIdChange,
+    onConversationCleared,
 }, ref) {
     const [state, setState] = useState<VEConversationState>({
         sessionId: existingSessionId || null,
@@ -401,52 +438,51 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     // --- Session Management ---
 
     const initSession = useCallback(async () => {
-        if (!initiateConversation) {
-            try {
-                const mod = await import("../../../wailsjs/go/main/App");
-                const result = await createSessionWithTimeout<{ session_id: string; ve_id: string; ve_name: string }>(
-                    (mod as any).InitiateVEConversation(veId),
-                    SESSION_TIMEOUT_MS
-                );
-                if (mountedRef.current) {
-                    setState((prev) => ({
-                        ...prev,
-                        sessionId: result.session_id,
-                        error: null,
-                        connectionState: "connected",
-                        reconnectAttempt: 0,
-                    }));
-                }
-                return true;
-            } catch (err: any) {
-                if (mountedRef.current) {
-                    const errorType = err?.message?.includes("session_timeout")
-                        ? "session_timeout"
-                        : err?.message?.includes("offline")
-                        ? "ve_offline"
-                        : "hub_disconnected";
-                    setState((prev) => ({
-                        ...prev,
-                        error: {
-                            type: errorType,
-                            message: err?.message || "Connection failed",
-                        } as VEConversationError,
-                    }));
-                }
+        const veIds = participants?.length ? groupSessionVEIds(veId, participants) : [veId];
+        const shouldRegisterLocalExecutor = !!participants?.some(isLocalGroupParticipant);
+        const startSession = async () => {
+            if (initiateGroupConversation && participants?.length) {
+                return initiateGroupConversation(veIds);
             }
-            return false;
-        }
+            if (initiateConversation) {
+                return initiateConversation(veId);
+            }
+            const mod = await import("../../../wailsjs/go/main/App");
+            if (participants?.length && typeof (mod as any).InitiateGroupConversation === "function") {
+                return (mod as any).InitiateGroupConversation(veIds);
+            }
+            return (mod as any).InitiateVEConversation(veId);
+        };
 
         try {
-            const result = await createSessionWithTimeout(
-                initiateConversation(veId),
+            const result = await createSessionWithTimeout<{ session_id: string; ve_id: string; ve_name: string }>(
+                startSession(),
                 SESSION_TIMEOUT_MS
             );
+            const sessionId = String(result?.session_id || "").trim();
+            let localRegistrationError: VEConversationError | null = null;
+            if (shouldRegisterLocalExecutor && sessionId) {
+                try {
+                    if (registerLocalExecutorInGroup) {
+                        await registerLocalExecutorInGroup(sessionId);
+                    } else {
+                        const mod = await import("../../../wailsjs/go/main/App");
+                        if (typeof (mod as any).RegisterLocalExecutorInGroup === "function") {
+                            await (mod as any).RegisterLocalExecutorInGroup(sessionId);
+                        }
+                    }
+                } catch (err: any) {
+                    localRegistrationError = {
+                        type: "send_failed",
+                        message: err?.message || "Local AI registration failed",
+                    } as VEConversationError;
+                }
+            }
             if (mountedRef.current) {
                 setState((prev) => ({
                     ...prev,
-                    sessionId: result.session_id,
-                    error: null,
+                    sessionId,
+                    error: localRegistrationError,
                     connectionState: "connected",
                     reconnectAttempt: 0,
                 }));
@@ -469,7 +505,20 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             }
             return false;
         }
-    }, [veId, initiateConversation]);
+    }, [initiateConversation, initiateGroupConversation, participants, registerLocalExecutorInGroup, veId]);
+
+    useEffect(() => {
+        const nextSessionId = existingSessionId || null;
+        if (!nextSessionId || sessionIdRef.current === nextSessionId) return;
+        if (sessionIdRef.current) return;
+        sessionIdRef.current = nextSessionId;
+        setState((prev) => prev.sessionId ? prev : {
+            ...prev,
+            sessionId: nextSessionId,
+            error: null,
+            connectionState: "connected",
+        });
+    }, [existingSessionId]);
 
     // Initialize session on mount (skip if resuming an existing sticky session or VE is offline)
     useEffect(() => {
@@ -501,6 +550,56 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             initSession();
         }
     }, [veOnline, initSession]);
+
+    const clearConversation = useCallback(async () => {
+        if (readOnly) return;
+        const oldSessionId = sessionIdRef.current;
+        queuedMessagesRef.current = [];
+        if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+        }
+        setPendingAttachments([]);
+        setInputText("");
+        closeMentionPopover();
+        sessionIdRef.current = null;
+        setState((prev) => ({
+            ...prev,
+            sessionId: null,
+            messages: [],
+            streaming: false,
+            streamContent: "",
+            streamFromId: "",
+            streamFromName: "",
+            error: null,
+            connectionState: "connected",
+            reconnectAttempt: 0,
+        }));
+        onConversationCleared?.();
+        if (oldSessionId) {
+            try {
+                if (closeSession) {
+                    await closeSession(oldSessionId);
+                } else {
+                    const mod = await import("../../../wailsjs/go/main/App");
+                    if (typeof (mod as any).CloseVESession === "function") {
+                        await (mod as any).CloseVESession(oldSessionId);
+                    }
+                }
+            } catch {
+                // Clearing the local UI should not be blocked by a stale Hub session.
+            }
+        }
+        if (veOnline) void initSession();
+    }, [closeMentionPopover, closeSession, initSession, onConversationCleared, readOnly, veOnline]);
+
+    const lastClearSignalRef = useRef(clearSignal);
+    useEffect(() => {
+        if (clearSignal === lastClearSignalRef.current) return;
+        lastClearSignalRef.current = clearSignal;
+        void clearConversation();
+    }, [clearConversation, clearSignal]);
+
 
     // --- Reconnection Logic ---
 
@@ -700,6 +799,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const handleSend = useCallback(async () => {
         const content = inputText.trim();
         if (readOnly) return;
+        if (isExplicitVEHistoryResetCommand(content)) {
+            void clearConversation();
+            return;
+        }
         if (!content && pendingAttachments.length === 0) return;
         if (sendingRef.current) return;
         sendingRef.current = true;
@@ -754,7 +857,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             sendingRef.current = false;
             setSending(false);
         }
-    }, [inputText, state.connectionState, state.sessionId, pendingAttachments, doSendMessage, localSpeakerName, readOnly]);
+    }, [clearConversation, doSendMessage, inputText, localSpeakerName, pendingAttachments, readOnly, state.connectionState, state.sessionId]);
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
@@ -982,7 +1085,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     +
                 </button>
 
-                <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+                <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0, display: "flex" }}>
                     {mentionOpen && (
                         <MentionPopover
                             filtered={mentionFiltered}
@@ -1019,6 +1122,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     rows={1}
                     style={{
                         width: "100%",
+                        boxSizing: "border-box",
+                        display: "block",
                         resize: "none",
                         border: `1px solid ${theme.fieldBorder}`,
                         borderRadius: 6,
@@ -1042,7 +1147,15 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         background: theme.sendBtnBg,
                         color: theme.sendBtnColor,
                         borderRadius: 6,
-                        padding: "6px 14px",
+                        width: 54,
+                        minWidth: 54,
+                        height: 34,
+                        padding: "0 10px",
+                        flexShrink: 0,
+                        whiteSpace: "nowrap",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
                         cursor: (readOnly || !veOnline || sending || (!inputText.trim() && pendingAttachments.length === 0)) ? "default" : "pointer",
                         fontSize: 13,
                         fontWeight: 500,

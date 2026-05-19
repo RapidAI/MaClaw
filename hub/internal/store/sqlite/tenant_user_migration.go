@@ -763,7 +763,7 @@ func moveRemoteGatewayBindingSettings(ctx context.Context, tx *sql.Tx, fromTenan
 		return nil, err
 	}
 	for _, key := range keys {
-		count, err := moveStringIMBindingSetting(ctx, tx, key, fromTenant, toTenant, email)
+		count, err := moveRemoteGatewayBindingSetting(ctx, tx, key, fromTenant, toTenant, email)
 		if err != nil {
 			return nil, err
 		}
@@ -774,6 +774,49 @@ func moveRemoteGatewayBindingSettings(ctx context.Context, tx *sql.Tx, fromTenan
 	return updates, nil
 }
 
+func moveRemoteGatewayBindingSetting(ctx context.Context, tx *sql.Tx, key, fromTenant, toTenant, email string) (int64, error) {
+	raw, err := getSystemSetting(ctx, tx, key)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return 0, err
+	}
+	var bindings map[string]string
+	if err := json.Unmarshal([]byte(raw), &bindings); err != nil {
+		return 0, nil
+	}
+	out := make(map[string]string, len(bindings))
+	put := func(bindingKey, value string) error {
+		if existing, ok := out[bindingKey]; ok && existing != value {
+			return fmt.Errorf("remote IM binding collision for setting %s key %q", key, bindingKey)
+		}
+		out[bindingKey] = value
+		return nil
+	}
+	var moved int64
+	for platformUID, value := range bindings {
+		info := decodeTenantMigrationBindingValue(value)
+		bindingTenantID := tenantMigrationRemoteTenantFromKeyValue(platformUID, value)
+		plainUID := tenantMigrationRemotePlatformUIDFromKey(platformUID)
+		if bindingTenantID == fromTenant && strings.EqualFold(info.Email, email) {
+			if err := put(tenantMigrationRemoteBindingKey(toTenant, plainUID), encodeTenantMigrationBindingValue(toTenant, email)); err != nil {
+				return 0, err
+			}
+			moved++
+			continue
+		}
+		if err := put(tenantMigrationRemoteBindingKey(bindingTenantID, plainUID), value); err != nil {
+			return 0, err
+		}
+	}
+	if moved == 0 {
+		return 0, nil
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return 0, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE system_settings SET value_json = ?, updated_at = datetime('now') WHERE key = ?`, string(data), key)
+	return moved, err
+}
 func moveStringIMBindingSetting(ctx context.Context, tx *sql.Tx, key, fromTenant, toTenant, email string) (int64, error) {
 	raw, err := getSystemSetting(ctx, tx, key)
 	if err != nil || strings.TrimSpace(raw) == "" {
@@ -841,6 +884,28 @@ func moveFeishuOpenIDMap(ctx context.Context, tx *sql.Tx, fromTenant, toTenant, 
 	return moved, err
 }
 
+func tenantMigrationRemoteBindingKey(tenantID, platformUID string) string {
+	tenantID = store.NormalizeTenantID(tenantID)
+	platformUID = strings.TrimSpace(platformUID)
+	if tenantID == store.DefaultTenantID {
+		return platformUID
+	}
+	return tenantID + "\x00" + platformUID
+}
+
+func tenantMigrationRemoteTenantFromKeyValue(key, value string) string {
+	if tenantID, _, ok := strings.Cut(key, "\x00"); ok {
+		return store.NormalizeTenantID(tenantID)
+	}
+	return decodeTenantMigrationBindingValue(value).TenantID
+}
+
+func tenantMigrationRemotePlatformUIDFromKey(key string) string {
+	if _, platformUID, ok := strings.Cut(key, "\x00"); ok {
+		return platformUID
+	}
+	return strings.TrimSpace(key)
+}
 func decodeTenantMigrationBindingValue(raw string) tenantMigrationBindingInfo {
 	var info tenantMigrationBindingInfo
 	if strings.HasPrefix(strings.TrimSpace(raw), "{") && json.Unmarshal([]byte(raw), &info) == nil {

@@ -50,6 +50,12 @@ func applyLLMEndpointUserRateLimitConfig(reg *im.LLMProviderRegistry) {
 }
 
 func (l *llmEndpointUserLimiter) applyRegistry(reg *im.LLMProviderRegistry) {
+	perMinute, burst := llmEndpointUserLimitFromRegistry(reg)
+	l.perMinute.Store(int64(perMinute))
+	l.burst.Store(int64(burst))
+}
+
+func llmEndpointUserLimitFromRegistry(reg *im.LLMProviderRegistry) (int, int) {
 	perMinute := im.DefaultLLMProviderUserRateLimitPerMinute
 	burst := im.DefaultLLMProviderUserRateLimitBurst
 	if reg != nil {
@@ -60,17 +66,23 @@ func (l *llmEndpointUserLimiter) applyRegistry(reg *im.LLMProviderRegistry) {
 			burst = reg.UserRateLimitBurst
 		}
 	}
-	l.perMinute.Store(int64(perMinute))
-	l.burst.Store(int64(burst))
+	return perMinute, burst
 }
 
 func (l *llmEndpointUserLimiter) allow(email string) bool {
+	return l.allowWithLimit(email, int(l.perMinute.Load()), int(l.burst.Load()))
+}
+
+func (l *llmEndpointUserLimiter) allowForRegistry(email string, reg *im.LLMProviderRegistry) bool {
+	perMinute, burst := llmEndpointUserLimitFromRegistry(reg)
+	return l.allowWithLimit(email, perMinute, burst)
+}
+
+func (l *llmEndpointUserLimiter) allowWithLimit(email string, perMinute, burst int) bool {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
 		return true
 	}
-	burst := int(l.burst.Load())
-	perMinute := int(l.perMinute.Load())
 	if burst <= 0 || perMinute <= 0 {
 		return true
 	}

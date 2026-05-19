@@ -2,9 +2,213 @@ package main
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
+
+func TestBuildSkillRiskPromptForLang_LocalizesChinesePrompt(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildSkillRiskPromptForLang("zh-Hans", "ui-ux-pro-max-skill", "auto_clawhub", security.RiskCritical, []string{
+		"threat pattern [injection]: \"\\\\|\\\\s*(bash|sh|python|perl)\" matched",
+		"community trust level: high escalated to critical",
+	})
+
+	for _, want := range []string{"安全警告", "严重风险", "风险因素", "威胁模式 [注入]", "社区信任级别", "高升级为严重", "是否允许安装此 Skill"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("localized prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, notWant := range []string{"Security warning", "Risk factors", "Do you want to allow", "critical risk"} {
+		if strings.Contains(prompt, notWant) {
+			t.Fatalf("localized prompt still contains English %q:\n%s", notWant, prompt)
+		}
+	}
+}
+
+func TestBuildSkillRiskPromptForLang_LocalizesTraditionalChinesePrompt(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildSkillRiskPromptForLang("zh-Hant", "ui-ux-pro-max-skill", "auto_clawhub", security.RiskCritical, []string{
+		"threat pattern [injection]: \"\\\\|\\\\s*(bash|sh|python|perl)\" matched",
+		"community trust level: high escalated to critical",
+	})
+
+	for _, want := range []string{"安全警告", "嚴重風險", "風險因素", "威脅模式 [注入]", "社群信任級別", "高升級為嚴重", "是否允許安裝此 Skill"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("traditional localized prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, notWant := range []string{"Security warning", "Risk factors", "Do you want to allow", "严重风险", "风险因素"} {
+		if strings.Contains(prompt, notWant) {
+			t.Fatalf("traditional localized prompt contains unexpected text %q:\n%s", notWant, prompt)
+		}
+	}
+}
+
+func TestBuildSkillRiskPromptForLang_DefaultsEmptyLanguageToChinese(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildSkillRiskPromptForLang("", "skill", "source", security.RiskHigh, nil)
+	if strings.Contains(prompt, "Security warning") {
+		t.Fatalf("empty language should not default to English:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Skill") {
+		t.Fatalf("prompt missing skill marker:\n%s", prompt)
+	}
+}
+
+func TestSkillInstallLocalizationHelpers(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeSkillConfirmLangKind(""); got != appLanguageZhHans {
+		t.Fatalf("empty language = %q, want %q", got, appLanguageZhHans)
+	}
+	if got := normalizeSkillConfirmLangKind("zh-TW"); got != appLanguageZhHant {
+		t.Fatalf("zh-TW language = %q, want %q", got, appLanguageZhHant)
+	}
+
+	confirm, reject := localizedSkillInstallActionLabels("zh-Hant")
+	if confirm != "確認安裝" || reject != "拒絕安裝" {
+		t.Fatalf("zh-Hant labels = %q/%q", confirm, reject)
+	}
+	confirm, reject = localizedSkillInstallActionLabels("")
+	if confirm != "确认安装" || reject != "拒绝安装" {
+		t.Fatalf("empty language labels = %q/%q", confirm, reject)
+	}
+}
+
+func TestSkillInstallResultMessages_Localized(t *testing.T) {
+	t.Parallel()
+
+	checks := []struct {
+		lang    string
+		success bool
+		errText string
+		want    string
+	}{
+		{lang: "en", success: true, want: "installed successfully"},
+		{lang: "en", success: false, errText: "scan failed", want: "was not installed successfully: scan failed"},
+		{lang: "zh-Hans", success: true, want: "安装成功"},
+		{lang: "zh-Hans", success: false, errText: "扫描失败", want: "安装未成功：扫描失败"},
+		{lang: "zh-Hant", success: true, want: "安裝成功"},
+		{lang: "zh-Hant", success: false, errText: "掃描失敗", want: "安裝未成功：掃描失敗"},
+	}
+	for _, tt := range checks {
+		msg := localizedSkillInstallResultMessage(tt.lang, "demo", tt.success, tt.errText)
+		if !strings.Contains(msg, tt.want) {
+			t.Fatalf("localized result message for %s/%v = %q, want substring %q", tt.lang, tt.success, msg, tt.want)
+		}
+	}
+
+	if got := localizedSkillInstallRejectedMessage("en", "demo"); !strings.Contains(got, "rejected and not installed") {
+		t.Fatalf("English rejected message = %q", got)
+	}
+	if got := localizedSkillInstallRejectedMessage("zh-Hant", "demo"); !strings.Contains(got, "已拒絕安裝") {
+		t.Fatalf("Traditional rejected message = %q", got)
+	}
+}
+
+func TestSkillInstallStatusMessages_Localized(t *testing.T) {
+	t.Parallel()
+
+	blocked := localizedSkillInstallBlockedMessage("zh-Hant", "demo", true)
+	if !strings.Contains(blocked, "安裝前") || !strings.Contains(blocked, "安全策略") {
+		t.Fatalf("Traditional blocked message = %q", blocked)
+	}
+	blocked = localizedSkillInstallBlockedMessage("en", "demo", false)
+	if !strings.Contains(blocked, "blocked by current security policy") {
+		t.Fatalf("English blocked message = %q", blocked)
+	}
+
+	summary := localizedSkillInstallSuccessSummary("zh-Hans", "demo", "desc", "hub", "high")
+	for _, want := range []string{"已成功安装", "描述：desc", "来源：hub", "信任等级：high"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("Simplified success summary missing %q: %q", want, summary)
+		}
+	}
+	if got := localizedSkillInstallAutoRunStarting("en", "demo"); !strings.Contains(got, "Running Skill") {
+		t.Fatalf("English auto-run message = %q", got)
+	}
+	if got := localizedSkillInstallRunHint("zh-Hant", "demo"); !strings.Contains(got, "執行") {
+		t.Fatalf("Traditional run hint = %q", got)
+	}
+}
+
+func TestSkillInstallCapabilityGapMessages_Localized(t *testing.T) {
+	t.Parallel()
+
+	review := localizedSkillInstallReviewStatus("zh-Hant", "critical")
+	if !strings.Contains(review, "安全審查") || !strings.Contains(review, "critical") {
+		t.Fatalf("Traditional review status = %q", review)
+	}
+	noConfirm := localizedSkillInstallNoConfirmationStatus("zh-Hans", "demo")
+	if !strings.Contains(noConfirm, "没有可用的确认通道") {
+		t.Fatalf("Simplified no-confirm status = %q", noConfirm)
+	}
+	if got := localizedSkillInstallScanRejectedError("en", true); !strings.Contains(got, "GitHub Skill security review did not pass") {
+		t.Fatalf("English rejected error = %q", got)
+	}
+	installing := localizedSkillInstallInstallingStatus("zh-Hant", "demo", true)
+	if !strings.Contains(installing, "正在從 GitHub 安裝") {
+		t.Fatalf("Traditional GitHub installing status = %q", installing)
+	}
+	executing := localizedSkillInstallExecutingStatus("en", "demo")
+	if !strings.Contains(executing, "Running Skill") {
+		t.Fatalf("English executing status = %q", executing)
+	}
+}
+
+func TestNextSkillConfirmID_IsUniqueAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	const total = 128
+	ids := make(map[string]struct{}, total)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id := nextSkillConfirmID("skill_install")
+			if !strings.HasPrefix(id, "skill_install_") {
+				t.Errorf("confirm ID %q missing prefix", id)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if _, exists := ids[id]; exists {
+				t.Errorf("duplicate confirm ID generated: %s", id)
+			}
+			ids[id] = struct{}{}
+		}()
+	}
+	wg.Wait()
+	if len(ids) != total {
+		t.Fatalf("generated %d unique IDs, want %d", len(ids), total)
+	}
+}
+
+func waitForPendingCriticalConfirm(t *testing.T, h *IMMessageHandler) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var confirmID string
+		h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
+			confirmID = key.(string)
+			return false
+		})
+		if confirmID != "" {
+			return confirmID
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no pending confirmation found")
+	return ""
+}
 
 // TestConfirmCriticalRisk_FailClosedEmptyPlatform verifies that calling
 // confirmCriticalRiskSkill with an empty platform returns false immediately
@@ -100,15 +304,9 @@ func TestConfirmCriticalRisk_DesktopChannelAdaptation(t *testing.T) {
 		done <- result
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
-	var confirmIDFound string
-	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
-		confirmIDFound = key.(string)
-		return false
-	})
-	if confirmIDFound == "" {
-		t.Fatal("expected a pending confirmation to be stored for desktop platform")
+	confirmIDFound := waitForPendingCriticalConfirm(t, h)
+	if !strings.HasPrefix(confirmIDFound, "crit_") {
+		t.Fatalf("pending confirmation ID = %q, want crit_ prefix", confirmIDFound)
 	}
 
 	cancel()
@@ -132,15 +330,9 @@ func TestConfirmCriticalRisk_IMChannelAdaptation(t *testing.T) {
 		done <- result
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
-	var confirmIDFound string
-	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
-		confirmIDFound = key.(string)
-		return false
-	})
-	if confirmIDFound == "" {
-		t.Fatal("expected a pending confirmation to be stored for IM platform")
+	confirmIDFound := waitForPendingCriticalConfirm(t, h)
+	if !strings.HasPrefix(confirmIDFound, "crit_") {
+		t.Fatalf("pending confirmation ID = %q, want crit_ prefix", confirmIDFound)
 	}
 
 	cancel()
@@ -165,16 +357,7 @@ func TestConfirmCriticalRisk_ConfirmResponse(t *testing.T) {
 		done <- result
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
-	var confirmID string
-	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
-		confirmID = key.(string)
-		return false
-	})
-	if confirmID == "" {
-		t.Fatal("no pending confirmation found")
-	}
+	confirmID := waitForPendingCriticalConfirm(t, h)
 
 	if err := h.ResolveCriticalConfirm(confirmID, true); err != nil {
 		t.Fatalf("ResolveCriticalConfirm returned error: %v", err)
@@ -204,16 +387,7 @@ func TestConfirmCriticalRisk_RejectResponse(t *testing.T) {
 		done <- result
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
-	var confirmID string
-	h.pendingCriticalConfirm.Range(func(key, value interface{}) bool {
-		confirmID = key.(string)
-		return false
-	})
-	if confirmID == "" {
-		t.Fatal("no pending confirmation found")
-	}
+	confirmID := waitForPendingCriticalConfirm(t, h)
 
 	if err := h.ResolveCriticalConfirm(confirmID, false); err != nil {
 		t.Fatalf("ResolveCriticalConfirm returned error: %v", err)

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -78,6 +79,9 @@ type CodeGenSSOResult struct {
 	// Email 是从 id_token JWT payload 中解析出的用户邮件地址。
 	// 需要 SSO scope 包含 "openid profile email"。
 	Email string
+
+	// Models 是 SSO token 可用的 CodeGen 模型列表，用于 GUI 下拉选择。
+	Models []CodeGenModel
 }
 
 // CodeGenModel describes one usable model returned by CodeGen /models.
@@ -278,6 +282,15 @@ var AllowedSSODomains = []string{
 // codeGenHTTPClient 是 CodeGen SSO 请求的共享 HTTP 客户端。
 var codeGenHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
+var codeGenCallbackServerMu sync.Mutex
+var codeGenCallbackServer *http.Server
+var codeGenCallbackResultCh chan codeGenCallbackResult
+
+type codeGenCallbackResult struct {
+	token string
+	email string
+}
+
 // NeedsRefreshCodeGen 检查 CodeGen SSO token 是否即将过期。
 // 仅对 AuthType == "sso" 的 provider 生效。
 // TokenExpiresAt == 0 表示无过期信息（旧数据），返回 false。
@@ -341,6 +354,7 @@ func ValidateAndBuildCodeGenResult(token string) (CodeGenSSOResult, error) {
 		ModelID:       defaultModel,
 		ContextLength: contextLength,
 		Email:         email,
+		Models:        codeGenModelsFromEntries(models),
 	}, nil
 }
 
@@ -453,6 +467,7 @@ func RunCodeGenSSOFlow() (CodeGenSSOResult, error) {
 		ModelID:       defaultModel,
 		ContextLength: contextLength,
 		Email:         email,
+		Models:        codeGenModelsFromEntries(models),
 	}, nil
 }
 
@@ -466,19 +481,36 @@ func RunCodeGenSSOFlow() (CodeGenSSOResult, error) {
 //  4. 本地服务器接收 token，关闭服务器
 //  5. 用 token 获取模型列表
 func RunCodeGenSSOFlowWithCallback(ctx context.Context) (CodeGenSSOResult, error) {
-	// 1. 启动本地回调服务器
+	loginURL, _, err := StartCodeGenSSOCallbackServer(ctx)
+	if err != nil {
+		return CodeGenSSOResult{}, err
+	}
+	log.Printf("[CodeGen SSO] 打开浏览器: %s", loginURL)
+	if err := browser.OpenURL(loginURL); err != nil {
+		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 无法打开浏览器: %w", err)
+	}
+	return WaitForCodeGenSSOCallbackContext(ctx, CodeGenTimeout)
+}
+
+// StartCodeGenSSOCallbackServer starts a local callback server and returns the
+// CodeGen SSO URL to open. It is split from waiting so GUI callers can open the
+// browser immediately and keep the UI responsive while polling completion.
+func StartCodeGenSSOCallbackServer(ctx context.Context) (loginURL string, callbackURL string, err error) {
+	codeGenCallbackServerMu.Lock()
+	if codeGenCallbackServer != nil {
+		_ = codeGenCallbackServer.Close()
+		codeGenCallbackServer = nil
+		codeGenCallbackResultCh = nil
+	}
+	codeGenCallbackServerMu.Unlock()
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 启动回调服务器失败: %w", err)
+		return "", "", fmt.Errorf("codegen sso: 启动回调服务器失败: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	callbackURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-
-	type callbackResult struct {
-		token string
-		email string
-	}
-	resultCh := make(chan callbackResult, 1)
+	callbackURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+	resultCh := make(chan codeGenCallbackResult, 1)
 
 	mux := http.NewServeMux()
 	// SSO 完成后浏览器重定向到 http://127.0.0.1:{port}/?{JWT_TOKEN}
@@ -494,7 +526,10 @@ func RunCodeGenSSOFlowWithCallback(ctx context.Context) (CodeGenSSOResult, error
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>登录成功</title></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>✅ 登录成功</h2><p>已自动返回应用，可以关闭此页面。</p><script>setTimeout(function(){window.close()},2000)</script></body></html>`)
-			resultCh <- callbackResult{token: token, email: r.URL.Query().Get("email")}
+			select {
+			case resultCh <- codeGenCallbackResult{token: token, email: r.URL.Query().Get("email")}:
+			default:
+			}
 		} else {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
@@ -503,21 +538,55 @@ func RunCodeGenSSOFlowWithCallback(ctx context.Context) (CodeGenSSOResult, error
 	})
 
 	server := &http.Server{Handler: mux}
+	codeGenCallbackServerMu.Lock()
+	codeGenCallbackServer = server
+	codeGenCallbackResultCh = resultCh
+	codeGenCallbackServerMu.Unlock()
+
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("[CodeGen SSO] 回调服务器错误: %v", err)
 		}
 	}()
-	defer server.Close()
+	go func() {
+		<-ctx.Done()
+		_ = server.Close()
+	}()
 
-	// 2. 打开浏览器访问 SSO 登录页面
-	loginURL := CodeGenSSOLoginBaseURL + "?ref=" + url.QueryEscape(callbackURL)
-	log.Printf("[CodeGen SSO] 打开浏览器: %s", loginURL)
-	if err := browser.OpenURL(loginURL); err != nil {
-		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 无法打开浏览器: %w", err)
+	loginURL = CodeGenSSOLoginBaseURL + "?ref=" + url.QueryEscape(callbackURL)
+	return loginURL, callbackURL, nil
+}
+
+// WaitForCodeGenSSOCallback waits for the callback started by
+// StartCodeGenSSOCallbackServer and exchanges the received token for model
+// metadata.
+func WaitForCodeGenSSOCallback(timeout time.Duration) (CodeGenSSOResult, error) {
+	return WaitForCodeGenSSOCallbackContext(context.Background(), timeout)
+}
+
+// WaitForCodeGenSSOCallbackContext waits for the callback started by
+// StartCodeGenSSOCallbackServer and returns promptly when ctx is canceled.
+func WaitForCodeGenSSOCallbackContext(ctx context.Context, timeout time.Duration) (CodeGenSSOResult, error) {
+	codeGenCallbackServerMu.Lock()
+	server := codeGenCallbackServer
+	resultCh := codeGenCallbackResultCh
+	codeGenCallbackServerMu.Unlock()
+	if server == nil || resultCh == nil {
+		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 回调服务器未启动")
 	}
+	defer func() {
+		_ = server.Close()
+		codeGenCallbackServerMu.Lock()
+		if codeGenCallbackServer == server {
+			codeGenCallbackServer = nil
+			codeGenCallbackResultCh = nil
+		}
+		codeGenCallbackServerMu.Unlock()
+	}()
 
-	// 3. 等待回调或超时
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	var token, email string
 	select {
 	case result := <-resultCh:
@@ -534,12 +603,11 @@ func RunCodeGenSSOFlowWithCallback(ctx context.Context) (CodeGenSSOResult, error
 			email = result.email
 		}
 	case <-ctx.Done():
-		return CodeGenSSOResult{}, context.Canceled
-	case <-time.After(CodeGenTimeout):
-		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 扫码登录超时（%v）", CodeGenTimeout)
+		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 登录已取消: %w", ctx.Err())
+	case <-timer.C:
+		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 扫码登录超时（%v）", timeout)
 	}
 
-	// 4. 用 token 获取模型列表
 	models, baseURL, err := fetchCodeGenModels(token)
 	if err != nil {
 		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 获取模型列表失败: %w", err)
@@ -553,6 +621,7 @@ func RunCodeGenSSOFlowWithCallback(ctx context.Context) (CodeGenSSOResult, error
 		ModelID:       defaultModel,
 		ContextLength: contextLength,
 		Email:         email,
+		Models:        codeGenModelsFromEntries(models),
 	}, nil
 }
 
@@ -859,5 +928,6 @@ func RunCodeGenSSOFlowWithPKCE(cfg Config) (CodeGenSSOResult, error) {
 		BaseURL:       baseURL,
 		ModelID:       modelID,
 		ContextLength: contextLength,
+		Models:        codeGenModelsFromEntries(models),
 	}, nil
 }

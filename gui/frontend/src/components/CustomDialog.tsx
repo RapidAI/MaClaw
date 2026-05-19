@@ -19,11 +19,18 @@ interface DialogState {
     mode: 'alert' | 'confirm';
     lang?: string;
     theme?: string;
+    confirmText?: string;
+    cancelText?: string;
+}
+
+interface ConfirmOptions {
+    confirmText?: string;
+    cancelText?: string;
 }
 
 interface DialogContextValue {
     showAlert: (message: string, title?: string) => Promise<void>;
-    showConfirm: (message: string, title?: string) => Promise<boolean>;
+    showConfirm: (message: string, title?: string, options?: ConfirmOptions) => Promise<boolean>;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -56,10 +63,10 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         });
     }, []);
 
-    const showConfirm = useCallback((message: string, title?: string): Promise<boolean> => {
+    const showConfirm = useCallback((message: string, title?: string, options?: ConfirmOptions): Promise<boolean> => {
         return new Promise(resolve => {
             resolveRef.current = resolve;
-            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme() });
+            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), confirmText: options?.confirmText, cancelText: options?.cancelText });
         });
     }, []);
 
@@ -106,11 +113,11 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                         <div className="modal-footer">
                             {state.mode === 'confirm' && (
                                 <button className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={() => close(false)}>
-                                    {localizeText(state.lang, 'Cancel', '取消')}
+                                    {state.cancelText || localizeText(state.lang, 'Cancel', '取消')}
                                 </button>
                             )}
                             <button className="btn-primary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={() => close(true)}>
-                                {localizeText(state.lang, 'OK', '确定')}
+                                {state.confirmText || localizeText(state.lang, 'OK', '确定')}
                             </button>
                         </div>
                     </div>

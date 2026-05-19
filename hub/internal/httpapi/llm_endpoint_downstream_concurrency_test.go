@@ -7,6 +7,23 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 )
 
+func TestLLMEndpointDownstreamConfigTenantSemaphoreDoesNotResizeGlobal(t *testing.T) {
+	originalCapacity := globalLLMEndpointDownstreamSemaphore.Capacity()
+	defer globalLLMEndpointDownstreamSemaphore.Resize(originalCapacity)
+	applyLLMEndpointDownstreamConfig(&im.LLMProviderRegistry{DownstreamMaxConcurrency: 17})
+
+	sem, ok := acquireLLMEndpointDownstreamSlot(t.Context(), "tenant_a", &im.LLMProviderRegistry{DownstreamMaxConcurrency: 1})
+	if !ok {
+		t.Fatal("tenant semaphore acquire failed")
+	}
+	defer sem.Release()
+	if got := sem.Capacity(); got != 1 {
+		t.Fatalf("tenant capacity = %d, want 1", got)
+	}
+	if got := globalLLMEndpointDownstreamSemaphore.Capacity(); got != 17 {
+		t.Fatalf("tenant config resized global capacity = %d, want 17", got)
+	}
+}
 func TestApplyLLMEndpointDownstreamConfigUsesDefaultAndOverride(t *testing.T) {
 	originalCapacity := globalLLMEndpointDownstreamSemaphore.Capacity()
 	originalTimeout := globalLLMEndpointDownstreamSemaphore.AcquireTimeout

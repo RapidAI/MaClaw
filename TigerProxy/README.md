@@ -13,6 +13,7 @@ TigerProxy 是一个面向 CodeGen 模型服务的桌面协议转发服务，复
   - Anthropic: `http://127.0.0.1:18086/anthropic/v1`
 - 模型透传：OpenAI `/v1/chat/completions` 请求体原样转发，Anthropic `/messages` 转换为 OpenAI chat completions 时保留请求中的 `model` 字段，便于 agent 工具用 `/model` 查看和切换。
 - 系统托盘：Windows 下使用当前 MaClaw 图标文件，托盘菜单仅包含“显示/隐藏”和“退出”。
+- 单实例运行：重复启动 TigerProxy 时，新进程会退出，并把已运行实例的主界面显示到前台。
 
 ## 数据目录
 

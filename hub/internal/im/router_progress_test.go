@@ -299,7 +299,7 @@ func TestBroadcastProgressDedup(t *testing.T) {
 
 	// Enter broadcast mode.
 	router.mu.Lock()
-	router.selectedMachine["user1"] = broadcastMachineID
+	router.selectedMachine[tenantUserRuntimeKey("", "user1")] = broadcastMachineID
 	router.mu.Unlock()
 
 	// Start broadcast in a goroutine.
@@ -379,7 +379,7 @@ func TestBroadcastProgressDedup_DifferentTextsPass(t *testing.T) {
 	router.SetResponseDelivery(func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {})
 
 	router.mu.Lock()
-	router.selectedMachine["user1"] = broadcastMachineID
+	router.selectedMachine[tenantUserRuntimeKey("", "user1")] = broadcastMachineID
 	router.mu.Unlock()
 
 	resultCh := make(chan *GenericResponse, 1)

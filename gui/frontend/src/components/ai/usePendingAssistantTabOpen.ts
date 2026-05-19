@@ -3,6 +3,7 @@ import type { CreateGroupTabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
+import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export interface PendingProjectTabOpen {
@@ -23,6 +24,17 @@ export interface PendingHistoryDiscussionOpen {
     readonly?: boolean;
     status?: string;
     participant_ids?: string[];
+}
+
+function normalizePendingParticipantId(value: string | undefined): string {
+    return normalizeParticipantId(value);
+}
+
+function singlePendingParticipantId(discussion: PendingHistoryDiscussionOpen): string {
+    const ids = (discussion?.participant_ids || [])
+        .map(normalizePendingParticipantId)
+        .filter(id => id && !isLocalHumanParticipantId(id));
+    return ids.length === 1 ? ids[0] : "";
 }
 
 function isConversationMessage(value: unknown): value is { role?: unknown } {
@@ -50,6 +62,7 @@ interface PendingAssistantTabOpenOptions {
     createProjectTab: (projectPath: string, taskTitle: string) => AITab | null;
     activateTab?: (tabId: string) => void;
     getTabState?: (tabId: string) => AITabState | undefined;
+    saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
     getTabList?: () => AITab[];
     hasProjectTab?: (projectPath: string) => boolean;
     sendMessage?: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
@@ -68,6 +81,7 @@ export function usePendingAssistantTabOpen({
     createProjectTab,
     activateTab,
     getTabState,
+    saveTabState,
     getTabList,
     hasProjectTab,
     sendMessage,
@@ -84,6 +98,21 @@ export function usePendingAssistantTabOpen({
 
         const readOnly = isHistoryDiscussionReadOnly(discussion);
 
+        const bindHistoryStateToTab = (tabId: string) => {
+            if (!saveTabState) return;
+            const current = getTabState?.(tabId);
+            saveTabState(tabId, {
+                history: current?.history || [],
+                scrollTop: current?.scrollTop || 0,
+                inputText: current?.inputText || "",
+                ...current,
+                sessionId: current?.sessionId || discussionId,
+                discussionId,
+                readOnly,
+                lastActiveAt: Date.now(),
+            });
+        };
+
         // First prefer any already-open tab for this discussion/session. History
         // rows can represent active, read-only, or invited conversations, but a
         // double-click should focus the live tab when it is already present.
@@ -97,21 +126,43 @@ export function usePendingAssistantTabOpen({
                 return String(state?.sessionId || state?.discussionId || "").trim() === discussionId;
             }) : undefined;
             if (existingSessionTab) {
+                bindHistoryStateToTab(existingSessionTab.id);
                 activateTab(existingSessionTab.id);
                 return;
             }
             // Also check if there's already a group tab for this discussion.
             const existingGroupTab = tabs.find(t => t.type === "group" && t.discussionId === discussionId);
             if (existingGroupTab) {
+                bindHistoryStateToTab(existingGroupTab.id);
                 activateTab(existingGroupTab.id);
                 return;
+            }
+
+            // If the history row is a 1:1 VE discussion and the direct VE tab
+            // already exists but has not saved its session ID yet, use the VE
+            // participant identity to avoid creating a duplicate history tab.
+            const onlyParticipant = singlePendingParticipantId(discussion);
+            if (onlyParticipant) {
+                const existingParticipantTab = tabs.find(t => {
+                    if (t.type !== "ve" && t.type !== "group") return false;
+                    if (normalizePendingParticipantId(t.veId) === onlyParticipant) return true;
+                    const participants = (t.participants || [])
+                        .map(normalizePendingParticipantId)
+                        .filter(id => id && !isLocalHumanParticipantId(id));
+                    return !t.veId && participants.length === 1 && participants[0] === onlyParticipant;
+                });
+                if (existingParticipantTab) {
+                    bindHistoryStateToTab(existingParticipantTab.id);
+                    activateTab(existingParticipantTab.id);
+                    return;
+                }
             }
         }
 
         const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
         const role = discussion?.local_relation || discussion?.role;
         createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role });
-    }, [activateTab, createGroupTab, getTabList, getTabState, lang]);
+    }, [activateTab, createGroupTab, getTabList, getTabState, lang, saveTabState]);
 
     useEffect(() => {
         if (!pendingVEOpen) return;
