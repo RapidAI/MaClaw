@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 // SessionCheckpoint captures the progress state of a session at exit time,
@@ -92,19 +93,17 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 		}
 	}
 
-	// Build a human-readable checkpoint content string.
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("会话进度快照 [%s]\n", cp.CreatedAt.Format("2006-01-02 15:04")))
-	sb.WriteString(fmt.Sprintf("工具: %s | 项目: %s | 状态: %s\n", cp.Tool, cp.ProjectPath, cp.Status))
+	sb.WriteString(fmt.Sprintf("Session checkpoint [%s]\n", cp.CreatedAt.Format("2006-01-02 15:04")))
+	sb.WriteString(fmt.Sprintf("Tool: %s | Project: %s | Status: %s\n", cp.Tool, cp.ProjectPath, cp.Status))
 	if cp.LastTask != "" {
-		sb.WriteString(fmt.Sprintf("最后任务: %s\n", cp.LastTask))
+		sb.WriteString(fmt.Sprintf("Last task: %s\n", cp.LastTask))
 	}
 	if cp.Summary != "" {
-		sb.WriteString(fmt.Sprintf("进度摘要: %s\n", cp.Summary))
+		sb.WriteString(fmt.Sprintf("Progress summary: %s\n", cp.Summary))
 	}
 	if len(eventSummaries) > 0 {
-		sb.WriteString("事件记录:\n")
-		// Keep last 10 events to stay concise.
+		sb.WriteString("Recent events:\n")
 		start := 0
 		if len(eventSummaries) > 10 {
 			start = len(eventSummaries) - 10
@@ -114,7 +113,7 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 		}
 	}
 	if len(cp.FileChanges) > 0 {
-		sb.WriteString("文件变更:\n")
+		sb.WriteString("File changes:\n")
 		limit := len(cp.FileChanges)
 		if limit > 15 {
 			limit = 15
@@ -124,25 +123,28 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 		}
 	}
 	if len(cp.Decisions) > 0 {
-		sb.WriteString("关键决策:\n")
+		sb.WriteString("Key decisions:\n")
 		for _, d := range cp.Decisions {
 			sb.WriteString(fmt.Sprintf("  - %s\n", d))
 		}
 	}
 
-	entry := memory.Entry{
-		Content:  sb.String(),
-		Category: memory.CategorySessionCheckpoint,
-		Tags: []string{
-			"session_checkpoint",
-			cp.ProjectPath,
-			cp.Tool,
-			cp.SessionID,
-			cp.UserID,
-			cp.SlotID,
-		},
+	tags := []string{
+		"session_checkpoint",
+		cp.ProjectPath,
+		cp.Tool,
+		cp.SessionID,
+		cp.UserID,
+		cp.SlotID,
 	}
-	return c.memoryStore.Save(entry)
+	_, err := c.memoryStore.UpsertSessionCheckpoint(memory.SessionCheckpointUpsertOptions{
+		Title:            firstNonEmptyTraceText(cp.LastTask, "Session checkpoint"),
+		Content:          sb.String(),
+		Tags:             tags,
+		IdentityTagCount: 4,
+		OwnerID:          cp.UserID,
+	})
+	return err
 }
 
 // RecallCheckpoint retrieves the most recent session checkpoint for a given
@@ -157,7 +159,6 @@ func (c *SessionCheckpointer) RecallCheckpoint(projectPath string) string {
 		return ""
 	}
 
-	// Return the most recent checkpoint (highest AccessCount or latest UpdatedAt).
 	latest := entries[0]
 	for _, e := range entries[1:] {
 		if e.UpdatedAt.After(latest.UpdatedAt) {
@@ -165,9 +166,7 @@ func (c *SessionCheckpointer) RecallCheckpoint(projectPath string) string {
 		}
 	}
 
-	// Touch access count so frequently resumed projects stay in memory.
 	c.memoryStore.TouchAccess([]string{latest.ID})
-
 	return latest.Content
 }
 
@@ -187,10 +186,10 @@ func buildCheckpointResumePrompt(checkpoint string) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("## 上次会话进度\n\n")
-	sb.WriteString("以下是上次在此项目上的工作进度，请在此基础上继续：\n\n")
+	sb.WriteString("## Previous Session Progress\n\n")
+	sb.WriteString("The following checkpoint summarizes prior work on this project. Continue from it when relevant.\n\n")
 	sb.WriteString(checkpoint)
-	sb.WriteString("\n请基于以上进度继续工作。如果上次的任务已完成，请告知用户。\n")
+	sb.WriteString("\nContinue based on this checkpoint. If the prior task is already complete, tell the user.\n")
 
 	result := sb.String()
 	if len(result) > 8000 {
@@ -198,7 +197,7 @@ func buildCheckpointResumePrompt(checkpoint string) string {
 		if len(runes) > 2000 {
 			runes = runes[:2000]
 		}
-		result = string(runes) + "\n...(已截断)"
+		result = string(runes) + "\n...(truncated)"
 	}
 	return result
 }

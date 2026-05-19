@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // ConnSender abstracts sending a JSON message to a WebSocket connection.
@@ -37,24 +40,36 @@ func NewNotifier(store *Store, push PushDispatcher) *Notifier {
 
 // Register adds a user's WS connection.
 func (n *Notifier) Register(userID string, conn ConnSender) {
+	n.RegisterForTenant(store.DefaultTenantID, userID, conn)
+}
+
+func (n *Notifier) RegisterForTenant(tenantID, userID string, conn ConnSender) {
 	n.mu.Lock()
-	n.conns[userID] = conn
+	n.conns[tenantUserKey(tenantID, userID)] = conn
 	n.mu.Unlock()
-	_ = n.store.SetPresence(userID, true)
+	_ = n.store.SetPresenceForTenant(tenantID, userID, true)
 }
 
 // Unregister removes a user's WS connection.
 func (n *Notifier) Unregister(userID string) {
+	n.UnregisterForTenant(store.DefaultTenantID, userID)
+}
+
+func (n *Notifier) UnregisterForTenant(tenantID, userID string) {
 	n.mu.Lock()
-	delete(n.conns, userID)
+	delete(n.conns, tenantUserKey(tenantID, userID))
 	n.mu.Unlock()
-	_ = n.store.SetPresence(userID, false)
+	_ = n.store.SetPresenceForTenant(tenantID, userID, false)
 }
 
 // IsOnline checks if a user has an active WS connection.
 func (n *Notifier) IsOnline(userID string) bool {
+	return n.IsOnlineForTenant(store.DefaultTenantID, userID)
+}
+
+func (n *Notifier) IsOnlineForTenant(tenantID, userID string) bool {
 	n.mu.RLock()
-	_, ok := n.conns[userID]
+	_, ok := n.conns[tenantUserKey(tenantID, userID)]
 	n.mu.RUnlock()
 	return ok
 }

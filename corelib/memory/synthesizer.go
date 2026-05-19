@@ -108,14 +108,14 @@ func (s *Synthesizer) Synthesize(ctx context.Context) (*SynthesizeResult, error)
 
 ## Task 1: Recurring Pattern Promotion
 Identify facts, preferences, or patterns that appear in %d or more separate entries.
-For each, output: {"source": "recurring", "content": "concise fact/preference", "category": "preference|instruction|user_fact", "evidence_count": N}
+For each, output: {"source": "recurring", "content": "concise fact/preference", "category": "preference|instruction|user_fact", "evidence_count": N, "evidence_ids": ["entry-id", "..."]}
 
 ## Task 2: High-Level Insight Extraction
 Extract user preferences, decision patterns, recurring habits, and important facts.
-For each, output: {"source": "insight", "content": "concise insight text", "category": "preference|instruction|user_fact"}
+For each, output: {"source": "insight", "content": "concise insight text", "category": "preference|instruction|user_fact", "evidence_count": N, "evidence_ids": ["entry-id", "..."]}
 
 Return a single JSON array combining both tasks:
-[{"source": "recurring|insight", "content": "...", "category": "...", "evidence_count": N}]
+[{"source": "recurring|insight", "content": "...", "category": "...", "evidence_count": N, "evidence_ids": ["..."]}]
 
 Rules:
 - Each item must be a single, actionable statement about ONE topic
@@ -132,6 +132,7 @@ CRITICAL category rules:
 - "preference" = user's tool/language/style preferences
 - "instruction" = how the user wants things done
 - NEVER classify technical environment details (software versions, server configs, Docker settings, project architecture, API endpoints, deployment configs) as "user_fact". These are project knowledge, not user facts.
+- Use only IDs shown in the episodic memory labels for evidence_ids
 - Each item must be about ONE topic. NEVER combine personal info with technical info.`, s.threshold, s.threshold)
 
 	userPrompt := sb.String()
@@ -157,10 +158,11 @@ CRITICAL category rules:
 
 	// Parse combined results.
 	type synthesisItem struct {
-		Source        string `json:"source"`
-		Content       string `json:"content"`
-		Category      string `json:"category"`
-		EvidenceCount int    `json:"evidence_count"`
+		Source        string   `json:"source"`
+		Content       string   `json:"content"`
+		Category      string   `json:"category"`
+		EvidenceCount int      `json:"evidence_count"`
+		EvidenceIDs   []string `json:"evidence_ids"`
 	}
 	var items []synthesisItem
 	if err := extractJSONFromLLMResponse(resp, &items); err != nil {
@@ -172,8 +174,12 @@ CRITICAL category rules:
 		if strings.TrimSpace(item.Content) == "" {
 			continue
 		}
-		// For recurring items, enforce evidence threshold.
-		if item.Source == "recurring" && item.EvidenceCount < s.threshold {
+		evidence := selectSynthesisEvidence(episodic, item.EvidenceIDs)
+		if len(evidence) == 0 && item.EvidenceCount > 0 {
+			evidence = syntheticEvidencePlaceholders(item.EvidenceCount)
+		}
+		gate := AssessConsolidationGate(evidence, ConsolidationGateOptions{MinEvidence: s.threshold})
+		if !gate.Allowed {
 			continue
 		}
 
@@ -190,13 +196,21 @@ CRITICAL category rules:
 			tag = "promoted"
 		}
 
-		entry := Entry{
-			Content:  item.Content,
-			Category: cat,
-			Tags:     []string{tag, "auto_generated"},
-			Scope:    ScopeGlobal,
-		}
-		if err := s.store.Save(entry); err != nil {
+		evidenceIDs := synthesisEvidenceIDs(evidence)
+		_, err := s.store.UpsertEntryByTags(UpsertByTagsOptions{
+			Title:            "Schema consolidation",
+			Content:          item.Content,
+			Category:         cat,
+			Tags:             []string{tag, "auto_generated", "schema:" + item.Source},
+			IdentityTagCount: 3,
+			Scope:            ScopeGlobal,
+			SourceType:       "schema_consolidation",
+			EvidenceIDs:      evidenceIDs,
+			RelatedIDs:       evidenceIDs,
+			DerivedKind:      "schema:" + item.Source,
+			Boundary:         &gate.Boundary,
+		})
+		if err != nil {
 			continue
 		}
 
@@ -208,4 +222,55 @@ CRITICAL category rules:
 	}
 
 	return result, nil
+}
+
+func selectSynthesisEvidence(entries []Entry, ids []string) []Entry {
+	if len(ids) == 0 {
+		return nil
+	}
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			want[id] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	selected := make([]Entry, 0, len(want))
+	for _, entry := range entries {
+		if _, ok := want[entry.ID]; ok {
+			selected = append(selected, entry)
+		}
+	}
+	return selected
+}
+
+func syntheticEvidencePlaceholders(count int) []Entry {
+	if count <= 0 {
+		return nil
+	}
+	evidence := make([]Entry, count)
+	for i := range evidence {
+		evidence[i] = Entry{SourceType: "llm_evidence_count"}
+	}
+	return evidence
+}
+
+func synthesisEvidenceIDs(evidence []Entry) []string {
+	ids := make([]string, 0, len(evidence))
+	seen := map[string]struct{}{}
+	for _, entry := range evidence {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }

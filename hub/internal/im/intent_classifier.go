@@ -44,7 +44,7 @@ type routeHistoryEntry struct {
 
 // IntentClassifier uses an LLM to classify user messages into routing intents.
 type IntentClassifier struct {
-	configProvider func() *HubLLMConfig
+	configProvider func(context.Context) *HubLLMConfig
 	breaker        *CircuitBreaker
 	llmSem         *LLMSemaphore
 	client         *http.Client
@@ -62,13 +62,13 @@ type intentCacheEntry struct {
 }
 
 const (
-	intentCacheMax = 10
-	intentCacheTTL = 5 * time.Minute
+	intentCacheMax  = 10
+	intentCacheTTL  = 5 * time.Minute
 	classifyTimeout = 5 * time.Second
 )
 
 // NewIntentClassifier creates a new classifier.
-func NewIntentClassifier(configProvider func() *HubLLMConfig, breaker *CircuitBreaker, llmSem *LLMSemaphore) *IntentClassifier {
+func NewIntentClassifier(configProvider func(context.Context) *HubLLMConfig, breaker *CircuitBreaker, llmSem *LLMSemaphore) *IntentClassifier {
 	return &IntentClassifier{
 		configProvider: configProvider,
 		breaker:        breaker,
@@ -95,7 +95,7 @@ func (ic *IntentClassifier) Classify(
 	}
 
 	// Build the LLM prompt.
-	cfg := ic.configProvider()
+	cfg := ic.configProvider(ctx)
 	if cfg == nil {
 		return &IntentResult{Type: IntentBroadcast, Reason: "LLM 未配置，降级广播"}, nil
 	}

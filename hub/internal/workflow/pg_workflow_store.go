@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // Compile-time interface check.
@@ -26,10 +28,15 @@ func NewPGWorkflowStore(db *sql.DB) *PGWorkflowStore {
 // ---------------------------------------------------------------------------
 
 func (s *PGWorkflowStore) CreateWorkflow(ctx context.Context, def *WorkflowDefinition) error {
+	tenantID := store.TenantIDFromContext(ctx)
+	if def.TenantID == "" {
+		def.TenantID = tenantID
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO workflow_definitions (id, owner_id, name, description, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		`INSERT INTO workflow_definitions (id, tenant_id, owner_id, name, description, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		def.ID,
+		tenantID,
 		def.OwnerID,
 		def.Name,
 		def.Description,
@@ -41,11 +48,11 @@ func (s *PGWorkflowStore) CreateWorkflow(ctx context.Context, def *WorkflowDefin
 
 func (s *PGWorkflowStore) GetWorkflow(ctx context.Context, id string) (*WorkflowDefinition, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, owner_id, name, description, created_at, updated_at
-		 FROM workflow_definitions WHERE id = $1`, id)
+		`SELECT id, tenant_id, owner_id, name, description, created_at, updated_at
+		 FROM workflow_definitions WHERE tenant_id = $1 AND id = $2`, store.TenantIDFromContext(ctx), id)
 
 	var def WorkflowDefinition
-	if err := row.Scan(&def.ID, &def.OwnerID, &def.Name, &def.Description, &def.CreatedAt, &def.UpdatedAt); err != nil {
+	if err := row.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &def.CreatedAt, &def.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -61,8 +68,8 @@ func (s *PGWorkflowStore) ListWorkflows(ctx context.Context, ownerID string) ([]
 		return nil, errors.New("ownerID is required")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, owner_id, name, description, created_at, updated_at
-		 FROM workflow_definitions WHERE owner_id = $1 ORDER BY updated_at DESC`, ownerID)
+		`SELECT id, tenant_id, owner_id, name, description, created_at, updated_at
+		 FROM workflow_definitions WHERE tenant_id = $1 AND owner_id = $2 ORDER BY updated_at DESC`, store.TenantIDFromContext(ctx), ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +78,7 @@ func (s *PGWorkflowStore) ListWorkflows(ctx context.Context, ownerID string) ([]
 	var defs []WorkflowDefinition
 	for rows.Next() {
 		var def WorkflowDefinition
-		if err := rows.Scan(&def.ID, &def.OwnerID, &def.Name, &def.Description, &def.CreatedAt, &def.UpdatedAt); err != nil {
+		if err := rows.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &def.CreatedAt, &def.UpdatedAt); err != nil {
 			return nil, err
 		}
 		def.CreatedAt = def.CreatedAt.UTC()
@@ -87,10 +94,11 @@ func (s *PGWorkflowStore) UpdateWorkflow(ctx context.Context, def *WorkflowDefin
 		return errors.New("workflow definition is required")
 	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_definitions SET name = $1, description = $2, updated_at = $3 WHERE id = $4`,
+		`UPDATE workflow_definitions SET name = $1, description = $2, updated_at = $3 WHERE tenant_id = $4 AND id = $5`,
 		def.Name,
 		def.Description,
 		def.UpdatedAt.UTC(),
+		store.TenantIDFromContext(ctx),
 		def.ID,
 	)
 	if err != nil {
@@ -109,7 +117,7 @@ func (s *PGWorkflowStore) DeleteWorkflow(ctx context.Context, id string) error {
 
 	var running int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM workflow_instances WHERE workflow_id = $1 AND status IN ('running', 'blocked')`, id,
+		`SELECT COUNT(*) FROM workflow_instances WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('running', 'blocked')`, store.TenantIDFromContext(ctx), id,
 	).Scan(&running); err != nil {
 		return err
 	}
@@ -117,10 +125,10 @@ func (s *PGWorkflowStore) DeleteWorkflow(ctx context.Context, id string) error {
 		return errors.New("cannot delete workflow with running instances")
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_versions WHERE workflow_id = $1`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_versions WHERE workflow_id = $1 AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = workflow_versions.workflow_id AND d.tenant_id = $2)`, id, store.TenantIDFromContext(ctx)); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM workflow_definitions WHERE id = $1`, id)
+	res, err := tx.ExecContext(ctx, `DELETE FROM workflow_definitions WHERE tenant_id = $1 AND id = $2`, store.TenantIDFromContext(ctx), id)
 	if err != nil {
 		return err
 	}
@@ -181,7 +189,9 @@ func (s *PGWorkflowStore) CreateVersion(ctx context.Context, ver *WorkflowVersio
 func (s *PGWorkflowStore) GetVersion(ctx context.Context, id string) (*WorkflowVersion, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions WHERE id = $1`, id)
+		 FROM workflow_versions v
+		 WHERE v.id = $1
+		   AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = v.workflow_id AND d.tenant_id = $2)`, id, store.TenantIDFromContext(ctx))
 	return s.scanVersion(row)
 }
 
@@ -189,7 +199,9 @@ func (s *PGWorkflowStore) GetPublishedVersion(ctx context.Context, workflowID st
 	// Uses the unique partial index: idx_wf_ver_published ON workflow_versions(workflow_id) WHERE status = 'published'
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions WHERE workflow_id = $1 AND status = 'published'`, workflowID)
+		 FROM workflow_versions v
+		 WHERE v.workflow_id = $1 AND v.status = 'published'
+		   AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = v.workflow_id AND d.tenant_id = $2)`, workflowID, store.TenantIDFromContext(ctx))
 	return s.scanVersion(row)
 }
 
@@ -199,23 +211,27 @@ func (s *PGWorkflowStore) UpdateVersionStatus(ctx context.Context, id string, st
 	switch status {
 	case VersionPendingReview:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = $1, submitted_at = $2, updated_at = $3 WHERE id = $4`,
-			string(status), now, now, id)
+			`UPDATE workflow_versions SET status = $1, submitted_at = $2, updated_at = $3
+			 WHERE id = $4 AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = workflow_versions.workflow_id AND d.tenant_id = $5)`,
+			string(status), now, now, id, store.TenantIDFromContext(ctx))
 		return err
 	case VersionPublished:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = $1, published_at = $2, updated_at = $3 WHERE id = $4`,
-			string(status), now, now, id)
+			`UPDATE workflow_versions SET status = $1, published_at = $2, updated_at = $3
+			 WHERE id = $4 AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = workflow_versions.workflow_id AND d.tenant_id = $5)`,
+			string(status), now, now, id, store.TenantIDFromContext(ctx))
 		return err
 	case VersionRejected:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = $1, rejection_reason = $2, updated_at = $3 WHERE id = $4`,
-			string(status), reason, now, id)
+			`UPDATE workflow_versions SET status = $1, rejection_reason = $2, updated_at = $3
+			 WHERE id = $4 AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = workflow_versions.workflow_id AND d.tenant_id = $5)`,
+			string(status), reason, now, id, store.TenantIDFromContext(ctx))
 		return err
 	default:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = $1, updated_at = $2 WHERE id = $3`,
-			string(status), now, id)
+			`UPDATE workflow_versions SET status = $1, updated_at = $2
+			 WHERE id = $3 AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = workflow_versions.workflow_id AND d.tenant_id = $4)`,
+			string(status), now, id, store.TenantIDFromContext(ctx))
 		return err
 	}
 }
@@ -223,7 +239,10 @@ func (s *PGWorkflowStore) UpdateVersionStatus(ctx context.Context, id string, st
 func (s *PGWorkflowStore) ListVersions(ctx context.Context, workflowID string) ([]WorkflowVersion, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions WHERE workflow_id = $1 ORDER BY created_at DESC`, workflowID)
+		 FROM workflow_versions v
+		 WHERE v.workflow_id = $1
+		   AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = v.workflow_id AND d.tenant_id = $2)
+		 ORDER BY created_at DESC`, workflowID, store.TenantIDFromContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +275,10 @@ func (s *PGWorkflowStore) ListPendingReviews(ctx context.Context, page, pageSize
 	// Get total count of pending reviews
 	var total int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM workflow_versions WHERE status = 'pending_review'`).Scan(&total)
+		`SELECT COUNT(*)
+		 FROM workflow_versions v
+		 JOIN workflow_definitions d ON d.id = v.workflow_id
+		 WHERE v.status = 'pending_review' AND d.tenant_id = $1`, store.TenantIDFromContext(ctx)).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -266,11 +288,12 @@ func (s *PGWorkflowStore) ListPendingReviews(ctx context.Context, page, pageSize
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions
-		 WHERE status = 'pending_review'
+		`SELECT v.id, v.workflow_id, v.version_number, v.status, v.graph_json, v.submitted_at, v.published_at, v.rejection_reason, v.created_at, v.updated_at
+		 FROM workflow_versions v
+		 JOIN workflow_definitions d ON d.id = v.workflow_id
+		 WHERE v.status = 'pending_review' AND d.tenant_id = $1
 		 ORDER BY submitted_at ASC
-		 LIMIT $1 OFFSET $2`, pageSize, offset)
+		 LIMIT $2 OFFSET $3`, store.TenantIDFromContext(ctx), pageSize, offset)
 	if err != nil {
 		return nil, 0, err
 	}

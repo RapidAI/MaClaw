@@ -27,7 +27,6 @@ import (
 	skillpkg "github.com/RapidAI/CodeClaw/hub/internal/skill"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/ve"
-	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
@@ -71,7 +70,7 @@ func NewRouter(
 	qqbotPlugin *qqbot.Plugin,
 	wecomPlugin *wecom.Plugin,
 	dingtalkPlugin *dingtalk.Plugin,
-	hubLLMStatusFn func() string,
+	hubLLMStatusFn func(context.Context) string,
 	convStatsFn func() (int, int),
 	chatStore *chat.Store,
 	chatChannelSvc *chat.ChannelService,
@@ -81,7 +80,6 @@ func NewRouter(
 	chatPresenceSvc *chat.PresenceService,
 	chatVoiceSignaling *chat.VoiceSignaling,
 	chatNotifier *chat.Notifier,
-	voiceprintSvc *voiceprint.Service,
 	securitySvc *security.SecurityService,
 	hubCfg *config.Config,
 	configPath string,
@@ -135,6 +133,7 @@ func NewRouter(
 				return
 			}
 			r.Header.Set("X-Authenticated-Machine-ID", principal.MachineID)
+			r.Header.Set("X-Hub-Tenant-ID", principal.TenantID)
 			h(w, r)
 		}
 	}
@@ -219,7 +218,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/center/status", RequireAdmin(admins, GetCenterStatusHandler(centerSvc)))
 	mux.HandleFunc("POST /api/center/user-migration/export", CenterUserMigrationExportHandler(centerSvc, identity, deviceSvc))
 	mux.HandleFunc("POST /api/center/user-migration/import", CenterUserMigrationImportHandler(centerSvc, identity, deviceSvc))
-	mux.HandleFunc("POST /api/center/user-migration/delete", CenterUserMigrationDeleteHandler(centerSvc, identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, voiceprintSvc))
+	mux.HandleFunc("POST /api/center/user-migration/delete", CenterUserMigrationDeleteHandler(centerSvc, identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners))
 	mux.HandleFunc("POST /api/admin/center/config", RequireAdmin(admins, UpdateCenterConfigHandler(centerSvc, identity, func(url string) {
 		if qqbotPlugin != nil {
 			qqbotPlugin.SetPublicBaseURL(url)
@@ -294,15 +293,6 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/users/smart_route", RequireAdmin(admins, UpdateUserSmartRouteHandler(identity.UsersRepo())))
 	mux.HandleFunc("GET /api/admin/smart_route_all", RequireAdmin(admins, GetSmartRouteAllHandler(system)))
 	mux.HandleFunc("PUT /api/admin/smart_route_all", RequireAdmin(admins, UpdateSmartRouteAllHandler(system)))
-	// Voiceprint management
-	if voiceprintSvc != nil {
-		mux.HandleFunc("GET /api/admin/voiceprint/config", RequireAdmin(admins, GetVoiceprintConfigHandler(voiceprintSvc)))
-		mux.HandleFunc("PUT /api/admin/voiceprint/config", RequireAdmin(admins, UpdateVoiceprintConfigHandler(voiceprintSvc)))
-		mux.HandleFunc("POST /api/admin/voiceprint/enroll", RequireAdmin(admins, VoiceprintEnrollHandler(voiceprintSvc, identity.UsersRepo())))
-		mux.HandleFunc("POST /api/admin/voiceprint/identify", RequireAdmin(admins, VoiceprintIdentifyHandler(voiceprintSvc)))
-		mux.HandleFunc("GET /api/admin/voiceprints", RequireAdmin(admins, ListVoiceprintsHandler(voiceprintSvc)))
-		mux.HandleFunc("DELETE /api/admin/voiceprints", RequireAdmin(admins, DeleteVoiceprintHandler(voiceprintSvc)))
-	}
 	// Security management
 	if securitySvc != nil {
 		mux.HandleFunc("GET /api/admin/security/groups", RequireAdmin(admins, SecurityGroupsHandler(securitySvc)))
@@ -469,6 +459,7 @@ func NewRouter(
 				return
 			}
 			r.Header.Set("X-Owner-ID", principal.MachineID)
+			r = r.WithContext(store.WithTenant(r.Context(), principal.TenantID))
 			h(w, r)
 		}
 	}
@@ -543,30 +534,23 @@ func NewRouter(
 	// Webhook session endpoint (Bearer token auth handled internally)
 	mux.HandleFunc("POST /api/webhook/session", WebhookCreateSessionHandler(deviceSvc, sessionSvc))
 
-	// User-facing voiceprint self-enrollment
-	if voiceprintSvc != nil {
-		mux.HandleFunc("POST /api/chat/voiceprint/enroll", UserVoiceprintEnrollHandler(identity, voiceprintSvc))
-		mux.HandleFunc("GET /api/chat/voiceprint/list", UserVoiceprintListHandler(identity, voiceprintSvc))
-		mux.HandleFunc("DELETE /api/chat/voiceprint", UserVoiceprintDeleteHandler(identity, voiceprintSvc))
-	}
-
 	// Chat Module
 	if chatChannelSvc != nil {
 		mux.HandleFunc("POST /api/chat/channels", ChatCreateChannelHandler(identity, chatChannelSvc))
 		mux.HandleFunc("GET /api/chat/channels", ChatListChannelsHandler(identity, chatChannelSvc))
 		mux.HandleFunc("POST /api/chat/channels/{id}/messages", ChatSendMessageHandler(identity, chatChannelSvc, chatMessageSvc))
 		mux.HandleFunc("GET /api/chat/channels/{id}/messages", ChatGetMessagesHandler(identity, chatChannelSvc, chatMessageSvc))
-		mux.HandleFunc("POST /api/chat/read-receipts", ChatReadReceiptsHandler(identity, chatReadReceiptSvc))
+		mux.HandleFunc("POST /api/chat/read-receipts", ChatReadReceiptsHandler(identity, chatChannelSvc, chatReadReceiptSvc))
 		mux.HandleFunc("POST /api/chat/files/upload", ChatFileUploadHandler(identity, chatChannelSvc, chatFileSvc))
-		mux.HandleFunc("GET /api/chat/files/{id}", ChatFileDownloadHandler(identity, chatFileSvc))
+		mux.HandleFunc("GET /api/chat/files/{id}", ChatFileDownloadHandler(identity, chatChannelSvc, chatFileSvc))
 		mux.HandleFunc("GET /api/chat/users/{id}/presence", ChatPresenceHandler(identity, chatPresenceSvc))
-		mux.HandleFunc("POST /api/chat/voice/call", ChatVoiceCallHandler(identity, chatVoiceSignaling))
-		mux.HandleFunc("POST /api/chat/voice/answer", ChatVoiceAnswerHandler(identity, chatVoiceSignaling))
+		mux.HandleFunc("POST /api/chat/voice/call", ChatVoiceCallHandler(identity, chatChannelSvc, chatVoiceSignaling))
+		mux.HandleFunc("POST /api/chat/voice/answer", ChatVoiceAnswerHandler(identity, chatChannelSvc, chatVoiceSignaling))
 		mux.HandleFunc("POST /api/chat/voice/ice", ChatVoiceICEHandler(identity, chatVoiceSignaling))
-		mux.HandleFunc("POST /api/chat/voice/hangup", ChatVoiceHangupHandler(identity, chatVoiceSignaling))
+		mux.HandleFunc("POST /api/chat/voice/hangup", ChatVoiceHangupHandler(identity, chatChannelSvc, chatVoiceSignaling))
 		mux.HandleFunc("POST /api/chat/push/register", ChatPushRegisterHandler(identity, chatStore))
-		mux.HandleFunc("POST /api/chat/typing", ChatTypingHandler(identity, chatNotifier))
-		mux.HandleFunc("/api/chat/ws", ChatWSHandler(identity, chatNotifier))
+		mux.HandleFunc("POST /api/chat/typing", ChatTypingHandler(identity, chatChannelSvc, chatNotifier))
+		mux.HandleFunc("/api/chat/ws", ChatWSHandler(identity, chatChannelSvc, chatNotifier))
 	}
 
 	// Model file download (embedding models etc.); public, no auth

@@ -32,4 +32,86 @@ describe("useGroupSessionActions", () => {
         expect(availability?.available.map((ve) => ve.name).join(" ")).not.toContain("m_b1821505498d817c");
         expect(availability?.available.map((ve) => ve.name).join(" ")).not.toContain("m_d64c1196e8d03c53");
     });
+
+    it("filters already-added participants case-insensitively by profile or machine id", async () => {
+        const listVirtualEmployees = vi.fn().mockResolvedValue([
+            { id: "profile-ve", machine_id: "Machine-VE", name: "Already added", online_status: "online" },
+            { id: "profile-new", machine_id: "machine-new", name: "New Bot", online_status: "online" },
+        ]);
+        const { result } = renderHook(() => useGroupSessionActions({
+            lang: "en",
+            listVirtualEmployees,
+            initiateConversation: vi.fn().mockResolvedValue({ session_id: "session-1" }),
+        }));
+
+        let availability: Awaited<ReturnType<typeof result.current.checkInviteAvailability>> | undefined;
+        await act(async () => {
+            availability = await result.current.checkInviteAvailability({
+                sessionId: "session-1",
+                veId: "ve-a",
+                participants: ["machine-ve"],
+                maxParticipants: 5,
+            });
+        });
+
+        expect(availability?.success).toBe(true);
+        expect(availability?.available.map((ve) => ve.id)).toEqual(["profile-new"]);
+    });
+
+    it("detects an existing local AI participant case-insensitively", async () => {
+        const registerLocalExecutor = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local AI" });
+        const { result } = renderHook(() => useGroupSessionActions({ lang: "en", registerLocalExecutor }));
+
+        let added: Awaited<ReturnType<typeof result.current.addLocalAI>> | undefined;
+        await act(async () => {
+            added = await result.current.addLocalAI({
+                sessionId: "session-1",
+                veId: "ve-a",
+                participants: [" LOCAL-MACLAW "],
+                maxParticipants: 5,
+            });
+        });
+
+        expect(added?.success).toBe(false);
+        expect(registerLocalExecutor).not.toHaveBeenCalled();
+        expect(result.current.feedback?.message).toBe("Local AI assistant is already in the session");
+    });
+
+    it("returns canonical local AI participant identity after registration", async () => {
+        const registerLocalExecutor = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local AI" });
+        const { result } = renderHook(() => useGroupSessionActions({ lang: "en", registerLocalExecutor }));
+
+        let added: Awaited<ReturnType<typeof result.current.addLocalAI>> | undefined;
+        await act(async () => {
+            added = await result.current.addLocalAI({
+                sessionId: "session-1",
+                veId: "ve-a",
+                participants: ["ve-a"],
+                maxParticipants: 5,
+            });
+        });
+
+        expect(added).toMatchObject({ success: true, sessionId: "session-1", participantId: "machine-local", displayName: "Local AI" });
+        expect(result.current.feedback?.message).toBe("Local AI assistant added to session");
+    });
+
+    it("detects an existing local AI participant by canonical id", async () => {
+        const registerLocalExecutor = vi.fn();
+        const { result } = renderHook(() => useGroupSessionActions({ lang: "en", registerLocalExecutor }));
+
+        let added: Awaited<ReturnType<typeof result.current.addLocalAI>> | undefined;
+        await act(async () => {
+            added = await result.current.addLocalAI({
+                sessionId: "session-1",
+                veId: "ve-a",
+                participants: ["machine-local"],
+                localParticipantIds: ["MACHINE-LOCAL"],
+                maxParticipants: 5,
+            });
+        });
+
+        expect(added?.success).toBe(false);
+        expect(registerLocalExecutor).not.toHaveBeenCalled();
+        expect(result.current.feedback?.message).toBe("Local AI assistant is already in the session");
+    });
 });

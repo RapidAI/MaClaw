@@ -104,10 +104,30 @@ func (a *memorySaverAdapter) SaveInsight(content string, category string, tags [
 	if a.app.memoryStore == nil {
 		return nil // graceful degradation
 	}
-	entry := memory.Entry{
-		Content:  content,
-		Category: memory.Category(category),
-		Tags:     tags,
+	categoryValue := memory.Category(category)
+	if categoryValue == memory.CategoryProjectKnowledge {
+		_, err := a.app.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+			Title:            "Self review insight",
+			Content:          content,
+			Tags:             tags,
+			IdentityTagCount: len(tags),
+			Scope:            memory.ScopeGlobal,
+			SourceType:       "self_review",
+			DerivedKind:      "self_review",
+			Boundary:         &memory.MemoryBoundary{SourceScope: "self_review"},
+		})
+		return err
 	}
-	return a.app.memoryStore.Save(entry)
+	_, err := a.app.memoryStore.UpsertGeneratedInsight(memory.GeneratedInsightUpsertOptions{
+		Title:            "Self review insight",
+		Content:          content,
+		Category:         categoryValue,
+		Tags:             tags,
+		IdentityTagCount: len(tags),
+		Scope:            memory.ScopeGlobal,
+		SourceType:       "self_review",
+		DerivedKind:      "self_review",
+		Boundary:         &memory.MemoryBoundary{SourceScope: "self_review"},
+	})
+	return err
 }

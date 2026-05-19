@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // FormatRecallEntryForTool renders a memory entry for explicit recall tools.
@@ -28,7 +29,67 @@ func FormatRecallEntryForTool(e Entry) string {
 		fmt.Fprintf(&b, "\n  drill_down: use read_file with path=%q to inspect the full source/evidence", e.SourceURL)
 	}
 
+	if derived := formatDerivedMemoryMetadata(e); derived != "" {
+		fmt.Fprintf(&b, "\n  derived: %s", derived)
+	}
+
 	return b.String()
+}
+
+func formatDerivedMemoryMetadata(e Entry) string {
+	parts := make([]string, 0, 3)
+	if e.DerivedKind != "" {
+		parts = append(parts, "kind="+e.DerivedKind)
+	}
+	if len(e.EvidenceIDs) > 0 {
+		parts = append(parts, "evidence_ids="+formatEvidenceIDList(e.EvidenceIDs, 5))
+	}
+	if boundary := formatMemoryBoundary(e.Boundary); boundary != "" {
+		parts = append(parts, "boundary={"+boundary+"}")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatEvidenceIDList(ids []string, limit int) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	if limit <= 0 || len(ids) <= limit {
+		return strings.Join(ids, ",")
+	}
+	return strings.Join(ids[:limit], ",") + fmt.Sprintf("(+%d)", len(ids)-limit)
+}
+
+func formatMemoryBoundary(boundary *MemoryBoundary) string {
+	if boundary == nil {
+		return ""
+	}
+	parts := make([]string, 0, 8)
+	if boundary.ProjectPath != "" {
+		parts = append(parts, "project_path="+boundary.ProjectPath)
+	}
+	if boundary.OwnerID != "" {
+		parts = append(parts, "owner_id="+boundary.OwnerID)
+	}
+	if boundary.TaskType != "" {
+		parts = append(parts, "task_type="+boundary.TaskType)
+	}
+	if boundary.Workflow != "" {
+		parts = append(parts, "workflow="+boundary.Workflow)
+	}
+	if boundary.Toolchain != "" {
+		parts = append(parts, "toolchain="+boundary.Toolchain)
+	}
+	if boundary.SourceScope != "" {
+		parts = append(parts, "source_scope="+boundary.SourceScope)
+	}
+	if boundary.Since != nil {
+		parts = append(parts, "since="+boundary.Since.UTC().Format(time.RFC3339))
+	}
+	if boundary.Until != nil {
+		parts = append(parts, "until="+boundary.Until.UTC().Format(time.RFC3339))
+	}
+	return strings.Join(parts, ",")
 }
 
 // FormatRecallEntryForPrompt renders a compact memory line for automatic prompt

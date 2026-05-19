@@ -13,7 +13,7 @@ import (
 //
 // The key difference from KnowledgeExtractor (which runs at session expiry):
 // this runs at session START, ensuring knowledge from the previous session
-// is available for recall in the new session — not after a 1-hour cooldown.
+// is available for recall in the new session, not after a 1-hour cooldown.
 //
 // Design principles:
 //   - Async: extraction runs in a goroutine, never blocks the user's message
@@ -70,7 +70,7 @@ func (e *SessionStartExtractor) MaybeExtractAsync(userID string, entries []Conve
 	// Cap the processed map to prevent unbounded growth.
 	if len(e.processed) > 200 {
 		// Evict oldest entries (simple: clear all, since this is just
-		// an optimization — re-extraction is harmless due to dedup in Store).
+		// an optimization; re-extraction is harmless due to dedup in Store).
 		e.processed = map[string]bool{fingerprint: true}
 	}
 	e.mu.Unlock()
@@ -145,7 +145,7 @@ func (e *SessionStartExtractor) extract(userID string, entries []ConversationMes
 	}
 
 	// Call LLM to extract a structured session summary.
-	// This is a simpler prompt than KnowledgeExtractor's — we want a
+	// This is a simpler prompt than KnowledgeExtractor: we want a
 	// single cohesive summary rather than individual knowledge points.
 	// Inspired by Codex's phase1 output: raw_memory + rollout_summary.
 	summary, err := e.llm.ChatCall([]map[string]string{
@@ -172,16 +172,19 @@ func (e *SessionStartExtractor) extract(userID string, entries []ConversationMes
 		title = strings.TrimSpace(summary[:idx])
 		title = strings.TrimLeft(title, "# ")
 	}
-	entry := Entry{
-		Content:    summary,
-		Title:      title,
-		Category:   CategoryTaskArtifact,
-		Tags:       []string{"session_extraction", "auto", userID},
-		Scope:      ScopeProject,
-		SourceType: "session_start_extraction",
-		OwnerID:    userID,
-	}
-	if err := e.store.Save(entry); err != nil {
+	sourceType := "session_start_extraction"
+	tags := []string{"session_extraction", "auto", userID, "session:" + sessionFingerprint(entries)}
+	_, err = e.store.UpsertTaskArtifact(TaskArtifactUpsertOptions{
+		Title:            title,
+		Content:          summary,
+		Tags:             tags,
+		IdentityTagCount: 4,
+		SourceType:       sourceType,
+		OwnerID:          userID,
+		DerivedKind:      "summary:session_start",
+		Boundary:         generatedRecordBoundary(tags, userID, sourceType),
+	})
+	if err != nil {
 		log.Printf("[session-start-extractor] save failed for user %s: %v", userID, err)
 		return
 	}
@@ -209,17 +212,17 @@ func sessionFingerprint(entries []ConversationMessage) string {
 	return computeContentHash(first + "|" + last)
 }
 
-const sessionExtractionPrompt = `你是一个会话记忆提取助手。从以下对话历史中提取一份结构化的会话摘要，用于帮助未来的对话回忆之前的工作。
+const sessionExtractionPrompt = `You are a conversation memory extraction assistant. Read the prior conversation and produce one structured session summary for future recall.
 
-摘要必须包含:
-1. **任务目标**: 用户想要完成什么
-2. **关键决策**: 做了哪些重要的技术/设计决策
-3. **完成状态**: 哪些工作已完成，哪些未完成
-4. **重要发现**: 遇到的问题、解决方案、关键配置信息
-5. **文件和路径**: 涉及的重要文件路径、项目路径
+The summary must include:
+1. Task goal: what the user wanted to accomplish.
+2. Key decisions: important technical or design decisions.
+3. Completion state: what is done and what remains.
+4. Important findings: problems, fixes, commands, configuration, and facts worth remembering.
+5. Files and paths: important project files, directories, and artifacts.
 
-要求:
-- 简洁但完整，300-800 字
-- 保留具体的技术细节（文件名、命令、配置值）
-- 不要包含寒暄和无关内容
-- 使用 Markdown 列表格式`
+Requirements:
+- Be concise but complete, around 300-800 characters when possible.
+- Preserve concrete technical details such as file names, commands, config values, APIs, and project paths.
+- Exclude secrets and irrelevant chatter.
+- Use Markdown bullets.`

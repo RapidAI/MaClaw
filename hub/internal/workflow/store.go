@@ -8,6 +8,7 @@ import (
 // WorkflowDefinition represents a complete workflow owned by a user.
 type WorkflowDefinition struct {
 	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id,omitempty"`
 	OwnerID     string    `json:"owner_id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`

@@ -61,9 +61,9 @@ func UpdateFeishuConfigHandler(system store.SystemSettingsRepository, notifier *
 			return
 		}
 
-		// Hot-reload: reconfigure the notifier so the new credentials take
-		// effect immediately without restarting the hub.
-		if notifier != nil {
+		// Hot-reload only for the Hub-level singleton notifier. Tenant-scoped
+		// settings are consumed per tenant and must not rewire the shared process.
+		if notifier != nil && shouldReloadSharedRuntimeForRequest(r) {
 			if cfg.Enabled {
 				notifier.Reconfigure(cfg.AppID, cfg.AppSecret)
 			} else {
@@ -93,12 +93,14 @@ func GetFeishuBindingsHandler(notifier *feishu.Notifier) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]any{"bindings": []any{}, "total": 0, "page": 1, "page_size": 50})
 			return
 		}
-		m := notifier.GetBindingsMap()
+		tenantID := RequestTenantID(r)
+		m := notifier.GetTenantBindingsMap(tenantID)
 
 		type binding struct {
-			Email  string `json:"email"`
-			OpenID string `json:"open_id"`
-			Mobile string `json:"mobile"`
+			Email    string `json:"email"`
+			OpenID   string `json:"open_id"`
+			Mobile   string `json:"mobile"`
+			TenantID string `json:"tenant_id"`
 		}
 
 		// Collect and optionally filter by search.
@@ -109,12 +111,15 @@ func GetFeishuBindingsHandler(notifier *feishu.Notifier) http.HandlerFunc {
 		}
 		all := make([]binding, 0, initCap)
 		for email, info := range m {
+			if strings.TrimSpace(info.Email) != "" {
+				email = info.Email
+			}
 			if search != "" &&
 				!strings.Contains(strings.ToLower(email), search) &&
 				!strings.Contains(strings.ToLower(info.Mobile), search) {
 				continue
 			}
-			all = append(all, binding{Email: email, OpenID: info.OpenID, Mobile: info.Mobile})
+			all = append(all, binding{Email: email, OpenID: info.OpenID, Mobile: info.Mobile, TenantID: info.TenantID})
 		}
 
 		// Sort by email for stable pagination.
@@ -165,7 +170,7 @@ func DeleteFeishuBindingHandler(notifier *feishu.Notifier) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return
 		}
-		notifier.RemoveOpenID(email)
+		notifier.RemoveOpenIDForTenant(RequestTenantID(r), email)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -207,8 +212,8 @@ func UpdateFeishuAutoEnrollHandler(system store.SystemSettingsRepository, notifi
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
 		}
-		// Hot-reload the auto-enroller.
-		if notifier != nil {
+		// Hot-reload the Hub-level auto-enroller only; tenant settings stay isolated.
+		if notifier != nil && shouldReloadSharedRuntimeForRequest(r) {
 			if ae := notifier.AutoEnroller(); ae != nil {
 				ae.SetConfig(req)
 			}

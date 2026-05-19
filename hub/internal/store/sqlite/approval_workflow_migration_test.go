@@ -124,7 +124,7 @@ func TestApprovalWorkflowMigration_AuditTrailImmutability(t *testing.T) {
 		t.Fatalf("query audit entry: %v", err)
 	}
 
-	// Attempt UPDATE — should be rejected by trigger
+	// Attempt UPDATE -should be rejected by trigger
 	_, err = db.Exec(`UPDATE approval_audit_trail SET event_type = 'modified' WHERE id = 'at_1'`)
 	if err == nil {
 		t.Fatal("expected UPDATE to be rejected by trigger, but it succeeded")
@@ -133,7 +133,7 @@ func TestApprovalWorkflowMigration_AuditTrailImmutability(t *testing.T) {
 		t.Fatalf("unexpected error on UPDATE: %v", err)
 	}
 
-	// Attempt DELETE — should be rejected by trigger
+	// Attempt DELETE -should be rejected by trigger
 	_, err = db.Exec(`DELETE FROM approval_audit_trail WHERE id = 'at_1'`)
 	if err == nil {
 		t.Fatal("expected DELETE to be rejected by trigger, but it succeeded")
@@ -181,28 +181,28 @@ func TestApprovalWorkflowMigration_PublishedUniqueConstraint(t *testing.T) {
 		t.Fatalf("insert workflow definition: %v", err)
 	}
 
-	// Insert first published version — should succeed
+	// Insert first published version -should succeed
 	_, err = db.Exec(`INSERT INTO workflow_versions (id, workflow_id, version_number, status, graph_json, created_at, updated_at)
 		VALUES ('v_1', 'wf_1', '1.0.0', 'published', '{}', datetime('now'), datetime('now'))`)
 	if err != nil {
 		t.Fatalf("insert first published version: %v", err)
 	}
 
-	// Insert second published version for same workflow — should fail (unique constraint)
+	// Insert second published version for same workflow -should fail (unique constraint)
 	_, err = db.Exec(`INSERT INTO workflow_versions (id, workflow_id, version_number, status, graph_json, created_at, updated_at)
 		VALUES ('v_2', 'wf_1', '2.0.0', 'published', '{}', datetime('now'), datetime('now'))`)
 	if err == nil {
 		t.Fatal("expected unique constraint violation for second published version, but insert succeeded")
 	}
 
-	// Insert draft version for same workflow — should succeed (partial index only covers published)
+	// Insert draft version for same workflow -should succeed (partial index only covers published)
 	_, err = db.Exec(`INSERT INTO workflow_versions (id, workflow_id, version_number, status, graph_json, created_at, updated_at)
 		VALUES ('v_3', 'wf_1', '2.0.0', 'draft', '{}', datetime('now'), datetime('now'))`)
 	if err != nil {
 		t.Fatalf("insert draft version should succeed: %v", err)
 	}
 
-	// Insert published version for different workflow — should succeed
+	// Insert published version for different workflow -should succeed
 	_, err = db.Exec(`INSERT INTO workflow_definitions (id, owner_id, name, created_at, updated_at)
 		VALUES ('wf_2', 'owner_2', 'Another Workflow', datetime('now'), datetime('now'))`)
 	if err != nil {
@@ -238,7 +238,7 @@ func TestApprovalWorkflowMigration_BasicCRUD(t *testing.T) {
 
 	// Insert workflow definition
 	_, err = db.Exec(`INSERT INTO workflow_definitions (id, owner_id, name, description, created_at, updated_at)
-		VALUES ('wf_crud', 'owner_1', 'Purchase Approval', '采购审批流程', datetime('now'), datetime('now'))`)
+		VALUES ('wf_crud', 'owner_1', 'Purchase Approval', 'approval workflow', datetime('now'), datetime('now'))`)
 	if err != nil {
 		t.Fatalf("insert workflow_definitions: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestApprovalWorkflowMigration_ForeignKeys(t *testing.T) {
 		VALUES ('v_orphan', 'nonexistent_wf', '1.0.0', 'draft', '{}', datetime('now'), datetime('now'))`)
 	if err == nil {
 		// Foreign keys may not be enforced if PRAGMA foreign_keys is not supported
-		// in this build. This is acceptable — the constraint is defined in schema.
+		// in this build. This is acceptable -the constraint is defined in schema.
 		var fkEnabled int
 		_ = db.QueryRow(`PRAGMA foreign_keys`).Scan(&fkEnabled)
 		if fkEnabled == 1 {
@@ -352,7 +352,7 @@ func TestApprovalWorkflowMigration_ForeignKeys(t *testing.T) {
 	}
 }
 
-// Verify idempotency — running migrations twice should not error
+// Verify idempotency -running migrations twice should not error
 func TestApprovalWorkflowMigration_Idempotent(t *testing.T) {
 	provider, err := NewProvider(Config{
 		DSN:               t.TempDir() + "/idempotent-test.db",
@@ -368,7 +368,7 @@ func TestApprovalWorkflowMigration_Idempotent(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = provider.Close() })
 
-	// Run migrations twice — should not error (CREATE TABLE IF NOT EXISTS)
+	// Run migrations twice -should not error (CREATE TABLE IF NOT EXISTS)
 	if err := RunMigrations(provider.Write); err != nil {
 		t.Fatalf("first migration run: %v", err)
 	}

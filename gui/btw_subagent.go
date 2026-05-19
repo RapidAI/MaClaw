@@ -262,7 +262,7 @@ func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 	if name == "memory" {
 		action, _ := args["action"].(string)
 		if !normalizeMemoryToolAction(action).IsRecallOnlyAllowed() {
-			return "错误: /btw 侧查询中 memory 工具仅支持只读操作（recall/themes/scenes/trace/candidates）"
+			return "错误: /btw 侧查询中 memory 工具仅支持只读操作（recall/themes/scenes/trace/candidates/derived）"
 		}
 	}
 

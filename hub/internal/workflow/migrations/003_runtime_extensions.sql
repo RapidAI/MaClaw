@@ -5,6 +5,7 @@
 -- Confirmation tracking table
 CREATE TABLE IF NOT EXISTS confirmations (
     id                      TEXT PRIMARY KEY,
+    tenant_id               TEXT NOT NULL DEFAULT 'tenant_default',
     instance_id             TEXT NOT NULL REFERENCES workflow_instances(id),
     recipient_id            TEXT NOT NULL,
     type                    TEXT NOT NULL,          -- 'executor' or 'notifier'
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS confirmations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_confirm_instance ON confirmations(instance_id);
+CREATE INDEX IF NOT EXISTS idx_confirm_tenant_pending ON confirmations(tenant_id, status, recipient_id);
 CREATE INDEX IF NOT EXISTS idx_confirm_recipient ON confirmations(recipient_id);
 CREATE INDEX IF NOT EXISTS idx_confirm_status ON confirmations(status);
 CREATE INDEX IF NOT EXISTS idx_confirm_pending ON confirmations(status, recipient_id)

@@ -507,7 +507,7 @@ sources = [
     ("📋", "Markdown", "设计文档\nREADME\n笔记", ORANGE),
     ("🌐", "URL", "网页\n博客\n在线文档", ACCENT_CYAN),
     ("📁", "目录批量", "整站导入\n知识库\n文档集", YELLOW),
-    ("🎤", "语音", "ASR转写\n会议录音\n声纹识别", PINK),
+    ("🎤", "语音", "ASR转写\n会议录音\n语音摘要", PINK),
 ]
 sw2 = Inches(1.55); sh2 = Inches(1.15)
 for i, (icon, name, desc, color) in enumerate(sources):

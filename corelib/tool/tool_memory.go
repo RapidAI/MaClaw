@@ -1,6 +1,9 @@
 package tool
 
-// ToolMemory: per-tool persistent rule store.
+// ToolMemoryStore is a narrow per-tool rule cache, not a replacement for
+// corelib/memory.Store. Durable user/agent memories, recall, audit, and surgery
+// stay in corelib/memory; this type only stores execution hints such as
+// tool-specific connection quirks.
 // Inspired by OpenHuman's memory/tool_memory/ module — each tool has its own
 // namespace of learned rules that are automatically injected before execution.
 //
@@ -39,11 +42,11 @@ type ToolRule struct {
 
 // ToolMemoryStore manages per-tool persistent rules.
 type ToolMemoryStore struct {
-	mu      sync.RWMutex
-	rules   []ToolRule
-	byTool  map[string][]int // toolName → indices into rules slice
-	path    string           // persistence file path
-	dirty   bool
+	mu     sync.RWMutex
+	rules  []ToolRule
+	byTool map[string][]int // toolName → indices into rules slice
+	path   string           // persistence file path
+	dirty  bool
 }
 
 const (

@@ -282,17 +282,14 @@ func (s *ArchiveService) saveExperienceEntry(projectName, projectPath, summary s
 		return fmt.Errorf("memory store not available")
 	}
 
-	now := time.Now()
-	entry := memory.Entry{
-		Content:   summary,
-		Title:     fmt.Sprintf("归档经验：%s", projectName),
-		Category:  memory.CategoryProjectKnowledge,
-		Scope:     memory.ScopeGlobal,
-		Tags:      []string{"archived_experience", projectPath},
-		OwnerID:   s.ownerID,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	return s.memoryStore.Save(entry)
+	_, err := s.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+		Content:          summary,
+		Title:            fmt.Sprintf("归档经验：%s", projectName),
+		Scope:            memory.ScopeGlobal,
+		Tags:             []string{"archived_experience", projectPath},
+		IdentityTagCount: 2,
+		SourceType:       "archived_experience",
+		OwnerID:          s.ownerID,
+	})
+	return err
 }

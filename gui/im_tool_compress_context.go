@@ -145,7 +145,7 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 // persistLastCompressionSummary saves the most recent compress_context
 // summary as a task_artifact memory entry. Called once at agent loop exit.
 func persistLastCompressionSummary(store interface {
-	Save(corememory.Entry) error
+	UpsertTaskArtifact(corememory.TaskArtifactUpsertOptions) (corememory.UpsertResult, error)
 	Path() string
 }, userID, summary string) {
 	if store == nil || strings.TrimSpace(summary) == "" {
@@ -160,16 +160,16 @@ func persistLastCompressionSummary(store interface {
 	if refPath != "" {
 		tags = append(tags, "source_ref")
 	}
-	entry := corememory.Entry{
-		Content:    preview,
-		Title:      "工作状态快照",
-		Category:   corememory.CategoryTaskArtifact,
-		Tags:       tags,
-		OwnerID:    userID,
-		SourceType: "context_checkpoint_ref",
-		SourceURL:  refPath,
-	}
-	if err := store.Save(entry); err != nil {
+	_, err = store.UpsertTaskArtifact(corememory.TaskArtifactUpsertOptions{
+		Title:            "Working state checkpoint",
+		Content:          preview,
+		Tags:             tags,
+		IdentityTagCount: 2,
+		OwnerID:          userID,
+		SourceType:       "context_checkpoint_ref",
+		SourceURL:        refPath,
+	})
+	if err != nil {
 		log.Printf("[compress_context] failed to persist final summary: %v", err)
 	}
 }

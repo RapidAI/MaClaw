@@ -418,6 +418,31 @@ func TestSetRequired_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetRequiredForTenantIsolation(t *testing.T) {
+	settings := newMemSettingsRepo()
+	svc := NewService(&memInvitationCodeRepo{}, settings)
+	ctx := context.Background()
+
+	if err := svc.SetRequiredForTenant(ctx, "tenant_a", true); err != nil {
+		t.Fatalf("set tenant_a: %v", err)
+	}
+	globalRequired, err := svc.IsRequired(ctx)
+	if err != nil {
+		t.Fatalf("get global: %v", err)
+	}
+	tenantARequired, err := svc.IsRequiredForTenant(ctx, "tenant_a")
+	if err != nil {
+		t.Fatalf("get tenant_a: %v", err)
+	}
+	tenantBRequired, err := svc.IsRequiredForTenant(ctx, "tenant_b")
+	if err != nil {
+		t.Fatalf("get tenant_b: %v", err)
+	}
+	if globalRequired || !tenantARequired || tenantBRequired {
+		t.Fatalf("required flags global=%t tenant_a=%t tenant_b=%t", globalRequired, tenantARequired, tenantBRequired)
+	}
+}
+
 func TestDeleteCodeByEmail(t *testing.T) {
 	repo := &memInvitationCodeRepo{}
 	svc := NewService(repo, newMemSettingsRepo())

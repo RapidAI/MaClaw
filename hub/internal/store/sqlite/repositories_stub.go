@@ -63,10 +63,6 @@ type sessionRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
-type voiceprintRepo struct {
-	db, readDB *sql.DB
-	batch      *writeBatcher
-}
 type emailInviteRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -91,7 +87,6 @@ func NewStore(p *Provider) *store.Store {
 		ViewerTokens:    &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		LoginTokens:     &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Sessions:        &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Voiceprints:     &voiceprintRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		EmailInvites:    &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		WorkflowRepo:    &workflowRepo{db: p.Write, readDB: p.Read},
 		LLMPromptCache:  &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -1008,8 +1003,24 @@ func (r *machineRepo) DeleteByUserID(ctx context.Context, userID string) (int64,
 	return res.RowsAffected()
 }
 
+func (r *machineRepo) DeleteByTenantUserID(ctx context.Context, tenantID, userID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE tenant_id = ? AND user_id = ? AND status != 'online'`, normalizeTenantID(tenantID), userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *machineRepo) ForceDeleteByUserID(ctx context.Context, userID string) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (r *machineRepo) ForceDeleteByTenantUserID(ctx context.Context, tenantID, userID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE tenant_id = ? AND user_id = ?`, normalizeTenantID(tenantID), userID)
 	if err != nil {
 		return 0, err
 	}
@@ -1034,6 +1045,14 @@ func (r *machineRepo) DeleteOfflineByTenant(ctx context.Context, tenantID string
 
 func (r *machineRepo) DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE user_id = ? AND status != 'online'`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (r *machineRepo) DeleteOfflineByTenantUserID(ctx context.Context, tenantID, userID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE tenant_id = ? AND user_id = ? AND status != 'online'`, normalizeTenantID(tenantID), userID)
 	if err != nil {
 		return 0, err
 	}
@@ -1393,11 +1412,12 @@ func (r *sessionRepo) UpdateSummary(ctx context.Context, sessionID string, summa
 		ctx,
 		r.batch,
 		r.db,
-		`UPDATE sessions SET summary_json = ?, status = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE sessions SET summary_json = ?, status = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
 		summaryJSON,
 		status,
 		updatedAt.Format(time.RFC3339),
 		sessionID,
+		store.TenantIDFromContext(ctx),
 	)
 }
 
@@ -1406,11 +1426,12 @@ func (r *sessionRepo) UpdatePreview(ctx context.Context, sessionID string, previ
 		ctx,
 		r.batch,
 		r.db,
-		`UPDATE sessions SET preview_text = ?, output_seq = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE sessions SET preview_text = ?, output_seq = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
 		previewText,
 		outputSeq,
 		updatedAt.Format(time.RFC3339),
 		sessionID,
+		store.TenantIDFromContext(ctx),
 	)
 }
 
@@ -1419,22 +1440,24 @@ func (r *sessionRepo) UpdateHostOnline(ctx context.Context, sessionID string, ho
 		ctx,
 		r.batch,
 		r.db,
-		`UPDATE sessions SET host_online = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE sessions SET host_online = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
 		boolToInt(hostOnline),
 		updatedAt.Format(time.RFC3339),
 		sessionID,
+		store.TenantIDFromContext(ctx),
 	)
 }
 
 func (r *sessionRepo) Close(ctx context.Context, sessionID string, exitCode *int, endedAt time.Time, status string) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`UPDATE sessions SET status = ?, ended_at = ?, exit_code = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE sessions SET status = ?, ended_at = ?, exit_code = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
 		status,
 		endedAt.Format(time.RFC3339),
 		exitCode,
 		endedAt.Format(time.RFC3339),
 		sessionID,
+		store.TenantIDFromContext(ctx),
 	)
 	return err
 }

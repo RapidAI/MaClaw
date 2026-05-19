@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // PgInstanceStore implements InstanceStore backed by PostgreSQL.
@@ -23,9 +25,9 @@ func (s *PgInstanceStore) Create(ctx context.Context, inst *WorkflowInstance) er
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workflow_instances (id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		inst.ID, inst.WorkflowID, inst.VersionID, inst.Status,
+		`INSERT INTO workflow_instances (id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		inst.ID, store.TenantIDFromContext(ctx), inst.WorkflowID, inst.VersionID, inst.Status,
 		inst.CurrentNodeID, dataJSON, inst.TriggerData, inst.CreatedAt,
 	)
 	return err
@@ -33,13 +35,13 @@ func (s *PgInstanceStore) Create(ctx context.Context, inst *WorkflowInstance) er
 
 func (s *PgInstanceStore) Get(ctx context.Context, id string) (*WorkflowInstance, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
-		 FROM workflow_instances WHERE id = $1`, id)
+		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
+		 FROM workflow_instances WHERE id = $1 AND tenant_id = $2`, id, store.TenantIDFromContext(ctx))
 
 	var inst WorkflowInstance
 	var dataJSON []byte
 	var completedAt sql.NullTime
-	err := row.Scan(&inst.ID, &inst.WorkflowID, &inst.VersionID, &inst.Status,
+	err := row.Scan(&inst.ID, &inst.TenantID, &inst.WorkflowID, &inst.VersionID, &inst.Status,
 		&inst.CurrentNodeID, &dataJSON, &inst.TriggerData, &inst.CreatedAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -63,15 +65,15 @@ func (s *PgInstanceStore) UpdateStatus(ctx context.Context, id string, status In
 		completedAt = &now
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_instances SET status = $1, completed_at = $2 WHERE id = $3`,
-		status, completedAt, id)
+		`UPDATE workflow_instances SET status = $1, completed_at = $2 WHERE id = $3 AND tenant_id = $4`,
+		status, completedAt, id, store.TenantIDFromContext(ctx))
 	return err
 }
 
 func (s *PgInstanceStore) UpdateCurrentNode(ctx context.Context, id, nodeID string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_instances SET current_node_id = $1 WHERE id = $2`,
-		nodeID, id)
+		`UPDATE workflow_instances SET current_node_id = $1 WHERE id = $2 AND tenant_id = $3`,
+		nodeID, id, store.TenantIDFromContext(ctx))
 	return err
 }
 
@@ -81,8 +83,8 @@ func (s *PgInstanceStore) UpdateInstanceData(ctx context.Context, id string, dat
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE workflow_instances SET instance_data = $1 WHERE id = $2`,
-		dataJSON, id)
+		`UPDATE workflow_instances SET instance_data = $1 WHERE id = $2 AND tenant_id = $3`,
+		dataJSON, id, store.TenantIDFromContext(ctx))
 	return err
 }
 
@@ -99,15 +101,15 @@ func (s *PgInstanceStore) CreateNodeExecution(ctx context.Context, exec *NodeExe
 func (s *PgInstanceStore) UpdateNodeExecution(ctx context.Context, id string, status NodeStatus, result json.RawMessage, failReason string) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_node_executions SET status = $1, completed_at = $2, result = $3, fail_reason = $4 WHERE id = $5`,
-		status, now, result, failReason, id)
+		`UPDATE workflow_node_executions SET status = $1, completed_at = $2, result = $3, fail_reason = $4 WHERE id = $5 AND instance_id IN (SELECT id FROM workflow_instances WHERE tenant_id = $6)`,
+		status, now, result, failReason, id, store.TenantIDFromContext(ctx))
 	return err
 }
 
 func (s *PgInstanceStore) GetPendingApprovals(ctx context.Context, approverID string) ([]NodeExecution, error) {
-	query := `SELECT id, instance_id, node_id, node_type, status, started_at, completed_at, result, fail_reason
-		 FROM workflow_node_executions WHERE status = $1`
-	args := []any{string(NodeRunning)}
+	query := `SELECT wne.id, wne.instance_id, wne.node_id, wne.node_type, wne.status, wne.started_at, wne.completed_at, wne.result, wne.fail_reason
+		 FROM workflow_node_executions wne INNER JOIN workflow_instances wi ON wi.id = wne.instance_id WHERE wne.status = $1 AND wi.tenant_id = $2`
+	args := []any{string(NodeRunning), store.TenantIDFromContext(ctx)}
 
 	if approverID != "" {
 		// When approverID is provided, filter by instances assigned to that approver.
@@ -143,15 +145,14 @@ func (s *PgInstanceStore) GetPendingApprovals(ctx context.Context, approverID st
 	return execs, rows.Err()
 }
 
-
 // --- Directory Query Methods ---
 
 // QueryMyInitiated returns DirectoryItems for instances where the user is the initiator.
 // Supports filtering by status, date range, and workflow type.
 // Sorted by created_at DESC with pagination.
 func (s *PgInstanceStore) QueryMyInitiated(ctx context.Context, userID string, filter DirectoryFilter) ([]DirectoryItem, int, error) {
-	baseWhere := `json_extract(instance_data, '$.initiator_id') = ?`
-	args := []interface{}{userID}
+	baseWhere := `tenant_id = ? AND json_extract(instance_data, '$.initiator_id') = ?`
+	args := []interface{}{store.TenantIDFromContext(ctx), userID}
 
 	if filter.Status != "" {
 		baseWhere += ` AND status = ?`
@@ -243,10 +244,10 @@ func (s *PgInstanceStore) QueryPendingMyAction(ctx context.Context, userID strin
 	query := `SELECT wi.id, wi.workflow_id, wi.status, wi.current_node_id, wi.instance_data, wi.created_at
 		FROM workflow_instances wi
 		INNER JOIN workflow_node_executions wne ON wne.instance_id = wi.id
-		WHERE wi.status = ? AND wne.status = ?
+		WHERE wi.tenant_id = ? AND wi.status = ? AND wne.status = ?
 		ORDER BY wi.created_at ASC`
 
-	rows, err := s.db.QueryContext(ctx, query, string(InstanceRunning), string(NodeRunning))
+	rows, err := s.db.QueryContext(ctx, query, store.TenantIDFromContext(ctx), string(InstanceRunning), string(NodeRunning))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -313,10 +314,10 @@ func (s *PgInstanceStore) QueryPendingMyConfirmation(ctx context.Context, userID
 		wi.status, wi.instance_data, wi.completed_at
 		FROM confirmations c
 		INNER JOIN workflow_instances wi ON wi.id = c.instance_id
-		WHERE c.status = ? AND c.recipient_id = ?
+		WHERE wi.tenant_id = ? AND c.status = ? AND c.recipient_id = ?
 		ORDER BY datetime(c.created_at, '+' || c.timeout_hours || ' hours') ASC`
 
-	rows, err := s.db.QueryContext(ctx, query, string(ConfirmPending), userID)
+	rows, err := s.db.QueryContext(ctx, query, store.TenantIDFromContext(ctx), string(ConfirmPending), userID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -400,11 +401,12 @@ func (s *PgInstanceStore) QueryCompleted(ctx context.Context, userID string, fil
 	// - initiator_id in instance_data matches userID
 	// - OR there's a confirmation record with recipient_id = userID
 	// - OR there's a node_execution assigned to userID
-	baseWhere := `(wi.status IN (?, ?, ?, ?)) AND (
+	baseWhere := `wi.tenant_id = ? AND (wi.status IN (?, ?, ?, ?)) AND (
 		json_extract(wi.instance_data, '$.initiator_id') = ?
 		OR EXISTS (SELECT 1 FROM confirmations c WHERE c.instance_id = wi.id AND c.recipient_id = ?)
 	)`
 	args := []interface{}{
+		store.TenantIDFromContext(ctx),
 		string(InstanceCompleted), string(InstanceFailed), string(InstanceWithdrawn), string(InstanceCancelled),
 		userID, userID,
 	}

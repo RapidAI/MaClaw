@@ -28,8 +28,9 @@ const incomingDedupTTL = 10 * time.Second
 // If MessageID is available, use it directly for precise dedup.
 // Otherwise, fall back to a content fingerprint (platform:uid:fnv(text+attachInfo)).
 func incomingDedupKey(msg IncomingMessage) string {
+	tenantID := normalizeTenantID(msg.TenantID)
 	if msg.MessageID != "" {
-		return msg.PlatformName + ":" + msg.PlatformUID + ":id:" + msg.MessageID
+		return tenantID + ":" + msg.PlatformName + ":" + msg.PlatformUID + ":id:" + msg.MessageID
 	}
 	text := strings.TrimSpace(msg.Text)
 	if text == "" && len(msg.Attachments) == 0 {
@@ -46,7 +47,7 @@ func incomingDedupKey(msg IncomingMessage) string {
 		h.Write([]byte(att.FileName))
 		h.Write([]byte(strconv.FormatInt(att.Size, 10)))
 	}
-	return fmt.Sprintf("%s:%s:%x:a%d", msg.PlatformName, msg.PlatformUID, h.Sum64(), len(msg.Attachments))
+	return fmt.Sprintf("%s:%s:%s:%x:a%d", tenantID, msg.PlatformName, msg.PlatformUID, h.Sum64(), len(msg.Attachments))
 }
 
 // isDuplicateIncoming returns true if the same message was already seen
@@ -111,6 +112,10 @@ func resolveIdentity(ctx context.Context, resolver IdentityResolver, platformNam
 	}
 	userID, err := resolver.ResolveUser(ctx, platformName, platformUID)
 	return normalizeTenantID(""), userID, err
+}
+
+func normalizeIncomingTenantID(tenantID string) string {
+	return normalizeTenantID(tenantID)
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +336,9 @@ func (a *Adapter) GetPlugin(name string) IMPlugin {
 //  3. Route to MaClaw Agent via MessageRouter
 //  4. Response formatting & delivery based on CapabilityDeclaration
 func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
+	if msg.TenantID != "" {
+		ctx = WithTenant(ctx, msg.TenantID)
+	}
 	plugin := a.GetPlugin(msg.PlatformName)
 	if plugin == nil {
 		log.Printf("[IM Adapter] no plugin registered for platform %q", msg.PlatformName)
@@ -356,6 +364,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 	ctx = WithTenant(ctx, tenantID)
+	msg.TenantID = tenantID
 	msg.UnifiedUserID = unifiedID
 	target.UnifiedUserID = unifiedID
 

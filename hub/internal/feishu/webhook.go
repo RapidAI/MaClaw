@@ -15,7 +15,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
-	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/go-lark/lark/v2"
 )
 
@@ -853,7 +852,16 @@ func (n *Notifier) sendSessionCommand(entry *session.SessionCacheEntry, msgType 
 // handleEmailSubmit validates the email exists in Hub, generates a code,
 // sends it to the email, and stores the pending verification.
 func handleEmailSubmit(n *Notifier, openID, email string) {
-	tenantID := store.DefaultTenantID
+	ctx := context.Background()
+	tenantID, user, err := im.ResolveUniqueTenantByEmail(ctx, n.users, email)
+	if err == im.ErrAmbiguousTenantEmail {
+		replyText(n, openID, "This email belongs to multiple tenants; tenant_id is required.")
+		return
+	}
+	if err != nil || user == nil {
+		replyText(n, openID, "No Hub user found for this email.")
+		return
+	}
 
 	// Check if this email is already bound to this open_id.
 	existing := n.resolveOpenIDForTenant(tenantID, email)
@@ -863,7 +871,7 @@ func handleEmailSubmit(n *Notifier, openID, email string) {
 	}
 
 	// Verify the email exists in Hub.
-	user, err := n.users.GetByTenantEmail(context.Background(), tenantID, email)
+	user, err = n.users.GetByTenantEmail(context.Background(), tenantID, email)
 	if err != nil || user == nil {
 		replyText(n, openID, "未找到该邮箱对应的 Hub 用户，请确认邮箱是否正确。\nNo Hub user found for this email.")
 		return
@@ -881,9 +889,10 @@ func handleEmailSubmit(n *Notifier, openID, email string) {
 		}
 	}
 	n.pending[openID] = &pendingBind{
-		Email:  email,
-		Code:   code,
-		Expiry: now.Add(verifyCodeTTL),
+		TenantID: tenantID,
+		Email:    email,
+		Code:     code,
+		Expiry:   now.Add(verifyCodeTTL),
 	}
 	n.pendMu.Unlock()
 
@@ -961,7 +970,7 @@ func handleVerifyCode(n *Notifier, openID, code string) {
 		return
 	}
 
-	n.BindOpenIDForTenant(store.DefaultTenantID, pb.Email, openID, "")
+	n.BindOpenIDForTenant(pb.TenantID, pb.Email, openID, "")
 	replyText(n, openID, "✅ 绑定成功！您将通过飞书接收 Hub 会话通知。\n✅ Binding succeeded! You will receive Hub session notifications via Feishu.")
 }
 

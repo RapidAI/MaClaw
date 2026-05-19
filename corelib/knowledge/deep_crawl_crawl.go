@@ -395,13 +395,14 @@ func (e *DeepCrawlEngine) buildPartialResult(jobID, status string, state *crawlS
 	defer state.mu.Unlock()
 
 	return DeepCrawlResult{
-		JobID:      jobID,
-		Status:     status,
-		TotalSaved: state.completed,
-		Duplicates: 0, // SaveURL handles duplicates by updating, so we don't track separately
-		Failed:     state.failed,
-		Skipped:    state.skipped,
-		Items:      state.results,
-		ByDepth:    byDepth,
+		JobID:           jobID,
+		Status:          status,
+		TotalDiscovered: state.totalQueued,
+		TotalSaved:      state.completed,
+		Duplicates:      0, // SaveURL handles duplicates by updating, so we don't track separately
+		Failed:          state.failed,
+		Skipped:         state.skipped,
+		Items:           state.results,
+		ByDepth:         byDepth,
 	}
 }

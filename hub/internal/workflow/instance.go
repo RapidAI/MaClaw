@@ -21,6 +21,7 @@ const (
 // WorkflowInstance represents a running execution of a workflow.
 type WorkflowInstance struct {
 	ID            string                 `json:"id"`
+	TenantID      string                 `json:"tenant_id,omitempty"`
 	WorkflowID    string                 `json:"workflow_id"`
 	VersionID     string                 `json:"version_id"`
 	Status        InstanceStatus         `json:"status"`

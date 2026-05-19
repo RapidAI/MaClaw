@@ -4,6 +4,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { GroupParticipantPanel, type Participant } from "./GroupParticipantPanel";
 import { HistoryGroupDiscussionTab } from "./HistoryGroupDiscussionTab";
 import { VEConversationView, type VEConversationHandle, type VEMessage } from "./VEConversationView";
+import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
 
 type AssistantActiveTabContentProps = {
     activeTab: AITab;
@@ -71,8 +72,6 @@ type AssistantTabContentPaneProps = {
 const mentionLabelFromName = (value: string): string =>
     String(value || "").trim().replace(/\s+\([^()]+\)$/, "").trim();
 
-const looksLikeRawParticipantId = (value: string): boolean =>
-    /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
 
 const friendlyParticipantName = (index: number, lang?: string): string =>
     lang?.startsWith("en") ? "Participant " + (index + 1) : "参与者 " + (index + 1);
@@ -219,7 +218,7 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
     // Handle "Talk to" from participant panel right-click menu
     const handleTalkTo = useCallback((participant: Participant) => {
         const displayName = participant.isLocal
-            ? (lang?.startsWith("zh") || !lang ? "本机AI" : "Local AI")
+            ? localAINameForLang(lang)
             : mentionLabelFromName(String(participant.name || ""));
         if (!displayName) return;
         setExternalMentionInsert({ name: displayName, timestamp: Date.now() });
@@ -229,13 +228,13 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
     const panelParticipants: Participant[] = useMemo(() =>
         (tab.participants || []).map((pid, index) => ({
             id: pid,
-            name: pid === "local-maclaw"
+            name: isLocalParticipant(tab, pid)
                 ? "" // GroupParticipantPanel uses isLocal flag for display name
                 : readableParticipantName(tab.participantNames?.[pid] || (pid === tab.veId ? tab.title : ""), pid, index, lang),
             online: true,
-            isLocal: pid === "local-maclaw",
+            isLocal: isLocalParticipant(tab, pid),
         })),
-        [tab.participants, tab.veId, tab.title, tab.participantNames, lang]
+        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, lang]
     );
 
     // Participants for @mention popover: all participants are mentionable.
@@ -244,12 +243,12 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
     const mentionParticipants = useMemo(() =>
         (tab.participants || []).map((pid, index) => ({
             id: pid,
-            name: pid === "local-maclaw"
-                ? (lang?.startsWith("zh") || !lang ? "本机AI" : "Local AI")
+            name: isLocalParticipant(tab, pid)
+                ? localAINameForLang(lang)
                 : mentionLabelFromName(readableParticipantName(tab.participantNames?.[pid] || (pid === tab.veId ? tab.title : ""), pid, index, lang)),
             online: true,
         })),
-        [tab.participants, tab.veId, tab.title, tab.participantNames, lang]
+        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, lang]
     );
 
     // CRITICAL: Always use the same DOM structure regardless of isGroupMode.

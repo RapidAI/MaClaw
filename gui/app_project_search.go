@@ -226,17 +226,15 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 		return ProjectSearchResult{}
 	}
 
-	entry := memory.Entry{
-		Title:      taskName,
-		Content:    taskContent,
-		Category:   memory.CategoryTaskArtifact,
-		Tags:       []string{"manual_task", "recent_task"},
-		SourceURL:  taskFile,
-		SourceType: "manual",
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}
-	if err := a.memoryStore.Save(entry); err != nil {
+	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            taskName,
+		Content:          taskContent,
+		Tags:             []string{"manual_task", "recent_task", taskDir},
+		IdentityTagCount: 3,
+		SourceURL:        taskFile,
+		SourceType:       "manual",
+	})
+	if err != nil {
 		log.Printf("[project_search] CreateRecentTask save failed: %v", err)
 		return ProjectSearchResult{}
 	}

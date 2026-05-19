@@ -23,6 +23,8 @@ export interface AITab {
     participants?: string[];
     /** Display names for group chat participants keyed by participant ID */
     participantNames?: Record<string, string>;
+    /** Canonical participant IDs that represent the local AI in this group tab */
+    localParticipantIds?: string[];
     /** Hub discussion/consultation ID for group history tabs */
     discussionId?: string;
     /** Whether this group history tab is view-only */

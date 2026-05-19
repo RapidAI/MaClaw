@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	storepkg "github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 	_ "modernc.org/sqlite"
 )
@@ -306,5 +307,66 @@ func TestInstanceStore_NodeExecution_WithResult(t *testing.T) {
 		if p.ID == "exec-res-1" {
 			t.Error("failed node execution should not appear in pending approvals")
 		}
+	}
+}
+
+func TestInstanceStore_TenantIsolation(t *testing.T) {
+	db := setupInstanceStoreTestDB(t)
+	store := NewInstanceStore(db)
+	now := time.Now().UTC().Truncate(time.Second)
+	ctxA := storepkg.WithTenant(context.Background(), "tenant_a")
+	ctxB := storepkg.WithTenant(context.Background(), "tenant_b")
+
+	instA := &workflow.WorkflowInstance{
+		ID:           "inst-tenant-a",
+		WorkflowID:   "wf-tenant",
+		VersionID:    "ver-tenant",
+		Status:       workflow.InstanceRunning,
+		InstanceData: map[string]interface{}{"initiator_id": "user_1", "approver_id": "user_1", "workflow_name": "Tenant A"},
+		CreatedAt:    now,
+	}
+	instB := &workflow.WorkflowInstance{
+		ID:           "inst-tenant-b",
+		WorkflowID:   "wf-tenant",
+		VersionID:    "ver-tenant",
+		Status:       workflow.InstanceRunning,
+		InstanceData: map[string]interface{}{"initiator_id": "user_1", "approver_id": "user_1", "workflow_name": "Tenant B"},
+		CreatedAt:    now.Add(time.Second),
+	}
+	if err := store.Create(ctxA, instA); err != nil {
+		t.Fatalf("Create tenant A: %v", err)
+	}
+	if err := store.Create(ctxB, instB); err != nil {
+		t.Fatalf("Create tenant B: %v", err)
+	}
+
+	if got, err := store.Get(ctxA, instB.ID); err != nil || got != nil {
+		t.Fatalf("tenant A should not read tenant B instance, got=%+v err=%v", got, err)
+	}
+	items, total, err := store.QueryMyInitiated(ctxA, "user_1", workflow.DirectoryFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("QueryMyInitiated tenant A: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].InstanceID != instA.ID {
+		t.Fatalf("tenant A query leaked instances: total=%d items=%+v", total, items)
+	}
+
+	execA := &workflow.NodeExecution{ID: "exec-tenant-a", InstanceID: instA.ID, NodeID: "approval", NodeType: workflow.NodeApproval, Status: workflow.NodeRunning, StartedAt: now}
+	execB := &workflow.NodeExecution{ID: "exec-tenant-b", InstanceID: instB.ID, NodeID: "approval", NodeType: workflow.NodeApproval, Status: workflow.NodeRunning, StartedAt: now}
+	if err := store.CreateNodeExecution(ctxA, execA); err != nil {
+		t.Fatalf("CreateNodeExecution tenant A: %v", err)
+	}
+	if err := store.CreateNodeExecution(ctxB, execB); err != nil {
+		t.Fatalf("CreateNodeExecution tenant B: %v", err)
+	}
+	if err := store.UpdateNodeExecution(ctxA, execB.ID, workflow.NodeCompleted, nil, ""); err != nil {
+		t.Fatalf("UpdateNodeExecution cross tenant: %v", err)
+	}
+	pendingA, err := store.GetPendingApprovals(ctxA, "user_1")
+	if err != nil {
+		t.Fatalf("GetPendingApprovals tenant A: %v", err)
+	}
+	if len(pendingA) != 1 || pendingA[0].ID != execA.ID {
+		t.Fatalf("tenant A pending approvals leaked: %+v", pendingA)
 	}
 }

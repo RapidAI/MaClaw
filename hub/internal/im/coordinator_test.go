@@ -70,9 +70,9 @@ func newTestCoordinator(df *autoRespondDeviceFinder, llmServer *httptest.Server)
 	df.router = router
 	df.mu.Unlock()
 
-	var configFn func() *HubLLMConfig
+	var configFn func(context.Context) *HubLLMConfig
 	if llmServer != nil {
-		configFn = func() *HubLLMConfig {
+		configFn = func(context.Context) *HubLLMConfig {
 			return &HubLLMConfig{
 				Enabled:  true,
 				APIURL:   llmServer.URL,
@@ -82,7 +82,7 @@ func newTestCoordinator(df *autoRespondDeviceFinder, llmServer *httptest.Server)
 			}
 		}
 	} else {
-		configFn = func() *HubLLMConfig { return nil }
+		configFn = func(context.Context) *HubLLMConfig { return nil }
 	}
 
 	return NewCoordinator(router, df, configFn)

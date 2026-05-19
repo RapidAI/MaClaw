@@ -997,6 +997,8 @@ export function ArchiveGroupSession(arg1:Array<string>):Promise<void>;
 
 export function AddVEToGroup(arg1:string,arg2:string):Promise<void>;
 
+export function RegisterLocalExecutorInGroup(arg1:string):Promise<{session_id:string; participant_id:string; display_name:string}>;
+
 export function RespondAuthRequest(arg1:string,arg2:string):Promise<void>;
 
 

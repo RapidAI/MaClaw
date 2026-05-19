@@ -6,4 +6,6 @@
 //  2. Transport adapters (REST, gRPC, IM, etc.) remain thin wrappers.
 //  3. Data is isolated by tenant, user, and instance.
 //  4. Each instance maps to a full Maclaw runtime with its own DataDir.
+//  5. Long-term memory always goes through corelib/memory StoreFactory and
+//     tools; MaClawSrv must not grow a separate memory subsystem.
 package agentservice

@@ -9,20 +9,20 @@ import (
 )
 
 type sessionRepoStub struct {
-	created          *store.Session
-	summaryID        string
-	summaryJSON      string
-	summaryStatus    string
-	previewID        string
-	previewText      string
-	previewSeq       int64
-	hostOnlineID     string
-	hostOnlineValue  bool
-	hostOnlineAt     time.Time
-	closedID         string
-	closedCode       *int
-	closedStatus     string
-	closedEndedAt    time.Time
+	created         *store.Session
+	summaryID       string
+	summaryJSON     string
+	summaryStatus   string
+	previewID       string
+	previewText     string
+	previewSeq      int64
+	hostOnlineID    string
+	hostOnlineValue bool
+	hostOnlineAt    time.Time
+	closedID        string
+	closedCode      *int
+	closedStatus    string
+	closedEndedAt   time.Time
 }
 
 func (s *sessionRepoStub) Create(ctx context.Context, session *store.Session) error {
@@ -140,6 +140,46 @@ func TestSessionServiceLifecycleUpdatesCacheAndRepository(t *testing.T) {
 	}
 }
 
+func TestSessionServicePropagatesTenantToCacheRepositoryAndEvents(t *testing.T) {
+	repo := &sessionRepoStub{}
+	svc := NewService(NewCache(), repo)
+	var events []Event
+	svc.RegisterListener(func(event Event) {
+		events = append(events, event)
+	})
+	ctx := store.WithTenant(context.Background(), "tenant_a")
+
+	if err := svc.OnSessionCreated(ctx, "machine-1", "user-1", "session-tenant", map[string]any{
+		"tool":      "claude",
+		"status":    "running",
+		"tenant_id": "tenant_a",
+	}); err != nil {
+		t.Fatalf("OnSessionCreated error: %v", err)
+	}
+	if err := svc.OnSessionSummary(ctx, "machine-1", "user-1", "session-tenant", SessionSummary{Status: "busy"}); err != nil {
+		t.Fatalf("OnSessionSummary error: %v", err)
+	}
+	if err := svc.OnSessionClosed(ctx, "machine-1", "user-1", "session-tenant", map[string]any{"status": "exited"}); err != nil {
+		t.Fatalf("OnSessionClosed error: %v", err)
+	}
+
+	if repo.created == nil || repo.created.TenantID != "tenant_a" {
+		t.Fatalf("expected persisted tenant tenant_a, got %#v", repo.created)
+	}
+	entry, ok := svc.GetSnapshot("user-1", "machine-1", "session-tenant")
+	if !ok || entry.TenantID != "tenant_a" {
+		t.Fatalf("expected cached tenant tenant_a, got %#v", entry)
+	}
+	if len(events) < 3 {
+		t.Fatalf("expected lifecycle events, got %d", len(events))
+	}
+	for _, event := range events {
+		if event.TenantID != "tenant_a" {
+			t.Fatalf("expected tenant_a event, got %#v", event)
+		}
+	}
+}
+
 func TestSessionServiceListByMachineFiltersByUserAndMachine(t *testing.T) {
 	svc := NewService(NewCache(), nil)
 
@@ -153,6 +193,25 @@ func TestSessionServiceListByMachineFiltersByUserAndMachine(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].SessionID != "session-1" {
 		t.Fatalf("expected only session-1, got %#v", items)
+	}
+}
+
+func TestSessionServiceListByMachineFiltersByTenant(t *testing.T) {
+	svc := NewService(NewCache(), nil)
+	ctxA := store.WithTenant(context.Background(), "tenant_a")
+	ctxB := store.WithTenant(context.Background(), "tenant_b")
+	_ = svc.OnSessionCreated(ctxA, "machine-1", "user-1", "session-a", map[string]any{"tool": "claude"})
+	_ = svc.OnSessionCreated(ctxB, "machine-1", "user-1", "session-b", map[string]any{"tool": "claude"})
+
+	items, err := svc.ListByMachine(ctxA, "user-1", "machine-1")
+	if err != nil {
+		t.Fatalf("ListByMachine tenant A error: %v", err)
+	}
+	if len(items) != 1 || items[0].SessionID != "session-a" {
+		t.Fatalf("tenant A list leaked sessions: %#v", items)
+	}
+	if _, ok := svc.GetSnapshotForTenant("tenant_a", "user-1", "machine-1", "session-b"); ok {
+		t.Fatalf("tenant A should not read tenant B snapshot")
 	}
 }
 

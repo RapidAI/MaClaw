@@ -2001,7 +2001,7 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	// Use provider-aware fetch: TinyFish has better content extraction.
 	// FetchWithProvider handles TinyFish routing, offset/maxChars windowing, and fallback.
 	var fetchProvider corelib.WebSearchProvider
-	if opts.SavePath == "" {
+	if opts.SavePath == "" && h != nil && h.app != nil {
 		searchCfg := h.app.GetWebSearchProviders()
 		if searchCfg.Current == "tinyfish" {
 			for _, p := range searchCfg.Providers {

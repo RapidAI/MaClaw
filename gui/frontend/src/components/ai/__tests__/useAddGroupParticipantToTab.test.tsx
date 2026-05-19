@@ -76,6 +76,34 @@ describe("useAddGroupParticipantToTab", () => {
         });
     });
 
+    it("preserves existing group participant names while adding another participant", async () => {
+        addVEToGroupMock.mockResolvedValueOnce(undefined);
+        const upgradeVETabToGroup = vi.fn();
+        const tab: AITab = {
+            id: "group-1",
+            type: "group",
+            title: "Group",
+            veId: "ve-a",
+            participants: ["ve-a", "ve-b"],
+            participantNames: { "ve-a": "Contract Reviewer", "ve-b": "Contract Bot" },
+            closable: true,
+        };
+        const { result } = renderHook(() => useAddGroupParticipantToTab({
+            getTabState: () => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 }),
+            upgradeVETabToGroup,
+        }));
+
+        await act(async () => {
+            await result.current(tab, "ve-c", "Risk Bot");
+        });
+
+        expect(upgradeVETabToGroup).toHaveBeenCalledWith("group-1", ["ve-a", "ve-b", "ve-c"], "session-1", {
+            "ve-a": "Contract Reviewer",
+            "ve-b": "Contract Bot",
+            "ve-c": "Risk Bot",
+        });
+    });
+
     it("creates a backend session before adding when no session id exists", async () => {
         addVEToGroupMock.mockResolvedValueOnce(undefined);
         const upgradeVETabToGroup = vi.fn();
@@ -135,14 +163,14 @@ describe("useAddGroupParticipantToTab", () => {
 
     it("does not add duplicate participants", async () => {
         const upgradeVETabToGroup = vi.fn();
-        const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-a", participants: ["ve-a"], closable: true };
+        const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "VE-A", participants: ["VE-A"], closable: true };
         const { result } = renderHook(() => useAddGroupParticipantToTab({
             getTabState: () => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 }),
             upgradeVETabToGroup,
         }));
 
         await act(async () => {
-            await result.current(tab, "ve-a", "Agent A");
+            await result.current(tab, " ve-a ", "Agent A");
         });
 
         expect(addVEToGroupMock).not.toHaveBeenCalledWith("session-1", "ve-a");

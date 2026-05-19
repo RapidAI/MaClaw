@@ -207,6 +207,29 @@ describe("ParticipantSelector", () => {
         });
     });
 
+    it("filters existing participants case-insensitively by profile or machine id", async () => {
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={[{ id: "MACHINE-3", name: "Machine Bot", online: true }]}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                onAdd={vi.fn()}
+                listVirtualEmployees={() => Promise.resolve([
+                    { id: "profile-3", machine_id: "machine-3", name: "Machine Bot", skill_description: "Review", access_policy: "public", status: "active", online_status: "online" },
+                    { id: "profile-4", machine_id: "machine-4", name: "Risk Bot", skill_description: "Review", access_policy: "public", status: "active", online_status: "online" },
+                ])}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        await waitFor(() => {
+            expect(screen.queryByTestId("group-picker-item-profile-3")).toBeNull();
+            expect(screen.getByTestId("group-picker-item-profile-4")).toBeTruthy();
+        });
+    });
+
     it("shows limit error when max participants reached", () => {
         const fullParticipants: GroupParticipant[] = [
             { id: "ve-1", name: "A", online: true },
@@ -520,6 +543,61 @@ describe("GroupMessageBubble", () => {
         expect(screen.queryByTestId("group-msg-content-msg-attachment-only")).toBeNull();
         expect(screen.getByTestId("group-msg-att-msg-attachment-only-0")).toBeTruthy();
     });
+
+    it("keeps attachment-only groups constrained to bubble width", () => {
+        const msg: GroupMessage = {
+            id: "msg-attachment-width",
+            fromId: "me",
+            fromName: "Me",
+            content: "",
+            timestamp: 3000,
+            attachments: [{ type: "file", filename: "evidence.pdf" }],
+        };
+
+        render(
+            <GroupMessageBubble
+                message={msg}
+                participantIndex={0}
+                theme={testTheme}
+                isUser={true}
+            />
+        );
+
+        const attachment = screen.getByTestId("group-msg-att-msg-attachment-width-0") as HTMLElement;
+        expect(attachment.parentElement?.style.maxWidth).toBe("82%");
+        expect(attachment.style.maxWidth).toBe("100%");
+        expect(attachment.style.minWidth).toBe("0px");
+    });
+
+    it("truncates long attachment filenames inside the constrained bubble", () => {
+        const msg: GroupMessage = {
+            id: "msg-long-attachment",
+            fromId: "me",
+            fromName: "Me",
+            content: "",
+            timestamp: 3000,
+            attachments: [{ type: "file", filename: "very-long-contract-review-attachment-name-that-should-not-expand-the-chat-column.pdf", fileUrl: "/file/1" }],
+        };
+
+        render(
+            <GroupMessageBubble
+                message={msg}
+                participantIndex={0}
+                theme={testTheme}
+                isUser={true}
+            />
+        );
+
+        const attachment = screen.getByTestId("group-msg-att-msg-long-attachment-0") as HTMLElement;
+        const filename = attachment.querySelector("button span:first-child") as HTMLElement | null;
+        const action = attachment.querySelector("button") as HTMLElement | null;
+        expect(attachment.style.maxWidth).toBe("100%");
+        expect(action?.style.flex).toBe("1 1 auto");
+        expect(action?.style.minWidth).toBe("0px");
+        expect(filename?.style.overflow).toBe("hidden");
+        expect(filename?.style.textOverflow).toBe("ellipsis");
+        expect(filename?.style.whiteSpace).toBe("nowrap");
+    });
 });
 
 // ─── ParticipantOfflineNotice ────────────────────────────────────────
@@ -565,7 +643,9 @@ describe("VEGroupChatView", () => {
 
         expect(screen.getByTestId("ve-group-chat-view")).toBeTruthy();
         expect(screen.getByTestId("group-chat-header")).toBeTruthy();
-        expect(screen.getByTestId("group-message-list")).toBeTruthy();
+        const messageList = screen.getByTestId("group-message-list") as HTMLElement;
+        expect(messageList).toBeTruthy();
+        expect(messageList.style.minHeight).toBe("0px");
     });
 
     it("adds participants by machine_id when discoverable id differs", async () => {
@@ -657,6 +737,63 @@ describe("VEGroupChatView", () => {
         expect(bubble.style.overflowWrap).toBe("anywhere");
         expect(bubble.style.whiteSpace).toBe("pre-wrap");
         expect(screen.getByText("second line")).toBeTruthy();
+    });
+
+    it("aligns configured local-user messages to the right", () => {
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={[{ id: "me", name: "Alice", online: true }, { id: "ve-a", name: "Contract Bot", online: true }]}
+                messages={[
+                    { id: "mine", fromId: "me", fromName: "Alice", content: "from initiator", timestamp: 1000 },
+                    { id: "bot", fromId: "ve-a", fromName: "Contract Bot", content: "from participant", timestamp: 1001 },
+                ]}
+                theme={testTheme}
+                localUserIds={["me"]}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        expect((screen.getByTestId("group-msg-mine") as HTMLElement).style.alignItems).toBe("flex-end");
+        expect((screen.getByTestId("group-msg-bot") as HTMLElement).style.alignItems).toBe("flex-start");
+    });
+
+    it("matches participant and local-user ids case-insensitively", () => {
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={[{ id: "VE-A", name: "Contract Bot", online: true }]}
+                messages={[
+                    { id: "mine-case", fromId: " ME ", fromName: "Alice", content: "from initiator", timestamp: 1000 },
+                    { id: "bot-case", fromId: "ve-a", fromName: "ve-a", content: "from participant", timestamp: 1001 },
+                ]}
+                theme={testTheme}
+                localUserIds={["me"]}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        expect((screen.getByTestId("group-msg-mine-case") as HTMLElement).style.alignItems).toBe("flex-end");
+        expect((screen.getByTestId("group-msg-bot-case") as HTMLElement).style.alignItems).toBe("flex-start");
+        expect(screen.getByTestId("group-msg-label-bot-case").textContent).toBe("Contract Bot");
+    });
+
+    it("keeps unknown senders right-aligned in live group chats without explicit local ids", () => {
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={[{ id: "ve-a", name: "Contract Bot", online: true }]}
+                messages={[
+                    { id: "local", fromId: "local-user", fromName: "Me", content: "from me", timestamp: 1000 },
+                    { id: "bot", fromId: "ve-a", fromName: "Contract Bot", content: "from participant", timestamp: 1001 },
+                ]}
+                theme={testTheme}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        expect((screen.getByTestId("group-msg-local") as HTMLElement).style.alignItems).toBe("flex-end");
+        expect((screen.getByTestId("group-msg-bot") as HTMLElement).style.alignItems).toBe("flex-start");
     });
 
     it("calls onTitleChange when participants change", () => {

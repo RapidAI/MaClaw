@@ -30,6 +30,16 @@ func testCodingIntentClassifier() *intent.UnifiedIntentClassifier {
 	})
 }
 
+func testIntentClassifier(label string) *intent.UnifiedIntentClassifier {
+	return intent.New(intent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			return fmt.Sprintf(`{"top":[{"skill":%q,"score":0.95,"reason":"test %s task"}]}`, label, label), nil
+		},
+		LLMTimeout: time.Second,
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Tests for IMMessageHandler dynamic tool integration (Task 6.3)
 // ---------------------------------------------------------------------------
@@ -939,25 +949,27 @@ func TestToolCreateSession_WithToolProvided(t *testing.T) {
 }
 
 func TestToolCreateSession_SSHIntentBlocked(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}, lastUserText: "ssh 到 10.0.0.8 看 nginx 日志"}
+	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "ssh to 10.0.0.8 and inspect nginx logs"}
+	handler.unifiedClassifier = testIntentClassifier("ssh")
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
-	if !contains(result, "SSH/服务器操作任务") || !contains(result, "ssh 工具") {
+	if !contains(result, "SSH/server operation") || !contains(result, "Use the ssh tool") {
 		t.Fatalf("expected ssh redirect hint, got: %s", result)
 	}
 }
 
 func TestToolCreateSession_NonCodingIntentBlocked(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}, lastUserText: "帮我翻译这篇论文"}
+	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "translate this paper"}
+	handler.unifiedClassifier = testIntentClassifier("non_coding")
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
-	if !contains(result, "不是编程任务") || !contains(result, "read_file / write_file / edit_file") {
+	if !contains(result, "not a coding task") || !contains(result, "read_file / write_file / edit_file") {
 		t.Fatalf("expected non-coding guard hint, got: %s", result)
 	}
 }
 
 func TestToolCreateSession_AmbiguousIntentBlocked(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}, lastUserText: "帮我处理一下线上问题"}
+	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "help me handle the production issue"}
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
-	if !contains(result, "不能确定") || !contains(result, "不要创建编程会话") {
+	if !contains(result, "ambiguous") || !contains(result, "Do not create a coding session yet") {
 		t.Fatalf("expected ambiguous guard hint, got: %s", result)
 	}
 }
@@ -1142,7 +1154,7 @@ func TestExecuteTool_GeneratePDF_IsRegistered(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	handler := &IMMessageHandler{app: app}
 	handler.registry = NewToolRegistry()
 	registerBuiltinTools(handler.registry, handler)
@@ -1403,7 +1415,8 @@ func TestBuildToolDefinitions_CreateSessionHasProviderParam(t *testing.T) {
 // TestToolCreateSession_NoProviderBehaviorUnchanged verifies that not passing
 // provider keeps the original behavior (tool param required, no provider passed).
 func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}, lastUserText: "请修改代码并创建会话"}
+	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "请修改代码并创建会话"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 
 	// Without tool param, should return missing tool error.
 	result := handler.toolCreateSession(map[string]interface{}{})
@@ -1429,7 +1442,8 @@ func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
 // parameter is extracted and resolved via ProviderResolver. When the specified
 // provider doesn't exist, the resolver returns an error before reaching session creation.
 func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}, lastUserText: "请修改代码并创建会话"}
+	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "请修改代码并创建会话"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":     "claude",
@@ -1622,7 +1636,7 @@ func TestToolListProviders_UnsupportedTool(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1665,7 +1679,7 @@ func TestToolListProviders_NoValidProviders(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	handler := &IMMessageHandler{app: app}
 	result := handler.toolListProviders(map[string]interface{}{"tool": "claude"})
 	// LoadConfig will add "Original" back, so Original will be valid.
@@ -1693,7 +1707,7 @@ func TestToolListProviders_WithValidProviders(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1742,7 +1756,7 @@ func TestToolListProviders_ModelIdTruncation(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1784,7 +1798,7 @@ func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1802,6 +1816,7 @@ func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 	}
 
 	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 	// Will fail at StartRemoteSessionForProject (remote not enabled), but
 	// should NOT fail at provider resolution.
 	result := handler.toolCreateSession(map[string]interface{}{
@@ -1826,7 +1841,7 @@ func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1847,6 +1862,7 @@ func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
 	}
 
 	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool": "claude",
 	})
@@ -1883,7 +1899,7 @@ func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1900,6 +1916,7 @@ func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
 	}
 
 	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":     "claude",
 		"provider": "DeepSeek",
@@ -1951,7 +1968,7 @@ func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1991,7 +2008,7 @@ func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -2026,7 +2043,7 @@ func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -2076,7 +2093,7 @@ func TestToolProjectManage_List(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -2109,7 +2126,7 @@ func TestToolProjectManage_ListEmpty(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -2170,7 +2187,7 @@ func TestExecuteTool_ProjectManageRouting(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, sessionStarter: &CodingSessionStarter{}}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

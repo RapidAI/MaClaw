@@ -137,7 +137,6 @@ func (e *ExperienceExtractor) persistAuditMemory(audit ExperienceAuditEntry) {
 	if content == "" {
 		return
 	}
-	now := time.Now().UTC()
 	tags := []string{experienceTraceKindToolMemory.String(), "experience_extraction", "status:" + audit.Status.String()}
 	if tool := strings.TrimSpace(audit.Tool); tool != "" {
 		tags = append(tags, "tool:"+tool)
@@ -145,18 +144,14 @@ func (e *ExperienceExtractor) persistAuditMemory(audit ExperienceAuditEntry) {
 	if project := strings.TrimSpace(audit.ProjectPath); project != "" {
 		tags = append(tags, project)
 	}
-	entry := corememory.Entry{
+	if _, err := e.memoryStore.UpsertProjectKnowledge(corememory.ProjectKnowledgeUpsertOptions{
 		ID:         "experience-audit-" + strings.TrimSpace(audit.SessionID),
 		Title:      firstNonEmptyExperienceString("Experience extraction: "+strings.TrimSpace(audit.Title), "Experience extraction audit"),
 		Content:    content,
-		Category:   corememory.CategoryProjectKnowledge,
 		Tags:       tags,
 		SourceType: string(experienceTraceSourceToolUsage),
 		SourceURL:  "experience://extraction/" + strings.TrimSpace(audit.SessionID),
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}
-	if err := e.memoryStore.Save(entry); err != nil {
+	}); err != nil {
 		log.Printf("[experience] failed to persist extraction audit memory: %v", err)
 	}
 }

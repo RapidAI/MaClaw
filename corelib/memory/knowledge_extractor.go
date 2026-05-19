@@ -35,6 +35,13 @@ func (ke *KnowledgeExtractor) SetConsolidator(c *Consolidator) {
 	ke.consolidator = c
 }
 
+// SetLLM rewires the fallback extractor to the current host LLM.
+func (ke *KnowledgeExtractor) SetLLM(llm LLMChatCaller) {
+	ke.mu.Lock()
+	defer ke.mu.Unlock()
+	ke.llm = llm
+}
+
 // HasRecentMemoryWrites checks if the conversation contains assistant messages
 // that explicitly wrote to memory (e.g. "I've saved this to memory", tool calls
 // to memory save). When the main agent already wrote memories, the background
@@ -43,7 +50,8 @@ func (ke *KnowledgeExtractor) SetConsolidator(c *Consolidator) {
 func HasRecentMemoryWrites(messages []ConversationMessage) bool {
 	// Signals in assistant text indicating memory was saved.
 	textSignals := []string{
-		"已保存到记忆", "saved to memory", "记住了", "已记录",
+		"saved to memory", "remembered", "memory saved", "saved this to memory",
+		"\u5df2\u4fdd\u5b58\u5230\u8bb0\u5fc6", "\u8bb0\u4f4f\u4e86", "\u5df2\u8bb0\u5f55",
 	}
 	// Signals in tool-role messages indicating a memory save tool was called.
 	toolSignals := []string{
@@ -100,7 +108,7 @@ func (ke *KnowledgeExtractor) filterMessages(messages []ConversationMessage) []C
 	for _, m := range messages {
 		switch m.Role {
 		case "system", "developer":
-			// Skip framework instructions — not user knowledge.
+			// Skip framework instructions; they are not user knowledge.
 			continue
 		case "user":
 			// Skip compaction recovery prompts and system notifications
@@ -112,7 +120,7 @@ func (ke *KnowledgeExtractor) filterMessages(messages []ConversationMessage) []C
 		case "tool":
 			// Truncate overly long tool results to reduce noise.
 			// The extraction LLM doesn't need full file contents or
-			// command outputs — it needs the gist.
+			// command outputs; it needs the gist.
 			if len([]rune(m.Content)) > 2000 {
 				runes := []rune(m.Content)
 				m.Content = string(runes[:500]) + "\n[...tool output truncated for memory extraction...]"
@@ -184,7 +192,7 @@ func (ke *KnowledgeExtractor) isDuplicate(content string) bool {
 }
 
 // Extract performs post-session knowledge extraction from conversation history.
-// Steps: cooldown check → mutual exclusion → filter → preCompress (if >20 turns) → LLM extract → dedup → save.
+// Steps: cooldown check, mutual exclusion, filter, preCompress if needed, LLM extract, dedup, save.
 // Returns nil on cooldown, empty conversation, or unconfigured LLM.
 // Skips extraction when the main agent already wrote memories (mutual exclusion).
 func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMessage) error {
@@ -301,13 +309,24 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 			}
 		}
 
-		entry := Entry{
-			Content:  content,
-			Category: cat,
-			Tags:     tags,
-			OwnerID:  userID, // multi-tenant: associate with the user who had this conversation
+		identityTagCount := len(tags)
+		if identityTagCount > 4 {
+			identityTagCount = 4
 		}
-		if err := ke.store.Save(entry); err != nil {
+		sourceType := "knowledge_extraction"
+		boundary := generatedRecordBoundary(tags, userID, sourceType)
+		_, err := ke.store.UpsertEntryByTags(UpsertByTagsOptions{
+			Title:            "Extracted knowledge",
+			Content:          content,
+			Category:         cat,
+			Tags:             tags,
+			IdentityTagCount: identityTagCount,
+			OwnerID:          userID,
+			SourceType:       sourceType,
+			DerivedKind:      "knowledge_extraction",
+			Boundary:         boundary,
+		})
+		if err != nil {
 			return fmt.Errorf("knowledge_extractor: save: %w", err)
 		}
 	}
@@ -334,7 +353,7 @@ func (ke *KnowledgeExtractor) extractKnowledge(ctx context.Context, conversation
 	systemPrompt := `You are a knowledge extraction assistant. Extract important knowledge from the conversation below, GROUPED BY TOPIC/ENTITY.
 
 Focus on:
-- Server/infrastructure details (hostname, port, services, credentials — group ALL facts about the same server together)
+- Server/infrastructure details (hostname, port, services, credentials; group ALL facts about the same server together)
 - Project architecture decisions and conventions
 - Tool configurations and environment specifics
 - Important error causes and solutions
@@ -352,7 +371,7 @@ Category must be one of:
 CRITICAL RULES:
 - Group ALL related facts about the same entity into ONE entry (e.g. all info about a server: hostname + port + services + credentials = ONE entry, not 4 separate entries)
 - Each entry should be 2-5 sentences, covering one complete topic
-- "tags" must contain 3-5 core entity NAMES (proper nouns, tool names, hostnames, project names) — these are used for search recall
+- "tags" must contain 3-5 core entity NAMES (proper nouns, tool names, hostnames, project names) because these are used for search recall
 - Tags must be specific identifiers (e.g. "api.rapidai.tech", "OmniRoute", "GLM-5.1"), NOT generic words (e.g. "server", "config", "tool")
 - Do NOT split related information into separate entries
 - Do NOT include trivial or obvious information

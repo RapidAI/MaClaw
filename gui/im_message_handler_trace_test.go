@@ -1268,7 +1268,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 	}
 	foundBaseStage := false
 	for _, msg := range progress {
-		if strings.Contains(msg, "📤 正在整理并发送生成的文件...") {
+		if strings.Contains(msg, "正在整理并发送文件") {
 			foundBaseStage = true
 		}
 		if strings.Contains(msg, "internal debug-only progress") {
@@ -1453,7 +1453,7 @@ func TestRunAgentLoop_NoToolStallEntersRecoverPhase(t *testing.T) {
 	for _, msg := range thirdMessages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
-		if role == "system" && strings.Contains(content, "[Recover 阶段]") && strings.Contains(content, "连续 2 轮都没有真正调用工具") {
+		if role == "system" && strings.Contains(content, "[Recover]") && strings.Contains(content, "No real tool was called for 2 consecutive rounds") {
 			foundRecoverPrompt = true
 			break
 		}
@@ -2753,7 +2753,7 @@ func TestRunAgentLoop_RepeatedPromiseOnlyRepliesEscalateToNoToolStallRecover(t *
 	for _, msg := range thirdMessages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
-		if role == "system" && strings.Contains(content, "连续 2 轮都没有真正调用工具") {
+		if role == "system" && strings.Contains(content, "No real tool was called for 2 consecutive rounds") {
 			foundRecoverPrompt = true
 			break
 		}
@@ -2895,7 +2895,7 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 	for _, msg := range fifthMessages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
-		if role == "system" && strings.Contains(content, "连续 1 轮都没有真正调用工具") {
+		if role == "system" && strings.Contains(content, "No real tool was called for") {
 			foundRecoverPrompt = true
 			break
 		}
@@ -3147,18 +3147,9 @@ func TestRunAgentLoop_RemoteSkillSearchPromptAppearsWhenNoLocalSkillMatches(t *t
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
 	h.SetToolRegistry(NewToolRegistry())
-	if err := h.registry.Register(RegisteredTool{
-		Name:        "search_and_install_skill",
-		Description: "search and install remote skill",
-		Category:    ToolCategoryBuiltin,
-		Status:      RegToolAvailable,
-		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return "已安装 Skill: hf_daily_papers_report"
-		},
-	}); err != nil {
-		t.Fatalf("Register search_and_install_skill tool: %v", err)
-	}
+	h.SetSkillSearchInstallHandler(func(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult {
+		return searchAndInstallSkillResult{Text: "Installed Skill: hf_daily_papers_report", Success: true}
+	})
 
 	loopCtx := NewLoopContext("chat-remote-skill-search", 4, server.Client())
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "remote skill search", "desktop", "u1", "/project")
@@ -3185,7 +3176,7 @@ func TestRunAgentLoop_RemoteSkillSearchPromptAppearsWhenNoLocalSkillMatches(t *t
 	for _, msg := range secondMessages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
-		if role == "system" && strings.Contains(content, "search_and_install_skill") && strings.Contains(content, "不要继续解释、承诺或直接 craft_tool") {
+		if role == "system" && strings.Contains(content, "Search/install a reusable Skill first") && strings.Contains(content, "Only switch to craft_tool or bash") {
 			foundRemotePrompt = true
 			break
 		}

@@ -1,10 +1,15 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeSettingsPanel } from '../KnowledgeSettingsPanel';
 import {
     KnowledgeCapabilities,
     KnowledgeHealth,
 } from '../../../../wailsjs/go/main/App';
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsOn: vi.fn(() => vi.fn()),
+    EventsOff: vi.fn(),
+}));
 
 vi.mock('../../../../wailsjs/go/main/App', () => {
     const arrayResult = vi.fn(async () => []);
@@ -88,6 +93,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeUpdateURLDomainPolicies',
         'KnowledgeUpdateSourceMetadata',
         'KnowledgeUpdateSourceLabels',
+        'KnowledgeDeepCrawl',
+        'KnowledgeDeepCrawlPreview',
+        'KnowledgeDeepCrawlCancel',
         'SelectKnowledgeDirectory',
         'SelectKnowledgeFiles',
     ];
@@ -132,5 +140,17 @@ describe('KnowledgeSettingsPanel component', () => {
 
         await waitFor(() => expect(KnowledgeHealth).toHaveBeenCalled());
         expect(KnowledgeCapabilities).toHaveBeenCalled();
+    });
+
+    it('keeps document import as a full-width ingest section', async () => {
+        render(<KnowledgeSettingsPanel lang="en" />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Ingest' }));
+
+        expect(await screen.findByRole('heading', { name: 'Import Documents' })).toBeTruthy();
+        expect(screen.getByText('Add local documents')).toBeTruthy();
+        expect(screen.getByText('Import files or directories into your knowledge base')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Import Documents' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: 'Deep Crawl' })).toBeTruthy();
     });
 });

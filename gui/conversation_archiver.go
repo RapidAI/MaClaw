@@ -1,8 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -30,11 +30,19 @@ func NewConversationArchiver(memoryStore *memory.Store, app *App) *ConversationA
 		memoryStore: memoryStore,
 		app:         app,
 	}
-	// Initialize KnowledgeExtractor with a GUI LLM adapter.
+	// Reuse the corelib/memory maintenance topology for fallback extraction so
+	// TiMem consolidation stays shared with online memory maintenance.
+	if app == nil {
+		return ca
+	}
 	llmAdapter := &archiverLLMCaller{app: app}
-	ca.knowledgeExtractor = memory.NewKnowledgeExtractor(memoryStore, llmAdapter)
-	// Wire TiMem online L1 segment consolidation into knowledge extraction.
-	ca.knowledgeExtractor.SetConsolidator(memory.NewConsolidator(memoryStore, memoryStore.TMT(), llmAdapter))
+	if app.memoryMaintenance != nil {
+		app.memoryMaintenance.SetLLM(llmAdapter)
+		ca.knowledgeExtractor = app.memoryMaintenance.KnowledgeExtractor()
+	} else {
+		maintenance := memory.NewMaintenance(memoryStore, llmAdapter, nil)
+		ca.knowledgeExtractor = maintenance.KnowledgeExtractor()
+	}
 	return ca
 }
 
@@ -44,13 +52,16 @@ func (a *ConversationArchiver) SetSlotScopeResolver(fn func(userID string) *agen
 
 // Archive analyses the conversation entries for a user and stores a summary
 // as a long-term memory. It skips archiving when:
-//   - The conversation is too short (< 4 entries) — simple Q&A not worth archiving.
+//   - The conversation is too short (< 4 entries), so simple Q&A is not worth archiving.
 //   - The Maclaw LLM is not configured.
 //   - The OnlineExtractor has been active (summary would be filtered out anyway).
 //
 // LLM failures during summary generation are logged but do not fail the call,
 // allowing session eviction to proceed regardless of transient LLM issues.
 func (a *ConversationArchiver) Archive(userID string, entries []agent.ConversationEntry) error {
+	if a == nil || a.app == nil || a.memoryStore == nil {
+		return nil
+	}
 	// Skip trivial conversations.
 	if len(entries) < 4 {
 		return nil
@@ -96,7 +107,7 @@ func (a *ConversationArchiver) Archive(userID string, entries []agent.Conversati
 				log.Printf("[conversation_archiver] summary generation error (non-fatal): %v", err)
 			} else {
 				summary = strings.TrimSpace(summary)
-				if summary != "" {
+				if !memory.IsEmptyConversationSummary(summary) {
 					// Store the summary as a MemoryEntry.
 					now := time.Now()
 					tags := []string{
@@ -115,13 +126,18 @@ func (a *ConversationArchiver) Archive(userID string, entries []agent.Conversati
 							tags = append(tags, "scope:main_conversation")
 						}
 					}
-					entry := memory.Entry{
-						Content:  summary,
-						Category: memory.CategoryConversationSummary,
-						Tags:     tags,
-						OwnerID:  userID,
+					identityTagCount := 3
+					if a.slotScopeResolver != nil {
+						identityTagCount = len(tags)
 					}
-					if err := a.memoryStore.Save(entry); err != nil {
+					_, err := a.memoryStore.UpsertConversationSummary(memory.ConversationSummaryUpsertOptions{
+						Title:            "Conversation summary",
+						Content:          summary,
+						Tags:             tags,
+						IdentityTagCount: identityTagCount,
+						OwnerID:          userID,
+					})
+					if err != nil {
 						return err
 					}
 				}
@@ -155,9 +171,7 @@ func (a *ConversationArchiver) Archive(userID string, entries []agent.Conversati
 // callLLMForSummary sends the conversation text to the configured LLM and
 // asks it to extract user preferences, decisions, and important facts.
 func (a *ConversationArchiver) callLLMForSummary(cfg corelib.MaclawLLMConfig, conversationText string) (string, error) {
-	prompt := "请从以下对话中提取关键信息，包括：用户偏好、决策结论、重要事实、任务进度（做了什么、还差什么）。" +
-		"请用简洁的中文列出要点，不要包含无关信息。如果对话中没有值得记录的信息，请回复「无」。\n\n" +
-		"对话内容：\n" + conversationText
+	prompt := "Extract key information from the following conversation, including user preferences, decisions, important facts, and task progress. Use concise Chinese bullet points. If there is nothing worth remembering, reply with only: NONE.\n\nConversation:\n" + conversationText
 
 	messages := []interface{}{
 		map[string]string{"role": "user", "content": prompt},
@@ -194,6 +208,9 @@ type archiverLLMCaller struct {
 }
 
 func (c *archiverLLMCaller) ChatCall(messages []map[string]string) (string, error) {
+	if c == nil || c.app == nil {
+		return "", fmt.Errorf("archiver LLM caller is not configured")
+	}
 	cfg := c.app.GetMaclawLLMConfig()
 	// Convert []map[string]string to []interface{} for doSimpleLLMRequest.
 	ifaces := make([]interface{}, len(messages))
@@ -209,5 +226,5 @@ func (c *archiverLLMCaller) ChatCall(messages []map[string]string) (string, erro
 }
 
 func (c *archiverLLMCaller) IsConfigured() bool {
-	return c.app.isMaclawLLMConfigured()
+	return c != nil && c.app != nil && c.app.isMaclawLLMConfigured()
 }

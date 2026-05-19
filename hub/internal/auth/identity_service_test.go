@@ -87,6 +87,39 @@ func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 	}
 }
 
+func TestManualBindForTenantAllowsSameEmailAcrossTenants(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	ctx := context.Background()
+
+	userA, err := svc.ManualBindForTenant(ctx, "tenant_a", "shared@example.com")
+	if err != nil {
+		t.Fatalf("ManualBindForTenant tenant_a: %v", err)
+	}
+	userB, err := svc.ManualBindForTenant(ctx, "tenant_b", "shared@example.com")
+	if err != nil {
+		t.Fatalf("ManualBindForTenant tenant_b: %v", err)
+	}
+	if userA == nil || userB == nil || userA.ID == userB.ID || userA.SN == userB.SN {
+		t.Fatalf("expected separate tenant users with unique SNs, got A=%+v B=%+v", userA, userB)
+	}
+	if userA.TenantID != "tenant_a" || userB.TenantID != "tenant_b" {
+		t.Fatalf("unexpected tenant ids: A=%+v B=%+v", userA, userB)
+	}
+}
 func TestIdentityServiceEnrollmentAndEmailLoginCreatesDefaultLLMServiceGrant(t *testing.T) {
 	deps := newTestStore(t)
 	svc := NewIdentityService(
@@ -197,4 +230,3 @@ func TestIdentityServiceManualModeRequiresExistingBinding(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
-

@@ -52,6 +52,11 @@ type IMMessageHandler struct {
 	registry    *ToolRegistry
 	toolBuilder *DynamicToolBuilder
 
+	// Injectable dependency for search_and_install_skill execution. The default
+	// implementation uses SkillMarket; tests can replace the dependency without
+	// hijacking the registry dispatch path.
+	skillSearchInstallHandler func(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult
+
 	// Security firewall (Phase 2 upgrade).
 	firewall *SecurityFirewall
 
@@ -466,6 +471,12 @@ func (h *IMMessageHandler) SetSecurityFirewall(fw *SecurityFirewall) {
 	h.firewall = fw
 }
 
+// SetSkillSearchInstallHandler replaces the SkillMarket search/install executor.
+// Passing nil restores the production SkillMarket-backed implementation.
+func (h *IMMessageHandler) SetSkillSearchInstallHandler(fn func(map[string]interface{}, tool.ProgressCallback) searchAndInstallSkillResult) {
+	h.skillSearchInstallHandler = fn
+}
+
 // SetToolDefGenerator configures the dynamic tool definition generator.
 // When set, it replaces the hardcoded buildToolDefinitions() output.
 func (h *IMMessageHandler) SetToolDefGenerator(gen *ToolDefinitionGenerator) {
@@ -696,18 +707,23 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 }
 
 // routeTools applies the ToolRouter to filter tools based on user message.
-// If no router is configured, returns allTools unchanged.
-//
-// Tool selection (including conditional activation of ssh, browser, etc.)
-// is fully handled by Route() via conditionalKeepRules + sessionTools.
-// This function does not apply any additional per-tool filtering.
+// If no router is configured, conditional tools fail closed so high-cost or
+// sensitive tools such as ssh and browser automation are not exposed by a
+// missing router setup.
 func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
 	h.toolsMu.RLock()
 	router := h.toolRouter
 	h.toolsMu.RUnlock()
 
 	if router == nil {
-		return allTools
+		filtered := make([]map[string]interface{}, 0, len(allTools))
+		for _, item := range allTools {
+			if tool.IsConditionalTool(extractToolName(item)) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		return filtered
 	}
 	return router.Route(userMessage, allTools)
 }

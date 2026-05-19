@@ -537,7 +537,7 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	}
 
 	if len(allowedDirs) > 0 {
-		sb.WriteString("\n## File Sending\n")
+		sb.WriteString("\n## 文件发送能力 / File Sending\n")
 		sb.WriteString("- You may use send_file to send files from allowed directories.\n")
 		sb.WriteString("- Allowed directories:\n")
 		for _, dir := range allowedDirs {
@@ -545,7 +545,7 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 		}
 		sb.WriteString("- Before sending, browse with list_directory and confirm content with read_file.\n")
 		sb.WriteString("- File size limit: 50 MB.\n")
-		sb.WriteString("- Sensitive files must not be sent even from allowed directories.\n")
+		sb.WriteString("- 敏感文件 / Sensitive files must not be sent even from allowed directories.\n")
 	}
 
 	c.appendVEMemoryRecall(&sb, userText)

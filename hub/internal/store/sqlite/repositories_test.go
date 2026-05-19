@@ -233,6 +233,31 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMachineTenantUserDeletesDoNotCrossTenants(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	for _, machine := range []*store.Machine{
+		{ID: "m_a", TenantID: "tenant_a", UserID: "same-user", Name: "a", Platform: "windows", MachineTokenHash: "hash-a", Status: "offline", CreatedAt: now, UpdatedAt: now},
+		{ID: "m_b", TenantID: "tenant_b", UserID: "same-user", Name: "b", Platform: "windows", MachineTokenHash: "hash-b", Status: "offline", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Machines.Create(ctx, machine); err != nil {
+			t.Fatalf("create machine %s: %v", machine.ID, err)
+		}
+	}
+
+	deleted, err := st.Machines.ForceDeleteByTenantUserID(ctx, "tenant_a", "same-user")
+	if err != nil {
+		t.Fatalf("force delete tenant user: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	if got, err := st.Machines.GetByID(ctx, "m_b"); err != nil || got == nil || got.TenantID != "tenant_b" {
+		t.Fatalf("tenant_b machine = %#v err=%v, want preserved", got, err)
+	}
+}
 func TestUsersAllowSameEmailAcrossTenants(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -258,6 +283,64 @@ func TestUsersAllowSameEmailAcrossTenants(t *testing.T) {
 	}
 	if gotA == nil || gotA.ID != "u_tenant_a" || gotB == nil || gotB.ID != "u_tenant_b" {
 		t.Fatalf("unexpected tenant users: a=%#v b=%#v", gotA, gotB)
+	}
+}
+
+func TestSessionRepositoryRuntimeUpdatesAreTenantScoped(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	ctxA := store.WithTenant(context.Background(), "tenant_a")
+	ctxB := store.WithTenant(context.Background(), "tenant_b")
+	sessionA := &store.Session{
+		ID:          "shared-session",
+		TenantID:    "tenant_a",
+		MachineID:   "machine-a",
+		UserID:      "user-a",
+		Tool:        "claude",
+		Status:      "running",
+		SummaryJSON: `{}`,
+		HostOnline:  true,
+		StartedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := st.Sessions.Create(ctxA, sessionA); err != nil {
+		t.Fatalf("create tenant A session: %v", err)
+	}
+
+	if err := st.Sessions.UpdateSummary(ctxB, sessionA.ID, `{"status":"leaked"}`, "leaked", now.Add(time.Minute)); err != nil {
+		t.Fatalf("cross tenant update summary: %v", err)
+	}
+	if err := st.Sessions.UpdatePreview(ctxB, sessionA.ID, "leaked preview", 9, now.Add(time.Minute)); err != nil {
+		t.Fatalf("cross tenant update preview: %v", err)
+	}
+	if err := st.Sessions.UpdateHostOnline(ctxB, sessionA.ID, false, now.Add(time.Minute)); err != nil {
+		t.Fatalf("cross tenant update host: %v", err)
+	}
+	exitCode := 1
+	if err := st.Sessions.Close(ctxB, sessionA.ID, &exitCode, now.Add(time.Minute), "leaked"); err != nil {
+		t.Fatalf("cross tenant close: %v", err)
+	}
+
+	row := st.Sessions.(*sessionRepo).db.QueryRowContext(context.Background(), `SELECT status, summary_json, preview_text, output_seq, host_online, ended_at FROM sessions WHERE id = ? AND tenant_id = ?`, sessionA.ID, "tenant_a")
+	var status, summaryJSON, previewText string
+	var outputSeq, hostOnline int
+	var endedAt any
+	if err := row.Scan(&status, &summaryJSON, &previewText, &outputSeq, &hostOnline, &endedAt); err != nil {
+		t.Fatalf("scan tenant A session: %v", err)
+	}
+	if status != "running" || summaryJSON != `{}` || previewText != "" || outputSeq != 0 || hostOnline != 1 || endedAt != nil {
+		t.Fatalf("tenant B mutated tenant A session: status=%q summary=%q preview=%q seq=%d host=%d ended=%v", status, summaryJSON, previewText, outputSeq, hostOnline, endedAt)
+	}
+
+	if err := st.Sessions.UpdateSummary(ctxA, sessionA.ID, `{"status":"busy"}`, "busy", now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("tenant A update summary: %v", err)
+	}
+	row = st.Sessions.(*sessionRepo).db.QueryRowContext(context.Background(), `SELECT status, summary_json FROM sessions WHERE id = ? AND tenant_id = ?`, sessionA.ID, "tenant_a")
+	if err := row.Scan(&status, &summaryJSON); err != nil {
+		t.Fatalf("scan tenant A session after update: %v", err)
+	}
+	if status != "busy" || summaryJSON != `{"status":"busy"}` {
+		t.Fatalf("tenant A update did not apply: status=%q summary=%q", status, summaryJSON)
 	}
 }
 

@@ -27,6 +27,7 @@ func (r *PluginIdentityResolver) ResolveUser(ctx context.Context, platformName, 
 
 // ResolveUserWithTenant maps a platform-specific user ID to tenant/user IDs.
 func (r *PluginIdentityResolver) ResolveUserWithTenant(ctx context.Context, platformName, platformUID string) (string, string, error) {
+	hintedTenantID := tenantIDFromContext(ctx)
 	plugin := r.adapter.GetPlugin(platformName)
 	if plugin == nil {
 		return "", "", fmt.Errorf("im: no plugin registered for platform %q", platformName)
@@ -34,8 +35,13 @@ func (r *PluginIdentityResolver) ResolveUserWithTenant(ctx context.Context, plat
 	if tenantAware, ok := plugin.(interface {
 		ResolveUserWithTenant(context.Context, string) (string, string, error)
 	}); ok {
-		return tenantAware.ResolveUserWithTenant(ctx, platformUID)
+		tenantID, userID, err := tenantAware.ResolveUserWithTenant(ctx, platformUID)
+		tenantID = normalizeIncomingTenantID(tenantID)
+		if err == nil && hintedTenantID != normalizeIncomingTenantID("") && tenantID != hintedTenantID {
+			return "", "", fmt.Errorf("im: platform user %s belongs to tenant %s, not hinted tenant %s", platformUID, tenantID, hintedTenantID)
+		}
+		return tenantID, userID, err
 	}
 	userID, err := plugin.ResolveUser(ctx, platformUID)
-	return tenantIDFromContext(ctx), userID, err
+	return hintedTenantID, userID, err
 }

@@ -15,6 +15,15 @@ func TestMemoryToolThemesIsRecallOnlyAllowed(t *testing.T) {
 	if !memoryToolActionCandidates.IsRecallOnlyAllowed() {
 		t.Fatal("candidates should be allowed in recall-only contexts")
 	}
+	if got := normalizeMemoryToolAction("derived_audit"); got != memoryToolActionDerived {
+		t.Fatalf("normalize derived_audit = %q", got)
+	}
+	if !memoryToolActionDerived.IsRecallOnlyAllowed() {
+		t.Fatal("derived audit should be allowed in recall-only contexts")
+	}
+	if memoryToolActionDerivedSurgery.IsRecallOnlyAllowed() {
+		t.Fatal("derived surgery should not be allowed in recall-only contexts")
+	}
 	if memoryToolActionSave.IsRecallOnlyAllowed() {
 		t.Fatal("save should not be allowed in recall-only contexts")
 	}

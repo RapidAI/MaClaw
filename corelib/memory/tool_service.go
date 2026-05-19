@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -21,11 +22,105 @@ type ToolRecallResult struct {
 	NormalizedMode string              `json:"mode"`
 }
 
-// RecallByMode applies the shared memory recall mode matrix.
+// ToolCandidatesResult is the shared inspection payload for quarantined memory
+// candidates. Hosts can render it as JSON or feed it to the text formatter.
+type ToolCandidatesResult struct {
+	Candidates    []MemoryCandidateSnapshot     `json:"candidates"`
+	Health        MemoryCandidateHealth         `json:"health"`
+	Consolidation *CandidateConsolidationResult `json:"consolidation,omitempty"`
+}
+
+// ToolThemesOptions controls shared theme inspection and maintenance actions.
+type ToolThemesOptions struct {
+	Limit         int
+	Stats         bool
+	EvidenceLimit int
+	Diagnose      bool
+	IssueLimit    int
+	Plan          bool
+	Apply         bool
+	ActionLimit   int
+}
+
+// ToolThemesResult is the shared theme inspection payload used by CLI and tools.
+type ToolThemesResult struct {
+	Themes            []ThemeNode             `json:"themes,omitempty"`
+	Health            ThemeHealth             `json:"health"`
+	Stats             bool                    `json:"-"`
+	Explanations      []ThemeExplanation      `json:"explanations,omitempty"`
+	Diagnostics       ThemeDiagnosticReport   `json:"diagnostics,omitempty"`
+	Plan              ThemeMaintenancePlan    `json:"plan,omitempty"`
+	MaintenanceResult *ThemeMaintenanceResult `json:"result,omitempty"`
+}
+
+// MemoryCandidatesForTool centralizes candidate inspection and optional safe
+// consolidation for host adapters.
+func (s *Store) MemoryCandidatesForTool(ctx context.Context, keyword string, limit int, apply bool) ToolCandidatesResult {
+	result := ToolCandidatesResult{}
+	if s == nil {
+		return result
+	}
+	if apply {
+		consolidation := s.ConsolidateMemoryCandidates(ctx)
+		result.Consolidation = &consolidation
+	}
+	result.Candidates = s.ListMemoryCandidates(keyword, limit)
+	result.Health = s.MemoryCandidateHealth()
+	return result
+}
+
+// MemoryThemesForTool centralizes theme inspection, diagnosis, planning, and
+// conservative maintenance actions for host adapters.
+func (s *Store) MemoryThemesForTool(opts ToolThemesOptions) ToolThemesResult {
+	result := ToolThemesResult{Stats: opts.Stats}
+	if s == nil {
+		return result
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 20
+	}
+	if opts.IssueLimit <= 0 {
+		opts.IssueLimit = 50
+	}
+	if opts.ActionLimit <= 0 {
+		opts.ActionLimit = 20
+	}
+	s.EnsureThemesUpToDate()
+	result.Themes = s.ThemeManager().TopThemes(opts.Limit)
+	result.Health = s.ThemeHealth()
+	if opts.EvidenceLimit > 0 {
+		result.Explanations = s.ThemeExplanations(opts.Limit, opts.EvidenceLimit)
+	}
+	if opts.Diagnose || opts.Plan || opts.Apply {
+		result.Diagnostics = s.ThemeDiagnostics(opts.IssueLimit)
+	}
+	if opts.Plan || opts.Apply {
+		result.Plan = PlanThemeMaintenance(result.Diagnostics, opts.ActionLimit)
+	}
+	if opts.Apply {
+		maintenanceResult := s.ApplyThemeMaintenancePlan(opts.IssueLimit, opts.ActionLimit)
+		result.MaintenanceResult = &maintenanceResult
+		s.EnsureThemesUpToDate()
+		result.Themes = s.ThemeManager().TopThemes(opts.Limit)
+		result.Health = s.ThemeHealth()
+		result.Diagnostics = s.ThemeDiagnostics(opts.IssueLimit)
+		result.Plan = PlanThemeMaintenance(result.Diagnostics, opts.ActionLimit)
+		if opts.EvidenceLimit > 0 {
+			result.Explanations = s.ThemeExplanations(opts.Limit, opts.EvidenceLimit)
+		}
+	}
+	return result
+}
+
+// RecallByMode applies the shared memory recall mode matrix used by GUI, TUI,
+// and server agents. Empty mode means "auto": simple queries use
+// RecallDynamic, while complex compare/analyze/summarize queries use
+// RecallAdaptiveHier. Always pass projectPath and ownerID from the host context
+// so project scope, tenant isolation, and derived-memory boundaries are honored.
 func (s *Store) RecallByMode(query string, category Category, mode string, projectPath string, limit int, ownerID ...string) (ToolRecallResult, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
-		mode = "dynamic"
+		mode = "auto"
 	}
 	result := ToolRecallResult{NormalizedMode: mode}
 	if s == nil {
@@ -86,29 +181,23 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 	action := NormalizeMemoryToolAction(rawAction)
 	switch action {
 	case MemoryToolActionThemes:
-		store.EnsureThemesUpToDate()
-		limit := toolIntArg(args, "limit", 20)
 		evidence := toolBoolArg(args, "evidence", false)
-		evidenceLimit := toolIntArg(args, "evidence_limit", 3)
-		diagnose := toolBoolArg(args, "diagnose", false)
-		issueLimit := toolIntArg(args, "issue_limit", 50)
-		plan := toolBoolArg(args, "plan", false)
-		actionLimit := toolIntArg(args, "action_limit", 20)
-		apply := toolBoolArg(args, "apply", false)
-		if apply {
-			return FormatThemeMaintenanceResultForTool(store.ApplyThemeMaintenancePlan(issueLimit, actionLimit))
-		}
-		if plan {
-			report := store.ThemeDiagnostics(issueLimit)
-			return FormatThemeMaintenancePlanForTool(PlanThemeMaintenance(report, actionLimit), report, store.ThemeExplanations(limit, evidenceLimit), evidence)
-		}
-		if diagnose {
-			return FormatThemeDiagnosticsForTool(store.ThemeDiagnostics(issueLimit), store.ThemeExplanations(limit, evidenceLimit), evidence)
-		}
+		evidenceLimit := 0
 		if evidence {
-			return FormatThemeExplanationsForTool(store.ThemeExplanations(limit, evidenceLimit), store.ThemeHealth(), toolBoolArg(args, "stats", false))
+			evidenceLimit = toolIntArg(args, "evidence_limit", 3)
 		}
-		return FormatThemesForTool(store.ThemeManager().TopThemes(limit), store.ThemeHealth(), toolBoolArg(args, "stats", false))
+		themeOpts := ToolThemesOptions{
+			Limit:         toolIntArg(args, "limit", 20),
+			Stats:         toolBoolArg(args, "stats", false),
+			EvidenceLimit: evidenceLimit,
+			Diagnose:      toolBoolArg(args, "diagnose", false),
+			IssueLimit:    toolIntArg(args, "issue_limit", 50),
+			Plan:          toolBoolArg(args, "plan", false),
+			Apply:         toolBoolArg(args, "apply", false),
+			ActionLimit:   toolIntArg(args, "action_limit", 20),
+		}
+		result := store.MemoryThemesForTool(themeOpts)
+		return FormatMemoryThemesResultForTool(result, themeOpts)
 
 	case MemoryToolActionScenes:
 		return FormatSceneIndexForTool(store.SceneIndex(toolIntArg(args, "limit", 10)))
@@ -121,7 +210,33 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		return formatted
 
 	case MemoryToolActionCandidates:
-		return FormatMemoryCandidatesForTool(store, toolStringArg(args, "keyword"), toolIntArg(args, "limit", 20))
+		result := store.MemoryCandidatesForTool(context.Background(), toolStringArg(args, "keyword"), toolIntArg(args, "limit", 20), false)
+		return FormatMemoryCandidatesResultForTool(result)
+
+	case MemoryToolActionDerived:
+		projectPath := firstNonEmptyMemoryToolString(opts.ProjectPath, toolStringArg(args, "project_path"), toolStringArg(args, "project"))
+		return FormatDerivedMemoryAuditsForTool(store.DerivedMemoryAudits(projectPath, opts.OwnerID, toolIntArg(args, "limit", 50)))
+
+	case MemoryToolActionDerivedSurgery:
+		id := toolStringArg(args, "id")
+		if id == "" {
+			return "missing id parameter"
+		}
+		surgery := strings.ToLower(strings.TrimSpace(toolStringArg(args, "surgery")))
+		if surgery == "" {
+			surgery = "supersede"
+		}
+		if surgery != "supersede" {
+			return fmt.Sprintf("unsupported derived surgery: %s (use supersede)", surgery)
+		}
+		projectPath := firstNonEmptyMemoryToolString(opts.ProjectPath, toolStringArg(args, "project_path"), toolStringArg(args, "project"))
+		if err := store.SupersedeDerivedMemory(id, projectPath, opts.OwnerID); err != nil {
+			return fmt.Sprintf("derived surgery failed: %s", err.Error())
+		}
+		if opts.AfterWrite != nil {
+			opts.AfterWrite()
+		}
+		return fmt.Sprintf("Derived memory superseded: %s", id)
 
 	case MemoryToolActionRecall:
 		query := toolStringArg(args, "query")
@@ -160,14 +275,10 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		if opts.AfterWrite != nil {
 			opts.AfterWrite()
 		}
-		summary := strings.ReplaceAll(content, "\n", " ")
-		if len([]rune(summary)) > 50 {
-			summary = string([]rune(summary)[:50]) + "..."
-		}
 		if decision.Action == MemoryGovernanceQuarantine {
-			return fmt.Sprintf("Memory saved as candidate: %s", summary)
+			return FormatMemoryCandidateSavedForTool(content)
 		}
-		return fmt.Sprintf("Memory saved: %s", summary)
+		return FormatMemorySavedForTool(content)
 
 	case MemoryToolActionList:
 		entries := store.List(Category(toolStringArg(args, "category")), toolStringArg(args, "keyword"))
@@ -199,7 +310,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		return fmt.Sprintf("Memory deleted: %s", id)
 
 	default:
-		return fmt.Sprintf("unknown memory action: %s (use save/recall/candidates/themes/scenes/trace/delete/list)", rawAction)
+		return fmt.Sprintf("unknown memory action: %s (use save/recall/candidates/derived/derived_surgery/themes/scenes/trace/delete/list)", rawAction)
 	}
 }
 
@@ -281,11 +392,79 @@ func FormatMemoryCandidatesForTool(store *Store, keyword string, limit int) stri
 	if store == nil {
 		return "long-term memory is not initialized"
 	}
-	candidates := store.ListMemoryCandidates(keyword, limit)
+	result := store.MemoryCandidatesForTool(context.Background(), keyword, limit, false)
+	return FormatMemoryCandidatesResultForTool(result)
+}
+
+func FormatMemoryCandidatesResultForTool(result ToolCandidatesResult) string {
+	var b strings.Builder
+	if result.Consolidation != nil {
+		b.WriteString(FormatCandidateConsolidationForTool(*result.Consolidation))
+	}
+	b.WriteString(FormatMemoryCandidateSnapshotsForTool(result.Candidates, result.Health))
+	return b.String()
+}
+
+func FormatMemoryThemesResultForTool(result ToolThemesResult, opts ToolThemesOptions) string {
+	if result.MaintenanceResult != nil {
+		return FormatThemeMaintenanceResultForTool(*result.MaintenanceResult)
+	}
+	if opts.Plan {
+		return FormatThemeMaintenancePlanForTool(result.Plan, result.Diagnostics, result.Explanations, opts.EvidenceLimit > 0)
+	}
+	if opts.Diagnose {
+		return FormatThemeDiagnosticsForTool(result.Diagnostics, result.Explanations, opts.EvidenceLimit > 0)
+	}
+	if opts.EvidenceLimit > 0 {
+		return FormatThemeExplanationsForTool(result.Explanations, result.Health, result.Stats)
+	}
+	return FormatThemesForTool(result.Themes, result.Health, result.Stats)
+}
+
+func MemoryThemesJSONPayloadForTool(result ToolThemesResult, opts ToolThemesOptions) interface{} {
+	if opts.Apply {
+		payload := map[string]interface{}{"result": result.MaintenanceResult, "diagnostics": result.Diagnostics, "plan": result.Plan}
+		if opts.EvidenceLimit > 0 {
+			payload["explanations"] = result.Explanations
+		} else {
+			payload["themes"] = result.Themes
+		}
+		return payload
+	}
+	if opts.Plan {
+		payload := map[string]interface{}{"diagnostics": result.Diagnostics, "plan": result.Plan}
+		if opts.EvidenceLimit > 0 {
+			payload["explanations"] = result.Explanations
+		} else {
+			payload["themes"] = result.Themes
+		}
+		return payload
+	}
+	if opts.Diagnose {
+		payload := map[string]interface{}{"diagnostics": result.Diagnostics}
+		if opts.EvidenceLimit > 0 {
+			payload["explanations"] = result.Explanations
+		} else {
+			payload["themes"] = result.Themes
+		}
+		return payload
+	}
+	if opts.EvidenceLimit > 0 {
+		if opts.Stats {
+			return map[string]interface{}{"health": result.Health, "explanations": result.Explanations}
+		}
+		return result.Explanations
+	}
+	if opts.Stats {
+		return map[string]interface{}{"health": result.Health, "themes": result.Themes}
+	}
+	return result.Themes
+}
+
+func FormatMemoryCandidateSnapshotsForTool(candidates []MemoryCandidateSnapshot, health MemoryCandidateHealth) string {
 	if len(candidates) == 0 {
 		return "No memory candidates found."
 	}
-	health := store.MemoryCandidateHealth()
 	var b strings.Builder
 	fmt.Fprintf(&b, "Memory candidates: %d (accept=%d quarantine=%d reject=%d stale=%d)\n", health.Total, health.Accept, health.Quarantine, health.Reject, health.Stale)
 	for _, candidate := range candidates {

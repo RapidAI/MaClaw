@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { looksLikeRawParticipantId } from "./localAIIdentity";
 
 // --- Types ---
 
@@ -36,7 +37,7 @@ function readableAuthName(
 ): string {
     const trimmed = String(name || "").trim();
     const rawId = String(id || "").trim();
-    if (trimmed && trimmed !== rawId && !/^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+)$/.test(trimmed)) return trimmed;
+    if (trimmed && trimmed !== rawId && !looksLikeRawParticipantId(trimmed)) return trimmed;
     return authTextForLang(isZh, fallbackEn, fallbackZh);
 }
 

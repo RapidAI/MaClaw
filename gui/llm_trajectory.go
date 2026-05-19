@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,8 +51,19 @@ var safeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9_\-]`)
 
 // NewTrajectoryRecorder creates a recorder that writes to ~/.maclaw/trajectories.
 func NewTrajectoryRecorder() *TrajectoryRecorder {
+	return NewTrajectoryRecorderForBaseDir(corelib.MaclawBaseDir())
+}
+
+// NewTrajectoryRecorderForBaseDir creates a recorder rooted at an explicit
+// Maclaw data directory. Tests and embedded runtimes pass their base directory
+// through the same dependency boundary used by the rest of App.
+func NewTrajectoryRecorderForBaseDir(baseDir string) *TrajectoryRecorder {
+	baseDir = strings.TrimSpace(baseDir)
+	if baseDir == "" {
+		baseDir = corelib.MaclawBaseDir()
+	}
 	return &TrajectoryRecorder{
-		dir: filepath.Join(corelib.MaclawBaseDir(), "trajectories"),
+		dir: filepath.Join(baseDir, "trajectories"),
 	}
 }
 

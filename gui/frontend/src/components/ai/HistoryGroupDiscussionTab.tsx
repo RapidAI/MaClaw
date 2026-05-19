@@ -6,6 +6,7 @@ import { GroupParticipantPanel } from "./GroupParticipantPanel";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEGroupChat";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
+import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 
 type HistoryDiscussionDetail = {
     discussion?: {
@@ -80,8 +81,6 @@ const mentionLabelFromParticipant = (participant: Pick<GroupParticipant, "id" | 
     return name.replace(/\s+\([^()]+\)$/, "").trim() || String(participant.id || "").trim();
 };
 
-const looksLikeRawParticipantId = (value: string): boolean =>
-    /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
 
 const readableHistorySpeakerName = (
     candidate: string | undefined,
@@ -97,10 +96,43 @@ const readableHistorySpeakerName = (
 
 const MENTION_TRIGGER_PATTERN = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/;
 
+const normalizeHistoryParticipantId = normalizeParticipantId;
+
+const HISTORY_MENTION_BOUNDARY = "[^A-Za-z0-9_.-]";
+
+const hasHistoryMention = (content: string, label: string): boolean => {
+    const escaped = String(label || "").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!escaped) return false;
+    return new RegExp(`(^|${HISTORY_MENTION_BOUNDARY})@${escaped}(?=$|${HISTORY_MENTION_BOUNDARY})`).test(content);
+};
+
+const mentionLabelsForHistoryParticipant = (participant: MentionParticipant): string[] => {
+    const labels = new Set<string>();
+    const name = String(participant.name || "").trim();
+    if (name) labels.add(name);
+    if (isLocalParticipantId(participant.id) || isLocalAIName(name)) {
+        labels.add(LOCAL_AI_DISPLAY_NAME_EN);
+        labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANS);
+        labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANT);
+        labels.add("本机 AI");
+        labels.add("本機 AI");
+    }
+    return [...labels];
+};
+
+const mentionedHistoryParticipantIds = (content: string, participants: MentionParticipant[]): string[] => {
+    const mentioned = new Set<string>();
+    for (const participant of participants) {
+        if (mentionLabelsForHistoryParticipant(participant).some((label) => hasHistoryMention(content, label))) {
+            mentioned.add(participant.id);
+        }
+    }
+    return [...mentioned];
+};
 const participantFallbackName = (id: string, index: number, lang: string | undefined): string => {
-    const normalized = String(id || "").trim();
+    const normalized = normalizeHistoryParticipantId(id);
     if (normalized === "me" || normalized === "user") return textForLang(lang, "Me", "我", "我");
-    if (normalized === "local-maclaw") return textForLang(lang, "Local AI", "本机AI", "本機AI");
+    if (normalized === LEGACY_LOCAL_AI_PARTICIPANT_ID) return localAINameForLang(lang);
     return textForLang(lang, `Participant ${index + 1}`, `参与者 ${index + 1}`, `參與者 ${index + 1}`);
 };
 
@@ -124,6 +156,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadSeqRef = useRef(0);
+    const mentionParticipantsRef = useRef<MentionParticipant[]>([]);
 
     const load = useCallback(async (options?: { silent?: boolean }) => {
         if (!discussionId) return;
@@ -190,7 +223,8 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         setSending(true);
         setError("");
         try {
-            await GroupDiscussionSendHistoryMessage(discussionId, { kind: "statement", content, created_at: new Date().toISOString() });
+            const toIDs = mentionedHistoryParticipantIds(content, mentionParticipantsRef.current);
+            await GroupDiscussionSendHistoryMessage(discussionId, { kind: "statement", content, to_ids: toIDs.length ? toIDs : undefined, created_at: new Date().toISOString() });
             setInput("");
             await load();
             return true;
@@ -262,6 +296,19 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         });
     }, [detail?.discussion?.participant_ids, detail?.messages, detail?.session?.participants, lang]);
 
+    const localHistoryUserIds = useMemo(() => {
+        const relation = String(detail?.discussion?.local_relation || "").trim().toLowerCase();
+        if (relation !== "initiated_by_me") return [];
+
+        const ids = new Set(["initiator", "me", "user"]);
+        for (const participant of detail?.session?.participants || []) {
+            const id = String(participant.id || "").trim();
+            const role = String(participant.role_code || "").trim().toLowerCase();
+            if (id && role === "initiator") ids.add(id);
+        }
+        return [...ids];
+    }, [detail?.discussion?.local_relation, detail?.session?.participants]);
+
     const closeMentionPopover = useCallback(() => {
         setMentionOpen(false);
         setMentionQuery("");
@@ -273,6 +320,10 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         participants.map((p) => ({ id: p.id, name: mentionLabelFromParticipant(p), online: p.online })),
         [participants]
     );
+
+    useEffect(() => {
+        mentionParticipantsRef.current = mentionParticipants;
+    }, [mentionParticipants]);
 
     const updateMentionState = useCallback((value: string, caret: number | null | undefined) => {
         if (effectiveReadOnly || !mentionParticipants.length || caret == null) {
@@ -427,6 +478,54 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
             : textForLang(lang, "Read-only - invited digital employee", "\u53ea\u8bfb - \u6211\u7684\u6570\u5b57\u5458\u5de5\u53d7\u9080\u53c2\u52a0", "\u552f\u8b80 - \u6211\u7684\u6578\u5b57\u54e1\u5de5\u53d7\u9080\u53c3\u52a0"))
         : textForLang(lang, "Started by me - can continue", "\u6211\u53d1\u8d77 - \u53ef\u7ee7\u7eed\u8ba8\u8bba", "\u6211\u767c\u8d77 - \u53ef\u7e7c\u7e8c\u8a0e\u8ad6");
 
+    const composerDisabled = effectiveReadOnly || sending;
+    const sendDisabled = composerDisabled || !input.trim();
+    const composerPlaceholder = effectiveReadOnly
+        ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00")
+        : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...");
+
+    const composer = <div data-testid="history-group-composer-row" style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+            {mentionOpen && (
+                <MentionPopover
+                    filtered={mentionFiltered}
+                    selectedIndex={mentionSelectedIndex}
+                    onSelect={insertMentionParticipant}
+                    onHover={setMentionSelectedIndex}
+                    onClose={closeMentionPopover}
+                    anchorRef={inputRef}
+                    theme={theme}
+                    lang={lang}
+                />
+            )}
+            <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => {
+                    setInput(e.target.value);
+                    updateMentionState(e.target.value, e.currentTarget.selectionStart);
+                }}
+                onClick={(e) => updateMentionState(input, e.currentTarget.selectionStart)}
+                onKeyUp={(e) => {
+                    if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key)) return;
+                    updateMentionState(e.currentTarget.value, e.currentTarget.selectionStart);
+                }}
+                onKeyDown={(e) => {
+                    if (mentionKeyDown(e)) return;
+                    if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        void send();
+                    }
+                }}
+                disabled={composerDisabled}
+                placeholder={composerPlaceholder}
+                rows={1}
+                style={{ width: "100%", resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }}
+            />
+        </div>
+        <button type="button" onClick={() => void send()} disabled={sendDisabled} style={{ border: "none", background: theme.sendBtnBg, color: theme.sendBtnColor, borderRadius: 6, padding: "6px 14px", cursor: sendDisabled ? "default" : "pointer", opacity: sendDisabled ? 0.4 : 1, fontSize: 13, fontWeight: 500, transition: "opacity 0.15s", flexShrink: 0 }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
+    </div>;
+
     return <div data-testid={`ai-history-group-tab-${discussionId}`} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, background: theme.bg }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "7px 12px", borderBottom: `1px solid ${theme.divider}`, background: theme.inputBarBg }}>
             <div style={{ minWidth: 0, flex: 1 }}>
@@ -443,28 +542,11 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         {loading && !detail
             ? <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: theme.textMuted }}>{textForLang(lang, "Loading...", "\u52a0\u8f7d\u4e2d...", "\u8f09\u5165\u4e2d...")}</div>
             : <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "row" }}>
-                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-                    <VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={false} showHeader={false} />
+                <div data-testid="history-group-main-column" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                    <VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={false} showHeader={false} localUserIds={localHistoryUserIds} containerStyle={{ flex: 1, minHeight: 0 }} />
+                    {composer}
                 </div>
                 <GroupParticipantPanel participants={participants} theme={theme} lang={lang} sessionId={discussionId} readOnly={effectiveReadOnly} onTalkTo={insertMention} onAddParticipant={addHistoryParticipant} />
             </div>}
-        <div style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
-            <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-                {mentionOpen && (
-                    <MentionPopover
-                        filtered={mentionFiltered}
-                        selectedIndex={mentionSelectedIndex}
-                        onSelect={insertMentionParticipant}
-                        onHover={setMentionSelectedIndex}
-                        onClose={closeMentionPopover}
-                        anchorRef={inputRef}
-                        theme={theme}
-                        lang={lang}
-                    />
-                )}
-                <textarea ref={inputRef} value={input} onChange={(e) => { setInput(e.target.value); updateMentionState(e.target.value, e.currentTarget.selectionStart); }} onClick={(e) => updateMentionState(input, e.currentTarget.selectionStart)} onKeyUp={(e) => { if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key)) return; updateMentionState(e.currentTarget.value, e.currentTarget.selectionStart); }} onKeyDown={(e) => { if (mentionKeyDown(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={effectiveReadOnly || sending} placeholder={effectiveReadOnly ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00") : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...")} rows={1} style={{ width: "100%", resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }} />
-            </div>
-            <button type="button" onClick={() => void send()} disabled={effectiveReadOnly || sending || !input.trim()} style={{ border: "none", background: theme.sendBtnBg, color: theme.sendBtnColor, borderRadius: 6, padding: "6px 14px", cursor: effectiveReadOnly || sending || !input.trim() ? "default" : "pointer", opacity: effectiveReadOnly || sending || !input.trim() ? 0.4 : 1, fontSize: 13, fontWeight: 500, transition: "opacity 0.15s" }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
-        </div>
     </div>;
 }

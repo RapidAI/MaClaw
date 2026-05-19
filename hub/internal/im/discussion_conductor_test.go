@@ -37,7 +37,7 @@ func TestDiscussionConductor_StartReturnsImmediately(t *testing.T) {
 
 	cfg := &HubLLMConfig{Enabled: true, APIURL: srv.URL, APIKey: "k", Model: "m", Protocol: "openai"}
 	cb := DefaultCircuitBreaker()
-	dc := NewDiscussionConductor(func() *HubLLMConfig { return cfg }, cb, router)
+	dc := NewDiscussionConductor(func(context.Context) *HubLLMConfig { return cfg }, cb, router)
 
 	stopCh := make(chan struct{})
 	resp := dc.StartConductedDiscussion(
@@ -80,7 +80,7 @@ func TestDiscussionConductor_MaxRoundsLimit(t *testing.T) {
 
 	cfg := &HubLLMConfig{Enabled: true, APIURL: srv.URL, APIKey: "k", Model: "m", Protocol: "openai"}
 	cb := DefaultCircuitBreaker()
-	dc := NewDiscussionConductor(func() *HubLLMConfig { return cfg }, cb, router)
+	dc := NewDiscussionConductor(func(context.Context) *HubLLMConfig { return cfg }, cb, router)
 
 	stopCh := make(chan struct{})
 	dc.StartConductedDiscussion(
@@ -122,7 +122,7 @@ func TestDiscussionConductor_StopTerminates(t *testing.T) {
 
 	cfg := &HubLLMConfig{Enabled: true, APIURL: srv.URL, APIKey: "k", Model: "m", Protocol: "openai"}
 	cb := DefaultCircuitBreaker()
-	dc := NewDiscussionConductor(func() *HubLLMConfig { return cfg }, cb, router)
+	dc := NewDiscussionConductor(func(context.Context) *HubLLMConfig { return cfg }, cb, router)
 
 	stopCh := make(chan struct{})
 	dc.StartConductedDiscussion(
@@ -157,7 +157,7 @@ func TestDiscussionConductor_LLMFailureFallback(t *testing.T) {
 
 	cfg := &HubLLMConfig{Enabled: true, APIURL: srv.URL, APIKey: "k", Model: "m", Protocol: "openai"}
 	cb := DefaultCircuitBreaker()
-	dc := NewDiscussionConductor(func() *HubLLMConfig { return cfg }, cb, router)
+	dc := NewDiscussionConductor(func(context.Context) *HubLLMConfig { return cfg }, cb, router)
 
 	stopCh := make(chan struct{})
 	resp := dc.StartConductedDiscussion(

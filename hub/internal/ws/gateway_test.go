@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/gorilla/websocket"
 )
 
@@ -33,6 +34,8 @@ type testDeviceBinder struct {
 	unboundMachineID string
 	markedOnline     int
 	heartbeats       int
+	tenantID         string
+	userID           string
 }
 
 func (d *testDeviceBinder) BindDesktop(machineID string, ctx *ConnContext) {
@@ -56,6 +59,18 @@ func (d *testDeviceBinder) Heartbeat(ctx context.Context, machineID string, hear
 
 func (d *testDeviceBinder) SendToMachine(machineID string, msg any) error {
 	return nil
+}
+
+func (d *testDeviceBinder) GetMachineOwner(ctx context.Context, machineID string) (string, string, error) {
+	tenantID := d.tenantID
+	if tenantID == "" {
+		tenantID = "tenant_default"
+	}
+	userID := d.userID
+	if userID == "" {
+		userID = "user-1"
+	}
+	return tenantID, userID, nil
 }
 
 func (d *testDeviceBinder) SetAlias(ctx context.Context, machineID string, alias string) {}
@@ -103,10 +118,17 @@ func (s *testSessionService) MarkMachineOffline(ctx context.Context, machineID s
 }
 
 func (s *testSessionService) GetSnapshot(userID, machineID, sessionID string) (*session.SessionCacheEntry, bool) {
+	return s.GetSnapshotForTenant("", userID, machineID, sessionID)
+}
+
+func (s *testSessionService) GetSnapshotForTenant(tenantID, userID, machineID, sessionID string) (*session.SessionCacheEntry, bool) {
 	if s.snapshot == nil {
 		return nil, false
 	}
 	if s.snapshot.UserID != userID || s.snapshot.MachineID != machineID || s.snapshot.SessionID != sessionID {
+		return nil, false
+	}
+	if tenantID != "" && s.snapshot.TenantID != "" && s.snapshot.TenantID != tenantID {
 		return nil, false
 	}
 	return s.snapshot, true
@@ -117,6 +139,10 @@ func (s *testSessionService) ListByMachine(ctx context.Context, userID, machineI
 		return nil, nil
 	}
 	if s.snapshot.UserID != userID || s.snapshot.MachineID != machineID {
+		return nil, nil
+	}
+	tenantID := store.TenantIDFromContext(ctx)
+	if s.snapshot.TenantID != "" && s.snapshot.TenantID != tenantID {
 		return nil, nil
 	}
 	return []*session.SessionCacheEntry{s.snapshot}, nil
@@ -372,6 +398,37 @@ func TestGatewayHandleSessionEventBroadcastsToViewer(t *testing.T) {
 	}
 	if payload.Title != "Updated Claude Session" || payload.Status != "busy" {
 		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestGatewayHandleSessionEventSkipsOtherTenantWatchers(t *testing.T) {
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, &testSessionService{})
+	matching := &ConnContext{TenantID: "tenant_a", sendCh: make(chan any, 2), closeSend: make(chan struct{})}
+	other := &ConnContext{TenantID: "tenant_b", sendCh: make(chan any, 2), closeSend: make(chan struct{})}
+
+	gateway.mu.Lock()
+	gateway.viewersBySession["sess-1"] = map[*ConnContext]struct{}{matching: {}, other: {}}
+	gateway.viewersByMachine["machine-1"] = map[*ConnContext]struct{}{matching: {}, other: {}}
+	gateway.mu.Unlock()
+
+	gateway.HandleSessionEvent(session.Event{
+		Type:      "session.summary",
+		TenantID:  "tenant_a",
+		SessionID: "sess-1",
+		MachineID: "machine-1",
+		UserID:    "user-1",
+		Summary:   &session.SessionSummary{SessionID: "sess-1", MachineID: "machine-1", Status: "busy"},
+	})
+
+	select {
+	case <-matching.sendCh:
+	default:
+		t.Fatalf("expected matching tenant watcher to receive event")
+	}
+	select {
+	case msg := <-other.sendCh:
+		t.Fatalf("other tenant watcher received event: %#v", msg)
+	default:
 	}
 }
 

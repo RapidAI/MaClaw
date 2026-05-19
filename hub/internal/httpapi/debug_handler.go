@@ -116,8 +116,12 @@ func enrichMachineList(ctx context.Context, items []device.MachineRuntimeInfo, u
 
 func DebugListMachineEventsHandler(devices *device.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		events := devices.ListEvents(100)
+		if isTenantScopedAdminRequest(r) {
+			events = devices.ListEventsByTenant(RequestTenantID(r), 100)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"events": devices.ListEvents(100),
+			"events": events,
 		})
 	}
 }
@@ -338,7 +342,7 @@ func DeleteMachinesByEmailHandler(devices *device.Service, users machineUserLook
 			writeJSON(w, http.StatusOK, map[string]any{"deleted": int64(0)})
 			return
 		}
-		count, err := devices.DeleteMachinesByUser(r.Context(), user.ID)
+		count, err := devices.DeleteMachinesByTenantUser(r.Context(), RequestTenantID(r), user.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
 			return
@@ -367,7 +371,7 @@ func ForceDeleteMachinesByEmailHandler(devices *device.Service, users machineUse
 			writeJSON(w, http.StatusOK, map[string]any{"deleted": int64(0)})
 			return
 		}
-		count, err := devices.ForceDeleteMachinesByUser(r.Context(), user.ID)
+		count, err := devices.ForceDeleteMachinesByTenantUser(r.Context(), RequestTenantID(r), user.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
 			return

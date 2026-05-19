@@ -105,6 +105,9 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			"status": resp.Status,
 			"brand":  brand.Current().DisplayName,
 		}
+		if resp.TenantID != "" {
+			respMap["tenant_id"] = resp.TenantID
+		}
 		if resp.Message != "" {
 			respMap["message"] = resp.Message
 		}
@@ -283,9 +286,11 @@ func EmailConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"access_token": token,
 			"expires_in":   30 * 86400,
+			"tenant_id":    user.TenantID,
 			"user": map[string]any{
-				"email": user.Email,
-				"sn":    user.SN,
+				"tenant_id": user.TenantID,
+				"email":     user.Email,
+				"sn":        user.SN,
 			},
 		})
 	}

@@ -223,6 +223,14 @@ func vipLookupCacheKey(tenantID, email string) string {
 	return tenantID + "\x00" + strings.TrimSpace(strings.ToLower(email))
 }
 
+func settingsKeyForTenant(tenantID, key string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" || tenantID == store.DefaultTenantID {
+		return key
+	}
+	return "tenant:" + tenantID + ":" + key
+}
+
 func cloneInvitationCode(item *store.InvitationCode) *store.InvitationCode {
 	if item == nil {
 		return nil
@@ -262,10 +270,14 @@ func (s *Service) CheckExpiryForTenant(ctx context.Context, tenantID, email stri
 
 // IsRequired reads the invitation_code_required setting from SystemSettings.
 func (s *Service) IsRequired(ctx context.Context) (bool, error) {
-	if s.settings == nil {
+	return s.IsRequiredForTenant(ctx, store.DefaultTenantID)
+}
+
+func (s *Service) IsRequiredForTenant(ctx context.Context, tenantID string) (bool, error) {
+	if s == nil || s.settings == nil {
 		return false, nil
 	}
-	raw, err := s.settings.Get(ctx, settingsKeyInvitationCodeRequired)
+	raw, err := s.settings.Get(ctx, settingsKeyForTenant(tenantID, settingsKeyInvitationCodeRequired))
 	if err != nil {
 		return false, nil
 	}
@@ -283,14 +295,18 @@ func (s *Service) IsRequired(ctx context.Context) (bool, error) {
 
 // SetRequired updates the invitation_code_required setting in SystemSettings.
 func (s *Service) SetRequired(ctx context.Context, required bool) error {
-	if s.settings == nil {
+	return s.SetRequiredForTenant(ctx, store.DefaultTenantID, required)
+}
+
+func (s *Service) SetRequiredForTenant(ctx context.Context, tenantID string, required bool) error {
+	if s == nil || s.settings == nil {
 		return nil
 	}
 	data, err := json.Marshal(map[string]bool{"value": required})
 	if err != nil {
 		return fmt.Errorf("marshaling settings: %w", err)
 	}
-	return s.settings.Set(ctx, settingsKeyInvitationCodeRequired, string(data))
+	return s.settings.Set(ctx, settingsKeyForTenant(tenantID, settingsKeyInvitationCodeRequired), string(data))
 }
 
 // ListCodes delegates to the repository's List method.

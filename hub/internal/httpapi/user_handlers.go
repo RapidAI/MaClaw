@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -9,10 +10,15 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 type machineCommandSender interface {
 	SendToMachine(machineID string, msg any) error
+}
+
+type machineInfoGetter interface {
+	GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error)
 }
 
 type SessionControlRequest struct {
@@ -135,7 +141,7 @@ func ListSessionsHandler(identity *auth.IdentityService, sessionSvc *session.Ser
 			return
 		}
 
-		items, err := sessionSvc.ListByMachine(r.Context(), principal.UserID, machineID)
+		items, err := sessionSvc.ListByMachine(store.WithTenant(r.Context(), principal.TenantID), principal.UserID, machineID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -178,7 +184,7 @@ func GetSessionHandler(identity *auth.IdentityService, sessionSvc *session.Servi
 			return
 		}
 
-		item, ok := sessionSvc.GetSnapshot(principal.UserID, machineID, sessionID)
+		item, ok := sessionSvc.GetSnapshotForTenant(principal.TenantID, principal.UserID, machineID, sessionID)
 		if !ok || item == nil {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
@@ -212,7 +218,7 @@ func SessionKillHandler(identity *auth.IdentityService, sessionSvc *session.Serv
 
 func SessionStartHandler(identity *auth.IdentityService, devices machineCommandSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, err := authenticateViewerRequest(r, identity)
+		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
@@ -231,6 +237,10 @@ func SessionStartHandler(identity *auth.IdentityService, devices machineCommandS
 		req.PythonEnv = strings.TrimSpace(req.PythonEnv)
 		if req.MachineID == "" || req.Tool == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "machine_id and tool are required")
+			return
+		}
+		if !canViewerAccessMachine(r.Context(), devices, principal.TenantID, principal.UserID, req.MachineID) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "machine is outside current tenant")
 			return
 		}
 
@@ -271,6 +281,18 @@ func SessionStartHandler(identity *auth.IdentityService, devices machineCommandS
 	}
 }
 
+func canViewerAccessMachine(ctx context.Context, devices machineCommandSender, tenantID, userID, machineID string) bool {
+	getter, ok := devices.(machineInfoGetter)
+	if !ok || getter == nil {
+		return true
+	}
+	info, err := getter.GetMachineInfo(ctx, machineID)
+	if err != nil || info == nil {
+		return false
+	}
+	return strings.TrimSpace(info.UserID) == strings.TrimSpace(userID) && store.NormalizeTenantID(info.TenantID) == store.NormalizeTenantID(tenantID)
+}
+
 func sessionControlHandler(identity *auth.IdentityService, sessionSvc *session.Service, devices machineCommandSender, msgType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateViewerRequest(r, identity)
@@ -295,7 +317,7 @@ func sessionControlHandler(identity *auth.IdentityService, sessionSvc *session.S
 			return
 		}
 
-		item, ok := sessionSvc.GetSnapshot(principal.UserID, req.MachineID, req.SessionID)
+		item, ok := sessionSvc.GetSnapshotForTenant(principal.TenantID, principal.UserID, req.MachineID, req.SessionID)
 		if !ok || item == nil {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return

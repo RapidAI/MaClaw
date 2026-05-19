@@ -16,6 +16,11 @@ type ConflictResult struct {
 
 // ConflictDetector checks whether a new memory entry contradicts existing ones.
 // It uses embedding similarity to find candidates and LLM to judge contradiction.
+//
+// Status: experimental/internal. The primary online write path is
+// OnlineExtractor's ADD/UPDATE/DELETE/NOOP classifier. Do not wire this into
+// realtime writes without first reconciling its decisions with OnlineExtractor
+// and the evidence-boundary consolidation gate.
 type ConflictDetector struct {
 	store    *Store
 	embedder embedding.Embedder

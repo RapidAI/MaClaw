@@ -85,6 +85,63 @@ describe("AITabItem", () => {
         expect(item.textContent).not.toContain("m_b1821505498d817c");
     });
 
+    it("localizes fallback group participant names", () => {
+        const tab = {
+            id: "group-raw-title",
+            type: "group" as const,
+            title: "m_b1821505498d817c",
+            veId: "m_b1821505498d817c",
+            participants: ["m_b1821505498d817c", "local-maclaw"],
+            closable: true,
+        };
+
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("参与者 1, 本机AI");
+        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("參與者 1, 本機AI");
+    });
+
+    it("normalizes local AI participant ids in group titles", () => {
+        const tab = {
+            id: "group-local-normalized",
+            type: "group" as const,
+            title: "Agent A",
+            veId: "ve-a",
+            participants: ["ve-a", " LOCAL-MACLAW "],
+            closable: true,
+        };
+
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Local AI");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("Agent A, \u672c\u673aAI");
+    });
+
+
+    it("localizes canonical local AI participant ids", () => {
+        const tab = {
+            id: "group-local-canonical",
+            type: "group" as const,
+            title: "Agent A",
+            veId: "ve-a",
+            participants: ["ve-a", "machine-local"],
+            participantNames: { "machine-local": "Local AI" },
+            localParticipantIds: ["machine-local"],
+            closable: true,
+        };
+
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Local AI");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("Agent A, 本机AI");
+    });
+
+    it("localizes direct VE fallback titles", () => {
+        const tab = {
+            id: "ve-raw-tab-zh",
+            type: "ve" as const,
+            title: "m_b1821505498d817c",
+            veId: "m_b1821505498d817c",
+            closable: true,
+        };
+
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("数字员工");
+        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("數字員工");
+    });
     it("keeps history group topic titles unchanged", () => {
         const tab = { id: "history-disc-1", type: "group" as const, title: "Case discussion", participants: ["me", "ve-a"], closable: true };
 

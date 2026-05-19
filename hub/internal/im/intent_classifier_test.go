@@ -45,8 +45,8 @@ func mockLLMServerError() *httptest.Server {
 	}))
 }
 
-func testConfig(url string) func() *HubLLMConfig {
-	return func() *HubLLMConfig {
+func testConfig(url string) func(context.Context) *HubLLMConfig {
+	return func(context.Context) *HubLLMConfig {
 		return &HubLLMConfig{
 			Enabled:  true,
 			APIURL:   url,
@@ -235,7 +235,7 @@ func TestIntentClassifier_CacheMissOnDifferentText(t *testing.T) {
 
 func TestIntentClassifier_NilConfigDegrades(t *testing.T) {
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(func() *HubLLMConfig { return nil }, cb, NewLLMSemaphore(5))
+	ic := NewIntentClassifier(func(context.Context) *HubLLMConfig { return nil }, cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "hello", testProfiles(), nil)
 	if err != nil {
@@ -313,5 +313,25 @@ func TestIntentClassifier_MarkdownFencedJSON(t *testing.T) {
 	}
 	if result.Type != IntentBroadcast {
 		t.Fatalf("expected broadcast, got %s", result.Type)
+	}
+}
+
+func TestIntentClassifierPassesTenantContextToConfigProvider(t *testing.T) {
+	cb := DefaultCircuitBreaker()
+	var seenTenant string
+	ic := NewIntentClassifier(func(ctx context.Context) *HubLLMConfig {
+		seenTenant = TenantIDFromContext(ctx)
+		return nil
+	}, cb, NewLLMSemaphore(1))
+
+	result, err := ic.Classify(WithTenant(context.Background(), "tenant_acme"), "user1", "hello", testProfiles(), nil)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if seenTenant != "tenant_acme" {
+		t.Fatalf("config provider saw tenant %q, want tenant_acme", seenTenant)
+	}
+	if result == nil || result.Type != IntentBroadcast {
+		t.Fatalf("expected broadcast fallback with nil tenant config, got %#v", result)
 	}
 }

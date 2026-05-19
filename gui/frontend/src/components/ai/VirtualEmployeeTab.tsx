@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { looksLikeRawParticipantId } from "./localAIIdentity";
 
 // --- Types ---
 
@@ -31,9 +32,6 @@ export interface VETabProps {
 
 // --- Helpers ---
 
-function looksLikeRawParticipantId(value: string): boolean {
-    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
-}
 
 function readableVirtualEmployeeName(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id" | "name">, index: number, lang?: string): string {
     const name = String(ve.name || "").trim();

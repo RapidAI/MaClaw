@@ -20,7 +20,7 @@ func WithTenant(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, coordinatorTenantContextKey{}, normalizeTenantID(tenantID))
 }
 
-func tenantIDFromContext(ctx context.Context) string {
+func TenantIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return store.DefaultTenantID
 	}
@@ -28,6 +28,10 @@ func tenantIDFromContext(ctx context.Context) string {
 		return normalizeTenantID(tenantID)
 	}
 	return store.DefaultTenantID
+}
+
+func tenantIDFromContext(ctx context.Context) string {
+	return TenantIDFromContext(ctx)
 }
 
 func tenantUserRuntimeKey(tenantID, userID string) string {
@@ -52,7 +56,7 @@ type Coordinator struct {
 	ruleEngine       *RuleEngine
 	intentClassifier *IntentClassifier
 	breaker          *CircuitBreaker
-	configProvider   func() *HubLLMConfig
+	configProvider   func(context.Context) *HubLLMConfig
 	profileCache     *DeviceProfileCache
 	smartRouteCheck  SmartRouteChecker
 
@@ -72,7 +76,7 @@ type Coordinator struct {
 func NewCoordinator(
 	router *MessageRouter,
 	devices DeviceFinder,
-	configProvider func() *HubLLMConfig,
+	configProvider func(context.Context) *HubLLMConfig,
 ) *Coordinator {
 	breaker := DefaultCircuitBreaker()
 	c := &Coordinator{
@@ -93,7 +97,7 @@ func NewCoordinator(
 
 // IsLLMEnabled returns true if LLM is configured, enabled, and not circuit-broken.
 func (c *Coordinator) IsLLMEnabled() bool {
-	cfg := c.configProvider()
+	cfg := c.configProvider(context.Background())
 	if cfg == nil || !cfg.Enabled {
 		return false
 	}
@@ -101,8 +105,11 @@ func (c *Coordinator) IsLLMEnabled() bool {
 }
 
 // GetLLMStatus returns the LLM health status string for the admin API.
-func (c *Coordinator) GetLLMStatus() string {
-	cfg := c.configProvider()
+func (c *Coordinator) GetLLMStatus(ctx context.Context) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg := c.configProvider(ctx)
 	if cfg == nil || !cfg.Enabled {
 		return "not_configured"
 	}
@@ -215,7 +222,7 @@ func (c *Coordinator) Coordinate(
 	}
 
 	// Single device online 鈫?no space model, pure passthrough to lobby logic.
-	state := c.spaceState.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
+	state := c.spaceState.GetOrCreateForTenant(TenantIDFromContext(ctx), userID)
 
 	switch state.State {
 	case SpacePrivate:
@@ -233,7 +240,7 @@ func (c *Coordinator) classifyAndRoute(
 	userID, platformName, platformUID, text string,
 	machines []OnlineMachineInfo,
 ) (*GenericResponse, error) {
-	profiles := c.profileCache.GetAllForTenant(tenantIDFromContext(ctx), userID)
+	profiles := c.profileCache.GetAllForTenant(TenantIDFromContext(ctx), userID)
 	if len(profiles) == 0 {
 		// No profiles reported yet 鈥?build minimal ones from OnlineMachineInfo.
 		for _, m := range machines {
@@ -246,7 +253,7 @@ func (c *Coordinator) classifyAndRoute(
 	}
 
 	// Inject conversation context into classification.
-	cc := c.convContext.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
+	cc := c.convContext.GetOrCreateForTenant(TenantIDFromContext(ctx), userID)
 	convRounds := cc.GetRecentSummaries(3)
 
 	history := c.getRecentHistory(ctx, userID)
@@ -285,7 +292,7 @@ func (c *Coordinator) classifyAndRoute(
 		for _, m := range machines {
 			participantIDs = append(participantIDs, m.MachineID)
 		}
-		_ = c.spaceState.EnterMeetingForTenant(tenantIDFromContext(ctx), userID, topic, participantIDs)
+		_ = c.spaceState.EnterMeetingForTenant(TenantIDFromContext(ctx), userID, topic, participantIDs)
 		return c.router.StartDiscussion(ctx, userID, platformName, platformUID, topic), nil
 
 	case IntentNeedClarification:
@@ -339,7 +346,7 @@ func (c *Coordinator) routeToTargetWithContext(
 	}
 
 	// Check for device handoff 鈥?if last conversation was on a different device.
-	cc := c.convContext.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
+	cc := c.convContext.GetOrCreateForTenant(TenantIDFromContext(ctx), userID)
 	lastRounds := cc.GetRecentSummaries(1)
 	handoffCtx := ""
 	if len(lastRounds) > 0 && lastRounds[0].TargetDevice != targetID && lastRounds[0].TargetDevice != "" {
@@ -361,7 +368,7 @@ func (c *Coordinator) routeToTargetWithContext(
 
 	// Async record to ConversationContext (record original text, not the handoff-prefixed one).
 	if resp != nil {
-		cfg := c.configProvider()
+		cfg := c.configProvider(ctx)
 		cc.RecordRoundAsync(text, resp.Body, targetID, targetMachine.Name, cfg, c.breaker, c.router.LLMSemaphore())
 	}
 
@@ -441,14 +448,14 @@ func (c *Coordinator) handlePrivateMessage(
 		}
 	}
 	if !online {
-		c.spaceState.ResetForTenant(tenantIDFromContext(ctx), userID)
+		c.spaceState.ResetForTenant(TenantIDFromContext(ctx), userID)
 		go c.router.deliverProgress(ctx, userID, platformName, platformUID,
 			fmt.Sprintf("私聊目标 %s 已离线，已返回大厅。", state.PrivateName))
 		return c.handleLobbyMessage(ctx, userID, platformName, platformUID, text, machines)
 	}
 
 	// Increment message count and send periodic reminder.
-	count := c.spaceState.IncrementMessageCountForTenant(tenantIDFromContext(ctx), userID)
+	count := c.spaceState.IncrementMessageCountForTenant(TenantIDFromContext(ctx), userID)
 	if count > 0 && count%5 == 0 {
 		reminder := fmt.Sprintf("当前私聊模式 -> %s（第 %d 条消息）。发送 /call all 返回大厅。", state.PrivateName, count)
 		go c.router.deliverProgress(ctx, userID, platformName, platformUID, reminder)
@@ -466,9 +473,9 @@ func (c *Coordinator) handleMeetingMessage(
 	userID, platformName, platformUID, text string,
 	state *SpaceState,
 ) (*GenericResponse, error) {
-	if !c.router.IsInDiscussionForTenant(tenantIDFromContext(ctx), userID) {
+	if !c.router.IsInDiscussionForTenant(TenantIDFromContext(ctx), userID) {
 		// No active discussion 鈥?defensive reset to lobby.
-		c.spaceState.ResetForTenant(tenantIDFromContext(ctx), userID)
+		c.spaceState.ResetForTenant(TenantIDFromContext(ctx), userID)
 		go c.router.deliverProgress(ctx, userID, platformName, platformUID,
 			"会议已结束，已返回大厅。")
 		machines := c.devices.FindAllOnlineMachinesForUser(ctx, userID)
@@ -479,7 +486,7 @@ func (c *Coordinator) handleMeetingMessage(
 	names, body := ParseMentions(text)
 	if len(names) == 0 {
 		// No @: inject into discussion.
-		if c.router.InjectUserInputForTenant(tenantIDFromContext(ctx), userID, text) {
+		if c.router.InjectUserInputForTenant(TenantIDFromContext(ctx), userID, text) {
 			return &GenericResponse{
 				StatusCode: 200,
 				StatusIcon: "ok",
@@ -550,7 +557,7 @@ func (c *Coordinator) handleMeetingMessage(
 	}
 	sideChatMsg := fmt.Sprintf("小会（%s）：\n用户: %s\n%s",
 		strings.Join(targetNames, "、"), truncate(body, 80), strings.Join(replies, "\n"))
-	c.router.InjectUserInputForTenant(tenantIDFromContext(ctx), userID, sideChatMsg)
+	c.router.InjectUserInputForTenant(TenantIDFromContext(ctx), userID, sideChatMsg)
 
 	return &GenericResponse{
 		StatusCode: 200,
@@ -572,7 +579,7 @@ func (c *Coordinator) handleLobbyMessage(
 	userID, platformName, platformUID, text string,
 	machines []OnlineMachineInfo,
 ) (*GenericResponse, error) {
-	cfg := c.configProvider()
+	cfg := c.configProvider(ctx)
 	llmEnabled := cfg != nil && cfg.Enabled && c.breaker.Allow()
 	smartRouteSingle := cfg != nil && cfg.SmartRouteSingleDevice
 
@@ -591,7 +598,7 @@ func (c *Coordinator) handleLobbyMessage(
 		return c.handleLobbyMention(ctx, userID, platformName, platformUID, names, body, text, machines)
 	}
 
-	selected, _ := c.router.GetSelectedMachineForTenant(tenantIDFromContext(ctx), userID)
+	selected, _ := c.router.GetSelectedMachineForTenant(TenantIDFromContext(ctx), userID)
 	decision := c.ruleEngine.Evaluate(text, machines, selected, llmEnabled, smartRouteSingle)
 
 	switch decision.Action {
@@ -661,13 +668,13 @@ func (c *Coordinator) hubDirectAnswer(
 	userID, platformName, platformUID, text string,
 	machines []OnlineMachineInfo,
 ) (*GenericResponse, error) {
-	cfg := c.configProvider()
+	cfg := c.configProvider(ctx)
 	if cfg == nil || !cfg.Enabled {
 		return c.router.routeBroadcast(ctx, userID, platformName, platformUID, text, machines)
 	}
 
 	// Build prompt with recent conversation context.
-	cc := c.convContext.GetOrCreateForTenant(tenantIDFromContext(ctx), userID)
+	cc := c.convContext.GetOrCreateForTenant(TenantIDFromContext(ctx), userID)
 	recent := cc.GetRecentSummaries(5)
 
 	var contextBlock string

@@ -179,6 +179,7 @@ func BindQueryHandler(identity *auth.IdentityService) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"bound":             true,
+			"tenant_id":         user.TenantID,
 			"email":             user.Email,
 			"sn":                user.SN,
 			"status":            user.Status,
@@ -311,7 +312,7 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			return
 		}
 
-		deleted, err := deviceSvc.ForceDeleteMachinesByUser(r.Context(), user.ID)
+		deleted, err := deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), tenantID, user.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "UNBIND_FAILED", err.Error())
 			return
@@ -344,6 +345,7 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":               true,
+			"tenant_id":        tenantID,
 			"deleted_machines": deleted,
 			"codes_deleted":    codesDeleted,
 			"email":            email,

@@ -17,14 +17,14 @@ import (
 // decide who speaks next, what to ask, and when to conclude. It replaces
 // the mechanical round-robin logic when Hub LLM is configured.
 type DiscussionConductor struct {
-	configProvider func() *HubLLMConfig
+	configProvider func(context.Context) *HubLLMConfig
 	breaker        *CircuitBreaker
 	router         *MessageRouter
 	client         *http.Client
 }
 
 // NewDiscussionConductor creates a new conductor.
-func NewDiscussionConductor(configProvider func() *HubLLMConfig, breaker *CircuitBreaker, router *MessageRouter) *DiscussionConductor {
+func NewDiscussionConductor(configProvider func(context.Context) *HubLLMConfig, breaker *CircuitBreaker, router *MessageRouter) *DiscussionConductor {
 	return &DiscussionConductor{
 		configProvider: configProvider,
 		breaker:        breaker,
@@ -62,7 +62,7 @@ func (s *ConductedDiscussionState) stopped() bool {
 // ConductedRound records one round of an LLM-orchestrated discussion.
 type ConductedRound struct {
 	Number    int
-	Action    string            // ask_all, ask_specific, cross_review, summarize, conclude
+	Action    string // ask_all, ask_specific, cross_review, summarize, conclude
 	TargetIDs []string
 	Prompt    string
 	Replies   map[string]string // machineID → reply
@@ -315,7 +315,7 @@ func (dc *DiscussionConductor) deliverRoundReplies(
 }
 
 func (dc *DiscussionConductor) decideNextAction(ctx context.Context, state *ConductedDiscussionState, userInputs []string) *conductorAction {
-	cfg := dc.configProvider()
+	cfg := dc.configProvider(ctx)
 	if cfg == nil || !dc.breaker.Allow() {
 		return nil
 	}
@@ -384,7 +384,7 @@ func (dc *DiscussionConductor) decideNextAction(ctx context.Context, state *Cond
 }
 
 func (dc *DiscussionConductor) generateFinalSummary(ctx context.Context, state *ConductedDiscussionState) string {
-	cfg := dc.configProvider()
+	cfg := dc.configProvider(ctx)
 	if cfg == nil || !dc.breaker.Allow() {
 		return dc.fallbackSummary(state)
 	}

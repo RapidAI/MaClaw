@@ -92,7 +92,7 @@ import {
 import { colors, radius } from '../remote/styles';
 
 type Props = {
-    lang: string;
+    lang?: string;
 };
 
 type Source = {
@@ -1177,7 +1177,8 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [deepCrawlBusy, setDeepCrawlBusy] = useState(false);
 
     const confirmT = (key: string) => {
-        const map: Record<string, string> = { cancel: lang.startsWith('zh') ? '取消' : 'Cancel', confirm: lang.startsWith('zh') ? '确认' : 'Confirm' };
+        const isZh = lang?.startsWith('zh') ?? false;
+        const map: Record<string, string> = { cancel: isZh ? '取消' : 'Cancel', confirm: isZh ? '确认' : 'Confirm' };
         return map[key] || key;
     };
 
@@ -1605,6 +1606,20 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
 
             {activeTab === 'ingest' && (
                 <>
+                <PanelBlock title={t('Import Documents', '导入文档')}>
+                    <div style={documentImportStyle}>
+                        <div style={documentImportCopyStyle}>
+                            <strong>{t('Add local documents', '添加本地文档')}</strong>
+                            <span style={mutedLineStyle}>{t('Import files or directories into your knowledge base', '将文件或目录导入到知识库中')}</span>
+                        </div>
+                        <button type="button" style={documentImportButtonStyle} onClick={() => setShowImportDialog(true)}>
+                            {t('Import Documents', '导入文档')}
+                        </button>
+                    </div>
+                    {importJob && ['running', 'queued', 'pending'].includes(String(importJob.status || '').toLowerCase()) && (
+                        <ImportJobSummary t={t} job={importJob} />
+                    )}
+                </PanelBlock>
                 <div style={twoColumnStyle}>
                     <PanelBlock title={t('Save Text', '保存文本')}>
                         <input style={inputStyle} value={textForm.title} onChange={event => setTextForm({ ...textForm, title: event.target.value })} placeholder={t('Title', '标题')} />
@@ -1617,17 +1632,6 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                         <MetadataControls t={t} labels={urlForm.labels} topicHint={urlForm.topicHint} saveScope={urlForm.saveScope} distillMode={urlForm.distillMode} distillModes={distillModes} onChange={patch => setURLForm({ ...urlForm, ...patch })} />
                         <label style={checkboxStyle}><input type="checkbox" checked={urlForm.autoLabels} onChange={event => setURLForm({ ...urlForm, autoLabels: event.target.checked })} /> {t('Auto labels', '自动标签')}</label>
                         <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={saveURLs}>{busy === 'saveURLs' ? t('Saving...', '保存中...') : t('Save URLs', '保存 URL')}</button>
-                    </PanelBlock>
-                    <PanelBlock title={t('Import Documents', '导入文档')}>
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '16px 0' }}>
-                            <button type="button" style={{ ...primaryButtonStyle, padding: '12px 32px', fontSize: 15 }} onClick={() => setShowImportDialog(true)}>
-                                📥 {t('Import Documents', '导入文档')}
-                            </button>
-                            <span style={mutedLineStyle}>{t('Import files or directories into your knowledge base', '将文件或目录导入到知识库中')}</span>
-                        </div>
-                        {importJob && ['running', 'queued', 'pending'].includes(String(importJob.status || '').toLowerCase()) && (
-                            <ImportJobSummary t={t} job={importJob} />
-                        )}
                     </PanelBlock>
                 </div>
                 <DeepCrawlPanel
@@ -1757,7 +1761,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             onJobUpdate={job => { if (job) setImportJob(job); }}
             supportedExts={capabilities?.default_include_exts}
             t={t}
-            lang={lang}
+            lang={lang || 'en'}
         />
         {confirmDialog.show && (
             <ConfirmDialog
@@ -1953,6 +1957,9 @@ const tabsStyle: CSSProperties = { display: 'flex', gap: 6, flexWrap: 'wrap', bo
 const tabButtonStyle = (active: boolean): CSSProperties => ({ border: `1px solid ${active ? colors.primary : colors.border}`, borderRadius: radius.sm, padding: '7px 10px', background: active ? colors.primaryLight : colors.surface, color: active ? colors.primaryDark : colors.textMuted, fontWeight: active ? 700 : 600, cursor: 'pointer' });
 const stackStyle: CSSProperties = { display: 'grid', gap: 12 };
 const twoColumnStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, alignItems: 'start' };
+const documentImportStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' };
+const documentImportCopyStyle: CSSProperties = { minWidth: 220, display: 'grid', gap: 4, color: colors.text, fontSize: 13 };
+const documentImportButtonStyle: CSSProperties = { ...primaryButtonStyle, padding: '9px 18px', fontSize: 13, flexShrink: 0 };
 const compactGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 };
 const blockStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 12, background: colors.surface };
 const blockTitleStyle: CSSProperties = { margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: colors.text };

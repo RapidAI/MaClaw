@@ -13,6 +13,7 @@ func looksLikeNoToolStallReply(text string) bool {
 	lower := strings.ToLower(trimmed)
 	stallHints := []string{
 		"鎴戝厛鎯虫兂",
+		"我先想想", "我先思考", "先想想", "先思考", "我先整理", "我再整理", "整理一下步骤", "先分析", "分析一下", "先检查",
 		"let me think", "i'll think", "think first", "organize the steps", "plan this out", "analyze first", "check first",
 	}
 	for _, hint := range stallHints {

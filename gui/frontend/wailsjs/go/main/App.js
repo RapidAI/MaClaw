@@ -1973,6 +1973,10 @@ export function AddVEToGroup(arg1, arg2) {
   return window['go']['main']['App']['AddVEToGroup'](arg1, arg2);
 }
 
+export function RegisterLocalExecutorInGroup(arg1) {
+  return window['go']['main']['App']['RegisterLocalExecutorInGroup'](arg1);
+}
+
 export function RespondAuthRequest(arg1, arg2) {
   return window['go']['main']['App']['RespondAuthRequest'](arg1, arg2);
 }

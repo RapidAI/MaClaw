@@ -118,8 +118,26 @@ describe('isHistoryDiscussionReadOnly', () => {
             lang: 'en',
         }));
 
-        fireEvent.contextMenu(screen.getByRole('tab', { name: 'Live helper' }));
+        fireEvent.contextMenu(screen.getByRole('tab', { name: /Live helper/ }));
         expect(screen.getByTestId('tab-menu-add-local')).toBeTruthy();
+    });
+
+    it('hides add-local action when local AI participant id differs only by case', () => {
+        render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'group-1', type: 'group', title: 'Live helper', veId: 've-a', participants: ['ve-a', ' LOCAL-MACLAW '], closable: true, readOnly: false },
+            ] as any,
+            activeTabId: 'group-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onAddLocalMaclawToTab: () => {},
+            lang: 'en',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: /Live helper/ }));
+        expect(screen.queryByTestId('tab-menu-add-local')).toBeNull();
     });
 
     it('marks read-only history tabs inside the overflow menu', async () => {

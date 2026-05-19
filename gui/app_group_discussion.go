@@ -1694,9 +1694,40 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 	if !isWritableHistoryDiscussionSummary(detail.Discussion) {
 		return fmt.Errorf("history discussion is read-only")
 	}
+	if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
+		msg.ToIDs = normalizeGroupDiscussionHistoryTargetIDs(msg.ToIDs, groupDiscussionAgentID(cfg))
+	}
 	msg.FromID = ""
 	msg.SessionID = consultationID
 	return a.GroupDiscussionSendMessage(consultationID, msg)
+}
+
+func normalizeGroupDiscussionHistoryTargetIDs(toIDs []string, localID string) []string {
+	if len(toIDs) == 0 {
+		return nil
+	}
+	localID = strings.TrimSpace(localID)
+	out := make([]string, 0, len(toIDs))
+	seen := map[string]struct{}{}
+	for _, rawID := range toIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if strings.EqualFold(id, "local-maclaw") && localID != "" {
+			id = localID
+		}
+		key := strings.ToLower(id)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func isWritableHistoryDiscussionSummary(summary a2a.HubDiscussionSummary) bool {

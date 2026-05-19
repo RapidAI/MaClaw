@@ -56,6 +56,7 @@ type ImportantEvent struct {
 
 type SessionCacheEntry struct {
 	SessionID     string
+	TenantID      string
 	MachineID     string
 	UserID        string
 	ExecutionMode string
@@ -71,6 +72,7 @@ type Cache = ShardedCache
 
 type Event struct {
 	Type         string
+	TenantID     string
 	SessionID    string
 	MachineID    string
 	UserID       string
@@ -187,9 +189,15 @@ func (s *Service) OnSessionCreated(ctx context.Context, machineID, userID, sessi
 	executionMode, _ := payload["execution_mode"].(string)
 	source, _ := payload["source"].(string)
 	tenantID, _ := payload["tenant_id"].(string)
+	if strings.TrimSpace(tenantID) == "" {
+		tenantID = store.TenantIDFromContext(ctx)
+	} else {
+		tenantID = store.NormalizeTenantID(tenantID)
+	}
 
 	entry := &SessionCacheEntry{
 		SessionID:     sessionID,
+		TenantID:      tenantID,
 		MachineID:     machineID,
 		UserID:        userID,
 		ExecutionMode: executionMode,
@@ -212,7 +220,7 @@ func (s *Service) OnSessionCreated(ctx context.Context, machineID, userID, sessi
 	if s.sessions != nil {
 		if err := s.sessions.Create(ctx, &store.Session{
 			ID:          sessionID,
-			TenantID:    strings.TrimSpace(tenantID),
+			TenantID:    tenantID,
 			MachineID:   machineID,
 			UserID:      userID,
 			Tool:        tool,
@@ -230,18 +238,22 @@ func (s *Service) OnSessionCreated(ctx context.Context, machineID, userID, sessi
 		}
 	}
 
-	s.emit(Event{Type: "session.created", SessionID: sessionID, MachineID: machineID, UserID: userID, Payload: payload})
+	s.emit(Event{Type: "session.created", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, Payload: payload})
 	return nil
 }
 
 func (s *Service) OnSessionSummary(ctx context.Context, machineID, userID, sessionID string, summary SessionSummary) error {
 	summary.SessionID = sessionID
 	summary.MachineID = machineID
+	tenantID := s.eventTenantID(sessionID, ctx)
 
 	var finalSummary SessionSummary
 	s.cache.Modify(sessionID, func() *SessionCacheEntry {
-		return &SessionCacheEntry{SessionID: sessionID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
+		return &SessionCacheEntry{SessionID: sessionID, TenantID: tenantID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
 	}, func(entry *SessionCacheEntry) {
+		if entry.TenantID == "" {
+			entry.TenantID = tenantID
+		}
 		// Prevent a stale summary from reverting an already-exited session back to running/busy.
 		if entry.Summary.Status == "exited" && summary.Status != "exited" && summary.Status != "error" {
 			summary.Status = "exited"
@@ -262,7 +274,7 @@ func (s *Service) OnSessionSummary(ctx context.Context, machineID, userID, sessi
 		}
 	}
 
-	s.emit(Event{Type: "session.summary", SessionID: sessionID, MachineID: machineID, UserID: userID, Summary: &finalSummary})
+	s.emit(Event{Type: "session.summary", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, Summary: &finalSummary})
 	return nil
 }
 
@@ -272,10 +284,14 @@ func (s *Service) OnSessionPreviewDelta(ctx context.Context, machineID, userID, 
 	var previewSnapshot string
 	var outputSeq int64
 	var shouldWriteDB bool
+	tenantID := s.eventTenantID(sessionID, ctx)
 
 	s.cache.Modify(sessionID, func() *SessionCacheEntry {
-		return &SessionCacheEntry{SessionID: sessionID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
+		return &SessionCacheEntry{SessionID: sessionID, TenantID: tenantID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
 	}, func(entry *SessionCacheEntry) {
+		if entry.TenantID == "" {
+			entry.TenantID = tenantID
+		}
 		entry.Preview.SessionID = sessionID
 		entry.Preview.OutputSeq = delta.OutputSeq
 		entry.Preview.PreviewLines = append(entry.Preview.PreviewLines, delta.AppendLines...)
@@ -339,6 +355,7 @@ func (s *Service) OnSessionPreviewDelta(ctx context.Context, machineID, userID, 
 // flushDebouncedDelta emits the merged preview delta for a session and clears
 // the debounce buffer.
 func (s *Service) flushDebouncedDelta(sessionID, machineID, userID string) {
+	tenantID := s.eventTenantID(sessionID, context.Background())
 	s.deltaDebounceMu.Lock()
 	merged := s.deltaDebounceBuf[sessionID]
 	delete(s.deltaDebounceBuf, sessionID)
@@ -348,17 +365,20 @@ func (s *Service) flushDebouncedDelta(sessionID, machineID, userID string) {
 	if merged == nil || len(merged.AppendLines) == 0 {
 		return
 	}
-	s.emit(Event{Type: "session.preview_delta", SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: merged})
+	s.emit(Event{Type: "session.preview_delta", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: merged})
 }
 
 func (s *Service) OnSessionImportantEvent(ctx context.Context, machineID, userID, sessionID string, event ImportantEvent) error {
-	_ = ctx
+	tenantID := s.eventTenantID(sessionID, ctx)
 	event.SessionID = sessionID
 	event.MachineID = machineID
 
 	s.cache.Modify(sessionID, func() *SessionCacheEntry {
-		return &SessionCacheEntry{SessionID: sessionID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
+		return &SessionCacheEntry{SessionID: sessionID, TenantID: tenantID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
 	}, func(entry *SessionCacheEntry) {
+		if entry.TenantID == "" {
+			entry.TenantID = tenantID
+		}
 		entry.RecentEvents = append(entry.RecentEvents, event)
 		if len(entry.RecentEvents) > 50 {
 			entry.RecentEvents = entry.RecentEvents[len(entry.RecentEvents)-50:]
@@ -367,7 +387,7 @@ func (s *Service) OnSessionImportantEvent(ctx context.Context, machineID, userID
 		entry.UpdatedAt = time.Now()
 	})
 
-	s.emit(Event{Type: "session.important_event", SessionID: sessionID, MachineID: machineID, UserID: userID, Important: &event})
+	s.emit(Event{Type: "session.important_event", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, Important: &event})
 	return nil
 }
 
@@ -375,13 +395,17 @@ func (s *Service) OnSessionClosed(ctx context.Context, machineID, userID, sessio
 	status, _ := payload["status"].(string)
 	exitCode := extractExitCode(payload["exit_code"])
 	endedAt := extractUnixTime(payload["ended_at"], time.Now())
+	tenantID := s.eventTenantID(sessionID, ctx)
 
 	var previewLines []string
 	var outputSeq int64
 
 	s.cache.Modify(sessionID, func() *SessionCacheEntry {
-		return &SessionCacheEntry{SessionID: sessionID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
+		return &SessionCacheEntry{SessionID: sessionID, TenantID: tenantID, MachineID: machineID, UserID: userID, HostOnline: true, UpdatedAt: time.Now()}
 	}, func(entry *SessionCacheEntry) {
+		if entry.TenantID == "" {
+			entry.TenantID = tenantID
+		}
 		entry.Summary.Status = status
 		entry.Summary.UpdatedAt = endedAt.Unix()
 		entry.UpdatedAt = endedAt
@@ -416,10 +440,10 @@ func (s *Service) OnSessionClosed(ctx context.Context, machineID, userID, sessio
 	}
 	s.deltaDebounceMu.Unlock()
 	if pendingDelta != nil && len(pendingDelta.AppendLines) > 0 {
-		s.emit(Event{Type: "session.preview_delta", SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: pendingDelta})
+		s.emit(Event{Type: "session.preview_delta", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, PreviewDelta: pendingDelta})
 	}
 
-	s.emit(Event{Type: "session.closed", SessionID: sessionID, MachineID: machineID, UserID: userID, Payload: payload})
+	s.emit(Event{Type: "session.closed", TenantID: tenantID, SessionID: sessionID, MachineID: machineID, UserID: userID, Payload: payload})
 	return nil
 }
 
@@ -427,8 +451,10 @@ func (s *Service) OnSessionClosed(ctx context.Context, machineID, userID, sessio
 // data is not persisted — it is only forwarded to real-time consumers such
 // as the Feishu notifier.
 func (s *Service) OnSessionImage(ctx context.Context, machineID, userID, sessionID string, img SessionImage) {
+	tenantID := s.eventTenantID(sessionID, ctx)
 	s.emit(Event{
 		Type:      "session.image",
+		TenantID:  tenantID,
 		SessionID: sessionID,
 		MachineID: machineID,
 		UserID:    userID,
@@ -440,12 +466,13 @@ func (s *Service) MarkMachineOffline(ctx context.Context, machineID string) erro
 	// Collect session IDs belonging to this machine.
 	type sessionMeta struct {
 		sessionID string
+		tenantID  string
 		userID    string
 	}
 	var targets []sessionMeta
 	s.cache.Range(func(_ string, entry *SessionCacheEntry) bool {
 		if entry.MachineID == machineID {
-			targets = append(targets, sessionMeta{sessionID: entry.SessionID, userID: entry.UserID})
+			targets = append(targets, sessionMeta{sessionID: entry.SessionID, tenantID: store.NormalizeTenantID(entry.TenantID), userID: entry.UserID})
 		}
 		return true
 	})
@@ -454,8 +481,11 @@ func (s *Service) MarkMachineOffline(ctx context.Context, machineID string) erro
 	for _, t := range targets {
 		var summaryCopy SessionSummary
 		s.cache.Modify(t.sessionID, func() *SessionCacheEntry {
-			return &SessionCacheEntry{SessionID: t.sessionID, MachineID: machineID, UserID: t.userID, HostOnline: true, UpdatedAt: now}
+			return &SessionCacheEntry{SessionID: t.sessionID, TenantID: t.tenantID, MachineID: machineID, UserID: t.userID, HostOnline: true, UpdatedAt: now}
 		}, func(entry *SessionCacheEntry) {
+			if entry.TenantID == "" {
+				entry.TenantID = t.tenantID
+			}
 			entry.HostOnline = false
 			entry.UpdatedAt = now
 			if entry.Summary.Status != "exited" {
@@ -478,7 +508,7 @@ func (s *Service) MarkMachineOffline(ctx context.Context, machineID string) erro
 			}
 		}
 
-		s.emit(Event{Type: "session.summary", SessionID: t.sessionID, MachineID: machineID, UserID: t.userID, Summary: &summaryCopy})
+		s.emit(Event{Type: "session.summary", TenantID: t.tenantID, SessionID: t.sessionID, MachineID: machineID, UserID: t.userID, Summary: &summaryCopy})
 	}
 
 	return nil
@@ -495,12 +525,25 @@ func (s *Service) GetSnapshot(userID, machineID, sessionID string) (*SessionCach
 	return cloneSessionCacheEntry(entry), true
 }
 
-func (s *Service) ListByMachine(ctx context.Context, userID, machineID string) ([]*SessionCacheEntry, error) {
-	_ = ctx
+func (s *Service) GetSnapshotForTenant(tenantID, userID, machineID, sessionID string) (*SessionCacheEntry, bool) {
+	entry, ok := s.get(sessionID)
+	if !ok {
+		return nil, false
+	}
+	if entry.UserID != userID || entry.MachineID != machineID {
+		return nil, false
+	}
+	if store.NormalizeTenantID(entry.TenantID) != store.NormalizeTenantID(tenantID) {
+		return nil, false
+	}
+	return cloneSessionCacheEntry(entry), true
+}
 
+func (s *Service) ListByMachine(ctx context.Context, userID, machineID string) ([]*SessionCacheEntry, error) {
+	tenantID := store.TenantIDFromContext(ctx)
 	out := make([]*SessionCacheEntry, 0)
 	s.cache.Range(func(_ string, entry *SessionCacheEntry) bool {
-		if entry.UserID == userID && entry.MachineID == machineID {
+		if entry.UserID == userID && entry.MachineID == machineID && store.NormalizeTenantID(entry.TenantID) == tenantID {
 			if terminalStatuses[strings.ToLower(entry.Summary.Status)] {
 				return true
 			}
@@ -526,6 +569,13 @@ func (s *Service) get(sessionID string) (*SessionCacheEntry, bool) {
 
 func (s *Service) set(sessionID string, entry *SessionCacheEntry) {
 	s.cache.Set(sessionID, entry)
+}
+
+func (s *Service) eventTenantID(sessionID string, ctx context.Context) string {
+	if entry, ok := s.get(sessionID); ok && strings.TrimSpace(entry.TenantID) != "" {
+		return store.NormalizeTenantID(entry.TenantID)
+	}
+	return store.TenantIDFromContext(ctx)
 }
 
 func cloneSessionCacheEntry(entry *SessionCacheEntry) *SessionCacheEntry {

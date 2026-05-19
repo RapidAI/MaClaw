@@ -130,7 +130,15 @@ func (s *Store) StaticMemorySectionForPrompt(opts StaticMemoryPromptOptions) str
 	}
 	var b strings.Builder
 	if opts.UserFacts != (UserFactSummaryPromptOptions{}) {
-		b.WriteString(s.UserFactSummaryForPrompt(opts.UserFacts))
+		facts := s.UserFactSummaryForPrompt(opts.UserFacts)
+		if facts != "" {
+			b.WriteString(facts)
+		} else if opts.UserFacts.Header != "" && (opts.IncludeRecallHint || opts.IncludeGuide) {
+			b.WriteString(opts.UserFacts.Header)
+			if !strings.HasSuffix(opts.UserFacts.Header, "\n") {
+				b.WriteByte('\n')
+			}
+		}
 	}
 
 	if opts.IncludeRecallHint {

@@ -1511,10 +1511,13 @@ func (p *Plugin) handleBindingFlow(userID, text string) bool {
 func (p *Plugin) handleEmailSubmit(userID, email string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tenantID := store.DefaultTenantID
 	email = strings.TrimSpace(strings.ToLower(email))
 
-	user, err := p.users.GetByTenantEmail(ctx, tenantID, email)
+	tenantID, user, err := im.ResolveUniqueTenantByEmail(ctx, p.users, email)
+	if err == im.ErrAmbiguousTenantEmail {
+		_ = p.sendMarkdown(userID, "该邮箱存在于多个租户，请联系租户管理员通过带租户的方式完成绑定。")
+		return
+	}
 	if err != nil || user == nil {
 		_ = p.sendMarkdown(userID,
 			fmt.Sprintf("❌ 未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
@@ -1647,6 +1650,35 @@ func (p *Plugin) GetBindings() map[string]string {
 		m[k] = v
 	}
 	return m
+}
+
+func (p *Plugin) GetTenantBindings(tenantID string) map[string]string {
+	tenantID = normalizeTenantID(tenantID)
+	p.bindMu.RLock()
+	defer p.bindMu.RUnlock()
+	m := make(map[string]string)
+	for k, raw := range p.bindings {
+		info := decodeBindingValue(raw)
+		if info.TenantID == tenantID {
+			m[k] = info.Email
+		}
+	}
+	return m
+}
+
+func (p *Plugin) RemoveTenantBinding(userID, tenantID string) bool {
+	tenantID = normalizeTenantID(tenantID)
+	p.bindMu.Lock()
+	raw, ok := p.bindings[userID]
+	removed := ok && decodeBindingValue(raw).TenantID == tenantID
+	if removed {
+		delete(p.bindings, userID)
+	}
+	p.bindMu.Unlock()
+	if removed {
+		p.saveBindings()
+	}
+	return removed
 }
 
 func (p *Plugin) BindTenantEmail(userID, tenantID, email string) {

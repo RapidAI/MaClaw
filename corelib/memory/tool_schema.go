@@ -13,15 +13,15 @@ type ToolDefinition struct {
 // agent frontends.
 func ToolDefinitionSchema() ToolDefinition {
 	return ToolDefinition{
-		Description: "Manage long-term memory with actions save, recall, candidates, themes, scenes, trace, list, and delete. Saves are governed; recall supports dynamic, hybrid, lightmem, adaptive, and auto modes.",
+		Description: "Manage long-term memory with actions save, recall, candidates, derived, derived_surgery, themes, scenes, trace, list, and delete. Saves are governed; recall defaults to auto and also supports dynamic, hybrid, lightmem, and adaptive modes.",
 		Required:    []string{"action"},
-		Tags:        []string{"memory", "save", "remember", "list", "search", "delete", "recall", "themes", "candidates", "scenes", "trace"},
+		Tags:        []string{"memory", "save", "remember", "list", "search", "delete", "recall", "themes", "candidates", "derived", "derived_surgery", "scenes", "trace"},
 		Properties: map[string]interface{}{
-			"action":         map[string]string{"type": "string", "description": "Action: save, recall, candidates, themes, scenes, trace, list, delete"},
+			"action":         map[string]string{"type": "string", "description": "Action: save, recall, candidates, derived, derived_surgery, themes, scenes, trace, list, delete"},
 			"query":          map[string]string{"type": "string", "description": "Search query for recall"},
 			"content":        map[string]string{"type": "string", "description": "Memory content for save"},
 			"category":       map[string]string{"type": "string", "description": "Category: user_fact, project_knowledge, preference, instruction"},
-			"mode":           map[string]string{"type": "string", "description": "Recall mode: dynamic, hybrid, lightmem, adaptive, auto"},
+			"mode":           map[string]string{"type": "string", "description": "Recall mode: auto (default), dynamic, hybrid, lightmem, adaptive"},
 			"debug":          map[string]string{"type": "boolean", "description": "Include recall trace and adaptive/lightmem plan when available"},
 			"stats":          map[string]string{"type": "boolean", "description": "Include theme health diagnostics for action=themes"},
 			"tags":           map[string]interface{}{"type": "array", "description": "Specific entity names for save/search anchors", "items": map[string]string{"type": "string"}},
@@ -35,7 +35,8 @@ func ToolDefinitionSchema() ToolDefinition {
 			"plan":           map[string]string{"type": "boolean", "description": "For action=themes, include a non-destructive maintenance plan"},
 			"action_limit":   map[string]string{"type": "integer", "description": "Maximum maintenance actions for action=themes"},
 			"apply":          map[string]string{"type": "boolean", "description": "For action=themes, apply safe maintenance actions"},
-			"id":             map[string]string{"type": "string", "description": "Memory ID for delete"},
+			"id":             map[string]string{"type": "string", "description": "Memory ID for delete or derived_surgery"},
+			"surgery":        map[string]string{"type": "string", "description": "For action=derived_surgery: supersede (default)"},
 		},
 	}
 }

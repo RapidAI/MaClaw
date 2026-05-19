@@ -105,7 +105,7 @@ func TestSessionCheckpointer_BuildResumePrompt(t *testing.T) {
 	if prompt == "" {
 		t.Fatal("BuildResumePrompt returned empty string")
 	}
-	if !strings.Contains(prompt, "上次会话进度") {
+	if !strings.Contains(prompt, "Previous Session Progress") {
 		t.Error("resume prompt should contain header")
 	}
 	if !strings.Contains(prompt, "添加用户注册功能") {

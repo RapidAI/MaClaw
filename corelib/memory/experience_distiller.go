@@ -345,7 +345,11 @@ func formatExperiencePromptEntry(index int, entry Entry, contentLimit int) strin
 		contentLimit *= 2
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[%d] %s\n", index, truncStr(entry.Content, contentLimit))
+	if entry.ID != "" {
+		fmt.Fprintf(&b, "[%d id=%s] %s\n", index, entry.ID, truncStr(entry.Content, contentLimit))
+	} else {
+		fmt.Fprintf(&b, "[%d] %s\n", index, truncStr(entry.Content, contentLimit))
+	}
 	if hint != "" {
 		fmt.Fprintf(&b, "    experience_protection: %s\n", hint)
 	}

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
@@ -87,6 +89,35 @@ func TestDebugListMachineEventsHandlerReturnsRecentEvents(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "machine_events_1") || !strings.Contains(body, `"type":"bind"`) {
 		t.Fatalf("unexpected body=%s", body)
+	}
+}
+
+func TestDebugListMachineEventsHandlerTenantAdminFiltersEvents(t *testing.T) {
+	deviceSvc := deviceOnlyTestService()
+	deviceSvc.BindDesktop("machine_tenant_a", &ws.ConnContext{TenantID: "tenant_a", UserID: "user_a", Role: "machine"})
+	deviceSvc.BindDesktop("machine_tenant_b", &ws.ConnContext{TenantID: "tenant_b", UserID: "user_b", Role: "machine"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/debug/machine-events", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rr := httptest.NewRecorder()
+
+	DebugListMachineEventsHandler(deviceSvc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Events []device.MachineEvent `json:"events"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Events) != 1 {
+		t.Fatalf("expected 1 tenant event, got %d: %s", len(body.Events), rr.Body.String())
+	}
+	if body.Events[0].TenantID != "tenant_a" || body.Events[0].MachineID != "machine_tenant_a" {
+		t.Fatalf("unexpected event: %+v", body.Events[0])
 	}
 }
 

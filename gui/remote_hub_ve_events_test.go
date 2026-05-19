@@ -262,3 +262,18 @@ func TestCachePushedVEDiscussionSnapshotCachesHubDetail(t *testing.T) {
 		t.Fatalf("cached discussion relation/readonly = %+v", cached.Discussion)
 	}
 }
+
+func TestShouldRouteVEDiscussionToLocalDispatcherSupportsSpeakRole(t *testing.T) {
+	if !shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
+		t.Fatal("speak role should route registered local sessions to the local dispatcher")
+	}
+	if !shouldRouteVEDiscussionToLocalDispatcher("executor", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
+		t.Fatal("executor role should remain supported for compatibility")
+	}
+	if shouldRouteVEDiscussionToLocalDispatcher("observe", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
+		t.Fatal("observe role must not route to the local dispatcher")
+	}
+	if shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: "hello"}) {
+		t.Fatal("stream chunks must not trigger a local dispatcher response")
+	}
+}

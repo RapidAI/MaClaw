@@ -38,6 +38,7 @@ const (
 	ItemStatusSkippedHidden    = "skipped_hidden"
 	ItemStatusSkippedType      = "skipped_unsupported_type"
 	ItemStatusSkippedSymlink   = "skipped_symlink"
+	ItemStatusSkippedExcluded  = "skipped_excluded"
 	ItemStatusFailed           = "failed"
 
 	SaveScopeSession   = "session"
@@ -542,9 +543,9 @@ type DirectoryImportResult struct {
 	FailedFiles    int          `json:"failed_files"`
 	ProcessedFiles int          `json:"processed_files,omitempty"`
 	CurrentFile    string       `json:"current_file,omitempty"`
-	CurrentStep    string       `json:"current_step,omitempty"`  // e.g. "parsing", "indexing", "distilling"
-	StepProgress   int          `json:"step_progress,omitempty"` // 0-100 within current file
-	TotalSteps     int          `json:"total_steps,omitempty"`   // total steps for current file (e.g. 5)
+	CurrentStep    string       `json:"current_step,omitempty"`     // e.g. "parsing", "indexing", "distilling"
+	StepProgress   int          `json:"step_progress,omitempty"`    // 0-100 within current file
+	TotalSteps     int          `json:"total_steps,omitempty"`      // total steps for current file (e.g. 5)
 	CurrentStepNum int          `json:"current_step_num,omitempty"` // which step (1-based)
 	EstimatedBytes int64        `json:"estimated_bytes"`
 	Warnings       []string     `json:"warnings,omitempty"`

@@ -19,8 +19,9 @@ func NewSQLiteAuditLogStore(db *sql.DB) *SQLiteAuditLogStore {
 // WriteLog persists an AuditLogEntry to the content_audit_logs table.
 func (s *SQLiteAuditLogStore) WriteLog(ctx context.Context, entry *AuditLogEntry) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO content_audit_logs (timestamp, user_id, platform, content_type, summary, return_code, duration_ms, message, content_hash)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO content_audit_logs (tenant_id, timestamp, user_id, platform, content_type, summary, return_code, duration_ms, message, content_hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		entry.TenantID,
 		entry.Timestamp,
 		entry.UserID,
 		entry.Platform,

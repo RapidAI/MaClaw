@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 )
 
@@ -31,9 +32,10 @@ func (s *instanceStore) Create(ctx context.Context, inst *workflow.WorkflowInsta
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workflow_instances (id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workflow_instances (id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.ID,
+		store.TenantIDFromContext(ctx),
 		inst.WorkflowID,
 		inst.VersionID,
 		string(inst.Status),
@@ -48,10 +50,11 @@ func (s *instanceStore) Create(ctx context.Context, inst *workflow.WorkflowInsta
 
 func (s *instanceStore) Get(ctx context.Context, id string) (*workflow.WorkflowInstance, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
+		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
 		 FROM workflow_instances
-		 WHERE id = ?`,
+		 WHERE id = ? AND tenant_id = ?`,
 		id,
+		store.TenantIDFromContext(ctx),
 	)
 	return scanWorkflowInstance(row)
 }
@@ -63,19 +66,21 @@ func (s *instanceStore) UpdateStatus(ctx context.Context, id string, status work
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_instances SET status = ?, completed_at = COALESCE(?, completed_at) WHERE id = ?`,
+		`UPDATE workflow_instances SET status = ?, completed_at = COALESCE(?, completed_at) WHERE id = ? AND tenant_id = ?`,
 		string(status),
 		completedAt,
 		id,
+		store.TenantIDFromContext(ctx),
 	)
 	return err
 }
 
 func (s *instanceStore) UpdateCurrentNode(ctx context.Context, id, nodeID string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_instances SET current_node_id = ? WHERE id = ?`,
+		`UPDATE workflow_instances SET current_node_id = ? WHERE id = ? AND tenant_id = ?`,
 		nodeID,
 		id,
+		store.TenantIDFromContext(ctx),
 	)
 	return err
 }
@@ -86,9 +91,10 @@ func (s *instanceStore) UpdateInstanceData(ctx context.Context, id string, data 
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE workflow_instances SET instance_data = ? WHERE id = ?`,
+		`UPDATE workflow_instances SET instance_data = ? WHERE id = ? AND tenant_id = ?`,
 		string(dataJSON),
 		id,
+		store.TenantIDFromContext(ctx),
 	)
 	return err
 }
@@ -131,12 +137,13 @@ func (s *instanceStore) UpdateNodeExecution(ctx context.Context, id string, stat
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE node_executions SET status = ?, result_json = ?, fail_reason = ?, completed_at = COALESCE(?, completed_at) WHERE id = ?`,
+		`UPDATE node_executions SET status = ?, result_json = ?, fail_reason = ?, completed_at = COALESCE(?, completed_at) WHERE id = ? AND instance_id IN (SELECT id FROM workflow_instances WHERE tenant_id = ?)`,
 		string(status),
 		resultJSON,
 		failReason,
 		completedAt,
 		id,
+		store.TenantIDFromContext(ctx),
 	)
 	return err
 }
@@ -145,14 +152,15 @@ func (s *instanceStore) GetPendingApprovals(ctx context.Context, approverID stri
 	// Query all pending node executions. The approverID filtering is done by
 	// the caller based on the workflow graph's approval node config (the
 	// approver info is stored in the workflow graph, not in node_executions).
-	// For now, return all pending nodes — the caller will filter by approver.
+	// For now, return all pending nodes -the caller will filter by approver.
 	_ = approverID // reserved for future use when approver info is denormalized
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, node_type, status, started_at, completed_at, result_json, fail_reason
-		 FROM node_executions
-		 WHERE status = 'running' AND node_type = 'approval'
-		 ORDER BY started_at ASC`,
+		`SELECT ne.id, ne.instance_id, ne.node_id, ne.node_type, ne.status, ne.started_at, ne.completed_at, ne.result_json, ne.fail_reason
+		 FROM node_executions ne INNER JOIN workflow_instances wi ON wi.id = ne.instance_id
+		 WHERE ne.status = 'running' AND ne.node_type = 'approval' AND wi.tenant_id = ?
+		 ORDER BY ne.started_at ASC`,
+		store.TenantIDFromContext(ctx),
 	)
 	if err != nil {
 		return nil, err
@@ -172,8 +180,8 @@ func (s *instanceStore) GetPendingApprovals(ctx context.Context, approverID stri
 
 func (s *instanceStore) QueryMyInitiated(ctx context.Context, userID string, filter workflow.DirectoryFilter) ([]workflow.DirectoryItem, int, error) {
 	filter.NormalizeFilter()
-	where := `json_extract(instance_data, '$.initiator_id') = ?`
-	args := []any{userID}
+	where := `tenant_id = ? AND json_extract(instance_data, '$.initiator_id') = ?`
+	args := []any{store.TenantIDFromContext(ctx), userID}
 	if filter.Status != "" {
 		where += ` AND status = ?`
 		args = append(args, filter.Status)
@@ -195,15 +203,15 @@ func (s *instanceStore) QueryMyInitiated(ctx context.Context, userID string, fil
 
 func (s *instanceStore) QueryPendingMyAction(ctx context.Context, userID string, filter workflow.DirectoryFilter) ([]workflow.DirectoryItem, int, error) {
 	filter.NormalizeFilter()
-	where := `status = ? AND json_extract(instance_data, '$.approver_id') = ?`
-	args := []any{string(workflow.InstanceRunning), userID}
+	where := `tenant_id = ? AND status = ? AND json_extract(instance_data, '$.approver_id') = ?`
+	args := []any{store.TenantIDFromContext(ctx), string(workflow.InstanceRunning), userID}
 	return s.queryDirectory(ctx, where, args, filter, `created_at ASC`, "approver")
 }
 
 func (s *instanceStore) QueryPendingMyConfirmation(ctx context.Context, userID string, filter workflow.DirectoryFilter) ([]workflow.DirectoryItem, int, error) {
 	filter.NormalizeFilter()
-	countQuery := `SELECT COUNT(*) FROM confirmations c INNER JOIN workflow_instances wi ON wi.id = c.instance_id WHERE c.status = ? AND c.recipient_id = ?`
-	args := []any{string(workflow.ConfirmPending), userID}
+	countQuery := `SELECT COUNT(*) FROM confirmations c INNER JOIN workflow_instances wi ON wi.id = c.instance_id WHERE wi.tenant_id = ? AND c.status = ? AND c.recipient_id = ?`
+	args := []any{store.TenantIDFromContext(ctx), string(workflow.ConfirmPending), userID}
 	var total int
 	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -214,7 +222,7 @@ func (s *instanceStore) QueryPendingMyConfirmation(ctx context.Context, userID s
 	offset := (filter.Page - 1) * filter.PageSize
 	rows, err := s.db.QueryContext(ctx, `SELECT c.type, c.timeout_hours, c.created_at, wi.id, wi.workflow_id, wi.status, wi.current_node_id, wi.instance_data, wi.created_at, wi.completed_at
 		FROM confirmations c INNER JOIN workflow_instances wi ON wi.id = c.instance_id
-		WHERE c.status = ? AND c.recipient_id = ?
+		WHERE wi.tenant_id = ? AND c.status = ? AND c.recipient_id = ?
 		ORDER BY c.created_at ASC LIMIT ? OFFSET ?`, append(args, filter.PageSize, offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -253,8 +261,8 @@ func (s *instanceStore) QueryPendingMyConfirmation(ctx context.Context, userID s
 
 func (s *instanceStore) QueryCompleted(ctx context.Context, userID string, filter workflow.DirectoryFilter) ([]workflow.DirectoryItem, int, error) {
 	filter.NormalizeFilter()
-	where := `(status IN (?, ?, ?, ?)) AND json_extract(instance_data, '$.initiator_id') = ?`
-	args := []any{string(workflow.InstanceCompleted), string(workflow.InstanceFailed), string(workflow.InstanceWithdrawn), string(workflow.InstanceCancelled), userID}
+	where := `tenant_id = ? AND (status IN (?, ?, ?, ?)) AND json_extract(instance_data, '$.initiator_id') = ?`
+	args := []any{store.TenantIDFromContext(ctx), string(workflow.InstanceCompleted), string(workflow.InstanceFailed), string(workflow.InstanceWithdrawn), string(workflow.InstanceCancelled), userID}
 	if filter.DateFrom != nil {
 		where += ` AND completed_at >= ?`
 		args = append(args, filter.DateFrom.Format(time.RFC3339))
@@ -391,6 +399,7 @@ func scanWorkflowInstance(row *sql.Row) (*workflow.WorkflowInstance, error) {
 
 	if err := row.Scan(
 		&inst.ID,
+		&inst.TenantID,
 		&inst.WorkflowID,
 		&inst.VersionID,
 		&status,

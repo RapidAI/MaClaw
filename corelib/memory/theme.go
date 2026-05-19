@@ -21,16 +21,19 @@ const (
 // entries. It is the xMemory-style layer above individual semantic/episodic
 // entries and below profile-level summaries.
 type ThemeNode struct {
-	ID           string    `json:"id"`
-	Summary      string    `json:"summary"`
-	Centroid     []float32 `json:"centroid,omitempty"`
-	EntryIDs     []string  `json:"entry_ids"`
-	MemberCount  int       `json:"member_count"`
-	Tags         []string  `json:"tags,omitempty"`
-	Neighbors    []string  `json:"neighbors,omitempty"`
-	NeighborSims []float64 `json:"neighbor_sims,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string          `json:"id"`
+	Summary      string          `json:"summary"`
+	Centroid     []float32       `json:"centroid,omitempty"`
+	EntryIDs     []string        `json:"entry_ids"`
+	MemberCount  int             `json:"member_count"`
+	Tags         []string        `json:"tags,omitempty"`
+	Neighbors    []string        `json:"neighbors,omitempty"`
+	NeighborSims []float64       `json:"neighbor_sims,omitempty"`
+	EvidenceIDs  []string        `json:"evidence_ids,omitempty"`
+	DerivedKind  string          `json:"derived_kind,omitempty"`
+	Boundary     *MemoryBoundary `json:"boundary,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 // ThemeHealth summarizes how well the theme layer covers active memory.
@@ -252,6 +255,10 @@ func (tm *ThemeManager) Rebuild(entries []Entry, llm LLMChatCaller) []ThemeNode 
 		themes[i].EntryIDs = uniqueSortedStrings(themes[i].EntryIDs)
 		themes[i].MemberCount = len(themes[i].EntryIDs)
 		themes[i].Tags = uniqueSortedStrings(themes[i].Tags)
+		themes[i].EvidenceIDs = append([]string(nil), themes[i].EntryIDs...)
+		themes[i].DerivedKind = "theme"
+		boundary := InferMemoryBoundary(themeEntries(themes[i].EntryIDs, entryByID))
+		themes[i].Boundary = &boundary
 		themes[i].Summary = tm.summarizeTheme(themes[i], entryByID, llm)
 	}
 	recomputeThemeNeighbors(themes, tm.neighborK)
@@ -269,6 +276,16 @@ func themeEntryAllowed(e Entry) bool {
 	default:
 		return true
 	}
+}
+
+func themeEntries(ids []string, entryByID map[string]Entry) []Entry {
+	entries := make([]Entry, 0, len(ids))
+	for _, id := range ids {
+		if entry, ok := entryByID[id]; ok {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }
 
 func themeEntryTags(e Entry) []string {

@@ -164,7 +164,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		key := route.HubID + "|" + tenantID + "|" + domain
 		seenDomainRoute[key] = struct{}{}
 		if isAdminDomainRoute(route) {
-			adminDomainRoutes[domain] = struct{}{}
+			adminDomainRoutes[domainTenantRouteKey(domain, tenantID)] = struct{}{}
 		}
 		snap.domainRoutes[domain] = append(snap.domainRoutes[domain], snapshotCandidate{hub: hub, tenantID: tenantID, routeDomain: domain, routePriority: route.Priority, rank: rankDomainRoute})
 	}
@@ -173,7 +173,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		legacyDomain := normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
 		if legacyDomain != "" {
 			key := hub.ID + "||" + legacyDomain
-			_, adminManaged := adminDomainRoutes[legacyDomain]
+			_, adminManaged := adminDomainRoutes[domainTenantRouteKey(legacyDomain, "")]
 			if _, ok := seenDomainRoute[key]; !ok && !adminManaged {
 				snap.domainRoutes[legacyDomain] = append(snap.domainRoutes[legacyDomain], snapshotCandidate{hub: hub, routeDomain: legacyDomain, routePriority: 100, rank: rankDomainRoute})
 			}
@@ -408,6 +408,11 @@ func (s *routeSnapshot) hasAdminUserRoute(email string) bool {
 func emailTenantRouteKey(email, tenantID string) string {
 	tenantID = strings.TrimSpace(tenantID)
 	return strings.TrimSpace(strings.ToLower(email)) + "\x00" + tenantID
+}
+
+func domainTenantRouteKey(domain, tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	return normalizeCorporateEmailDomain(domain) + "\x00" + tenantID
 }
 
 func (s *routeSnapshot) resolveAdminEmailPattern(pattern string) *ResolveResult {

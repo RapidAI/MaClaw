@@ -29,8 +29,8 @@ const (
 
 // AuditRequest is the JSON structure written to the audit program's stdin.
 type AuditRequest struct {
-	Type     string   `json:"type"`               // "text", "image", "file"
-	Content  string   `json:"content"`             // text content or base64 data
+	Type     string   `json:"type"`    // "text", "image", "file"
+	Content  string   `json:"content"` // text content or base64 data
 	UserID   string   `json:"user_id"`
 	Platform string   `json:"platform"`
 	Keywords []string `json:"keywords,omitempty"`
@@ -53,11 +53,12 @@ type AuditResult struct {
 // AuditLogEntry represents a single audit log record.
 type AuditLogEntry struct {
 	ID          int64
+	TenantID    string
 	Timestamp   time.Time
 	UserID      string
 	Platform    string
-	ContentType string        // "text", "image", "file"
-	Summary     string        // first 200 chars of text or filename
+	ContentType string // "text", "image", "file"
+	Summary     string // first 200 chars of text or filename
 	ReturnCode  int
 	Duration    time.Duration
 	Message     string // message from audit program
@@ -95,11 +96,11 @@ type ContentAuditor struct {
 	timeoutPolicy  string // "block" or "pass"
 	semaphore      chan struct{}
 	logStore       AuditLogStore
-	configProvider func() *ContentAuditDynamicConfig
+	configProvider func(context.Context) *ContentAuditDynamicConfig
 }
 
 // NewContentAuditor creates a new ContentAuditor.
-func NewContentAuditor(programPath string, timeoutSec int, timeoutPolicy string, logStore AuditLogStore, configProvider func() *ContentAuditDynamicConfig) *ContentAuditor {
+func NewContentAuditor(programPath string, timeoutSec int, timeoutPolicy string, logStore AuditLogStore, configProvider func(context.Context) *ContentAuditDynamicConfig) *ContentAuditor {
 	return &ContentAuditor{
 		programPath:    programPath,
 		timeoutSec:     timeoutSec,
@@ -108,6 +109,13 @@ func NewContentAuditor(programPath string, timeoutSec int, timeoutPolicy string,
 		logStore:       logStore,
 		configProvider: configProvider,
 	}
+}
+
+func (ca *ContentAuditor) dynamicConfig(ctx context.Context) *ContentAuditDynamicConfig {
+	if ca == nil || ca.configProvider == nil {
+		return nil
+	}
+	return ca.configProvider(ctx)
 }
 
 // auditContent calls the external audit program via stdin/stdout JSON protocol.
@@ -184,10 +192,8 @@ func (ca *ContentAuditor) Audit(ctx context.Context, userID, platform string, re
 	}
 
 	// Inject keywords from dynamic config.
-	if ca.configProvider != nil {
-		if dynCfg := ca.configProvider(); dynCfg != nil && len(dynCfg.Keywords) > 0 {
-			req.Keywords = dynCfg.Keywords
-		}
+	if dynCfg := ca.dynamicConfig(ctx); dynCfg != nil && len(dynCfg.Keywords) > 0 {
+		req.Keywords = dynCfg.Keywords
 	}
 
 	start := time.Now()
@@ -269,6 +275,7 @@ type DeliveryCallback func(ctx context.Context, resp *GenericResponse)
 // It sends the placeholder message immediately via deliverFn, then polls
 // the audit program until a final decision is reached.
 func (ca *ContentAuditor) StartDelayPolling(ctx context.Context, userID, platform string, originalResp *GenericResponse, deliverFn DeliveryCallback) {
+	dynCfg := ca.dynamicConfig(ctx)
 	go func() {
 		// Use a detached context so polling survives after sendResponse returns.
 		// Total budget: pollInterval * maxAttempts + margin.
@@ -283,10 +290,8 @@ func (ca *ContentAuditor) StartDelayPolling(ctx context.Context, userID, platfor
 			UserID:   userID,
 			Platform: platform,
 		}
-		if ca.configProvider != nil {
-			if dynCfg := ca.configProvider(); dynCfg != nil && len(dynCfg.Keywords) > 0 {
-				req.Keywords = dynCfg.Keywords
-			}
+		if dynCfg != nil && len(dynCfg.Keywords) > 0 {
+			req.Keywords = dynCfg.Keywords
 		}
 
 		for i := 0; i < delayPollMaxAttempts; i++ {
@@ -428,6 +433,7 @@ func (ca *ContentAuditor) writeAuditLog(ctx context.Context, userID, platform, c
 	}
 
 	entry := &AuditLogEntry{
+		TenantID:    TenantIDFromContext(ctx),
 		Timestamp:   time.Now(),
 		UserID:      userID,
 		Platform:    platform,

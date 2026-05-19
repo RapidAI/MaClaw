@@ -33,14 +33,15 @@ type DeepCrawlProgress struct {
 
 // DeepCrawlResult 抓取完成结果
 type DeepCrawlResult struct {
-	JobID      string                `json:"job_id"`
-	Status     string                `json:"status"`
-	TotalSaved int                   `json:"total_saved"`
-	Duplicates int                   `json:"duplicates"`
-	Failed     int                   `json:"failed"`
-	Skipped    int                   `json:"skipped"`
-	Items      []DeepCrawlItem       `json:"items,omitempty"`
-	ByDepth    []DeepCrawlDepthSummary `json:"by_depth,omitempty"`
+	JobID           string                  `json:"job_id"`
+	Status          string                  `json:"status"`
+	TotalDiscovered int                     `json:"total_discovered"`
+	TotalSaved      int                     `json:"total_saved"`
+	Duplicates      int                     `json:"duplicates"`
+	Failed          int                     `json:"failed"`
+	Skipped         int                     `json:"skipped"`
+	Items           []DeepCrawlItem         `json:"items,omitempty"`
+	ByDepth         []DeepCrawlDepthSummary `json:"by_depth,omitempty"`
 }
 
 // DeepCrawlItem 单个 URL 的抓取结果

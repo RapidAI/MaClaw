@@ -53,6 +53,7 @@ type Compressor struct {
 	lastResult            *CompressResult
 	lastError             string
 	experienceProtection  string
+	compressCount         int
 	consecutiveFailures   int  // circuit breaker: consecutive compress failures
 	circuitBreakerTripped bool // true when failures >= maxConsecutiveCompressFailures
 }
@@ -101,6 +102,14 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 	if mc.store == nil {
 		return nil, fmt.Errorf("memory store is nil")
 	}
+	mc.mu.Lock()
+	mc.compressCount++
+	mc.mu.Unlock()
+	defer func() {
+		mc.mu.Lock()
+		mc.compressCount--
+		mc.mu.Unlock()
+	}()
 
 	backupName, err := mc.createBackup()
 	if err != nil {
@@ -614,6 +623,13 @@ func (mc *Compressor) IsRunning() bool {
 	return mc.running
 }
 
+// IsCompressing returns whether a compression operation is currently in progress.
+func (mc *Compressor) IsCompressing() bool {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	return mc.compressCount > 0
+}
+
 // Status returns the current service status.
 func (mc *Compressor) Status() CompressorStatus {
 	mc.mu.Lock()
@@ -1010,7 +1026,12 @@ type backupFileInfo struct {
 	size    int64
 }
 
-const defaultMaxBackups = 20
+const (
+	// DefaultMaxBackups is the default number of memory backup files to keep.
+	DefaultMaxBackups = 20
+	// MinBackups is the minimum retention limit accepted by memory backup pruning.
+	MinBackups = 8
+)
 
 // ListBackups returns available backup snapshots.
 func (mc *Compressor) ListBackups() ([]BackupInfo, error) {
@@ -1042,14 +1063,14 @@ func (mc *Compressor) getMaxBackups() int {
 	if n > 0 {
 		return n
 	}
-	return defaultMaxBackups
+	return DefaultMaxBackups
 }
 
 // SetMaxBackups updates the backup retention limit and immediately prunes
 // any excess backup files.
 func (mc *Compressor) SetMaxBackups(n int) {
-	if n < 8 {
-		n = 8
+	if n < MinBackups {
+		n = MinBackups
 	}
 	mc.mu.Lock()
 	mc.maxBackups = n

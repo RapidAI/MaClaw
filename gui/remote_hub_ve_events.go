@@ -112,7 +112,7 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) {
 		// Check if this message originated from our own local agent
 		localMachineID := dispatcher.getLocalMachineID()
-		if localMachineID != "" && envelope.Message.FromID == localMachineID {
+		if localMachineID != "" && strings.EqualFold(strings.TrimSpace(envelope.Message.FromID), localMachineID) {
 			isOwnMessage = true
 		}
 	}
@@ -136,11 +136,8 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 				runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
 				runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
 			}
-		} else if strings.EqualFold(targetRole, "executor") {
-			// Route to local maclaw executor via GroupChatDispatcher
-			if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) {
-				dispatcher.HandleGroupMessage(sessionID, *envelope.Message, false)
-			}
+		} else if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) && shouldRouteVEDiscussionToLocalDispatcher(targetRole, *envelope.Message) {
+			dispatcher.HandleGroupMessage(sessionID, *envelope.Message, false)
 		} else if shouldDigitalEmployeeRespondToDiscussion(targetRole, envelope.Message.Kind) {
 			if handler := c.digitalEmployeeMessageHandler(); handler != nil {
 				handler.HandleGroupEnvelope(envelope)
@@ -148,6 +145,16 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 		}
 	}
 	runtime.EventsEmit(c.app.ctx, "ve-event", map[string]any{"type": msg.Type, "ts": msg.TS, "payload": envelope})
+}
+
+func shouldRouteVEDiscussionToLocalDispatcher(targetRole string, msg a2a.GroupDiscussionMessage) bool {
+	if !shouldExecutorRespond(msg) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(targetRole), "executor") {
+		return true
+	}
+	return shouldDigitalEmployeeRespondToDiscussion(targetRole, msg.Kind)
 }
 
 func buildVEDiscussionStreamEventPayload(envelope a2a.GroupEnvelope, sessionID string, content string) map[string]any {

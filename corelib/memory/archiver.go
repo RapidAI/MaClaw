@@ -23,7 +23,10 @@ type LLMSummarizer interface {
 }
 
 // Archiver extracts key information from expiring conversations and stores
-// them as long-term memories via Store.
+// them as summary memories via Store. It is a fallback/legacy summarization
+// path: OnlineExtractor is the primary fact-write path, and Archiver should
+// skip when online extraction has recently succeeded to avoid duplicate
+// derived memories.
 type Archiver struct {
 	store      *Store
 	summarizer LLMSummarizer
@@ -37,16 +40,26 @@ func NewArchiver(store *Store, summarizer LLMSummarizer) *Archiver {
 	}
 }
 
-// Archive analyses the conversation entries and stores a summary as a
-// long-term memory. Skips trivial conversations (< 4 entries) or when
-// the LLM is not configured.
+// Archive analyses the conversation entries and stores a summary memory. It
+// skips trivial conversations, unconfigured LLMs, and periods where the
+// OnlineExtractor has recently succeeded. Conversation summaries are legacy
+// context/fallback records, not first-class evidence for normal recall.
 func (a *Archiver) Archive(userID string, entries []ConversationEntry) error {
+	if a == nil || a.store == nil {
+		return nil
+	}
 	if len(entries) < 4 {
 		return nil
 	}
 
 	if a.summarizer == nil || !a.summarizer.IsConfigured() {
 		return nil
+	}
+
+	if a.store != nil {
+		if oe := a.store.OnlineExtractor(); oe != nil && oe.HasRecentSuccess(60*time.Minute) {
+			return nil
+		}
 	}
 
 	var convoBuilder strings.Builder
@@ -62,9 +75,7 @@ func (a *Archiver) Archive(userID string, entries []ConversationEntry) error {
 		return nil
 	}
 
-	prompt := "请从以下对话中提取关键信息，包括：用户偏好、决策结论、重要事实、任务进度（做了什么、还差什么）。" +
-		"请用简洁的中文列出要点，不要包含无关信息。如果对话中没有值得记录的信息，请回复「无」。\n\n" +
-		"对话内容：\n" + conversationText
+	prompt := "Extract key information from the following conversation, including user preferences, decisions, important facts, and task progress. Use concise Chinese bullet points. If there is nothing worth remembering, reply with only: NONE.\n\nConversation:\n" + conversationText
 
 	summary, err := a.summarizer.Summarize(prompt)
 	if err != nil {
@@ -72,7 +83,7 @@ func (a *Archiver) Archive(userID string, entries []ConversationEntry) error {
 	}
 
 	summary = strings.TrimSpace(summary)
-	if summary == "" {
+	if IsEmptyConversationSummary(summary) {
 		return nil
 	}
 
@@ -89,13 +100,14 @@ func (a *Archiver) Archive(userID string, entries []ConversationEntry) error {
 		tags = append(tags, entity)
 	}
 
-	entry := Entry{
-		Content:  summary,
-		Category: CategoryConversationSummary,
-		Tags:     tags,
-		OwnerID:  userID, // 多租户隔离：设置记忆所有者
-	}
-	return a.store.Save(entry)
+	_, err = a.store.UpsertConversationSummary(ConversationSummaryUpsertOptions{
+		Title:            "Conversation summary",
+		Content:          summary,
+		Tags:             tags,
+		IdentityTagCount: 3,
+		OwnerID:          userID,
+	})
+	return err
 }
 
 func formatEntryContent(content interface{}) string {

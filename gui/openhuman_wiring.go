@@ -4,6 +4,8 @@ package main
 // Each module has its own initialization and injection point.
 //
 // Modules wired here:
+// ToolMemory below is only a per-tool rule cache; durable memory remains in
+// corelib/memory.Store.
 // - A3: ModelRouter (corelib/llm) — per-task model routing
 // - A4: ToolMemory (corelib/tool) — per-tool persistent rules
 // - A5: SituationReport (corelib/agent) — context injection

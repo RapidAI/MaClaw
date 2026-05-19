@@ -264,23 +264,15 @@ func (r *AdaptiveRetry) persistFailureMemory(toolName string, category FailureCa
 		content = adaptiveRetryAppendPreservedReviewAudit(content, existing[0].Content)
 	}
 	tags := adaptiveRetryMemoryTags(toolName, categoryText, count, decision, r.disabledTools[toolName], existingTags)
-	if len(existing) > 0 {
-		if err := r.memoryStore.Update(entryID, content, memory.CategoryProjectKnowledge, tags); err != nil {
-			log.Printf("[adaptive-retry] failed to update retry memory %s: %v", entryID, err)
-		}
-		return
-	}
-	entry := memory.Entry{
+	if _, err := r.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
 		ID:         entryID,
 		Title:      "Adaptive retry: " + toolName + " / " + categoryText,
 		Content:    content,
-		Category:   memory.CategoryProjectKnowledge,
 		Tags:       tags,
 		SourceType: string(experienceTraceSourceToolUsage),
 		SourceURL:  "experience://adaptive_retry/" + adaptiveRetrySafeID(toolName) + "/" + adaptiveRetrySafeID(categoryText),
-	}
-	if err := r.memoryStore.Save(entry); err != nil {
-		log.Printf("[adaptive-retry] failed to save retry memory %s: %v", entryID, err)
+	}); err != nil {
+		log.Printf("[adaptive-retry] failed to upsert retry memory %s: %v", entryID, err)
 	}
 }
 

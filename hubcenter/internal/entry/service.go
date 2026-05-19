@@ -120,7 +120,7 @@ func (s *Service) RoutingDiagnostics(ctx context.Context) (RoutingDiagnostics, e
 		if domain == "" {
 			continue
 		}
-		enabledRoutesByHubDomain[route.HubID+"|"+domain] = struct{}{}
+		enabledRoutesByHubDomain[route.HubID+"|"+strings.TrimSpace(route.TenantID)+"|"+domain] = struct{}{}
 		diagnostics.Hubs.EnabledDomainRoutes++
 	}
 
@@ -146,7 +146,7 @@ func (s *Service) RoutingDiagnostics(ctx context.Context) (RoutingDiagnostics, e
 			continue
 		}
 		diagnostics.Hubs.LegacyDomainHubs++
-		if _, ok := enabledRoutesByHubDomain[hub.ID+"|"+legacyDomain]; !ok {
+		if _, ok := enabledRoutesByHubDomain[hub.ID+"||"+legacyDomain]; !ok {
 			diagnostics.Migration.LegacyDomainBackfillPending++
 		}
 	}

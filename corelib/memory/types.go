@@ -259,6 +259,20 @@ type ConsolidationResult struct {
 	Duration       string        `json:"duration,omitempty"`
 }
 
+// MemoryBoundary records where a derived memory is valid. It keeps schema-like
+// memories from silently applying across unrelated projects, workflows, owners,
+// or time windows. Empty fields mean the boundary is unknown, not universal.
+type MemoryBoundary struct {
+	ProjectPath string     `json:"project_path,omitempty"`
+	OwnerID     string     `json:"owner_id,omitempty"`
+	TaskType    string     `json:"task_type,omitempty"`
+	Workflow    string     `json:"workflow,omitempty"`
+	Toolchain   string     `json:"toolchain,omitempty"`
+	SourceScope string     `json:"source_scope,omitempty"`
+	Since       *time.Time `json:"since,omitempty"`
+	Until       *time.Time `json:"until,omitempty"`
+}
+
 // Entry represents a single memory record.
 type Entry struct {
 	ID      string `json:"id"`
@@ -287,6 +301,16 @@ type Entry struct {
 	Pinned bool `json:"pinned,omitempty"`
 	// --- Compact form for context injection ---
 	CompactForm string `json:"compact_form,omitempty"`
+	// --- Evidence-first derived memory metadata ---
+	// EvidenceIDs points to raw episodic/source entries supporting this derived memory.
+	// It is intentionally separate from RelatedIDs: evidence is provenance, while
+	// related IDs are graph/navigation hints.
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	// DerivedKind identifies generated views such as schema:recurring, schema:insight,
+	// profile, theme, or summary. Empty means this is a raw/evidence entry.
+	DerivedKind string `json:"derived_kind,omitempty"`
+	// Boundary records the context where a derived memory is expected to hold.
+	Boundary *MemoryBoundary `json:"boundary,omitempty"`
 	// --- Temporal memory tree metadata ---
 	Level    TemporalLevel `json:"level,omitempty"`
 	Interval *TimeInterval `json:"interval,omitempty"`
@@ -382,7 +406,9 @@ type DreamCycleResult struct {
 	TagsBackfilled   int `json:"tags_backfilled"`
 }
 
-// SearchMode controls which retrieval strategy to use.
+// SearchMode controls the legacy low-level search selector. User-facing recall
+// should normally use RecallByMode("auto"), which chooses RecallDynamic or
+// RecallAdaptiveHier based on query complexity.
 type SearchMode int
 
 const (

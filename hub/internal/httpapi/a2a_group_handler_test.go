@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
@@ -18,6 +19,19 @@ func groupReq(method, target, body string) *http.Request {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	return req
+}
+
+func TestRequestGroupDiscussionTenantIDUsesMachineHeaderAndDefaultTenant(t *testing.T) {
+	defaultReq := httptest.NewRequest(http.MethodGet, "/api/a2a/experts", nil)
+	if got := requestGroupDiscussionTenantID(defaultReq); got != store.DefaultTenantID {
+		t.Fatalf("default tenant = %q, want %q", got, store.DefaultTenantID)
+	}
+
+	tenantReq := httptest.NewRequest(http.MethodGet, "/api/a2a/experts", nil)
+	tenantReq.Header.Set("X-Hub-Tenant-ID", "tenant_acme")
+	if got := requestGroupDiscussionTenantID(tenantReq); got != "tenant_acme" {
+		t.Fatalf("header tenant = %q, want tenant_acme", got)
+	}
 }
 
 type captureGroupDiscussionSender struct {
@@ -761,6 +775,155 @@ func TestGroupDiscussionActiveExpertWindow(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionMessageHonorsTargetIDs(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"targeted","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+
+	for _, toID := range []string{"maclaw-b", "maclaw-c"} {
+		if _, err := svc.AddInvitation("tenant-a", created.Discussion.ID, corea2a.GroupInvitation{FromID: "maclaw-a", ToID: toID, Role: corea2a.GroupRoleSpeak}); err != nil {
+			t.Fatalf("AddInvitation %s: %v", toID, err)
+		}
+		invites := svc.ListInvitations("tenant-a", toID, "pending")
+		if len(invites) != 1 {
+			t.Fatalf("pending invites for %s = %+v", toID, invites)
+		}
+		if err := svc.RespondInvitation("tenant-a", invites[0].ID, corea2a.GroupInvitationResponse{FromID: toID, Decision: corea2a.GroupInvitationAccept}); err != nil {
+			t.Fatalf("RespondInvitation %s: %v", toID, err)
+		}
+	}
+
+	sender.messages = nil
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-a","to_ids":["maclaw-c"],"content":"Only C should see this."}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 1 || sender.messages[0].machineID != "maclaw-c" {
+		t.Fatalf("sent messages = %+v, want only maclaw-c", sender.messages)
+	}
+
+	detail, err := svc.GetDiscussionDetail("tenant-a", created.Discussion.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	last := detail.Session.Messages[len(detail.Session.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "maclaw-c" {
+		t.Fatalf("persisted to_ids = %v, want [maclaw-c]", last.ToIDs)
+	}
+}
+
+func TestGroupDiscussionMessageRejectsUnknownTargetID(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"targeted","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-a","to_ids":["missing-ve"],"content":"Only missing should see this."}`))
+	if w.Code == http.StatusOK {
+		t.Fatalf("message status=%d body=%s, want failure", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 0 {
+		t.Fatalf("sent messages = %+v, want none", sender.messages)
+	}
+}
+
+func TestGroupDiscussionMessageRejectsBlankTargetIDs(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"targeted","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-a","to_ids":[" ",""],"content":"Do not broadcast this."}`))
+	if w.Code == http.StatusOK {
+		t.Fatalf("message status=%d body=%s, want failure", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 0 {
+		t.Fatalf("sent messages = %+v, want none", sender.messages)
+	}
+}
+
+func TestGroupDiscussionMessageNormalizesTargetIDs(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"targeted","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+	if _, err := svc.AddInvitation("tenant-a", created.Discussion.ID, corea2a.GroupInvitation{FromID: "maclaw-a", ToID: "Maclaw-C", Role: corea2a.GroupRoleSpeak}); err != nil {
+		t.Fatalf("AddInvitation: %v", err)
+	}
+	invites := svc.ListInvitations("tenant-a", "Maclaw-C", "pending")
+	if len(invites) != 1 {
+		t.Fatalf("pending invites = %+v", invites)
+	}
+	if err := svc.RespondInvitation("tenant-a", invites[0].ID, corea2a.GroupInvitationResponse{FromID: "maclaw-c", Decision: corea2a.GroupInvitationAccept}); err != nil {
+		t.Fatalf("RespondInvitation: %v", err)
+	}
+
+	sender.messages = nil
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-a","to_ids":["maclaw-c","MACLAW-C"],"content":"Only C should see this."}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 1 || sender.messages[0].machineID != "maclaw-c" {
+		t.Fatalf("sent messages = %+v, want only maclaw-c", sender.messages)
+	}
+	detail, err := svc.GetDiscussionDetail("tenant-a", created.Discussion.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	last := detail.Session.Messages[len(detail.Session.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "maclaw-c" {
+		t.Fatalf("persisted to_ids = %v, want [maclaw-c]", last.ToIDs)
+	}
+}
 func TestGroupDiscussionListPagination(t *testing.T) {
 	svc := NewGroupDiscussionService()
 	first, err := svc.CreateConsultation("tenant-a", corea2a.GroupConsultationRequest{FromID: "maclaw-a", Topic: "first", Question: "First?"})
@@ -789,6 +952,61 @@ func TestGroupDiscussionListPagination(t *testing.T) {
 	invites := svc.ListInvitations("tenant-a", "", "", ListInvitationsFilter{ToID: "maclaw-b", Status: "pending", Limit: 1, Offset: 1})
 	if len(invites) != 1 || invites[0].ID != inviteOne {
 		t.Fatalf("expected second invite page to contain first invite, got %+v", invites)
+	}
+}
+
+func TestAddParticipantIfMissingUpdatesExistingParticipantCaseInsensitive(t *testing.T) {
+	session := &corea2a.Session{
+		Participants: []corea2a.Participant{{ID: "MACHINE-1"}},
+	}
+
+	addParticipantIfMissing(session, corea2a.Participant{ID: "machine-1", RoleCode: "speak", Name: "Local AI", Skills: []string{"tools"}})
+
+	if len(session.Participants) != 1 {
+		t.Fatalf("participants = %+v, want one updated participant", session.Participants)
+	}
+	participant := session.Participants[0]
+	if participant.ID != "MACHINE-1" || participant.RoleCode != "speak" || participant.Name != "Local AI" || len(participant.Skills) != 1 || participant.Skills[0] != "tools" {
+		t.Fatalf("participant = %+v, want existing id with updated metadata", participant)
+	}
+}
+
+func TestAddParticipantIfMissingPreservesExistingRole(t *testing.T) {
+	session := &corea2a.Session{
+		Participants: []corea2a.Participant{{ID: "machine-1", RoleCode: "initiator"}},
+	}
+
+	addParticipantIfMissing(session, corea2a.Participant{ID: "MACHINE-1", RoleCode: "speak"})
+
+	if len(session.Participants) != 1 {
+		t.Fatalf("participants = %+v, want one participant", session.Participants)
+	}
+	if got := session.Participants[0].RoleCode; got != "initiator" {
+		t.Fatalf("role = %q, want initiator", got)
+	}
+}
+
+func TestAddParticipantIfMissingUpgradesReadOnlyRole(t *testing.T) {
+	session := &corea2a.Session{
+		Participants: []corea2a.Participant{{ID: "machine-1", RoleCode: "observe"}},
+	}
+
+	addParticipantIfMissing(session, corea2a.Participant{ID: "MACHINE-1", RoleCode: "speak"})
+
+	if len(session.Participants) != 1 {
+		t.Fatalf("participants = %+v, want one participant", session.Participants)
+	}
+	if got := session.Participants[0].RoleCode; got != "speak" {
+		t.Fatalf("role = %q, want speak", got)
+	}
+}
+
+func TestGroupDiscussionParticipantCanMessageAllowsLegacyExecutorRole(t *testing.T) {
+	if !groupDiscussionParticipantCanMessage("executor") {
+		t.Fatal("legacy executor participants should remain writable")
+	}
+	if groupDiscussionParticipantCanMessage("observe") {
+		t.Fatal("observe participants should remain read-only")
 	}
 }
 
@@ -840,6 +1058,36 @@ func TestGroupDiscussionServicePersistsAcrossRestart(t *testing.T) {
 	}
 	if len(mine) != 1 || mine[0].ID != created.Discussion.ID {
 		t.Fatalf("restored mine = %+v", mine)
+	}
+}
+
+func TestGroupDiscussionReadinessIgnoresSelfTargetedRoutingCopies(t *testing.T) {
+	now := time.Now().UTC()
+	session := &corea2a.Session{
+		ID:        "disc-self-target",
+		Topic:     "Local AI routing",
+		Goal:      "Ask local AI only",
+		Status:    corea2a.SessionOpen,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Participants: []corea2a.Participant{
+			{ID: "human-1", RoleCode: "initiator"},
+			{ID: "machine-1", RoleCode: "speak"},
+		},
+		Messages: []corea2a.Message{
+			{ID: "m1", SessionID: "disc-self-target", FromID: "machine-1", ToIDs: []string{"machine-1"}, Kind: corea2a.MessageStatement, Content: "@local-maclaw summarize this locally.", CreatedAt: now},
+		},
+	}
+
+	summary := discussionSummaryFromSession(session)
+	if summary.AnswerCount != 0 || summary.ExpectedAnswerCount != 1 || summary.ReadyToSummarize {
+		t.Fatalf("summary with self-targeted routing copy = %+v", summary)
+	}
+
+	session.Messages = append(session.Messages, corea2a.Message{ID: "m2", SessionID: "disc-self-target", FromID: "machine-1", Kind: corea2a.MessageStatement, Content: "Local summary is ready.", CreatedAt: now})
+	summary = discussionSummaryFromSession(session)
+	if summary.AnswerCount != 1 || !summary.ReadyToSummarize {
+		t.Fatalf("summary with local AI answer = %+v", summary)
 	}
 }
 

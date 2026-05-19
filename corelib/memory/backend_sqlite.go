@@ -615,6 +615,9 @@ type entryExtra struct {
 	ValidAt      *time.Time        `json:"valid_at,omitempty"`
 	InvalidAt    *time.Time        `json:"invalid_at,omitempty"`
 	Stability    *StabilityMeta    `json:"stability_meta,omitempty"`
+	EvidenceIDs  []string          `json:"evidence_ids,omitempty"`
+	DerivedKind  string            `json:"derived_kind,omitempty"`
+	Boundary     *MemoryBoundary   `json:"boundary,omitempty"`
 	// Note: Status is NOT stored here — it's derived from the dormant/superseded columns.
 }
 
@@ -629,6 +632,9 @@ func marshalExtra(e *Entry) []byte {
 		ValidAt:      e.ValidAt,
 		InvalidAt:    e.InvalidAt,
 		Stability:    e.Stability,
+		EvidenceIDs:  e.EvidenceIDs,
+		DerivedKind:  e.DerivedKind,
+		Boundary:     e.Boundary,
 	}
 	data, _ := json.Marshal(ex)
 	return data
@@ -651,6 +657,9 @@ func unmarshalExtra(e *Entry, data string) {
 	e.ValidAt = ex.ValidAt
 	e.InvalidAt = ex.InvalidAt
 	e.Stability = ex.Stability
+	e.EvidenceIDs = ex.EvidenceIDs
+	e.DerivedKind = ex.DerivedKind
+	e.Boundary = ex.Boundary
 }
 
 // --- Utility ---

@@ -26,6 +26,74 @@ const (
 	StoreModeAuto StoreMode = ""
 )
 
+// DataDirStoreDir returns the canonical long-term memory directory under a
+// host data directory. GUI, TUI, and MaClawSrv should use this helper instead
+// of spelling their own "memory" subdirectory convention.
+func DataDirStoreDir(dataDir string) string {
+	return filepath.Join(dataDir, "memory")
+}
+
+// OpenDataDirStore opens the canonical memory store for a host data directory.
+// Optional legacy JSON paths are seeded into the canonical store when no shared
+// store exists yet.
+func OpenDataDirStore(dataDir string, mode StoreMode, legacyJSONPaths ...string) (*Store, error) {
+	dir := DataDirStoreDir(dataDir)
+	legacyJSONPaths = append([]string{filepath.Join(dataDir, "memories.json")}, legacyJSONPaths...)
+	if err := prepareDataDirStoreDir(dataDir, dir, mode); err != nil {
+		return nil, err
+	}
+	return NewStoreWithModeAndLegacyJSON(dir, mode, legacyJSONPaths...)
+}
+
+func prepareDataDirStoreDir(dataDir, dir string, mode StoreMode) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("memory: mkdir %s: %w", dir, err)
+	}
+	if mode == StoreModeJSON || canonicalStoreExists(dir) {
+		return nil
+	}
+	return copyLegacySQLiteStore(dataDir, dir)
+}
+
+func canonicalStoreExists(dir string) bool {
+	for _, name := range []string{"memory.db", "memories.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func copyLegacySQLiteStore(dataDir, dir string) error {
+	legacyDB := filepath.Join(dataDir, "memory.db")
+	if _, err := os.Stat(legacyDB); err != nil {
+		return nil
+	}
+	if err := copyFileIfExists(legacyDB, filepath.Join(dir, "memory.db")); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := copyFileIfExists(legacyDB+suffix, filepath.Join(dir, "memory.db"+suffix)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyFileIfExists(src, dst string) error {
+	in, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("memory: read legacy store %s: %w", src, err)
+	}
+	if err := os.WriteFile(dst, in, 0o644); err != nil {
+		return fmt.Errorf("memory: copy legacy store %s to %s: %w", src, dst, err)
+	}
+	return nil
+}
+
 // NewStoreWithMode creates a Store with the specified backend mode.
 // For SQLite mode, the DB file is placed at {dir}/memory.db and sync is enabled.
 // For JSON mode, the file is placed at {dir}/memories.json (legacy behavior).
@@ -42,7 +110,25 @@ func NewStoreWithMode(dir string, mode StoreMode) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("memory: mkdir %s: %w", dir, err)
 	}
+	return newStoreWithPreparedDir(dir, mode)
+}
 
+// NewStoreWithModeAndLegacyJSON opens a managed memory store while seeding the
+// canonical store directory from older JSON filenames when needed. This keeps
+// host adapters such as GUI, TUI, and MaClawSrv on the same corelib StoreFactory
+// without losing records written before the shared {dir}/memories.json or
+// {dir}/memory.db layouts.
+func NewStoreWithModeAndLegacyJSON(dir string, mode StoreMode, legacyJSONPaths ...string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("memory: mkdir %s: %w", dir, err)
+	}
+	if err := seedCanonicalJSONFromLegacy(dir, legacyJSONPaths...); err != nil {
+		return nil, err
+	}
+	return newStoreWithPreparedDir(dir, mode)
+}
+
+func newStoreWithPreparedDir(dir string, mode StoreMode) (*Store, error) {
 	resolvedMode := resolveMode(dir, mode)
 
 	switch resolvedMode {
@@ -51,6 +137,39 @@ func NewStoreWithMode(dir string, mode StoreMode) (*Store, error) {
 	default:
 		return newJSONStore(dir)
 	}
+}
+
+func seedCanonicalJSONFromLegacy(dir string, legacyJSONPaths ...string) error {
+	if len(legacyJSONPaths) == 0 {
+		return nil
+	}
+	jsonPath := filepath.Join(dir, "memories.json")
+	if _, err := os.Stat(jsonPath); err == nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, "memory.db")); err == nil {
+		return nil
+	}
+	targetClean := filepath.Clean(jsonPath)
+	for _, legacyPath := range legacyJSONPaths {
+		legacyPath = filepath.Clean(legacyPath)
+		if legacyPath == "" || legacyPath == "." || legacyPath == targetClean {
+			continue
+		}
+		entries, err := loadLegacyJSON(legacyPath)
+		if err != nil || len(entries) == 0 {
+			continue
+		}
+		data, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			return fmt.Errorf("memory: marshal legacy json %s: %w", legacyPath, err)
+		}
+		if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
+			return fmt.Errorf("memory: seed canonical json from %s: %w", legacyPath, err)
+		}
+		return nil
+	}
+	return nil
 }
 
 func resolveMode(dir string, mode StoreMode) StoreMode {

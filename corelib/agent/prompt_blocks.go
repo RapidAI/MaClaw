@@ -42,7 +42,7 @@ const PromptKnowledgeBaseRules = `
 - 回答优先级：当用户提问且「知识库参考（自动检索）」section 中有相关内容时，**必须优先使用知识库内容回答**，并标注"根据知识库中的资料"。绝不要忽略知识库内容而直接用训练数据回答。
 - 主动深入检索：如果自动检索的片段不够详细或需要更精确的查询，可主动调用 knowledge_search 或 knowledge_context_pack 工具深入检索知识库。knowledge_search 执行全文搜索返回排名结果；knowledge_context_pack 构建带引用的上下文包，适合需要多源综合的复杂问题。
 - 来源透明：回答中明确区分哪些信息来自知识库、哪些来自记忆、哪些来自网络搜索、哪些来自模型训练数据。用户有权知道信息的可靠程度。
-- 写入限制：仅当用户明确要求保存信息到知识库时（如"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"等），才调用 knowledge_save_text 或 knowledge_save_url。公共网页用 knowledge_save_url；纯文本/笔记用 knowledge_save_text。
+- 写入限制：仅当用户明确要求保存信息到知识库时（如"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"导入这份文档/目录"等），才调用知识库写入或导入工具。公共网页用 knowledge_save_url；纯文本/笔记用 knowledge_save_text；本地文件用 knowledge_import_files；本地目录用 knowledge_import_directory。
 - 不要因为用户只是让你"看看这个链接/总结这个文件/搜索资料"就自动写入知识库；除非用户明确表达保存、记住、录入、归档或以后复用的意图。
 `
 

@@ -66,30 +66,19 @@ func upsertGroupDiscussionMemory(store *memory.Store, content string, tags []str
 	if identityCount <= 0 || identityCount > len(tags) {
 		identityCount = len(tags)
 	}
-	allEntries := store.List(memory.CategoryProjectKnowledge, "")
-	for _, entry := range allEntries {
-		if !hasAllTags(entry.Tags, tags[:identityCount]...) {
-			continue
-		}
-		if strings.TrimSpace(entry.Content) == content {
-			store.TouchAccess([]string{entry.ID})
-			return false, false
-		}
-		_ = store.Update(entry.ID, content, memory.CategoryProjectKnowledge, resetExperienceReviewTagsForChangedContent(entry.Tags, tags))
-		return false, true
-	}
-	entry := memory.Entry{
-		Title:      strings.TrimSpace(title),
-		Content:    content,
-		Category:   memory.CategoryProjectKnowledge,
-		Tags:       tags,
-		SourceType: groupDiscussionMemorySourceType,
-		SourceURL:  groupDiscussionSourceURL(tags),
-	}
-	if err := store.Save(entry); err != nil {
+	result, err := store.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+		Title:             title,
+		Content:           content,
+		Tags:              tags,
+		IdentityTagCount:  identityCount,
+		SourceType:        groupDiscussionMemorySourceType,
+		SourceURL:         groupDiscussionSourceURL(tags),
+		MergeExistingTags: resetExperienceReviewTagsForChangedContent,
+	})
+	if err != nil {
 		return false, false
 	}
-	return true, false
+	return result.Created, result.Updated
 }
 
 func groupDiscussionMemoryIdentityTagCount(tags []string) int {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,12 +14,18 @@ import (
 )
 
 // KnowledgeStore is the interface required by the agent executor for knowledge operations.
-// Satisfied by *knowledge.SQLiteStore.
+// It stores cited documents/cards/facts for retrieval, not Maclaw long-term memory;
+// durable user/agent memories, recall, audit, and surgery are owned by
+// corelib/memory.Store. Satisfied by *knowledge.SQLiteStore.
 type KnowledgeStore interface {
 	Search(ctx context.Context, opts knowledge.SearchOptions) ([]knowledge.SearchResult, error)
 	ContextPack(ctx context.Context, opts knowledge.ContextPackOptions) (knowledge.ContextPackResult, error)
 	SaveURL(ctx context.Context, req knowledge.URLSaveRequest) (knowledge.Source, error)
 	SaveText(ctx context.Context, req knowledge.TextSaveRequest) (knowledge.Source, error)
+	ScanDirectory(ctx context.Context, req knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error)
+	ScanFiles(ctx context.Context, req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error)
+	ImportDirectory(ctx context.Context, req knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error)
+	ImportFiles(ctx context.Context, req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error)
 	Stats(ctx context.Context) (knowledge.Stats, error)
 }
 
@@ -38,6 +45,12 @@ const knowledgeAutoRecallScoreThreshold = 0.3
 
 // appendKnowledgeAutoRecall searches the knowledge base and injects relevant
 // results into the system prompt. Mirrors gui/im_knowledge_auto_recall.go logic.
+func (c *coreAgentCallbacks) parentContext() context.Context {
+	if c != nil && c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
 func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string) {
 	if c.knowledgeStore == nil || userMsg == "" {
 		return
@@ -49,7 +62,7 @@ func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userM
 		query = string(runes[:knowledgeAutoRecallMaxQueryRunes])
 	}
 
-	ctx, cancel := context.WithTimeout(c.ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(c.parentContext(), 3*time.Second)
 	defer cancel()
 
 	results, err := c.knowledgeStore.Search(ctx, knowledge.SearchOptions{
@@ -145,7 +158,7 @@ func (c *coreAgentCallbacks) executeKnowledgeSearch(args map[string]interface{})
 		return "Error: knowledge base is not configured"
 	}
 	opts := buildSearchOptions(args, c.principal.TenantID, c.principal.UserID)
-	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.parentContext(), 10*time.Second)
 	defer cancel()
 
 	results, err := c.knowledgeStore.Search(ctx, opts)
@@ -166,7 +179,7 @@ func (c *coreAgentCallbacks) executeKnowledgeContextPack(args map[string]interfa
 	maxItems := intArg(args, "max_items", 10)
 	maxChars := intArg(args, "max_chars", 4000)
 
-	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.parentContext(), 10*time.Second)
 	defer cancel()
 
 	result, err := c.knowledgeStore.ContextPack(ctx, knowledge.ContextPackOptions{
@@ -203,7 +216,7 @@ func (c *coreAgentCallbacks) executeKnowledgeSaveURL(args map[string]interface{}
 	title := stringArg(args, "title")
 	topicHint := stringArg(args, "topic_hint")
 
-	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(c.parentContext(), 30*time.Second)
 	defer cancel()
 
 	source, err := c.knowledgeStore.SaveURL(ctx, knowledge.URLSaveRequest{
@@ -240,7 +253,7 @@ func (c *coreAgentCallbacks) executeKnowledgeSaveText(args map[string]interface{
 	title := stringArg(args, "title")
 	topicHint := stringArg(args, "topic_hint")
 
-	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.parentContext(), 10*time.Second)
 	defer cancel()
 
 	source, err := c.knowledgeStore.SaveText(ctx, knowledge.TextSaveRequest{
@@ -258,6 +271,215 @@ func (c *coreAgentCallbacks) executeKnowledgeSaveText(args map[string]interface{
 		result += fmt.Sprintf(", Title: %s", source.Title)
 	}
 	return result
+}
+
+func (c *coreAgentCallbacks) executeKnowledgeImportDirectory(args map[string]interface{}) string {
+	if c.knowledgeStore == nil {
+		return "Error: knowledge base is not configured"
+	}
+	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID)
+	if req.RootPath == "" {
+		return "Error: root_path parameter is required"
+	}
+	action, err := knowledgeImportAction(args)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	rootPath, err := c.resolveKnowledgeImportPath(req.RootPath)
+	if err != nil {
+		return fmt.Sprintf("Error: knowledge import path rejected: %v", err)
+	}
+	req.RootPath = rootPath
+
+	ctx, cancel := context.WithTimeout(c.parentContext(), 5*time.Minute)
+	defer cancel()
+
+	var result knowledge.DirectoryImportResult
+	if action == "scan" {
+		result, err = c.knowledgeStore.ScanDirectory(ctx, req)
+	} else {
+		result, err = c.knowledgeStore.ImportDirectory(ctx, req)
+	}
+	if err != nil {
+		return fmt.Sprintf("Error: knowledge directory import failed: %v", err)
+	}
+	return formatDirectoryImportResult("Directory", result)
+}
+
+func (c *coreAgentCallbacks) executeKnowledgeImportFiles(args map[string]interface{}) string {
+	if c.knowledgeStore == nil {
+		return "Error: knowledge base is not configured"
+	}
+	filePaths := toFilePathSlice(args["file_paths"])
+	if len(filePaths) == 0 {
+		filePaths = toFilePathSlice(args["paths"])
+	}
+	if len(filePaths) == 0 {
+		return "Error: file_paths parameter is required"
+	}
+	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID)
+	action, err := knowledgeImportAction(args)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	resolvedPaths, err := c.resolveKnowledgeImportPaths(filePaths)
+	if err != nil {
+		return fmt.Sprintf("Error: knowledge import path rejected: %v", err)
+	}
+	filePaths = resolvedPaths
+	if req.RootPath != "" {
+		rootPath, err := c.resolveKnowledgeImportPath(req.RootPath)
+		if err != nil {
+			return fmt.Sprintf("Error: knowledge import root_path rejected: %v", err)
+		}
+		req.RootPath = rootPath
+	} else {
+		rootPath, err := c.resolveKnowledgeWorkspaceRoot()
+		if err != nil {
+			return fmt.Sprintf("Error: knowledge import root_path rejected: %v", err)
+		}
+		req.RootPath = rootPath
+	}
+	if err := ensureKnowledgeImportFilesWithinRoot(filePaths, req.RootPath); err != nil {
+		return fmt.Sprintf("Error: knowledge import file rejected: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(c.parentContext(), 5*time.Minute)
+	defer cancel()
+
+	var result knowledge.DirectoryImportResult
+	if action == "scan" {
+		result, err = c.knowledgeStore.ScanFiles(ctx, req, filePaths)
+	} else {
+		result, err = c.knowledgeStore.ImportFiles(ctx, req, filePaths)
+	}
+	if err != nil {
+		return fmt.Sprintf("Error: knowledge files import failed: %v", err)
+	}
+	return formatDirectoryImportResult("Files", result)
+}
+
+func knowledgeImportAction(args map[string]interface{}) (string, error) {
+	action := strings.ToLower(strings.TrimSpace(stringArg(args, "action")))
+	if action == "" {
+		return "import", nil
+	}
+	if action != "scan" && action != "import" {
+		return "", fmt.Errorf("unsupported knowledge import action %q; expected scan or import", action)
+	}
+	return action, nil
+}
+
+func (c *coreAgentCallbacks) resolveKnowledgeWorkspaceRoot() (string, error) {
+	workspace := strings.TrimSpace(c.workspace)
+	if workspace == "" {
+		return "", fmt.Errorf("knowledge import requires a workspace-scoped path")
+	}
+	root, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(root), nil
+}
+
+func (c *coreAgentCallbacks) resolveKnowledgeImportPath(p string) (string, error) {
+	if _, err := c.resolveKnowledgeWorkspaceRoot(); err != nil {
+		return "", err
+	}
+	resolved, err := c.resolveWorkspacePath(p)
+	if err != nil {
+		return "", fmt.Errorf("outside workspace: %w", err)
+	}
+	return resolved, nil
+}
+
+func (c *coreAgentCallbacks) resolveKnowledgeImportPaths(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	resolved := make([]string, 0, len(paths))
+	for _, p := range paths {
+		absPath, err := c.resolveKnowledgeImportPath(p)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, absPath)
+	}
+	return resolved, nil
+}
+
+func ensureKnowledgeImportFilesWithinRoot(filePaths []string, rootPath string) error {
+	for _, filePath := range filePaths {
+		if err := ensurePathWithinBase(filePath, rootPath); err != nil {
+			return fmt.Errorf("file %q is outside root_path %q: %w", filePath, rootPath, err)
+		}
+	}
+	return nil
+}
+
+func toFilePathSlice(v interface{}) []string {
+	appendPath := func(result []string, raw string) []string {
+		for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+			return r == '\n' || r == '\r'
+		}) {
+			if part = strings.TrimSpace(part); part != "" {
+				result = append(result, part)
+			}
+		}
+		return result
+	}
+
+	switch arr := v.(type) {
+	case []interface{}:
+		result := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				result = appendPath(result, s)
+			}
+		}
+		return result
+	case []string:
+		result := make([]string, 0, len(arr))
+		for _, item := range arr {
+			result = appendPath(result, item)
+		}
+		return result
+	case string:
+		return appendPath(nil, arr)
+	default:
+		return nil
+	}
+}
+
+func buildDirectoryImportRequest(args map[string]interface{}, tenantID, userID string) knowledge.DirectoryImportRequest {
+	maxFileBytes := int64(intArg(args, "max_file_bytes", 0))
+	if maxFileBytes == 0 {
+		if maxMB := intArg(args, "max_file_mb", 0); maxMB > 0 {
+			maxFileBytes = int64(maxMB) * 1024 * 1024
+		}
+	}
+	req := knowledge.DirectoryImportRequest{
+		RootPath:     stringArg(args, "root_path"),
+		OwnerID:      userID,
+		TenantID:     tenantID,
+		ProjectPath:  stringArg(args, "project_path"),
+		TopicHint:    stringArg(args, "topic_hint"),
+		SaveScope:    stringArg(args, "save_scope"),
+		DistillMode:  stringArg(args, "distill_mode"),
+		Labels:       toStringSlice(args["labels"]),
+		Recursive:    boolArg(args, "recursive", true),
+		IncludeExts:  toStringSlice(args["include_exts"]),
+		ExcludeGlobs: toStringSlice(args["exclude_globs"]),
+		MaxFileBytes: maxFileBytes,
+	}
+	if _, ok := args["auto_labels"]; ok {
+		req.AutoLabels = boolArg(args, "auto_labels", false)
+	}
+	return req
+}
+
+func formatDirectoryImportResult(prefix string, result knowledge.DirectoryImportResult) string {
+	return fmt.Sprintf("%s import %s. Batch ID: %s, total=%d, imported=%d, skipped=%d, duplicates=%d, failed=%d", prefix, result.Status, result.BatchID, result.TotalFiles, result.ImportedFiles, result.SkippedFiles, result.DuplicateFiles, result.FailedFiles)
 }
 
 // --- Helpers ---
@@ -343,6 +565,15 @@ func stringArg(args map[string]interface{}, key string) string {
 	return ""
 }
 
+func boolArg(args map[string]interface{}, key string, defaultVal bool) bool {
+	if v, ok := args[key]; ok {
+		if b, ok2 := v.(bool); ok2 {
+			return b
+		}
+	}
+	return defaultVal
+}
+
 func intArg(args map[string]interface{}, key string, defaultVal int) int {
 	if v, ok := args[key]; ok {
 		switch n := v.(type) {
@@ -360,14 +591,35 @@ func intArg(args map[string]interface{}, key string, defaultVal int) int {
 }
 
 func toStringSlice(v interface{}) []string {
-	if arr, ok := v.([]interface{}); ok {
-		result := make([]string, 0, len(arr))
-		for _, item := range arr {
-			if s, ok2 := item.(string); ok2 {
-				result = append(result, s)
+	appendValue := func(result []string, raw string) []string {
+		for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == ';'
+		}) {
+			if part = strings.TrimSpace(part); part != "" {
+				result = append(result, part)
 			}
 		}
 		return result
 	}
-	return nil
+
+	switch arr := v.(type) {
+	case []interface{}:
+		result := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				result = appendValue(result, s)
+			}
+		}
+		return result
+	case []string:
+		result := make([]string, 0, len(arr))
+		for _, item := range arr {
+			result = appendValue(result, item)
+		}
+		return result
+	case string:
+		return appendValue(nil, arr)
+	default:
+		return nil
+	}
 }

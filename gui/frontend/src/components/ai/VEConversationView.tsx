@@ -4,6 +4,7 @@ import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { getParticipantColor } from "./VEGroupChat";
+import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 
 // --- Types ---
 
@@ -131,15 +132,16 @@ function createSessionWithTimeout<T>(
     });
 }
 
-function participantNameById(participants: MentionParticipant[] | undefined, id?: string): string {
-    const normalized = String(id || "").trim();
-    if (!normalized || !participants?.length) return "";
-    return participants.find((p) => p.id === normalized)?.name || "";
+function normalizeMentionParticipantId(value: string | undefined): string {
+    return normalizeParticipantId(value);
 }
 
-function looksLikeRawParticipantId(value: string): boolean {
-    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+function participantNameById(participants: MentionParticipant[] | undefined, id?: string): string {
+    const normalized = normalizeMentionParticipantId(id);
+    if (!normalized || !participants?.length) return "";
+    return participants.find((p) => normalizeMentionParticipantId(p.id) === normalized)?.name || "";
 }
+
 
 function readableSpeakerName(
     candidate: string | undefined,
@@ -162,8 +164,8 @@ function readableConversationPartnerName(name: string, id: string, isZh: boolean
 }
 
 function participantColorById(participants: MentionParticipant[] | undefined, id: string | undefined, fallback: string): string {
-    const normalized = String(id || "").trim();
-    const index = participants?.findIndex((p) => p.id === normalized) ?? -1;
+    const normalized = normalizeMentionParticipantId(id);
+    const index = participants?.findIndex((p) => normalizeMentionParticipantId(p.id) === normalized) ?? -1;
     return index >= 0 ? getParticipantColor(index) : fallback;
 }
 
@@ -176,13 +178,27 @@ function hasMention(content: string, label: string): boolean {
     return new RegExp(`(^|[^A-Za-z0-9_.-])@${escaped}(?=$|[^A-Za-z0-9_.-])`).test(content);
 }
 
+function mentionLabelsForParticipant(participant: MentionParticipant): string[] {
+    const labels = new Set<string>();
+    const name = String(participant.name || "").trim();
+    if (name) labels.add(name);
+    if (normalizeMentionParticipantId(participant.id) === LEGACY_LOCAL_AI_PARTICIPANT_ID || isLocalAIName(name)) {
+        labels.add(LOCAL_AI_DISPLAY_NAME_EN);
+        labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANS);
+        labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANT);
+        labels.add("本机 AI");
+        labels.add("本機 AI");
+    }
+    return [...labels];
+}
+
 function mentionedParticipantIds(content: string, participants: MentionParticipant[] | undefined): string[] {
     if (!participants?.length) return [];
     const mentioned = new Set<string>();
     for (const participant of participants) {
-        const name = String(participant.name || "").trim();
-        if (name && hasMention(content, name)) {
-            mentioned.add(participant.id);
+        if (mentionLabelsForParticipant(participant).some((label) => hasMention(content, label))) {
+            const id = String(participant.id || "").trim();
+            if (id) mentioned.add(id);
         }
     }
     return [...mentioned];

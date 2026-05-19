@@ -1,6 +1,7 @@
 package im
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -165,7 +166,7 @@ func TestDeviceNotifier_RapidFlapping(t *testing.T) {
 func newTestNotifierWithCoordinator() (*DeviceNotifier, *Coordinator) {
 	df := &mockDeviceFinder{}
 	router := NewMessageRouter(df)
-	coord := NewCoordinator(router, df, func() *HubLLMConfig { return nil })
+	coord := NewCoordinator(router, df, func(context.Context) *HubLLMConfig { return nil })
 	dn := NewDeviceNotifier(nil, coord)
 	return dn, coord
 }

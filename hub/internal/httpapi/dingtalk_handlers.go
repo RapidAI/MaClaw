@@ -58,8 +58,9 @@ func UpdateDingTalkConfigHandler(system store.SystemSettingsRepository, plugin *
 			return
 		}
 
-		// Hot-reload: restart Stream gateway
-		if plugin != nil {
+		// Hot-reload only for the Hub-level singleton gateway. Tenant-scoped
+		// settings are consumed per tenant and must not rewire the shared process.
+		if plugin != nil && shouldReloadSharedRuntimeForRequest(r) {
 			_ = plugin.Stop(r.Context())
 			if cfg.Enabled {
 				_ = plugin.Start(r.Context())
@@ -81,14 +82,16 @@ func GetDingTalkBindingsHandler(plugin *dingtalk.Plugin) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]any{"bindings": []any{}})
 			return
 		}
-		m := plugin.GetBindings()
+		tenantID := RequestTenantID(r)
+		m := plugin.GetTenantBindings(tenantID)
 		type binding struct {
-			StaffID string `json:"staff_id"`
-			Email   string `json:"email"`
+			StaffID  string `json:"staff_id"`
+			Email    string `json:"email"`
+			TenantID string `json:"tenant_id"`
 		}
 		bindings := make([]binding, 0, len(m))
 		for sid, email := range m {
-			bindings = append(bindings, binding{StaffID: sid, Email: email})
+			bindings = append(bindings, binding{StaffID: sid, Email: email, TenantID: tenantID})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"bindings": bindings})
 	}
@@ -106,7 +109,7 @@ func DeleteDingTalkBindingHandler(plugin *dingtalk.Plugin) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "staff_id is required")
 			return
 		}
-		plugin.RemoveBinding(staffID)
+		plugin.RemoveTenantBinding(staffID, RequestTenantID(r))
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }

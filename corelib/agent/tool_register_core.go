@@ -432,6 +432,38 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
+		Name:        "knowledge_import_directory",
+		Description: "Scan or import a local directory of documents into the local knowledge base. Only use after the user explicitly provides or approves the directory path.",
+		Properties: map[string]interface{}{
+			"root_path":    map[string]string{"type": "string", "description": "Directory containing documents"},
+			"action":       map[string]string{"type": "string", "description": "scan | import. Default import."},
+			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
+			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
+			"recursive":    map[string]string{"type": "boolean", "description": "Include subdirectories, default true"},
+			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
+			"start_async":  map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
+		},
+		Required: []string{"root_path"},
+		Handler:  extraHandler(deps, "knowledge_import_directory", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "knowledge_import_files",
+		Description: "Scan or import explicitly provided local document file paths into the local knowledge base. Only use after the user explicitly provides or approves the file paths.",
+		Properties: map[string]interface{}{
+			"file_paths":   map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
+			"action":       map[string]string{"type": "string", "description": "scan | import. Default import."},
+			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
+			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
+			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
+		},
+		Required: []string{"file_paths"},
+		Handler:  extraHandler(deps, "knowledge_import_files", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
+	})
+
+	r.Register(ToolEntry{
 		Name:        "knowledge_save_text",
 		Description: "Save text into the local knowledge base. Only use when the user explicitly asks to save, remember, or persist a specific piece of text to the knowledge base.",
 		Properties: map[string]interface{}{

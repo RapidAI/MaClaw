@@ -112,6 +112,58 @@ describe("GroupParticipantPanel", () => {
         expect(screen.queryByText("m_b1821505498d817c")).toBeNull();
         expect(screen.queryByTitle("m_b1821505498d817c")).toBeNull();
     });
+    it("uses localized fallback names for Chinese participants", () => {
+        render(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "m_b1821505498d817c", name: "m_b1821505498d817c", online: true },
+                    { id: "local-maclaw", name: "local-maclaw", online: true, isLocal: true },
+                ]}
+                theme={theme}
+                lang="zh-CN"
+            />
+        );
+
+        expect(screen.getByText("\u53c2\u4e0e\u8005 1")).toBeTruthy();
+        expect(screen.getByText("本机AI")).toBeTruthy();
+        expect(screen.queryByText("m_b1821505498d817c")).toBeNull();
+        expect(screen.queryByTitle("local-maclaw")).toBeNull();
+    });
+    it("renders Chinese fallback invite labels without mojibake", () => {
+        render(
+            <GroupParticipantPanel
+                participants={[]}
+                theme={theme}
+                lang="zh-CN"
+                onInvite={vi.fn()}
+            />
+        );
+
+        expect(screen.getByText("\u6682\u65e0\u53c2\u4e0e\u8005")).toBeTruthy();
+        const invite = screen.getByTestId("group-panel-invite-btn");
+        expect(invite.textContent).toContain("\u9080\u8bf7");
+        expect(invite.getAttribute("title")).toBe("\u9080\u8bf7\u6570\u5b57\u5458\u5de5");
+    });
+
+    it("renders the Chinese talk-to context menu label", () => {
+        const onTalkTo = vi.fn();
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "ve-1", name: "\u5b89\u5a1c", online: true }]}
+                theme={theme}
+                lang="zh-CN"
+                onTalkTo={onTalkTo}
+            />
+        );
+
+        fireEvent.contextMenu(screen.getByText("\u5b89\u5a1c"));
+        const item = screen.getByTestId("context-menu-talk-to");
+        expect(item.textContent).toContain("\u4e0e\u5b83\u4ea4\u8c08");
+
+        fireEvent.click(item);
+        expect(onTalkTo).toHaveBeenCalledWith({ id: "ve-1", name: "\u5b89\u5a1c", online: true });
+    });
+
     it("uses live group config for the add-participant limit", async () => {
         const participants = Array.from({ length: 5 }, (_, index) => ({
             id: "ve-" + (index + 1),

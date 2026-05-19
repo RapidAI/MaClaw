@@ -47,7 +47,7 @@ export interface DeepCrawlPreviewResult {
         total: number;
         urls: string[];
     }>;
-    total_discovered: number;
+    total_discovered?: number;
 }
 
 export interface DeepCrawlPanelProps {
@@ -88,6 +88,12 @@ function parseLabels(value: string): string[] {
 function truncateURL(url: string, maxLen = 60): string {
     if (url.length <= maxLen) return url;
     return url.slice(0, maxLen - 3) + '...';
+}
+
+export function previewTotalDiscovered(result: DeepCrawlPreviewResult | null): number {
+    if (!result) return 0;
+    if (typeof result.total_discovered === 'number') return result.total_discovered;
+    return (result.by_depth || []).reduce((sum, level) => sum + (level.total || level.urls?.length || 0), 0);
 }
 
 export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCrawlPanelProps) {
@@ -157,8 +163,8 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
         setIsCrawling(true);
         try {
             await onStartCrawl(buildConfig());
-        } catch {
-            // If the call fails before any progress event is emitted,
+        } finally {
+            // If the call finishes before any final progress event is emitted,
             // reset isCrawling to avoid permanently stuck UI.
             setIsCrawling(false);
         }
@@ -172,7 +178,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
         setIsCrawling(true);
         try {
             await onStartCrawl(buildConfig());
-        } catch {
+        } finally {
             setIsCrawling(false);
         }
     }, [onStartCrawl, buildConfig]);
@@ -209,6 +215,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
 
     const showProgress = isCrawling || (progress && (progress.status === 'discovering' || progress.status === 'crawling'));
     const showPreview = previewResult && !isCrawling;
+    const previewTotal = previewTotalDiscovered(previewResult);
 
     return (
         <div style={panelStyle}>
@@ -357,8 +364,8 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                     {/* Total count header (Req 4.3) */}
                     <div style={previewHeaderStyle}>
                         {t(lang,
-                            `Found ${previewResult.total_discovered} URLs across ${previewResult.by_depth.length} levels`,
-                            `发现 ${previewResult.total_discovered} 个 URL，共 ${previewResult.by_depth.length} 层`
+                            `Found ${previewTotal} URLs across ${previewResult.by_depth.length} levels`,
+                            `发现 ${previewTotal} 个 URL，共 ${previewResult.by_depth.length} 层`
                         )}
                     </div>
 

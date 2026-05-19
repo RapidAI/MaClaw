@@ -3,7 +3,8 @@
 //
 // Outbound: Hub POSTs OutgoingMessage to the adapter's webhook URL.
 // Inbound:  The adapter POSTs IncomingMessage to Hub's /api/openclaw_im/webhook endpoint,
-//           which calls InjectMessage to feed it into the IM Adapter pipeline.
+//
+//	which calls InjectMessage to feed it into the IM Adapter pipeline.
 package im
 
 import (
@@ -20,16 +21,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // WebhookConfig holds the configuration for a webhook-based IM plugin.
 type WebhookConfig struct {
+	TenantID   string // Hub tenant associated with this adapter endpoint
 	WebhookURL string // Adapter's endpoint for outbound messages
 	Secret     string // Shared HMAC secret
 }
 
 // WebhookConfigProvider supplies the current webhook config (read from DB).
-type WebhookConfigProvider func() WebhookConfig
+type WebhookConfigProvider func(ctx context.Context) WebhookConfig
 
 // WebhookIMPlugin implements IMPlugin for remote IM adapters connected via
 // the OpenClaw IM webhook protocol.
@@ -84,27 +88,33 @@ func (p *WebhookIMPlugin) InjectMessage(msg IncomingMessage) error {
 
 // SendText sends a plain text message to the adapter via webhook POST.
 func (p *WebhookIMPlugin) SendText(ctx context.Context, target UserTarget, text string) error {
+	tenantID := webhookTenantIDFromContext(ctx)
 	payload := webhookOutPayload{
-		Type:   "text",
-		Target: target,
-		Text:   text,
+		TenantID: tenantID,
+		Type:     "text",
+		Target:   target,
+		Text:     text,
 	}
 	return p.postToAdapter(ctx, "message", payload)
 }
 
 // SendCard sends a rich card (OutgoingMessage) to the adapter via webhook POST.
 func (p *WebhookIMPlugin) SendCard(ctx context.Context, target UserTarget, card OutgoingMessage) error {
+	tenantID := webhookTenantIDFromContext(ctx)
 	payload := webhookOutPayload{
-		Type:    "card",
-		Target:  target,
-		Message: &card,
+		TenantID: tenantID,
+		Type:     "card",
+		Target:   target,
+		Message:  &card,
 	}
 	return p.postToAdapter(ctx, "message", payload)
 }
 
 // SendImage sends an image reference to the adapter via webhook POST.
 func (p *WebhookIMPlugin) SendImage(ctx context.Context, target UserTarget, imageKey string, caption string) error {
+	tenantID := webhookTenantIDFromContext(ctx)
 	payload := webhookOutPayload{
+		TenantID: tenantID,
 		Type:     "image",
 		Target:   target,
 		ImageKey: imageKey,
@@ -115,7 +125,9 @@ func (p *WebhookIMPlugin) SendImage(ctx context.Context, target UserTarget, imag
 
 // SendFile sends a file to the adapter via webhook POST.
 func (p *WebhookIMPlugin) SendFile(ctx context.Context, target UserTarget, fileData, fileName, mimeType string) error {
+	tenantID := webhookTenantIDFromContext(ctx)
 	payload := webhookOutPayload{
+		TenantID: tenantID,
 		Type:     "file",
 		Target:   target,
 		FileName: fileName,
@@ -123,6 +135,14 @@ func (p *WebhookIMPlugin) SendFile(ctx context.Context, target UserTarget, fileD
 		MimeType: mimeType,
 	}
 	return p.postToAdapter(ctx, "message", payload)
+}
+
+func webhookTenantIDFromContext(ctx context.Context) string {
+	tenantID := tenantIDFromContext(ctx)
+	if tenantID == store.DefaultTenantID {
+		return ""
+	}
+	return tenantID
 }
 
 // ResolveUser is a no-op for webhook plugins — identity resolution is handled
@@ -156,12 +176,20 @@ func (p *WebhookIMPlugin) Stop(ctx context.Context) error {
 	return nil
 }
 
+func (p *WebhookIMPlugin) SetHTTPClient(client *http.Client) {
+	if client == nil {
+		return
+	}
+	p.client = client
+}
+
 // ---------------------------------------------------------------------------
 // Outbound webhook POST
 // ---------------------------------------------------------------------------
 
 type webhookOutPayload struct {
-	Type     string           `json:"type"`               // "text", "card", "image", "file"
+	TenantID string           `json:"tenant_id,omitempty"`
+	Type     string           `json:"type"` // "text", "card", "image", "file"
 	Target   UserTarget       `json:"target"`
 	Text     string           `json:"text,omitempty"`
 	Message  *OutgoingMessage `json:"message,omitempty"`
@@ -173,7 +201,7 @@ type webhookOutPayload struct {
 }
 
 func (p *WebhookIMPlugin) postToAdapter(ctx context.Context, event string, payload any) error {
-	cfg := p.configProvider()
+	cfg := p.configProvider(ctx)
 	if cfg.WebhookURL == "" {
 		return fmt.Errorf("openclaw_im: webhook URL not configured for plugin %q", p.platformName)
 	}
@@ -189,6 +217,9 @@ func (p *WebhookIMPlugin) postToAdapter(ctx context.Context, event string, paylo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-OpenClaw-Event", event)
+	if cfg.TenantID != "" {
+		req.Header.Set("X-Tenant-ID", cfg.TenantID)
+	}
 
 	if cfg.Secret != "" {
 		mac := hmac.New(sha256.New, []byte(cfg.Secret))

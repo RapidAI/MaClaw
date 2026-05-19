@@ -143,29 +143,17 @@ func (b *UsagePatternBridge) upsertUsageMemory(content string, tags []string) (c
 		return false, false
 	}
 
-	allEntries := b.memory.List(memory.CategoryProjectKnowledge, "")
-	for _, e := range allEntries {
-		if !hasAllTags(e.Tags, tags[:usageMemoryIdentityTagCount(tags)]...) {
-			continue
-		}
-		if strings.TrimSpace(e.Content) == content {
-			b.memory.TouchAccess([]string{e.ID})
-			return false, false
-		}
-		_ = b.memory.Update(e.ID, content, memory.CategoryProjectKnowledge, resetExperienceReviewTagsForChangedContent(e.Tags, tags))
-		return false, true
-	}
-
-	entry := memory.Entry{
-		Content:    content,
-		Category:   memory.CategoryProjectKnowledge,
-		Tags:       tags,
-		SourceType: string(experienceTraceSourceToolUsage),
-	}
-	if err := b.memory.Save(entry); err != nil {
+	result, err := b.memory.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+		Content:           content,
+		Tags:              tags,
+		IdentityTagCount:  usageMemoryIdentityTagCount(tags),
+		SourceType:        string(experienceTraceSourceToolUsage),
+		MergeExistingTags: resetExperienceReviewTagsForChangedContent,
+	})
+	if err != nil {
 		return false, false
 	}
-	return true, false
+	return result.Created, result.Updated
 }
 
 func usageMemoryIdentityTagCount(tags []string) int {

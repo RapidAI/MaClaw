@@ -153,6 +153,186 @@ func TestSearchByModeDirectRespectsProjectScopeAndCategory(t *testing.T) {
 		t.Fatalf("direct SearchByMode should respect requested category, got %+v", got)
 	}
 }
+
+func TestSearchByModeDirectRespectsOwnerBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{
+			ID:        "direct-owner-a",
+			Content:   "owner direct boundary",
+			Category:  CategoryPreference,
+			Scope:     ScopeGlobal,
+			OwnerID:   "owner-a",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+			Boundary:  &MemoryBoundary{OwnerID: "owner-a"},
+		},
+	})
+	store.mu.Unlock()
+
+	if got := store.SearchByMode("direct-owner-a", SearchDirect, "", "", 1, "owner-b"); len(got) != 0 {
+		t.Fatalf("direct SearchByMode should enforce owner boundary, got %+v", got)
+	}
+	if got := store.SearchByMode("direct-owner-a", SearchDirect, "", "", 1, "owner-a"); len(got) != 1 || got[0].ID != "direct-owner-a" {
+		t.Fatalf("direct SearchByMode should allow matching owner, got %+v", got)
+	}
+}
+
+func TestSearchByModeKeywordOnlyRespectsOwnerBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{
+			ID:        "keyword-owner-a",
+			Content:   "keyword owner boundary target private evidence",
+			Category:  CategoryPreference,
+			Scope:     ScopeGlobal,
+			OwnerID:   "owner-a",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+			Boundary:  &MemoryBoundary{OwnerID: "owner-a"},
+		},
+		{
+			ID:        "keyword-shared",
+			Content:   "keyword owner boundary target shared evidence",
+			Category:  CategoryPreference,
+			Scope:     ScopeGlobal,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+		},
+	})
+	store.mu.Unlock()
+
+	got := store.SearchByMode("keyword owner boundary target", SearchKeywordOnly, "", "", 10, "owner-b")
+	if containsEntryID(got, "keyword-owner-a") {
+		t.Fatalf("keyword-only SearchByMode should enforce owner boundary, got %+v", got)
+	}
+	if !containsEntryID(got, "keyword-shared") {
+		t.Fatalf("keyword-only SearchByMode should preserve shared results, got %+v", got)
+	}
+}
+
+func TestRecallDynamicRespectsDerivedMemoryProjectBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	alphaProject := `D:\workprj\alpha`
+	betaProject := `D:\workprj\beta`
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{
+			ID:          "schema-alpha",
+			Content:     "shared boundary target prefers alpha cache invalidation workflow",
+			Category:    CategoryProjectKnowledge,
+			Scope:       ScopeGlobal,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Strength:    1,
+			DerivedKind: "schema:recurring",
+			Boundary:    &MemoryBoundary{ProjectPath: alphaProject},
+		},
+		{
+			ID:        "legacy-generic",
+			Content:   "shared boundary target generic rollback checklist",
+			Category:  CategoryProjectKnowledge,
+			Scope:     ScopeGlobal,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+		},
+	})
+	store.mu.Unlock()
+
+	alphaResults := store.RecallDynamic("shared boundary target", "", alphaProject)
+	if !containsEntryID(alphaResults, "schema-alpha") {
+		t.Fatalf("matching project should recall bounded derived memory, got %+v", alphaResults)
+	}
+
+	betaResults := store.RecallDynamic("shared boundary target", "", betaProject)
+	if containsEntryID(betaResults, "schema-alpha") {
+		t.Fatalf("different project should not recall bounded derived memory, got %+v", betaResults)
+	}
+	if !containsEntryID(betaResults, "legacy-generic") {
+		t.Fatalf("entries without boundary should keep existing recall behavior, got %+v", betaResults)
+	}
+}
+
+func TestRecallDynamicRespectsDerivedMemoryOwnerBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{
+			ID:          "profile-owner-a",
+			Content:     "owner boundary target prefers concise implementation plans",
+			Category:    CategoryPreference,
+			Scope:       ScopeGlobal,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Strength:    1,
+			DerivedKind: "profile",
+			Boundary:    &MemoryBoundary{OwnerID: "owner-a"},
+		},
+		{
+			ID:        "shared-preference",
+			Content:   "owner boundary target likes focused verification notes",
+			Category:  CategoryPreference,
+			Scope:     ScopeGlobal,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+		},
+	})
+	store.mu.Unlock()
+
+	ownerAResults := store.RecallDynamic("owner boundary target", "", "", "owner-a")
+	if !containsEntryID(ownerAResults, "profile-owner-a") {
+		t.Fatalf("matching owner should recall bounded derived memory, got %+v", ownerAResults)
+	}
+
+	ownerBResults := store.RecallDynamic("owner boundary target", "", "", "owner-b")
+	if containsEntryID(ownerBResults, "profile-owner-a") {
+		t.Fatalf("different owner should not recall bounded derived memory, got %+v", ownerBResults)
+	}
+	if !containsEntryID(ownerBResults, "shared-preference") {
+		t.Fatalf("entries without boundary should keep existing owner recall behavior, got %+v", ownerBResults)
+	}
+}
+
+func containsEntryID(entries []Entry, id string) bool {
+	for _, entry := range entries {
+		if entry.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRecallDynamicCategoryUsesCanonicalMatching(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
 	if err != nil {

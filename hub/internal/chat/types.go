@@ -13,6 +13,7 @@ const (
 // Channel represents a chat channel.
 type Channel struct {
 	ID        string      `json:"id"`
+	TenantID  string      `json:"tenant_id,omitempty"`
 	Type      ChannelType `json:"type"`
 	Name      string      `json:"name,omitempty"`
 	AvatarURL string      `json:"avatar_url,omitempty"`
@@ -24,6 +25,7 @@ type Channel struct {
 // Member represents a channel member.
 type Member struct {
 	ChannelID string     `json:"channel_id"`
+	TenantID  string     `json:"tenant_id,omitempty"`
 	UserID    string     `json:"user_id"`
 	Role      MemberRole `json:"role"`
 	Mute      bool       `json:"mute"`
@@ -44,7 +46,7 @@ const (
 type MessageType int
 
 const (
-	MsgText      MessageType = iota
+	MsgText MessageType = iota
 	MsgImage
 	MsgVoiceNote
 	MsgFile
@@ -52,22 +54,22 @@ const (
 
 // Message represents a chat message.
 type Message struct {
-	ID          string      `json:"id"`
-	ChannelID   string      `json:"channel_id"`
-	Seq         int64       `json:"seq"`
-	SenderID    string      `json:"sender_id"`
-	Content     string      `json:"content"`
-	MsgType     MessageType `json:"msg_type"`
+	ID          string       `json:"id"`
+	ChannelID   string       `json:"channel_id"`
+	Seq         int64        `json:"seq"`
+	SenderID    string       `json:"sender_id"`
+	Content     string       `json:"content"`
+	MsgType     MessageType  `json:"msg_type"`
 	Attachments []Attachment `json:"attachments,omitempty"`
-	CreatedAt   time.Time   `json:"created_at"`
-	ClientMsgID string      `json:"client_msg_id,omitempty"`
-	Recalled    bool        `json:"recalled,omitempty"`
-	EditedAt    *time.Time  `json:"edited_at,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	ClientMsgID string       `json:"client_msg_id,omitempty"`
+	Recalled    bool         `json:"recalled,omitempty"`
+	EditedAt    *time.Time   `json:"edited_at,omitempty"`
 }
 
 // Attachment holds metadata for a file/image/voice attached to a message.
 type Attachment struct {
-	Type       string `json:"type"`                  // "image", "voice", "file"
+	Type       string `json:"type"` // "image", "voice", "file"
 	URL        string `json:"url"`
 	ThumbURL   string `json:"thumb_url,omitempty"`
 	Size       int64  `json:"size"`
@@ -77,6 +79,7 @@ type Attachment struct {
 // FileRecord tracks an uploaded file.
 type FileRecord struct {
 	ID         string    `json:"id"`
+	TenantID   string    `json:"tenant_id,omitempty"`
 	UploaderID string    `json:"uploader_id"`
 	ChannelID  string    `json:"channel_id"`
 	Filename   string    `json:"filename"`
@@ -89,6 +92,7 @@ type FileRecord struct {
 // VoiceCall represents a voice call session.
 type VoiceCall struct {
 	ID        string     `json:"id"`
+	TenantID  string     `json:"tenant_id,omitempty"`
 	ChannelID string     `json:"channel_id,omitempty"`
 	CallerID  string     `json:"caller_id"`
 	CallType  CallType   `json:"call_type"`
@@ -125,6 +129,7 @@ type CallParticipant struct {
 
 // PushToken stores a device push token for notifications.
 type PushToken struct {
+	TenantID  string    `json:"tenant_id,omitempty"`
 	UserID    string    `json:"user_id"`
 	Platform  string    `json:"platform"` // "apns", "fcm", "hms"
 	Token     string    `json:"token"`

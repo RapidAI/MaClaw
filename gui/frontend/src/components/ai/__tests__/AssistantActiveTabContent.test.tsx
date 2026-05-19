@@ -170,6 +170,32 @@ describe("AssistantActiveTabContent", () => {
         expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@Local AI ");
     });
 
+    it("normalizes local AI participant ids for the participant panel", () => {
+        const groupTab: AITab = { id: "group-talk-normalized", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a", " LOCAL-MACLAW "], closable: true };
+
+        render(
+            <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="zh-CN" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
+        );
+
+        fireEvent.contextMenu(screen.getByText("\u672c\u673aAI"));
+        fireEvent.click(screen.getByTestId("context-menu-talk-to"));
+
+        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@\u672c\u673aAI ");
+    });
+
+    it("inserts localized local AI mention from the participant context menu", () => {
+        const groupTab: AITab = { id: "group-talk-zh", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a", "local-maclaw"], closable: true };
+
+        render(
+            <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="zh-CN" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
+        );
+
+        fireEvent.contextMenu(screen.getByText("本机AI"));
+        fireEvent.click(screen.getByTestId("context-menu-talk-to"));
+
+        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@本机AI ");
+    });
+
     it("inserts a mention at the current caret position", () => {
         const groupTab: AITab = { id: "group-talk-caret", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a", "local-maclaw"], closable: true };
 

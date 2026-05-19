@@ -39,6 +39,9 @@ func run(args []string) error {
 	if len(args) >= 1 && args[0] == "restore" {
 		return runRestore(args[1:])
 	}
+	if len(args) >= 1 && args[0] == "tenant" {
+		return runTenant(args[1:])
+	}
 	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		printUsage()
 		return nil
@@ -100,6 +103,97 @@ func runServer(args []string) error {
 	return http.ListenAndServe(addr, a.HTTPHandler)
 }
 
+func runTenant(args []string) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		printTenantUsage()
+		return nil
+	}
+	switch args[0] {
+	case "migrate-users":
+		return runTenantMigrateUsers(args[1:])
+	default:
+		return fmt.Errorf("unknown tenant command %q", args[0])
+	}
+}
+
+func runTenantMigrateUsers(args []string) error {
+	if hasHelpArg(args) {
+		printTenantMigrateUsersUsage()
+		return nil
+	}
+	fs := flag.NewFlagSet("tenant migrate-users", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	configPath := fs.String("config", "", "Path to MaClaw Hub config file")
+	mappingPath := fs.String("mapping", "", "CSV mapping file with columns: email,tenant_id")
+	fromTenant := fs.String("from-tenant", "tenant_default", "Source tenant for existing users")
+	dryRun := fs.Bool("dry-run", true, "Validate and report changes without committing")
+	apply := fs.Bool("apply", false, "Commit the migration. Requires a stopped Hub and a fresh backup.")
+	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
+	copyTenantConfig := fs.Bool("copy-tenant-config", false, "Copy tenant-scoped system settings and tenant authorizations from source tenant to targets")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*mappingPath) == "" {
+		return fmt.Errorf("tenant migrate-users requires --mapping")
+	}
+	cfg, err := config.Load(resolveConfigPath(*configPath))
+	if err != nil {
+		return err
+	}
+	provider, err := sqlite.NewProvider(sqlite.Config{
+		DSN:               cfg.Database.DSN,
+		WAL:               cfg.Database.WAL,
+		BusyTimeoutMS:     cfg.Database.BusyTimeoutMS,
+		MaxReadOpenConns:  cfg.Database.MaxReadOpenConns,
+		MaxReadIdleConns:  cfg.Database.MaxReadIdleConns,
+		MaxWriteOpenConns: cfg.Database.MaxWriteOpenConns,
+		MaxWriteIdleConns: cfg.Database.MaxWriteIdleConns,
+		BatchFlushMS:      cfg.Database.BatchFlushMS,
+		BatchMaxSize:      cfg.Database.BatchMaxSize,
+		BatchQueueSize:    cfg.Database.BatchQueueSize,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = provider.Close() }()
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		return err
+	}
+	result, err := sqlite.MigrateTenantUsers(context.Background(), provider.Write, sqlite.TenantUserMigrationOptions{
+		MappingPath:      strings.TrimSpace(*mappingPath),
+		FromTenant:       strings.TrimSpace(*fromTenant),
+		DryRun:           *dryRun || !*apply,
+		CopyTenantConfig: *copyTenantConfig,
+	})
+	if result != nil && *jsonOut {
+		_ = printJSON(result)
+	}
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return nil
+	}
+	verb := "would move"
+	if !result.DryRun {
+		verb = "moved"
+	}
+	fmt.Fprintf(os.Stdout, "%s %d/%d matched users from %s\n", verb, result.UsersMatched, result.UsersTotal, result.FromTenant)
+	fmt.Fprintf(os.Stdout, "users changed: %d\n", result.UsersMoved)
+	for tenantID, count := range result.ByTenant {
+		fmt.Fprintf(os.Stdout, "target %s: %d mapped users\n", tenantID, count)
+	}
+	if len(result.Warnings) > 0 {
+		fmt.Fprintf(os.Stdout, "warnings: %d\n", len(result.Warnings))
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(os.Stdout, "- %s\n", warning)
+		}
+	}
+	if result.DryRun {
+		fmt.Fprintln(os.Stdout, "dry-run only; rerun with --apply --dry-run=false after backup and maintenance window")
+	}
+	return nil
+}
 func runBackup(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		printBackupUsage()
@@ -313,6 +407,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stdout, "  backup create     Create a disaster-recovery tar.gz archive")
 	fmt.Fprintln(os.Stdout, "  backup inspect    Read manifest.json from an archive")
 	fmt.Fprintln(os.Stdout, "  restore           Restore an archive into a Hub root directory")
+	fmt.Fprintln(os.Stdout, "  tenant migrate-users  Move existing users using email CSV")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "More help:")
 	fmt.Fprintln(os.Stdout, "  hub backup help")
@@ -402,4 +497,33 @@ func printRestoreUsage() {
 	fmt.Fprintln(os.Stdout, "  hub backup inspect --file ./maclaw-hub-backup-2026-04-28-153012.tar.gz --json")
 	fmt.Fprintln(os.Stdout, "  hub restore --file ./maclaw-hub-backup-2026-04-28-153012.tar.gz --target-root . --dry-run --json")
 	fmt.Fprintln(os.Stdout, "  hub restore --file ./maclaw-hub-backup-2026-04-28-153012.tar.gz --target-root . --force --json")
+}
+
+func printTenantUsage() {
+	fmt.Fprintln(os.Stdout, "MaClaw Hub tenant tools")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Commands:")
+	fmt.Fprintln(os.Stdout, "  hub tenant migrate-users --config <config.yaml> --mapping <users.csv> [--dry-run] [--json]")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "CSV format:")
+	fmt.Fprintln(os.Stdout, "  email,tenant_id")
+	fmt.Fprintln(os.Stdout, "  alice@example.com,tenant_acme")
+}
+
+func printTenantMigrateUsersUsage() {
+	fmt.Fprintln(os.Stdout, "Usage:")
+	fmt.Fprintln(os.Stdout, "  hub tenant migrate-users --config <config.yaml> --mapping <users.csv> [--from-tenant tenant_default] [--copy-tenant-config] [--dry-run] [--json]")
+	fmt.Fprintln(os.Stdout, "  hub tenant migrate-users --config <config.yaml> --mapping <users.csv> --copy-tenant-config --apply --dry-run=false")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Moves existing user-owned rows from one tenant to target tenants by email.")
+	fmt.Fprintln(os.Stdout, "Run --dry-run first, create a backup, stop Hub, then rerun with --apply --dry-run=false.")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "CSV columns:")
+	fmt.Fprintln(os.Stdout, "  email,tenant_id")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Affected data includes users, enrollments, tokens, machines, sessions,")
+	fmt.Fprintln(os.Stdout, "content/failure logs, used invitation codes, workflow state/definitions,")
+	fmt.Fprintln(os.Stdout, "MCP user secrets, capability inventory, and security group membership.")
+	fmt.Fprintln(os.Stdout, "--copy-tenant-config also copies tenant-scoped system settings and digital employee authorization.")
+	fmt.Fprintln(os.Stdout, "Security group paths and policies referenced by moved users are cloned automatically.")
 }

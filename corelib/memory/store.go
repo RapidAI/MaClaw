@@ -304,62 +304,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		entry.ID = generateID()
 	}
 
-	// --- Embedding semantic candidate recall (under lock, <1ms) ---
-	// The embedding was computed above (outside the lock). Here we only
-	// query the vector index for candidates; this is a fast dot-product
-	// scan over the in-memory index, not a model inference call.
-	if len(entry.Embedding) > 0 {
-		if candidate := s.findSemanticDupCandidate(entry.Embedding, entry.Category, entry.OwnerID); candidate != nil {
-			s.enqueuePendingDedup(entry.ID, *candidate)
-		}
-	}
-
-	if entry.CreatedAt.IsZero() {
-		entry.CreatedAt = now
-	}
-	entry.UpdatedAt = now
-	entry.ContentHash = hash
-	if entry.AccessCount == 0 {
-		entry.AccessCount = 1
-	}
-	if entry.Strength == 0 {
-		entry.Strength = 1.0
-	}
-	if entry.Scope == "" {
-		entry.Scope = InferScope(entry.Category)
-	}
-
-	if err := s.persistInsertedEntryLocked(&entry); err != nil {
-		return fmt.Errorf("memory_store: persist new entry: %w", err)
-	}
-
-	s.entries = append(s.entries, entry)
-	s.bm25.addEntry(entry)
-	s.vecIndex.add(entry.ID, entry.Embedding)
-
-	// Auto-link: find related entries and create graph edges.
-	s.autoLink(entry)
-
-	s.evictLRU()
-	s.markDirtyLocked()
-
-	// Update project index. Called under s.mu.Lock; ProjectIndex has its own
-	// mutex so this is a nested lock (Store.mu -> ProjectIndex.mu). The lock
-	// order is consistent across all call sites, no deadlock risk.
-	if s.projIndex != nil {
-		s.projIndex.IndexEntry(&entry)
-	}
-
-	// Update entity index for entity-centric recall.
-	if s.entityIndex != nil {
-		s.entityIndex.IndexEntry(&entry)
-	}
-	if s.semanticGraph != nil {
-		s.semanticGraph.IndexEntry(&entry)
-	}
-	s.rebuildThemeLayerLocked()
-
-	return nil
+	return s.insertPreparedEntryLocked(entry, hash, now, true)
 }
 
 // Update modifies an existing entry identified by ID.
@@ -830,7 +775,7 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 }
 
 func recallProjectEntryAllowed(e Entry, projectLower string) bool {
-	return semanticProjectAllowed(e.Scope, e.Tags, projectLower)
+	return semanticProjectAllowed(e.Scope, e.Tags, projectLower) && recallBoundaryAllowed(e, projectLower, "")
 }
 
 func recallProjectOtherAllowed(e Entry, projectLower string) bool {
@@ -1493,15 +1438,19 @@ func (s *Store) supersedeEntryLocked(id string, invalidAt time.Time) bool {
 	return false
 }
 
-// RecallDynamic retrieves memory entries matching the given query, excluding
-// user_fact entries (which are injected separately as a compressed summary).
-// Uses RRF (Reciprocal Rank Fusion) with Memory Stream scoring.
-// Filters out dormant and superseded entries.
+// RecallDynamic is the default flat recall engine for simple/direct queries.
+// It combines BM25, vector, semantic graph, entity/tag, recency, importance,
+// stability, and graph-expansion signals, then filters dormant/superseded
+// entries. It excludes internal summary/identity categories from general recall
+// unless a category is explicitly requested.
 //
-// ownerID is optional (variadic). When provided and non-empty, only entries
-// with matching OwnerID or empty OwnerID (shared) are returned. This enables
-// multi-tenant isolation in maclawsrv. In GUI/TUI (single-user), omit ownerID
-// or pass empty string; all entries are returned.
+// projectPath is the current workspace/task path. Project-scoped entries and
+// derived-memory Boundary.ProjectPath values are compared against it to avoid
+// cross-project contamination.
+//
+// ownerID is optional. When provided and non-empty, only entries with matching
+// OwnerID or empty OwnerID (shared) are returned, and Boundary.OwnerID is also
+// enforced. In GUI/TUI single-user mode, omit ownerID or pass empty string.
 func (s *Store) RecallDynamic(query string, category Category, projectPath string, ownerID ...string) []Entry {
 	return s.recallDynamicCore(query, category, projectPath, false, ownerID...)
 }
@@ -1535,7 +1484,7 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 		}
 	}
 	// Multi-hop inference: derive implicit facts from the semantic graph.
-	// Note: s.inferenceEngine is read without s.mu — same pattern as s.semanticGraph
+	// Note: s.inferenceEngine is read without s.mu 闁?same pattern as s.semanticGraph
 	// above. Pointer read is safe on 64-bit (atomic at hardware level). Worst case
 	// is reading a stale engine (gives slightly outdated results) or nil (no results).
 	var derivedFacts []DerivedFact
@@ -1703,7 +1652,7 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 //
 // To compensate for budget slots consumed by entries that will be filtered out,
 // this method calls RecallDynamic twice if the first pass yields fewer than 5
-// results after strict filtering — the second pass uses a broader query to
+// results after strict filtering 闁?the second pass uses a broader query to
 // backfill the budget.
 func (s *Store) RecallDynamicStrict(query string, category Category, projectPath string, ownerID ...string) []Entry {
 	results := s.recallDynamicCore(query, category, projectPath, true, ownerID...)
@@ -1743,9 +1692,9 @@ func (s *Store) RecallDynamicStrict(query string, category Category, projectPath
 }
 
 // recallStrictProjectEntryAllowed implements the strict project filtering rule:
-//   - Scope != ScopeProject → always allowed (global knowledge, user_fact, preference, self_identity)
-//   - Scope == ScopeProject AND tags contain projectPath → allowed (belongs to this project)
-//   - Scope == ScopeProject AND tags do NOT contain projectPath → excluded (belongs to another project)
+//   - Scope != ScopeProject 闁?always allowed (global knowledge, user_fact, preference, self_identity)
+//   - Scope == ScopeProject AND tags contain projectPath 闁?allowed (belongs to this project)
+//   - Scope == ScopeProject AND tags do NOT contain projectPath 闁?excluded (belongs to another project)
 func recallStrictProjectEntryAllowed(e Entry, projectLower string) bool {
 	if e.Scope != ScopeProject {
 		return true
@@ -1767,13 +1716,17 @@ func recallStrictProjectEntryAllowed(e Entry, projectLower string) bool {
 // Three-layer search (inspired by GBrain's keyword / hybrid / direct modes)
 // ---------------------------------------------------------------------------
 
-// SearchByMode dispatches to the appropriate search strategy based on mode.
+// SearchByMode is the low-level search selector used by legacy/diagnostic
+// callers. SearchDirect is exact ID lookup, SearchKeywordOnly is BM25-only, and
+// SearchHybrid delegates to RecallDynamic. New user-facing recall should prefer
+// RecallByMode so empty mode can default to auto and adaptive/lightmem debug
+// plans remain available. Pass ownerID for tenant isolation.
 func (s *Store) SearchByMode(query string, mode SearchMode, category Category, projectPath string, limit int, ownerID ...string) []Entry {
 	switch mode {
 	case SearchDirect:
-		return s.SearchDirectByIDForProject(query, category, projectPath)
+		return s.SearchDirectByIDForProject(query, category, projectPath, ownerID...)
 	case SearchKeywordOnly:
-		return s.SearchKeywordForProject(query, category, projectPath, limit)
+		return s.SearchKeywordForProject(query, category, projectPath, limit, ownerID...)
 	default:
 		return limitSearchResults(s.RecallDynamic(query, category, projectPath, ownerID...), limit)
 	}
@@ -1781,6 +1734,9 @@ func (s *Store) SearchByMode(query string, mode SearchMode, category Category, p
 
 func recallDynamicEntryAllowed(e Entry, category Category, projectLower, filterOwner string) bool {
 	if !e.IsActive() || !recallProjectEntryAllowed(e, projectLower) {
+		return false
+	}
+	if !recallBoundaryAllowed(e, projectLower, filterOwner) {
 		return false
 	}
 	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
@@ -1811,11 +1767,11 @@ func filterRecallDynamicCandidates(candidates []recallScored, category Category,
 }
 
 // recallDynamicEntryAllowedStrict implements strict project filtering for Project Tab:
-//   - ScopeProject + tags match current projectPath → allowed
-//   - ScopeProject + tags don't match current projectPath → excluded (other projects' knowledge)
-//   - ScopeGlobal → allowed (archived experience, universal knowledge)
-//   - user_fact / preference → allowed (user preferences always available)
-//   - Other projects' project_knowledge → excluded
+//   - ScopeProject + tags match current projectPath 闁?allowed
+//   - ScopeProject + tags don't match current projectPath 闁?excluded (other projects' knowledge)
+//   - ScopeGlobal 闁?allowed (archived experience, universal knowledge)
+//   - user_fact / preference 闁?allowed (user preferences always available)
+//   - Other projects' project_knowledge 闁?excluded
 //
 // This is more restrictive than recallDynamicEntryAllowed (soft filter) which allows
 // all non-ScopeProject entries through.
@@ -1825,6 +1781,9 @@ func recallDynamicEntryAllowedStrict(e Entry, category Category, projectLower, f
 	}
 	// Multi-tenant owner filtering (same as non-strict).
 	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+		return false
+	}
+	if !recallBoundaryAllowed(e, projectLower, filterOwner) {
 		return false
 	}
 	// Category filter (same as non-strict).
@@ -1864,8 +1823,8 @@ func recallDynamicEntryAllowedStrict(e Entry, category Category, projectLower, f
 			}
 		}
 	}
-	// If entry has project tags but none match → exclude (belongs to another project).
-	// If entry has no project tags → allow (generic knowledge).
+	// If entry has project tags but none match 闁?exclude (belongs to another project).
+	// If entry has no project tags 闁?allow (generic knowledge).
 	return !hasProjectTag
 }
 
@@ -1884,6 +1843,23 @@ func filterRecallDynamicCandidatesStrict(candidates []recallScored, category Cat
 	return filtered
 }
 
+func recallBoundaryAllowed(e Entry, projectLower, filterOwner string) bool {
+	if e.Boundary == nil {
+		return true
+	}
+	boundary := e.Boundary
+	if filterOwner != "" && boundary.OwnerID != "" && boundary.OwnerID != filterOwner {
+		return false
+	}
+	if projectLower != "" && boundary.ProjectPath != "" {
+		boundaryProject := semanticNormalizeProjectPath(boundary.ProjectPath)
+		if boundaryProject != "" && !semanticProjectPathMatches(boundaryProject, projectLower) {
+			return false
+		}
+	}
+	return true
+}
+
 func recallCategoryMatches(entryCategory, requested Category) bool {
 	return entryCategory == requested || MapToCanonical(entryCategory) == MapToCanonical(requested)
 }
@@ -1895,8 +1871,14 @@ func limitSearchResults(results []Entry, limit int) []Entry {
 	return append([]Entry(nil), results[:limit]...)
 }
 
-func recallDirectEntryAllowed(e Entry, category Category, projectLower string) bool {
+func recallDirectEntryAllowed(e Entry, category Category, projectLower, filterOwner string) bool {
 	if !e.IsActive() || !recallProjectEntryAllowed(e, projectLower) {
+		return false
+	}
+	if !recallBoundaryAllowed(e, projectLower, filterOwner) {
+		return false
+	}
+	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
 		return false
 	}
 	if category != "" {
@@ -1918,12 +1900,13 @@ func (s *Store) SearchDirectByID(id string) []Entry {
 }
 
 // SearchDirectByIDForProject returns an exact ID match if it is visible in the requested project/category scope.
-func (s *Store) SearchDirectByIDForProject(id string, category Category, projectPath string) []Entry {
+func (s *Store) SearchDirectByIDForProject(id string, category Category, projectPath string, ownerID ...string) []Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	projectLower := semanticNormalizeProjectPath(projectPath)
+	filterOwner := firstOwnerID(ownerID...)
 	for _, e := range s.entries {
-		if e.ID == id && recallDirectEntryAllowed(e, category, projectLower) {
+		if e.ID == id && recallDirectEntryAllowed(e, category, projectLower, filterOwner) {
 			return []Entry{e}
 		}
 	}
@@ -1937,12 +1920,13 @@ func (s *Store) SearchKeyword(query string, category Category, limit int) []Entr
 
 // SearchKeywordForProject performs BM25-only search within the same project
 // visibility contract used by hybrid recall.
-func (s *Store) SearchKeywordForProject(query string, category Category, projectPath string, limit int) []Entry {
+func (s *Store) SearchKeywordForProject(query string, category Category, projectPath string, limit int, ownerID ...string) []Entry {
 	if limit <= 0 {
 		limit = 15
 	}
 	scores := s.bm25.score(query)
 	projectLower := semanticNormalizeProjectPath(projectPath)
+	filterOwner := firstOwnerID(ownerID...)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1953,7 +1937,7 @@ func (s *Store) SearchKeywordForProject(query string, category Category, project
 	}
 	var candidates []scored
 	for _, e := range s.entries {
-		if !recallDynamicEntryAllowed(e, category, projectLower, "") {
+		if !recallDynamicEntryAllowed(e, category, projectLower, filterOwner) {
 			continue
 		}
 		sc := scores[e.ID]
@@ -2460,6 +2444,56 @@ func normalizeEntryTimestamp(e *Entry, fallback time.Time) {
 	}
 }
 
+// insertPreparedEntryLocked appends an already sanitized entry and refreshes all indexes.
+// Caller MUST hold s.mu.Lock. The caller owns identity/dedup policy; this
+// helper owns the common insert mechanics.
+func (s *Store) insertPreparedEntryLocked(entry Entry, hash string, now time.Time, enqueueSemanticDedup bool) error {
+	if entry.ID == "" {
+		entry.ID = generateID()
+	}
+	if enqueueSemanticDedup && len(entry.Embedding) > 0 {
+		if candidate := s.findSemanticDupCandidate(entry.Embedding, entry.Category, entry.OwnerID); candidate != nil {
+			s.enqueuePendingDedup(entry.ID, *candidate)
+		}
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = now
+	}
+	entry.UpdatedAt = now
+	entry.ContentHash = hash
+	if entry.AccessCount == 0 {
+		entry.AccessCount = 1
+	}
+	if entry.Strength == 0 {
+		entry.Strength = 1.0
+	}
+	if entry.Scope == "" {
+		entry.Scope = InferScope(entry.Category)
+	}
+
+	if err := s.persistInsertedEntryLocked(&entry); err != nil {
+		return fmt.Errorf("memory_store: persist new entry: %w", err)
+	}
+
+	s.entries = append(s.entries, entry)
+	s.bm25.addEntry(entry)
+	s.vecIndex.add(entry.ID, entry.Embedding)
+	s.autoLink(entry)
+	s.evictLRU()
+	s.markDirtyLocked()
+	if s.projIndex != nil {
+		s.projIndex.IndexEntry(&entry)
+	}
+	if s.entityIndex != nil {
+		s.entityIndex.IndexEntry(&entry)
+	}
+	if s.semanticGraph != nil {
+		s.semanticGraph.IndexEntry(&entry)
+	}
+	s.rebuildThemeLayerLocked()
+	return nil
+}
+
 func (s *Store) markDirtyLocked() {
 	s.dirty = true
 	s.signalSave()
@@ -2469,7 +2503,6 @@ func (s *Store) persistInsertedEntryLocked(entry *Entry) error {
 	if s.backend != nil {
 		return s.backend.SaveEntry(entry)
 	}
-	s.markDirtyLocked()
 	return nil
 }
 
@@ -2973,7 +3006,11 @@ func (s *Store) ThemeMaintenancePlan(issueLimit int, actionLimit int) ThemeMaint
 }
 
 // OnlineExtractor returns the online extraction pipeline (may be nil).
-func (s *Store) OnlineExtractor() *OnlineExtractor { return s.onlineExtractor }
+func (s *Store) OnlineExtractor() *OnlineExtractor {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.onlineExtractor
+}
 
 // SetOnlineExtractor wires the Mem0-style online extraction pipeline.
 func (s *Store) SetOnlineExtractor(oe *OnlineExtractor) {
@@ -3022,7 +3059,7 @@ func (s *Store) findByEntity(entityName string, category Category, projectPath s
 			if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
 				continue
 			}
-			if !recallDirectEntryAllowed(e, category, projectLower) {
+			if !recallDirectEntryAllowed(e, category, projectLower, ownerID) {
 				continue
 			}
 		}

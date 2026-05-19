@@ -79,6 +79,26 @@ func (m *mockIdentity) ResolveUser(ctx context.Context, platform, uid string) (s
 	return "unified_" + uid, nil
 }
 
+type mockTenantIdentity struct {
+	tenantID string
+	userID   string
+	err      error
+	seen     string
+}
+
+func (m *mockTenantIdentity) ResolveUser(ctx context.Context, platform, uid string) (string, error) {
+	_, userID, err := m.ResolveUserWithTenant(ctx, platform, uid)
+	return userID, err
+}
+
+func (m *mockTenantIdentity) ResolveUserWithTenant(ctx context.Context, platform, uid string) (string, string, error) {
+	m.seen = tenantIDFromContext(ctx)
+	if m.err != nil {
+		return "", "", m.err
+	}
+	return m.tenantID, m.userID, nil
+}
+
 type mockDeviceFinder struct {
 	machineID     string
 	llmConfigured bool
@@ -274,6 +294,63 @@ func TestHandleMessage_RateLimited(t *testing.T) {
 	}
 	if !containsStr(plugin.sentTexts[0], "请求过于频繁") {
 		t.Fatalf("unexpected response: %s", plugin.sentTexts[0])
+	}
+}
+
+func TestHandleMessage_UsesIncomingTenantHintForIdentity(t *testing.T) {
+	resetIncomingDedup()
+	plugin := &mockPlugin{name: "test", caps: CapabilityDeclaration{SupportsRichCard: false}}
+	df := &mockDeviceFinder{machineID: "m1", llmConfigured: true, found: true}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+
+	identity := &mockTenantIdentity{tenantID: "tenant_a", userID: "u1"}
+	adapter := NewAdapter(router, identity)
+	_ = adapter.RegisterPlugin(plugin)
+	adapter.limiter.mu.Lock()
+	adapter.limiter.buckets[tenantUserRuntimeKey("tenant_a", "u1")] = &rateBucket{
+		tokens:   0,
+		refillAt: time.Now().Add(1 * time.Minute),
+	}
+	adapter.limiter.mu.Unlock()
+
+	adapter.HandleMessage(context.Background(), IncomingMessage{
+		TenantID:     "tenant_a",
+		PlatformName: "test",
+		PlatformUID:  "uid1",
+		Text:         "hello",
+	})
+
+	if identity.seen != "tenant_a" {
+		t.Fatalf("expected resolver to see tenant_a, got %q", identity.seen)
+	}
+	plugin.mu.Lock()
+	rateLimited := len(plugin.sentTexts) > 0 && containsStr(plugin.sentTexts[0], "请求过于频繁")
+	plugin.mu.Unlock()
+	if !rateLimited {
+		t.Fatal("expected tenant_a rate limit response")
+	}
+	if !adapter.limiter.allow(tenantUserRuntimeKey("tenant_b", "u1")) {
+		t.Fatal("expected tenant_b user runtime bucket to remain independent")
+	}
+}
+
+func TestIncomingDedupKeyIncludesTenant(t *testing.T) {
+	resetIncomingDedup()
+	msgA := IncomingMessage{TenantID: "tenant_a", PlatformName: "test", PlatformUID: "uid1", MessageID: "msg-1", Text: "hello"}
+	msgB := IncomingMessage{TenantID: "tenant_b", PlatformName: "test", PlatformUID: "uid1", MessageID: "msg-1", Text: "hello"}
+
+	if incomingDedupKey(msgA) == incomingDedupKey(msgB) {
+		t.Fatalf("dedup key should include tenant: %q", incomingDedupKey(msgA))
+	}
+	if isDuplicateIncoming(msgA) {
+		t.Fatal("first tenant_a message should not be duplicate")
+	}
+	if isDuplicateIncoming(msgB) {
+		t.Fatal("same platform message id in tenant_b should not be duplicate")
+	}
+	if !isDuplicateIncoming(msgA) {
+		t.Fatal("second tenant_a message should be duplicate")
 	}
 }
 

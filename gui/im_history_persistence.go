@@ -102,17 +102,21 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 				if refPath != "" {
 					entryTags = append(entryTags, "source_ref")
 				}
-				entry := memory.Entry{
-					Content:    preview,
-					Title:      title,
-					Category:   memory.CategoryTaskArtifact,
-					Tags:       entryTags,
-					Scope:      memory.ScopeProject,
-					OwnerID:    userID, // multi-tenant: associate with the user whose history is being trimmed
-					SourceType: "conversation_trim_ref",
-					SourceURL:  refPath,
+				identityTagCount := len(entryTags)
+				if refPath != "" {
+					entryTags = append(entryTags, "ref:"+refPath)
+					identityTagCount = len(entryTags)
 				}
-				if err := h.memoryStore.Save(entry); err == nil && h.app != nil {
+				_, err = h.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+					Title:            title,
+					Content:          preview,
+					Tags:             entryTags,
+					IdentityTagCount: identityTagCount,
+					OwnerID:          userID,
+					SourceType:       "conversation_trim_ref",
+					SourceURL:        refPath,
+				})
+				if err == nil && h.app != nil {
 					h.app.triggerMemoryPipelineSoon(45 * time.Second)
 				}
 			}
@@ -241,6 +245,9 @@ func (h *IMMessageHandler) classifyPendingUserReplyPrompt(assistantText string) 
 	if assistantText == "" {
 		return false
 	}
+	if !looksLikePendingUserReplyPromptCandidate(assistantText) {
+		return false
+	}
 	if h != nil && h.pendingReplyPromptClassifier != nil {
 		ok, err := h.pendingReplyPromptClassifier(assistantText)
 		if err == nil {
@@ -273,6 +280,13 @@ func (h *IMMessageHandler) classifyPendingUserReplyAnswer(question, answer strin
 	answer = strings.TrimSpace(answer)
 	if question == "" || answer == "" {
 		return false, true
+	}
+	if h != nil && h.pendingReplyAnswerClassifier != nil {
+		ok, err := h.pendingReplyAnswerClassifier(question, answer)
+		if err == nil {
+			return ok, true
+		}
+		log.Printf("[PendingUserReply] answer test classifier failed: %v", err)
 	}
 
 	// When this function is called, pendingFresh=true is already guaranteed by

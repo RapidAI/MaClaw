@@ -287,7 +287,7 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	// Invalidate update cache — installed skill set changed.
+	// Invalidate update cache - installed skill set changed.
 	defer func() {
 		if a.hubUpdCache != nil {
 			a.hubUpdCache.invalidate()
@@ -498,7 +498,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 	nodeModules := filepath.Join(skillDir, "node_modules")
 
 	if _, err := os.Stat(pkgJSON); err == nil {
-		// Has package.json — check if node_modules exists.
+		// Has package.json - check if node_modules exists.
 		if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
 			log.Printf("[skill-deps] installing npm dependencies for %s...", skillName)
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -515,7 +515,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 		}
 	}
 	if _, err := os.Stat(reqTxt); err == nil {
-		// Has requirements.txt — run pip install.
+		// Has requirements.txt - run pip install.
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "pip", "install", "-r", reqTxt)
@@ -613,7 +613,7 @@ func (a *App) RateHubSkill(skillID string, score int) error {
 
 // GetHubRecommendations returns the cached popular skills list for the Hub tab
 // initial state (Wails binding). Returns data from the in-memory cache populated
-// by the 24h RefreshRecommendations ticker — zero HTTP requests.
+// by the 24h RefreshRecommendations ticker - zero HTTP requests.
 func (a *App) GetHubRecommendations() ([]MixedSkillSearchResult, error) {
 	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
@@ -666,11 +666,7 @@ func (a *App) SaveMemory(content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.Save(memory.Entry{
-		Content:  content,
-		Category: memory.Category(category),
-		Tags:     tags,
-	})
+	return a.memoryStore.SaveManualMemory(content, memory.Category(category), tags)
 }
 
 // UpdateMemory modifies an existing memory entry by ID (Wails binding).
@@ -679,7 +675,7 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.Update(id, content, memory.Category(category), tags)
+	return a.memoryStore.UpdateManualMemory(id, content, memory.Category(category), tags)
 }
 
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
@@ -688,7 +684,14 @@ func (a *App) DeleteMemory(id string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	return a.memoryStore.Delete(id)
+	out := memory.HandleTool(a.memoryStore, map[string]interface{}{
+		"action": "delete",
+		"id":     id,
+	}, memory.ToolOptions{})
+	if strings.HasPrefix(out, "delete memory failed:") || strings.HasPrefix(out, "missing ") {
+		return fmt.Errorf("%s", out)
+	}
+	return nil
 }
 
 // CompressMemories runs dedup + LLM compression once and returns a summary (Wails binding).
@@ -697,10 +700,13 @@ func (a *App) CompressMemories() (*memory.CompressResult, error) {
 	if a.memoryStore == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
-	mc := a.getOrCreateCompressor()
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return nil, fmt.Errorf("memory maintenance not initialized")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	result, err := mc.Compress(ctx)
+	result, err := maintenance.Compress(ctx)
 	// Emit event so the frontend refreshes even if the component was
 	// unmounted and remounted (tab switch) during compression.
 	a.emitEvent("memory:compressed", result)
@@ -713,8 +719,11 @@ func (a *App) ListMemoryBackups() ([]MemoryBackupInfo, error) {
 	if a.memoryStore == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
-	mc := a.getOrCreateCompressor()
-	return mc.ListBackups()
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return nil, fmt.Errorf("memory maintenance not initialized")
+	}
+	return maintenance.ListBackups()
 }
 
 // RestoreMemoryBackup replaces the current memory with the named backup and
@@ -724,8 +733,11 @@ func (a *App) RestoreMemoryBackup(backupName string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	mc := a.getOrCreateCompressor()
-	return mc.RestoreBackup(backupName)
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return fmt.Errorf("memory maintenance not initialized")
+	}
+	return maintenance.RestoreBackup(backupName)
 }
 
 // DeleteMemoryBackup removes a backup file by name (Wails binding).
@@ -734,8 +746,11 @@ func (a *App) DeleteMemoryBackup(backupName string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	mc := a.getOrCreateCompressor()
-	return mc.DeleteBackup(backupName)
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return fmt.Errorf("memory maintenance not initialized")
+	}
+	return maintenance.DeleteBackup(backupName)
 }
 
 // SetAutoCompress enables or disables the background auto-compression service (Wails binding).
@@ -744,11 +759,18 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	mc := a.getOrCreateCompressor()
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return fmt.Errorf("memory maintenance not initialized")
+	}
+	var compressorErr error
 	if enabled {
-		mc.Start()
+		compressorErr = maintenance.StartCompressor()
 	} else {
-		mc.Stop()
+		compressorErr = maintenance.StopCompressor()
+	}
+	if compressorErr != nil {
+		return compressorErr
 	}
 	// Persist to config.
 	cfg, err := a.LoadConfig()
@@ -762,18 +784,35 @@ func (a *App) SetAutoCompress(enabled bool) error {
 // GetAutoCompressStatus returns the current state of the auto-compression service (Wails binding).
 func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 	a.ensureInteractionInfra()
-	if a.memoryCompressor == nil {
+	if a.memoryStore == nil {
 		return MemoryCompressorStatus{}
 	}
-	return a.memoryCompressor.Status()
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return MemoryCompressorStatus{}
+	}
+	status, err := maintenance.CompressorStatus()
+	if err != nil {
+		return MemoryCompressorStatus{}
+	}
+	return status
 }
 
 // IsMemoryCompressing returns whether a compression operation is currently in progress (Wails binding).
 func (a *App) IsMemoryCompressing() bool {
-	if a.memoryCompressor == nil {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
 		return false
 	}
-	return a.memoryCompressor.IsCompressing()
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return false
+	}
+	compressing, err := maintenance.IsCompressing()
+	if err != nil {
+		return false
+	}
+	return compressing
 }
 
 // GetMemoryHealth returns an aggregated health report of the memory system (Wails binding).
@@ -856,86 +895,19 @@ func sortCatRows(rows []MemoryStatusCatRow) {
 	}
 }
 
-// InferenceDiagnosticsData holds multi-hop reasoning diagnostics for the frontend.
-type InferenceDiagnosticsData struct {
-	EngineActive     bool                       `json:"engine_active"`
-	RuleCount        int                        `json:"rule_count"`
-	Rules            []InferenceDiagnosticsRule `json:"rules"`
-	LastDerived      []InferenceDiagnosticsFact `json:"last_derived"`
-	SemanticFacts    int                        `json:"semantic_facts"`
-	SemanticEntities int                        `json:"semantic_entities"`
-}
-
-// InferenceDiagnosticsRule describes one inference rule.
-type InferenceDiagnosticsRule struct {
-	Name            string  `json:"name"`
-	Type            string  `json:"type"`
-	Relation        string  `json:"relation,omitempty"`
-	InputRelation1  string  `json:"input_relation1,omitempty"`
-	InputRelation2  string  `json:"input_relation2,omitempty"`
-	OutputRelation  string  `json:"output_relation,omitempty"`
-	MaxChainLength  int     `json:"max_chain_length,omitempty"`
-	ConfidenceDecay float64 `json:"confidence_decay"`
-}
-
-// InferenceDiagnosticsFact describes one derived fact.
-type InferenceDiagnosticsFact struct {
-	Subject     string  `json:"subject"`
-	Predicate   string  `json:"predicate"`
-	Object      string  `json:"object"`
-	RuleName    string  `json:"rule_name"`
-	Confidence  float64 `json:"confidence"`
-	Explanation string  `json:"explanation"`
-	SourceCount int     `json:"source_count"`
-}
+// Inference diagnostics payloads are owned by corelib/memory so GUI/TUI/server
+// hosts share the same projection of the long-term-memory inference layer.
+type InferenceDiagnosticsData = memory.InferenceDiagnosticsData
+type InferenceDiagnosticsRule = memory.InferenceDiagnosticsRule
+type InferenceDiagnosticsFact = memory.InferenceDiagnosticsFact
 
 // GetInferenceDiagnostics returns multi-hop reasoning engine diagnostics (Wails binding).
 func (a *App) GetInferenceDiagnostics() *InferenceDiagnosticsData {
 	a.ensureInteractionInfra()
-	result := &InferenceDiagnosticsData{}
 	if a.memoryStore == nil {
-		return result
+		return &InferenceDiagnosticsData{}
 	}
-	ie := a.memoryStore.InferenceEngine()
-	if ie == nil {
-		return result
-	}
-	result.EngineActive = true
-	result.RuleCount = len(ie.Rules())
-	for _, r := range ie.Rules() {
-		dr := InferenceDiagnosticsRule{
-			Name:            r.Name,
-			Type:            string(r.Type),
-			ConfidenceDecay: r.ConfidenceDecay,
-		}
-		if r.Type == memory.RuleTransitive {
-			dr.Relation = r.Relation
-			dr.MaxChainLength = r.MaxChainLength
-		} else {
-			dr.InputRelation1 = r.InputRelation1
-			dr.InputRelation2 = r.InputRelation2
-			dr.OutputRelation = r.OutputRelation
-		}
-		result.Rules = append(result.Rules, dr)
-	}
-	for _, df := range a.memoryStore.LastDerivedFacts() {
-		result.LastDerived = append(result.LastDerived, InferenceDiagnosticsFact{
-			Subject:     df.Subject,
-			Predicate:   df.Predicate,
-			Object:      df.Object,
-			RuleName:    df.RuleName,
-			Confidence:  df.Confidence,
-			Explanation: df.Explanation,
-			SourceCount: len(df.SourceFacts),
-		})
-	}
-	sg := a.memoryStore.SemanticGraph()
-	if sg != nil {
-		entities, facts, _ := sg.Stats()
-		result.SemanticFacts = facts
-		result.SemanticEntities = entities
-	}
-	return result
+	return a.memoryStore.InferenceDiagnosticsForHost()
 }
 
 // TestInference runs the inference engine on a query and returns derived facts (Wails binding).
@@ -944,55 +916,34 @@ func (a *App) TestInference(query string) []InferenceDiagnosticsFact {
 	if a.memoryStore == nil || query == "" {
 		return nil
 	}
-	ie := a.memoryStore.InferenceEngine()
-	if ie == nil {
-		return nil
-	}
-	expanded := memory.ExpandQuery(query)
-	if len(expanded.Entities) == 0 {
-		return nil
-	}
 	projectPath := ""
 	if a.contextResolver != nil {
 		projectPath, _ = a.contextResolver.ResolveProject()
 	}
-	derived := ie.Infer(expanded.Entities, memory.InferenceOptions{
+	return a.memoryStore.TestInferenceForHost(query, memory.InferenceOptions{
 		ProjectPath:     projectPath,
 		MaxDerived:      20,
 		MinConfidence:   0.40,
 		MaxVisitedFacts: 200,
 	})
-	var results []InferenceDiagnosticsFact
-	for _, df := range derived {
-		results = append(results, InferenceDiagnosticsFact{
-			Subject:     df.Subject,
-			Predicate:   df.Predicate,
-			Object:      df.Object,
-			RuleName:    df.RuleName,
-			Confidence:  df.Confidence,
-			Explanation: df.Explanation,
-			SourceCount: len(df.SourceFacts),
-		})
-	}
-	return results
 }
 
 // GetMemoryMaxBackups returns the configured max backup retention count (Wails binding).
 func (a *App) GetMemoryMaxBackups() int {
 	cfg, err := a.LoadConfig()
 	if err != nil || cfg.MemoryMaxBackups <= 0 {
-		return defaultMaxBackups
+		return memory.DefaultMaxBackups
 	}
-	if cfg.MemoryMaxBackups < minBackups {
-		return minBackups
+	if cfg.MemoryMaxBackups < memory.MinBackups {
+		return memory.MinBackups
 	}
 	return cfg.MemoryMaxBackups
 }
 
 // SetMemoryMaxBackups updates the max backup retention count and persists it (Wails binding).
 func (a *App) SetMemoryMaxBackups(n int) error {
-	if n < 8 {
-		n = 8
+	if n < memory.MinBackups {
+		n = memory.MinBackups
 	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -1002,9 +953,17 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if err := a.SaveConfig(cfg); err != nil {
 		return err
 	}
-	mc := a.getOrCreateCompressor()
-	mc.SetMaxBackups(n)
-	return nil
+	if a.memoryStore == nil {
+		a.ensureMemoryStore()
+	}
+	if a.memoryStore == nil {
+		return nil
+	}
+	maintenance := a.getOrCreateMemoryMaintenance()
+	if maintenance == nil {
+		return nil
+	}
+	return maintenance.SetMaxBackups(n)
 }
 
 // ListArchiveMemories returns archived (cold storage) entries filtered by category and keyword (Wails binding).
@@ -1124,18 +1083,38 @@ func (a *App) GetSessionCount() int {
 	return n
 }
 
+// getOrCreateMemoryMaintenance returns the singleton corelib memory maintenance facade,
+// creating it if needed.
+func (a *App) getOrCreateMemoryMaintenance() *memory.Maintenance {
+	if a == nil || a.memoryStore == nil {
+		return nil
+	}
+	_ = a.getOrCreateCompressor()
+	return a.memoryMaintenance
+}
+
 // getOrCreateCompressor returns the singleton MemoryCompressor, creating it if needed.
 func (a *App) getOrCreateCompressor() *MemoryCompressor {
+	if a == nil || a.memoryStore == nil {
+		return nil
+	}
 	a.compressorMu.Lock()
-	defer a.compressorMu.Unlock()
-	if a.memoryCompressor == nil {
-		cfg := a.GetMaclawLLMConfig()
-		a.memoryCompressor = NewMemoryCompressor(a.memoryStore, cfg, a)
-		// Apply configured backup limit.
-		if appCfg, err := a.LoadConfig(); err == nil && appCfg.MemoryMaxBackups > 0 {
-			a.memoryCompressor.SetMaxBackups(appCfg.MemoryMaxBackups)
+	needsCreate := a.memoryCompressor == nil || a.memoryMaintenance == nil
+	oldCompressor := a.memoryCompressor
+	a.compressorMu.Unlock()
+
+	if needsCreate {
+		compressor := a.newMemoryCompressor(a.memoryStore)
+		a.compressorMu.Lock()
+		a.memoryCompressor = compressor
+		a.compressorMu.Unlock()
+		if oldCompressor != nil && oldCompressor != compressor {
+			oldCompressor.Stop()
 		}
 	}
+
+	a.compressorMu.Lock()
+	defer a.compressorMu.Unlock()
 	return a.memoryCompressor
 }
 
@@ -1695,7 +1674,7 @@ func (a *App) runAIAssistantMessageAsync(req AIAssistantSendRequest, hubClient *
 	}
 	// Trace enrichment and gossip detection are non-critical post-processing.
 	// Run them asynchronously so the Wails binding returns immediately after
-	// the agent loop completes — this unblocks the frontend input box which
+	// the agent loop completes - this unblocks the frontend input box which
 	// was locked while awaiting this synchronous call.
 	// Note: resp.TraceSummary/TraceEventCount/EvidenceCount are already
 	// populated by finalizeTraceResult inside the agent loop. The async
@@ -1719,7 +1698,7 @@ func (a *App) runAIAssistantMessageAsync(req AIAssistantSendRequest, hubClient *
 	}
 	streamTailElapsed = handlerTailElapsed + memorySaveElapsed + capabilityGapElapsed + fileMaterializeElapsed + finalizeTraceElapsed
 	// Per-message timing log (fires for every message, not just the first).
-	// This is the primary diagnostic tool for "user sent message → response slow" issues.
+	// This is the primary diagnostic tool for "user sent message -> response slow" issues.
 	log.Printf("[AI assistant] agent_loop=%v first_token=%v ensure_infra=%v ensure_handler=%v pre_llm=%v llm_http=%v llm_first_sse=%v stream_tail=%v text_len=%d",
 		agentLoopElapsed, firstTokenElapsed, ensureInteractionInfraElapsed, ensureIMHandlerElapsed,
 		preLLMPrepElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, streamTailElapsed,

@@ -409,6 +409,12 @@ func (p *RemoteGatewayPlugin) sendToGatewayOwner(replyType string, payload map[s
 	return err
 }
 
+func (p *RemoteGatewayPlugin) sendBindingText(ctx context.Context, platformUID, text string) {
+	if err := p.SendText(ctx, UserTarget{PlatformUID: platformUID}, text); err != nil {
+		log.Printf("[remote-gw/%s] send binding text failed: %v", p.platform, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Auto-bind gateway owner
 // ---------------------------------------------------------------------------
@@ -475,10 +481,19 @@ func (p *RemoteGatewayPlugin) handleBindingFlow(platformUID, text string) bool {
 }
 
 func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
-	tenantID := store.DefaultTenantID
+	ctx := context.Background()
+	tenantID, user, err := ResolveUniqueTenantByEmail(ctx, p.users, email)
+	if err == ErrAmbiguousTenantEmail {
+		p.sendBindingText(ctx, platformUID, "This email belongs to multiple tenants; tenant_id is required.")
+		return
+	}
+	if err != nil || user == nil {
+		p.sendBindingText(ctx, platformUID, "No Hub user found for this email.")
+		return
+	}
 	// Check if already bound
 	p.bindMu.RLock()
-	existing := p.bindings[platformUID]
+	existing := decodeRemoteBindingValue(p.bindings[platformUID]).Email
 	p.bindMu.RUnlock()
 	if existing != "" {
 		_ = p.SendText(context.Background(), UserTarget{PlatformUID: platformUID},
@@ -487,7 +502,7 @@ func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
 	}
 
 	// Verify email exists in Hub
-	user, err := p.users.GetByTenantEmail(context.Background(), tenantID, email)
+	user, err = p.users.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil || user == nil {
 		_ = p.SendText(context.Background(), UserTarget{PlatformUID: platformUID},
 			"该邮箱未在 Hub 注册，请检查后重试。")
@@ -662,6 +677,9 @@ func decodeRemoteBindingValue(raw string) remoteBindingInfo {
 }
 
 func (p *RemoteGatewayPlugin) loadBindings() {
+	if p.system == nil {
+		return
+	}
 	key := fmt.Sprintf("im_%s_bindings", p.platform)
 	raw, err := p.system.Get(context.Background(), key)
 	if err != nil || raw == "" {
@@ -676,6 +694,9 @@ func (p *RemoteGatewayPlugin) loadBindings() {
 }
 
 func (p *RemoteGatewayPlugin) saveBindings() {
+	if p.system == nil {
+		return
+	}
 	p.bindMu.RLock()
 	data, _ := json.Marshal(p.bindings)
 	p.bindMu.RUnlock()

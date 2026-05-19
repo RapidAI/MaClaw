@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 )
 
@@ -29,9 +30,10 @@ func NewWorkflowStore(db *sql.DB) *WorkflowStoreSQLite {
 
 func (s *WorkflowStoreSQLite) CreateWorkflow(ctx context.Context, def *workflow.WorkflowDefinition) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO workflow_definitions (id, owner_id, name, description, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workflow_definitions (id, tenant_id, owner_id, name, description, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		def.ID,
+		store.TenantIDFromContext(ctx),
 		def.OwnerID,
 		def.Name,
 		def.Description,
@@ -43,14 +45,14 @@ func (s *WorkflowStoreSQLite) CreateWorkflow(ctx context.Context, def *workflow.
 
 func (s *WorkflowStoreSQLite) GetWorkflow(ctx context.Context, id string) (*workflow.WorkflowDefinition, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, owner_id, name, description, created_at, updated_at
-		 FROM workflow_definitions WHERE id = ?`, id)
+		`SELECT id, tenant_id, owner_id, name, description, created_at, updated_at
+		 FROM workflow_definitions WHERE id = ? AND tenant_id = ?`, id, store.TenantIDFromContext(ctx))
 
 	var (
 		def                  workflow.WorkflowDefinition
 		createdAt, updatedAt string
 	)
-	if err := row.Scan(&def.ID, &def.OwnerID, &def.Name, &def.Description, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -66,8 +68,8 @@ func (s *WorkflowStoreSQLite) ListWorkflows(ctx context.Context, ownerID string)
 		return nil, errors.New("ownerID is required")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, owner_id, name, description, created_at, updated_at
-		 FROM workflow_definitions WHERE owner_id = ? ORDER BY updated_at DESC`, ownerID)
+		`SELECT id, tenant_id, owner_id, name, description, created_at, updated_at
+		 FROM workflow_definitions WHERE tenant_id = ? AND owner_id = ? ORDER BY updated_at DESC`, store.TenantIDFromContext(ctx), ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +81,7 @@ func (s *WorkflowStoreSQLite) ListWorkflows(ctx context.Context, ownerID string)
 			def                  workflow.WorkflowDefinition
 			createdAt, updatedAt string
 		)
-		if err := rows.Scan(&def.ID, &def.OwnerID, &def.Name, &def.Description, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&def.ID, &def.TenantID, &def.OwnerID, &def.Name, &def.Description, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		def.CreatedAt = mustParseTime(createdAt)
@@ -95,11 +97,12 @@ func (s *WorkflowStoreSQLite) UpdateWorkflow(ctx context.Context, def *workflow.
 		return errors.New("workflow definition is required")
 	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE workflow_definitions SET name = ?, description = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE workflow_definitions SET name = ?, description = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
 		def.Name,
 		def.Description,
 		def.UpdatedAt.UTC().Format(time.RFC3339),
 		def.ID,
+		store.TenantIDFromContext(ctx),
 	)
 	if err != nil {
 		return err
@@ -117,7 +120,7 @@ func (s *WorkflowStoreSQLite) DeleteWorkflow(ctx context.Context, id string) err
 
 	var running int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM workflow_instances WHERE workflow_id = ? AND status IN ('running', 'blocked')`, id,
+		`SELECT COUNT(*) FROM workflow_instances WHERE tenant_id = ? AND workflow_id = ? AND status IN ('running', 'blocked')`, store.TenantIDFromContext(ctx), id,
 	).Scan(&running); err != nil {
 		return err
 	}
@@ -125,10 +128,10 @@ func (s *WorkflowStoreSQLite) DeleteWorkflow(ctx context.Context, id string) err
 		return errors.New("cannot delete workflow with running instances")
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_versions WHERE workflow_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_versions WHERE workflow_id = ? AND workflow_id IN (SELECT id FROM workflow_definitions WHERE tenant_id = ?)`, id, store.TenantIDFromContext(ctx)); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM workflow_definitions WHERE id = ?`, id)
+	res, err := tx.ExecContext(ctx, `DELETE FROM workflow_definitions WHERE id = ? AND tenant_id = ?`, id, store.TenantIDFromContext(ctx))
 	if err != nil {
 		return err
 	}
@@ -186,15 +189,17 @@ func (s *WorkflowStoreSQLite) CreateVersion(ctx context.Context, ver *workflow.W
 
 func (s *WorkflowStoreSQLite) GetVersion(ctx context.Context, id string) (*workflow.WorkflowVersion, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions WHERE id = ?`, id)
+		`SELECT v.id, v.workflow_id, v.version_number, v.status, v.graph_json, v.submitted_at, v.published_at, v.rejection_reason, v.created_at, v.updated_at
+		 FROM workflow_versions v JOIN workflow_definitions d ON d.id = v.workflow_id
+		 WHERE v.id = ? AND d.tenant_id = ?`, id, store.TenantIDFromContext(ctx))
 	return s.scanVersion(row)
 }
 
 func (s *WorkflowStoreSQLite) GetPublishedVersion(ctx context.Context, workflowID string) (*workflow.WorkflowVersion, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions WHERE workflow_id = ? AND status = 'published'`, workflowID)
+		`SELECT v.id, v.workflow_id, v.version_number, v.status, v.graph_json, v.submitted_at, v.published_at, v.rejection_reason, v.created_at, v.updated_at
+		 FROM workflow_versions v JOIN workflow_definitions d ON d.id = v.workflow_id
+		 WHERE v.workflow_id = ? AND v.status = 'published' AND d.tenant_id = ?`, workflowID, store.TenantIDFromContext(ctx))
 	return s.scanVersion(row)
 }
 
@@ -204,31 +209,32 @@ func (s *WorkflowStoreSQLite) UpdateVersionStatus(ctx context.Context, id string
 	switch status {
 	case workflow.VersionPendingReview:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = ?, submitted_at = ?, updated_at = ? WHERE id = ?`,
-			string(status), now, now, id)
+			`UPDATE workflow_versions SET status = ?, submitted_at = ?, updated_at = ? WHERE id = ? AND workflow_id IN (SELECT id FROM workflow_definitions WHERE tenant_id = ?)`,
+			string(status), now, now, id, store.TenantIDFromContext(ctx))
 		return err
 	case workflow.VersionPublished:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = ?, published_at = ?, updated_at = ? WHERE id = ?`,
-			string(status), now, now, id)
+			`UPDATE workflow_versions SET status = ?, published_at = ?, updated_at = ? WHERE id = ? AND workflow_id IN (SELECT id FROM workflow_definitions WHERE tenant_id = ?)`,
+			string(status), now, now, id, store.TenantIDFromContext(ctx))
 		return err
 	case workflow.VersionRejected:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = ?, rejection_reason = ?, updated_at = ? WHERE id = ?`,
-			string(status), reason, now, id)
+			`UPDATE workflow_versions SET status = ?, rejection_reason = ?, updated_at = ? WHERE id = ? AND workflow_id IN (SELECT id FROM workflow_definitions WHERE tenant_id = ?)`,
+			string(status), reason, now, id, store.TenantIDFromContext(ctx))
 		return err
 	default:
 		_, err := s.db.ExecContext(ctx,
-			`UPDATE workflow_versions SET status = ?, updated_at = ? WHERE id = ?`,
-			string(status), now, id)
+			`UPDATE workflow_versions SET status = ?, updated_at = ? WHERE id = ? AND workflow_id IN (SELECT id FROM workflow_definitions WHERE tenant_id = ?)`,
+			string(status), now, id, store.TenantIDFromContext(ctx))
 		return err
 	}
 }
 
 func (s *WorkflowStoreSQLite) ListVersions(ctx context.Context, workflowID string) ([]workflow.WorkflowVersion, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions WHERE workflow_id = ? ORDER BY created_at DESC`, workflowID)
+		`SELECT v.id, v.workflow_id, v.version_number, v.status, v.graph_json, v.submitted_at, v.published_at, v.rejection_reason, v.created_at, v.updated_at
+		 FROM workflow_versions v JOIN workflow_definitions d ON d.id = v.workflow_id
+		 WHERE v.workflow_id = ? AND d.tenant_id = ? ORDER BY v.created_at DESC`, workflowID, store.TenantIDFromContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +252,7 @@ func (s *WorkflowStoreSQLite) ListVersions(ctx context.Context, workflowID strin
 }
 
 // ---------------------------------------------------------------------------
-// ListPendingReviews — paginated, sorted by submitted_at ASC (oldest first)
+// ListPendingReviews 閳?paginated, sorted by submitted_at ASC (oldest first)
 // ---------------------------------------------------------------------------
 
 func (s *WorkflowStoreSQLite) ListPendingReviews(ctx context.Context, page, pageSize int) ([]workflow.WorkflowVersion, int, error) {
@@ -258,24 +264,24 @@ func (s *WorkflowStoreSQLite) ListPendingReviews(ctx context.Context, page, page
 	}
 	offset := (page - 1) * pageSize
 
-	// Get total count
 	var total int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM workflow_versions WHERE status = 'pending_review'`).Scan(&total)
+		`SELECT COUNT(*) FROM workflow_versions v JOIN workflow_definitions d ON d.id = v.workflow_id WHERE v.status = 'pending_review' AND d.tenant_id = ?`,
+		store.TenantIDFromContext(ctx),
+	).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
-
 	if total == 0 {
 		return nil, 0, nil
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at
-		 FROM workflow_versions
-		 WHERE status = 'pending_review'
-		 ORDER BY submitted_at ASC
-		 LIMIT ? OFFSET ?`, pageSize, offset)
+		`SELECT v.id, v.workflow_id, v.version_number, v.status, v.graph_json, v.submitted_at, v.published_at, v.rejection_reason, v.created_at, v.updated_at
+		 FROM workflow_versions v JOIN workflow_definitions d ON d.id = v.workflow_id
+		 WHERE v.status = 'pending_review' AND d.tenant_id = ?
+		 ORDER BY v.submitted_at ASC
+		 LIMIT ? OFFSET ?`, store.TenantIDFromContext(ctx), pageSize, offset)
 	if err != nil {
 		return nil, 0, err
 	}

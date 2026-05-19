@@ -115,10 +115,8 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		fmt.Fprintln(os.Stderr, tuiFormat(tuiConfigLang(appCfg), "incompleteRemoteActivate", strings.ToLower(brand.Current().DisplayName)))
 	}
 
-	// Initialize memory store (shared with GUI 鈥?same ~/.maclaw/memory/).
-	memoryDir := filepath.Join(dataDir, "memory")
-	os.MkdirAll(memoryDir, 0755)
-	memStore, err := memory.NewStoreWithMode(memoryDir, memory.StoreModeAuto)
+	// Initialize memory store (shared with GUI and MaClawSrv via corelib).
+	memStore, err := memory.OpenDataDirStore(dataDir, memory.StoreModeAuto)
 	if err != nil {
 		logger.Warn("memory store init failed: %v", err)
 	}
@@ -2233,10 +2231,7 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 
 	// User fact summary.
 	if app.memoryStore != nil {
-		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(memory.UserFactSummaryPromptOptions{
-			Template: tuiBtwSectionFormat(lang, "userInfo"),
-			MaxRunes: 400,
-		}))
+		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(memory.UserFactTemplatePromptOptions(tuiBtwSectionFormat(lang, "userInfo"))))
 	}
 
 	// Proactive memory recall (read-only, no side effects).

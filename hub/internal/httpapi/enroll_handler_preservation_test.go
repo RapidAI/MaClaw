@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -66,6 +67,10 @@ type stubInvitationValidator struct {
 }
 
 func (s *stubInvitationValidator) IsRequired(_ context.Context) (bool, error) {
+	return s.required, nil
+}
+
+func (s *stubInvitationValidator) IsRequiredForTenant(_ context.Context, _ string) (bool, error) {
 	return s.required, nil
 }
 
@@ -382,6 +387,268 @@ func TestEnrollStartHandler_Preservation_SuccessResponseFields(t *testing.T) {
 	if result["email"] != "fields-test@example.com" {
 		t.Errorf("email: got %q, want %q", result["email"], "fields-test@example.com")
 	}
+}
+
+func TestEnrollStartAutoResolvesUniqueTenantByEmail(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	ctx := context.Background()
+	user, err := identity.ManualBindForTenant(auth.WithTenant(ctx, "tenant_acme"), "tenant_acme", "device@example.com")
+	if err != nil {
+		t.Fatalf("manual bind tenant user: %v", err)
+	}
+
+	handler := EnrollStartHandler(identity, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/start", strings.NewReader(`{"email":"device@example.com","machine_name":"desktop","platform":"windows","client_id":"legacy-client"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enroll status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var result struct {
+		TenantID  string `json:"tenant_id"`
+		MachineID string `json:"machine_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.TenantID != "tenant_acme" || result.MachineID == "" {
+		t.Fatalf("expected tenant_acme enrollment response, got %s", rr.Body.String())
+	}
+	machine, err := st.Machines.GetByID(ctx, result.MachineID)
+	if err != nil {
+		t.Fatalf("load machine: %v", err)
+	}
+	if machine == nil || machine.TenantID != "tenant_acme" || machine.UserID != user.ID {
+		t.Fatalf("expected tenant_acme machine for bound user, got %+v", machine)
+	}
+	defaultMachines, err := st.Machines.ListByTenant(ctx, store.DefaultTenantID)
+	if err != nil {
+		t.Fatalf("list default machines: %v", err)
+	}
+	if len(defaultMachines) != 0 {
+		t.Fatalf("default tenant should not receive machine, got %+v", defaultMachines)
+	}
+}
+
+func TestEnrollStartRejectsAmbiguousTenantEmailWithoutHint(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	ctx := context.Background()
+	for _, tenantID := range []string{"tenant_acme", "tenant_beta"} {
+		time.Sleep(time.Nanosecond)
+		if _, err := identity.ManualBindForTenant(auth.WithTenant(ctx, tenantID), tenantID, "ambiguous-device@example.com"); err != nil {
+			t.Fatalf("manual bind %s: %v", tenantID, err)
+		}
+	}
+
+	handler := EnrollStartHandler(identity, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/start", strings.NewReader(`{"email":"ambiguous-device@example.com","machine_name":"desktop","platform":"windows","client_id":"legacy-client"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "TENANT_AMBIGUOUS") {
+		t.Fatalf("expected tenant ambiguous response, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	for _, tenantID := range []string{"tenant_acme", "tenant_beta", store.DefaultTenantID} {
+		machines, err := st.Machines.ListByTenant(ctx, tenantID)
+		if err != nil {
+			t.Fatalf("list machines for %s: %v", tenantID, err)
+		}
+		if len(machines) != 0 {
+			t.Fatalf("ambiguous request should not create machine for %s, got %+v", tenantID, machines)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/enroll/start?tenant_id=tenant_beta", strings.NewReader(`{"email":"ambiguous-device@example.com","machine_name":"desktop","platform":"windows","client_id":"legacy-client"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("tenant hinted enroll status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var hinted struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &hinted); err != nil {
+		t.Fatalf("decode hinted response: %v", err)
+	}
+	if hinted.TenantID != "tenant_beta" {
+		t.Fatalf("expected hinted tenant_beta response, got %s", rr.Body.String())
+	}
+	machines, err := st.Machines.ListByTenant(ctx, "tenant_beta")
+	if err != nil {
+		t.Fatalf("list tenant_beta machines: %v", err)
+	}
+	if len(machines) != 1 {
+		t.Fatalf("expected tenant_beta machine after hint, got %+v", machines)
+	}
+	machines, err = st.Machines.ListByTenant(ctx, "tenant_acme")
+	if err != nil {
+		t.Fatalf("list tenant_acme machines: %v", err)
+	}
+	if len(machines) != 0 {
+		t.Fatalf("tenant hint should not create tenant_acme machine, got %+v", machines)
+	}
+}
+
+func TestEmailRequestLoginAutoResolvesUniqueTenantByEmail(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	ctx := context.Background()
+	if _, err := identity.ManualBindForTenant(auth.WithTenant(ctx, "tenant_acme"), "tenant_acme", "legacy@example.com"); err != nil {
+		t.Fatalf("manual bind tenant user: %v", err)
+	}
+
+	handler := EmailRequestLoginHandler(identity)
+	req := httptest.NewRequest(http.MethodPost, "/api/email/request-login", strings.NewReader(`{"email":"legacy@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("request login status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if token, err := st.LoginTokens.GetPendingByTenantEmail(ctx, "tenant_acme", "legacy@example.com"); err != nil || token == nil {
+		t.Fatalf("expected tenant_acme pending token, token=%+v err=%v", token, err)
+	}
+	var result struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.TenantID != "tenant_acme" {
+		t.Fatalf("expected resolved tenant_id in login response, got %q body=%s", result.TenantID, rr.Body.String())
+	}
+	if token, err := st.LoginTokens.GetPendingByTenantEmail(ctx, store.DefaultTenantID, "legacy@example.com"); err != nil || token != nil {
+		t.Fatalf("default tenant should not receive token, token=%+v err=%v", token, err)
+	}
+}
+
+func TestEmailRequestLoginRejectsAmbiguousTenantEmailWithoutHint(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	ctx := context.Background()
+	for _, tenantID := range []string{"tenant_acme", "tenant_beta"} {
+		time.Sleep(time.Nanosecond)
+		if _, err := identity.ManualBindForTenant(auth.WithTenant(ctx, tenantID), tenantID, "shared@example.com"); err != nil {
+			t.Fatalf("manual bind %s: %v", tenantID, err)
+		}
+	}
+
+	handler := EmailRequestLoginHandler(identity)
+	req := httptest.NewRequest(http.MethodPost, "/api/email/request-login", strings.NewReader(`{"email":"shared@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "TENANT_AMBIGUOUS") {
+		t.Fatalf("expected tenant ambiguous response, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	for _, tenantID := range []string{"tenant_acme", "tenant_beta", store.DefaultTenantID} {
+		if token, err := st.LoginTokens.GetPendingByTenantEmail(ctx, tenantID, "shared@example.com"); err != nil || token != nil {
+			t.Fatalf("ambiguous request should not create token for %s, token=%+v err=%v", tenantID, token, err)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/email/request-login?tenant_id=tenant_beta", strings.NewReader(`{"email":"shared@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("tenant hinted request status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if token, err := st.LoginTokens.GetPendingByTenantEmail(ctx, "tenant_beta", "shared@example.com"); err != nil || token == nil {
+		t.Fatalf("expected tenant_beta token after hint, token=%+v err=%v", token, err)
+	}
+	var hintedResult struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &hintedResult); err != nil {
+		t.Fatalf("decode hinted response: %v", err)
+	}
+	if hintedResult.TenantID != "tenant_beta" {
+		t.Fatalf("expected hinted tenant_id in login response, got %q body=%s", hintedResult.TenantID, rr.Body.String())
+	}
+	if token, err := st.LoginTokens.GetPendingByTenantEmail(ctx, "tenant_acme", "shared@example.com"); err != nil || token != nil {
+		t.Fatalf("tenant hint should not create tenant_acme token, token=%+v err=%v", token, err)
+	}
+}
+
+func TestEmailConfirmAndPollResponsesIncludeTenantID(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	ctx := context.Background()
+	if _, err := identity.ManualBindForTenant(auth.WithTenant(ctx, "tenant_acme"), "tenant_acme", "confirm@example.com"); err != nil {
+		t.Fatalf("manual bind tenant user: %v", err)
+	}
+
+	reqLogin, err := identity.RequestEmailLogin(auth.WithTenant(ctx, "tenant_acme"), "confirm@example.com")
+	if err != nil {
+		t.Fatalf("request login: %v", err)
+	}
+	if reqLogin.TenantID != "tenant_acme" {
+		t.Fatalf("expected request login tenant_id, got %+v", reqLogin)
+	}
+	rawToken := extractDevConfirmToken(t, reqLogin.Message)
+
+	confirmReq := httptest.NewRequest(http.MethodPost, "/api/email/confirm-login", strings.NewReader(`{"token":"`+rawToken+`"}`))
+	confirmReq.Header.Set("Content-Type", "application/json")
+	confirmRec := httptest.NewRecorder()
+	EmailConfirmLoginHandler(identity).ServeHTTP(confirmRec, confirmReq)
+	if confirmRec.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", confirmRec.Code, confirmRec.Body.String())
+	}
+	var confirmResp struct {
+		TenantID string `json:"tenant_id"`
+		User     struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(confirmRec.Body.Bytes(), &confirmResp); err != nil {
+		t.Fatalf("decode confirm response: %v", err)
+	}
+	if confirmResp.TenantID != "tenant_acme" || confirmResp.User.TenantID != "tenant_acme" {
+		t.Fatalf("expected confirm response tenant_id, got %s", confirmRec.Body.String())
+	}
+
+	reqLogin, err = identity.RequestEmailLogin(auth.WithTenant(ctx, "tenant_acme"), "confirm@example.com")
+	if err != nil {
+		t.Fatalf("request login for poll: %v", err)
+	}
+	rawToken = extractDevConfirmToken(t, reqLogin.Message)
+	if _, _, err := identity.ConfirmEmailLogin(ctx, rawToken); err != nil {
+		t.Fatalf("confirm for poll: %v", err)
+	}
+	pollReq := httptest.NewRequest(http.MethodPost, "/api/email/poll-login", strings.NewReader(`{"poll_id":"`+reqLogin.PollID+`"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollRec := httptest.NewRecorder()
+	EmailPollLoginHandler(identity).ServeHTTP(pollRec, pollReq)
+	if pollRec.Code != http.StatusOK {
+		t.Fatalf("poll status=%d body=%s", pollRec.Code, pollRec.Body.String())
+	}
+	var pollResp struct {
+		Status   string `json:"status"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal(pollRec.Body.Bytes(), &pollResp); err != nil {
+		t.Fatalf("decode poll response: %v", err)
+	}
+	if pollResp.Status != "confirmed" || pollResp.TenantID != "tenant_acme" {
+		t.Fatalf("expected poll response tenant_id, got %s", pollRec.Body.String())
+	}
+}
+
+func extractDevConfirmToken(t *testing.T, message string) string {
+	t.Helper()
+	const prefix = "Use this confirm URL for development: "
+	if !strings.HasPrefix(message, prefix) {
+		t.Fatalf("unexpected confirm message: %q", message)
+	}
+	parsed, err := url.Parse(strings.TrimPrefix(message, prefix))
+	if err != nil {
+		t.Fatalf("parse confirm URL: %v", err)
+	}
+	token := parsed.Query().Get("token")
+	if token == "" {
+		t.Fatalf("missing token in confirm URL: %s", message)
+	}
+	return token
 }
 
 func TestEnrollStartHandler_Preservation_VIPLookupUsesCache(t *testing.T) {

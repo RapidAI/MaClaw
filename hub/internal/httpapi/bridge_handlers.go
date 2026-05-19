@@ -21,14 +21,14 @@ const bridgeChannelsConfigKey = "openclaw_bridge_channels"
 
 // KnownChannel describes a supported OpenClaw channel plugin.
 type KnownChannel struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	NameZH      string   `json:"name_zh"`
-	Package     string   `json:"package"`     // npm package name
-	AltPackage  string   `json:"alt_package"` // fallback package name
-	Fields      []Field  `json:"fields"`
-	Description string   `json:"description"`
-	DescZH      string   `json:"desc_zh"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	NameZH      string  `json:"name_zh"`
+	Package     string  `json:"package"`     // npm package name
+	AltPackage  string  `json:"alt_package"` // fallback package name
+	Fields      []Field `json:"fields"`
+	Description string  `json:"description"`
+	DescZH      string  `json:"desc_zh"`
 }
 
 type Field struct {
@@ -119,6 +119,7 @@ var bridgeInstallMu sync.Mutex
 // GetBridgeChannelsHandler returns the list of known channels and their current config.
 func GetBridgeChannelsHandler(system store.SystemSettingsRepository, bridgeDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		saved := loadChannelStates(r, system)
 		type channelResp struct {
 			KnownChannel
@@ -147,6 +148,7 @@ func GetBridgeChannelsHandler(system store.SystemSettingsRepository, bridgeDir s
 // package if needed, and regenerates the bridge config.json.
 func SaveBridgeChannelHandler(system store.SystemSettingsRepository, bridgeDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		var req struct {
 			ID      string            `json:"id"`
 			Enabled bool              `json:"enabled"`
@@ -218,7 +220,7 @@ func SaveBridgeChannelHandler(system store.SystemSettingsRepository, bridgeDir s
 
 		// Regenerate bridge config.json
 		configErr := ""
-		if bridgeDir != "" {
+		if shouldWriteSharedBridgeConfig(r, bridgeDir) {
 			if err := writeBridgeConfig(r, system, bridgeDir, saved); err != nil {
 				configErr = err.Error()
 			}
@@ -235,6 +237,7 @@ func SaveBridgeChannelHandler(system store.SystemSettingsRepository, bridgeDir s
 // BridgeStatusHandler checks if the bridge is reachable and returns its status.
 func BridgeStatusHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system = scopedSystemSettingsForRequest(r, system)
 		cfg := loadOpenclawIMConfig(r, system)
 		webhookURL := cfg.WebhookURL
 		if webhookURL == "" {
@@ -348,6 +351,9 @@ func npmInstallPackage(bridgeDir, pkg string) error {
 	return nil
 }
 
+func shouldWriteSharedBridgeConfig(r *http.Request, bridgeDir string) bool {
+	return strings.TrimSpace(bridgeDir) != "" && !isTenantScopedAdminRequest(r)
+}
 func writeBridgeConfig(r *http.Request, system store.SystemSettingsRepository, bridgeDir string, channels map[string]ChannelState) error {
 	// Load the openclaw IM config for hub webhook URL and secret
 	imCfg := loadOpenclawIMConfig(r, system)

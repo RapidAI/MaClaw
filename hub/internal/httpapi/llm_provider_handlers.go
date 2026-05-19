@@ -374,7 +374,7 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_NOT_FOUND", strings.Join(issues, "; "))
 			return
 		}
-		knownSecurityGroups, err := collectSecurityGroupIDs(r.Context(), securitySvc)
+		knownSecurityGroups, err := collectSecurityGroupIDs(security.WithTenant(r.Context(), RequestTenantID(r)), securitySvc)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "SECURITY_GROUP_LOAD_FAILED", err.Error())
 			return

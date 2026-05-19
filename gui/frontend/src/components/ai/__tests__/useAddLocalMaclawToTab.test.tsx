@@ -19,7 +19,7 @@ describe("useAddLocalMaclawToTab", () => {
     });
 
     it("registers local AI with an existing session before updating tab metadata", async () => {
-        registerLocalExecutorMock.mockResolvedValueOnce(undefined);
+        registerLocalExecutorMock.mockResolvedValueOnce({ participant_id: "machine-local", display_name: "Local AI" });
         const upgradeVETabToGroup = vi.fn();
         const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-a", participants: ["ve-a"], closable: true };
         const { result } = renderHook(() => useAddLocalMaclawToTab({
@@ -33,11 +33,11 @@ describe("useAddLocalMaclawToTab", () => {
 
         expect(initiateVEConversationMock).not.toHaveBeenCalled();
         expect(registerLocalExecutorMock).toHaveBeenCalledWith("session-1");
-        expect(upgradeVETabToGroup).toHaveBeenCalledWith("group-1", ["ve-a", "local-maclaw"], "session-1", { "ve-a": "Group", "local-maclaw": "Local AI" });
+        expect(upgradeVETabToGroup).toHaveBeenCalledWith("group-1", ["ve-a", "machine-local"], "session-1", { "ve-a": "Group", "machine-local": "Local AI" }, ["machine-local"]);
     });
 
     it("creates a session before registering local AI when no session id exists", async () => {
-        registerLocalExecutorMock.mockResolvedValueOnce(undefined);
+        registerLocalExecutorMock.mockResolvedValueOnce({ participant_id: "machine-local", display_name: "Local AI" });
         const upgradeVETabToGroup = vi.fn();
         const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-a", participants: ["ve-a"], closable: true };
         const { result } = renderHook(() => useAddLocalMaclawToTab({
@@ -51,10 +51,38 @@ describe("useAddLocalMaclawToTab", () => {
 
         expect(initiateVEConversationMock).toHaveBeenCalledWith("ve-a");
         expect(registerLocalExecutorMock).toHaveBeenCalledWith("session-new");
-        expect(upgradeVETabToGroup).toHaveBeenCalledWith("group-1", ["ve-a", "local-maclaw"], "session-new", { "ve-a": "Group", "local-maclaw": "Local AI" });
+        expect(upgradeVETabToGroup).toHaveBeenCalledWith("group-1", ["ve-a", "machine-local"], "session-new", { "ve-a": "Group", "machine-local": "Local AI" }, ["machine-local"]);
     });
 
-    it("keeps the participant panel visible when local registration fails", async () => {
+    it("preserves existing group participant names when adding local AI", async () => {
+        registerLocalExecutorMock.mockResolvedValueOnce({ participant_id: "machine-local", display_name: "Local AI" });
+        const upgradeVETabToGroup = vi.fn();
+        const tab: AITab = {
+            id: "group-1",
+            type: "group",
+            title: "Group",
+            veId: "ve-a",
+            participants: ["ve-a", "ve-b"],
+            participantNames: { "ve-a": "Agent A", "ve-b": "Contract Bot" },
+            closable: true,
+        };
+        const { result } = renderHook(() => useAddLocalMaclawToTab({
+            getTabState: () => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 }),
+            upgradeVETabToGroup,
+        }));
+
+        await act(async () => {
+            await result.current(tab);
+        });
+
+        expect(upgradeVETabToGroup).toHaveBeenCalledWith("group-1", ["ve-a", "ve-b", "machine-local"], "session-1", {
+            "ve-a": "Agent A",
+            "ve-b": "Contract Bot",
+            "machine-local": "Local AI",
+        }, ["machine-local"]);
+    });
+
+    it("does not show local AI as joined when local registration fails", async () => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
         registerLocalExecutorMock.mockRejectedValueOnce(new Error("register failed"));
         const upgradeVETabToGroup = vi.fn();
@@ -68,7 +96,7 @@ describe("useAddLocalMaclawToTab", () => {
             await result.current(tab);
         });
 
-        expect(upgradeVETabToGroup).toHaveBeenCalledWith("group-1", ["ve-a", "local-maclaw"], "session-1", { "ve-a": "Group", "local-maclaw": "Local AI" });
+        expect(upgradeVETabToGroup).not.toHaveBeenCalled();
         errorSpy.mockRestore();
     });
 
@@ -91,7 +119,7 @@ describe("useAddLocalMaclawToTab", () => {
 
     it("does not register duplicate local AI participants", async () => {
         const upgradeVETabToGroup = vi.fn();
-        const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-a", participants: ["ve-a", "local-maclaw"], closable: true };
+        const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-a", participants: ["ve-a", " LOCAL-MACLAW "], closable: true };
         const { result } = renderHook(() => useAddLocalMaclawToTab({
             getTabState: () => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 }),
             upgradeVETabToGroup,
@@ -102,6 +130,22 @@ describe("useAddLocalMaclawToTab", () => {
         });
 
         expect(initiateVEConversationMock).not.toHaveBeenCalled();
+        expect(registerLocalExecutorMock).not.toHaveBeenCalled();
+        expect(upgradeVETabToGroup).not.toHaveBeenCalled();
+    });
+
+    it("does not register duplicate local AI participants by canonical display name", async () => {
+        const upgradeVETabToGroup = vi.fn();
+        const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-a", participants: ["ve-a", "machine-local"], participantNames: { "machine-local": "Local AI" }, closable: true };
+        const { result } = renderHook(() => useAddLocalMaclawToTab({
+            getTabState: () => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 }),
+            upgradeVETabToGroup,
+        }));
+
+        await act(async () => {
+            await result.current(tab);
+        });
+
         expect(registerLocalExecutorMock).not.toHaveBeenCalled();
         expect(upgradeVETabToGroup).not.toHaveBeenCalled();
     });

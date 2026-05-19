@@ -71,12 +71,20 @@ func (pc *ProfileConsolidator) ConsolidateForOwner(ctx context.Context, ownerID 
 	start := time.Now()
 
 	// Gather weekly summaries (L4).
-	weeklySummaries := pc.gatherWeeklySummaries(ownerID)
+	weeklyEvidence := pc.gatherWeeklySummaryEntries(ownerID)
+	weeklySummaries := entryContents(weeklyEvidence)
 
 	// Gather recent reflections and promoted insights as additional signal.
-	recentInsights := pc.gatherRecentInsights(ownerID)
+	insightEvidence := pc.gatherRecentInsightEntries(ownerID)
+	recentInsights := entryContents(insightEvidence)
 
 	if len(weeklySummaries) == 0 && len(recentInsights) == 0 {
+		return &ConsolidationResult{Level: LevelProfile}, nil
+	}
+
+	profileEvidence := append(append([]Entry(nil), weeklyEvidence...), insightEvidence...)
+	gate := AssessConsolidationGate(profileEvidence, ConsolidationGateOptions{MinEvidence: 2})
+	if !gate.Allowed {
 		return &ConsolidationResult{Level: LevelProfile}, nil
 	}
 
@@ -97,7 +105,7 @@ func (pc *ProfileConsolidator) ConsolidateForOwner(ctx context.Context, ownerID 
 	}
 
 	// Update or create the profile entry.
-	if err := pc.upsertProfile(newProfile, ownerID); err != nil {
+	if err := pc.upsertProfile(newProfile, ownerID, profileEvidence); err != nil {
 		return nil, fmt.Errorf("profile_consolidator: upsert: %w", err)
 	}
 
@@ -114,13 +122,17 @@ func (pc *ProfileConsolidator) ConsolidateForOwner(ctx context.Context, ownerID 
 
 // gatherWeeklySummaries collects L4 entries from the tree or store.
 func (pc *ProfileConsolidator) gatherWeeklySummaries(ownerID string) []string {
+	return entryContents(pc.gatherWeeklySummaryEntries(ownerID))
+}
+
+func (pc *ProfileConsolidator) gatherWeeklySummaryEntries(ownerID string) []Entry {
 	// Try TMT first.
 	if pc.tree != nil {
 		weeklyIDs := pc.tree.RecentAtLevel(LevelWeek, 4) // last 4 weeks
 		if len(weeklyIDs) > 0 {
-			contents := pc.contentsByIDs(weeklyIDs, ownerID)
-			if len(contents) > 0 {
-				return contents
+			entries := pc.entriesByIDs(weeklyIDs, ownerID)
+			if len(entries) > 0 {
+				return entries
 			}
 		}
 	}
@@ -129,10 +141,10 @@ func (pc *ProfileConsolidator) gatherWeeklySummaries(ownerID string) []string {
 	pc.store.mu.RLock()
 	defer pc.store.mu.RUnlock()
 
-	var results []string
+	var results []Entry
 	for _, e := range pc.store.entries {
 		if e.Level == LevelWeek && e.IsActive() && ownerMatches(e.OwnerID, ownerID) {
-			results = append(results, e.Content)
+			results = append(results, e)
 			if len(results) >= 4 {
 				break
 			}
@@ -143,10 +155,14 @@ func (pc *ProfileConsolidator) gatherWeeklySummaries(ownerID string) []string {
 
 // gatherRecentInsights collects recent reflection/promoted entries.
 func (pc *ProfileConsolidator) gatherRecentInsights(ownerID string) []string {
+	return entryContents(pc.gatherRecentInsightEntries(ownerID))
+}
+
+func (pc *ProfileConsolidator) gatherRecentInsightEntries(ownerID string) []Entry {
 	pc.store.mu.RLock()
 	defer pc.store.mu.RUnlock()
 
-	var results []string
+	var results []Entry
 	cutoff := time.Now().Add(-30 * 24 * time.Hour) // last 30 days
 
 	for _, e := range pc.store.entries {
@@ -155,7 +171,7 @@ func (pc *ProfileConsolidator) gatherRecentInsights(ownerID string) []string {
 		}
 		for _, tag := range e.Tags {
 			if tag == "reflection" || tag == "promoted" {
-				results = append(results, truncStr(e.Content, 200))
+				results = append(results, e)
 				break
 			}
 		}
@@ -180,8 +196,11 @@ func (pc *ProfileConsolidator) getCurrentProfile(ownerID string) string {
 }
 
 // upsertProfile updates the existing profile entry or creates a new one.
-func (pc *ProfileConsolidator) upsertProfile(newContent string, ownerID string) error {
+func (pc *ProfileConsolidator) upsertProfile(newContent string, ownerID string, evidence ...[]Entry) error {
 	now := time.Now()
+	evidenceEntries := flattenProfileEvidence(evidence...)
+	evidenceIDs := synthesisEvidenceIDs(evidenceEntries)
+	boundary := InferMemoryBoundary(evidenceEntries)
 
 	pc.store.mu.Lock()
 	for i := range pc.store.entries {
@@ -200,6 +219,11 @@ func (pc *ProfileConsolidator) upsertProfile(newContent string, ownerID string) 
 			pc.store.entries[i].Level = LevelProfile
 			pc.store.entries[i].ContentHash = computeContentHash(newContent)
 			pc.store.entries[i].AccessCount++
+			pc.store.entries[i].EvidenceIDs = evidenceIDs
+			pc.store.entries[i].RelatedIDs = mergeTags(pc.store.entries[i].RelatedIDs, evidenceIDs)
+			pc.store.entries[i].DerivedKind = "profile"
+			pc.store.entries[i].Boundary = &boundary
+			pc.store.entries[i].SourceType = "profile_consolidation"
 			pc.store.rebuildDerivedIndexesLocked(false)
 			pc.store.dirty = true
 			pc.store.mu.Unlock()
@@ -209,17 +233,24 @@ func (pc *ProfileConsolidator) upsertProfile(newContent string, ownerID string) 
 	}
 	pc.store.mu.Unlock()
 
-	// No existing profile — create one.
-	entry := Entry{
-		Content:  newContent,
-		Category: CategoryProfile,
-		Tags:     []string{"tmt", "L5", "profile", "auto_generated"},
-		Level:    LevelProfile,
-		Scope:    ScopeGlobal,
-		Interval: &TimeInterval{Start: now, End: now},
-		OwnerID:  ownerID,
-	}
-	return pc.store.Save(entry)
+	// No existing profile: create one.
+	_, err := pc.store.UpsertEntryByTags(UpsertByTagsOptions{
+		Title:            "User profile",
+		Content:          newContent,
+		Category:         CategoryProfile,
+		Tags:             []string{"tmt", "L5", "profile", "auto_generated"},
+		IdentityTagCount: 3,
+		Scope:            ScopeGlobal,
+		OwnerID:          ownerID,
+		SourceType:       "profile_consolidation",
+		Level:            LevelProfile,
+		Interval:         &TimeInterval{Start: now, End: now},
+		EvidenceIDs:      evidenceIDs,
+		RelatedIDs:       evidenceIDs,
+		DerivedKind:      "profile",
+		Boundary:         &boundary,
+	})
+	return err
 }
 
 func (pc *ProfileConsolidator) buildProfilePrompt(currentProfile string, weeklySummaries, insights []string) []map[string]string {
@@ -261,6 +292,10 @@ Rules:
 }
 
 func (pc *ProfileConsolidator) contentsByIDs(ids []string, ownerID string) []string {
+	return entryContents(pc.entriesByIDs(ids, ownerID))
+}
+
+func (pc *ProfileConsolidator) entriesByIDs(ids []string, ownerID string) []Entry {
 	pc.store.mu.RLock()
 	defer pc.store.mu.RUnlock()
 
@@ -269,13 +304,13 @@ func (pc *ProfileConsolidator) contentsByIDs(ids []string, ownerID string) []str
 		idSet[id] = true
 	}
 
-	var contents []string
+	var entries []Entry
 	for _, e := range pc.store.entries {
 		if idSet[e.ID] && ownerMatches(e.OwnerID, ownerID) {
-			contents = append(contents, e.Content)
+			entries = append(entries, e)
 		}
 	}
-	return contents
+	return entries
 }
 
 func ownerMatches(entryOwner, filterOwner string) bool {
@@ -283,4 +318,36 @@ func ownerMatches(entryOwner, filterOwner string) bool {
 		return entryOwner == ""
 	}
 	return entryOwner == filterOwner || entryOwner == ""
+}
+
+func entryContents(entries []Entry) []string {
+	contents := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		content := strings.TrimSpace(entry.Content)
+		if content != "" {
+			contents = append(contents, truncStr(content, 200))
+		}
+	}
+	return contents
+}
+
+func flattenProfileEvidence(groups ...[]Entry) []Entry {
+	var out []Entry
+	seen := map[string]struct{}{}
+	for _, group := range groups {
+		for _, entry := range group {
+			key := entry.ID
+			if key == "" {
+				key = entry.Content
+			}
+			if key != "" {
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			out = append(out, entry)
+		}
+	}
+	return out
 }

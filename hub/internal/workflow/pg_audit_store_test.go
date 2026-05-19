@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
 
+	storepkg "github.com/RapidAI/CodeClaw/hub/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -27,6 +29,7 @@ func setupTestPgAuditDB(t *testing.T) *sql.DB {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS audit_trail (
 			id           TEXT PRIMARY KEY,
+			tenant_id    TEXT NOT NULL DEFAULT 'tenant_default',
 			instance_id  TEXT NOT NULL,
 			node_id      TEXT DEFAULT '',
 			event_type   TEXT NOT NULL,
@@ -165,7 +168,7 @@ func TestPgAuditStore_GenerateIDUniqueness(t *testing.T) {
 func TestPgAuditStore_ScanPgAuditEntriesEmpty(t *testing.T) {
 	db := setupTestPgAuditDB(t)
 	rows, err := db.Query(
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision,
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision,
 		        matched_rule, rationale, details_json, timestamp
 		 FROM audit_trail WHERE 1=0`)
 	if err != nil {
@@ -235,7 +238,7 @@ func TestPgAuditStore_ScanPreservesMillisecondPrecision(t *testing.T) {
 	}
 
 	rows, err := db.Query(
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision,
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision,
 		        matched_rule, rationale, details_json, timestamp
 		 FROM audit_trail WHERE id = 'ms_test'`)
 	if err != nil {
@@ -259,5 +262,28 @@ func TestPgAuditStore_ScanPreservesMillisecondPrecision(t *testing.T) {
 	}
 	if entry.Timestamp.Location() != time.UTC {
 		t.Errorf("expected UTC, got %v", entry.Timestamp.Location())
+	}
+}
+
+func TestPgAuditStore_TenantIsolation(t *testing.T) {
+	db := setupTestPgAuditDB(t)
+	store := NewPgAuditStore(db)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	ctxA := storepkg.WithTenant(context.Background(), "tenant_a")
+	ctxB := storepkg.WithTenant(context.Background(), "tenant_b")
+
+	if err := store.Append(ctxA, &AuditEntry{ID: "pg-audit-a", InstanceID: "inst-shared", EventType: "decision", ActorID: "approver_1", Decision: "approve", Timestamp: now}); err != nil {
+		t.Fatalf("Append tenant A: %v", err)
+	}
+	if err := store.Append(ctxB, &AuditEntry{ID: "pg-audit-b", InstanceID: "inst-shared", EventType: "decision", ActorID: "approver_1", Decision: "approve", Timestamp: now.Add(time.Second)}); err != nil {
+		t.Fatalf("Append tenant B: %v", err)
+	}
+
+	entries, total, err := store.QueryByInstance(ctxA, "inst-shared", 0, 10)
+	if err != nil {
+		t.Fatalf("QueryByInstance tenant A: %v", err)
+	}
+	if total != 1 || len(entries) != 1 || entries[0].ID != "pg-audit-a" || entries[0].TenantID != "tenant_a" {
+		t.Fatalf("tenant A query leaked entries: total=%d entries=%+v", total, entries)
 	}
 }

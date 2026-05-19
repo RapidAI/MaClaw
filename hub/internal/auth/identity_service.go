@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -24,11 +25,13 @@ var (
 	ErrInvitationCodeRequired = errors.New("invitation code is required")
 	ErrInvalidInvitationCode  = errors.New("invalid or used invitation code")
 	ErrInvitationExpired      = errors.New("invitation code has expired")
+	identitySNCounter         atomic.Uint64
 )
 
 // InvitationCodeValidator abstracts the invitation code service to avoid circular imports.
 type InvitationCodeValidator interface {
 	IsRequired(ctx context.Context) (bool, error)
+	IsRequiredForTenant(ctx context.Context, tenantID string) (bool, error)
 	ValidateAndConsume(ctx context.Context, code string, email string) error
 	ValidateAndConsumeForTenant(ctx context.Context, tenantID string, code string, email string) error
 	CheckExpiry(ctx context.Context, email string) (bool, *time.Time, error)
@@ -53,6 +56,7 @@ const (
 
 type EnrollmentResult struct {
 	Status       string `json:"status"`
+	TenantID     string `json:"tenant_id,omitempty"`
 	Message      string `json:"message,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
 	Email        string `json:"email,omitempty"`
@@ -64,14 +68,16 @@ type EnrollmentResult struct {
 }
 
 type EmailLoginRequestResult struct {
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
-	PollID  string `json:"poll_id,omitempty"`
-	SentTo  string `json:"sent_to,omitempty"`
+	Status   string `json:"status"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Message  string `json:"message,omitempty"`
+	PollID   string `json:"poll_id,omitempty"`
+	SentTo   string `json:"sent_to,omitempty"`
 }
 
 type EmailPollResult struct {
 	Status      string `json:"status"`
+	TenantID    string `json:"tenant_id,omitempty"`
 	AccessToken string `json:"access_token,omitempty"`
 	ExpiresIn   int    `json:"expires_in,omitempty"`
 	Email       string `json:"email,omitempty"`
@@ -241,9 +247,10 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 			} else {
 				// Expired and no new code provided
 				result := &EnrollmentResult{
-					Status:  "invitation_expired",
-					Message: "invitation code has expired",
-					Email:   email,
+					Status:   "invitation_expired",
+					TenantID: tenantID,
+					Message:  "invitation code has expired",
+					Email:    email,
 				}
 				if expiresAt != nil {
 					result.ExpiresAt = expiresAt.Format(time.RFC3339)
@@ -255,7 +262,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 
 	// Invitation code validation - only required for new users
 	if user == nil && s.invitationSvc != nil {
-		required, err := s.invitationSvc.IsRequired(ctx)
+		required, err := s.invitationSvc.IsRequiredForTenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
 		}
@@ -277,18 +284,20 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 		switch mode {
 		case "manual":
 			return &EnrollmentResult{
-				Status:  "manual_binding_required",
-				Message: "This hub requires manual binding before a machine can be enrolled",
-				Email:   email,
+				Status:   "manual_binding_required",
+				TenantID: tenantID,
+				Message:  "This hub requires manual binding before a machine can be enrolled",
+				Email:    email,
 			}, nil
 		case "approval":
 			return s.ensurePendingApprovalForTenant(ctx, tenantID, email, "Awaiting administrator approval before machine enrollment")
 		default:
 			if !s.allowSelfEnroll {
 				return &EnrollmentResult{
-					Status:  "manual_binding_required",
-					Message: "Self enrollment is disabled. Ask an administrator to generate an SN binding first",
-					Email:   email,
+					Status:   "manual_binding_required",
+					TenantID: tenantID,
+					Message:  "Self enrollment is disabled. Ask an administrator to generate an SN binding first",
+					Email:    email,
 				}, nil
 			}
 			user, err = s.createApprovedUserForTenant(ctx, tenantID, email)
@@ -324,8 +333,9 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		switch mode {
 		case "manual":
 			return &EmailLoginRequestResult{
-				Status:  "manual_binding_required",
-				Message: "This hub requires manual binding before email sign-in can be used",
+				Status:   "manual_binding_required",
+				TenantID: tenantID,
+				Message:  "This hub requires manual binding before email sign-in can be used",
 			}, nil
 		case "approval":
 			result, err := s.ensurePendingApprovalForTenant(ctx, tenantID, email, "Awaiting administrator approval before email sign-in")
@@ -340,15 +350,17 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 				return nil, err
 			}
 			return &EmailLoginRequestResult{
-				Status:  result.Status,
-				Message: result.Message,
-				PollID:  pollResult.PollID,
+				Status:   result.Status,
+				TenantID: tenantID,
+				Message:  result.Message,
+				PollID:   pollResult.PollID,
 			}, nil
 		default:
 			if !s.allowSelfEnroll {
 				return &EmailLoginRequestResult{
-					Status:  "manual_binding_required",
-					Message: "Self enrollment is disabled. Ask an administrator to generate an SN binding first",
+					Status:   "manual_binding_required",
+					TenantID: tenantID,
+					Message:  "Self enrollment is disabled. Ask an administrator to generate an SN binding first",
 				}, nil
 			}
 			user, err = s.createApprovedUserForTenant(ctx, tenantID, email)
@@ -372,9 +384,10 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		}
 		s.consumePendingLoginToken(ctx, email)
 		return &EmailLoginRequestResult{
-			Status:  "pending_email_confirmation",
-			Message: "Email delivery failed, but your account is approved. Please wait a moment.",
-			PollID:  pollResult.PollID,
+			Status:   "pending_email_confirmation",
+			TenantID: tenantID,
+			Message:  "Email delivery failed, but your account is approved. Please wait a moment.",
+			PollID:   pollResult.PollID,
 		}, nil
 	}
 	return result, err
@@ -446,9 +459,10 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 		}
 		// No mailer and no IM channels - dev mode fallback
 		return &EmailLoginRequestResult{
-			Status:  "pending_email_confirmation",
-			Message: fmt.Sprintf("Use this confirm URL for development: %s", confirmURL),
-			PollID:  rawPollToken,
+			Status:   "pending_email_confirmation",
+			TenantID: tenantID,
+			Message:  fmt.Sprintf("Use this confirm URL for development: %s", confirmURL),
+			PollID:   rawPollToken,
 		}, nil
 	}
 
@@ -457,10 +471,11 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 		sentTo += " + " + ch
 	}
 	return &EmailLoginRequestResult{
-		Status:  "pending_email_confirmation",
-		Message: fmt.Sprintf("Verification link sent to: %s", sentTo),
-		PollID:  rawPollToken,
-		SentTo:  sentTo,
+		Status:   "pending_email_confirmation",
+		TenantID: tenantID,
+		Message:  fmt.Sprintf("Verification link sent to: %s", sentTo),
+		PollID:   rawPollToken,
+		SentTo:   sentTo,
 	}, nil
 }
 
@@ -504,8 +519,9 @@ func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email str
 	}
 
 	return &EmailLoginRequestResult{
-		Status: "pending_approval",
-		PollID: rawPollToken,
+		Status:   "pending_approval",
+		TenantID: tenantID,
+		PollID:   rawPollToken,
 	}, nil
 }
 
@@ -600,6 +616,7 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 
 	return &EmailPollResult{
 		Status:      "confirmed",
+		TenantID:    user.TenantID,
 		AccessToken: rawViewerToken,
 		ExpiresIn:   30 * 86400,
 		Email:       user.Email,
@@ -1069,9 +1086,10 @@ func (s *IdentityService) ensurePendingApprovalForTenant(ctx context.Context, te
 		}
 	}
 	return &EnrollmentResult{
-		Status:  "pending_approval",
-		Message: message,
-		Email:   email,
+		Status:   "pending_approval",
+		TenantID: tenantID,
+		Message:  message,
+		Email:    email,
 	}, nil
 }
 
@@ -1133,6 +1151,7 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 
 	return &EnrollmentResult{
 		Status:       "approved",
+		TenantID:     user.TenantID,
 		UserID:       user.ID,
 		Email:        user.Email,
 		SN:           user.SN,
@@ -1166,7 +1185,7 @@ func (s *IdentityService) ensureEmailAllowed(ctx context.Context, email string) 
 }
 
 func generateSN() string {
-	return fmt.Sprintf("SN-%d", time.Now().UnixNano())
+	return fmt.Sprintf("SN-%d-%d", time.Now().UnixNano(), identitySNCounter.Add(1))
 }
 
 func hashToken(raw string) string {

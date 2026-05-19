@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -15,23 +13,17 @@ import (
 
 // workflowArtifactSaver adapts memory.Store to the workflow.ArtifactSaver
 // interface, allowing the WorkflowEngine to persist phase output summaries
-// to long-term memory without importing corelib/memory directly.
+// through corelib/memory's generated task-artifact upsert path.
 //
-// Deduplication strategy:
-//   - Content hash dedup is handled by Store.Save (existing mechanism).
-//   - Phase-level dedup (one entry per phaseID) is handled by tracking
-//     saved phase IDs and calling Store.Update for subsequent saves.
-//     This avoids manual lock/unlock on Store internals.
+// Deduplication and metadata repair are owned by Store.UpsertTaskArtifact:
+// phase-level identity comes from the workflow/phase tags, while source refs,
+// owner scope, and project boundary stay in the shared corelib memory layer.
 type workflowArtifactSaver struct {
 	store *memory.Store
-
-	mu       sync.Mutex
-	phaseIDs map[string]string // phaseTag → entry ID (tracks saved artifacts)
 }
 
 // SaveArtifact persists a workflow phase output summary as a task_artifact
-// memory entry. Uses Store.Save for new entries and Store.Update for
-// re-saves of the same phase (e.g. user modifies and re-confirms).
+// memory entry. Re-saves of the same phase are upserted by corelib/memory.
 func (s *workflowArtifactSaver) SaveArtifact(title, content string, tags []string, sourceURL string) error {
 	return s.SaveArtifactForUser(title, content, tags, sourceURL, "")
 }
@@ -57,22 +49,6 @@ func (s *workflowArtifactSaver) SaveArtifactFullForUser(title, summary, fullCont
 	// Convention: tags = ["workflow", phaseID, workflowType, ...projectPath]
 	phaseTag := extractPhaseTag(tags)
 
-	// Phase-level dedup: if we already saved an artifact for this phase,
-	// update the existing entry instead of creating a new one.
-	if phaseTag != "" {
-		s.mu.Lock()
-		existingID := s.phaseIDs[phaseTag]
-		s.mu.Unlock()
-
-		if existingID != "" {
-			if err := s.store.Delete(existingID); err != nil {
-				log.Printf("[artifact_saver] failed to replace task_artifact %s: %v", existingID, err)
-			} else {
-				log.Printf("[artifact_saver] replacing task_artifact %s for phase %q", existingID, phaseTag)
-			}
-		}
-	}
-
 	sourceType := "workflow_output"
 	sourceURL = strings.TrimSpace(sourceURL)
 	if sourceURL == "" {
@@ -85,48 +61,24 @@ func (s *workflowArtifactSaver) SaveArtifactFullForUser(title, summary, fullCont
 		}
 	}
 
-	entry := memory.Entry{
-		Content:    summary,
-		Title:      title,
-		Category:   memory.CategoryTaskArtifact,
-		Tags:       tags,
-		Scope:      memory.ScopeProject,
-		SourceType: sourceType,
-		SourceURL:  sourceURL,
-		OwnerID:    ownerID, // multi-tenant: associate with the user who ran this workflow
+	identityCount := len(tags)
+	if phaseTag != "" {
+		identityCount = 2
 	}
-	// Store.Save handles content hash dedup internally.
-	if err := s.store.Save(entry); err != nil {
+	result, err := s.store.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            title,
+		Content:          summary,
+		Tags:             tags,
+		IdentityTagCount: identityCount,
+		SourceType:       sourceType,
+		SourceURL:        sourceURL,
+		OwnerID:          ownerID,
+	})
+	if err != nil {
 		return fmt.Errorf("artifact_saver: %w", err)
 	}
 
-	// Track the saved entry ID for future phase-level dedup.
-	if phaseTag != "" {
-		// Find the entry by content hash (unique, stable identifier).
-		// Do Store read BEFORE acquiring s.mu to avoid nested locking.
-		h := sha256.Sum256([]byte(summary))
-		contentHash := hex.EncodeToString(h[:])
-		var entryID string
-		s.store.RLock()
-		for _, e := range s.store.Entries() {
-			if e.ContentHash == contentHash {
-				entryID = e.ID
-				break
-			}
-		}
-		s.store.RUnlock()
-
-		if entryID != "" {
-			s.mu.Lock()
-			if s.phaseIDs == nil {
-				s.phaseIDs = make(map[string]string)
-			}
-			s.phaseIDs[phaseTag] = entryID
-			s.mu.Unlock()
-		}
-	}
-
-	log.Printf("[artifact_saver] saved task_artifact for phase %q (%d runes)", phaseTag, len([]rune(summary)))
+	log.Printf("[artifact_saver] saved task_artifact for phase %q (%d runes, entry=%s created=%v updated=%v touched=%v)", phaseTag, len([]rune(summary)), result.EntryID, result.Created, result.Updated, result.Touched)
 	return nil
 }
 

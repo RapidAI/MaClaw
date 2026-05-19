@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -158,12 +159,12 @@ type hubLLMCacheStatus struct {
 	Runtime           llmPromptCacheRuntimeMetrics `json:"runtime"`
 }
 
-func HubLLMStatusHandler(statusFn func() string, system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
+func HubLLMStatusHandler(statusFn func(context.Context) string, system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		system = scopedSystemSettingsForRequest(r, system)
 		status := "not_configured"
 		if statusFn != nil {
-			status = statusFn()
+			status = statusFn(r.Context())
 		}
 		promptCacheSource := firstPromptCacheStatusSource(promptCacheSources)
 		cfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)

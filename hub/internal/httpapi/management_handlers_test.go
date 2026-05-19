@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -86,6 +87,55 @@ func TestListUsersHandlerReturnsBoundUsers(t *testing.T) {
 	}
 }
 
+func TestListUsersHandlerKeepsSameEmailTenantsSeparate(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for _, user := range []*store.User{
+		{ID: "user-tenant-a", TenantID: "tenant_a", Email: "same@example.com", SN: "sn-a", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "user-tenant-b", TenantID: "tenant_b", Email: "same@example.com", SN: "sn-b", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := services.store.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+	if err := llmservice.SaveRegistry(ctx, scopedSystemSettingsForTenant("tenant_a", services.store.System), &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", Models: []llmservice.ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-a"}}}}},
+		Grants:             []llmservice.Grant{{ID: "grant-a", Email: "same@example.com", ServiceGroupID: "coding-basic", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now.Add(-time.Hour)}},
+	}); err != nil {
+		t.Fatalf("save tenant A registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(ctx, scopedSystemSettingsForTenant("tenant_b", services.store.System), &llmservice.Registry{}); err != nil {
+		t.Fatalf("save tenant B registry: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/users", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		Users []struct {
+			TenantID         string `json:"tenant_id"`
+			Email            string `json:"email"`
+			HasServiceAccess bool   `json:"has_service_access"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, user := range payload.Users {
+		if user.Email != "same@example.com" {
+			continue
+		}
+		seen[user.TenantID] = user.HasServiceAccess
+	}
+	if len(seen) != 2 || !seen["tenant_a"] || seen["tenant_b"] {
+		t.Fatalf("expected same email to remain tenant-scoped with tenant A grant only, got %#v body=%s", seen, resp.Body.String())
+	}
+}
 func TestDeleteBoundUserHandlerRemovesUser(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)
@@ -438,6 +488,50 @@ func TestGetCenterStatusHandlerClearsStalePendingConfirmation(t *testing.T) {
 	}
 	if strings.Contains(body, `"hub_id":"hub_pending_removed"`) || strings.Contains(body, `"active_base_url":"`) || strings.Contains(body, `"last_registered_at":`) {
 		t.Fatalf("expected stale registration fields to be cleared, body=%s", body)
+	}
+}
+
+func TestGetCenterStatusHandlerSelectsTenantAuthorizationForGlobalAdmin(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	now := time.Now().UTC()
+	authA := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Enabled: true, Quota: 2, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)}, now)
+	authB := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Enabled: true, Quota: 7, ExpiresAt: now.AddDate(2, 0, 0).Format(time.RFC3339)}, now)
+	record, err := json.Marshal(map[string]any{
+		"registered": true,
+		"hub_id":     "hub_tenant_auth",
+		"hub_secret": "secret_tenant_auth",
+		"digital_employee_authorizations": map[string]any{
+			"tenant_a": authA,
+			"tenant_b": authB,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := services.store.System.Set(context.Background(), "center_registration", string(record)); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/center/status?tenant_id=tenant_b", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		DigitalEmployeeAuthorization struct {
+			Quota  int  `json:"quota"`
+			Active bool `json:"active"`
+		} `json:"digital_employee_authorization"`
+		DigitalEmployeeAuthorizations map[string]any `json:"digital_employee_authorizations"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.DigitalEmployeeAuthorization.Quota != 7 || !payload.DigitalEmployeeAuthorization.Active {
+		t.Fatalf("expected selected tenant_b auth, got %#v body=%s", payload.DigitalEmployeeAuthorization, resp.Body.String())
+	}
+	if len(payload.DigitalEmployeeAuthorizations) != 2 {
+		t.Fatalf("global admin should still see tenant authorization map, got %#v", payload.DigitalEmployeeAuthorizations)
 	}
 }
 

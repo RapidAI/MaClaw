@@ -30,6 +30,7 @@ import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTur
 import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
 import { AITabBar } from "./AITabBar";
 import { useAITabManager } from "./useAITabManager";
+import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
 import { useAddLocalMaclawToTab } from "./useAddLocalMaclawToTab";
 import { useProjectContextLoader } from "./useProjectContextLoader";
@@ -748,7 +749,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
                     const title = String(tab.title || "").trim();
                     const veId = String(tab.veId || "").trim();
-                    const titleLooksRaw = /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+)$/.test(title);
+                    const titleLooksRaw = looksLikeRawParticipantId(title);
                     const participantNames = veId && title && title !== veId && !titleLooksRaw ? { [veId]: title } : undefined;
                     upgradeVETabToGroup(tab.id, currentParticipants, sessionId, participantNames);
                 }

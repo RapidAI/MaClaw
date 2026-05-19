@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -354,6 +355,7 @@ func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 	t.Setenv("USERPROFILE", tempHome)
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

@@ -41,17 +41,31 @@ func (r *stubUserRepo) GetByID(_ context.Context, id string) (*store.User, error
 func (r *stubUserRepo) GetByEmail(_ context.Context, _ string) (*store.User, error) {
 	return nil, nil
 }
-func (r *stubUserRepo) GetByTenantEmail(_ context.Context, _ string, email string) (*store.User, error) {
+func (r *stubUserRepo) GetByTenantEmail(_ context.Context, tenantID string, email string) (*store.User, error) {
+	tenantID = store.NormalizeTenantID(tenantID)
 	for _, u := range r.users {
-		if u.Email == email {
+		if store.NormalizeTenantID(u.TenantID) == tenantID && u.Email == email {
 			return u, nil
 		}
 	}
 	return nil, nil
 }
-func (r *stubUserRepo) List(_ context.Context) ([]*store.User, error) { return nil, nil }
-func (r *stubUserRepo) ListByTenant(_ context.Context, _ string) ([]*store.User, error) {
-	return nil, nil
+func (r *stubUserRepo) List(_ context.Context) ([]*store.User, error) {
+	users := make([]*store.User, 0, len(r.users))
+	for _, user := range r.users {
+		users = append(users, user)
+	}
+	return users, nil
+}
+func (r *stubUserRepo) ListByTenant(_ context.Context, tenantID string) ([]*store.User, error) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	var users []*store.User
+	for _, user := range r.users {
+		if store.NormalizeTenantID(user.TenantID) == tenantID {
+			users = append(users, user)
+		}
+	}
+	return users, nil
 }
 func (r *stubUserRepo) DeleteByEmail(_ context.Context, _ string) error { return nil }
 func (r *stubUserRepo) DeleteByTenantEmail(_ context.Context, _ string, _ string) error {
@@ -120,6 +134,50 @@ func TestTenantOpenIDBindingsAreIsolated(t *testing.T) {
 	}
 	if got := n.ResolveOpenIDByTenantEmail(store.DefaultTenantID, "same@example.com"); got != "open-default" {
 		t.Fatalf("default tenant binding after tenant remove = %q", got)
+	}
+}
+
+func TestFeishuEmailBindingResolvesUniqueTenant(t *testing.T) {
+	system := &stubSystemSettingsRepo{}
+	repo := &stubUserRepo{users: map[string]*store.User{
+		"u1": {ID: "u1", TenantID: "tenant_a", Email: "same@example.com"},
+	}}
+	n := New("", "", repo, system, nil)
+	t.Cleanup(n.StopEventLoop)
+
+	n.pendMu.Lock()
+	n.pending["open-a"] = &pendingBind{TenantID: "tenant_a", Email: "same@example.com", Code: "123456", Expiry: time.Now().Add(time.Minute)}
+	n.pendMu.Unlock()
+
+	handleVerifyCode(n, "open-a", "123456")
+
+	if got := n.ResolveOpenIDByTenantEmail("tenant_a", "same@example.com"); got != "open-a" {
+		t.Fatalf("tenant binding = %q", got)
+	}
+	if got := n.ResolveOpenIDByTenantEmail(store.DefaultTenantID, "same@example.com"); got != "" {
+		t.Fatalf("default binding should remain empty, got %q", got)
+	}
+}
+
+func TestFeishuEmailBindingDoesNotDefaultAmbiguousEmail(t *testing.T) {
+	system := &stubSystemSettingsRepo{}
+	repo := &stubUserRepo{users: map[string]*store.User{
+		"u1": {ID: "u1", TenantID: "tenant_a", Email: "same@example.com"},
+		"u2": {ID: "u2", TenantID: "tenant_b", Email: "same@example.com"},
+	}}
+	n := New("", "", repo, system, nil)
+	t.Cleanup(n.StopEventLoop)
+
+	handleEmailSubmit(n, "open-ambiguous", "same@example.com")
+
+	n.pendMu.Lock()
+	_, pending := n.pending["open-ambiguous"]
+	n.pendMu.Unlock()
+	if pending {
+		t.Fatal("ambiguous email should not create a pending binding")
+	}
+	if got := n.ResolveOpenIDByTenantEmail(store.DefaultTenantID, "same@example.com"); got != "" {
+		t.Fatalf("ambiguous email should not bind default tenant, got %q", got)
 	}
 }
 

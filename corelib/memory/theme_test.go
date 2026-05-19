@@ -335,3 +335,23 @@ func themeLayerContainsEntry(themes []ThemeNode, id string) bool {
 	}
 	return false
 }
+
+func TestThemeManagerRebuildStoresEvidenceBoundary(t *testing.T) {
+	tm := NewThemeManager()
+	now := time.Now()
+	entries := []Entry{
+		{ID: "go1", Content: "Go migration", Category: CategoryProjectKnowledge, Tags: []string{"project:D:/work/a"}, Embedding: []float32{1, 0}, Scope: ScopeProject, OwnerID: "owner-1", SourceType: "manual", UpdatedAt: now, Status: StatusActive},
+		{ID: "go2", Content: "Go tests", Category: CategoryProjectKnowledge, Tags: []string{"project:D:/work/a"}, Embedding: []float32{0.98, 0.02}, Scope: ScopeProject, OwnerID: "owner-1", SourceType: "manual", UpdatedAt: now, Status: StatusActive},
+	}
+	themes := tm.Rebuild(entries, nil)
+	if len(themes) == 0 {
+		t.Fatal("expected theme")
+	}
+	got := themes[0]
+	if got.DerivedKind != "theme" || strings.Join(got.EvidenceIDs, ",") != "go1,go2" {
+		t.Fatalf("missing theme evidence metadata: %+v", got)
+	}
+	if got.Boundary == nil || got.Boundary.OwnerID != "owner-1" || got.Boundary.ProjectPath == "" {
+		t.Fatalf("unexpected theme boundary: %+v", got.Boundary)
+	}
+}

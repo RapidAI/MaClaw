@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 )
 
@@ -37,9 +38,10 @@ func (s *AuditStore) Append(ctx context.Context, entry *workflow.AuditEntry) err
 	entry.Timestamp = workflow.NormalizeAuditTimestamp(entry.Timestamp)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO approval_audit_trail (id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO approval_audit_trail (id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID,
+		store.TenantIDFromContext(ctx),
 		entry.InstanceID,
 		entry.NodeID,
 		entry.EventType,
@@ -59,18 +61,18 @@ func (s *AuditStore) QueryByInstance(ctx context.Context, instanceID string, pag
 	pageSize = workflow.NormalizePageSize(pageSize)
 	offset := normalizeOffset(page, pageSize)
 
-	total, err := s.countWhere(ctx, "instance_id = ?", instanceID)
+	total, err := s.countWhere(ctx, "tenant_id = ? AND instance_id = ?", store.TenantIDFromContext(ctx), instanceID)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM approval_audit_trail
-		 WHERE instance_id = ?
+		 WHERE tenant_id = ? AND instance_id = ?
 		 ORDER BY timestamp ASC
 		 LIMIT ? OFFSET ?`,
-		instanceID, pageSize, offset,
+		store.TenantIDFromContext(ctx), instanceID, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -90,18 +92,18 @@ func (s *AuditStore) QueryByApprover(ctx context.Context, approverID string, pag
 	pageSize = workflow.NormalizePageSize(pageSize)
 	offset := normalizeOffset(page, pageSize)
 
-	total, err := s.countWhere(ctx, "actor_id = ?", approverID)
+	total, err := s.countWhere(ctx, "tenant_id = ? AND actor_id = ?", store.TenantIDFromContext(ctx), approverID)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM approval_audit_trail
-		 WHERE actor_id = ?
+		 WHERE tenant_id = ? AND actor_id = ?
 		 ORDER BY timestamp ASC
 		 LIMIT ? OFFSET ?`,
-		approverID, pageSize, offset,
+		store.TenantIDFromContext(ctx), approverID, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -124,18 +126,18 @@ func (s *AuditStore) QueryByTimeRange(ctx context.Context, start, end time.Time,
 	startStr := workflow.NormalizeAuditTimestamp(start).Format(auditTimeFormat)
 	endStr := workflow.NormalizeAuditTimestamp(end).Format(auditTimeFormat)
 
-	total, err := s.countWhere(ctx, "timestamp >= ? AND timestamp <= ?", startStr, endStr)
+	total, err := s.countWhere(ctx, "tenant_id = ? AND timestamp >= ? AND timestamp <= ?", store.TenantIDFromContext(ctx), startStr, endStr)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM approval_audit_trail
-		 WHERE timestamp >= ? AND timestamp <= ?
+		 WHERE tenant_id = ? AND timestamp >= ? AND timestamp <= ?
 		 ORDER BY timestamp ASC
 		 LIMIT ? OFFSET ?`,
-		startStr, endStr, pageSize, offset,
+		store.TenantIDFromContext(ctx), startStr, endStr, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -155,18 +157,18 @@ func (s *AuditStore) QueryByDecision(ctx context.Context, decision string, page,
 	pageSize = workflow.NormalizePageSize(pageSize)
 	offset := normalizeOffset(page, pageSize)
 
-	total, err := s.countWhere(ctx, "decision = ?", decision)
+	total, err := s.countWhere(ctx, "tenant_id = ? AND decision = ?", store.TenantIDFromContext(ctx), decision)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM approval_audit_trail
-		 WHERE decision = ?
+		 WHERE tenant_id = ? AND decision = ?
 		 ORDER BY timestamp ASC
 		 LIMIT ? OFFSET ?`,
-		decision, pageSize, offset,
+		store.TenantIDFromContext(ctx), decision, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -207,6 +209,7 @@ func scanAuditEntries(rows *sql.Rows) ([]workflow.AuditEntry, error) {
 		)
 		if err := rows.Scan(
 			&entry.ID,
+			&entry.TenantID,
 			&entry.InstanceID,
 			&entry.NodeID,
 			&entry.EventType,

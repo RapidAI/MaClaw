@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRecallAdaptiveHierExpandsWithinSelectedThemes(t *testing.T) {
@@ -142,6 +143,73 @@ func TestRecallAdaptiveHierExpandsWithinSelectedThemes(t *testing.T) {
 	}
 	if !foundCoverageExpansion {
 		t.Fatalf("expected facet coverage to include expanded entries: %+v", plan.FacetCoverage)
+	}
+}
+
+func TestRecallAdaptiveHierFiltersThemeBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{
+			ID:        "shared-seed",
+			Content:   "adaptive boundary target migration risk shared seed",
+			Category:  CategoryProjectKnowledge,
+			Scope:     ScopeGlobal,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+		},
+		{
+			ID:        "owner-a-entry",
+			Content:   "adaptive boundary target migration risk owner a private evidence",
+			Category:  CategoryProjectKnowledge,
+			Scope:     ScopeGlobal,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+			Boundary:  &MemoryBoundary{OwnerID: "owner-a"},
+		},
+	})
+	store.mu.Unlock()
+
+	tm := store.ThemeManager()
+	tm.mu.Lock()
+	tm.themes = []ThemeNode{
+		{
+			ID:          "owner-a-theme",
+			Summary:     "adaptive boundary target migration risk private theme",
+			EntryIDs:    []string{"owner-a-entry"},
+			MemberCount: 1,
+			Boundary:    &MemoryBoundary{OwnerID: "owner-a"},
+		},
+		{
+			ID:          "owner-b-theme",
+			Summary:     "adaptive boundary target migration risk visible theme",
+			EntryIDs:    []string{"shared-seed"},
+			MemberCount: 1,
+			Boundary:    &MemoryBoundary{OwnerID: "owner-b"},
+		},
+	}
+	tm.dirty = false
+	tm.mu.Unlock()
+
+	_, plan := store.RecallAdaptiveHierDebug("compare adaptive boundary target migration risk over time", "", "", "owner-b")
+	if plan.Fallback {
+		t.Fatalf("expected adaptive theme selection, got fallback: %+v", plan)
+	}
+	for _, theme := range plan.SelectedThemes {
+		if theme.ThemeID == "owner-a-theme" {
+			t.Fatalf("adaptive recall should not select themes outside owner boundary: %+v", plan.SelectedThemes)
+		}
+	}
+	if len(plan.SelectedThemes) == 0 || plan.SelectedThemes[0].ThemeID != "owner-b-theme" {
+		t.Fatalf("expected visible owner-b theme, got %+v", plan.SelectedThemes)
 	}
 }
 

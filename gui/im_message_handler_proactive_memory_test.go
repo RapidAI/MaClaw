@@ -62,7 +62,7 @@ func TestSystemPrompt_FirstTurn_ContainsProactiveMemoryInstruction(t *testing.T)
 
 	assertContainsAll(t, prompt, []string{
 		corememory.PromptSectionUserMemory,
-		"濡傞渶鏇村璁板繂锛屽彲閫氳繃 " + corememory.PromptActionRecallColon,
+		corememory.DefaultRecallHintForPrompt(),
 		corememory.BuildIMMemoryGuidePrompt(),
 	})
 }
@@ -85,7 +85,7 @@ func TestSystemPrompt_ClearHistory_RestoresFirstTurnProactiveInstruction(t *test
 
 	h.memory.Save(userID, []agent.ConversationEntry{{Role: "user", Content: "hello"}})
 	promptBeforeClear := h.buildSystemPromptWithMemory("follow up", len(h.memory.Load(userID)) == 0)
-	assertContainsNone(t, promptBeforeClear, []string{"涓诲姩璋冪敤 " + corememory.PromptActionSaveColon})
+	assertContainsNone(t, promptBeforeClear, []string{"娑撹濮╃拫鍐暏 " + corememory.PromptActionSaveColon})
 
 	h.memory.Clear(userID)
 	promptAfterClear := h.buildSystemPromptWithMemory("new topic", len(h.memory.Load(userID)) == 0)
@@ -131,15 +131,17 @@ func TestSystemPrompt_TrialReflectEnabled_InProMode(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	app.configCache = cfg
+	app.configCacheValid = true
 
 	h := newTestIMHandler(map[string]*RemoteSession{})
 	h.app = app
 	prompt := h.buildSystemPrompt()
 
 	assertContainsAll(t, prompt, []string{
-		"## 璇曢敊骞跺弽鎬濇ā寮?",
-		"鍏堟彁鍑哄綋鍓嶆渶鏈夊彲鑳芥垚绔嬬殑鍋囪",
-		"涓嶈鏈烘閲嶅鍚屾牱鐨勫け璐ュ姩浣?",
+		"## 试错并反思模式",
+		"先提出当前最有可能成立的假设",
+		"不要机械重复同样的失败动作",
 	})
 }
 
@@ -164,8 +166,8 @@ func TestSystemPrompt_TrialReflectDisabled_OutsideProMode(t *testing.T) {
 	prompt := h.buildSystemPrompt()
 
 	assertContainsNone(t, prompt, []string{
-		"## 璇曢敊骞跺弽鎬濇ā寮?",
-		"涓嶈鏈烘閲嶅鍚屾牱鐨勫け璐ュ姩浣?",
+		"## 鐠囨洟鏁婇獮璺哄冀閹繃膩瀵?",
+		"娑撳秷顩﹂張鐑橆潾闁插秴顦查崥灞剧壉閻ㄥ嫬銇戠拹銉ュЗ娴?",
 	})
 }
 
@@ -180,13 +182,12 @@ func TestSystemPrompt_IncludesKnowledgeBaseTriggerRules(t *testing.T) {
 	prompt := h.buildSystemPrompt()
 
 	assertContainsAll(t, prompt, []string{
-		"## 鐭ヨ瘑搴撳鑴戣鍒?",
+		agent.PromptKnowledgeBaseRules,
 		"knowledge_save_url",
 		"knowledge_import_files",
 		"knowledge_import_directory",
 		"knowledge_save_text",
 		"knowledge_context_pack",
-		"涓嶈鍥犱负鐢ㄦ埛鍙槸璁╀綘",
 	})
 }
 

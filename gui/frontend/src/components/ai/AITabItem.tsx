@@ -1,17 +1,15 @@
 import { useCallback } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
 
 const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
     lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
 );
 
-function looksLikeRawParticipantId(value: string): boolean {
-    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
-}
 
 function participantTitleName(tab: AITab, participantId: string, index: number, lang?: string): string {
-    if (participantId === "local-maclaw") return textForTabLang(lang, "Local AI", "本机AI", "本機AI");
+    if (isLocalParticipant(tab, participantId)) return localAINameForLang(lang);
     const mapped = String(tab.participantNames?.[participantId] || "").trim();
     if (mapped && mapped !== participantId && !looksLikeRawParticipantId(mapped)) return mapped.replace(/\s+\([^()]+\)$/, "").trim();
     const tabTitle = String(tab.title || "").trim();

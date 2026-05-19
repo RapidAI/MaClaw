@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AITabItem, getAITabDisplayTitle } from "./AITabItem";
+import { hasLocalAIParticipant } from "./localAIIdentity";
 
 export interface AITabBarProps {
     tabs: AITab[];
@@ -11,7 +12,7 @@ export interface AITabBarProps {
     onClose: (tabId: string) => void;
     /** Called when user wants to invite a VE to a tab's session (upgrade to group) */
     onInviteToTab?: (tab: AITab) => void;
-    /** Called when user wants to add local maclaw to a tab's session */
+    /** Called when user wants to add local AI to a tab's session */
     onAddLocalMaclawToTab?: (tab: AITab) => void;
     lang?: string;
     /** Returns the lastActiveAt timestamp for a tab (used for overflow sorting). */
@@ -22,6 +23,7 @@ export interface AITabBarProps {
 const MIN_TAB_WIDTH = 110;
 /** Extra space reserved for the overflow button. */
 const OVERFLOW_BUTTON_WIDTH = 50;
+
 
 /**
  * Horizontal tab bar for the AI Assistant Panel.
@@ -249,7 +251,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             {isZh ? "\u2795 \u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "\u2795 Invite digital employee"}
                         </div>
                     )}
-                    {onAddLocalMaclawToTab && !!tabContextMenu.tab.veId && !tabContextMenu.tab.participants?.includes("local-maclaw") && (
+                    {onAddLocalMaclawToTab && !!tabContextMenu.tab.veId && !hasLocalAIParticipant(tabContextMenu.tab) && (
                         <div
                             data-testid="tab-menu-add-local"
                             role="menuitem"

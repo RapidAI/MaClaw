@@ -154,8 +154,10 @@ type memoryShard struct {
 	sessions map[string]*conversationSession
 }
 
-// ConversationMemory is a sharded in-memory conversation store with
-// optional disk persistence and TTL-based eviction.
+// ConversationMemory is a sharded active conversation/session-state store with
+// optional disk persistence and TTL-based eviction. Despite the historical
+// name, it is not Maclaw long-term memory; durable user/agent memories,
+// recall, audit, and surgery are owned by corelib/memory.Store.
 type ConversationMemory struct {
 	shards         [MemoryShardCount]*memoryShard
 	Archiver       ConversationArchiver

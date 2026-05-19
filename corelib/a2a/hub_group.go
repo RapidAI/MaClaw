@@ -93,6 +93,7 @@ type GroupDiscussionMessage struct {
 	ID               string            `json:"id"`
 	SessionID        string            `json:"session_id"`
 	FromID           string            `json:"from_id"`
+	ToIDs            []string          `json:"to_ids,omitempty"`
 	Kind             MessageKind       `json:"kind"`
 	Content          string            `json:"content"`
 	TextAttachments  []TextAttachment  `json:"text_attachments,omitempty"`

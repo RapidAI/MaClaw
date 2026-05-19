@@ -870,6 +870,9 @@ func (s *Service) MigrateUser(ctx context.Context, req MigrateUserRequest) (*Mig
 		return &MigrationResult{Mode: "email", Email: email, ToHubID: toHubID}, nil
 	}
 	if isEmailMigrationPattern(email) {
+		if tenantID != "" {
+			return nil, errors.New("tenant-scoped user migration requires an exact email")
+		}
 		return s.migrateUserPattern(ctx, email, fromHubID, toHubID)
 	}
 	sources, err := s.collectUserMigrationSources(ctx, email, fromHubID, toHubID)
@@ -1902,7 +1905,7 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 		return err
 	}
 	for _, item := range items {
-		if isAdminUserLink(item) {
+		if item != nil && isAdminUserLink(item) && strings.TrimSpace(item.TenantID) == tenantID {
 			return nil
 		}
 	}
@@ -2005,7 +2008,7 @@ func (s *Service) syncHubTenantUserEmailInventory(ctx context.Context, hubID str
 			}
 			adminManaged := false
 			for _, item := range items {
-				if isAdminUserLink(item) {
+				if item != nil && isAdminUserLink(item) && strings.TrimSpace(item.TenantID) == tenantID {
 					adminManaged = true
 					break
 				}

@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
 type testLLMServiceSystemSettings struct {
@@ -137,6 +140,87 @@ func TestCreateLLMServiceCardHandlerGeneratesBatchCodes(t *testing.T) {
 	if audit.logs[0].AdminUserID != "adm-1" {
 		t.Fatalf("unexpected audit admin user id: %s", audit.logs[0].AdminUserID)
 	}
+}
+
+func TestRedeemLLMServiceCardHandlerScopesCardsByTenant(t *testing.T) {
+	ctx := context.Background()
+	identity, _, _ := newHTTPAPITestServices(t)
+	system := newTestLLMServiceSystemSettings()
+	code, err := llmservice.GenerateCardCode()
+	if err != nil {
+		t.Fatalf("GenerateCardCode: %v", err)
+	}
+	enc, err := llmservice.EncryptCardCode(code)
+	if err != nil {
+		t.Fatalf("EncryptCardCode: %v", err)
+	}
+	baseRegistry := llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+	}
+	if err := llmservice.SaveRegistry(ctx, scopedSystemSettingsForTenant("tenant_a", system), &llmservice.Registry{
+		ModelServiceGroups: baseRegistry.ModelServiceGroups,
+		Cards: []llmservice.RechargeCard{{
+			ID:              "card-tenant-a",
+			CodeHash:        llmservice.HashCode(code),
+			EncryptedCode:   enc,
+			Label:           "Tenant A",
+			ServiceGroupIDs: []string{"coding-basic"},
+			DurationDays:    30,
+			Credits:         100,
+			CreatedAt:       time.Now().UTC(),
+		}},
+	}); err != nil {
+		t.Fatalf("Save tenant_a registry: %v", err)
+	}
+	if err := llmservice.SaveRegistry(ctx, scopedSystemSettingsForTenant("tenant_b", system), &baseRegistry); err != nil {
+		t.Fatalf("Save tenant_b registry: %v", err)
+	}
+
+	tenantBToken := issueViewerTokenForTenant(t, identity, "tenant_b", "same@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/service/redeem", bytes.NewReader([]byte(fmt.Sprintf(`{"code":%q}`, code))))
+	req.Header.Set("Authorization", "Bearer "+tenantBToken)
+	rec := httptest.NewRecorder()
+	RedeemLLMServiceCardHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("tenant_b redeem status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	savedA, err := llmservice.LoadRegistry(ctx, scopedSystemSettingsForTenant("tenant_a", system))
+	if err != nil {
+		t.Fatalf("Load tenant_a registry: %v", err)
+	}
+	if savedA.Cards[0].RedeemedAt != nil {
+		t.Fatalf("tenant_b should not redeem tenant_a card: %#v", savedA.Cards[0])
+	}
+
+	tenantAToken := issueViewerTokenForTenant(t, identity, "tenant_a", "same@example.com")
+	req = httptest.NewRequest(http.MethodPost, "/api/llm/service/redeem", bytes.NewReader([]byte(fmt.Sprintf(`{"code":%q}`, code))))
+	req.Header.Set("Authorization", "Bearer "+tenantAToken)
+	rec = httptest.NewRecorder()
+	RedeemLLMServiceCardHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant_a redeem status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	savedA, err = llmservice.LoadRegistry(ctx, scopedSystemSettingsForTenant("tenant_a", system))
+	if err != nil {
+		t.Fatalf("Reload tenant_a registry: %v", err)
+	}
+	if savedA.Cards[0].RedeemedAt == nil || savedA.Cards[0].RedeemedByEmail != "same@example.com" {
+		t.Fatalf("tenant_a card was not redeemed by tenant_a user: %#v", savedA.Cards[0])
+	}
+}
+
+func issueViewerTokenForTenant(t *testing.T, identity *auth.IdentityService, tenantID, email string) string {
+	t.Helper()
+	ctx := auth.WithTenant(context.Background(), tenantID)
+	user, err := identity.ManualBindForTenant(ctx, tenantID, email)
+	if err != nil {
+		t.Fatalf("ManualBindForTenant(%s): %v", tenantID, err)
+	}
+	token, err := identity.IssueViewerTokenForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("IssueViewerTokenForUser(%s): %v", tenantID, err)
+	}
+	return token
 }
 
 func TestCreateLLMServiceCardHandlerAppliesDefaultCreditsWhenMissingOrInvalid(t *testing.T) {
@@ -434,6 +518,64 @@ func TestLLMServiceCardsAdminHandlersScopeByTenant(t *testing.T) {
 	exportText := exportRec.Body.String()
 	if !strings.Contains(exportText, "card-tenant-a") || strings.Contains(exportText, "card-tenant-b") {
 		t.Fatalf("tenant A export leaked cards: %s", exportText)
+	}
+}
+
+func TestUpdateLLMServicesAdminHandlerValidatesSecurityGroupsWithinTenant(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: t.TempDir() + "/security-tenant.db"})
+	if err != nil {
+		t.Fatalf("new sqlite provider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	secStore := security.NewSecurityStore(provider.Write)
+	if err := secStore.InitSchema(ctx); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	ctxA := security.WithTenant(ctx, "tenant_a")
+	ctxB := security.WithTenant(ctx, "tenant_b")
+	if err := secStore.InitRootGroup(ctxA); err != nil {
+		t.Fatalf("init tenant A root: %v", err)
+	}
+	if err := secStore.InitRootGroup(ctxB); err != nil {
+		t.Fatalf("init tenant B root: %v", err)
+	}
+	secSvc := security.NewSecurityService(secStore, nil, nil)
+	rootA, err := secStore.GetRootGroup(ctxA)
+	if err != nil || rootA == nil {
+		t.Fatalf("get tenant A root: %v", err)
+	}
+	rootB, err := secStore.GetRootGroup(ctxB)
+	if err != nil || rootB == nil {
+		t.Fatalf("get tenant B root: %v", err)
+	}
+	groupA, err := secSvc.CreateGroup(ctxA, "A Only", rootA.ID)
+	if err != nil {
+		t.Fatalf("create tenant A group: %v", err)
+	}
+	groupB, err := secSvc.CreateGroup(ctxB, "B Only", rootB.ID)
+	if err != nil {
+		t.Fatalf("create tenant B group: %v", err)
+	}
+
+	requestBody := func(groupID string) *bytes.Reader {
+		return bytes.NewReader([]byte(fmt.Sprintf(`{"model_service_groups":[{"id":"coding-basic","name":"Coding Basic"}],"group_bindings":[{"group_id":%q,"service_group_ids":["coding-basic"]}]}`, groupID)))
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", requestBody(groupB.ID))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rec := httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, secSvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected cross-tenant group rejection, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", requestBody(groupA.ID))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rec = httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, secSvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected tenant group accepted, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

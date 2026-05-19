@@ -104,6 +104,10 @@ func writeAdminAuditLog(ctx context.Context, audit store.AdminAuditRepository, a
 	tenantID := ""
 	if admin := AdminFromContext(ctx); admin != nil && strings.TrimSpace(admin.Scope) == "tenant" {
 		tenantID = AdminTenantID(ctx)
+	} else if value := ctx.Value(requestTenantContextKey{}); value != nil {
+		if requestedTenantID, ok := value.(string); ok {
+			tenantID = strings.TrimSpace(requestedTenantID)
+		}
 	}
 	_ = audit.Create(ctx, &store.AdminAuditLog{ID: uuid.New().String(), TenantID: tenantID, AdminUserID: adminUserID, Action: action, PayloadJSON: string(payloadJSON), CreatedAt: time.Now().UTC()})
 }

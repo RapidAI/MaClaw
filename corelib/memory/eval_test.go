@@ -2,6 +2,7 @@ package memory
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -173,5 +174,46 @@ func TestEvaluateRecallStrategiesWithMaintenanceReportsDelta(t *testing.T) {
 	}
 	if report.Delta.ThemeIssueCount > 0 {
 		t.Fatalf("safe maintenance should not increase issue count in this case: %+v", report.Delta)
+	}
+}
+
+func TestFormatRecallEvalReportForTool(t *testing.T) {
+	report := RecallEvalReport{
+		Strategies: map[string]RecallEvalMetric{
+			"hybrid":   {Cases: 1, Hits: 1, HitRate: 1, AvgTokens: 12, AvgThemeRepeats: 0, AvgThemeMatchEvidence: 0},
+			"adaptive": {Cases: 1, Hits: 1, HitRate: 1, AvgTokens: 10, AvgThemeRepeats: 1, AvgThemeMatchEvidence: 2},
+		},
+		Theme: RecallEvalThemeReport{Health: ThemeHealth{ThemeCount: 2, CoverageRate: 0.75, IsolatedThemes: 1}, IssueCount: 1, ActionCount: 1},
+		Cases: []RecallEvalCaseResult{{
+			Name:  "case-1",
+			Query: "react migration decision",
+			Strategies: map[string]RecallEvalCaseScore{
+				"hybrid":   {Hit: true, ResultCount: 1, TokenEstimate: 12, MatchedExpected: []string{"react"}},
+				"adaptive": {Hit: true, ResultCount: 1, TokenEstimate: 10, DuplicateThemes: 1, MatchedExpected: []string{"react"}, AdaptiveFallback: false, QueryFacets: 2, BudgetMaxItems: 8, BudgetTokens: 500, SelectedThemes: 1, AggregatedThemes: 1, ThemeMatchEvidence: 2},
+			},
+		}},
+	}
+
+	out := FormatRecallEvalReportForTool(report)
+	for _, want := range []string{"Memory Recall Eval", "Theme health: coverage=0.75", "STRATEGY", "case-1: react migration decision", "adaptive hit=true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("formatted eval missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestFormatRecallMaintenanceEvalReportForTool(t *testing.T) {
+	report := RecallMaintenanceEvalReport{
+		Maintenance: ThemeMaintenanceResult{RequestedActions: 2, RebuiltThemes: true, BackfilledEmbeddings: 1, AppliedActions: []string{"rebuild_themes"}},
+		Delta:       RecallMaintenanceDelta{ThemeCoverageRate: 0.25, HybridHitRate: 0.1, AdaptiveHitRate: 0.2, ThemeIssueCount: -1, ThemeActionCount: -1},
+		Before:      RecallEvalReport{Strategies: map[string]RecallEvalMetric{"hybrid": {}, "adaptive": {}}, Theme: RecallEvalThemeReport{Health: ThemeHealth{}}, Cases: nil},
+		After:       RecallEvalReport{Strategies: map[string]RecallEvalMetric{"hybrid": {}, "adaptive": {}}, Theme: RecallEvalThemeReport{Health: ThemeHealth{CoverageRate: 0.25}}, Cases: nil},
+	}
+
+	out := FormatRecallMaintenanceEvalReportForTool(report)
+	for _, want := range []string{"Memory Recall Eval With Maintenance", "Maintenance: requested=2", "Delta: coverage=+0.25", "Before:", "After:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("formatted maintenance eval missing %q:\n%s", want, out)
+		}
 	}
 }

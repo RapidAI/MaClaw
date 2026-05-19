@@ -112,6 +112,7 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 
 type BoundUserView struct {
 	ID               string                    `json:"id"`
+	TenantID         string                    `json:"tenant_id"`
 	Email            string                    `json:"email"`
 	SN               string                    `json:"sn"`
 	Status           string                    `json:"status"`
@@ -180,7 +181,7 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 
 		var deletedMachines int64
 		if deviceSvc != nil {
-			deletedMachines, err = deviceSvc.ForceDeleteMachinesByUser(r.Context(), user.ID)
+			deletedMachines, err = deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), user.TenantID, user.ID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "DELETE_USER_MACHINES_FAILED", err.Error())
 				return
@@ -322,7 +323,7 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			return
 		}
 		out := make([]BoundUserView, 0, len(items))
-		seenEmails := make(map[string]struct{}, len(items))
+		seenUsers := make(map[string]struct{}, len(items))
 		for _, user := range items {
 			if user == nil {
 				continue
@@ -331,16 +332,20 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			if emailKey == "" {
 				continue
 			}
-			if _, exists := seenEmails[emailKey]; exists {
+			tenantID := store.NormalizeTenantID(user.TenantID)
+			seenKey := tenantID + "\x00" + emailKey
+			if _, exists := seenUsers[seenKey]; exists {
 				continue
 			}
-			seenEmails[emailKey] = struct{}{}
+			seenUsers[seenKey] = struct{}{}
 			var serviceStatus *llmservice.ServiceStatus
 			if system != nil {
-				serviceStatus, _ = llmservice.ResolveServiceStatus(r.Context(), system, securitySvc, user.Email, externalLLMBaseURL(r))
+				tenantSystem := ScopedSystemSettingsForTenant(tenantID, system)
+				serviceStatus, _ = llmservice.ResolveServiceStatus(r.Context(), tenantSystem, securitySvc, user.Email, externalLLMBaseURL(r))
 			}
 			out = append(out, BoundUserView{
 				ID:               user.ID,
+				TenantID:         tenantID,
 				Email:            user.Email,
 				SN:               user.SN,
 				Status:           user.Status,

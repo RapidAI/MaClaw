@@ -104,9 +104,10 @@ type SessionLister interface {
 
 // pendingBind holds a verification code for an in-progress open_id binding.
 type pendingBind struct {
-	Email  string
-	Code   string
-	Expiry time.Time
+	TenantID string
+	Email    string
+	Code     string
+	Expiry   time.Time
 }
 
 // Notifier listens to session events and pushes interactive cards to
@@ -336,6 +337,23 @@ func (n *Notifier) GetBindingsMap() map[string]BindingInfo {
 	m := make(map[string]BindingInfo, len(n.oidCache))
 	for k, v := range n.oidCache {
 		m[k] = v
+	}
+	return m
+}
+
+func (n *Notifier) GetTenantBindingsMap(tenantID string) map[string]BindingInfo {
+	tenantID = normalizeFeishuTenantID(tenantID)
+	n.oidMu.RLock()
+	defer n.oidMu.RUnlock()
+	m := make(map[string]BindingInfo)
+	for k, v := range n.oidCache {
+		v.TenantID = normalizeFeishuTenantID(v.TenantID)
+		if v.TenantID == tenantID {
+			if strings.TrimSpace(v.Email) == "" {
+				v.Email = emailFromTenantBindingKey(k)
+			}
+			m[k] = v
+		}
 	}
 	return m
 }
@@ -704,7 +722,7 @@ func (n *Notifier) onSessionCreated(event session.Event) {
 		{"会话", truncate(title, 60)},
 		{"Session ID", shortID(event.SessionID)},
 	})
-	n.sendToUser(event.UserID, cardJSON)
+	n.sendToUserForTenant(event.TenantID, event.UserID, cardJSON)
 }
 
 func (n *Notifier) onSessionSummary(event session.Event) {
@@ -758,9 +776,9 @@ func (n *Notifier) onSessionSummary(event session.Event) {
 	cardJSON := buildCardJSON("📊 会话状态更新", statusColor(s.Status), fields)
 	// Use urgent notification when the session is waiting for user action.
 	if s.WaitingForUser {
-		n.sendToUserUrgent(event.UserID, cardJSON)
+		n.sendToUserUrgentForTenant(event.TenantID, event.UserID, cardJSON)
 	} else {
-		n.sendToUser(event.UserID, cardJSON)
+		n.sendToUserForTenant(event.TenantID, event.UserID, cardJSON)
 	}
 }
 
@@ -806,9 +824,9 @@ func (n *Notifier) onImportantEvent(event session.Event) {
 	cardJSON := buildCardJSON("🔔 重要事件", severityColor(ie.Severity), fields)
 	// Use urgent notification for error/critical severity events.
 	if sev == "error" || sev == "critical" {
-		n.sendToUserUrgent(event.UserID, cardJSON)
+		n.sendToUserUrgentForTenant(event.TenantID, event.UserID, cardJSON)
 	} else {
-		n.sendToUser(event.UserID, cardJSON)
+		n.sendToUserForTenant(event.TenantID, event.UserID, cardJSON)
 	}
 }
 
@@ -1003,7 +1021,7 @@ func (n *Notifier) onSessionImage(event session.Event) {
 	} else {
 		email := n.resolveEmail(event.UserID)
 		if email != "" {
-			targetOpenID = n.resolveOpenID(email)
+			targetOpenID = n.resolveOpenIDForTenant(event.TenantID, email)
 		}
 	}
 	if targetOpenID == "" {
@@ -1134,7 +1152,7 @@ func (n *Notifier) onSessionClosed(event session.Event) {
 		fields = append(fields, cardField{"退出码", exitCodeStr})
 	}
 	cardJSON := buildCardJSON(title, color, fields)
-	n.sendToUser(event.UserID, cardJSON)
+	n.sendToUserForTenant(event.TenantID, event.UserID, cardJSON)
 
 	// Clean up dedup entries for this session.
 	n.clearDedup(event.SessionID)
@@ -1189,15 +1207,24 @@ func buildCardJSON(title, color string, fields []cardField) string {
 // ---------------------------------------------------------------------------
 
 func (n *Notifier) sendToUser(userID string, cardJSON string) {
-	n.sendToUserWithUrgent(userID, cardJSON, false)
+	n.sendToUserForTenant(store.DefaultTenantID, userID, cardJSON)
+}
+
+func (n *Notifier) sendToUserForTenant(tenantID, userID string, cardJSON string) {
+	n.sendToUserWithUrgent(tenantID, userID, cardJSON, false)
 }
 
 // sendToUserUrgent sends a card and follows up with a BuzzMessage (in-app urgent).
 func (n *Notifier) sendToUserUrgent(userID string, cardJSON string) {
-	n.sendToUserWithUrgent(userID, cardJSON, true)
+	n.sendToUserUrgentForTenant(store.DefaultTenantID, userID, cardJSON)
 }
 
-func (n *Notifier) sendToUserWithUrgent(userID string, cardJSON string, urgent bool) {
+func (n *Notifier) sendToUserUrgentForTenant(tenantID, userID string, cardJSON string) {
+	n.sendToUserWithUrgent(tenantID, userID, cardJSON, true)
+}
+
+func (n *Notifier) sendToUserWithUrgent(tenantID, userID string, cardJSON string, urgent bool) {
+	tenantID = normalizeFeishuTenantID(tenantID)
 	email := n.resolveEmail(userID)
 	if email == "" {
 		log.Printf("[feishu] cannot resolve email for user_id=%s, skipping", userID)
@@ -1206,7 +1233,7 @@ func (n *Notifier) sendToUserWithUrgent(userID string, cardJSON string, urgent b
 
 	// Prefer open_id (works for both personal and enterprise Feishu).
 	// Fall back to BindEmail (enterprise Feishu only).
-	openID := n.resolveOpenID(email)
+	openID := n.resolveOpenIDForTenant(tenantID, email)
 
 	var msg lark.OutcomingMessage
 	if openID != "" {

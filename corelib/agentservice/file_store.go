@@ -11,7 +11,9 @@ import (
 )
 
 // FileStore keeps the service control-plane state durable while reusing the
-// in-memory Store implementation for query semantics and sorting.
+// in-process control-plane Store implementation for query semantics and sorting.
+// It is intentionally separate from corelib/memory.Store, which owns long-term
+// user/agent memory.
 type FileStore struct {
 	mu    sync.Mutex
 	path  string

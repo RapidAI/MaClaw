@@ -188,10 +188,12 @@ var BuiltinToolNames = map[string]bool{
 	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
 	"browser_ocr": true,
 	// Knowledge tools (registered via CoreToolDeps.ExtraHandlers).
-	"knowledge_search":       true,
-	"knowledge_context_pack": true,
-	"knowledge_save_text":    true,
-	"knowledge_save_url":     true,
+	"knowledge_search":           true,
+	"knowledge_context_pack":     true,
+	"knowledge_save_text":        true,
+	"knowledge_save_url":         true,
+	"knowledge_import_directory": true,
+	"knowledge_import_files":     true,
 }
 
 func init() {

@@ -36,7 +36,7 @@ var chatUpgrader = websocket.Upgrader{
 //  2. Client sends auth frame: {"type":"auth","token":"<bearer_token>"}
 //  3. Server responds: {"type":"auth_ok","user_id":"..."}  or  {"type":"auth_fail"}
 //  4. Server pushes WsHint frames; client sends ping/typing frames.
-func ChatWSHandler(identity *auth.IdentityService, notifier *chat.Notifier) http.HandlerFunc {
+func ChatWSHandler(identity *auth.IdentityService, chSvc *chat.ChannelService, notifier *chat.Notifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := chatUpgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -70,7 +70,7 @@ func ChatWSHandler(identity *auth.IdentityService, notifier *chat.Notifier) http
 		}
 
 		// Auth OK.
-		_ = conn.WriteJSON(map[string]any{"type": "auth_ok", "user_id": vp.UserID})
+		_ = conn.WriteJSON(map[string]any{"type": "auth_ok", "tenant_id": vp.TenantID, "user_id": vp.UserID})
 
 		// Register with notifier.
 		sender := &chatWSConn{ws: conn}

@@ -9,11 +9,12 @@
  * - 14.6: Listen for ve:group_config event to update local participant limit
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { looksLikeRawParticipantId } from "./localAIIdentity";
 
 // --- Types ---
 
@@ -67,6 +68,10 @@ export interface VEGroupChatProps {
     allowParticipantAdd?: boolean;
     /** Whether to render the compact participant-count header above messages */
     showHeader?: boolean;
+    /** Participant IDs that represent the local user and should align as outgoing messages. */
+    localUserIds?: string[];
+    /** Optional root layout override for embedding beside other vertical siblings. */
+    containerStyle?: CSSProperties;
 }
 
 // --- Constants ---
@@ -130,8 +135,9 @@ export function virtualEmployeeDisplayName(
     return !lang || lang.startsWith("zh") ? "数字员工" + ordinal : "Digital employee" + ordinal;
 }
 
-function looksLikeRawParticipantId(value: string): boolean {
-    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
+
+function normalizeParticipantLookupId(value: string): string {
+    return String(value || "").trim().toLowerCase();
 }
 
 function readableGroupSpeakerName(
@@ -232,10 +238,11 @@ export function ParticipantSelector({
             }
             const all = await fn!();
             // Filter out digital employees already in the group
-            const currentIds = new Set(currentParticipants.map((p) => p.id));
+            const currentIds = new Set(currentParticipants.map((p) => normalizeParticipantLookupId(p.id)));
             const filtered = (all || []).filter((ve) => {
-                const participantId = virtualEmployeeParticipantId(ve);
-                return !currentIds.has(ve.id) && !currentIds.has(participantId) && ve.online_status === "online";
+                const profileId = normalizeParticipantLookupId(ve.id);
+                const participantId = normalizeParticipantLookupId(virtualEmployeeParticipantId(ve));
+                return !currentIds.has(profileId) && !currentIds.has(participantId) && ve.online_status === "online";
             });
             if (!mountedRef.current) return;
             setAvailable(filtered);
@@ -438,11 +445,12 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
     const color = isUser ? theme.text : getParticipantColor(participantIndex);
     const hasAttachments = !!message.attachments?.length;
     const hasContent = message.content.trim().length > 0;
+    const horizontalAlign = isUser ? "flex-end" : "flex-start";
 
     return (
         <div
             data-testid={`group-msg-${message.id}`}
-            style={{ marginBottom: 10 }}
+            style={{ marginBottom: 10, display: "flex", flexDirection: "column", alignItems: horizontalAlign }}
         >
             {/* Participant name label */}
             <div
@@ -452,7 +460,8 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                     fontWeight: 600,
                     color,
                     marginBottom: 2,
-                    paddingLeft: 4,
+                    paddingLeft: isUser ? 0 : 4,
+                    paddingRight: isUser ? 4 : 0,
                 }}
             >
                 {displayName || message.fromName}
@@ -470,13 +479,14 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                     wordBreak: "break-word",
                     overflowWrap: "anywhere",
                     whiteSpace: "pre-wrap",
+                    maxWidth: "82%",
                 }}
             >
                 <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />
             </div>}
             {/* Attachments */}
             {hasAttachments && (
-                <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: 4 }}>
+                <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: isUser ? 0 : 4, paddingRight: isUser ? 4 : 0, justifyContent: horizontalAlign, maxWidth: "82%" }}>
                     {message.attachments?.map((att, idx) => (
                         <div
                             key={idx}
@@ -490,10 +500,12 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                                 background: theme.fieldBg,
                                 border: `1px solid ${theme.divider}`,
                                 fontSize: 11,
+                                maxWidth: "100%",
+                                minWidth: 0,
                             }}
                         >
-                            <span>{att.type === "image" ? "IMG" : att.type === "text" ? "TXT" : "FILE"}</span>
-                            {att.fileUrl || att.localPath ? <button type="button" onClick={() => onDownloadAttachment?.(att, message)} title={att.localPath || att.fileUrl} style={{ border: 0, padding: 0, background: "transparent", color: theme.text, textDecoration: "underline", cursor: "pointer", font: "inherit" }}><span>{att.filename}</span><span style={{ marginLeft: 5, color: theme.textMuted, fontSize: 10 }}>{att.localPath ? "OPEN" : "GET"}</span></button> : <span>{att.filename}</span>}
+                            <span style={{ flexShrink: 0 }}>{att.type === "image" ? "IMG" : att.type === "text" ? "TXT" : "FILE"}</span>
+                            {att.fileUrl || att.localPath ? <button type="button" onClick={() => onDownloadAttachment?.(att, message)} title={att.localPath || att.fileUrl} style={{ border: 0, padding: 0, minWidth: 0, maxWidth: "100%", flex: "1 1 auto", display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: theme.text, cursor: "pointer", font: "inherit" }}><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "underline" }}>{att.filename}</span><span style={{ color: theme.textMuted, fontSize: 10, flexShrink: 0 }}>{att.localPath ? "OPEN" : "GET"}</span></button> : <span style={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>}
                         </div>
                     ))}
                 </div>
@@ -543,6 +555,8 @@ export function VEGroupChatView({
     onDownloadAttachment,
     allowParticipantAdd = true,
     showHeader = true,
+    localUserIds,
+    containerStyle,
 }: VEGroupChatProps) {
     const { maxGroupParticipants } = useGroupConfig(initialMax);
     const [offlineNotices, setOfflineNotices] = useState<string[]>([]);
@@ -603,14 +617,17 @@ export function VEGroupChatView({
         [sessionId, participants.length, maxGroupParticipants, addVEToGroup, onAddParticipant]
     );
 
-    // Build participant index map for coloring
+    // Build participant index map for coloring. Normalize ids because Hub history
+    // can preserve canonical casing while frontend state may use a local alias.
     const participantIndexMap = new Map<string, number>();
-    participants.forEach((p, i) => participantIndexMap.set(p.id, i));
+    participants.forEach((p, i) => participantIndexMap.set(normalizeParticipantLookupId(p.id), i));
+    const hasExplicitLocalUserIds = Array.isArray(localUserIds);
+    const localUserIdSet = new Set((localUserIds || []).map(normalizeParticipantLookupId));
 
     return (
         <div
             data-testid="ve-group-chat-view"
-            style={{ display: "flex", flexDirection: "column", height: "100%" }}
+            style={{ display: "flex", flexDirection: "column", height: "100%", ...containerStyle }}
         >
             {showHeader && (
                 <div
@@ -644,12 +661,13 @@ export function VEGroupChatView({
             {/* Message list */}
             <div
                 data-testid="group-message-list"
-                style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}
+                style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "12px 16px" }}
             >
                 {messages.map((msg) => {
-                    const participant = participants.find((p) => p.id === msg.fromId);
-                    const pIdx = participantIndexMap.get(msg.fromId) ?? 0;
-                    const isUser = !participant;
+                    const normalizedFromId = normalizeParticipantLookupId(msg.fromId);
+                    const participant = participants.find((p) => normalizeParticipantLookupId(p.id) === normalizedFromId);
+                    const pIdx = participantIndexMap.get(normalizedFromId) ?? 0;
+                    const isUser = hasExplicitLocalUserIds ? localUserIdSet.has(normalizedFromId) : !participant;
                     const displayName = readableGroupSpeakerName(msg.fromName, msg.fromId, participant?.name, isUser, lang);
                     return (
                         <GroupMessageBubble

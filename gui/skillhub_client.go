@@ -207,7 +207,7 @@ func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targ
 	var full hubSkillFull
 	base, _, err := c.getJSONFromExplicitHubURL(ctx, hubURL, path, &full)
 	if err != nil {
-		return nil, fmt.Errorf("download skill failed: %v", err)
+		return nil, fmt.Errorf("download skill %q from %s failed: %v", skillID, strings.TrimRight(hubURL, "/"), err)
 	}
 
 	steps := make([]corelib.NLSkillStep, 0, len(full.Steps))

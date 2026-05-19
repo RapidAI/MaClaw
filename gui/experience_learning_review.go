@@ -54,9 +54,22 @@ func (a *App) ReviewExperienceTrace(traceID string, req ExperienceTraceReviewReq
 	}
 
 	now := time.Now().UTC()
-	content := appendExperienceReviewRecord(entry.Content, outcome, reviewKind, req.Note, a.defaultExperienceReviewReviewer(req.Reviewer), now)
-	tags := applyExperienceReviewTags(entry.Tags, reviewKind, outcome, now)
-	if err := a.memoryStore.Update(entry.ID, content, entry.Category, tags); err != nil {
+	entry.Content = appendExperienceReviewRecord(entry.Content, outcome, reviewKind, req.Note, a.defaultExperienceReviewReviewer(req.Reviewer), now)
+	entry.Tags = applyExperienceReviewTags(entry.Tags, reviewKind, outcome, now)
+	if _, err := a.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+		ID:          entry.ID,
+		Title:       entry.Title,
+		Content:     entry.Content,
+		Tags:        entry.Tags,
+		Scope:       entry.Scope,
+		OwnerID:     entry.OwnerID,
+		SourceType:  entry.SourceType,
+		SourceURL:   entry.SourceURL,
+		EvidenceIDs: entry.EvidenceIDs,
+		RelatedIDs:  entry.RelatedIDs,
+		DerivedKind: entry.DerivedKind,
+		Boundary:    entry.Boundary,
+	}); err != nil {
 		return ExperienceTraceReviewRecord{}, err
 	}
 	a.emitEvent("memory:experience-reviewed", map[string]string{

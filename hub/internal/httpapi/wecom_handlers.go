@@ -58,8 +58,9 @@ func UpdateWeComConfigHandler(system store.SystemSettingsRepository, plugin *wec
 			return
 		}
 
-		// Hot-reload: restart WebSocket gateway
-		if plugin != nil {
+		// Hot-reload only for the Hub-level singleton gateway. Tenant-scoped
+		// settings are consumed per tenant and must not rewire the shared process.
+		if plugin != nil && shouldReloadSharedRuntimeForRequest(r) {
 			_ = plugin.Stop(r.Context())
 			if cfg.Enabled {
 				_ = plugin.Start(r.Context())
@@ -80,14 +81,16 @@ func GetWeComBindingsHandler(plugin *wecom.Plugin) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]any{"bindings": []any{}})
 			return
 		}
-		m := plugin.GetBindings()
+		tenantID := RequestTenantID(r)
+		m := plugin.GetTenantBindings(tenantID)
 		type binding struct {
-			UserID string `json:"userid"`
-			Email  string `json:"email"`
+			UserID   string `json:"userid"`
+			Email    string `json:"email"`
+			TenantID string `json:"tenant_id"`
 		}
 		bindings := make([]binding, 0, len(m))
 		for uid, email := range m {
-			bindings = append(bindings, binding{UserID: uid, Email: email})
+			bindings = append(bindings, binding{UserID: uid, Email: email, TenantID: tenantID})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"bindings": bindings})
 	}
@@ -104,7 +107,7 @@ func DeleteWeComBindingHandler(plugin *wecom.Plugin) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "userid is required")
 			return
 		}
-		plugin.RemoveBinding(userID)
+		plugin.RemoveTenantBinding(userID, RequestTenantID(r))
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }

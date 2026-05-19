@@ -10,7 +10,7 @@ import (
 )
 
 // historyWindowSize is the number of recent same-level memories used as
-// historical context during consolidation (TiMem wᵢ=3).
+// historical context during consolidation (TiMem w=3).
 const historyWindowSize = 3
 
 // Consolidator performs TiMem-style stratified memory consolidation.
@@ -74,22 +74,26 @@ func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistan
 
 	// Create the segment entry.
 	interval := TimeInterval{Start: turnTime, End: turnTime}
-	entry := Entry{
-		Content:  content,
-		Category: CategoryConversationSummary,
-		Tags:     []string{"tmt", "L1", "segment"},
-		Level:    LevelSegment,
-		Interval: &interval,
-		OwnerID:  ownerID, // 多租户隔离
-	}
-
-	if err := c.store.Save(entry); err != nil {
+	boundary := tmtBoundaryFromEntries(nil, ownerID, interval, "conversation")
+	result, err := c.store.UpsertEntryByTags(UpsertByTagsOptions{
+		Title:            "TMT segment",
+		Content:          content,
+		Category:         CategoryConversationSummary,
+		Tags:             []string{"tmt", "L1", "segment", ownerID, "at:" + turnTime.UTC().Format(time.RFC3339Nano)},
+		IdentityTagCount: 5,
+		Level:            LevelSegment,
+		Interval:         &interval,
+		OwnerID:          ownerID,
+		SourceType:       "tmt_consolidation",
+		DerivedKind:      "tmt:segment",
+		Boundary:         &boundary,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("consolidator: save L1: %w", err)
 	}
 
 	// Insert into TMT.
-	// Find the saved entry ID (Save may have deduplicated).
-	savedID := c.findEntryByContent(content, LevelSegment)
+	savedID := result.EntryID
 	if savedID != "" {
 		_ = c.tree.Insert(savedID, LevelSegment, interval)
 	}
@@ -130,8 +134,7 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 		return &ConsolidationResult{Level: level}, nil
 	}
 
-	// 多租户隔离：验证所有 child entries 的 OwnerID 一致
-	// 如果 ownerID 非空，过滤掉不属于该用户的 child entries
+	// Multi-tenant isolation: keep only child entries visible to this owner.
 	if ownerID != "" {
 		childIDs = c.filterChildrenByOwner(childIDs, ownerID)
 		if len(childIDs) == 0 {
@@ -139,8 +142,9 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 		}
 	}
 
-	// Gather child contents.
-	childContents := c.gatherContents(childIDs)
+	// Gather child entries and contents.
+	childEntries := c.gatherEntries(childIDs)
+	childContents := tmtEntryContents(childEntries)
 	if len(childContents) == 0 {
 		return &ConsolidationResult{Level: level}, nil
 	}
@@ -163,22 +167,30 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 
 	// Determine category based on level.
 	cat := c.levelCategory(level)
+	evidenceIDs := synthesisEvidenceIDs(childEntries)
+	boundary := tmtBoundaryFromEntries(childEntries, ownerID, window, "tmt_consolidation")
 
-	entry := Entry{
-		Content:  content,
-		Category: cat,
-		Tags:     []string{"tmt", fmt.Sprintf("L%d", level), level.String()},
-		Level:    level,
-		Interval: &window,
-		OwnerID:  ownerID, // 多租户隔离
-	}
-
-	if err := c.store.Save(entry); err != nil {
+	result, err := c.store.UpsertEntryByTags(UpsertByTagsOptions{
+		Title:            fmt.Sprintf("TMT %s", level.String()),
+		Content:          content,
+		Category:         cat,
+		Tags:             []string{"tmt", fmt.Sprintf("L%d", level), level.String(), ownerID, "window:" + window.Start.UTC().Format(time.RFC3339Nano)},
+		IdentityTagCount: 5,
+		Level:            level,
+		Interval:         &window,
+		OwnerID:          ownerID,
+		SourceType:       "tmt_consolidation",
+		EvidenceIDs:      evidenceIDs,
+		RelatedIDs:       evidenceIDs,
+		DerivedKind:      "tmt:" + strings.ToLower(level.String()),
+		Boundary:         &boundary,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("consolidator: save L%d: %w", level, err)
 	}
 
 	// Insert into TMT and link children.
-	savedID := c.findEntryByContent(content, level)
+	savedID := result.EntryID
 	if savedID != "" {
 		if err := c.tree.Insert(savedID, level, window); err != nil {
 			log.Printf("[consolidator] TMT insert L%d: %v", level, err)
@@ -342,7 +354,7 @@ Rules:
 // Helpers
 // ---------------------------------------------------------------------------
 
-// getHistoryContext retrieves the wᵢ most recent memories at the same level
+// getHistoryContext retrieves the most recent memories at the same level
 // for continuity during consolidation.
 func (c *Consolidator) getHistoryContext(level TemporalLevel) string {
 	recentIDs := c.tree.RecentAtLevel(level, historyWindowSize)
@@ -379,7 +391,7 @@ func (c *Consolidator) getHistoryContext(level TemporalLevel) string {
 	return strings.Join(parts, "\n---\n")
 }
 
-func (c *Consolidator) gatherContents(ids []string) []string {
+func (c *Consolidator) gatherEntries(ids []string) []Entry {
 	c.store.mu.RLock()
 	defer c.store.mu.RUnlock()
 
@@ -388,22 +400,49 @@ func (c *Consolidator) gatherContents(ids []string) []string {
 		idSet[id] = true
 	}
 
-	// Single pass: collect content indexed by ID.
-	contentByID := make(map[string]string, len(ids))
+	entryByID := make(map[string]Entry, len(ids))
 	for _, e := range c.store.entries {
 		if idSet[e.ID] {
-			contentByID[e.ID] = e.Content
+			entryByID[e.ID] = e
 		}
 	}
 
-	// Preserve order from input ids.
-	var contents []string
+	entries := make([]Entry, 0, len(ids))
 	for _, id := range ids {
-		if content, ok := contentByID[id]; ok {
-			contents = append(contents, content)
+		if entry, ok := entryByID[id]; ok {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func tmtEntryContents(entries []Entry) []string {
+	contents := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Content) != "" {
+			contents = append(contents, entry.Content)
 		}
 	}
 	return contents
+}
+
+func tmtBoundaryFromEntries(entries []Entry, ownerID string, interval TimeInterval, sourceScope string) MemoryBoundary {
+	boundary := InferMemoryBoundary(entries)
+	if boundary.OwnerID == "" {
+		boundary.OwnerID = strings.TrimSpace(ownerID)
+	}
+	if boundary.SourceScope == "" {
+		boundary.SourceScope = sourceScope
+	}
+	start := interval.Start
+	end := interval.End
+	if !start.IsZero() {
+		boundary.Since = &start
+	}
+	if !end.IsZero() {
+		boundary.Until = &end
+	}
+	return boundary
 }
 
 // filterChildrenByOwner filters child entry IDs to only include those
@@ -416,7 +455,7 @@ func (c *Consolidator) filterChildrenByOwner(childIDs []string, ownerID string) 
 	c.store.mu.RLock()
 	defer c.store.mu.RUnlock()
 
-	// Build ID → OwnerID map in single pass.
+	// Build ID -> OwnerID map in single pass.
 	ownerByID := make(map[string]string, len(childIDs))
 	idSet := make(map[string]bool, len(childIDs))
 	for _, id := range childIDs {

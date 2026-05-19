@@ -1,10 +1,10 @@
 /**
- * GroupParticipantPanel — Right-side participant list for group chat tabs.
+ * GroupParticipantPanel - Right-side participant list for group chat tabs.
  *
  * Shows:
  * - Participant count header
  * - List of participants with online/offline status indicators
- * - "＋ 邀请" button to add more participants
+ * - "+ Invite" button to add more participants
  *
  * Designed to be rendered alongside the group chat message area in a flex row.
  */
@@ -13,24 +13,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { ParticipantSelector, useGroupConfig, virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
+import { localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
 
 export interface Participant {
     id: string;
     name: string;
     online: boolean;
-    isLocal?: boolean; // true for "local-maclaw"
+    isLocal?: boolean;
 }
 
-function looksLikeRawParticipantId(value: string): boolean {
-    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
-}
 
 function participantFallbackName(index: number, isZh: boolean): string {
     return isZh ? "参与者 " + (index + 1) : "Participant " + (index + 1);
 }
 
-function participantDisplayNameFor(p: Participant, index: number, isZh: boolean): string {
-    if (p.isLocal) return isZh ? "本机AI" : "Local AI";
+function participantDisplayNameFor(p: Participant, index: number, isZh: boolean, lang?: string): string {
+    if (p.isLocal) return localAINameForLang(lang);
     const name = String(p.name || "").trim();
     const id = String(p.id || "").trim();
     if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
@@ -195,7 +193,7 @@ export function GroupParticipantPanel({
                 padding: "4px 0",
             }}>
                 {resolvedParticipants.map((p, index) => {
-                    const displayName = participantDisplayNameFor(p, index, isZh);
+                    const displayName = participantDisplayNameFor(p, index, isZh, lang);
                     return (
                     <div
                         key={p.id}
@@ -279,7 +277,7 @@ export function GroupParticipantPanel({
                             : (isZh ? "邀请数字员工" : "Invite")
                         }
                     >
-                        {isZh ? "＋ 邀请" : "+ Invite"}
+                        {isZh ? "+ 邀请" : "+ Invite"}
                     </button>}
                 </div>
             )}
@@ -314,7 +312,7 @@ export function GroupParticipantPanel({
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = (theme.sendBtnBg || "#3b82f6") + "20"; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        {isZh ? "找它交谈" : "Talk to"}
+                        {isZh ? "与它交谈" : "Talk to"}
                     </div>
                 </div>
             )}

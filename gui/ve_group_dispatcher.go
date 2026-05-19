@@ -11,13 +11,13 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// GroupChatDispatcher routes group chat messages to the local maclaw agent
-// when it's participating as an executor in a VE group discussion.
-// It maintains a set of active sessions where local maclaw is an executor.
+// GroupChatDispatcher routes group chat messages to the local AI agent
+// when it is participating as a speaker in a VE group discussion.
+// It maintains the active sessions where the local AI dispatcher is enabled.
 type GroupChatDispatcher struct {
 	app *App
 	mu  sync.RWMutex
-	// sessions tracks which discussion sessions have local maclaw as executor
+	// sessions tracks which discussion sessions have local AI enabled
 	sessions map[string]*groupExecutorSession
 	// cachedMachineID is lazily resolved and cached (immutable during runtime)
 	cachedMachineID     string
@@ -33,7 +33,7 @@ func (d *GroupChatDispatcher) getLocalMachineID() string {
 		if err != nil {
 			return
 		}
-		d.cachedMachineID = strings.TrimSpace(cfg.RemoteMachineID)
+		d.cachedMachineID = strings.TrimSpace(groupDiscussionAgentID(cfg))
 	})
 	return d.cachedMachineID
 }
@@ -52,7 +52,7 @@ func NewGroupChatDispatcher(app *App) *GroupChatDispatcher {
 	}
 }
 
-// RegisterSession marks a session as having local maclaw as executor.
+// RegisterSession marks a session as having local AI enabled.
 // After this call, incoming messages for this session will be routed to the main agent.
 func (d *GroupChatDispatcher) RegisterSession(sessionID string) {
 	d.mu.Lock()
@@ -80,7 +80,7 @@ func (d *GroupChatDispatcher) UnregisterSession(sessionID string) {
 	}
 }
 
-// IsRegistered returns true if the session has local maclaw as executor.
+// IsRegistered returns true if the session has local AI enabled.
 func (d *GroupChatDispatcher) IsRegistered(sessionID string) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -89,7 +89,7 @@ func (d *GroupChatDispatcher) IsRegistered(sessionID string) bool {
 }
 
 // HandleGroupMessage processes an incoming group discussion message for a session
-// where local maclaw is the executor. It routes the message through the main
+// where local AI is enabled. It routes the message through the main
 // IMMessageHandler with full tool access.
 // localDispatch indicates the message was dispatched directly from tryLocalExecutorDispatch
 // (bypassing Hub), so responses should be emitted directly to the frontend.
@@ -100,7 +100,7 @@ func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.Group
 
 	// Skip own messages (only relevant for Hub-routed messages)
 	machineID := d.getLocalMachineID()
-	if machineID != "" && msg.FromID == machineID {
+	if machineID != "" && strings.EqualFold(strings.TrimSpace(msg.FromID), machineID) {
 		return
 	}
 
@@ -126,20 +126,44 @@ func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.Group
 }
 
 func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a2a.GroupDiscussionMessage, localDispatch bool) {
+	var hubSyncCh chan a2a.GroupDiscussionMessage
+	var hubSyncDone chan struct{}
+	finishHubSync := func() {}
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[group-dispatcher] panic in routeToMainAgent for session %s: %v", sess.SessionID, r)
+			finishHubSync()
 		}
 	}()
+	if localDispatch {
+		hubSyncCh = make(chan a2a.GroupDiscussionMessage, 64)
+		hubSyncDone = make(chan struct{})
+		go func() {
+			defer close(hubSyncDone)
+			d.sendQueuedGroupMessages(sess.SessionID, hubSyncCh)
+		}()
+		var closeOnce sync.Once
+		finishHubSync = func() {
+			closeOnce.Do(func() {
+				close(hubSyncCh)
+				<-hubSyncDone
+			})
+		}
+		if targetedInput, ok := d.app.localTargetedGroupMessage(msg); ok {
+			hubSyncCh <- targetedInput
+		}
+	}
 
 	hubClient := d.app.hubClient()
 	if hubClient == nil {
 		log.Printf("[group-dispatcher] hub client unavailable for session %s", sess.SessionID)
+		finishHubSync()
 		return
 	}
 	handler := hubClient.ensureIMHandler()
 	if handler == nil {
 		log.Printf("[group-dispatcher] IM handler unavailable for session %s", sess.SessionID)
+		finishHubSync()
 		return
 	}
 
@@ -162,18 +186,6 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 
 	// hubSyncCh serializes Hub sync messages to avoid goroutine explosion and
 	// preserve chunk ordering. Buffered to avoid blocking the onToken callback.
-	var hubSyncCh chan a2a.GroupDiscussionMessage
-	var hubSyncDone chan struct{}
-	if localDispatch {
-		hubSyncCh = make(chan a2a.GroupDiscussionMessage, 64)
-		hubSyncDone = make(chan struct{})
-		go func() {
-			defer close(hubSyncDone)
-			for m := range hubSyncCh {
-				d.sendToGroup(sess.SessionID, m)
-			}
-		}()
-	}
 
 	// Stream response
 	resp := handler.HandleIMMessageWithProgressAndStream(imMsg, nil, func(chunk string) {
@@ -203,13 +215,9 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	if resp != nil {
 		if localDispatch {
 			d.emitStreamToFrontend(sess.SessionID, "")
-			// Queue stream_end and close channel to signal completion
-			select {
-			case hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamEnd, Content: ""}:
-			default:
-			}
-			close(hubSyncCh)
-			<-hubSyncDone // Wait for all Hub syncs to complete
+			// Always preserve stream_end so Hub history can collapse streamed chunks reliably.
+			hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamEnd, Content: ""}
+			finishHubSync() // Wait for all Hub syncs to complete
 		} else {
 			d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
 				Kind:    a2a.MessageStreamEnd,
@@ -218,8 +226,7 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		}
 	} else if localDispatch {
 		// No response — still need to close the sync channel
-		close(hubSyncCh)
-		<-hubSyncDone
+		finishHubSync()
 	}
 }
 
@@ -229,6 +236,10 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 	if d.app == nil || d.app.ctx == nil {
 		return
 	}
+	senderID := d.getLocalMachineID()
+	if senderID == "" {
+		senderID = "local-maclaw"
+	}
 	if chunk == "" {
 		// Stream end
 		runtime.EventsEmit(d.app.ctx, "ve:stream_end", map[string]any{
@@ -236,7 +247,7 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 			"content":     "",
 			"chunk":       "",
 			"sender_name": "本机AI",
-			"sender_id":   "local-maclaw",
+			"sender_id":   senderID,
 		})
 	} else {
 		// Stream chunk
@@ -245,8 +256,35 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 			"content":     chunk,
 			"chunk":       chunk,
 			"sender_name": "本机AI",
-			"sender_id":   "local-maclaw",
+			"sender_id":   senderID,
 		})
+	}
+}
+
+func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages <-chan a2a.GroupDiscussionMessage) {
+	if d.app == nil {
+		for range messages {
+		}
+		return
+	}
+	client, cfg, err := d.app.groupDiscussionClient()
+	if err != nil {
+		log.Printf("[group-dispatcher] group discussion client unavailable for session %s: %v", sessionID, err)
+		for range messages {
+		}
+		return
+	}
+	fromID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	for msg := range messages {
+		if strings.TrimSpace(msg.FromID) == "" {
+			msg.FromID = fromID
+		}
+		ctx, cancel := groupDiscussionContext()
+		err := client.SendDiscussionMessage(ctx, sessionID, msg)
+		cancel()
+		if err != nil {
+			log.Printf("[group-dispatcher] failed to sync queued message to session %s: %v", sessionID, err)
+		}
 	}
 }
 

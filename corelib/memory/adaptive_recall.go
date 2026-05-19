@@ -179,6 +179,25 @@ func containsAny(text string, needles []string) bool {
 	return false
 }
 
+func filterAdaptiveThemesByBoundary(themes []ThemeNode, projectLower, filterOwner string) []ThemeNode {
+	if len(themes) == 0 {
+		return themes
+	}
+	filtered := themes[:0]
+	for _, theme := range themes {
+		if adaptiveThemeBoundaryAllowed(theme, projectLower, filterOwner) {
+			filtered = append(filtered, theme)
+		}
+	}
+	return filtered
+}
+
+func adaptiveThemeBoundaryAllowed(theme ThemeNode, projectLower, filterOwner string) bool {
+	if theme.Boundary == nil {
+		return true
+	}
+	return recallBoundaryAllowed(Entry{Boundary: theme.Boundary}, projectLower, filterOwner)
+}
 func selectThemesByQueryFacets(themes []ThemeNode, facets []RecallQueryFacet, selected map[string]struct{}, limit int, entryByID map[string]Entry) []ThemeNode {
 	return selectThemesByQueryFacetsCached(themes, facets, selected, limit, entryByID, nil)
 }
@@ -655,16 +674,20 @@ func nonZeroMapLen(counts map[string]int) int {
 	return n
 }
 
-// RecallAdaptiveHier retrieves through the xMemory-style theme layer. It keeps
-// the existing RecallDynamic pipeline as the seed stage, then expands within
-// selected themes to recover related but lower-ranked evidence.
+// RecallAdaptiveHier retrieves through the xMemory-style theme layer. Use it
+// for complex queries that compare, analyze, summarize, or ask for patterns over
+// time. It keeps RecallDynamic as the seed stage, then expands within selected
+// themes to recover related but lower-ranked evidence while preserving owner,
+// project, category, and derived-memory boundary filters.
 func (s *Store) RecallAdaptiveHier(query string, category Category, projectPath string, ownerID ...string) []Entry {
 	result, _ := s.RecallAdaptiveHierDebug(query, category, projectPath, ownerID...)
 	s.touchRecallResultsAsync(result)
 	return result
 }
 
-// RecallAdaptiveHierDebug returns both results and the decision plan.
+// RecallAdaptiveHierDebug returns both results and the decision plan used for
+// diagnostics and evaluation. The plan exposes selected themes, facet coverage,
+// expansion, diversity caps, and fallback decisions.
 func (s *Store) RecallAdaptiveHierDebug(query string, category Category, projectPath string, ownerID ...string) ([]Entry, AdaptiveRecallPlan) {
 	expanded := ExpandQuery(query)
 	complexity := ClassifyComplexity(query, expanded.Entities, nil)
@@ -680,7 +703,9 @@ func (s *Store) RecallAdaptiveHierDebug(query string, category Category, project
 		return seeds, plan
 	}
 
-	themes := s.themeManager.Themes()
+	projectLower := semanticNormalizeProjectPath(projectPath)
+	filterOwner := firstOwnerID(ownerID...)
+	themes := filterAdaptiveThemesByBoundary(s.themeManager.Themes(), projectLower, filterOwner)
 	if len(themes) == 0 {
 		plan.Fallback = true
 		setAdaptivePlanResults(&plan, seeds, nil, nil)
@@ -749,8 +774,6 @@ func (s *Store) RecallAdaptiveHierDebug(query string, category Category, project
 		return seeds, plan
 	}
 
-	projectLower := semanticNormalizeProjectPath(projectPath)
-	filterOwner := firstOwnerID(ownerID...)
 	seedSet := make(map[string]Entry, len(seeds))
 	seedIDs := make(map[string]struct{}, len(seeds))
 	for _, seed := range seeds {

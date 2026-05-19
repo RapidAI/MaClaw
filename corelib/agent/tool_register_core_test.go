@@ -92,6 +92,28 @@ func TestCoreSearchToolsExposeLargeRepoSearchOptions(t *testing.T) {
 	)
 }
 
+func TestCoreKnowledgeImportToolsAreRegistered(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	for _, name := range []string{"knowledge_import_directory", "knowledge_import_files"} {
+		if !reg.Has(name) {
+			t.Fatalf("expected %s to be registered", name)
+		}
+	}
+
+	reg.mu.RLock()
+	dirEntry := reg.tools["knowledge_import_directory"]
+	filesEntry := reg.tools["knowledge_import_files"]
+	reg.mu.RUnlock()
+	if _, ok := dirEntry.Properties["root_path"]; !ok {
+		t.Fatalf("knowledge_import_directory missing root_path property")
+	}
+	if _, ok := filesEntry.Properties["file_paths"]; !ok {
+		t.Fatalf("knowledge_import_files missing file_paths property")
+	}
+}
+
 func TestCoreWorkflowDocumentToolsExposeMetadata(t *testing.T) {
 	reg := NewCoreToolRegistry()
 	RegisterCoreTools(reg, CoreToolDeps{})

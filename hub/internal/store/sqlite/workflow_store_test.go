@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	storepkg "github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 	_ "modernc.org/sqlite"
 )
@@ -97,5 +98,35 @@ func TestWorkflowStoreSQLite_DeleteWorkflowRejectsRunningInstance(t *testing.T) 
 
 	if err := store.DeleteWorkflow(ctx, def.ID); err == nil {
 		t.Fatal("expected running instance to block workflow deletion")
+	}
+}
+
+func TestWorkflowStoreSQLite_DeleteWorkflowIgnoresOtherTenantRunningInstance(t *testing.T) {
+	db := setupWorkflowStoreTestDB(t)
+	wfStore := NewWorkflowStore(db)
+	ctxA := storepkg.WithTenant(context.Background(), "tenant_a")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	def := &workflow.WorkflowDefinition{ID: "wf_cross_running", OwnerID: "owner_a", Name: "Cross", CreatedAt: now, UpdatedAt: now}
+	if err := wfStore.CreateWorkflow(ctxA, def); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	ver := &workflow.WorkflowVersion{ID: "ver_cross_running", WorkflowID: def.ID, VersionNumber: "0.1.0", Status: workflow.VersionPublished, Graph: workflow.WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
+	if err := wfStore.CreateVersion(ctxA, ver); err != nil {
+		t.Fatalf("CreateVersion: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `INSERT INTO workflow_instances (id, tenant_id, workflow_id, version_id, status) VALUES (?, ?, ?, ?, ?)`, "inst_other_tenant", "tenant_b", def.ID, ver.ID, string(workflow.InstanceRunning)); err != nil {
+		t.Fatalf("insert other tenant instance: %v", err)
+	}
+
+	if err := wfStore.DeleteWorkflow(ctxA, def.ID); err != nil {
+		t.Fatalf("DeleteWorkflow should ignore other tenant running instance: %v", err)
+	}
+	got, err := wfStore.GetWorkflow(ctxA, def.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflow: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected workflow deleted, got %+v", got)
 	}
 }

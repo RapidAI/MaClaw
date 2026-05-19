@@ -1,39 +1,33 @@
 import { useCallback } from "react";
 import type { AITab, AITabState } from "./AITabTypes";
+import { hasLocalAIParticipant, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, normalizeParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
 
-function looksLikeRawParticipantId(value: string): boolean {
-    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
-}
 
-function participantNameFromTab(tab: AITab): string {
+
+function participantNamesFromTab(tab: AITab): Record<string, string> {
+    const names: Record<string, string> = { ...(tab.participantNames || {}) };
     const id = String(tab.veId || "").trim();
-    const mapped = String(id ? tab.participantNames?.[id] || "" : "").trim();
-    if (mapped && mapped !== id && !looksLikeRawParticipantId(mapped)) return mapped;
+    const mapped = String(id ? names[id] || "" : "").trim();
+    if (id && mapped && mapped !== id && !looksLikeRawParticipantId(mapped)) return names;
     const title = String(tab.title || "").trim();
-    if (title && title !== id && !looksLikeRawParticipantId(title)) return title;
-    return "Digital employee";
+    if (id && title && title !== id && !looksLikeRawParticipantId(title)) {
+        return { ...names, [id]: title };
+    }
+    return names;
 }
 
 type UseAddLocalMaclawToTabOptions = {
     getTabState: (tabId: string) => AITabState | undefined;
-    upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string, participantNames?: Record<string, string>) => AITab | null;
+    upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string, participantNames?: Record<string, string>, localParticipantIds?: string[]) => AITab | null;
 };
 
 export function useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup }: UseAddLocalMaclawToTabOptions) {
     return useCallback(async (tab: AITab) => {
         if (!tab.veId) return null;
         const currentParticipants = tab.participants || [tab.veId];
-        if (currentParticipants.includes("local-maclaw")) return null;
-
-        const nextParticipants = [...currentParticipants, "local-maclaw"];
-        const participantNames: Record<string, string> = {
-            ...(tab.veId ? { [tab.veId]: participantNameFromTab(tab) } : {}),
-            "local-maclaw": "Local AI",
-        };
-        const updateUI = (sessionId?: string) => upgradeVETabToGroup(tab.id, nextParticipants, sessionId, participantNames);
+        if (hasLocalAIParticipant(tab)) return null;
 
         let sessionId = getTabState(tab.id)?.sessionId || tab.discussionId || "";
-        const optimisticTab = updateUI(sessionId || undefined);
 
         try {
             const mod = await import("../../../wailsjs/go/main/App");
@@ -41,23 +35,31 @@ export function useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup }: Use
             if (!sessionId) {
                 const initiateConversation = (mod as any).InitiateVEConversation;
                 if (typeof initiateConversation !== "function" || !tab.veId) {
-                    return optimisticTab;
+                    return null;
                 }
                 const created = await initiateConversation(tab.veId);
                 sessionId = String(created?.session_id || created?.SessionID || "").trim();
-                if (!sessionId) return optimisticTab;
+                if (!sessionId) return null;
             }
 
             const registerLocalExecutor = (mod as any).RegisterLocalExecutorInGroup;
             if (typeof registerLocalExecutor !== "function") {
-                return optimisticTab;
+                return null;
             }
 
-            await registerLocalExecutor(sessionId);
-            return updateUI(sessionId) || optimisticTab;
+            const registered = await registerLocalExecutor(sessionId) as LocalGroupExecutorRegistration | undefined;
+            const localParticipantId = localExecutorParticipantID(registered);
+            if (!localParticipantId) return null;
+            if (currentParticipants.some((id) => normalizeParticipantId(id) === normalizeParticipantId(localParticipantId))) return null;
+            const nextParticipants = [...currentParticipants, localParticipantId];
+            const participantNames: Record<string, string> = {
+                ...participantNamesFromTab(tab),
+                [localParticipantId]: localExecutorDisplayName(registered),
+            };
+            return upgradeVETabToGroup(tab.id, nextParticipants, sessionId, participantNames, [localParticipantId]);
         } catch (err) {
             console.error("Failed to add local Maclaw to group:", err);
-            return optimisticTab;
+            return null;
         }
     }, [getTabState, upgradeVETabToGroup]);
 }

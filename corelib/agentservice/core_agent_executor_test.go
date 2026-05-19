@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
@@ -124,6 +127,109 @@ func TestCoreAgentExecutorSupportsAskUserFlow(t *testing.T) {
 	}
 	if sess.Metadata[sessionMetaPendingAskUser] != "" {
 		t.Fatalf("expected pending ask_user metadata to clear, got %#v", sess.Metadata)
+	}
+}
+
+type noOpKnowledgeStore struct{}
+
+func (noOpKnowledgeStore) Search(context.Context, knowledge.SearchOptions) ([]knowledge.SearchResult, error) {
+	return nil, nil
+}
+func (noOpKnowledgeStore) ContextPack(context.Context, knowledge.ContextPackOptions) (knowledge.ContextPackResult, error) {
+	return knowledge.ContextPackResult{}, nil
+}
+func (noOpKnowledgeStore) SaveURL(context.Context, knowledge.URLSaveRequest) (knowledge.Source, error) {
+	return knowledge.Source{}, nil
+}
+func (noOpKnowledgeStore) SaveText(context.Context, knowledge.TextSaveRequest) (knowledge.Source, error) {
+	return knowledge.Source{}, nil
+}
+func (noOpKnowledgeStore) ScanDirectory(context.Context, knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error) {
+	return knowledge.DirectoryImportResult{}, nil
+}
+func (noOpKnowledgeStore) ScanFiles(context.Context, knowledge.DirectoryImportRequest, []string) (knowledge.DirectoryImportResult, error) {
+	return knowledge.DirectoryImportResult{}, nil
+}
+func (noOpKnowledgeStore) ImportDirectory(context.Context, knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error) {
+	return knowledge.DirectoryImportResult{}, nil
+}
+func (noOpKnowledgeStore) ImportFiles(context.Context, knowledge.DirectoryImportRequest, []string) (knowledge.DirectoryImportResult, error) {
+	return knowledge.DirectoryImportResult{}, nil
+}
+func (noOpKnowledgeStore) Stats(context.Context) (knowledge.Stats, error) {
+	return knowledge.Stats{}, nil
+}
+
+func TestCoreAgentBuildSystemPromptIncludesKnowledgeRulesWhenStoreConfigured(t *testing.T) {
+	cb := &coreAgentCallbacks{knowledgeStore: noOpKnowledgeStore{}}
+	prompt := cb.BuildSystemPrompt("what is in my docs?", true)
+	if !strings.Contains(prompt, agent.PromptKnowledgeBaseRules) {
+		t.Fatalf("expected knowledge base rules in core agent prompt")
+	}
+	if !strings.Contains(prompt, "knowledge_import_files") || !strings.Contains(prompt, "knowledge_import_directory") {
+		t.Fatalf("expected knowledge import tool guidance in core agent prompt")
+	}
+}
+
+func TestCoreAgentExecutorMemoryUsesCorelibStoreFactory(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyPath := filepath.Join(dataDir, "agent_memory.json")
+	now := time.Now().UTC()
+	legacy := []memory.Entry{{ID: "srv-legacy-1", Content: "legacy server memory", Category: memory.CategoryUserFact, CreatedAt: now, UpdatedAt: now, Strength: 1}}
+	data, _ := json.MarshalIndent(legacy, "", "  ")
+	if err := os.WriteFile(legacyPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := &CoreAgentExecutor{}
+	store, err := executor.resourcesForUser("tenant-a", "user-a", dataDir)
+	if err != nil {
+		t.Fatalf("resourcesForUser: %v", err)
+	}
+	defer store.Stop()
+
+	if got := store.List(memory.CategoryUserFact, "legacy server"); len(got) != 1 {
+		t.Fatalf("expected migrated legacy agent memory, got %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "memory", "memories.json")); err != nil {
+		t.Fatalf("expected MaClawSrv memory to use corelib canonical memory directory: %v", err)
+	}
+}
+
+func TestCoreAgentExecutorMemoryToolUsesPrincipalBoundary(t *testing.T) {
+	store, err := memory.NewStoreWithMode(t.TempDir(), memory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	defer store.Stop()
+
+	ownerA := memoryOwnerIDForPrincipal(Principal{TenantID: "tenant-a", UserID: "user-a"})
+	ownerB := memoryOwnerIDForPrincipal(Principal{TenantID: "tenant-a", UserID: "user-b"})
+	if err := store.Save(memory.Entry{Content: "private api endpoint belongs to owner alpha", Category: memory.CategoryProjectKnowledge, OwnerID: ownerA, Status: memory.StatusActive}); err != nil {
+		t.Fatalf("Save owner A: %v", err)
+	}
+	if err := store.Save(memory.Entry{Content: "private api endpoint belongs to owner beta", Category: memory.CategoryProjectKnowledge, OwnerID: ownerB, Status: memory.StatusActive}); err != nil {
+		t.Fatalf("Save owner B: %v", err)
+	}
+
+	cb := &coreAgentCallbacks{
+		memory:    store,
+		principal: Principal{TenantID: "tenant-a", UserID: "user-a"},
+		workspace: `D:\workprj\alpha`,
+		userText:  "remember the current user context",
+	}
+	out := cb.ExecuteTool("memory", `{"action":"recall","query":"private api endpoint","mode":"hybrid","limit":10}`)
+	if !strings.Contains(out, "owner alpha") || strings.Contains(out, "owner beta") {
+		t.Fatalf("MaClawSrv memory recall must be scoped to principal owner, got:\n%s", out)
+	}
+
+	out = cb.ExecuteTool("memory", `{"action":"save","content":"Project API endpoint is https://api.owner-a.example.com and test command is pnpm test","category":"project_knowledge"}`)
+	if !strings.Contains(out, "Memory saved:") {
+		t.Fatalf("expected owner-scoped memory save, got: %s", out)
+	}
+	entries := store.Search(memory.CategoryProjectKnowledge, "api.owner-a.example.com", 5)
+	if len(entries) != 1 || entries[0].OwnerID != ownerA {
+		t.Fatalf("saved MaClawSrv memory must carry principal owner %q, got %+v", ownerA, entries)
 	}
 }
 
@@ -512,6 +618,204 @@ func TestEnsureBashWorkingDirPreservesExplicitDir(t *testing.T) {
 	args := ensureBashWorkingDir(map[string]interface{}{"command": "pwd", "working_dir": "/tmp/custom"}, "/tmp/workspace")
 	if got := args["working_dir"]; got != "/tmp/custom" {
 		t.Fatalf("expected explicit working_dir to be preserved, got %#v", got)
+	}
+}
+
+func TestCoreAgentKnowledgeImportToolsAcceptStructuredStringSlices(t *testing.T) {
+	fileA := filepath.Join(t.TempDir(), "a.md")
+	fileB := filepath.Join(t.TempDir(), "b.md")
+	req := buildDirectoryImportRequest(map[string]interface{}{
+		"include_exts": []string{".md,.txt"},
+		"labels":       []interface{}{"alpha; beta"},
+		"max_file_mb":  2,
+	}, "tenant_a", "user_a")
+	if len(req.IncludeExts) != 2 || req.IncludeExts[0] != ".md" || req.IncludeExts[1] != ".txt" {
+		t.Fatalf("unexpected include_exts: %#v", req.IncludeExts)
+	}
+	if len(req.Labels) != 2 || req.Labels[0] != "alpha" || req.Labels[1] != "beta" {
+		t.Fatalf("unexpected labels: %#v", req.Labels)
+	}
+	if req.MaxFileBytes != 2*1024*1024 {
+		t.Fatalf("unexpected MaxFileBytes: %d", req.MaxFileBytes)
+	}
+
+	paths := toStringSlice([]string{fileA + "\n" + fileB})
+	if len(paths) != 2 || paths[0] != fileA || paths[1] != fileB {
+		t.Fatalf("unexpected file paths: %#v", paths)
+	}
+}
+
+func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	root := t.TempDir()
+	filePath := filepath.Join(root, "note.md")
+	if err := os.WriteFile(filePath, []byte("# Note\n\nAgent service import smoke test."), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+
+	cb := &coreAgentCallbacks{
+		ctx:            context.Background(),
+		knowledgeStore: store,
+		principal:      Principal{TenantID: "tenant_a", UserID: "user_a"},
+		workspace:      root,
+	}
+	tools := cb.BuildTools("")
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		seen[tooldef.Name(tool)] = true
+	}
+	if !seen["knowledge_import_directory"] || !seen["knowledge_import_files"] {
+		t.Fatalf("expected knowledge import tools in %#v", seen)
+	}
+
+	importFilesProps := map[string]interface{}{}
+	for _, tool := range tools {
+		if tooldef.Name(tool) != "knowledge_import_files" {
+			continue
+		}
+		fn, _ := tool["function"].(map[string]interface{})
+		params, _ := fn["parameters"].(map[string]interface{})
+		importFilesProps, _ = params["properties"].(map[string]interface{})
+	}
+	for _, prop := range []string{"root_path", "labels", "exclude_globs", "distill_mode", "auto_labels"} {
+		if _, ok := importFilesProps[prop]; !ok {
+			t.Fatalf("knowledge_import_files schema missing %s in %#v", prop, importFilesProps)
+		}
+	}
+
+	scanArgs, err := json.Marshal(map[string]interface{}{
+		"action":       "scan",
+		"file_paths":   []string{filePath},
+		"include_exts": []string{".md"},
+		"max_file_mb":  1,
+	})
+	if err != nil {
+		t.Fatalf("marshal scan args: %v", err)
+	}
+	scan := cb.ExecuteToolStructured("knowledge_import_files", string(scanArgs))
+	if scan.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(scan.Result, "scanned") {
+		t.Fatalf("unexpected scan result: outcome=%s result=%s", scan.Outcome, scan.Result)
+	}
+
+	importArgs, err := json.Marshal(map[string]interface{}{
+		"action":       "import",
+		"root_path":    root,
+		"include_exts": []string{".md"},
+		"max_file_mb":  1,
+	})
+	if err != nil {
+		t.Fatalf("marshal import args: %v", err)
+	}
+	imported := cb.ExecuteToolStructured("knowledge_import_directory", string(importArgs))
+	if imported.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(imported.Result, "imported=1") {
+		t.Fatalf("unexpected import result: outcome=%s result=%s", imported.Outcome, imported.Result)
+	}
+}
+
+func TestCoreAgentKnowledgeImportRejectsPathsOutsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	cb := &coreAgentCallbacks{
+		ctx:            context.Background(),
+		knowledgeStore: noOpKnowledgeStore{},
+		principal:      Principal{TenantID: "tenant_a", UserID: "user_a"},
+		workspace:      workspace,
+	}
+	args, err := json.Marshal(map[string]interface{}{
+		"action":     "scan",
+		"file_paths": []string{outside},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	out := cb.ExecuteToolStructured("knowledge_import_files", string(args))
+	if out.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(out.Result, "outside workspace") {
+		t.Fatalf("expected workspace boundary rejection, got outcome=%s result=%s", out.Outcome, out.Result)
+	}
+}
+
+func TestCoreAgentKnowledgeImportFilesPreservesPunctuationInArrayPaths(t *testing.T) {
+	workspace := t.TempDir()
+	filePath := filepath.Join(workspace, "note;v1,final.md")
+	if err := os.WriteFile(filePath, []byte("punctuated path"), 0o644); err != nil {
+		t.Fatalf("write punctuated file: %v", err)
+	}
+
+	cb := &coreAgentCallbacks{
+		ctx:            context.Background(),
+		knowledgeStore: noOpKnowledgeStore{},
+		principal:      Principal{TenantID: "tenant_a", UserID: "user_a"},
+		workspace:      workspace,
+	}
+	args, err := json.Marshal(map[string]interface{}{
+		"action":     "scan",
+		"file_paths": []string{filePath},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	out := cb.ExecuteToolStructured("knowledge_import_files", string(args))
+	if out.Outcome != agent.ToolExecutionOutcomeOK {
+		t.Fatalf("expected punctuated array path to stay intact, got outcome=%s result=%s", out.Outcome, out.Result)
+	}
+}
+
+func TestCoreAgentKnowledgeImportFilesRejectsFilesOutsideExplicitRoot(t *testing.T) {
+	workspace := t.TempDir()
+	root := filepath.Join(workspace, "docs")
+	other := filepath.Join(workspace, "other")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatalf("mkdir other: %v", err)
+	}
+	outsideRoot := filepath.Join(other, "note.md")
+	if err := os.WriteFile(outsideRoot, []byte("outside explicit root"), 0o644); err != nil {
+		t.Fatalf("write outside root: %v", err)
+	}
+
+	cb := &coreAgentCallbacks{
+		ctx:            context.Background(),
+		knowledgeStore: noOpKnowledgeStore{},
+		principal:      Principal{TenantID: "tenant_a", UserID: "user_a"},
+		workspace:      workspace,
+	}
+	args, err := json.Marshal(map[string]interface{}{
+		"action":     "scan",
+		"root_path":  root,
+		"file_paths": []string{outsideRoot},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	out := cb.ExecuteToolStructured("knowledge_import_files", string(args))
+	if out.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(out.Result, "outside root_path") {
+		t.Fatalf("expected explicit root_path boundary rejection, got outcome=%s result=%s", out.Outcome, out.Result)
+	}
+}
+
+func TestCoreAgentKnowledgeImportRequiresWorkspace(t *testing.T) {
+	cb := &coreAgentCallbacks{ctx: context.Background(), knowledgeStore: noOpKnowledgeStore{}}
+	args, err := json.Marshal(map[string]interface{}{
+		"action":     "scan",
+		"file_paths": []string{filepath.Join(t.TempDir(), "note.md")},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	out := cb.ExecuteToolStructured("knowledge_import_files", string(args))
+	if out.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(out.Result, "requires a workspace-scoped path") {
+		t.Fatalf("expected workspace requirement, got outcome=%s result=%s", out.Outcome, out.Result)
 	}
 }
 

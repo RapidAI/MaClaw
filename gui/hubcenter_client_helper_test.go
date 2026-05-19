@@ -44,6 +44,49 @@ func TestGetHubCenterJSONAcceptsResponseAtLimit(t *testing.T) {
 	}
 }
 
+func TestGetHubCenterJSONRetriesUnexpectedEOF(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			_, _ = w.Write([]byte(`{"ok":`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{}
+	var dest map[string]bool
+	_, _, err := app.getHubCenterJSONFromCandidates(context.Background(), server.Client(), []string{server.URL}, "/download", 1024, &dest)
+	if err != nil {
+		t.Fatalf("getHubCenterJSONFromCandidates: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if !dest["ok"] {
+		t.Fatalf("dest = %+v", dest)
+	}
+}
+
+func TestGetHubCenterJSONUnexpectedEOFDiagnostic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":`))
+	}))
+	defer server.Close()
+
+	app := &App{}
+	var dest map[string]bool
+	_, _, err := app.getHubCenterJSONFromCandidates(context.Background(), server.Client(), []string{server.URL}, "/download", 1024, &dest)
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), "decode hubcenter JSON "+server.URL+"/download failed after 6 bytes") {
+		t.Fatalf("error = %v, want diagnostic with URL/path and byte count", err)
+	}
+}
+
 func TestGetHubCenterBytesReturnsExactLimitedBody(t *testing.T) {
 	body := strings.Repeat("a", 32)
 	data, err := readLimitedHubCenterBody(strings.NewReader(body), int64(len(body)))

@@ -31,7 +31,7 @@ func TestEnsureMemoryStoreDefaultsToSQLite(t *testing.T) {
 	if app.memoryStore == nil {
 		t.Fatal("memory store was not initialized")
 	}
-	dbPath := filepath.Join(app.getMaclawBaseDir(), "memory.db")
+	dbPath := filepath.Join(memory.DataDirStoreDir(app.getMaclawBaseDir()), "memory.db")
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("expected SQLite memory database at %s: %v", dbPath, err)
 	}
@@ -45,7 +45,7 @@ func TestProjectIndexChangeTriggersDebouncedMemoryPipeline(t *testing.T) {
 		t.Fatal("memory pipeline was not initialized")
 	}
 	app.memPipeline.Stop()
-	app.memPipeline = memory.NewPipeline(app.memoryStore, nil, nil, nil, nil)
+	app.memPipeline = memory.NewMaintenance(app.memoryStore, nil, nil).Pipeline()
 	app.memPipeline.Start()
 
 	_, lastRun, _ := app.memPipeline.Status()
@@ -99,9 +99,9 @@ func TestProjectIndexChangeTriggersDebouncedMemoryPipeline(t *testing.T) {
 func TestCreateRecentTaskAddsSearchableRecentTask(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	created := app.CreateRecentTask("  新任务  ")
-	if created.Name != "新任务" {
-		t.Fatalf("Name = %q, want 新任务", created.Name)
+	created := app.CreateRecentTask("  \u65b0\u4efb\u52a1  ")
+	if created.Name != "\u65b0\u4efb\u52a1" {
+		t.Fatalf("Name = %q, want new task title", created.Name)
 	}
 	if created.ProjectPath == "" || created.ID == "" {
 		t.Fatalf("expected project identifiers, got %#v", created)
@@ -117,13 +117,13 @@ func TestCreateRecentTaskAddsSearchableRecentTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%q): %v", taskFile, err)
 	}
-	if !strings.Contains(string(content), "# 新任务") {
+	if !strings.Contains(string(content), "# \u65b0\u4efb\u52a1") {
 		t.Fatalf("task file content = %q, want task title", content)
 	}
 
 	found := false
-	for _, result := range app.SearchProjects("新任务", 10) {
-		if result.ProjectPath == created.ProjectPath && result.Name == "新任务" {
+	for _, result := range app.SearchProjects("\u65b0\u4efb\u52a1", 10) {
+		if result.ProjectPath == created.ProjectPath && result.Name == "\u65b0\u4efb\u52a1" {
 			found = true
 			break
 		}
@@ -159,10 +159,10 @@ func TestCreateRecentTaskIgnoresBlankName(t *testing.T) {
 
 func TestRecentTaskSlug(t *testing.T) {
 	tests := map[string]string{
-		"Hello World!":     "hello-world",
-		"---Alpha_Beta---": "alpha_beta",
-		"中文任务":             "task",
-		"  A   B   C  ":    "a-b-c",
+		"Hello World!":             "hello-world",
+		"---Alpha_Beta---":         "alpha_beta",
+		"\u4e2d\u6587\u4efb\u52a1": "task",
+		"  A   B   C  ":            "a-b-c",
 		"01234567890123456789012345678901234567890123456789": "0123456789012345678901234567890123456789",
 	}
 	for input, want := range tests {
@@ -176,7 +176,7 @@ func TestNormalizeRecentTaskName(t *testing.T) {
 	if got := normalizeRecentTaskName("  Alpha\n\tBeta   Gamma  "); got != "Alpha Beta Gamma" {
 		t.Fatalf("normalizeRecentTaskName whitespace = %q", got)
 	}
-	long := strings.Repeat("测", 130)
+	long := strings.Repeat("\u6d4b", 130)
 	if got := normalizeRecentTaskName(long); len([]rune(got)) != 120 {
 		t.Fatalf("normalizeRecentTaskName length = %d, want 120", len([]rune(got)))
 	}

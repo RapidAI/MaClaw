@@ -137,6 +137,16 @@ func TestDeepCrawl_FullFlow(t *testing.T) {
 	if totalProcessed == 0 {
 		t.Fatalf("expected totalProcessed > 0")
 	}
+	if result.TotalDiscovered != totalProcessed {
+		t.Fatalf("TotalDiscovered=%d, want processed total %d", result.TotalDiscovered, totalProcessed)
+	}
+
+	mu.Lock()
+	finalProgress := progressEvents[len(progressEvents)-1]
+	mu.Unlock()
+	if finalProgress.TotalDiscovered != result.TotalDiscovered {
+		t.Fatalf("final progress TotalDiscovered=%d, want result total %d", finalProgress.TotalDiscovered, result.TotalDiscovered)
+	}
 }
 
 func TestDeepCrawl_PreviewNoSaves(t *testing.T) {
@@ -174,6 +184,9 @@ func TestDeepCrawl_PreviewNoSaves(t *testing.T) {
 	if len(result.Items) == 0 {
 		t.Fatal("expected items to be discovered in preview")
 	}
+	if result.TotalDiscovered == 0 {
+		t.Fatal("expected TotalDiscovered to be populated in preview")
+	}
 	// All items should be "discovered" (not "saved")
 	for _, item := range result.Items {
 		if item.Status != "discovered" {
@@ -184,10 +197,15 @@ func TestDeepCrawl_PreviewNoSaves(t *testing.T) {
 	if len(result.ByDepth) == 0 {
 		t.Fatal("expected ByDepth to be populated in preview")
 	}
+	totalByDepth := 0
 	for _, depth := range result.ByDepth {
+		totalByDepth += depth.Total
 		if depth.Total > 0 && len(depth.URLs) == 0 {
 			t.Fatalf("ByDepth[%d] should have URLs in preview mode", depth.Depth)
 		}
+	}
+	if result.TotalDiscovered != totalByDepth {
+		t.Fatalf("TotalDiscovered=%d, want sum of by-depth totals %d", result.TotalDiscovered, totalByDepth)
 	}
 	// Progress events should be emitted
 	mu.Lock()

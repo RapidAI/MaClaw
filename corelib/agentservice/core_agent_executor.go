@@ -162,12 +162,28 @@ func (e *CoreAgentExecutor) resourcesForUser(tenantID, userID, dataDir string) (
 	if store := e.userMemory[key]; store != nil {
 		return store, nil
 	}
-	store, err := memory.NewStore(filepath.Join(dataDir, "agent_memory.json"))
+	store, err := memory.OpenDataDirStore(
+		dataDir,
+		memory.StoreModeAuto,
+		filepath.Join(dataDir, "agent_memory.json"),
+	)
 	if err != nil {
 		return nil, err
 	}
 	e.userMemory[key] = store
 	return store, nil
+}
+
+func memoryOwnerIDForPrincipal(principal Principal) string {
+	tenantID := strings.TrimSpace(principal.TenantID)
+	userID := strings.TrimSpace(principal.UserID)
+	if tenantID == "" {
+		return userID
+	}
+	if userID == "" {
+		return tenantID
+	}
+	return tenantID + ":" + userID
 }
 
 func (e *CoreAgentExecutor) taskStoreForSession(sessionID string) *task.Store {
@@ -239,7 +255,8 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 			RoleDescription: roleDescription,
 			IsProMode:       false,
 		},
-		MemoryStore: c.memory,
+		MemoryStore:      c.memory,
+		HasKnowledgeBase: c.knowledgeStore != nil,
 	}, userText, isFirstTurn)
 
 	// Append knowledge auto-recall if knowledge store is available.
@@ -425,6 +442,63 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"required": []string{"query"},
 			},
 		},
+		{
+			Name:        "knowledge_import_directory",
+			Description: "Scan or import a local directory of documents into the knowledge base. Only use after the user explicitly provides or approves the directory path.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"root_path":     map[string]interface{}{"type": "string", "description": "Directory containing documents"},
+					"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
+					"save_scope":    map[string]interface{}{"type": "string", "description": "project | personal | local_only. Default project."},
+					"topic_hint":    map[string]interface{}{"type": "string", "description": "Optional topic hint"},
+					"distill_mode":  map[string]interface{}{"type": "string", "description": "Optional distillation mode"},
+					"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Labels to attach to imported sources"},
+					"auto_labels":   map[string]interface{}{"type": "boolean", "description": "Enable automatic labels when supported"},
+					"recursive":     map[string]interface{}{"type": "boolean", "description": "Include subdirectories, default true"},
+					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
+					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
+				},
+				"required": []string{"root_path"},
+			},
+		},
+		{
+			Name:        "knowledge_import_files",
+			Description: "Scan or import explicitly provided local document file paths into the knowledge base. Only use after the user explicitly provides or approves the file paths.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"file_paths":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
+					"root_path":     map[string]interface{}{"type": "string", "description": "Optional import root; file_paths must stay under this directory and the workspace"},
+					"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
+					"save_scope":    map[string]interface{}{"type": "string", "description": "project | personal | local_only. Default project."},
+					"topic_hint":    map[string]interface{}{"type": "string", "description": "Optional topic hint"},
+					"distill_mode":  map[string]interface{}{"type": "string", "description": "Optional distillation mode"},
+					"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Labels to attach to imported sources"},
+					"auto_labels":   map[string]interface{}{"type": "boolean", "description": "Enable automatic labels when supported"},
+					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
+					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
+					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
+				},
+				"required": []string{"file_paths"},
+			},
+		},
+
 		{
 			Name:        "knowledge_save_url",
 			Description: "Save a URL to the knowledge base. The content will be fetched, parsed, and indexed for future retrieval.",
@@ -649,6 +723,14 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 	return true, ""
 }
 
+func knowledgeToolResult(result string) agent.ToolExecutionResult {
+	outcome := agent.ToolExecutionOutcomeOK
+	if strings.HasPrefix(result, "Error:") {
+		outcome = agent.ToolExecutionOutcomeError
+	}
+	return agent.ToolExecutionResult{Result: result, Outcome: outcome}
+}
+
 func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
 	var args map[string]interface{}
 	if strings.TrimSpace(argsJSON) != "" {
@@ -685,7 +767,11 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	case "task":
 		return agent.ToolExecutionResult{Result: agent.ToolTask(c.tasks, args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "memory":
-		return agent.ToolExecutionResult{Result: agent.ToolMemory(c.memory, args), Outcome: agent.ToolExecutionOutcomeOK}
+		return agent.ToolExecutionResult{Result: memory.HandleTool(c.memory, args, memory.ToolOptions{
+			ProjectPath: c.workspace,
+			ContextHint: c.userText,
+			OwnerID:     memoryOwnerIDForPrincipal(c.principal),
+		}), Outcome: agent.ToolExecutionOutcomeOK}
 	case "read_file":
 		return agent.ToolExecutionResult{Result: c.executeReadFile(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "write_file":
@@ -704,6 +790,10 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_context_pack":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeContextPack(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "knowledge_import_directory":
+		return knowledgeToolResult(c.executeKnowledgeImportDirectory(args))
+	case "knowledge_import_files":
+		return knowledgeToolResult(c.executeKnowledgeImportFiles(args))
 	case "knowledge_save_url":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeSaveURL(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_save_text":

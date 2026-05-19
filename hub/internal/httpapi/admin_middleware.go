@@ -10,6 +10,7 @@ import (
 )
 
 type adminContextKey string
+type requestTenantContextKey struct{}
 
 const adminUserContextKey adminContextKey = "admin_user"
 
@@ -57,6 +58,11 @@ func RequestTenantID(r *http.Request) string {
 	if r == nil {
 		return store.DefaultTenantID
 	}
+	if value := r.Context().Value(requestTenantContextKey{}); value != nil {
+		if tenantID, ok := value.(string); ok && strings.TrimSpace(tenantID) != "" {
+			return strings.TrimSpace(tenantID)
+		}
+	}
 	admin := AdminFromContext(r.Context())
 	if admin != nil && strings.TrimSpace(admin.Scope) == "tenant" {
 		return AdminTenantID(r.Context())
@@ -65,4 +71,8 @@ func RequestTenantID(r *http.Request) string {
 		return tenantID
 	}
 	return store.DefaultTenantID
+}
+
+func WithRequestTenant(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, requestTenantContextKey{}, strings.TrimSpace(tenantID))
 }

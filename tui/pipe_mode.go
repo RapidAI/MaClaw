@@ -40,10 +40,11 @@ import (
 // subcommands that might have their own -p flags.
 //
 // Supported forms:
-//   -p "prompt text"
-//   --prompt "prompt text"
-//   -p="prompt text"
-//   --prompt="prompt text"
+//
+//	-p "prompt text"
+//	--prompt "prompt text"
+//	-p="prompt text"
+//	--prompt="prompt text"
 func parsePipePromptFlag() string {
 	if len(os.Args) < 2 {
 		return ""
@@ -95,10 +96,8 @@ func runPrompt(promptText string) {
 		os.Exit(1)
 	}
 
-	// Initialize memory store.
-	memoryDir := filepath.Join(dataDir, "memory")
-	os.MkdirAll(memoryDir, 0755)
-	memStore, _ := memory.NewStoreWithMode(memoryDir, memory.StoreModeAuto)
+	// Initialize memory store through the shared corelib data-dir convention.
+	memStore, _ := memory.OpenDataDirStore(dataDir, memory.StoreModeAuto)
 
 	// Initialize SSH manager.
 	sshMgr := remote.NewSSHSessionManager(nil)

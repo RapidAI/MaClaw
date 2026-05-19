@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -37,6 +38,7 @@ func NormalizeDirectoryImportRequest(req DirectoryImportRequest) DirectoryImport
 		req.IncludeExts = append([]string(nil), DefaultIncludeExts...)
 	}
 	req.IncludeExts = normalizeIncludeExts(req.IncludeExts)
+	req.ExcludeGlobs = normalizeImportExcludeGlobs(req.ExcludeGlobs)
 	if req.MaxFileBytes <= 0 {
 		req.MaxFileBytes = DefaultMaxFileBytes
 	}
@@ -86,6 +88,16 @@ func ScanDirectory(ctx context.Context, req DirectoryImportRequest, existingHash
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		if path != root && shouldExcludeImportPath(root, path, req.ExcludeGlobs) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			result.TotalFiles++
+			result.SkippedFiles++
+			items = append(items, newSkippedImportItem(root, path, now, ItemStatusSkippedExcluded, "excluded by exclude_globs"))
+			return nil
 		}
 
 		if path != root && shouldSkipName(d.Name()) {
@@ -244,6 +256,12 @@ func ScanFiles(ctx context.Context, req DirectoryImportRequest, filePaths []stri
 			result.TotalFiles++
 			result.FailedFiles++
 			items = append(items, newFailedImportItem(root, path, now, err))
+			continue
+		}
+		if shouldExcludeImportPath(root, path, req.ExcludeGlobs) {
+			result.TotalFiles++
+			result.SkippedFiles++
+			items = append(items, newSkippedImportItem(root, path, now, ItemStatusSkippedExcluded, "excluded by exclude_globs"))
 			continue
 		}
 		if shouldSkipName(filepath.Base(path)) {
@@ -460,6 +478,71 @@ func normalizeExt(ext string) string {
 		ext = "." + ext
 	}
 	return ext
+}
+
+func normalizeImportExcludeGlobs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		for _, part := range strings.FieldsFunc(value, isKnowledgeListSeparator) {
+			pattern := strings.Trim(strings.TrimSpace(filepath.ToSlash(part)), "/")
+			if pattern == "" {
+				continue
+			}
+			if _, ok := seen[pattern]; ok {
+				continue
+			}
+			seen[pattern] = struct{}{}
+			out = append(out, pattern)
+		}
+	}
+	return out
+}
+
+func shouldExcludeImportPath(root, candidate string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		rel = filepath.Base(candidate)
+	}
+	rel = strings.Trim(strings.TrimSpace(filepath.ToSlash(rel)), "/")
+	if rel == "" || rel == "." {
+		return false
+	}
+	base := pathpkg.Base(rel)
+	for _, pattern := range patterns {
+		if importGlobMatches(pattern, rel, base) {
+			return true
+		}
+	}
+	return false
+}
+
+func importGlobMatches(pattern, rel, base string) bool {
+	pattern = strings.Trim(strings.TrimSpace(filepath.ToSlash(pattern)), "/")
+	if pattern == "" {
+		return false
+	}
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		if rel == prefix || strings.HasPrefix(rel, prefix+"/") {
+			return true
+		}
+	}
+	if ok, err := pathpkg.Match(pattern, rel); err == nil && ok {
+		return true
+	}
+	if !strings.Contains(pattern, "/") {
+		if ok, err := pathpkg.Match(pattern, base); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeIncludeExts(values []string) []string {

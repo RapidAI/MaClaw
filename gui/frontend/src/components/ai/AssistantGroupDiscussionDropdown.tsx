@@ -3,6 +3,7 @@ import { miniActionButtonStyle } from "./aiAssistantControls";
 import type { Theme } from "./aiAssistantPanelTheme";
 import type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./aiAssistantPanelTypes";
 import type { GroupDiscussionInvite } from "./AssistantGroupDiscussionMenu";
+import { looksLikeRawParticipantId } from "./localAIIdentity";
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "no-drag" };
 const wailsDragStyle = (style: WailsDragStyle): CSSProperties => style;
@@ -93,7 +94,7 @@ function inviteTextForLang(lang: string, en: string, zh: string): string {
 function readableInviteName(name?: string, id?: string, lang = "zh"): string {
     const trimmed = String(name || "").trim();
     const rawId = String(id || "").trim();
-    if (trimmed && trimmed !== rawId && !/^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+)$/.test(trimmed)) return trimmed;
+    if (trimmed && trimmed !== rawId && !looksLikeRawParticipantId(trimmed)) return trimmed;
     return inviteTextForLang(lang, "Inviter", "邀请者");
 }
 

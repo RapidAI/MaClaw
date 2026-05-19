@@ -340,9 +340,22 @@ func (a *App) RecordExperienceTraceFollowUp(traceID string, req ExperienceTraceF
 		return ExperienceTraceFollowUpRecord{}, fmt.Errorf("experience trace %q has no recordable follow-up action", traceID)
 	}
 	now := time.Now().UTC()
-	content := appendExperienceFollowUpRecord(entry.Content, status, detail.NextActionKind, req.Note, a.defaultExperienceReviewReviewer(req.Actor), now)
-	tags := applyExperienceFollowUpTags(entry.Tags, status, now)
-	if err := a.memoryStore.Update(entry.ID, content, entry.Category, tags); err != nil {
+	entry.Content = appendExperienceFollowUpRecord(entry.Content, status, detail.NextActionKind, req.Note, a.defaultExperienceReviewReviewer(req.Actor), now)
+	entry.Tags = applyExperienceFollowUpTags(entry.Tags, status, now)
+	if _, err := a.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+		ID:          entry.ID,
+		Title:       entry.Title,
+		Content:     entry.Content,
+		Tags:        entry.Tags,
+		Scope:       entry.Scope,
+		OwnerID:     entry.OwnerID,
+		SourceType:  entry.SourceType,
+		SourceURL:   entry.SourceURL,
+		EvidenceIDs: entry.EvidenceIDs,
+		RelatedIDs:  entry.RelatedIDs,
+		DerivedKind: entry.DerivedKind,
+		Boundary:    entry.Boundary,
+	}); err != nil {
 		return ExperienceTraceFollowUpRecord{}, err
 	}
 	a.emitEvent("memory:experience-followup-recorded", map[string]string{
@@ -385,16 +398,14 @@ func (a *App) RecordExperienceDraftReview(req ExperienceDraftReviewRequest) (Exp
 	memoryID := fmt.Sprintf("experience-draft-%s-%d", strings.ReplaceAll(kind, "_", "-"), now.UnixNano())
 	content := appendExperienceFollowUpRecord(buildExperienceDraftReviewContent(req, kind), status, kind, req.Note, a.defaultExperienceReviewReviewer(req.Actor), now)
 	tags := applyExperienceFollowUpTags([]string{experienceDraftReviewTag, kind, "non_executing_draft_review"}, status, now)
-	entry := memory.Entry{
+	if _, err := a.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
 		ID:         memoryID,
 		Title:      "Experience draft review: " + experienceDraftReviewTitle(kind),
 		Content:    content,
-		Category:   memory.CategoryProjectKnowledge,
 		Tags:       tags,
 		SourceType: experienceLearningSourceType,
 		SourceURL:  "experience://draft/" + kind,
-	}
-	if err := a.memoryStore.Save(entry); err != nil {
+	}); err != nil {
 		return ExperienceDraftReviewRecord{}, err
 	}
 	traceID := "memory:" + memoryID
@@ -411,7 +422,7 @@ func (a *App) RecordExperienceDraftReview(req ExperienceDraftReviewRequest) (Exp
 		Status:                  status,
 		SourceTraceID:           sourceTraceID,
 		RecommendedFocusContext: a.experienceRecommendedFocusContextForTrace(sourceTraceID, "manual draft review recorded for source experience trace"),
-		RecommendedToolCall:     experienceTraceInspectionRecommendedToolCall("memory:"+entry.ID, entry.Title, "manual draft review audit record"),
+		RecommendedToolCall:     experienceTraceInspectionRecommendedToolCall("memory:"+memoryID, "Experience draft review: "+experienceDraftReviewTitle(kind), "manual draft review audit record"),
 		NonExecutingBoundary:    "draft review audit record only; the reviewed draft was not executed, memory was not rewritten beyond audit evidence, routing was not changed, files were not written, tools were not run, rollback was not executed, notifications were not sent, and skills were not installed",
 	}), nil
 }

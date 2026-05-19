@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+// MemoryRecordStore is an in-process structured-record store for the agentservice
+// control plane. Despite the historical name, it is not Maclaw long-term memory;
+// durable user/agent memories, recall, audit, and surgery are owned by
+// corelib/memory.Store.
 type MemoryRecordStore struct {
 	mu      sync.RWMutex
 	records map[string]StructuredRecord

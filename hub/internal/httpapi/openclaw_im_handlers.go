@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
@@ -84,7 +85,7 @@ func UpdateOpenclawIMConfigHandler(system store.SystemSettingsRepository, bridge
 			return
 		}
 		// Sync secret to bridge config.json if bridge directory exists
-		if bridgeDir != "" {
+		if shouldWriteSharedBridgeConfig(r, bridgeDir) {
 			channels := loadChannelStates(r, system)
 			_ = writeBridgeConfig(r, system, bridgeDir, channels)
 		}
@@ -107,6 +108,31 @@ func loadOpenclawIMConfig(r *http.Request, system store.SystemSettingsRepository
 		cfg.Secret = DefaultOpenclawIMSecret
 	}
 	return cfg
+}
+
+func openclawWebhookTenantID(r *http.Request, body []byte) string {
+	if r != nil {
+		for _, name := range []string{"X-Tenant-ID", "X-Maclaw-Tenant-ID", "X-Hub-Tenant-ID"} {
+			if tenantID := strings.TrimSpace(r.Header.Get(name)); tenantID != "" {
+				return tenantID
+			}
+		}
+	}
+	var envelope struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if len(body) > 0 && json.Unmarshal(body, &envelope) == nil {
+		return strings.TrimSpace(envelope.TenantID)
+	}
+	return ""
+}
+
+func loadOpenclawIMWebhookConfig(r *http.Request, system store.SystemSettingsRepository, body []byte) (OpenclawIMConfigState, string) {
+	tenantID := openclawWebhookTenantID(r, body)
+	if tenantID == "" || tenantID == store.DefaultTenantID {
+		return loadOpenclawIMConfig(r, system), tenantID
+	}
+	return loadOpenclawIMConfig(r, scopedSystemSettingsForTenant(tenantID, system)), tenantID
 }
 
 // TestOpenclawIMWebhookHandler sends a ping request to the configured webhook URL
@@ -171,11 +197,12 @@ func TestOpenclawIMWebhookHandler(system store.SystemSettingsRepository) http.Ha
 // WebhookIMPlugin.
 //
 // Protocol:
-//   POST /api/openclaw_im/webhook
-//   Headers:
-//     Content-Type: application/json
-//     X-OpenClaw-Signature: sha256=<hex HMAC-SHA256>
-//   Body: { "platform_uid": "...", "text": "...", "message_type": "text" }
+//
+//	POST /api/openclaw_im/webhook
+//	Headers:
+//	  Content-Type: application/json
+//	  X-OpenClaw-Signature: sha256=<hex HMAC-SHA256>
+//	Body: { "platform_uid": "...", "text": "...", "message_type": "text" }
 func OpenclawIMWebhookHandler(system store.SystemSettingsRepository, plugin *im.WebhookIMPlugin) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if plugin == nil {
@@ -183,16 +210,16 @@ func OpenclawIMWebhookHandler(system store.SystemSettingsRepository, plugin *im.
 			return
 		}
 
-		cfg := loadOpenclawIMConfig(r, system)
-		if !cfg.Enabled {
-			writeError(w, http.StatusForbidden, "OPENCLAW_IM_DISABLED", "OpenClaw IM integration is disabled")
-			return
-		}
-
 		// Read body with size limit (15 MB — must accommodate base64-encoded attachments up to 10 MB).
 		body, err := io.ReadAll(io.LimitReader(r.Body, 15*1024*1024))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "READ_BODY_FAILED", "Failed to read request body")
+			return
+		}
+
+		cfg, tenantID := loadOpenclawIMWebhookConfig(r, system, body)
+		if !cfg.Enabled {
+			writeError(w, http.StatusForbidden, "OPENCLAW_IM_DISABLED", "OpenClaw IM integration is disabled")
 			return
 		}
 
@@ -208,6 +235,9 @@ func OpenclawIMWebhookHandler(system store.SystemSettingsRepository, plugin *im.
 		if err := json.Unmarshal(body, &msg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Failed to parse message body")
 			return
+		}
+		if tenantID != "" {
+			msg.TenantID = tenantID
 		}
 
 		// Basic validation.

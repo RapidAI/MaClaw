@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	storepkg "github.com/RapidAI/CodeClaw/hub/internal/store"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -26,6 +28,7 @@ func newTestPGStore(t *testing.T) *PGWorkflowStore {
 	schema := `
 		CREATE TABLE IF NOT EXISTS workflow_definitions (
 			id          TEXT PRIMARY KEY,
+			tenant_id   TEXT NOT NULL DEFAULT 'tenant_default',
 			owner_id    TEXT NOT NULL,
 			name        TEXT NOT NULL,
 			description TEXT DEFAULT '',
@@ -33,6 +36,7 @@ func newTestPGStore(t *testing.T) *PGWorkflowStore {
 			updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_workflow_def_owner ON workflow_definitions(owner_id);
+		CREATE INDEX IF NOT EXISTS idx_workflow_def_tenant_owner ON workflow_definitions(tenant_id, owner_id);
 
 		CREATE TABLE IF NOT EXISTS workflow_versions (
 			id               TEXT PRIMARY KEY,
@@ -53,6 +57,7 @@ func newTestPGStore(t *testing.T) *PGWorkflowStore {
 
 		CREATE TABLE IF NOT EXISTS workflow_instances (
 			id              TEXT PRIMARY KEY,
+			tenant_id       TEXT NOT NULL DEFAULT 'tenant_default',
 			workflow_id     TEXT NOT NULL,
 			version_id      TEXT NOT NULL REFERENCES workflow_versions(id),
 			status          TEXT NOT NULL DEFAULT 'running',
@@ -83,7 +88,7 @@ func TestPGWorkflowStore_CreateAndGetWorkflow(t *testing.T) {
 		ID:          "wf_001",
 		OwnerID:     "user_abc",
 		Name:        "Purchase Approval",
-		Description: "采购审批流程",
+		Description: "Purchase approval workflow",
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -141,7 +146,7 @@ func TestPGWorkflowStore_ListWorkflows(t *testing.T) {
 		}
 	}
 
-	// List for user_a — should get 2
+	// List for user_a -should get 2
 	defs, err := store.ListWorkflows(ctx, "user_a")
 	if err != nil {
 		t.Fatalf("ListWorkflows: %v", err)
@@ -150,7 +155,7 @@ func TestPGWorkflowStore_ListWorkflows(t *testing.T) {
 		t.Fatalf("expected 2 workflows for user_a, got %d", len(defs))
 	}
 
-	// List for user_b — should get 1
+	// List for user_b -should get 1
 	defs, err = store.ListWorkflows(ctx, "user_b")
 	if err != nil {
 		t.Fatalf("ListWorkflows: %v", err)
@@ -566,7 +571,7 @@ func TestPGWorkflowStore_ListPendingReviews_Pagination(t *testing.T) {
 		t.Fatalf("expected 2 versions on page 2, got %d", len(versions))
 	}
 
-	// Page 3, size 2 — should get 1
+	// Page 3, size 2 -should get 1
 	versions, total, err = store.ListPendingReviews(ctx, 3, 2)
 	if err != nil {
 		t.Fatalf("ListPendingReviews page 3: %v", err)
@@ -672,7 +677,7 @@ func TestPGWorkflowStore_PublishedUniqueConstraint(t *testing.T) {
 		t.Fatalf("CreateWorkflow: %v", err)
 	}
 
-	// First published version — should succeed
+	// First published version -should succeed
 	ver1 := &WorkflowVersion{
 		ID: "ver_uc1", WorkflowID: "wf_uc", VersionNumber: "1.0.0",
 		Status: VersionPublished, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now,
@@ -681,7 +686,7 @@ func TestPGWorkflowStore_PublishedUniqueConstraint(t *testing.T) {
 		t.Fatalf("CreateVersion first published: %v", err)
 	}
 
-	// Second published version for same workflow — should fail (unique partial index)
+	// Second published version for same workflow -should fail (unique partial index)
 	ver2 := &WorkflowVersion{
 		ID: "ver_uc2", WorkflowID: "wf_uc", VersionNumber: "2.0.0",
 		Status: VersionPublished, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now,
@@ -691,12 +696,83 @@ func TestPGWorkflowStore_PublishedUniqueConstraint(t *testing.T) {
 		t.Fatal("expected unique constraint violation for second published version")
 	}
 
-	// Draft version for same workflow — should succeed
+	// Draft version for same workflow -should succeed
 	ver3 := &WorkflowVersion{
 		ID: "ver_uc3", WorkflowID: "wf_uc", VersionNumber: "2.0.0",
 		Status: VersionDraft, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := store.CreateVersion(ctx, ver3); err != nil {
 		t.Fatalf("CreateVersion draft should succeed: %v", err)
+	}
+}
+
+func TestPGWorkflowStore_TenantIsolation(t *testing.T) {
+	wfStore := newTestPGStore(t)
+	ctxA := storepkg.WithTenant(context.Background(), "tenant_a")
+	ctxB := storepkg.WithTenant(context.Background(), "tenant_b")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if err := wfStore.CreateWorkflow(ctxA, &WorkflowDefinition{ID: "wf_a", OwnerID: "owner_1", Name: "Tenant A", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant A workflow: %v", err)
+	}
+	if err := wfStore.CreateWorkflow(ctxB, &WorkflowDefinition{ID: "wf_b", OwnerID: "owner_1", Name: "Tenant B", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant B workflow: %v", err)
+	}
+
+	defsA, err := wfStore.ListWorkflows(ctxA, "owner_1")
+	if err != nil {
+		t.Fatalf("list tenant A workflows: %v", err)
+	}
+	if len(defsA) != 1 || defsA[0].ID != "wf_a" || defsA[0].TenantID != "tenant_a" {
+		t.Fatalf("tenant A list = %+v, want only wf_a", defsA)
+	}
+	if got, err := wfStore.GetWorkflow(ctxA, "wf_b"); err != nil || got != nil {
+		t.Fatalf("tenant A got tenant B workflow: got=%+v err=%v", got, err)
+	}
+
+	if err := wfStore.CreateVersion(ctxA, &WorkflowVersion{ID: "ver_a", WorkflowID: "wf_a", VersionNumber: "1.0.0", Status: VersionPendingReview, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant A version: %v", err)
+	}
+	if err := wfStore.CreateVersion(ctxB, &WorkflowVersion{ID: "ver_b", WorkflowID: "wf_b", VersionNumber: "1.0.0", Status: VersionPendingReview, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant B version: %v", err)
+	}
+	pendingA, totalA, err := wfStore.ListPendingReviews(ctxA, 1, 50)
+	if err != nil {
+		t.Fatalf("list tenant A reviews: %v", err)
+	}
+	if totalA != 1 || len(pendingA) != 1 || pendingA[0].ID != "ver_a" {
+		t.Fatalf("tenant A pending = total %d items %+v, want ver_a", totalA, pendingA)
+	}
+	if got, err := wfStore.GetVersion(ctxA, "ver_b"); err != nil || got != nil {
+		t.Fatalf("tenant A got tenant B version: got=%+v err=%v", got, err)
+	}
+}
+
+func TestPGWorkflowStore_DeleteWorkflowIgnoresOtherTenantRunningInstance(t *testing.T) {
+	wfStore := newTestPGStore(t)
+	ctxA := storepkg.WithTenant(context.Background(), "tenant_a")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	def := &WorkflowDefinition{ID: "wf_cross_running", OwnerID: "owner_a", Name: "Cross", CreatedAt: now, UpdatedAt: now}
+	if err := wfStore.CreateWorkflow(ctxA, def); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	ver := &WorkflowVersion{ID: "ver_cross_running", WorkflowID: def.ID, VersionNumber: "0.1.0", Status: VersionPublished, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
+	if err := wfStore.CreateVersion(ctxA, ver); err != nil {
+		t.Fatalf("CreateVersion: %v", err)
+	}
+	if _, err := wfStore.db.ExecContext(context.Background(), `INSERT INTO workflow_instances (id, tenant_id, workflow_id, version_id, status) VALUES ($1, $2, $3, $4, $5)`, "inst_other_tenant", "tenant_b", def.ID, ver.ID, string(InstanceRunning)); err != nil {
+		t.Fatalf("insert other tenant instance: %v", err)
+	}
+
+	if err := wfStore.DeleteWorkflow(ctxA, def.ID); err != nil {
+		t.Fatalf("DeleteWorkflow should ignore other tenant running instance: %v", err)
+	}
+	got, err := wfStore.GetWorkflow(ctxA, def.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflow: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected workflow deleted, got %+v", got)
 	}
 }

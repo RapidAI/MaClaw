@@ -10,6 +10,7 @@ import (
 // InvitationCodeChecker checks whether invitation codes are required.
 type InvitationCodeChecker interface {
 	IsRequired(ctx context.Context) (bool, error)
+	IsRequiredForTenant(ctx context.Context, tenantID string) (bool, error)
 }
 
 type ProbeResult struct {
@@ -37,7 +38,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 
 	invCodeRequired := false
 	if s.invitationCode != nil {
-		req, err := s.invitationCode.IsRequired(ctx)
+		req, err := s.invitationCode.IsRequiredForTenant(ctx, auth.TenantIDFromContext(ctx))
 		if err == nil {
 			invCodeRequired = req
 		}

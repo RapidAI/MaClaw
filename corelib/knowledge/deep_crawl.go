@@ -107,9 +107,10 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 		// Check context cancellation
 		if ctx.Err() != nil {
 			return DeepCrawlResult{
-				Status:  "cancelled",
-				Items:   items,
-				ByDepth: byDepth,
+				Status:          "cancelled",
+				TotalDiscovered: totalDiscovered,
+				Items:           items,
+				ByDepth:         byDepth,
 			}, nil
 		}
 
@@ -129,9 +130,10 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 			if ctx.Err() != nil {
 				byDepth = append(byDepth, depthSummary)
 				return DeepCrawlResult{
-					Status:  "cancelled",
-					Items:   items,
-					ByDepth: byDepth,
+					Status:          "cancelled",
+					TotalDiscovered: totalDiscovered,
+					Items:           items,
+					ByDepth:         byDepth,
 				}, nil
 			}
 
@@ -244,9 +246,10 @@ func (e *DeepCrawlEngine) Preview(ctx context.Context, req DeepCrawlRequest) (De
 	}
 
 	return DeepCrawlResult{
-		Status:  "completed",
-		Items:   items,
-		ByDepth: byDepth,
+		Status:          "completed",
+		TotalDiscovered: totalDiscovered,
+		Items:           items,
+		ByDepth:         byDepth,
 	}, nil
 }
 

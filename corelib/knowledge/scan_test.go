@@ -64,6 +64,58 @@ func TestScanDirectoryHonorsRecursiveFalse(t *testing.T) {
 	}
 }
 
+func TestScanDirectoryHonorsExcludeGlobs(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "keep.md"), []byte("keep"))
+	mustWrite(t, filepath.Join(root, "skip.tmp"), []byte("tmp"))
+	mustWrite(t, filepath.Join(root, "vendor", "skip.md"), []byte("vendor"))
+
+	res, items, err := ScanDirectory(context.Background(), DirectoryImportRequest{
+		RootPath:     root,
+		Recursive:    true,
+		IncludeExts:  []string{".md", ".tmp"},
+		ExcludeGlobs: []string{"*.tmp", "vendor/**"},
+		MaxFileBytes: 1024,
+	}, nil)
+	if err != nil {
+		t.Fatalf("ScanDirectory returned error: %v", err)
+	}
+	if res.QueuedFiles != 1 || res.SkippedFiles != 1 {
+		t.Fatalf("queued=%d skipped=%d, want queued=1 skipped=1", res.QueuedFiles, res.SkippedFiles)
+	}
+	statuses := map[string]int{}
+	for _, item := range items {
+		statuses[item.Status]++
+	}
+	if statuses[ItemStatusSkippedExcluded] != 1 {
+		t.Fatalf("excluded status count=%d in %#v", statuses[ItemStatusSkippedExcluded], items)
+	}
+}
+
+func TestScanFilesHonorsExcludeGlobs(t *testing.T) {
+	root := t.TempDir()
+	keep := filepath.Join(root, "keep.md")
+	skip := filepath.Join(root, "draft.tmp")
+	mustWrite(t, keep, []byte("keep"))
+	mustWrite(t, skip, []byte("skip"))
+
+	res, items, err := ScanFiles(context.Background(), DirectoryImportRequest{
+		RootPath:     root,
+		IncludeExts:  []string{".md", ".tmp"},
+		ExcludeGlobs: []string{"*.tmp"},
+		MaxFileBytes: 1024,
+	}, []string{keep, skip}, nil)
+	if err != nil {
+		t.Fatalf("ScanFiles returned error: %v", err)
+	}
+	if res.QueuedFiles != 1 || res.SkippedFiles != 1 {
+		t.Fatalf("queued=%d skipped=%d, want queued=1 skipped=1", res.QueuedFiles, res.SkippedFiles)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items=%d, want 2", len(items))
+	}
+}
+
 func TestNormalizeDirectoryImportRequestSplitsIncludeExts(t *testing.T) {
 	req := NormalizeDirectoryImportRequest(DirectoryImportRequest{
 		IncludeExts: []string{" MD，.txt；csv、md "},

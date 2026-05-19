@@ -2759,10 +2759,75 @@ func buildCodingToolDefinitionsFallback() []map[string]interface{} {
 	tools := make([]map[string]interface{}, 0, len(codingSubAgentToolOrder))
 	for _, name := range codingSubAgentToolOrder {
 		if t, ok := byName[name]; ok {
-			tools = append(tools, t)
+			tools = append(tools, compactCodingSubAgentToolDefinition(t))
 		}
 	}
 	return tools
+}
+
+func compactCodingSubAgentToolDefinition(tool map[string]interface{}) map[string]interface{} {
+	fn, ok := tool["function"].(map[string]interface{})
+	if !ok {
+		return tool
+	}
+	params, ok := fn["parameters"].(map[string]interface{})
+	if !ok {
+		return tool
+	}
+	props, ok := params["properties"].(map[string]interface{})
+	if !ok {
+		return tool
+	}
+	compactProps := make(map[string]interface{}, len(props))
+	for name, raw := range props {
+		switch prop := raw.(type) {
+		case map[string]interface{}:
+			copyProp := make(map[string]interface{}, len(prop))
+			for key, value := range prop {
+				if key == "description" {
+					continue
+				}
+				copyProp[key] = value
+			}
+			compactProps[name] = copyProp
+		case map[string]string:
+			copyProp := make(map[string]string, len(prop))
+			for key, value := range prop {
+				if key == "description" {
+					continue
+				}
+				copyProp[key] = value
+			}
+			compactProps[name] = copyProp
+		default:
+			compactProps[name] = raw
+		}
+	}
+	compactParams := make(map[string]interface{}, len(params))
+	for key, value := range params {
+		if key == "properties" {
+			compactParams[key] = compactProps
+			continue
+		}
+		compactParams[key] = value
+	}
+	compactFn := make(map[string]interface{}, len(fn))
+	for key, value := range fn {
+		if key == "parameters" {
+			compactFn[key] = compactParams
+			continue
+		}
+		compactFn[key] = value
+	}
+	compactTool := make(map[string]interface{}, len(tool))
+	for key, value := range tool {
+		if key == "function" {
+			compactTool[key] = compactFn
+			continue
+		}
+		compactTool[key] = value
+	}
+	return compactTool
 }
 
 func codingSubAgentExtraToolDefinitions() []map[string]interface{} {

@@ -1,9 +1,11 @@
 package memory
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandleToolSupportsLightMemRecall(t *testing.T) {
@@ -94,6 +96,70 @@ func TestHandleToolSaveUsesGovernance(t *testing.T) {
 	}
 }
 
+func TestRecallByModeDefaultsToAuto(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	result, err := store.RecallByMode("compare api design tradeoffs over time", "", "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NormalizedMode != "auto" {
+		t.Fatalf("empty mode should normalize to auto, got %q", result.NormalizedMode)
+	}
+	if result.AdaptivePlan == nil {
+		t.Fatalf("auto mode should use adaptive path for complex queries")
+	}
+}
+
+func TestRecallByModeAutoRespectsOwnerBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{
+			ID:          "owner-a-derived",
+			Content:     "auto boundary target prefers careful evidence gates",
+			Category:    CategoryPreference,
+			Scope:       ScopeGlobal,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Strength:    1,
+			DerivedKind: "profile",
+			Boundary:    &MemoryBoundary{OwnerID: "owner-a"},
+		},
+		{
+			ID:        "shared-derived",
+			Content:   "auto boundary target keeps shared recall behavior",
+			Category:  CategoryPreference,
+			Scope:     ScopeGlobal,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Strength:  1,
+		},
+	})
+	store.mu.Unlock()
+
+	result, err := store.RecallByMode("auto boundary target", "", "auto", "", 0, "owner-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsEntryID(result.Entries, "owner-a-derived") {
+		t.Fatalf("auto recall should enforce owner boundary: %+v", result.Entries)
+	}
+	if !containsEntryID(result.Entries, "shared-derived") {
+		t.Fatalf("auto recall should preserve shared entries: %+v", result.Entries)
+	}
+}
+
 func TestMemoryToolActionNormalizationAndSchema(t *testing.T) {
 	if got := NormalizeMemoryToolAction("memory_candidates"); got != MemoryToolActionCandidates {
 		t.Fatalf("NormalizeMemoryToolAction(memory_candidates) = %q", got)
@@ -101,7 +167,7 @@ func TestMemoryToolActionNormalizationAndSchema(t *testing.T) {
 	if got := NormalizeMemoryToolAction("scene_index"); got != MemoryToolActionScenes {
 		t.Fatalf("NormalizeMemoryToolAction(scene_index) = %q", got)
 	}
-	if !MemoryToolActionTrace.IsRecallOnlyAllowed() || MemoryToolActionSave.IsRecallOnlyAllowed() {
+	if !MemoryToolActionTrace.IsRecallOnlyAllowed() || !MemoryToolActionDerived.IsRecallOnlyAllowed() || MemoryToolActionDerivedSurgery.IsRecallOnlyAllowed() || MemoryToolActionSave.IsRecallOnlyAllowed() {
 		t.Fatal("unexpected recall-only action policy")
 	}
 
@@ -109,7 +175,65 @@ func TestMemoryToolActionNormalizationAndSchema(t *testing.T) {
 	if def.Properties["mode"] == nil || def.Properties["project_path"] == nil || def.Properties["diagnose"] == nil {
 		t.Fatalf("memory tool schema missing shared properties: %#v", def.Properties)
 	}
-	if !strings.Contains(def.Description, "lightmem") || !strings.Contains(def.Description, "candidates") {
+	if !strings.Contains(def.Description, "lightmem") || !strings.Contains(def.Description, "candidates") || !strings.Contains(def.Description, "derived") || !strings.Contains(def.Description, "derived_surgery") {
 		t.Fatalf("memory tool schema description missing shared capabilities: %q", def.Description)
+	}
+}
+
+func TestMemoryCandidatesForToolFormatsConsolidation(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{
+		Content:    "Project API endpoint is https://api.example.com and build command is pnpm test",
+		Category:   CategoryProjectKnowledge,
+		Tags:       []string{memoryCandidateTag, "api"},
+		Status:     StatusDormant,
+		SourceType: "memory_candidate",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := store.MemoryCandidatesForTool(context.Background(), "api", 10, true)
+	out := FormatMemoryCandidatesResultForTool(result)
+	if result.Consolidation == nil || result.Consolidation.Promoted != 1 {
+		t.Fatalf("expected promoted candidate consolidation, got %+v", result.Consolidation)
+	}
+	if !strings.Contains(out, "Candidate consolidation: scanned=1 promoted=1") || !strings.Contains(out, "No memory candidates found.") {
+		t.Fatalf("unexpected candidate result format:\n%s", out)
+	}
+}
+
+func TestMemoryThemesForToolSharedRenderAndJSONPayload(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	for _, entry := range []Entry{
+		{Content: "React migration decision", Category: CategoryProjectKnowledge, Tags: []string{"react", "migration"}, Embedding: []float32{1, 0}, Status: StatusActive},
+		{Content: "Vue migration decision", Category: CategoryProjectKnowledge, Tags: []string{"vue", "migration"}, Embedding: []float32{0.98, 0.02}, Status: StatusActive},
+	} {
+		if err := store.Save(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	opts := ToolThemesOptions{Limit: 5, Stats: true, EvidenceLimit: 1, Diagnose: true, IssueLimit: 10}
+	result := store.MemoryThemesForTool(opts)
+	out := FormatMemoryThemesResultForTool(result, opts)
+	if !strings.Contains(out, "theme_health:") || !strings.Contains(out, "theme_diagnostics:") || !strings.Contains(out, "Memory themes:") {
+		t.Fatalf("unexpected theme result format:\n%s", out)
+	}
+	payload, ok := MemoryThemesJSONPayloadForTool(result, opts).(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected diagnostic payload map")
+	}
+	if payload["diagnostics"] == nil || payload["explanations"] == nil {
+		t.Fatalf("payload should preserve diagnostics and evidence: %+v", payload)
 	}
 }

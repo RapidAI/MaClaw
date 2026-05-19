@@ -41,6 +41,9 @@ type Store interface {
 	ListAuditEvents(string, string) ([]AuditEvent, error)
 }
 
+// MemoryStore is an in-process implementation of the agentservice control-plane
+// Store interface. Despite the historical name, it is not Maclaw long-term memory;
+// user/agent memory must go through corelib/memory.Store.
 type MemoryStore struct {
 	mu          sync.RWMutex
 	tenants     map[string]Tenant

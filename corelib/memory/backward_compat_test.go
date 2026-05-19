@@ -286,6 +286,43 @@ func TestKnowledgeExtractor_NilLLMSkips(t *testing.T) {
 	}
 }
 
+func TestKnowledgeExtractorStoresFallbackDerivedBoundary(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "memory.json")
+	store, err := NewStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	llm := &mockLLMCaller{
+		configured: true,
+		response:   `[{"content":"Project uses SQLite memory backend for persistence","category":"project_knowledge","tags":["SQLite","memory"]}]`,
+	}
+	ke := NewKnowledgeExtractor(store, llm)
+	ke.cooldown = 0
+
+	msgs := []ConversationMessage{
+		{Role: "user", Content: "what memory backend does the project use?"},
+		{Role: "assistant", Content: "The project uses SQLite memory backend for persistence."},
+	}
+	if err := ke.Extract("owner-a", msgs); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	entries := store.List(CategoryProjectKnowledge, "SQLite memory")
+	if len(entries) != 1 {
+		t.Fatalf("expected extracted knowledge entry, got %+v", entries)
+	}
+	entry := entries[0]
+	if entry.SourceType != "knowledge_extraction" || entry.DerivedKind != "knowledge_extraction" {
+		t.Fatalf("unexpected source/derived metadata: %+v", entry)
+	}
+	if entry.Boundary == nil || entry.Boundary.OwnerID != "owner-a" || entry.Boundary.SourceScope != "knowledge_extraction" {
+		t.Fatalf("unexpected boundary: %+v", entry.Boundary)
+	}
+}
+
 // TestKnowledgeExtractor_LLMErrorNoImpact verifies that when the LLM
 // returns an error, Extract returns an error but does not panic.
 func TestKnowledgeExtractor_LLMErrorNoImpact(t *testing.T) {
@@ -316,7 +353,7 @@ func TestKnowledgeExtractor_LLMErrorNoImpact(t *testing.T) {
 		t.Fatal("expected error from Extract when LLM fails")
 	}
 
-	// Store should be unaffected — no entries added.
+	// Store should be unaffected; no entries added.
 	if len(store.List("", "")) != 0 {
 		t.Fatal("expected no entries saved when LLM returns error")
 	}

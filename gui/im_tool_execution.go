@@ -152,7 +152,7 @@ func (h *IMMessageHandler) executeToolDetailed(name, argsJSON string, onProgress
 	h.trackSteeringFileFromArgs(name, args)
 
 	if kind == agentToolKindSearchAndInstallSkill {
-		installResult := h.toolSearchAndInstallSkillResult(args, onProgress)
+		installResult := h.executeSkillSearchInstall(args, onProgress)
 		outcome := toolOutcomeFailed
 		if installResult.Success {
 			outcome = toolOutcomeSucceeded

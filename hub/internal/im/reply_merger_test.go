@@ -8,7 +8,7 @@ import (
 )
 
 func TestReplyMerger_SingleReply(t *testing.T) {
-	rm := NewReplyMerger(func() *HubLLMConfig { return nil }, DefaultCircuitBreaker())
+	rm := NewReplyMerger(func(context.Context) *HubLLMConfig { return nil }, DefaultCircuitBreaker())
 	replies := []DeviceReply{
 		{Name: "MacBook", Response: &GenericResponse{Body: "hello"}},
 	}
@@ -22,7 +22,7 @@ func TestReplyMerger_SingleReply(t *testing.T) {
 }
 
 func TestReplyMerger_SingleReplyWithErrors(t *testing.T) {
-	rm := NewReplyMerger(func() *HubLLMConfig { return nil }, DefaultCircuitBreaker())
+	rm := NewReplyMerger(func(context.Context) *HubLLMConfig { return nil }, DefaultCircuitBreaker())
 	replies := []DeviceReply{
 		{Name: "MacBook", Response: &GenericResponse{Body: "hello"}},
 		{Name: "iMac", Err: fmt.Errorf("timeout")},
@@ -37,7 +37,7 @@ func TestReplyMerger_SingleReplyWithErrors(t *testing.T) {
 }
 
 func TestReplyMerger_SimilarReplies(t *testing.T) {
-	rm := NewReplyMerger(func() *HubLLMConfig { return nil }, DefaultCircuitBreaker())
+	rm := NewReplyMerger(func(context.Context) *HubLLMConfig { return nil }, DefaultCircuitBreaker())
 	body := strings.Repeat("same content ", 20)
 	replies := []DeviceReply{
 		{Name: "MacBook", Response: &GenericResponse{Body: body}},
@@ -53,7 +53,7 @@ func TestReplyMerger_SimilarReplies(t *testing.T) {
 }
 
 func TestReplyMerger_DifferentRepliesNoLLM(t *testing.T) {
-	rm := NewReplyMerger(func() *HubLLMConfig { return nil }, DefaultCircuitBreaker())
+	rm := NewReplyMerger(func(context.Context) *HubLLMConfig { return nil }, DefaultCircuitBreaker())
 	replies := []DeviceReply{
 		{Name: "MacBook", Response: &GenericResponse{Body: "Go is great for servers"}},
 		{Name: "iMac", Response: &GenericResponse{Body: "Python is better for ML"}},
@@ -68,7 +68,7 @@ func TestReplyMerger_DifferentRepliesNoLLM(t *testing.T) {
 }
 
 func TestReplyMerger_AllErrors(t *testing.T) {
-	rm := NewReplyMerger(func() *HubLLMConfig { return nil }, DefaultCircuitBreaker())
+	rm := NewReplyMerger(func(context.Context) *HubLLMConfig { return nil }, DefaultCircuitBreaker())
 	replies := []DeviceReply{
 		{Name: "MacBook", Err: fmt.Errorf("err1")},
 		{Name: "iMac", Err: fmt.Errorf("err2")},
@@ -93,7 +93,7 @@ func TestReplyMerger_DifferentRepliesWithLLM(t *testing.T) {
 		Model:    "test",
 		Protocol: "openai",
 	}
-	rm := NewReplyMerger(func() *HubLLMConfig { return cfg }, DefaultCircuitBreaker())
+	rm := NewReplyMerger(func(context.Context) *HubLLMConfig { return cfg }, DefaultCircuitBreaker())
 
 	replies := []DeviceReply{
 		{Name: "MacBook", Response: &GenericResponse{Body: "Go is great for servers"}},

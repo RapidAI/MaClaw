@@ -653,6 +653,47 @@ func TestGroupDiscussionSendHistoryMessageUsesParticipantScopedDetail(t *testing
 	}
 }
 
+func TestGroupDiscussionSendHistoryMessageNormalizesLocalMaclawTarget(t *testing.T) {
+	var gotToIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-local/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{Discussion: a2a.HubDiscussionSummary{ID: "disc-local", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-local/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			gotToIDs = append([]string(nil), msg.ToIDs...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	if err := app.GroupDiscussionSendHistoryMessage("disc-local", a2a.GroupDiscussionMessage{Content: "@\u672c\u673aAI continue", ToIDs: []string{" local-maclaw ", "MACHINE-1"}}); err != nil {
+		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+	}
+	if len(gotToIDs) != 1 || gotToIDs[0] != "machine-1" {
+		t.Fatalf("to_ids = %v, want [machine-1]", gotToIDs)
+	}
+}
+
+func TestNormalizeGroupDiscussionHistoryTargetIDs(t *testing.T) {
+	got := normalizeGroupDiscussionHistoryTargetIDs([]string{"", "local-maclaw", "VE-A", "ve-a"}, "machine-1")
+	want := []string{"machine-1", "VE-A"}
+	if len(got) != len(want) {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("targets = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestGroupDiscussionSendHistoryMessageBlocksInvitedDetail(t *testing.T) {
 	messageHits := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

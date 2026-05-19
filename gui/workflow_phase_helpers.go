@@ -62,6 +62,13 @@ type searchAndInstallSkillResult struct {
 	Success bool
 }
 
+func (h *IMMessageHandler) executeSkillSearchInstall(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult {
+	if h != nil && h.skillSearchInstallHandler != nil {
+		return h.skillSearchInstallHandler(args, onProgress)
+	}
+	return h.toolSearchAndInstallSkillResult(args, onProgress)
+}
+
 func (h *IMMessageHandler) toolSearchAndInstallSkillResult(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult {
 	query, _ := args["query"].(string)
 	if strings.TrimSpace(query) == "" {

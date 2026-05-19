@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 const (
@@ -270,6 +271,9 @@ func discussionAnswerCount(session *corea2a.Session) int {
 		if content == "" || strings.HasPrefix(strings.ToLower(content), "invitation ") {
 			continue
 		}
+		if groupDiscussionMessageTargetsOnlySender(msg) {
+			continue
+		}
 		if role, ok := roles[strings.TrimSpace(msg.FromID)]; ok && !groupDiscussionRoleContributesAnswer(role) {
 			continue
 		}
@@ -279,6 +283,14 @@ func discussionAnswerCount(session *corea2a.Session) int {
 		}
 	}
 	return count
+}
+
+func groupDiscussionMessageTargetsOnlySender(msg corea2a.Message) bool {
+	fromID := strings.TrimSpace(msg.FromID)
+	if fromID == "" || len(msg.ToIDs) != 1 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.ToIDs[0]), fromID)
 }
 
 func discussionExpectedAnswerCount(session *corea2a.Session) int {
@@ -581,10 +593,48 @@ func (s *GroupDiscussionService) AddDiscussionMessage(tenantID, sessionID string
 		if err := requireGroupDiscussionWritableParticipant(session, fromID); err != nil {
 			return err
 		}
-		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: fromID, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments, CreatedAt: time.Now().UTC()})
+		toIDs, err := normalizeGroupDiscussionTargetIDs(session, msg.ToIDs)
+		if err != nil {
+			return err
+		}
+		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: fromID, ToIDs: toIDs, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments, CreatedAt: time.Now().UTC()})
 	})
 }
 
+func normalizeGroupDiscussionTargetIDs(session *corea2a.Session, toIDs []string) ([]string, error) {
+	if len(toIDs) == 0 {
+		return nil, nil
+	}
+	participants := make(map[string]string, len(session.Participants))
+	for _, participant := range session.Participants {
+		id := strings.TrimSpace(participant.ID)
+		if id != "" {
+			participants[strings.ToLower(id)] = id
+		}
+	}
+	out := make([]string, 0, len(toIDs))
+	seen := map[string]struct{}{}
+	for _, rawID := range toIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		canonical, ok := participants[strings.ToLower(id)]
+		if !ok {
+			return nil, fmt.Errorf("target participant %s is not in discussion", id)
+		}
+		key := strings.ToLower(canonical)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, canonical)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("target participant id is required")
+	}
+	return out, nil
+}
 func findGroupDiscussionParticipant(session *corea2a.Session, participantID string) *corea2a.Participant {
 	participantID = strings.TrimSpace(participantID)
 	if session == nil || participantID == "" {
@@ -600,7 +650,7 @@ func findGroupDiscussionParticipant(session *corea2a.Session, participantID stri
 
 func groupDiscussionParticipantCanMessage(roleCode string) bool {
 	switch strings.ToLower(strings.TrimSpace(roleCode)) {
-	case "", "initiator", "review", "speak", "speaker", "participant":
+	case "", "initiator", "review", "speak", "speaker", "participant", "executor":
 		return true
 	case "observe", "observer", "readonly", "read_only":
 		return false
@@ -750,7 +800,11 @@ func (s *GroupDiscussionService) AddMessage(tenantID, sessionID string, req AddM
 				return err
 			}
 		}
-		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: req.FromID, ToIDs: req.ToIDs, Kind: req.Kind, Content: req.Content, Evidence: req.Evidence, TextAttachments: req.TextAttachments, ImageAttachments: req.ImageAttachments, FileAttachments: req.FileAttachments, CreatedAt: time.Now().UTC()})
+		toIDs, err := normalizeGroupDiscussionTargetIDs(session, req.ToIDs)
+		if err != nil {
+			return err
+		}
+		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: req.FromID, ToIDs: toIDs, Kind: req.Kind, Content: req.Content, Evidence: req.Evidence, TextAttachments: req.TextAttachments, ImageAttachments: req.ImageAttachments, FileAttachments: req.FileAttachments, CreatedAt: time.Now().UTC()})
 	})
 }
 
@@ -920,10 +974,7 @@ func participantRole(session *corea2a.Session, participantID string) string {
 }
 
 func normalizeTenantID(tenantID string) string {
-	if strings.TrimSpace(tenantID) == "" {
-		return "default"
-	}
-	return strings.TrimSpace(tenantID)
+	return store.NormalizeTenantID(tenantID)
 }
 
 func normalizeOrgUnitID(values ...string) string {
@@ -948,10 +999,30 @@ func addParticipantIfMissing(session *corea2a.Session, participant corea2a.Parti
 		return
 	}
 	participant.ID = strings.TrimSpace(participant.ID)
-	for _, existing := range session.Participants {
-		if existing.ID == participant.ID {
-			return
+	for i := range session.Participants {
+		if !strings.EqualFold(strings.TrimSpace(session.Participants[i].ID), participant.ID) {
+			continue
 		}
+		changed := false
+		if role := strings.TrimSpace(participant.RoleCode); role != "" {
+			existingRole := strings.TrimSpace(session.Participants[i].RoleCode)
+			if existingRole == "" || (!groupDiscussionParticipantCanMessage(existingRole) && groupDiscussionParticipantCanMessage(role)) {
+				session.Participants[i].RoleCode = role
+				changed = true
+			}
+		}
+		if name := strings.TrimSpace(participant.Name); name != "" && strings.TrimSpace(session.Participants[i].Name) == "" {
+			session.Participants[i].Name = name
+			changed = true
+		}
+		if len(participant.Skills) > 0 && len(session.Participants[i].Skills) == 0 {
+			session.Participants[i].Skills = append([]string(nil), participant.Skills...)
+			changed = true
+		}
+		if changed {
+			session.UpdatedAt = time.Now().UTC()
+		}
+		return
 	}
 	session.Participants = append(session.Participants, participant)
 	session.UpdatedAt = time.Now().UTC()

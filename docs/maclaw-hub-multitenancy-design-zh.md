@@ -168,7 +168,6 @@ CREATE TABLE tenant_domains (
 - `audit_logs`
 - `admin_audit_logs`
 - `failure_event_logs`
-- `voiceprints`
 - `content_audit_logs`
 - `gossip_posts`、`gossip_comments`
 - `understanding_sessions`、`workflow_states`
@@ -1257,7 +1256,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 1. 新增 `tenants`、`tenant_domains`、`tenant_settings`。
 2. 插入默认租户。
 3. 给核心身份表增加 `tenant_id`：`users`、`machines`、`viewer_tokens`、`login_tokens`、`admin_users`。
-4. 给运行态表增加 `tenant_id`：`sessions`、`audit_logs`、`failure_event_logs`、`voiceprints`、`content_audit_logs`。
+4. 给运行态表增加 `tenant_id`：`sessions`、`audit_logs`、`failure_event_logs`、`content_audit_logs`。
 5. 给治理表增加 `tenant_id`：`user_enrollments`、`email_blocklist`、`invitation_codes`、`email_invites`。
 6. 给企业管理和能力市场表增加 `tenant_id` 或租户策略表。
 7. 给数字员工、A2A、工作流、IM 绑定等表补 `tenant_id`。
@@ -1388,7 +1387,6 @@ go run .\cmd\hub tenant migrate-users --from tenant_default --to tenant_acme --e
 - sessions
 - viewer/login tokens
 - invitation codes and enrollments
-- voiceprints
 - digital employee registrations and sessions
 - security group membership
 - model service grants

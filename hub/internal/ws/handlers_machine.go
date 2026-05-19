@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/gorilla/websocket"
 )
 
@@ -197,6 +198,7 @@ type DeviceBinder interface {
 	UnbindDesktop(ctx context.Context, machineID string, conn *ConnContext) error
 	MarkOnline(ctx context.Context, machineID string, hello MachineHelloPayload) error
 	Heartbeat(ctx context.Context, machineID string, heartbeat MachineHeartbeatPayload) error
+	GetMachineOwner(ctx context.Context, machineID string) (tenantID string, userID string, err error)
 	SendToMachine(machineID string, msg any) error
 	SetAlias(ctx context.Context, machineID string, alias string)
 	// CheckAliasConflict returns true if another same-user online machine
@@ -213,6 +215,7 @@ type SessionService interface {
 	OnSessionImage(ctx context.Context, machineID, userID, sessionID string, img session.SessionImage)
 	MarkMachineOffline(ctx context.Context, machineID string) error
 	GetSnapshot(userID, machineID, sessionID string) (*session.SessionCacheEntry, bool)
+	GetSnapshotForTenant(tenantID, userID, machineID, sessionID string) (*session.SessionCacheEntry, bool)
 	ListByMachine(ctx context.Context, userID, machineID string) ([]*session.SessionCacheEntry, error)
 }
 
@@ -531,13 +534,20 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) HandleSessionEvent(event session.Event) {
+	eventTenantID := store.NormalizeTenantID(event.TenantID)
 	g.mu.RLock()
 	machineWatchers := make([]*ConnContext, 0, len(g.viewersByMachine[event.MachineID]))
 	for watcher := range g.viewersByMachine[event.MachineID] {
+		if eventTenantID != "" && store.NormalizeTenantID(watcher.TenantID) != eventTenantID {
+			continue
+		}
 		machineWatchers = append(machineWatchers, watcher)
 	}
 	watchers := make([]*ConnContext, 0, len(g.viewersBySession[event.SessionID]))
 	for watcher := range g.viewersBySession[event.SessionID] {
+		if eventTenantID != "" && store.NormalizeTenantID(watcher.TenantID) != eventTenantID {
+			continue
+		}
 		watchers = append(watchers, watcher)
 	}
 	g.mu.RUnlock()
@@ -578,9 +588,14 @@ func (g *Gateway) HandleSessionEvent(event session.Event) {
 }
 
 func (g *Gateway) broadcastMachineEvent(machineID string, payload map[string]any) {
+	tenantID, _ := payload["tenant_id"].(string)
+	normalizedTenantID := store.NormalizeTenantID(tenantID)
 	g.mu.RLock()
 	machineWatchers := make([]*ConnContext, 0, len(g.viewersByMachine[machineID]))
 	for watcher := range g.viewersByMachine[machineID] {
+		if normalizedTenantID != "" && store.NormalizeTenantID(watcher.TenantID) != normalizedTenantID {
+			continue
+		}
 		machineWatchers = append(machineWatchers, watcher)
 	}
 	g.mu.RUnlock()
@@ -658,7 +673,7 @@ func (g *Gateway) handleViewerSubscribeSession(ctx *ConnContext, msg Envelope) e
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid viewer.subscribe_session payload")
 	}
-	entry, ok := g.Sessions.GetSnapshot(ctx.UserID, payload.MachineID, payload.SessionID)
+	entry, ok := g.Sessions.GetSnapshotForTenant(ctx.TenantID, ctx.UserID, payload.MachineID, payload.SessionID)
 	if !ok || entry == nil {
 		return writeWSError(ctx.Conn, "NOT_FOUND", "Session not found")
 	}
@@ -697,7 +712,7 @@ func (g *Gateway) handleViewerSubscribeMachine(ctx *ConnContext, msg Envelope) e
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid viewer.subscribe_machine payload")
 	}
 
-	entries, err := g.Sessions.ListByMachine(context.Background(), ctx.UserID, payload.MachineID)
+	entries, err := g.Sessions.ListByMachine(store.WithTenant(context.Background(), ctx.TenantID), ctx.UserID, payload.MachineID)
 	if err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
@@ -755,6 +770,9 @@ func (g *Gateway) handleViewerStartSession(ctx *ConnContext, msg Envelope) error
 	if payload.MachineID == "" || payload.Tool == "" {
 		return writeWSError(ctx.Conn, "INVALID_INPUT", "machine_id and tool are required")
 	}
+	if !g.viewerCanAccessMachine(ctx, payload.MachineID) {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "machine is outside current tenant")
+	}
 
 	command := map[string]any{
 		"type":       "session.start",
@@ -783,6 +801,17 @@ func (g *Gateway) handleViewerStartSession(ctx *ConnContext, msg Envelope) error
 		return writeWSError(ctx.Conn, "MACHINE_OFFLINE", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+func (g *Gateway) viewerCanAccessMachine(ctx *ConnContext, machineID string) bool {
+	if g == nil || g.Devices == nil || ctx == nil {
+		return false
+	}
+	tenantID, userID, err := g.Devices.GetMachineOwner(context.Background(), machineID)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(userID) == strings.TrimSpace(ctx.UserID) && store.NormalizeTenantID(tenantID) == store.NormalizeTenantID(ctx.TenantID)
 }
 
 func (g *Gateway) handleViewerUnsubscribeMachine(ctx *ConnContext, msg Envelope) error {
@@ -891,6 +920,7 @@ func (g *Gateway) handleMachineProjects(ctx *ConnContext, msg Envelope) error {
 
 	g.broadcastMachineEvent(ctx.MachineID, map[string]any{
 		"type":       "machine.projects",
+		"tenant_id":  ctx.TenantID,
 		"machine_id": ctx.MachineID,
 		"ts":         time.Now().Unix(),
 		"payload": map[string]any{
@@ -918,6 +948,7 @@ func (g *Gateway) handleMachineTools(ctx *ConnContext, msg Envelope) error {
 
 	g.broadcastMachineEvent(ctx.MachineID, map[string]any{
 		"type":       "machine.tools",
+		"tenant_id":  ctx.TenantID,
 		"machine_id": ctx.MachineID,
 		"ts":         time.Now().Unix(),
 		"payload": map[string]any{
@@ -947,7 +978,7 @@ func (g *Gateway) handleSessionCreated(ctx *ConnContext, msg Envelope) error {
 	if ctx.TenantID != "" {
 		payload["tenant_id"] = ctx.TenantID
 	}
-	if err := g.Sessions.OnSessionCreated(context.Background(), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
+	if err := g.Sessions.OnSessionCreated(store.WithTenant(context.Background(), ctx.TenantID), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
@@ -958,7 +989,7 @@ func (g *Gateway) handleSessionSummary(ctx *ConnContext, msg Envelope) error {
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid session.summary payload")
 	}
-	if err := g.Sessions.OnSessionSummary(context.Background(), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
+	if err := g.Sessions.OnSessionSummary(store.WithTenant(context.Background(), ctx.TenantID), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
@@ -969,7 +1000,7 @@ func (g *Gateway) handleSessionPreviewDelta(ctx *ConnContext, msg Envelope) erro
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid session.preview_delta payload")
 	}
-	if err := g.Sessions.OnSessionPreviewDelta(context.Background(), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
+	if err := g.Sessions.OnSessionPreviewDelta(store.WithTenant(context.Background(), ctx.TenantID), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	// Skip ack for preview deltas — they are high-frequency fire-and-forget
@@ -983,7 +1014,7 @@ func (g *Gateway) handleSessionImportantEvent(ctx *ConnContext, msg Envelope) er
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid session.important_event payload")
 	}
-	if err := g.Sessions.OnSessionImportantEvent(context.Background(), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
+	if err := g.Sessions.OnSessionImportantEvent(store.WithTenant(context.Background(), ctx.TenantID), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
@@ -994,7 +1025,7 @@ func (g *Gateway) handleSessionClosed(ctx *ConnContext, msg Envelope) error {
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid session.closed payload")
 	}
-	if err := g.Sessions.OnSessionClosed(context.Background(), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
+	if err := g.Sessions.OnSessionClosed(store.WithTenant(context.Background(), ctx.TenantID), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
@@ -1031,7 +1062,7 @@ func (g *Gateway) handleSessionImage(ctx *ConnContext, msg Envelope) error {
 	// forward the image to users who are watching via chat.
 	var imgPayload session.SessionImage
 	if err := json.Unmarshal(msg.Payload, &imgPayload); err == nil && imgPayload.Data != "" {
-		g.Sessions.OnSessionImage(context.Background(), ctx.MachineID, ctx.UserID, msg.SessionID, imgPayload)
+		g.Sessions.OnSessionImage(store.WithTenant(context.Background(), ctx.TenantID), ctx.MachineID, ctx.UserID, msg.SessionID, imgPayload)
 	}
 
 	return nil
@@ -1388,6 +1419,7 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 		g.mu.Unlock()
 		g.broadcastMachineEvent(ctx.MachineID, map[string]any{
 			"type":       "machine.offline",
+			"tenant_id":  ctx.TenantID,
 			"machine_id": ctx.MachineID,
 			"ts":         time.Now().Unix(),
 			"payload": map[string]any{

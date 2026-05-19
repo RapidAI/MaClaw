@@ -20,8 +20,13 @@ func NewVoiceSignaling(store *Store, notifier *Notifier) *VoiceSignaling {
 
 // InitiateCall creates a new call and notifies the callee.
 func (v *VoiceSignaling) InitiateCall(callerID, calleeID, channelID string, callType CallType) (*VoiceCall, error) {
+	return v.InitiateCallForTenant("", callerID, calleeID, channelID, callType)
+}
+
+func (v *VoiceSignaling) InitiateCallForTenant(tenantID, callerID, calleeID, channelID string, callType CallType) (*VoiceCall, error) {
 	call := &VoiceCall{
 		ID:        uuid.NewString(),
+		TenantID:  tenantID,
 		ChannelID: channelID,
 		CallerID:  callerID,
 		CallType:  callType,
@@ -37,6 +42,11 @@ func (v *VoiceSignaling) InitiateCall(callerID, calleeID, channelID string, call
 	v.notifier.NotifyCallEvent(calleeID, hint, "Incoming Call", "Voice call from "+callerID)
 
 	return call, nil
+}
+
+// GetCall returns the current call record for authorization and tenant checks.
+func (v *VoiceSignaling) GetCall(callID string) (*VoiceCall, error) {
+	return v.store.GetVoiceCall(callID)
 }
 
 // AnswerCall accepts or rejects a call.

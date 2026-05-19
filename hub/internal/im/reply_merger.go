@@ -15,13 +15,13 @@ import (
 // coherent response. Falls back to structured formatting when LLM is
 // unavailable.
 type ReplyMerger struct {
-	configProvider func() *HubLLMConfig
+	configProvider func(context.Context) *HubLLMConfig
 	breaker        *CircuitBreaker
 	client         *http.Client
 }
 
 // NewReplyMerger creates a new merger.
-func NewReplyMerger(configProvider func() *HubLLMConfig, breaker *CircuitBreaker) *ReplyMerger {
+func NewReplyMerger(configProvider func(context.Context) *HubLLMConfig, breaker *CircuitBreaker) *ReplyMerger {
 	return &ReplyMerger{
 		configProvider: configProvider,
 		breaker:        breaker,
@@ -83,7 +83,7 @@ func (rm *ReplyMerger) MergeReplies(ctx context.Context, replies []DeviceReply) 
 	}
 
 	// Try LLM merge.
-	cfg := rm.configProvider()
+	cfg := rm.configProvider(ctx)
 	if cfg != nil && cfg.Enabled && rm.breaker.Allow() {
 		merged := rm.llmMerge(ctx, good, cfg)
 		if merged != "" {

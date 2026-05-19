@@ -1352,7 +1352,7 @@ func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.Deep
 		runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", knowledge.DeepCrawlProgress{
 			JobID:           result.JobID,
 			Status:          finalStatus,
-			TotalDiscovered: result.TotalSaved + result.Duplicates + result.Failed + result.Skipped,
+			TotalDiscovered: result.TotalDiscovered,
 			Completed:       result.TotalSaved,
 			Failed:          result.Failed,
 			Skipped:         result.Skipped,
@@ -1413,7 +1413,7 @@ func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowled
 		}
 		runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", knowledge.DeepCrawlProgress{
 			Status:          finalStatus,
-			TotalDiscovered: len(result.Items),
+			TotalDiscovered: result.TotalDiscovered,
 		})
 	}
 

@@ -20,7 +20,18 @@ func scopedSystemSettingsForRequest(r *http.Request, base store.SystemSettingsRe
 	return scopedSystemSettingsForTenant(RequestTenantID(r), base)
 }
 
+func shouldReloadSharedRuntimeForRequest(r *http.Request) bool {
+	if r == nil {
+		return true
+	}
+	return !isTenantScopedAdminRequest(r)
+}
+
 func scopedSystemSettingsForTenant(tenantID string, base store.SystemSettingsRepository) store.SystemSettingsRepository {
+	return ScopedSystemSettingsForTenant(tenantID, base)
+}
+
+func ScopedSystemSettingsForTenant(tenantID string, base store.SystemSettingsRepository) store.SystemSettingsRepository {
 	tenantID = strings.TrimSpace(tenantID)
 	if base == nil || tenantID == "" || tenantID == store.DefaultTenantID {
 		return base

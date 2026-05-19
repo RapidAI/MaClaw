@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // ConfirmationType distinguishes executor confirmation from notifier acknowledgment.
@@ -29,6 +31,7 @@ const (
 // Confirmation represents a single confirmation/acknowledgment record.
 type Confirmation struct {
 	ID                    string             `json:"id"`
+	TenantID              string             `json:"tenant_id,omitempty"`
 	InstanceID            string             `json:"instance_id"`
 	RecipientID           string             `json:"recipient_id"`
 	Type                  ConfirmationType   `json:"type"`
@@ -88,11 +91,11 @@ func (s *PgConfirmationStore) Create(ctx context.Context, conf *Confirmation) er
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO confirmations (id, instance_id, recipient_id, type, status, notes,
+		`INSERT INTO confirmations (id, tenant_id, instance_id, recipient_id, type, status, notes,
 			timeout_hours, max_reminders, reminders_sent, reminder_interval_hours,
 			last_reminder_at, confirmed_at, auto_closed_at, auto_close_reason, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-		conf.ID, conf.InstanceID, conf.RecipientID, conf.Type, conf.Status, conf.Notes,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		conf.ID, store.TenantIDFromContext(ctx), conf.InstanceID, conf.RecipientID, conf.Type, conf.Status, conf.Notes,
 		conf.TimeoutHours, conf.MaxReminders, conf.RemindersSent, conf.ReminderIntervalHours,
 		formatNullableTime(conf.LastReminderAt), formatNullableTime(conf.ConfirmedAt),
 		formatNullableTime(conf.AutoClosedAt), conf.AutoCloseReason,
@@ -103,10 +106,10 @@ func (s *PgConfirmationStore) Create(ctx context.Context, conf *Confirmation) er
 
 func (s *PgConfirmationStore) Get(ctx context.Context, id string) (*Confirmation, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, instance_id, recipient_id, type, status, notes,
+		`SELECT id, tenant_id, instance_id, recipient_id, type, status, notes,
 			timeout_hours, max_reminders, reminders_sent, reminder_interval_hours,
 			last_reminder_at, confirmed_at, auto_closed_at, auto_close_reason, created_at
-		 FROM confirmations WHERE id = $1`, id)
+		 FROM confirmations WHERE id = $1 AND tenant_id = $2`, id, store.TenantIDFromContext(ctx))
 
 	conf, err := scanConfirmation(row)
 	if err == sql.ErrNoRows {
@@ -132,8 +135,8 @@ func (s *PgConfirmationStore) UpdateStatus(ctx context.Context, id string, statu
 
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE confirmations SET status = $1, notes = $2, confirmed_at = $3, auto_closed_at = $4
-		 WHERE id = $5`,
-		status, notes, confirmedAt, autoClosedAt, id)
+		 WHERE id = $5 AND tenant_id = $6`,
+		status, notes, confirmedAt, autoClosedAt, id, store.TenantIDFromContext(ctx))
 	return err
 }
 
@@ -141,19 +144,19 @@ func (s *PgConfirmationStore) IncrementReminders(ctx context.Context, id string)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE confirmations SET reminders_sent = reminders_sent + 1, last_reminder_at = $1
-		 WHERE id = $2`,
-		now, id)
+		 WHERE id = $2 AND tenant_id = $3`,
+		now, id, store.TenantIDFromContext(ctx))
 	return err
 }
 
 func (s *PgConfirmationStore) ListPending(ctx context.Context, recipientID string) ([]Confirmation, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, recipient_id, type, status, notes,
+		`SELECT id, tenant_id, instance_id, recipient_id, type, status, notes,
 			timeout_hours, max_reminders, reminders_sent, reminder_interval_hours,
 			last_reminder_at, confirmed_at, auto_closed_at, auto_close_reason, created_at
-		 FROM confirmations WHERE status = $1 AND recipient_id = $2
+		 FROM confirmations WHERE tenant_id = $1 AND status = $2 AND recipient_id = $3
 		 ORDER BY created_at ASC`,
-		string(ConfirmPending), recipientID)
+		store.TenantIDFromContext(ctx), string(ConfirmPending), recipientID)
 	if err != nil {
 		return nil, err
 	}
@@ -163,12 +166,12 @@ func (s *PgConfirmationStore) ListPending(ctx context.Context, recipientID strin
 
 func (s *PgConfirmationStore) ListByInstance(ctx context.Context, instanceID string) ([]Confirmation, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, recipient_id, type, status, notes,
+		`SELECT id, tenant_id, instance_id, recipient_id, type, status, notes,
 			timeout_hours, max_reminders, reminders_sent, reminder_interval_hours,
 			last_reminder_at, confirmed_at, auto_closed_at, auto_close_reason, created_at
-		 FROM confirmations WHERE instance_id = $1
+		 FROM confirmations WHERE tenant_id = $1 AND instance_id = $2
 		 ORDER BY created_at ASC`,
-		instanceID)
+		store.TenantIDFromContext(ctx), instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -183,14 +186,14 @@ func (s *PgConfirmationStore) FindOverdue(ctx context.Context) ([]Confirmation, 
 	// We use the created_at + timeout_hours to determine if overdue.
 	// SQLite datetime arithmetic: datetime(created_at, '+N hours')
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, recipient_id, type, status, notes,
+		`SELECT id, tenant_id, instance_id, recipient_id, type, status, notes,
 			timeout_hours, max_reminders, reminders_sent, reminder_interval_hours,
 			last_reminder_at, confirmed_at, auto_closed_at, auto_close_reason, created_at
 		 FROM confirmations
-		 WHERE status = $1
+		 WHERE tenant_id = $1 AND status = $2
 		   AND datetime(created_at, '+' || timeout_hours || ' hours') <= datetime('now')
 		 ORDER BY created_at ASC`,
-		string(ConfirmPending))
+		store.TenantIDFromContext(ctx), string(ConfirmPending))
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +207,7 @@ func scanConfirmation(row *sql.Row) (*Confirmation, error) {
 	var conf Confirmation
 	var lastReminderAt, confirmedAt, autoClosedAt, createdAt sql.NullString
 	err := row.Scan(
-		&conf.ID, &conf.InstanceID, &conf.RecipientID, &conf.Type, &conf.Status, &conf.Notes,
+		&conf.ID, &conf.TenantID, &conf.InstanceID, &conf.RecipientID, &conf.Type, &conf.Status, &conf.Notes,
 		&conf.TimeoutHours, &conf.MaxReminders, &conf.RemindersSent, &conf.ReminderIntervalHours,
 		&lastReminderAt, &confirmedAt, &autoClosedAt, &conf.AutoCloseReason, &createdAt,
 	)
@@ -228,7 +231,7 @@ func scanConfirmations(rows *sql.Rows) ([]Confirmation, error) {
 		var conf Confirmation
 		var lastReminderAt, confirmedAt, autoClosedAt, createdAt sql.NullString
 		err := rows.Scan(
-			&conf.ID, &conf.InstanceID, &conf.RecipientID, &conf.Type, &conf.Status, &conf.Notes,
+			&conf.ID, &conf.TenantID, &conf.InstanceID, &conf.RecipientID, &conf.Type, &conf.Status, &conf.Notes,
 			&conf.TimeoutHours, &conf.MaxReminders, &conf.RemindersSent, &conf.ReminderIntervalHours,
 			&lastReminderAt, &confirmedAt, &autoClosedAt, &conf.AutoCloseReason, &createdAt,
 		)

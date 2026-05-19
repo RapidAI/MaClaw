@@ -111,13 +111,15 @@ func ToggleInvitationCodeHandler(svc *invitation.Service) http.HandlerFunc {
 			return
 		}
 
-		if err := svc.SetRequired(r.Context(), req.Required); err != nil {
+		tenantID := RequestTenantID(r)
+		if err := svc.SetRequiredForTenant(r.Context(), tenantID, req.Required); err != nil {
 			writeError(w, http.StatusInternalServerError, "TOGGLE_FAILED", err.Error())
 			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":                       true,
+			"tenant_id":                tenantID,
 			"invitation_code_required": req.Required,
 		})
 	}
@@ -125,15 +127,20 @@ func ToggleInvitationCodeHandler(svc *invitation.Service) http.HandlerFunc {
 
 func InvitationCodeStatusHandler(svc *invitation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		required, err := svc.IsRequired(r.Context())
+		tenantID := RequestTenantID(r)
+		required, err := svc.IsRequiredForTenant(r.Context(), tenantID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "STATUS_FAILED", err.Error())
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"invitation_code_required": required,
-		})
+		}
+		if tenantID != DefaultTenantID {
+			resp["tenant_id"] = tenantID
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -187,6 +194,11 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "invitation code not found")
 			return
 		}
+		requestTenantID := RequestTenantID(r)
+		if !IsGlobalAdmin(r.Context()) && code.TenantID != requestTenantID {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "invitation code not found")
+			return
+		}
 
 		email := code.UsedByEmail
 		var deletedMachines int64
@@ -199,7 +211,7 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 					log.Printf("[admin-unbind] lookup user %s failed: %v", email, lookupErr)
 				}
 				if user != nil && deviceSvc != nil {
-					deleted, delErr := deviceSvc.ForceDeleteMachinesByUser(r.Context(), user.ID)
+					deleted, delErr := deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), code.TenantID, user.ID)
 					if delErr != nil {
 						log.Printf("[admin-unbind] delete machines for user %s failed: %v", user.ID, delErr)
 					} else {
@@ -240,6 +252,7 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 		log.Printf("[admin-unbind] code=%s email=%s machines_deleted=%d", code.Code, email, deletedMachines)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":               true,
+			"tenant_id":        code.TenantID,
 			"email":            email,
 			"deleted_machines": deletedMachines,
 		})

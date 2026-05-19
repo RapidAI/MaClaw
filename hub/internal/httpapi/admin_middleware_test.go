@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -92,7 +93,8 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 	st := sqlite.NewStore(provider)
 	admins := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
 	promptCache := llmcache.New(st.LLMPromptCache, llmcache.Config{})
-	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	invitationSvc := invitation.NewService(st.InvitationCodes, st.System)
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, invitationSvc, "open", true, nil, "http://127.0.0.1:8080")
 	testCfg := config.Default()
 	testCfg.Database.DSN = dbPath
 	testCfg.Center.BaseURL = ""
@@ -109,14 +111,13 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		gateway,
 		deviceSvc,
 		sessionSvc,
-		nil,
+		invitationSvc,
 		st.EmailInvites,
 		st.System,
 		provider.Write,
 		promptCache,
 		st.AdminAudit,
 		st.FailureLogs,
-		nil,
 		nil,
 		nil,
 		nil,
@@ -200,6 +201,63 @@ func issueHubAdminToken(t *testing.T, handler http.Handler) string {
 	return token
 }
 
+func TestTenantBridgeConfigDoesNotRewriteSharedConfigFile(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	bridgeDir := t.TempDir()
+	globalAdmin := &store.AdminUser{ID: "global-admin", Scope: "global"}
+	tenantAdmin := &store.AdminUser{ID: "tenant-admin", Scope: "tenant", TenantID: "tenant_acme"}
+	postChannel := SaveBridgeChannelHandler(ctx.store.System, bridgeDir)
+	postIM := UpdateOpenclawIMConfigHandler(ctx.store.System, bridgeDir)
+
+	send := func(handler http.HandlerFunc, body any, admin *store.AdminUser) *httptest.ResponseRecorder {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/test", bytes.NewReader(data))
+		req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, admin))
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		return rec
+	}
+
+	globalResp := send(postChannel, map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "global-token"}}, globalAdmin)
+	if globalResp.Code != http.StatusOK {
+		t.Fatalf("global channel save status=%d body=%s", globalResp.Code, globalResp.Body.String())
+	}
+	configPath := filepath.Join(bridgeDir, "config.json")
+	globalConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read global bridge config: %v", err)
+	}
+	if !bytes.Contains(globalConfig, []byte("global-token")) {
+		t.Fatalf("expected global bridge config to contain global channel: %s", string(globalConfig))
+	}
+
+	tenantResp := send(postChannel, map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "tenant-token"}}, tenantAdmin)
+	if tenantResp.Code != http.StatusOK {
+		t.Fatalf("tenant channel save status=%d body=%s", tenantResp.Code, tenantResp.Body.String())
+	}
+	afterTenantChannel, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read bridge config after tenant channel save: %v", err)
+	}
+	if !bytes.Equal(afterTenantChannel, globalConfig) || bytes.Contains(afterTenantChannel, []byte("tenant-token")) {
+		t.Fatalf("tenant channel save rewrote shared bridge config: %s", string(afterTenantChannel))
+	}
+
+	tenantIMResp := send(postIM, OpenclawIMConfigState{Enabled: true, WebhookURL: "http://127.0.0.1:3210/outbound", Secret: "tenant-secret"}, tenantAdmin)
+	if tenantIMResp.Code != http.StatusOK {
+		t.Fatalf("tenant im save status=%d body=%s", tenantIMResp.Code, tenantIMResp.Body.String())
+	}
+	afterTenantIM, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read bridge config after tenant im save: %v", err)
+	}
+	if !bytes.Equal(afterTenantIM, globalConfig) || bytes.Contains(afterTenantIM, []byte("tenant-secret")) {
+		t.Fatalf("tenant im save rewrote shared bridge config: %s", string(afterTenantIM))
+	}
+}
 func TestAdminDebugHandlersRequireToken(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 
@@ -551,5 +609,131 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 	}
 	if !bytes.Contains(tenantAuditGet.Body.Bytes(), []byte(`"program_path":"tenant-audit"`)) {
 		t.Fatalf("tenant content audit = %s", tenantAuditGet.Body.String())
+	}
+
+	globalBridge := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "global-token"}}, globalToken)
+	if globalBridge.Code != http.StatusOK {
+		t.Fatalf("global bridge status = %d body=%s", globalBridge.Code, globalBridge.Body.String())
+	}
+	tenantBridge := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "tenant-token"}}, loginPayload.AccessToken)
+	if tenantBridge.Code != http.StatusOK {
+		t.Fatalf("tenant bridge status = %d body=%s", tenantBridge.Code, tenantBridge.Body.String())
+	}
+	globalBridgeGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/bridge/channels", nil, globalToken)
+	tenantBridgeGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/bridge/channels", nil, loginPayload.AccessToken)
+	if !bytes.Contains(globalBridgeGet.Body.Bytes(), []byte(`"botToken":"global-token"`)) || bytes.Contains(globalBridgeGet.Body.Bytes(), []byte("tenant-token")) {
+		t.Fatalf("global bridge channels leaked tenant update: %s", globalBridgeGet.Body.String())
+	}
+	if !bytes.Contains(tenantBridgeGet.Body.Bytes(), []byte(`"botToken":"tenant-token"`)) || bytes.Contains(tenantBridgeGet.Body.Bytes(), []byte("global-token")) {
+		t.Fatalf("tenant bridge channels leaked global update: %s", tenantBridgeGet.Body.String())
+	}
+
+	globalFeishu := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/feishu/config", map[string]any{"enabled": true, "app_id": "global-feishu", "app_secret": "global-secret"}, globalToken)
+	if globalFeishu.Code != http.StatusOK {
+		t.Fatalf("global feishu status = %d body=%s", globalFeishu.Code, globalFeishu.Body.String())
+	}
+	tenantFeishu := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/feishu/config", map[string]any{"enabled": true, "app_id": "tenant-feishu", "app_secret": "tenant-secret"}, loginPayload.AccessToken)
+	if tenantFeishu.Code != http.StatusOK {
+		t.Fatalf("tenant feishu status = %d body=%s", tenantFeishu.Code, tenantFeishu.Body.String())
+	}
+	globalFeishuGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/feishu/config", nil, globalToken)
+	tenantFeishuGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/feishu/config", nil, loginPayload.AccessToken)
+	if !bytes.Contains(globalFeishuGet.Body.Bytes(), []byte(`"app_id":"global-feishu"`)) || bytes.Contains(globalFeishuGet.Body.Bytes(), []byte("tenant-feishu")) {
+		t.Fatalf("global feishu config leaked tenant update: %s", globalFeishuGet.Body.String())
+	}
+	if !bytes.Contains(tenantFeishuGet.Body.Bytes(), []byte(`"app_id":"tenant-feishu"`)) || bytes.Contains(tenantFeishuGet.Body.Bytes(), []byte("global-feishu")) {
+		t.Fatalf("tenant feishu config leaked global update: %s", tenantFeishuGet.Body.String())
+	}
+
+	globalInviteRequired := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invitation-codes/toggle", map[string]any{"required": false}, globalToken)
+	if globalInviteRequired.Code != http.StatusOK {
+		t.Fatalf("global invitation toggle status = %d body=%s", globalInviteRequired.Code, globalInviteRequired.Body.String())
+	}
+	tenantInviteRequired := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invitation-codes/toggle", map[string]any{"required": true}, loginPayload.AccessToken)
+	if tenantInviteRequired.Code != http.StatusOK {
+		t.Fatalf("tenant invitation toggle status = %d body=%s", tenantInviteRequired.Code, tenantInviteRequired.Body.String())
+	}
+	globalInviteStatus := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/invitation-codes/status", nil, globalToken)
+	tenantInviteStatus := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/invitation-codes/status", nil, loginPayload.AccessToken)
+	if !bytes.Contains(globalInviteStatus.Body.Bytes(), []byte(`"invitation_code_required":false`)) || bytes.Contains(globalInviteStatus.Body.Bytes(), []byte(`"tenant_id":"tenant_acme"`)) {
+		t.Fatalf("global invitation setting leaked tenant update: %s", globalInviteStatus.Body.String())
+	}
+	if !bytes.Contains(tenantInviteStatus.Body.Bytes(), []byte(`"tenant_id":"tenant_acme"`)) || !bytes.Contains(tenantInviteStatus.Body.Bytes(), []byte(`"invitation_code_required":true`)) {
+		t.Fatalf("tenant invitation setting = %s", tenantInviteStatus.Body.String())
+	}
+}
+
+func TestTenantAdminInvitationCodeUnbindIsTenantScoped(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, ctx.handler)
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "acme",
+		"name":                   "Acme Corp",
+		"initial_admin_username": "acme-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@acme.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "acme-owner",
+		"password": "StrongPassword123!",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+
+	decodeGeneratedCode := func(resp *httptest.ResponseRecorder) invitationCodeResponse {
+		t.Helper()
+		var payload struct {
+			Codes []invitationCodeResponse `json:"codes"`
+		}
+		if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode generated code: %v body=%s", err, resp.Body.String())
+		}
+		if len(payload.Codes) != 1 {
+			t.Fatalf("expected one generated code, got %#v", payload.Codes)
+		}
+		return payload.Codes[0]
+	}
+
+	globalGen := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invitation-codes/generate", map[string]any{"count": 1, "validity_days": 7}, globalToken)
+	if globalGen.Code != http.StatusOK {
+		t.Fatalf("global generate status = %d body=%s", globalGen.Code, globalGen.Body.String())
+	}
+	globalCode := decodeGeneratedCode(globalGen)
+
+	tenantGen := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invitation-codes/generate", map[string]any{"count": 1, "validity_days": 7}, loginPayload.AccessToken)
+	if tenantGen.Code != http.StatusOK {
+		t.Fatalf("tenant generate status = %d body=%s", tenantGen.Code, tenantGen.Body.String())
+	}
+	tenantCode := decodeGeneratedCode(tenantGen)
+	if tenantCode.TenantID != "tenant_acme" {
+		t.Fatalf("tenant generated code tenant_id = %q", tenantCode.TenantID)
+	}
+
+	deleteGlobalAsTenant := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invitation-codes/unbind", map[string]any{"id": globalCode.ID}, loginPayload.AccessToken)
+	if deleteGlobalAsTenant.Code != http.StatusNotFound {
+		t.Fatalf("tenant unbind global code status = %d body=%s", deleteGlobalAsTenant.Code, deleteGlobalAsTenant.Body.String())
+	}
+	if found, err := ctx.store.InvitationCodes.GetByID(context.Background(), globalCode.ID); err != nil || found == nil {
+		t.Fatalf("global code should remain after tenant unbind attempt, found=%#v err=%v", found, err)
+	}
+
+	deleteTenantAsTenant := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invitation-codes/unbind", map[string]any{"id": tenantCode.ID}, loginPayload.AccessToken)
+	if deleteTenantAsTenant.Code != http.StatusOK {
+		t.Fatalf("tenant unbind own code status = %d body=%s", deleteTenantAsTenant.Code, deleteTenantAsTenant.Body.String())
+	}
+	if found, err := ctx.store.InvitationCodes.GetByID(context.Background(), tenantCode.ID); err != nil || found != nil {
+		t.Fatalf("tenant code should be deleted after own unbind, found=%#v err=%v", found, err)
 	}
 }

@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -242,20 +244,20 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 }
 
 // SendVEMessage sends a message in a VE conversation.
-// When local maclaw is the executor for this session, the message is dispatched
-// directly to the local agent (zero network latency) while asynchronously syncing
-// to Hub for history consistency. Otherwise, the message goes through Hub normally.
+// When the local AI agent is enabled for this session, the message is dispatched
+// directly to the local agent (zero network latency) while syncing
+// targeted history to Hub. Otherwise, the message goes through Hub normally.
 func (a *App) SendVEMessage(sessionID, content string) error {
-	// Delegate to SendVEGroupMessage with no explicit mentions (broadcast to all)
+	// Delegate to SendVEGroupMessage with no explicit mentions (single-responder routing)
 	return a.SendVEGroupMessage(sessionID, content, nil)
 }
 
 // SendVEGroupMessage sends a message in a VE group conversation with @mention-based routing.
-// mentionedIds controls which participants receive and respond to the message:
-//   - nil or empty: broadcast to ALL participants (both local AI and remote VE respond)
-//   - contains "local-maclaw": route to local AI executor only
+// mentionedIds controls which participant handles the message:
+//   - nil or empty: prefer the local AI executor, then fall back to Hub
+//   - contains the local AI participant or legacy alias: route to local AI only
 //   - contains remote VE id: route to remote VE via Hub only
-//   - contains both: broadcast to all (same as empty)
+//   - contains both: use the same priority path as an unmentioned message
 func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []string) error {
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("message content is empty")
@@ -270,52 +272,208 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 		CreatedAt: time.Now(),
 	}
 
-	// Determine routing based on @mentions
-	mentionLocal := false
-	mentionRemote := false
-	for _, id := range mentionedIds {
-		if id == "local-maclaw" {
-			mentionLocal = true
-		} else {
-			mentionRemote = true
-		}
+	targets, err := a.resolveVEGroupMentionTargets(sessionID, mentionedIds)
+	if err != nil {
+		return err
 	}
 
-	// No explicit mentions → use priority-based routing (original SendVEMessage semantics).
-	// Priority: local AI executor first (zero latency), fallback to remote VE via Hub.
-	// Only ONE participant responds per message — prevents duplicate/conflicting replies.
-	if len(mentionedIds) == 0 || (mentionLocal && mentionRemote) {
+	// No explicit mentions, or mixed local+remote mentions, use the same
+	// single-responder path as a normal chat message.
+	if !targets.Explicit || (targets.Local && len(targets.RemoteToIDs) > 0) {
 		if a.tryLocalExecutorDispatch(sessionID, msg) {
-			// Local AI handled it. Async sync to Hub for history consistency.
-			go func() {
-				_ = a.GroupDiscussionSendMessage(sessionID, msg)
-			}()
 			return nil
 		}
-		// Local AI not available — route to remote VE via Hub
 		return a.GroupDiscussionSendMessage(sessionID, msg)
 	}
 
-	if mentionLocal && !mentionRemote {
-		// @本机AI only → route exclusively to local dispatcher.
-		// Do NOT send to Hub — this prevents the remote VE from receiving and responding.
-		// The local AI's response will be synced to Hub via the dispatcher's hubSyncCh,
-		// maintaining conversation continuity for other participants.
+	if targets.Local {
 		if !a.tryLocalExecutorDispatch(sessionID, msg) {
-			return fmt.Errorf("本机AI 未就绪，请确认已添加到群聊")
+			if _, err := a.RegisterLocalExecutorInGroup(sessionID); err != nil {
+				return fmt.Errorf("local AI is not ready in this group: %w", err)
+			}
+			if !a.tryLocalExecutorDispatch(sessionID, msg) {
+				return fmt.Errorf("local AI is not ready in this group; please add it again")
+			}
 		}
 		return nil
 	}
 
-	if mentionRemote && !mentionLocal {
-		// @远程VE only → route exclusively to Hub, skip local dispatcher
+	if len(targets.RemoteToIDs) > 0 {
+		msg.ToIDs = targets.RemoteToIDs
 		return a.GroupDiscussionSendMessage(sessionID, msg)
 	}
 
-	return nil
+	return fmt.Errorf("no valid mention target found")
 }
 
-// tryLocalExecutorDispatch checks if local maclaw is the executor for this session
+type LocalGroupExecutorRegistration struct {
+	SessionID     string `json:"session_id"`
+	ParticipantID string `json:"participant_id"`
+	DisplayName   string `json:"display_name"`
+}
+
+type veGroupMentionTargets struct {
+	Explicit    bool
+	Local       bool
+	RemoteToIDs []string
+}
+
+func (a *App) resolveVEGroupMentionTargets(sessionID string, mentionedIds []string) (veGroupMentionTargets, error) {
+	var targets veGroupMentionTargets
+	localID := ""
+	if cfg, err := a.LoadConfig(); err == nil {
+		localID = strings.TrimSpace(groupDiscussionAgentID(cfg))
+	}
+	participantIDs := a.groupDiscussionParticipantIDs(sessionID, localID)
+	var employeeIDs map[string]string
+	seenRemote := map[string]struct{}{}
+	for _, rawID := range mentionedIds {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		targets.Explicit = true
+		if isLocalGroupMentionID(id, localID) {
+			targets.Local = true
+			continue
+		}
+		if employeeIDs == nil {
+			employeeIDs = a.discoverableVEParticipantIDs()
+		}
+		canonical := canonicalGroupMentionTargetID(id, employeeIDs, participantIDs)
+		if isLocalGroupMentionID(canonical, localID) {
+			targets.Local = true
+			continue
+		}
+		if canonical == "" {
+			return veGroupMentionTargets{}, fmt.Errorf("mention target %s is not available in this discussion", id)
+		}
+		key := strings.ToLower(canonical)
+		if _, ok := seenRemote[key]; ok {
+			continue
+		}
+		seenRemote[key] = struct{}{}
+		targets.RemoteToIDs = append(targets.RemoteToIDs, canonical)
+	}
+	return targets, nil
+}
+
+func (a *App) groupDiscussionParticipantIDs(sessionID, localID string) map[string]string {
+	ids := map[string]string{}
+	client, cfg, err := a.groupDiscussionClient()
+	if err != nil {
+		return ids
+	}
+	requesterID := strings.TrimSpace(firstNonEmptyGroupString(localID, groupDiscussionAgentID(cfg)))
+	if requesterID == "" {
+		return ids
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	detail, err := client.GetConsultationDetailForAgent(ctx, strings.TrimSpace(sessionID), requesterID)
+	if err != nil || detail.Session == nil {
+		return ids
+	}
+	for _, participant := range detail.Session.Participants {
+		id := strings.TrimSpace(participant.ID)
+		if id != "" {
+			ids[strings.ToLower(id)] = id
+		}
+	}
+	return ids
+}
+
+func (a *App) discoverableVEParticipantIDs() map[string]string {
+	ids := map[string]string{}
+	hubURL, token, err := a.getHubCredentials()
+	if err != nil {
+		return ids
+	}
+	employees, err := a.loadDiscoverableVEEntries(hubURL, token)
+	if err != nil {
+		return ids
+	}
+	for _, employee := range employees {
+		machineID := strings.TrimSpace(employee.MachineID)
+		profileID := strings.TrimSpace(employee.ID)
+		canonical := firstNonEmptyGroupString(machineID, profileID)
+		if canonical == "" {
+			continue
+		}
+		ids[strings.ToLower(canonical)] = canonical
+		if profileID != "" {
+			ids[strings.ToLower(profileID)] = canonical
+		}
+		if machineID != "" {
+			ids[strings.ToLower(machineID)] = canonical
+		}
+	}
+	return ids
+}
+
+func canonicalGroupMentionTargetID(id string, employeeIDs, participantIDs map[string]string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	key := strings.ToLower(id)
+	if canonical := strings.TrimSpace(employeeIDs[key]); canonical != "" {
+		id = canonical
+		key = strings.ToLower(id)
+	}
+	if canonical := strings.TrimSpace(participantIDs[key]); canonical != "" {
+		return canonical
+	}
+	if len(participantIDs) == 0 {
+		return id
+	}
+	return ""
+}
+
+func isLocalGroupMentionID(id, localID string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if localID != "" && strings.EqualFold(id, strings.TrimSpace(localID)) {
+		return true
+	}
+	switch strings.ToLower(id) {
+	case "local-maclaw", "local ai", "local-ai", "localai":
+		return true
+	}
+	switch strings.Join(strings.Fields(id), "") {
+	case "本机AI", "本機AI":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) localTargetedGroupMessage(msg a2a.GroupDiscussionMessage) (a2a.GroupDiscussionMessage, bool) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return a2a.GroupDiscussionMessage{}, false
+	}
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if localID == "" {
+		return a2a.GroupDiscussionMessage{}, false
+	}
+	msg.ToIDs = []string{localID}
+	return msg, true
+}
+
+func (a *App) syncLocalDispatchInputToHub(sessionID string, msg a2a.GroupDiscussionMessage) {
+	msg, ok := a.localTargetedGroupMessage(msg)
+	if !ok {
+		return
+	}
+	if err := a.GroupDiscussionSendMessage(sessionID, msg); err != nil {
+		log.Printf("[ve-group] failed to sync local dispatch input for session %s: %v", sessionID, err)
+	}
+}
+
+// tryLocalExecutorDispatch checks if local AI is enabled for this session
 // and dispatches the message directly to the local agent if so.
 // Returns true if local dispatch was performed, false otherwise.
 func (a *App) tryLocalExecutorDispatch(sessionID string, msg a2a.GroupDiscussionMessage) bool {
@@ -392,50 +550,108 @@ func (a *App) AddVEToGroup(sessionID, veID string) error {
 	return err
 }
 
-// RegisterLocalExecutorInGroup adds the local maclaw as an executor participant
-// in an existing group discussion session. This enables the local AI assistant
-// to receive and respond to messages in the group with full tool access.
-func (a *App) RegisterLocalExecutorInGroup(sessionID string) error {
+// RegisterLocalExecutorInGroup adds the local machine to the Hub discussion
+// and starts the local executor dispatcher for this session. This enables the
+// local AI assistant to receive and respond with full tool access.
+func (a *App) RegisterLocalExecutorInGroup(sessionID string) (*LocalGroupExecutorRegistration, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return fmt.Errorf("sessionID is required")
+		return nil, fmt.Errorf("sessionID is required")
 	}
 
-	// Register with Hub as executor participant
+	// Register with Hub first so local responses can be synced back into
+	// discussion history, then register the in-process dispatcher.
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cfg, cfgErr := a.LoadConfig()
 	if cfgErr != nil {
-		return fmt.Errorf("load config: %w", cfgErr)
+		return nil, fmt.Errorf("load config: %w", cfgErr)
 	}
-	machineID := strings.TrimSpace(cfg.RemoteMachineID)
-	if machineID == "" {
-		return fmt.Errorf("machine not registered")
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if localID == "" {
+		return nil, fmt.Errorf("machine not registered")
 	}
 
-	// Add self as executor participant via Hub invite API
+	if a.localParticipantCanAnswerInHubDiscussion(sessionID, localID, cfg) {
+		a.registerLocalGroupDispatcher(sessionID)
+		return localGroupExecutorRegistration(sessionID, localID), nil
+	}
+
 	body := map[string]any{
-		"from_id": machineID,
-		"to_id":   machineID,
-		"role":    "executor",
+		"from_id": localID,
+		"to_id":   localID,
+		"role":    string(a2a.GroupRoleSpeak),
 	}
-	_, err = a.postHubJSON(hubURL, token, "/api/a2a/consultations/"+sessionID+"/invites", body)
+	data, err := a.postHubJSON(hubURL, token, "/api/a2a/consultations/"+sessionID+"/invites", body)
 	if err != nil {
-		return fmt.Errorf("register executor with Hub: %w", err)
+		return nil, fmt.Errorf("register local AI with Hub: %w", err)
+	}
+	var inviteResp struct {
+		InviteID string `json:"invite_id"`
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("register local AI with Hub: missing invite id")
+	}
+	if err := json.Unmarshal(data, &inviteResp); err != nil {
+		return nil, fmt.Errorf("parse local AI invite response: %w", err)
+	}
+	inviteID := strings.TrimSpace(inviteResp.InviteID)
+	if inviteID == "" {
+		return nil, fmt.Errorf("register local AI with Hub: missing invite id")
+	}
+	acceptBody := map[string]any{
+		"from_id": localID,
+		"reason":  "local AI ready",
+	}
+	if _, err := a.postHubJSON(hubURL, token, "/api/a2a/invites/"+inviteID+"/accept", acceptBody); err != nil {
+		return nil, fmt.Errorf("accept local AI invite: %w", err)
 	}
 
-	// Start the GroupChatDispatcher for this session
-	hubClient := a.hubClient()
-	if hubClient != nil {
-		dispatcher := hubClient.groupChatDispatcher()
-		if dispatcher != nil {
-			dispatcher.RegisterSession(sessionID)
+	a.registerLocalGroupDispatcher(sessionID)
+	return localGroupExecutorRegistration(sessionID, localID), nil
+}
+
+func localGroupExecutorRegistration(sessionID, participantID string) *LocalGroupExecutorRegistration {
+	return &LocalGroupExecutorRegistration{SessionID: strings.TrimSpace(sessionID), ParticipantID: strings.TrimSpace(participantID), DisplayName: "Local AI"}
+}
+
+func (a *App) localParticipantCanAnswerInHubDiscussion(sessionID, localID string, cfg corelib.AppConfig) bool {
+	client, err := a2a.NewHubClientFromConfig(cfg)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	detail, err := client.GetConsultationDetailForAgent(ctx, sessionID, localID)
+	if err != nil || detail.Session == nil {
+		return false
+	}
+	for _, participant := range detail.Session.Participants {
+		if !strings.EqualFold(strings.TrimSpace(participant.ID), localID) {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
+		switch role {
+		case "", "initiator", "speak", "speaker", "review", "participant", "executor":
+			return true
+		default:
+			return false
 		}
 	}
+	return false
+}
 
-	return nil
+func (a *App) registerLocalGroupDispatcher(sessionID string) {
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return
+	}
+	dispatcher := hubClient.groupChatDispatcher()
+	if dispatcher != nil {
+		dispatcher.RegisterSession(sessionID)
+	}
 }
 
 // resolveVEInviteMachineID maps a frontend VE id to the discussion participant machine id.
@@ -444,17 +660,25 @@ func (a *App) resolveVEInviteMachineID(hubURL, token, veID string) string {
 	if veID == "" {
 		return ""
 	}
-	data, err := a.getHubJSON(hubURL, token, "/api/ve/discoverable")
+	employees, err := a.loadDiscoverableVEEntries(hubURL, token)
 	if err != nil {
 		return veID
+	}
+	return resolveVEInviteMachineID(employees, veID)
+}
+
+func (a *App) loadDiscoverableVEEntries(hubURL, token string) ([]VirtualEmployeeEntry, error) {
+	data, err := a.getHubJSON(hubURL, token, "/api/ve/discoverable")
+	if err != nil {
+		return nil, err
 	}
 	var resp struct {
 		Employees []VirtualEmployeeEntry `json:"employees"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return veID
+		return nil, err
 	}
-	return resolveVEInviteMachineID(resp.Employees, veID)
+	return resp.Employees, nil
 }
 
 func resolveVEInviteMachineID(employees []VirtualEmployeeEntry, value string) string {

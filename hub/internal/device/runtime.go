@@ -23,7 +23,9 @@ type MachineRepository interface {
 	ListAll(ctx context.Context) ([]*store.Machine, error)
 	Delete(ctx context.Context, machineID string) error
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
+	DeleteByTenantUserID(ctx context.Context, tenantID, userID string) (int64, error)
 	ForceDeleteByUserID(ctx context.Context, userID string) (int64, error)
+	ForceDeleteByTenantUserID(ctx context.Context, tenantID, userID string) (int64, error)
 	DeleteOffline(ctx context.Context) (int64, error)
 	DeleteOfflineByTenant(ctx context.Context, tenantID string) (int64, error)
 	DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error)
@@ -84,6 +86,7 @@ type MachineRuntimeInfo struct {
 
 type MachineEvent struct {
 	Timestamp int64  `json:"timestamp"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	MachineID string `json:"machine_id"`
 	UserID    string `json:"user_id,omitempty"`
 	Type      string `json:"type"`
@@ -632,6 +635,27 @@ func (s *Service) ListMachinesByTenant(ctx context.Context, tenantID string) ([]
 	return out, nil
 }
 
+func (s *Service) GetMachineOwner(ctx context.Context, machineID string) (string, string, error) {
+	if s == nil || strings.TrimSpace(machineID) == "" {
+		return "", "", nil
+	}
+	s.runtime.mu.RLock()
+	conn := s.runtime.desktopsByMachine[machineID]
+	if conn != nil {
+		tenantID, userID := conn.TenantID, conn.UserID
+		s.runtime.mu.RUnlock()
+		return store.NormalizeTenantID(tenantID), userID, nil
+	}
+	s.runtime.mu.RUnlock()
+	if s.repo == nil {
+		return "", "", nil
+	}
+	machine, err := s.repo.GetByID(ctx, machineID)
+	if err != nil || machine == nil {
+		return "", "", err
+	}
+	return store.NormalizeTenantID(machine.TenantID), machine.UserID, nil
+}
 func (s *Service) GetMachineInfo(ctx context.Context, machineID string) (*MachineRuntimeInfo, error) {
 	machineID = strings.TrimSpace(machineID)
 	if machineID == "" {
@@ -867,54 +891,77 @@ func (s *Service) DeleteMachinesByUser(ctx context.Context, userID string) (int6
 	return s.repo.DeleteByUserID(ctx, userID)
 }
 
+func (s *Service) DeleteMachinesByTenantUser(ctx context.Context, tenantID, userID string) (int64, error) {
+	if s.repo == nil {
+		return 0, errors.New("no repository configured")
+	}
+	return s.repo.DeleteByTenantUserID(ctx, tenantID, userID)
+}
+
 func (s *Service) ForceDeleteMachinesByUser(ctx context.Context, userID string) (int64, error) {
 	if s.repo == nil {
 		return 0, errors.New("no repository configured")
 	}
-
-	// Delete from DB first so subsequent reads won't see these machines
 	count, err := s.repo.ForceDeleteByUserID(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
+	s.closeRuntimeConnectionsForUser("", userID)
+	return count, nil
+}
 
-	// Clean up runtime state and close WebSocket connections
+func (s *Service) ForceDeleteMachinesByTenantUser(ctx context.Context, tenantID, userID string) (int64, error) {
+	if s.repo == nil {
+		return 0, errors.New("no repository configured")
+	}
+	count, err := s.repo.ForceDeleteByTenantUserID(ctx, tenantID, userID)
+	if err != nil {
+		return 0, err
+	}
+	s.closeRuntimeConnectionsForUser(store.NormalizeTenantID(tenantID), userID)
+	return count, nil
+}
+
+func (s *Service) closeRuntimeConnectionsForUser(tenantID, userID string) {
 	var connsToClose []*ws.ConnContext
 	s.runtime.mu.Lock()
 	for mid, conn := range s.runtime.desktopsByMachine {
-		if conn != nil && conn.UserID == userID {
-			connsToClose = append(connsToClose, conn)
-			delete(s.runtime.desktopsByMachine, mid)
-			delete(s.runtime.metadataByMachine, mid)
-			delete(s.runtime.lastHeartbeatAt, mid)
+		if conn == nil || conn.UserID != userID {
+			continue
 		}
+		if tenantID != "" && store.NormalizeTenantID(conn.TenantID) != tenantID {
+			continue
+		}
+		connsToClose = append(connsToClose, conn)
+		delete(s.runtime.desktopsByMachine, mid)
+		delete(s.runtime.metadataByMachine, mid)
+		delete(s.runtime.lastHeartbeatAt, mid)
 	}
 	s.runtime.mu.Unlock()
-
-	// Close WebSocket connections outside the lock to prevent reconnect/re-register
 	for _, conn := range connsToClose {
 		if conn.Conn != nil {
 			_ = conn.Conn.Close()
 		}
 	}
-
-	return count, nil
 }
 
 func (s *Service) ListEvents(limit int) []MachineEvent {
+	return s.ListEventsByTenant("", limit)
+}
+
+func (s *Service) ListEventsByTenant(tenantID string, limit int) []MachineEvent {
 	s.runtime.mu.RLock()
 	defer s.runtime.mu.RUnlock()
+	tenantID = strings.TrimSpace(tenantID)
 
 	if limit <= 0 || limit > len(s.runtime.events) {
 		limit = len(s.runtime.events)
 	}
-	start := len(s.runtime.events) - limit
-	if start < 0 {
-		start = 0
-	}
-
-	out := make([]MachineEvent, 0, len(s.runtime.events)-start)
-	for i := len(s.runtime.events) - 1; i >= start; i-- {
+	out := make([]MachineEvent, 0, limit)
+	for i := len(s.runtime.events) - 1; i >= 0 && len(out) < limit; i-- {
+		if tenantID != "" && store.NormalizeTenantID(s.runtime.events[i].TenantID) != store.NormalizeTenantID(tenantID) {
+			continue
+		}
 		out = append(out, s.runtime.events[i])
 	}
 	return out
@@ -927,6 +974,16 @@ func (s *Service) recordEvent(event MachineEvent) {
 }
 
 func (s *Service) appendEventLocked(event MachineEvent) {
+	if strings.TrimSpace(event.TenantID) == "" && strings.TrimSpace(event.MachineID) != "" {
+		if info, ok := s.runtime.metadataByMachine[event.MachineID]; ok {
+			event.TenantID = info.TenantID
+		} else if conn, ok := s.runtime.desktopsByMachine[event.MachineID]; ok && conn != nil {
+			event.TenantID = conn.TenantID
+		}
+	}
+	if strings.TrimSpace(event.TenantID) != "" {
+		event.TenantID = store.NormalizeTenantID(event.TenantID)
+	}
 	s.runtime.events = append(s.runtime.events, event)
 	if len(s.runtime.events) > 200 {
 		s.runtime.events = s.runtime.events[len(s.runtime.events)-200:]

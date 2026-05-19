@@ -124,17 +124,21 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 		tags = append(tags, projectTag)
 	}
 
-	entry := memory.Entry{
-		Content:    buf.String(),
-		Title:      title,
-		Category:   memory.CategoryProjectKnowledge,
-		Tags:       tags,
-		Scope:      memory.ScopeProject,
-		SourceType: "task_sediment",
-		OwnerID:    userID, // multi-tenant: associate with the user who ran this task
+	identityTagCount := 2
+	if standalonePath != "" {
+		identityTagCount = 3
 	}
-	if err := h.memoryStore.Save(entry); err != nil {
-		log.Printf("[task_sediment] save failed: %v", err)
+	_, err := h.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+		Title:            title,
+		Content:          buf.String(),
+		Tags:             tags,
+		IdentityTagCount: identityTagCount,
+		Scope:            memory.ScopeProject,
+		SourceType:       "task_sediment",
+		OwnerID:          userID,
+	})
+	if err != nil {
+		log.Printf("[task_sediment] upsert failed: %v", err)
 	} else if h.app != nil {
 		h.app.triggerMemoryPipelineSoon(45 * time.Second)
 	}

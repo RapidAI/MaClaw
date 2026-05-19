@@ -43,51 +43,12 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 			},
 			Required: []string{"query"},
 			HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-				return h.toolSearchAndInstallSkill(args, onProgress)
+				return h.executeSkillSearchInstall(args, onProgress).Text
 			},
 		})
 	} else if !hasApp && hasSearchTool {
 		h.registry.Unregister("search_and_install_skill")
 	}
-}
-
-// toolSearchAndInstallSkill handles the search_and_install_skill tool call.
-// Search order: SkillMarket (HubCenter) 鈫?ClawHub mirror 鈫?GitHub.
-// If a match is found, it downloads and registers the skill locally.
-func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-	query, _ := args["query"].(string)
-	if query == "" {
-		return "閿欒: 缂哄皯 query 鍙傛暟"
-	}
-
-	sendStatus := func(msg string) {
-		if onProgress != nil {
-			onProgress(msg)
-		}
-	}
-
-	ctx := context.Background()
-
-	smClient := NewSkillMarketClient(h.app)
-	searcher := NewSkillSearcher(smClient)
-
-	sendStatus("馃攳 姝ｅ湪鎼滅储 SkillMarket...")
-	best, err := searcher.SearchAndInstall(ctx, query)
-	if err != nil {
-		return fmt.Sprintf("鎼滅储 SkillMarket 澶辫触: %v", err)
-	}
-	if best == nil {
-		return fmt.Sprintf("鍦?SkillMarket銆丆lawHub 鍜?GitHub 涓婂潎鏈壘鍒颁笌 %q 鍖归厤鐨?Skill", query)
-	}
-
-	sendStatus(fmt.Sprintf("馃摝 鎵惧埌 Skill: %s 鈥?%s (鏉ユ簮: %s)", best.Name, best.Description, best.Status))
-
-	// Read platform/userID from the active loop context (valid during agent loop).
-	platform := ""
-	if h.currentLoopCtx != nil {
-		platform = h.currentLoopCtx.Platform
-	}
-	return h.installAndExecuteSkill(ctx, best, query, platform, h.lastUserID, sendStatus).Text
 }
 
 // installAndExecuteSkill handles the download, security review, registration,

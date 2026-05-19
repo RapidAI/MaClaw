@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 )
 
@@ -25,7 +26,7 @@ func WorkflowAdminReviewListHandler(reviewSvc *workflow.AdminReviewService) http
 			}
 		}
 
-		result, err := reviewSvc.ListPendingSubmissions(r.Context(), page)
+		result, err := reviewSvc.ListPendingSubmissions(store.WithTenant(r.Context(), RequestTenantID(r)), page)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -50,7 +51,7 @@ func WorkflowAdminReviewDetailHandler(reviewSvc *workflow.AdminReviewService) ht
 			return
 		}
 
-		detail, err := reviewSvc.GetSubmissionForReview(r.Context(), versionID)
+		detail, err := reviewSvc.GetSubmissionForReview(store.WithTenant(r.Context(), RequestTenantID(r)), versionID)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
@@ -83,7 +84,7 @@ func WorkflowAdminReviewApproveHandler(reviewSvc *workflow.AdminReviewService) h
 			return
 		}
 
-		if err := reviewSvc.ApproveSubmission(r.Context(), versionID); err != nil {
+		if err := reviewSvc.ApproveSubmission(store.WithTenant(r.Context(), RequestTenantID(r)), versionID); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 				return
@@ -126,7 +127,7 @@ func WorkflowAdminReviewRejectHandler(reviewSvc *workflow.AdminReviewService) ht
 			return
 		}
 
-		if err := reviewSvc.RejectSubmission(r.Context(), versionID, req.Reason); err != nil {
+		if err := reviewSvc.RejectSubmission(store.WithTenant(r.Context(), RequestTenantID(r)), versionID, req.Reason); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 				return
@@ -165,7 +166,7 @@ func WorkflowAdminReviewUnpublishHandler(reviewSvc *workflow.AdminReviewService)
 			return
 		}
 
-		if err := reviewSvc.UnpublishVersion(r.Context(), versionID); err != nil {
+		if err := reviewSvc.UnpublishVersion(store.WithTenant(r.Context(), RequestTenantID(r)), versionID); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 				return

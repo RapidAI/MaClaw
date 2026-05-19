@@ -793,6 +793,48 @@ func TestRoutingDiagnosticsReportsLegacyBackfillPending(t *testing.T) {
 	}
 }
 
+func TestRoutingDiagnosticsTenantDomainDoesNotSatisfyGlobalBackfill(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:                   "hub_tenant_route_only",
+		OwnerEmail:           "owner@rapidai.tech",
+		Name:                 "Tenant Route Only Hub",
+		BaseURL:              "https://tenant-route.example.com",
+		CorporateEmailDomain: "rapidai.tech",
+		Status:               "online",
+		HubSecretHash:        "secret",
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{
+		ID:        "hdr_tenant_route_only",
+		HubID:     hub.ID,
+		TenantID:  "tenant_a",
+		Domain:    "rapidai.tech",
+		Enabled:   true,
+		Priority:  200,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert tenant route: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	diagnostics, err := svc.RoutingDiagnostics(ctx)
+	if err != nil {
+		t.Fatalf("RoutingDiagnostics: %v", err)
+	}
+	if diagnostics.Migration.LegacyDomainBackfillPending != 1 {
+		t.Fatalf("LegacyDomainBackfillPending = %d, want 1", diagnostics.Migration.LegacyDomainBackfillPending)
+	}
+}
+
 func TestResolveByDomainReturnsOnlyExactDomainMatches(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -1007,6 +1049,60 @@ func TestResolveByDomainReturnsTenantVirtualHubRoutes(t *testing.T) {
 	}
 	if !seen["tenant_a"] || !seen["tenant_b"] {
 		t.Fatalf("missing tenant domain routes: %+v", result.Hubs)
+	}
+}
+
+func TestAdminTenantDomainRouteDoesNotHideGlobalDomainRoute(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:                   "hub_tenant_admin_domain",
+		OwnerEmail:           "owner@example.com",
+		Name:                 "Tenant Admin Domain",
+		BaseURL:              "https://hub.example.com",
+		Visibility:           "shared",
+		EnrollmentMode:       "open",
+		Status:               "online",
+		CorporateEmailDomain: "acme.example",
+		HubSecretHash:        "secret",
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{
+		ID:        "hdr_admin_tenant_a_acme",
+		HubID:     hub.ID,
+		TenantID:  "tenant_a",
+		Domain:    "acme.example",
+		Enabled:   true,
+		Priority:  0,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert tenant admin domain route: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveByDomain(ctx, "acme.example")
+	if err != nil {
+		t.Fatalf("ResolveByDomain: %v", err)
+	}
+	if result == nil || result.Mode != "multiple" || len(result.Hubs) != 2 {
+		t.Fatalf("expected tenant and global domain routes, got %+v", result)
+	}
+	seen := map[string]bool{}
+	for _, item := range result.Hubs {
+		if item.HubID != hub.ID {
+			t.Fatalf("unexpected hub id: %+v", item)
+		}
+		seen[item.TenantID] = true
+	}
+	if !seen[""] || !seen["tenant_a"] {
+		t.Fatalf("expected global and tenant domain routes, got %+v", result.Hubs)
 	}
 }
 

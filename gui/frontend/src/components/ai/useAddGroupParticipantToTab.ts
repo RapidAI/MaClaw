@@ -1,9 +1,7 @@
 import { useCallback } from "react";
 import type { AITab, AITabState } from "./AITabTypes";
+import { looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 
-function looksLikeRawParticipantId(value: string): boolean {
-    return /^(m_[A-Za-z0-9]+|machine[-_][A-Za-z0-9-]+|ve[-_][A-Za-z0-9-]+|profile[-_][A-Za-z0-9-]+|disc[-_][A-Za-z0-9-]+|discussion[-_][A-Za-z0-9-]+|consultation[-_][A-Za-z0-9-]+|session[-_][A-Za-z0-9-]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(value);
-}
 
 function participantNameFromInput(name: string, participantId: string): string {
     const trimmed = String(name || "").trim();
@@ -11,13 +9,17 @@ function participantNameFromInput(name: string, participantId: string): string {
     return trimmed && trimmed !== id && !looksLikeRawParticipantId(trimmed) ? trimmed : "Digital employee";
 }
 
+
 function participantNameFromTab(tab: AITab): Record<string, string> {
+    const names: Record<string, string> = { ...(tab.participantNames || {}) };
     const id = String(tab.veId || "").trim();
-    const mapped = String(id ? tab.participantNames?.[id] || "" : "").trim();
-    if (id && mapped && mapped !== id && !looksLikeRawParticipantId(mapped)) return { [id]: mapped };
+    const mapped = String(id ? names[id] || "" : "").trim();
+    if (id && mapped && mapped !== id && !looksLikeRawParticipantId(mapped)) return names;
     const title = String(tab.title || "").trim();
-    if (tab.type === "ve" && id && title && title !== id && !looksLikeRawParticipantId(title)) return { [id]: title };
-    return {};
+    if (tab.type === "ve" && id && title && title !== id && !looksLikeRawParticipantId(title)) {
+        return { ...names, [id]: title };
+    }
+    return names;
 }
 
 type UseAddGroupParticipantToTabOptions = {
@@ -31,7 +33,8 @@ export function useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup }
         if (!participantId) return null;
 
         const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-        if (currentParticipants.includes(participantId)) return null;
+        const normalizedParticipantId = normalizeParticipantId(participantId);
+        if (currentParticipants.some((id) => normalizeParticipantId(id) === normalizedParticipantId)) return null;
 
         const nextParticipants = [...currentParticipants, participantId];
         const participantName = participantNameFromInput(veName, participantId);

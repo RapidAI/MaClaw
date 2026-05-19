@@ -72,7 +72,7 @@ func TestHubLLMStatusIncludesPromptCacheRate(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_status", nil)
 	rr := httptest.NewRecorder()
-	HubLLMStatusHandler(func() string { return "healthy" }, settings, hubPromptCacheRepoStub{stats: store.LLMPromptCacheStats{Entries: 2, TotalBytes: 4096, ExpiredEntries: 1, ExpiredBytes: 1024, TotalHits: 7}}).ServeHTTP(rr, req)
+	HubLLMStatusHandler(func(context.Context) string { return "healthy" }, settings, hubPromptCacheRepoStub{stats: store.LLMPromptCacheStats{Entries: 2, TotalBytes: 4096, ExpiredEntries: 1, ExpiredBytes: 1024, TotalHits: 7}}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -154,7 +154,7 @@ func TestHubLLMStatusIncludesMemoryAndDiskCacheStatusFromRuntimeCache(t *testing
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_status", nil)
 	rr := httptest.NewRecorder()
-	HubLLMStatusHandler(func() string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
+	HubLLMStatusHandler(func(context.Context) string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -205,7 +205,7 @@ func TestHubLLMPromptCacheStatusIncludesRuntimeMetrics(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_status", nil)
 	rr := httptest.NewRecorder()
-	HubLLMStatusHandler(func() string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
+	HubLLMStatusHandler(func(context.Context) string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -248,7 +248,7 @@ func TestHubLLMPromptCacheStatusUsesTenantRuntimeMetrics(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_status", nil)
 	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
 	rr := httptest.NewRecorder()
-	HubLLMStatusHandler(func() string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
+	HubLLMStatusHandler(func(context.Context) string { return "healthy" }, settings, cache).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
 	}

@@ -111,6 +111,11 @@ func BtwProactivePromptOptions(projectPath string, header string) ProactivePromp
 	}
 }
 
+// UserFactTemplatePromptOptions returns a localized template-based user fact profile.
+func UserFactTemplatePromptOptions(template string) UserFactSummaryPromptOptions {
+	return UserFactSummaryPromptOptions{Template: template, MaxRunes: defaultUserFactMaxRunes}
+}
+
 // UserInfoPromptOptions returns the standard Chinese user-info summary line.
 func UserInfoPromptOptions(header string) UserFactSummaryPromptOptions {
 	return UserFactSummaryPromptOptions{Header: header, Prefix: "\u7528\u6237\u4fe1\u606f: ", MaxRunes: defaultUserFactMaxRunes}

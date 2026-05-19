@@ -480,6 +480,25 @@ describe("VEConversationView", () => {
             expect(screen.queryByTestId("mention-popover")).toBeNull();
         });
 
+        it("routes localized local AI mention aliases to the local participant", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "ve-a", name: "Agent A", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@本机 AI 请处理" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "@本机 AI 请处理", ["local-maclaw"]);
+        });
+
         it("routes group messages with mentioned participant ids", async () => {
             const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
             const { send } = renderConversation({

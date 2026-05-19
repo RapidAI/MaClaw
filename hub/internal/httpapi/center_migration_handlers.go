@@ -11,7 +11,6 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
-	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 )
 
 type centerMigrationRequest struct {
@@ -141,7 +140,7 @@ func CenterUserMigrationImportHandler(centerSvc *center.Service, identity *auth.
 	}
 }
 
-func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.IdentityService, devices *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner, voiceprintSvc *voiceprint.Service) http.HandlerFunc {
+func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.IdentityService, devices *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req centerMigrationRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -172,13 +171,10 @@ func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.
 				continue
 			}
 			if devices != nil {
-				if _, err := devices.ForceDeleteMachinesByUser(r.Context(), user.ID); err != nil {
+				if _, err := devices.ForceDeleteMachinesByTenantUser(r.Context(), tenantID, user.ID); err != nil {
 					writeError(w, http.StatusInternalServerError, "DELETE_USER_MACHINES_FAILED", err.Error())
 					return
 				}
-			}
-			if voiceprintSvc != nil {
-				_, _ = voiceprintSvc.DeleteByUser(voiceprint.WithTenant(r.Context(), tenantID), user.ID)
 			}
 			if invitationSvc != nil {
 				if _, err := invitationSvc.DeleteCodeByTenantEmail(r.Context(), tenantID, user.Email); err != nil {

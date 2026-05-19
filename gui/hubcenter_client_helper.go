@@ -1,9 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,41 +88,45 @@ func (a *App) getHubCenterJSONFromCandidates(ctx context.Context, client *http.C
 	}
 	var lastErr error
 	for _, base := range bases {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
-		if err != nil {
-			return "", nil, err
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		ok := false
-		func() {
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-				lastErr = fmt.Errorf("request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
-				return
+		for attempt := 0; attempt < 2; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+			if err != nil {
+				return "", nil, err
 			}
-			reader := io.Reader(resp.Body)
-			if limit > 0 {
-				data, err := readLimitedHubCenterBody(resp.Body, limit)
-				if err != nil {
-					lastErr = err
+			resp, err := client.Do(req)
+			if err != nil {
+				lastErr = fmt.Errorf("request hubcenter JSON %s%s failed: %w", base, path, err)
+				continue
+			}
+			ok := false
+			truncated := false
+			func() {
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+					lastErr = fmt.Errorf("request hubcenter JSON %s%s failed (%d): %s", base, path, resp.StatusCode, strings.TrimSpace(string(body)))
 					return
 				}
-				reader = bytes.NewReader(data)
+				data, err := readHubCenterJSONBody(resp.Body, limit)
+				if err != nil {
+					lastErr = fmt.Errorf("read hubcenter JSON %s%s failed: %w", base, path, err)
+					truncated = isUnexpectedEOFError(err)
+					return
+				}
+				if err := json.Unmarshal(data, dest); err != nil {
+					lastErr = fmt.Errorf("decode hubcenter JSON %s%s failed after %d bytes: %w", base, path, len(data), err)
+					truncated = isUnexpectedEOFError(err)
+					return
+				}
+				ok = true
+			}()
+			if ok {
+				a.rememberHubCenterSelection(base, bases)
+				return base, bases, nil
 			}
-			if err := json.NewDecoder(reader).Decode(dest); err != nil {
-				lastErr = err
-				return
+			if !truncated || attempt == 1 {
+				break
 			}
-			ok = true
-		}()
-		if ok {
-			a.rememberHubCenterSelection(base, bases)
-			return base, bases, nil
 		}
 	}
 	if lastErr != nil {
@@ -183,4 +187,19 @@ func readLimitedHubCenterBody(body io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("hubcenter response exceeds %d bytes", limit)
 	}
 	return data, nil
+}
+
+func readHubCenterJSONBody(body io.Reader, limit int64) ([]byte, error) {
+	if limit > 0 {
+		return readLimitedHubCenterBody(body, limit)
+	}
+	return io.ReadAll(body)
+}
+
+func isUnexpectedEOFError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(msg, "unexpected eof") || strings.Contains(msg, "unexpected end of json")
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 type groupDiscussionMachineSender interface {
@@ -607,14 +608,17 @@ func parseHubInviteAction(path string) (string, string) {
 
 func requestGroupDiscussionTenantID(r *http.Request) string {
 	if r == nil {
-		return "default"
+		return store.DefaultTenantID
 	}
-	for _, key := range []string{"X-Tenant-ID", "X-Hub-Tenant-ID"} {
+	for _, key := range []string{"X-Hub-Tenant-ID", "X-Tenant-ID"} {
 		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
-			return value
+			return store.NormalizeTenantID(value)
 		}
 	}
-	return "default"
+	if tenantID := RequestTenantID(r); strings.TrimSpace(tenantID) != "" {
+		return store.NormalizeTenantID(tenantID)
+	}
+	return store.DefaultTenantID
 }
 
 func persistedGroupDiscussionMessage(session *corea2a.Session, fallback corea2a.GroupDiscussionMessage) corea2a.GroupDiscussionMessage {
@@ -626,6 +630,7 @@ func persistedGroupDiscussionMessage(session *corea2a.Session, fallback corea2a.
 		ID:               last.ID,
 		SessionID:        firstNonEmptyGroupStatus(last.SessionID, session.ID),
 		FromID:           last.FromID,
+		ToIDs:            append([]string(nil), last.ToIDs...),
 		Kind:             last.Kind,
 		Content:          last.Content,
 		TextAttachments:  last.TextAttachments,
@@ -643,10 +648,21 @@ func (h *GroupDiscussionHandler) notifyDiscussionMessage(session *corea2a.Sessio
 	if msg.SessionID == "" {
 		msg.SessionID = session.ID
 	}
+	targetFilter := map[string]struct{}{}
+	for _, id := range msg.ToIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			targetFilter[strings.ToLower(id)] = struct{}{}
+		}
+	}
 	for _, participant := range session.Participants {
 		targetID := strings.TrimSpace(participant.ID)
 		if targetID == "" || strings.EqualFold(targetID, fromID) {
 			continue
+		}
+		if len(targetFilter) > 0 {
+			if _, ok := targetFilter[strings.ToLower(targetID)]; !ok {
+				continue
+			}
 		}
 		envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, fromID, time.Now().UTC())
 		envelope.SessionID = session.ID

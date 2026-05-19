@@ -125,6 +125,7 @@ type App struct {
 	aiConfirmationStore        *aiConfirmationStore
 	swarmOrchestrator          *swarm.SwarmOrchestrator
 	memoryCompressor           *MemoryCompressor
+	memoryMaintenance          *memory.Maintenance
 	memPipeline                *memory.Pipeline
 	memoryPipelineDebounce     time.Duration
 	compressorMu               sync.Mutex // guards lazy creation of memoryCompressor
@@ -142,7 +143,7 @@ type App struct {
 	capabilitySyncNextAttempt  atomic.Value // stores time.Time; throttles heartbeat-triggered managed sync retries
 	hubMarketplaceUnsupported  atomic.Bool  // capability discovery: hub doesn't have marketplace API
 	hubMarketplace404URL       atomic.Value // stores the hub URL (string) that returned 404
-	managedDeploymentIDs       sync.Map     // capability_ref (string) → true; cached from last sync
+	managedDeploymentIDs       sync.Map     // capability_ref (string) -> true; cached from last sync
 	contextBridge              *ContextBridge
 	aiTrace                    *AITraceService
 	taskOrchestrator2          *TaskOrchestrator2
@@ -199,14 +200,14 @@ type App struct {
 	// Project Tab session persistence (disk-backed session read/write + cleanup).
 	projectTabSessionPersist *ProjectTabSessionPersist
 
-	// tabProjectPaths caches tabID → projectPath mappings in memory to avoid
+	// tabProjectPaths caches tabID -> projectPath mappings in memory to avoid
 	// unnecessary disk reads in SendMessageForTab. Populated in CreateProjectTabSession.
 	tabProjectPaths sync.Map
 
-	// Sticky VE session caches: (veID → sessionID) and (sorted participant key → sessionID).
+	// Sticky VE session caches: (veID -> sessionID) and (sorted participant key -> sessionID).
 	// Ensures conversations with the same VE/group always reuse the same session unless archived.
-	veSessionCache    sync.Map // string → string
-	groupSessionCache sync.Map // string → string
+	veSessionCache    sync.Map // string -> string
+	groupSessionCache sync.Map // string -> string
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -340,7 +341,7 @@ func (a *App) initCoreInfra() {
 	// Wire skill-aware routing: when skillExecutor is available, connect it
 	// to the toolRouter so that Route() can match user messages against
 	// installed skills and enrich the manage_skill tool description with
-	// "可用 Skill: xh-md-to-pdf" hints. Without this wiring, skillMatchScore
+	// "Available Skill: xh-md-to-pdf" hints. Without this wiring, skillMatchScore
 	// always returns 0 and the LLM never gets skill-specific routing hints.
 	if a.toolRouter != nil && a.skillExecutor != nil {
 		a.toolRouter.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
@@ -461,14 +462,14 @@ func (a *App) ensureMemoryStore() {
 	a.ensureAITrace()
 	a.logMemorySnapshot("ensureMemoryStore:start")
 	baseDir := a.getMaclawBaseDir()
-	memPath := filepath.Join(baseDir, "memories.json")
-	ms, err := memory.NewStoreWithMode(baseDir, memory.StoreModeSQLite)
+	memPath := filepath.Join(memory.DataDirStoreDir(baseDir), "memories.json")
+	ms, err := memory.OpenDataDirStore(baseDir, memory.StoreModeSQLite)
 	if err != nil {
 		fmt.Printf("[ensureMemoryStore] WARNING: failed to load SQLite memory store from %s: %v\n", baseDir, err)
 		backupPath := memPath + ".bad." + time.Now().Format("20060102_150405")
 		_ = os.Rename(memPath, backupPath)
 		fmt.Printf("[ensureMemoryStore] renamed problematic legacy file to %s, retrying JSON mode\n", backupPath)
-		ms, err = memory.NewStoreWithMode(baseDir, memory.StoreModeJSON)
+		ms, err = memory.OpenDataDirStore(baseDir, memory.StoreModeJSON)
 		if err != nil {
 			fmt.Printf("[ensureMemoryStore] ERROR: memory store still failed after retry: %v\n", err)
 		}
@@ -488,27 +489,18 @@ func (a *App) ensureMemoryStore() {
 				a.triggerMemoryPipelineSoon(a.projectIndexMemoryDebounce())
 			}
 		}
-		// Wire up all pipeline components. LLM-dependent components (synthesizer,
-		// consolidator) gracefully skip when LLM is nil/unconfigured.
-		// Step 0 (decay/dormant marking) always runs regardless.
-		compressor := memory.NewCompressor(ms, nil, nil)
-		a.memPipeline = memory.NewPipeline(ms, compressor, nil, nil, nil)
-		// Attach combined Promoter+Reflector as Synthesizer.
-		synthesizer := memory.NewSynthesizer(ms, nil)
-		a.memPipeline.SetSynthesizer(synthesizer)
-		// Attach TiMem consolidators.
-		consolidator := memory.NewConsolidator(ms, ms.TMT(), nil)
-		profiler := memory.NewProfileConsolidator(ms, ms.TMT(), nil)
-		a.memPipeline.SetConsolidator(consolidator, profiler)
-		// Attach TiMem recall gating for post-retrieval LLM filtering.
-		ms.SetRecallGating(memory.NewRecallGating(nil))
-		a.memPipeline.Start()
-		// Wire up Mem0-style online incremental extraction pipeline.
-		// The LLM caller is nil at this point (configured later when LLM
-		// config is available). The OnlineExtractor gracefully skips when
-		// LLM is nil/unconfigured.
-		onlineExtractor := memory.NewOnlineExtractor(ms, nil)
-		ms.SetOnlineExtractor(onlineExtractor)
+		// Corelib owns the memory maintenance topology: compressor, pipeline,
+		// synthesizer, TiMem consolidators, recall gating, and online extraction.
+		maintenance := memory.NewMaintenance(ms, nil, guiMemoryEventEmitter{app: a})
+		maintenance.InstallRuntime()
+		a.memoryMaintenance = maintenance
+		compressor := maintenance.Compressor()
+		a.configureMemoryCompressor(compressor)
+		a.compressorMu.Lock()
+		a.memoryCompressor = compressor
+		a.compressorMu.Unlock()
+		a.memPipeline = maintenance.Pipeline()
+		maintenance.Start()
 		a.refreshMemoryEvolutionLLM()
 		// Load embedding model asynchronously so it doesn't block the first
 		// AI assistant message. Vector search will become available once
@@ -681,17 +673,28 @@ func (a *App) refreshMemoryEvolutionLLM() {
 	if a.memoryStore == nil || !a.isMaclawLLMConfigured() {
 		return
 	}
-	caller := &archiverLLMCaller{app: a}
-	a.memoryStore.SetLLMDedup(caller)
-	if oe := a.memoryStore.OnlineExtractor(); oe != nil {
-		oe.SetLLM(caller)
+	if a.memoryMaintenance == nil {
+		a.memoryMaintenance = memory.NewMaintenance(a.memoryStore, nil, guiMemoryEventEmitter{app: a})
+		a.memoryMaintenance.InstallRuntime()
+		if a.memPipeline == nil {
+			a.memPipeline = a.memoryMaintenance.Pipeline()
+		}
+		if compressor := a.memoryMaintenance.Compressor(); compressor != nil {
+			a.configureMemoryCompressor(compressor)
+			var oldCompressor *MemoryCompressor
+			a.compressorMu.Lock()
+			if a.memoryCompressor != compressor {
+				oldCompressor = a.memoryCompressor
+				a.memoryCompressor = compressor
+			}
+			a.compressorMu.Unlock()
+			if oldCompressor != nil {
+				oldCompressor.Stop()
+			}
+		}
 	}
-	if a.memPipeline != nil {
-		a.memPipeline.SetLLM(caller)
-	}
-	if gating := memory.NewRecallGating(caller); gating != nil {
-		a.memoryStore.SetRecallGating(gating)
-	}
+	a.memoryMaintenance.SetLLM(&archiverLLMCaller{app: a})
+	a.memoryMaintenance.Start()
 }
 
 func (a *App) ensureExperienceExtractor() {
@@ -791,7 +794,7 @@ func (a *App) buildTrajectoryRecorderFactory() func() *TrajectoryRecorder {
 		if err != nil || !cfg.LLMTrajectoryLogging {
 			return nil
 		}
-		recorder := NewTrajectoryRecorder()
+		recorder := NewTrajectoryRecorderForBaseDir(a.getMaclawBaseDir())
 		recorder.SetPipeline(a.buildSkillAutoSummaryPipeline())
 		return recorder
 	}
@@ -1469,8 +1472,10 @@ func (a *App) startup(ctx context.Context) {
 		a.refreshWorkstationMode(config)
 		// Auto-start memory compression service if enabled in config.
 		if config.MemoryAutoCompress && a.memoryStore != nil {
-			mc := a.getOrCreateCompressor()
-			mc.Start()
+			_ = a.getOrCreateCompressor()
+			if a.memoryMaintenance != nil {
+				_ = a.memoryMaintenance.StartCompressor()
+			}
 		}
 		// Auto-start local MCP servers that are enabled for app launch.
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
@@ -1656,8 +1661,18 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.aiConfirmationStore != nil {
 		a.aiConfirmationStore.stop()
 	}
-	if a.memPipeline != nil {
-		a.memPipeline.Stop()
+	if a.memoryMaintenance != nil {
+		a.memoryMaintenance.Stop()
+	} else {
+		if a.memPipeline != nil {
+			a.memPipeline.Stop()
+		}
+		a.compressorMu.Lock()
+		memoryCompressor := a.memoryCompressor
+		a.compressorMu.Unlock()
+		if memoryCompressor != nil {
+			memoryCompressor.Stop()
+		}
 	}
 	if a.memoryStore != nil {
 		a.memoryStore.Stop()
@@ -1677,9 +1692,6 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.ohModules.eventBus != nil {
 		a.ohModules.eventBus.Close()
-	}
-	if a.memoryCompressor != nil {
-		a.memoryCompressor.Stop()
 	}
 	if a.scheduledTaskManager != nil {
 		a.scheduledTaskManager.Stop() // cancels ticker + all in-flight executor goroutines

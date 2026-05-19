@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HistoryGroupDiscussionTab } from "../HistoryGroupDiscussionTab";
@@ -102,6 +102,115 @@ describe("HistoryGroupDiscussionTab", () => {
 
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
         expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({ content: "continue", kind: "statement" }));
+    });
+
+    it("sends history @mentions as targeted messages", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "ve-a", name: "Contract Bot" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...");
+        fireEvent.change(input, { target: { value: "@Contract Bot please continue" } });
+        fireEvent.click(screen.getByText("Send"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({
+            content: "@Contract Bot please continue",
+            to_ids: ["ve-a"],
+        }));
+    });
+
+    it("routes localized local AI mentions in history messages", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "machine-1"] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "machine-1", name: "Local AI" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="zh-CN" />);
+
+        const input = await screen.findByPlaceholderText("\u7ee7\u7eed\u8ba8\u8bba...");
+        fireEvent.change(input, { target: { value: "@\u672c\u673a AI \u8bf7\u5904\u7406" } });
+        fireEvent.click(screen.getByText("\u53d1\u9001"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({
+            content: "@\u672c\u673a AI \u8bf7\u5904\u7406",
+            to_ids: ["machine-1"],
+        }));
+    });
+
+    it("routes normalized local AI ids in history messages", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", " LOCAL-MACLAW "] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: " LOCAL-MACLAW ", name: "Local AI" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="zh-CN" />);
+
+        const input = await screen.findByPlaceholderText("\u7ee7\u7eed\u8ba8\u8bba...");
+        fireEvent.change(input, { target: { value: "@\u672c\u673a AI \u8bf7\u5904\u7406" } });
+        fireEvent.click(screen.getByText("\u53d1\u9001"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({
+            to_ids: ["LOCAL-MACLAW"],
+        }));
+    });
+
+    it("keeps the composer inside the chat column beside the participant panel", async () => {
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        await screen.findByPlaceholderText("Continue discussion...");
+        const mainColumn = screen.getByTestId("history-group-main-column");
+        const composer = screen.getByTestId("history-group-composer-row");
+        const chatView = screen.getByTestId("ve-group-chat-view");
+
+        expect(mainColumn.contains(composer)).toBe(true);
+        expect((chatView as HTMLElement).style.flex).toBe("1 1 0%");
+        expect((chatView as HTMLElement).style.minHeight).toBe("0px");
+    });
+
+    it("aligns the initiator on the right and other history participants on the left", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["human-a", "ve-a", "local-maclaw"] },
+            session: { participants: [
+                { id: "human-a", name: "Alice", role_code: "initiator" },
+                { id: "ve-a", name: "Contract Bot", role_code: "speak" },
+                { id: "local-maclaw", name: "Local AI", role_code: "speak" },
+            ] },
+            messages: [
+                { id: "m1", from_id: "human-a", from_name: "Alice", content: "hello", created_at: "2026-01-01T00:00:00Z" },
+                { id: "m2", from_id: "ve-a", from_name: "Contract Bot", content: "reviewed", created_at: "2026-01-01T00:00:01Z" },
+                { id: "m3", from_id: "local-maclaw", from_name: "Local AI", content: "noted", created_at: "2026-01-01T00:00:02Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        await screen.findByText("hello");
+
+        expect((screen.getByTestId("group-msg-m1") as HTMLElement).style.alignItems).toBe("flex-end");
+        expect((screen.getByTestId("group-msg-m2") as HTMLElement).style.alignItems).toBe("flex-start");
+        expect((screen.getByTestId("group-msg-m3") as HTMLElement).style.alignItems).toBe("flex-start");
+    });
+
+    it("keeps invited history sessions left-aligned even when a sender id is me", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "owned_ve_invited", readonly: true, participant_ids: ["me", "human-a"] },
+            session: { participants: [
+                { id: "me", name: "Local Digital Employee", role_code: "speak" },
+                { id: "human-a", name: "Alice", role_code: "initiator" },
+            ] },
+            messages: [
+                { id: "m-local-ve", from_id: "me", from_name: "Local Digital Employee", content: "reviewed", created_at: "2026-01-01T00:00:00Z" },
+                { id: "m-initiator", from_id: "human-a", from_name: "Alice", content: "please review", created_at: "2026-01-01T00:00:01Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Read only" readOnly={true} theme={theme} lang="en" />);
+
+        await screen.findByText("reviewed");
+
+        expect((screen.getByTestId("group-msg-m-local-ve") as HTMLElement).style.alignItems).toBe("flex-start");
+        expect((screen.getByTestId("group-msg-m-initiator") as HTMLElement).style.alignItems).toBe("flex-start");
     });
 
     it("opens already downloaded attachments without downloading again", async () => {

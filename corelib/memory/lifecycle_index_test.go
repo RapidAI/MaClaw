@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -420,6 +421,40 @@ func TestProfileUpdateRebuildsTemporalTree(t *testing.T) {
 	}
 }
 
+func TestProfileUpdateStoresEvidenceBoundary(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	evidence := []Entry{
+		{ID: "week-1", Content: "weekly summary", Category: CategoryConversationSummary, Level: LevelWeek, OwnerID: "owner-1", SourceType: "summary", Status: StatusActive},
+		{ID: "insight-1", Content: "prefers concise replies", Category: CategoryPreference, Tags: []string{"reflection"}, OwnerID: "owner-1", SourceType: "schema_consolidation", Status: StatusActive},
+	}
+	pc := NewProfileConsolidator(store, store.TMT(), nil)
+	if err := pc.upsertProfile("new profile", "owner-1", evidence); err != nil {
+		t.Fatal(err)
+	}
+	entries := store.List(CategoryProfile, "new profile")
+	if len(entries) != 1 {
+		t.Fatalf("expected profile entry, got %+v", entries)
+	}
+	got := entries[0]
+	if got.DerivedKind != "profile" || got.SourceType != "profile_consolidation" {
+		t.Fatalf("missing profile metadata: %+v", got)
+	}
+	if got.Level != LevelProfile || got.Interval == nil {
+		t.Fatalf("profile should keep temporal profile metadata: level=%v interval=%+v", got.Level, got.Interval)
+	}
+	if strings.Join(got.EvidenceIDs, ",") != "week-1,insight-1" {
+		t.Fatalf("unexpected evidence ids: %+v", got.EvidenceIDs)
+	}
+	if got.Boundary == nil || got.Boundary.OwnerID != "owner-1" {
+		t.Fatalf("unexpected boundary: %+v", got.Boundary)
+	}
+}
+
 func TestSetEntriesNormalizesMissingTimestamps(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
 	if err != nil {
@@ -445,5 +480,43 @@ func TestSetEntriesNormalizesMissingTimestamps(t *testing.T) {
 	asOfBefore := updated.Add(-time.Nanosecond)
 	if hits := store.SemanticGraph().SearchWithOptions([]string{"alpha"}, SemanticSearchOptions{Now: asOfBefore, AsOf: &asOfBefore, TemporalMode: SemanticTemporalAsOf}); len(hits) != 0 {
 		t.Fatalf("normalized created timestamp should keep future facts out of as-of recall, got %+v", hits)
+	}
+}
+
+func TestProfileConsolidatorGateSkipsSingleEvidence(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{
+		ID:         "week-1",
+		Content:    "single weekly summary should not form a durable profile yet",
+		Category:   CategoryConversationSummary,
+		Level:      LevelWeek,
+		OwnerID:    "owner-1",
+		SourceType: "summary",
+		Status:     StatusActive,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	llm := &recordingExperienceProtectionLLM{response: "profile text"}
+	pc := NewProfileConsolidator(store, store.TMT(), llm)
+	result, err := pc.ConsolidateForOwner(context.Background(), "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NodesCreated != 0 {
+		t.Fatalf("NodesCreated = %d, want 0", result.NodesCreated)
+	}
+	if len(llm.messages) != 0 {
+		t.Fatalf("profile LLM was called despite insufficient evidence: %+v", llm.messages)
+	}
+	if entries := store.List(CategoryProfile, "profile text"); len(entries) != 0 {
+		t.Fatalf("unexpected profile entry: %+v", entries)
 	}
 }

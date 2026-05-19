@@ -160,15 +160,21 @@ func (a *App) startAutoFetchEngine() {
 			return nil
 		}
 		for _, item := range items {
-			entry := memory.Entry{
-				Content:    item.Title + "\n\n" + item.Content,
-				Title:      item.Title,
-				Category:   "project_knowledge",
-				Tags:       append(item.Tags, "auto_fetch", item.Source),
-				SourceURL:  item.URL,
-				SourceType: item.Source,
+			tags := append(append([]string{}, item.Tags...), "auto_fetch", item.Source)
+			identityTagCount := len(tags)
+			if strings.TrimSpace(item.URL) != "" {
+				tags = append(tags, "url:"+strings.TrimSpace(item.URL))
+				identityTagCount = 3
 			}
-			_ = a.memoryStore.Save(entry)
+			_, _ = a.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+				Title:            item.Title,
+				Content:          item.Title + "\n\n" + item.Content,
+				Tags:             tags,
+				IdentityTagCount: identityTagCount,
+				Scope:            memory.ScopeProject,
+				SourceType:       item.Source,
+				SourceURL:        item.URL,
+			})
 		}
 		return nil
 	}

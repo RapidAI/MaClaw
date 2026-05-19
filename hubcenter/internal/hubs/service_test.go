@@ -163,6 +163,94 @@ func TestSyncHubUserLinkIsTenantScoped(t *testing.T) {
 	}
 }
 
+func TestSyncHubUserLinkTenantAdminRouteOnlySuppressesSameTenant(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	hubA := &store.HubInstance{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", HubSecretHash: hashToken("secret-a"), CreatedAt: now, UpdatedAt: now}
+	hubB := &store.HubInstance{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", HubSecretHash: hashToken("secret-b"), CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{hubA, hubB} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: adminUserLinkIDForTenant("tenant_a", "same@example.com"), HubID: hubA.ID, TenantID: "tenant_a", Email: "same@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant admin link: %v", err)
+	}
+
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "same@example.com", true, "tenant_b"); err != nil {
+		t.Fatalf("SyncHubUserLink tenant_b: %v", err)
+	}
+	items, err := st.HubUserLinks.ListByEmail(ctx, "same@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	byTenant := map[string]string{}
+	for _, item := range items {
+		byTenant[item.TenantID] = item.HubID
+	}
+	if byTenant["tenant_a"] != hubA.ID || byTenant["tenant_b"] != hubB.ID {
+		t.Fatalf("tenant_a admin link should not suppress tenant_b sync, got %+v", items)
+	}
+
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "same@example.com", true, "tenant_a"); err != nil {
+		t.Fatalf("SyncHubUserLink tenant_a: %v", err)
+	}
+	items, err = st.HubUserLinks.ListByEmail(ctx, "same@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail after tenant_a sync: %v", err)
+	}
+	byTenant = map[string]string{}
+	for _, item := range items {
+		byTenant[item.TenantID] = item.HubID
+	}
+	if byTenant["tenant_a"] != hubA.ID || byTenant["tenant_b"] != hubB.ID || len(items) != 2 {
+		t.Fatalf("same-tenant admin link should suppress tenant_a user sync only, got %+v", items)
+	}
+}
+
+func TestHeartbeatTenantInventoryAdminRouteOnlySuppressesSameTenant(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_inventory", OwnerEmail: "owner@example.com", Name: "Inventory Hub", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: adminUserLinkIDForTenant("tenant_a", "same@example.com"), HubID: hub.ID, TenantID: "tenant_a", Email: "same@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant admin link: %v", err)
+	}
+
+	caps := map[string]any{
+		"tenant_user_emails": map[string]any{
+			"tenant_a": []any{"same@example.com"},
+			"tenant_b": []any{"same@example.com"},
+		},
+	}
+	if err := svc.syncHubTenantUserEmailInventory(ctx, hub.ID, tenantUserEmailCapabilityMap(caps), now); err != nil {
+		t.Fatalf("sync tenant inventory: %v", err)
+	}
+	items, err := st.HubUserLinks.ListByEmail(ctx, "same@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	byTenant := map[string]string{}
+	for _, item := range items {
+		byTenant[item.TenantID] = item.ID
+	}
+	if byTenant["tenant_a"] != adminUserLinkIDForTenant("tenant_a", "same@example.com") {
+		t.Fatalf("tenant_a admin link should remain authoritative, got %+v", items)
+	}
+	if byTenant["tenant_b"] != primaryUserLinkIDForTenant(hub.ID, "tenant_b", "same@example.com") {
+		t.Fatalf("tenant_a admin link should not suppress tenant_b inventory, got %+v", items)
+	}
+}
+
 func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
@@ -466,6 +554,21 @@ func TestMigrateUserCanTargetOneTenantForSameEmail(t *testing.T) {
 	}
 	if seen["tenant_a"] != "hub_b" || seen["tenant_b"] != "hub_a" {
 		t.Fatalf("expected tenant_a migrated and tenant_b preserved, got %+v", resolved.Hubs)
+	}
+}
+
+func TestMigrateUserRejectsTenantScopedPattern(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.Hubs.Create(ctx, &store.HubInstance{ID: "hub_target", OwnerEmail: "owner@example.com", Name: "Hub Target", BaseURL: "https://target.example.com", Status: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create hub target: %v", err)
+	}
+
+	if _, err := svc.MigrateUser(ctx, MigrateUserRequest{Email: "*@example.com", TenantID: "tenant_a", ToHubID: "hub_target"}); err == nil || !strings.Contains(err.Error(), "exact email") {
+		t.Fatalf("expected tenant-scoped pattern rejection, got %v", err)
 	}
 }
 

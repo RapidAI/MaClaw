@@ -10,6 +10,7 @@ const DefaultAuditPageSize = 100
 
 // AuditEntry represents a single immutable audit record.
 type AuditEntry struct {
+	TenantID    string    `json:"tenant_id,omitempty"`
 	ID          string    `json:"id"`
 	InstanceID  string    `json:"instance_id"`
 	NodeID      string    `json:"node_id,omitempty"`
@@ -23,7 +24,7 @@ type AuditEntry struct {
 }
 
 // AuditStore provides append-only access to audit records.
-// There are no Update or Delete methods — the audit trail is immutable.
+// There are no Update or Delete methods; the audit trail is immutable.
 type AuditStore interface {
 	// Append writes a new audit entry. Entries cannot be modified or deleted.
 	// If the entry's Timestamp is zero, it is set to the current UTC time

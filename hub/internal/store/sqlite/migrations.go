@@ -218,21 +218,9 @@ func RunMigrations(db *sql.DB) error {
 
 		`CREATE INDEX IF NOT EXISTS idx_gossip_comments_post_id ON gossip_comments(post_id);`,
 
-		`CREATE TABLE IF NOT EXISTS voiceprints (
-			id TEXT PRIMARY KEY,
-			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
-			user_id TEXT NOT NULL,
-			email TEXT NOT NULL,
-			label TEXT NOT NULL DEFAULT '',
-			embedding BLOB NOT NULL,
-			created_at TEXT NOT NULL
-		);`,
-
-		`CREATE INDEX IF NOT EXISTS idx_voiceprints_user_id ON voiceprints(user_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_voiceprints_tenant_user_id ON voiceprints(tenant_id, user_id);`,
-
 		`CREATE TABLE IF NOT EXISTS content_audit_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			user_id TEXT NOT NULL,
 			platform TEXT NOT NULL,
@@ -245,6 +233,7 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 
 		`CREATE INDEX IF NOT EXISTS idx_content_audit_logs_timestamp ON content_audit_logs(timestamp);`,
+		`CREATE INDEX IF NOT EXISTS idx_content_audit_logs_tenant_timestamp ON content_audit_logs(tenant_id, timestamp);`,
 		`CREATE INDEX IF NOT EXISTS idx_content_audit_logs_user_id ON content_audit_logs(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_content_audit_logs_return_code ON content_audit_logs(return_code);`,
 
@@ -554,13 +543,15 @@ func RunMigrations(db *sql.DB) error {
 		// Workflow definitions (owned by users)
 		`CREATE TABLE IF NOT EXISTS workflow_definitions (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			owner_id TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')) ,
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_def_owner ON workflow_definitions(owner_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_def_tenant_owner ON workflow_definitions(tenant_id, owner_id);`,
 
 		// Workflow versions (revisions of a definition)
 		`CREATE TABLE IF NOT EXISTS workflow_versions (
@@ -584,6 +575,7 @@ func RunMigrations(db *sql.DB) error {
 		// Workflow instances (running executions)
 		`CREATE TABLE IF NOT EXISTS workflow_instances (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			workflow_id TEXT NOT NULL,
 			version_id TEXT NOT NULL REFERENCES workflow_versions(id),
 			status TEXT NOT NULL DEFAULT 'running',
@@ -595,6 +587,7 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_wf_inst_status ON workflow_instances(status);`,
 		`CREATE INDEX IF NOT EXISTS idx_wf_inst_workflow ON workflow_instances(workflow_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_wf_inst_tenant_status ON workflow_instances(tenant_id, status);`,
 
 		// Node executions within an instance
 		`CREATE TABLE IF NOT EXISTS node_executions (
@@ -613,6 +606,7 @@ func RunMigrations(db *sql.DB) error {
 		// Audit trail (append-only, immutable)
 		`CREATE TABLE IF NOT EXISTS approval_audit_trail (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			instance_id TEXT NOT NULL,
 			node_id TEXT NOT NULL DEFAULT '',
 			event_type TEXT NOT NULL,
@@ -625,6 +619,7 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_instance ON approval_audit_trail(instance_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_actor ON approval_audit_trail(actor_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_tenant_instance ON approval_audit_trail(tenant_id, instance_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON approval_audit_trail(timestamp);`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_decision ON approval_audit_trail(decision);`,
 
@@ -646,6 +641,7 @@ func RunMigrations(db *sql.DB) error {
 		// Confirmation tracking table (post-completion executor/notifier confirmations)
 		`CREATE TABLE IF NOT EXISTS confirmations (
 			id                      TEXT PRIMARY KEY,
+			tenant_id               TEXT NOT NULL DEFAULT 'tenant_default',
 			instance_id             TEXT NOT NULL REFERENCES workflow_instances(id),
 			recipient_id            TEXT NOT NULL,
 			type                    TEXT NOT NULL,
@@ -662,6 +658,7 @@ func RunMigrations(db *sql.DB) error {
 			created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_confirm_instance ON confirmations(instance_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_confirm_tenant_pending ON confirmations(tenant_id, status, recipient_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_confirm_recipient ON confirmations(recipient_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_confirm_status ON confirmations(status);`,
 		`CREATE INDEX IF NOT EXISTS idx_confirm_pending ON confirmations(status, recipient_id) WHERE status = 'pending';`,
@@ -689,7 +686,6 @@ func RunMigrations(db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
 		`ALTER TABLE admin_audit_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE failure_event_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
-		`ALTER TABLE voiceprints ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
 		`ALTER TABLE content_audit_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
 		`ALTER TABLE capabilities ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
 		`ALTER TABLE capability_versions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
@@ -717,9 +713,16 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN exported INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_tenant_created_at ON admin_audit_logs(tenant_id, created_at DESC)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_content_audit_logs_tenant_timestamp ON content_audit_logs(tenant_id, timestamp)`)
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN smart_route INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN vip INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE node_executions ADD COLUMN node_type TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE workflow_instances ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
+	alterStmts = append(alterStmts, `ALTER TABLE approval_audit_trail ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
+	alterStmts = append(alterStmts, `ALTER TABLE confirmations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_wf_inst_tenant_status ON workflow_instances(tenant_id, status)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_audit_tenant_instance ON approval_audit_trail(tenant_id, instance_id)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_confirm_tenant_pending ON confirmations(tenant_id, status, recipient_id)`)
 	alterStmts = append(alterStmts, `ALTER TABLE understanding_sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
 	alterStmts = append(alterStmts, `ALTER TABLE workflow_states ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_understanding_sessions_tenant_user_state ON understanding_sessions(tenant_id, user_id, state)`)
@@ -745,9 +748,6 @@ func RunMigrations(db *sql.DB) error {
 	}
 	if err := migrateTenantScopedUserIndexes(db); err != nil {
 		return err
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_voiceprints_tenant_user_id ON voiceprints(tenant_id, user_id)`); err != nil {
-		return fmt.Errorf("create voiceprint tenant index: %w", err)
 	}
 
 	return nil

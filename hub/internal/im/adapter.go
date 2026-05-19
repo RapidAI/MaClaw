@@ -78,6 +78,7 @@ const MaxAttachmentSize = 10 * 1024 * 1024
 
 // IncomingMessage represents a standardized inbound message from any IM platform.
 type IncomingMessage struct {
+	TenantID      string              `json:"tenant_id,omitempty"`   // Hub tenant hint for multi-tenant webhook adapters
 	PlatformName  string              `json:"platform_name"`         // IM platform name (e.g. "feishu", "qbot")
 	PlatformUID   string              `json:"platform_uid"`          // Platform-specific user ID (e.g. Feishu open_id)
 	UnifiedUserID string              `json:"unified_user_id"`       // Unified internal user ID (populated by IM Adapter)

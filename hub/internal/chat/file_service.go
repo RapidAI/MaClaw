@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -24,6 +25,10 @@ func NewFileService(store *Store, dataDir string) *FileService {
 
 // Upload stores a file and returns its metadata.
 func (s *FileService) Upload(uploaderID, channelID, filename, mimeType string, size int64, reader io.Reader) (*FileRecord, error) {
+	tenantID := store.DefaultTenantID
+	if ch, err := s.store.GetChannel(channelID); err == nil && ch != nil {
+		tenantID = store.NormalizeTenantID(ch.TenantID)
+	}
 	id := uuid.NewString()
 	ext := filepath.Ext(filename)
 	diskName := id + ext
@@ -40,6 +45,7 @@ func (s *FileService) Upload(uploaderID, channelID, filename, mimeType string, s
 
 	rec := &FileRecord{
 		ID:         id,
+		TenantID:   tenantID,
 		UploaderID: uploaderID,
 		ChannelID:  channelID,
 		Filename:   filename,
@@ -49,9 +55,9 @@ func (s *FileService) Upload(uploaderID, channelID, filename, mimeType string, s
 	}
 
 	_, err = s.store.db.Exec(
-		`INSERT INTO chat_files (id, uploader_id, channel_id, filename, mime_type, size, has_thumb, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-		rec.ID, rec.UploaderID, rec.ChannelID, rec.Filename, rec.MimeType, rec.Size, rec.CreatedAt.UnixMilli(),
+		`INSERT INTO chat_files (id, tenant_id, uploader_id, channel_id, filename, mime_type, size, has_thumb, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		rec.ID, rec.TenantID, rec.UploaderID, rec.ChannelID, rec.Filename, rec.MimeType, rec.Size, rec.CreatedAt.UnixMilli(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert file record: %w", err)
@@ -70,9 +76,9 @@ func (s *FileService) GetFileRecord(fileID string) (*FileRecord, error) {
 	var rec FileRecord
 	var createdAt int64
 	err := s.store.db.QueryRow(
-		`SELECT id, uploader_id, channel_id, filename, mime_type, size, has_thumb, created_at
+		`SELECT id, tenant_id, uploader_id, channel_id, filename, mime_type, size, has_thumb, created_at
 		 FROM chat_files WHERE id = ?`, fileID,
-	).Scan(&rec.ID, &rec.UploaderID, &rec.ChannelID, &rec.Filename, &rec.MimeType, &rec.Size, &rec.HasThumb, &createdAt)
+	).Scan(&rec.ID, &rec.TenantID, &rec.UploaderID, &rec.ChannelID, &rec.Filename, &rec.MimeType, &rec.Size, &rec.HasThumb, &createdAt)
 	if err != nil {
 		return nil, err
 	}

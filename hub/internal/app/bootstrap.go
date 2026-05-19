@@ -28,7 +28,6 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
-	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
@@ -120,8 +119,10 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	// Hub LLM Coordinator 闂?sits between Adapter and MessageRouter.
 	// Provides seamless smart mode when Hub LLM is configured.
-	llmConfigProvider := func() *im.HubLLMConfig {
-		raw, err := st.System.Get(context.Background(), "hub_llm_config")
+	llmConfigProvider := func(ctx context.Context) *im.HubLLMConfig {
+		tenantID := im.TenantIDFromContext(ctx)
+		system := scopedSystemSettingsForTenant(tenantID, st.System)
+		raw, err := system.Get(context.Background(), "hub_llm_config")
 		if err != nil || raw == "" {
 			return nil
 		}
@@ -218,8 +219,15 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	// 7. OpenClaw IM Webhook Plugin 闂?enables external IM adapters to
 	//     communicate with Hub via the OpenClaw IM protocol.
-	openclawIMPlugin := im.NewWebhookIMPlugin("openclaw", func() im.WebhookConfig {
-		raw, err := st.System.Get(context.Background(), "openclaw_im_config")
+	openclawIMPlugin := im.NewWebhookIMPlugin("openclaw", func(ctx context.Context) im.WebhookConfig {
+		tenantID := im.TenantIDFromContext(ctx)
+		system := st.System
+		configTenantID := ""
+		if tenantID != "" && tenantID != store.DefaultTenantID {
+			system = httpapi.ScopedSystemSettingsForTenant(tenantID, st.System)
+			configTenantID = tenantID
+		}
+		raw, err := system.Get(context.Background(), "openclaw_im_config")
 		if err != nil || raw == "" {
 			return im.WebhookConfig{}
 		}
@@ -231,7 +239,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		if json.Unmarshal([]byte(raw), &cfg) != nil || !cfg.Enabled {
 			return im.WebhookConfig{}
 		}
-		return im.WebhookConfig{WebhookURL: cfg.WebhookURL, Secret: cfg.Secret}
+		return im.WebhookConfig{TenantID: configTenantID, WebhookURL: cfg.WebhookURL, Secret: cfg.Secret}
 	})
 	if err := imAdapter.RegisterPlugin(openclawIMPlugin); err != nil {
 		log.Printf("[bootstrap] failed to register openclaw IM plugin: %v", err)
@@ -385,8 +393,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	chatPresenceSvc := chat.NewPresenceService(chatStore, chatNotifier)
 	chatVoiceSignaling := chat.NewVoiceSignaling(chatStore, chatNotifier)
 
-	voiceprintSvc := voiceprint.NewService(st.Voiceprints, st.System)
-
 	securityStore := security.NewSecurityStore(provider.Write)
 	if err := securityStore.InitSchema(context.Background()); err != nil {
 		return nil, fmt.Errorf("security schema: %w", err)
@@ -406,8 +412,10 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	// Wire ContentAuditor into im.Adapter for outbound content compliance checks.
 	contentAuditLogStore := im.NewSQLiteAuditLogStore(provider.Write)
-	contentAuditConfigProvider := func() *im.ContentAuditDynamicConfig {
-		raw, err := st.System.Get(context.Background(), "content_audit_config")
+	contentAuditConfigProvider := func(ctx context.Context) *im.ContentAuditDynamicConfig {
+		tenantID := im.TenantIDFromContext(ctx)
+		system := scopedSystemSettingsForTenant(tenantID, st.System)
+		raw, err := system.Get(context.Background(), "content_audit_config")
 		if err != nil || raw == "" {
 			return nil
 		}
@@ -457,7 +465,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		chatPresenceSvc,
 		chatVoiceSignaling,
 		chatNotifier,
-		voiceprintSvc,
 		securitySvc,
 		cfg,
 		configPath,

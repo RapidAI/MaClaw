@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	maxShortcuts   = 50
-	maxNameLen     = 100
-	maxCmdLen      = 500
-	maxBodyBytes   = 32 * 1024 // 32 KB
+	maxShortcuts = 50
+	maxNameLen   = 100
+	maxCmdLen    = 500
+	maxBodyBytes = 32 * 1024 // 32 KB
 )
 
 type shortcutItem struct {
@@ -35,6 +35,7 @@ func GetShortcutsHandler(identity *auth.IdentityService, system store.SystemSett
 			return
 		}
 
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		raw, err := system.Get(r.Context(), shortcutsKey(principal.UserID))
 		if err != nil || raw == "" {
 			writeJSON(w, http.StatusOK, map[string]any{"shortcuts": []shortcutItem{}})
@@ -100,6 +101,7 @@ func PutShortcutsHandler(identity *auth.IdentityService, system store.SystemSett
 			writeError(w, http.StatusInternalServerError, "MARSHAL_FAILED", "Failed to encode shortcuts")
 			return
 		}
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		if err := system.Set(r.Context(), shortcutsKey(principal.UserID), string(data)); err != nil {
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", "Failed to save shortcuts")
 			return

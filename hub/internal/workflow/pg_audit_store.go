@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // PgAuditStore implements AuditStore backed by PostgreSQL.
@@ -31,9 +33,10 @@ func (s *PgAuditStore) Append(ctx context.Context, entry *AuditEntry) error {
 	entry.Timestamp = NormalizeAuditTimestamp(entry.Timestamp)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit_trail (id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		`INSERT INTO audit_trail (id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		entry.ID,
+		store.TenantIDFromContext(ctx),
 		entry.InstanceID,
 		entry.NodeID,
 		entry.EventType,
@@ -54,18 +57,18 @@ func (s *PgAuditStore) QueryByInstance(ctx context.Context, instanceID string, p
 	pageSize = NormalizePageSize(pageSize)
 	offset := pgAuditOffset(page, pageSize)
 
-	total, err := s.countWhere(ctx, "instance_id = $1", instanceID)
+	total, err := s.countWhere(ctx, "tenant_id = $1 AND instance_id = $2", store.TenantIDFromContext(ctx), instanceID)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM audit_trail
-		 WHERE instance_id = $1
+		 WHERE tenant_id = $1 AND instance_id = $2
 		 ORDER BY timestamp ASC
-		 LIMIT $2 OFFSET $3`,
-		instanceID, pageSize, offset,
+		 LIMIT $3 OFFSET $4`,
+		store.TenantIDFromContext(ctx), instanceID, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -86,18 +89,18 @@ func (s *PgAuditStore) QueryByApprover(ctx context.Context, approverID string, p
 	pageSize = NormalizePageSize(pageSize)
 	offset := pgAuditOffset(page, pageSize)
 
-	total, err := s.countWhere(ctx, "actor_id = $1", approverID)
+	total, err := s.countWhere(ctx, "tenant_id = $1 AND actor_id = $2", store.TenantIDFromContext(ctx), approverID)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM audit_trail
-		 WHERE actor_id = $1
+		 WHERE tenant_id = $1 AND actor_id = $2
 		 ORDER BY timestamp ASC
-		 LIMIT $2 OFFSET $3`,
-		approverID, pageSize, offset,
+		 LIMIT $3 OFFSET $4`,
+		store.TenantIDFromContext(ctx), approverID, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -122,18 +125,18 @@ func (s *PgAuditStore) QueryByTimeRange(ctx context.Context, start, end time.Tim
 	startNorm := NormalizeAuditTimestamp(start)
 	endNorm := NormalizeAuditTimestamp(end)
 
-	total, err := s.countWhere(ctx, "timestamp >= $1 AND timestamp <= $2", startNorm, endNorm)
+	total, err := s.countWhere(ctx, "tenant_id = $1 AND timestamp >= $2 AND timestamp <= $3", store.TenantIDFromContext(ctx), startNorm, endNorm)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM audit_trail
-		 WHERE timestamp >= $1 AND timestamp <= $2
+		 WHERE tenant_id = $1 AND timestamp >= $2 AND timestamp <= $3
 		 ORDER BY timestamp ASC
-		 LIMIT $3 OFFSET $4`,
-		startNorm, endNorm, pageSize, offset,
+		 LIMIT $4 OFFSET $5`,
+		store.TenantIDFromContext(ctx), startNorm, endNorm, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -154,18 +157,18 @@ func (s *PgAuditStore) QueryByDecision(ctx context.Context, decision string, pag
 	pageSize = NormalizePageSize(pageSize)
 	offset := pgAuditOffset(page, pageSize)
 
-	total, err := s.countWhere(ctx, "decision = $1", decision)
+	total, err := s.countWhere(ctx, "tenant_id = $1 AND decision = $2", store.TenantIDFromContext(ctx), decision)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
+		`SELECT id, tenant_id, instance_id, node_id, event_type, actor_id, decision, matched_rule, rationale, details_json, timestamp
 		 FROM audit_trail
-		 WHERE decision = $1
+		 WHERE tenant_id = $1 AND decision = $2
 		 ORDER BY timestamp ASC
-		 LIMIT $2 OFFSET $3`,
-		decision, pageSize, offset,
+		 LIMIT $3 OFFSET $4`,
+		store.TenantIDFromContext(ctx), decision, pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -208,6 +211,7 @@ func scanPgAuditEntries(rows *sql.Rows) ([]AuditEntry, error) {
 		var ts pgTimestamp
 		if err := rows.Scan(
 			&entry.ID,
+			&entry.TenantID,
 			&entry.InstanceID,
 			&entry.NodeID,
 			&entry.EventType,
@@ -262,6 +266,8 @@ func (pt *pgTimestamp) parseString(s string) error {
 		"2006-01-02T15:04:05.999Z",
 		"2006-01-02T15:04:05.000-07:00",
 		"2006-01-02 15:04:05.000",
+		"2006-01-02 15:04:05.000 -0700 MST",
+		"2006-01-02 15:04:05.999 -0700 MST",
 		"2006-01-02T15:04:05Z",
 		time.RFC3339Nano,
 		time.RFC3339,

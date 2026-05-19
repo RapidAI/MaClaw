@@ -92,6 +92,84 @@ func TestNewStoreWithMode_SQLite_MigratesLegacyJSON(t *testing.T) {
 	}
 }
 
+func TestNewStoreWithModeAndLegacyJSONSeedsCanonicalStore(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(t.TempDir(), "agent_memory.json")
+	now := time.Now().UTC()
+	entries := []Entry{{ID: "legacy-agent-1", Content: "MaClawSrv legacy agent memory", Category: CategoryUserFact, CreatedAt: now, UpdatedAt: now, Strength: 1}}
+	data, _ := json.MarshalIndent(entries, "", "  ")
+	if err := os.WriteFile(legacyPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStoreWithModeAndLegacyJSON(dir, StoreModeJSON, legacyPath)
+	if err != nil {
+		t.Fatalf("NewStoreWithModeAndLegacyJSON: %v", err)
+	}
+	defer store.Stop()
+
+	got := store.List(CategoryUserFact, "legacy agent")
+	if len(got) != 1 || got[0].ID != "legacy-agent-1" {
+		t.Fatalf("expected seeded legacy memory, got %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "memories.json")); err != nil {
+		t.Fatalf("expected canonical memories.json to be seeded: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy source should be left in place for safe migration: %v", err)
+	}
+}
+
+func TestOpenDataDirStoreSeedsLegacyRootJSON(t *testing.T) {
+	dataDir := t.TempDir()
+	now := time.Now().UTC()
+	entries := []Entry{{ID: "legacy-root-json", Content: "legacy root json memory", Category: CategoryUserFact, CreatedAt: now, UpdatedAt: now, Strength: 1}}
+	data, _ := json.MarshalIndent(entries, "", "  ")
+	if err := os.WriteFile(filepath.Join(dataDir, "memories.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenDataDirStore(dataDir, StoreModeJSON)
+	if err != nil {
+		t.Fatalf("OpenDataDirStore: %v", err)
+	}
+	defer store.Stop()
+
+	got := store.List(CategoryUserFact, "legacy root")
+	if len(got) != 1 || got[0].ID != "legacy-root-json" {
+		t.Fatalf("expected seeded legacy root memory, got %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(DataDirStoreDir(dataDir), "memories.json")); err != nil {
+		t.Fatalf("expected canonical data-dir memories.json: %v", err)
+	}
+}
+
+func TestOpenDataDirStoreCopiesLegacyRootSQLite(t *testing.T) {
+	dataDir := t.TempDir()
+	legacy, err := NewStoreWithMode(dataDir, StoreModeSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Save(Entry{ID: "legacy-root-sqlite", Content: "legacy root sqlite memory", Category: CategoryProjectKnowledge, Tags: []string{"sqlite"}}); err != nil {
+		t.Fatalf("Save legacy: %v", err)
+	}
+	legacy.Stop()
+
+	store, err := OpenDataDirStore(dataDir, StoreModeSQLite)
+	if err != nil {
+		t.Fatalf("OpenDataDirStore: %v", err)
+	}
+	defer store.Stop()
+
+	got := store.List(CategoryProjectKnowledge, "legacy root sqlite")
+	if len(got) != 1 || got[0].ID != "legacy-root-sqlite" {
+		t.Fatalf("expected copied legacy sqlite memory, got %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(DataDirStoreDir(dataDir), "memory.db")); err != nil {
+		t.Fatalf("expected canonical data-dir memory.db: %v", err)
+	}
+}
+
 func TestNewStoreWithMode_Auto_DetectsExistingDB(t *testing.T) {
 	dir := t.TempDir()
 
@@ -213,5 +291,67 @@ func TestNewStoreWithMode_SQLite_SaveUpdateDeletePersist(t *testing.T) {
 	defer afterDelete.Stop()
 	if got := afterDelete.List(CategoryProjectKnowledge, "SQLite store"); len(got) != 0 {
 		t.Fatalf("expected deleted entry to stay deleted after reload, got %#v", got)
+	}
+}
+
+func TestNewStoreWithMode_SQLite_DerivedMetadataPersists(t *testing.T) {
+	dir := t.TempDir()
+
+	store, err := NewStoreWithMode(dir, StoreModeSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC)
+	until := now.Add(time.Hour)
+	entry := Entry{
+		ID:          "schema-sqlite-1",
+		Content:     "SQLite should persist derived memory metadata",
+		Category:    CategoryProjectKnowledge,
+		Tags:        []string{"sqlite", "derived"},
+		Status:      StatusActive,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Strength:    1,
+		EvidenceIDs: []string{"raw-1", "raw-2"},
+		RelatedIDs:  []string{"raw-1", "raw-2"},
+		DerivedKind: "schema:recurring",
+		Boundary: &MemoryBoundary{
+			OwnerID:     "owner-a",
+			ProjectPath: `D:\workprj\alpha`,
+			SourceScope: "conversation",
+			Since:       &now,
+			Until:       &until,
+		},
+	}
+	if err := store.Save(entry); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	store.Stop()
+
+	reloaded, err := NewStoreWithMode(dir, StoreModeSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Stop()
+
+	entries := reloaded.SearchByMode("schema-sqlite-1", SearchDirect, CategoryProjectKnowledge, `D:\workprj\alpha`, 1, "owner-a")
+	if len(entries) != 1 {
+		t.Fatalf("expected derived entry after reload, got %+v", entries)
+	}
+	got := entries[0]
+	if got.DerivedKind != "schema:recurring" {
+		t.Fatalf("DerivedKind = %q", got.DerivedKind)
+	}
+	if len(got.EvidenceIDs) != 2 || got.EvidenceIDs[0] != "raw-1" || got.EvidenceIDs[1] != "raw-2" {
+		t.Fatalf("EvidenceIDs not persisted: %+v", got.EvidenceIDs)
+	}
+	if len(got.RelatedIDs) != 2 || got.RelatedIDs[0] != "raw-1" || got.RelatedIDs[1] != "raw-2" {
+		t.Fatalf("RelatedIDs not persisted: %+v", got.RelatedIDs)
+	}
+	if got.Boundary == nil || got.Boundary.OwnerID != "owner-a" || got.Boundary.ProjectPath != `D:\workprj\alpha` || got.Boundary.SourceScope != "conversation" {
+		t.Fatalf("Boundary not persisted: %+v", got.Boundary)
+	}
+	if got.Boundary.Since == nil || !got.Boundary.Since.Equal(now) || got.Boundary.Until == nil || !got.Boundary.Until.Equal(until) {
+		t.Fatalf("Boundary time window not persisted: %+v", got.Boundary)
 	}
 }
