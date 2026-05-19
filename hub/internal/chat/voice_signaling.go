@@ -39,7 +39,7 @@ func (v *VoiceSignaling) InitiateCallForTenant(tenantID, callerID, calleeID, cha
 
 	// Notify callee via WS + push.
 	hint := WsHint{Type: "call_incoming", ChannelID: channelID}
-	v.notifier.NotifyCallEvent(calleeID, hint, "Incoming Call", "Voice call from "+callerID)
+	v.notifier.NotifyCallEventForTenant(call.TenantID, calleeID, hint, "Incoming Call", "Voice call from "+callerID)
 
 	return call, nil
 }

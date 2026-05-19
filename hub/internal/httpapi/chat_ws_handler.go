@@ -74,8 +74,8 @@ func ChatWSHandler(identity *auth.IdentityService, chSvc *chat.ChannelService, n
 
 		// Register with notifier.
 		sender := &chatWSConn{ws: conn}
-		notifier.Register(vp.UserID, sender)
-		defer notifier.Unregister(vp.UserID)
+		notifier.RegisterForTenant(vp.TenantID, vp.UserID, sender)
+		defer notifier.UnregisterForTenant(vp.TenantID, vp.UserID)
 
 		log.Printf("[chat/ws] user %s connected", vp.UserID)
 

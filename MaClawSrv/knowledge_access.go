@@ -406,6 +406,18 @@ func (s *multiKnowledgeStore) SaveText(ctx context.Context, req knowledge.TextSa
 func (s *multiKnowledgeStore) Stats(ctx context.Context) (knowledge.Stats, error) {
 	return s.store.Stats(ctx)
 }
+func (s *multiKnowledgeStore) ScanDirectory(ctx context.Context, req knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error) {
+	return s.store.ScanDirectory(ctx, req)
+}
+func (s *multiKnowledgeStore) ScanFiles(ctx context.Context, req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error) {
+	return s.store.ScanFiles(ctx, req, filePaths)
+}
+func (s *multiKnowledgeStore) ImportDirectory(ctx context.Context, req knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error) {
+	return s.store.ImportDirectory(ctx, req)
+}
+func (s *multiKnowledgeStore) ImportFiles(ctx context.Context, req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error) {
+	return s.store.ImportFiles(ctx, req, filePaths)
+}
 
 func knowledgeResultKey(r knowledge.SearchResult) string {
 	return strings.Join([]string{r.Source.ID, r.ResultType, r.NodeID, r.CardID, r.FactID, r.Citation}, "\x00")

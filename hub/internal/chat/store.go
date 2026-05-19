@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -66,9 +67,6 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_chat_channels_tenant ON chat_channels(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_members_tenant_user ON chat_members(tenant_id, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_tenant_ch_seq ON chat_messages(tenant_id, channel_id, seq)`,
-		`CREATE INDEX IF NOT EXISTS idx_chat_files_tenant ON chat_files(tenant_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_chat_voice_calls_tenant ON chat_voice_calls(tenant_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_chat_push_tokens_tenant_user ON chat_push_tokens(tenant_id, user_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_msg_dedup ON chat_messages(channel_id, client_msg_id)`,
 		`CREATE TABLE IF NOT EXISTS chat_files (
 			id          TEXT PRIMARY KEY,
@@ -106,14 +104,18 @@ func (s *Store) migrate() error {
 			platform   TEXT NOT NULL,
 			token      TEXT NOT NULL,
 			updated_at INTEGER NOT NULL,
-			PRIMARY KEY(user_id, platform)
+			PRIMARY KEY(tenant_id, user_id, platform)
 		)`,
 		`CREATE TABLE IF NOT EXISTS chat_presence (
 			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
-			user_id   TEXT PRIMARY KEY,
+			user_id   TEXT NOT NULL,
 			status    INTEGER NOT NULL DEFAULT 0,
-			last_seen INTEGER NOT NULL
+			last_seen INTEGER NOT NULL,
+			PRIMARY KEY(tenant_id, user_id)
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_files_tenant ON chat_files(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_voice_calls_tenant ON chat_voice_calls(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_push_tokens_tenant_user ON chat_push_tokens(tenant_id, user_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -134,7 +136,102 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if err := s.ensureTenantAwareUserTables(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) ensureTenantAwareUserTables() error {
+	if err := s.rebuildChatPushTokensIfNeeded(); err != nil {
+		return err
+	}
+	if err := s.rebuildChatPresenceIfNeeded(); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_chat_push_tokens_tenant_user ON chat_push_tokens(tenant_id, user_id)`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) rebuildChatPushTokensIfNeeded() error {
+	pk, err := s.primaryKeyColumns("chat_push_tokens")
+	if err != nil || reflect.DeepEqual(pk, []string{"tenant_id", "user_id", "platform"}) {
+		return err
+	}
+	return s.rebuildTable(
+		"chat_push_tokens",
+		`CREATE TABLE chat_push_tokens (tenant_id TEXT NOT NULL DEFAULT 'tenant_default', user_id TEXT NOT NULL, platform TEXT NOT NULL, token TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(tenant_id, user_id, platform))`,
+		`INSERT OR REPLACE INTO chat_push_tokens (tenant_id, user_id, platform, token, updated_at)
+		 SELECT COALESCE(NULLIF(tenant_id, ''), 'tenant_default'), user_id, platform, token, updated_at FROM chat_push_tokens_legacy`,
+	)
+}
+
+func (s *Store) rebuildChatPresenceIfNeeded() error {
+	pk, err := s.primaryKeyColumns("chat_presence")
+	if err != nil || reflect.DeepEqual(pk, []string{"tenant_id", "user_id"}) {
+		return err
+	}
+	return s.rebuildTable(
+		"chat_presence",
+		`CREATE TABLE chat_presence (tenant_id TEXT NOT NULL DEFAULT 'tenant_default', user_id TEXT NOT NULL, status INTEGER NOT NULL DEFAULT 0, last_seen INTEGER NOT NULL, PRIMARY KEY(tenant_id, user_id))`,
+		`INSERT OR REPLACE INTO chat_presence (tenant_id, user_id, status, last_seen)
+		 SELECT COALESCE(NULLIF(tenant_id, ''), 'tenant_default'), user_id, status, last_seen FROM chat_presence_legacy`,
+	)
+}
+
+func (s *Store) rebuildTable(table, createSQL, copySQL string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE ` + table + ` RENAME TO ` + table + `_legacy`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(createSQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(copySQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE ` + table + `_legacy`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) primaryKeyColumns(table string) ([]string, error) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ordered := map[int]string{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		if pk > 0 {
+			ordered[pk] = name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ordered))
+	for i := 1; i <= len(ordered); i++ {
+		out = append(out, ordered[i])
+	}
+	return out, nil
 }
 
 // 閳光偓閳光偓 Channels 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
@@ -365,7 +462,7 @@ func (s *Store) SetPresenceForTenant(tenantID, userID string, online bool) error
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO chat_presence (tenant_id, user_id, status, last_seen) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(user_id) DO UPDATE SET status = excluded.status, last_seen = excluded.last_seen`,
+		 ON CONFLICT(tenant_id, user_id) DO UPDATE SET status = excluded.status, last_seen = excluded.last_seen`,
 		store.NormalizeTenantID(tenantID), userID, status, time.Now().UnixMilli(),
 	)
 	return err
@@ -380,7 +477,7 @@ func (s *Store) UpsertPushToken(userID, platform, token string) error {
 func (s *Store) UpsertPushTokenForTenant(tenantID, userID, platform, token string) error {
 	_, err := s.db.Exec(
 		`INSERT INTO chat_push_tokens (tenant_id, user_id, platform, token, updated_at) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(user_id, platform) DO UPDATE SET token = excluded.token, updated_at = excluded.updated_at`,
+		 ON CONFLICT(tenant_id, user_id, platform) DO UPDATE SET token = excluded.token, updated_at = excluded.updated_at`,
 		store.NormalizeTenantID(tenantID), userID, platform, token, time.Now().UnixMilli(),
 	)
 	return err

@@ -11,7 +11,7 @@ type Dispatcher struct {
 	fcm  *FCMSender
 	hms  *HMSSender
 	// tokenLookup resolves userID → []PushToken
-	tokenLookup func(userID string) ([]TokenInfo, error)
+	tokenLookup func(tenantID, userID string) ([]TokenInfo, error)
 }
 
 // TokenInfo holds a push token and its platform.
@@ -22,6 +22,12 @@ type TokenInfo struct {
 
 // NewDispatcher creates a push Dispatcher.
 func NewDispatcher(tokenLookup func(string) ([]TokenInfo, error)) *Dispatcher {
+	return NewTenantDispatcher(func(_ string, userID string) ([]TokenInfo, error) {
+		return tokenLookup(userID)
+	})
+}
+
+func NewTenantDispatcher(tokenLookup func(string, string) ([]TokenInfo, error)) *Dispatcher {
 	return &Dispatcher{
 		apns:        &APNsSender{},
 		fcm:         &FCMSender{},
@@ -32,7 +38,11 @@ func NewDispatcher(tokenLookup func(string) ([]TokenInfo, error)) *Dispatcher {
 
 // SendPush sends a push notification to all registered devices of a user.
 func (d *Dispatcher) SendPush(ctx context.Context, userID, title, body string) error {
-	tokens, err := d.tokenLookup(userID)
+	return d.SendPushForTenant(ctx, "", userID, title, body)
+}
+
+func (d *Dispatcher) SendPushForTenant(ctx context.Context, tenantID, userID, title, body string) error {
+	tokens, err := d.tokenLookup(tenantID, userID)
 	if err != nil {
 		return err
 	}

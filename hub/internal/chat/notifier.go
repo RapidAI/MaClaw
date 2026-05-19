@@ -17,16 +17,16 @@ type ConnSender interface {
 
 // PushDispatcher abstracts sending push notifications to offline users.
 type PushDispatcher interface {
-	SendPush(ctx context.Context, userID, title, body string) error
+	SendPushForTenant(ctx context.Context, tenantID, userID, title, body string) error
 }
 
 // Notifier broadcasts WS hints to online users and dispatches push
 // notifications to offline users.
 type Notifier struct {
-	store    *Store
-	push     PushDispatcher // nil = push disabled
-	mu       sync.RWMutex
-	conns    map[string]ConnSender // userID → WS connection
+	store *Store
+	push  PushDispatcher // nil = push disabled
+	mu    sync.RWMutex
+	conns map[string]ConnSender // userID → WS connection
 }
 
 // NewNotifier creates a Notifier.
@@ -97,13 +97,17 @@ func (n *Notifier) NotifyTyping(channelID, userID string) {
 	if len(members) > 20 {
 		return
 	}
+	tenantID := store.DefaultTenantID
+	if ch, err := n.store.GetChannel(channelID); err == nil && ch != nil {
+		tenantID = store.NormalizeTenantID(ch.TenantID)
+	}
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	for _, m := range members {
 		if m.UserID == userID {
 			continue
 		}
-		if conn, ok := n.conns[m.UserID]; ok {
+		if conn, ok := n.conns[tenantUserKey(tenantID, m.UserID)]; ok {
 			_ = conn.SendJSON(hint)
 		}
 	}
@@ -111,14 +115,18 @@ func (n *Notifier) NotifyTyping(channelID, userID string) {
 
 // NotifyCallEvent sends a voice call signaling hint.
 func (n *Notifier) NotifyCallEvent(targetUserID string, hint WsHint, pushTitle, pushBody string) {
+	n.NotifyCallEventForTenant(store.DefaultTenantID, targetUserID, hint, pushTitle, pushBody)
+}
+
+func (n *Notifier) NotifyCallEventForTenant(tenantID, targetUserID string, hint WsHint, pushTitle, pushBody string) {
 	n.mu.RLock()
-	conn, online := n.conns[targetUserID]
+	conn, online := n.conns[tenantUserKey(tenantID, targetUserID)]
 	n.mu.RUnlock()
 
 	if online {
 		_ = conn.SendJSON(hint)
 	} else if n.push != nil && pushTitle != "" {
-		if err := n.push.SendPush(context.Background(), targetUserID, pushTitle, pushBody); err != nil {
+		if err := n.push.SendPushForTenant(context.Background(), tenantID, targetUserID, pushTitle, pushBody); err != nil {
 			log.Printf("[chat/notifier] push to %s failed: %v", targetUserID, err)
 		}
 	}
@@ -135,27 +143,35 @@ func (n *Notifier) broadcastToChannel(channelID, excludeUID string, hint WsHint,
 
 	n.mu.RLock()
 	defer n.mu.RUnlock()
+	tenantID := store.DefaultTenantID
+	if ch, err := n.store.GetChannel(channelID); err == nil && ch != nil {
+		tenantID = store.NormalizeTenantID(ch.TenantID)
+	}
 
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
 		}
-		if conn, ok := n.conns[m.UserID]; ok {
+		if conn, ok := n.conns[tenantUserKey(tenantID, m.UserID)]; ok {
 			_ = conn.SendJSON(hint)
 		} else if !m.Mute && n.push != nil && pushBody != "" {
-			go func(uid string) {
-				if err := n.push.SendPush(context.Background(), uid, "MaClaw Chat", pushBody); err != nil {
+			go func(tenantID, uid string) {
+				if err := n.push.SendPushForTenant(context.Background(), tenantID, uid, "MaClaw Chat", pushBody); err != nil {
 					log.Printf("[chat/notifier] push to %s failed: %v", uid, err)
 				}
-			}(m.UserID)
+			}(tenantID, m.UserID)
 		}
 	}
 }
 
 // SendRaw sends an arbitrary JSON payload to a specific user's WS.
 func (n *Notifier) SendRaw(userID string, payload any) bool {
+	return n.SendRawForTenant(store.DefaultTenantID, userID, payload)
+}
+
+func (n *Notifier) SendRawForTenant(tenantID, userID string, payload any) bool {
 	n.mu.RLock()
-	conn, ok := n.conns[userID]
+	conn, ok := n.conns[tenantUserKey(tenantID, userID)]
 	n.mu.RUnlock()
 	if !ok {
 		return false
@@ -166,4 +182,8 @@ func (n *Notifier) SendRaw(userID string, payload any) bool {
 	}
 	_ = data // SendJSON handles marshaling internally
 	return conn.SendJSON(payload) == nil
+}
+
+func tenantUserKey(tenantID, userID string) string {
+	return store.NormalizeTenantID(tenantID) + "\x00" + strings.TrimSpace(userID)
 }

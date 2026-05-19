@@ -338,7 +338,7 @@ func ChatPresenceHandler(identity *auth.IdentityService, presenceSvc *chat.Prese
 			writeError(w, http.StatusForbidden, "FORBIDDEN", "user is outside tenant")
 			return
 		}
-		online := presenceSvc.IsOnline(targetUID)
+		online := presenceSvc.IsOnlineForTenant(principal.TenantID, targetUID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"user_id": targetUID,
 			"online":  online,
@@ -376,7 +376,7 @@ func ChatVoiceCallHandler(identity *auth.IdentityService, chSvc *chat.ChannelSer
 				return
 			}
 		}
-		call, err := voiceSvc.InitiateCall(uid, req.CalleeID, req.ChannelID, chat.CallType(req.CallType))
+		call, err := voiceSvc.InitiateCallForTenant(principal.TenantID, uid, req.CalleeID, req.ChannelID, chat.CallType(req.CallType))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CALL_FAILED", err.Error())
 			return
@@ -492,7 +492,7 @@ func ChatPushRegisterHandler(identity *auth.IdentityService, store *chat.Store) 
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "platform must be apns, fcm, or hms")
 			return
 		}
-		if err := store.UpsertPushToken(uid, req.Platform, req.Token); err != nil {
+		if err := store.UpsertPushTokenForTenant(principal.TenantID, uid, req.Platform, req.Token); err != nil {
 			writeError(w, http.StatusInternalServerError, "REGISTER_FAILED", err.Error())
 			return
 		}

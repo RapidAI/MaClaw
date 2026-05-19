@@ -373,8 +373,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	}
 
 	// Push dispatcher: look up tokens from chat store.
-	pushDispatcher := chatpush.NewDispatcher(func(userID string) ([]chatpush.TokenInfo, error) {
-		tokens, err := chatStore.GetPushTokens(userID)
+	pushDispatcher := chatpush.NewTenantDispatcher(func(tenantID, userID string) ([]chatpush.TokenInfo, error) {
+		tokens, err := chatStore.GetPushTokensForTenant(tenantID, userID)
 		if err != nil {
 			return nil, err
 		}
