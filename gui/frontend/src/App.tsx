@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -427,6 +427,9 @@ function App() {
         }
     }, [showModelSettings, activeTab]);
 
+    // Clear fetched model list when switching provider tabs
+    useEffect(() => { setFetchedModelList([]); }, [activeTab, activeTool]);
+
     const [showInstallSkillModal, setShowInstallSkillModal] = useState(false);
     const [selectedSkillsToInstall, setSelectedSkillsToInstall] = useState<string[]>([]);
 
@@ -526,6 +529,8 @@ function App() {
     // Provider selector state
     const [showProviderSelector, setShowProviderSelector] = useState(false);
     const [showModelRecommend, setShowModelRecommend] = useState(false);
+    const [fetchedModelList, setFetchedModelList] = useState<{id: string; name?: string}[]>([]);
+    const [fetchingModelList, setFetchingModelList] = useState(false);
     const [providerFilter, setProviderFilter] = useState<'all' | 'china' | 'global'>('all');
     const [selectedProviderForUrl, setSelectedProviderForUrl] = useState<ProviderEndpoint | null>(null);
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
@@ -948,7 +953,7 @@ function App() {
                 }).catch(err2 => {
                     console.error("Retry load config also failed:", err2);
                     // Last resort: set a minimal default config so the UI is not stuck
-                    // on "鍔犺浇閰嶇疆涓? forever. User can still use the app and reconfigure.
+                    // on "加载配置中 forever. User can still use the app and reconfigure.
                     setConfig(new main.AppConfig({}));
                 });
             }, 1500);
@@ -1016,23 +1021,23 @@ function App() {
 
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `妫€鏌?${toolName}...` : `Checking ${toolName}...`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `检查 ${toolName}...` : `Checking ${toolName}...`);
             setBackgroundInstallingTool("");  // Clear previous tool's installing state
         });
 
         EventsOn("tool-installing", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `瀹夎 ${toolName}...` : `Installing ${toolName}...`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `安装 ${toolName}...` : `Installing ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
         EventsOn("tool-updating", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `鏇存柊 ${toolName}...` : `Updating ${toolName}...`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `更新 ${toolName}...` : `Updating ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
         EventsOn("tool-installed", (toolName: string) => {
             console.log("Tool installed in background:", toolName);
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `鉁?${toolName} 瀹夎瀹屾垚` : `鉁?${toolName} installed`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `✅ ${toolName} 安装完成` : `✅ ${toolName} installed`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
@@ -1967,7 +1972,7 @@ function App() {
             if (p.includes("aicodemirror")) return "Haiku";
             if (p.includes("coderelay")) return "claude-3-5-sonnet-20241022";
             if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
+            if (p.includes("快手")) return "kat-coder-pro-v1";
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
@@ -1984,7 +1989,7 @@ function App() {
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
             if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
+            if (p.includes("快手")) return "kat-coder-pro-v1";
         }
         return "";
     };
@@ -2142,7 +2147,7 @@ function App() {
         }
         setShowRemoteActivationModal(false);
         if (pendingRemoteLaunchTool) {
-            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杩滅▼鍚姩...' : lang === 'zh-Hant' ? '姝ｅ湪閬犵鍟熷嫊...' : 'Starting remotely...');
+            setStatus(lang === 'zh-Hans' ? '正在远程启动...' : lang === 'zh-Hant' ? '正在遠程啟動...' : 'Starting remotely...');
             setLaunchingTool(pendingRemoteLaunchTool);
             await quickStartRemoteSession(pendingRemoteLaunchTool as any);
             setPendingRemoteLaunchTool("");
@@ -2239,10 +2244,8 @@ function App() {
 
             // Prepare mailto body
             const instruction = lang === 'zh-Hans'
-                ? `璇峰皢鍒氬垰鎵撳紑鐨勬枃浠跺す涓殑鍘嬬缉鍖咃紙aicoder_log_....zip锛変綔涓洪檮浠舵坊鍔犲埌姝ら偖浠朵腑鍙戦€併€俓n\n`
-                : lang === 'zh-Hant'
-                    ? `璜嬪皣鍓涘墰鎵撻枊鐨勬枃浠跺ぞ涓殑澹撶府鍖咃紙aicoder_log_....zip锛変綔鐐洪檮浠舵坊鍔犲埌姝ら兊浠朵腑鐧奸€併€俓n\n`
-                    : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
+ 请将刚才打开的文件夹中的压缩包（aicoder_log_....zip）作为附件添加到此邮件中发送。\n\n                : lang === 'zh-Hant'
+ 請將剛才打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n                    : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
             const body = `Product: ${brandInfo?.displayName || 'MaClaw'}
 Version: ${APP_VERSION}
@@ -2816,10 +2819,10 @@ ${instruction}`;
                                     setStatus("");
                                 }).catch((err: any) => {
                                     console.error("CheckUpdate error:", err);
-                                    setStatus("妫€鏌ユ洿鏂板け璐? " + err);
+                                    setStatus("检查更新失败:  " + err);
                                     setUpdateResult({
                                         has_update: false,
-                                        latest_version: "鑾峰彇澶辫触",
+                                        latest_version: "获取失败",
                                         release_url: ""
                                     });
                                     setIsStartupUpdateCheck(false);
@@ -2982,7 +2985,7 @@ ${instruction}`;
                                                 cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
                                                 opacity: isRemoteCapableActiveTool ? 1 : 0.4
                                             }}
-                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : (lang === 'zh-Hans' ? '褰撳墠宸ュ叿鏆備笉鏀寔杩滅▼' : lang === 'zh-Hant' ? '鐩墠宸ュ叿鏆笉鏀彺閬犵' : 'This tool does not support remote mode')}
+                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : (lang === 'zh-Hans' ? '当前工具暂不支持远程' : lang === 'zh-Hant' ? '目前工具暫不支援遠程' : 'This tool does not support remote mode')}
                                         >
                                             {t("remoteModeLabel")}
                                         </button>
@@ -3110,11 +3113,11 @@ ${instruction}`;
                                         </button>
                                     </div>
                                 </div>
-                                {/* Handoff: local 鈫?remote icon button */}
+                                {/* Handoff: local →remote icon button */}
                                 {!launchRemoteEnabled && isRemoteCapableActiveTool && (
                                     <button
                                         type="button"
-                                        title={lang === 'zh-Hans' ? '杞负杩滅▼' : lang === 'zh-Hant' ? '杞夌偤閬犵' : 'Switch to Remote'}
+                                        title={lang === 'zh-Hans' ? '转为远程' : lang === 'zh-Hant' ? '轉為遠程' : 'Switch to Remote'}
                                         style={{
                                             width: '36px',
                                             height: '36px',
@@ -3144,7 +3147,7 @@ ${instruction}`;
                                                 openRemoteActivationModal(activeTool);
                                                 return;
                                             }
-                                            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杞负杩滅▼...' : lang === 'zh-Hant' ? '姝ｅ湪杞夌偤閬犵...' : 'Switching to remote...');
+                                            setStatus(lang === 'zh-Hans' ? '正在转为远程...' : lang === 'zh-Hant' ? '正在轉為遠程...' : 'Switching to remote...');
                                             setLaunchingTool(activeTool);
                                             try {
                                                 const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true });
@@ -3158,7 +3161,7 @@ ${instruction}`;
                                             }
                                         }}
                                     >
-                                        鈽?                                    </button>
+                                        ☁                                    </button>
                                 )}
                                 <button
                                     className="btn-launch"
@@ -3177,14 +3180,14 @@ ${instruction}`;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
                                             if (launchRemoteEnabled) {
                                                 if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
-                                                    setStatus(lang === 'zh-Hans' ? '褰撳墠宸ュ叿鏆備笉鏀寔杩滅▼鍚姩' : lang === 'zh-Hant' ? '鐩墠宸ュ叿鏆笉鏀彺閬犵鍟熷嫊' : 'This tool does not support remote launch');
+                                                    setStatus(lang === 'zh-Hans' ? '当前工具暂不支持远程启动' : lang === 'zh-Hant' ? '目前工具暫不支援遠程啟動' : 'This tool does not support remote launch');
                                                     return;
                                                 }
                                                 if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                     openRemoteActivationModal(activeTool);
                                                     return;
                                                 }
-                                                setStatus(lang === 'zh-Hans' ? '姝ｅ湪杩滅▼鍚姩...' : lang === 'zh-Hant' ? '姝ｅ湪閬犵鍟熷嫊...' : 'Starting remotely...');
+                                                setStatus(lang === 'zh-Hans' ? '正在远程启动...' : lang === 'zh-Hant' ? '正在遠程啟動...' : 'Starting remotely...');
                                                 setLaunchingTool(activeTool);
                                                 try {
                                                     await quickStartRemoteSession(activeTool as any);
@@ -3202,18 +3205,18 @@ ${instruction}`;
                                                 const isBeingInstalled = await IsToolBeingInstalled(activeTool);
                                                 if (isBeingInstalled) {
                                                     // Tool is being installed in background, just wait
-                                                    setStatus(lang === 'zh-Hans' ? `${activeTool} 姝ｅ湪鍚庡彴瀹夎涓紝璇风◢鍊?..` : `${activeTool} is being installed in background, please wait...`);
+                                                    setStatus(lang === 'zh-Hans' ? `${activeTool} 正在后台安装中，请稍候...` : `${activeTool} is being installed in background, please wait...`);
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {
                                                         await InstallToolOnDemand(activeTool);
                                                         // Refresh tool statuses
                                                         const updatedStatuses = await CheckToolsStatus();
                                                         setToolStatuses(updatedStatuses);
-                                                        setStatus(lang === 'zh-Hans' ? `${activeTool} 瀹夎瀹屾垚` : `${activeTool} installed`);
+                                                        setStatus(lang === 'zh-Hans' ? `${activeTool} 安装完成` : `${activeTool} installed`);
                                                         setOnDemandInstallingTool("");
                                                         // Auto launch
                                                         setTimeout(async () => {
-                                                            setStatus(lang === 'zh-Hans' ? "姝ｅ湪鍚姩..." : "Launching...");
+                                                            setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
                                                             setLaunchingTool(activeTool);
                                                             try {
                                                                 await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
@@ -3245,7 +3248,7 @@ ${instruction}`;
                                                         setToolRepairStatus(prev => ({...prev, show: false}));
                                                         setOnDemandInstallingTool("");
                                                         // Launch the tool
-                                                        setStatus(lang === 'zh-Hans' ? "姝ｅ湪鍚姩..." : "Launching...");
+                                                        setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
                                                         setLaunchingTool(activeTool);
                                                         try {
                                                             await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
@@ -3267,7 +3270,7 @@ ${instruction}`;
                                             }
 
                                             console.log("Launching tool with project:", selectedProj.name, "path:", selectedProj.path);
-                                            setStatus(lang === 'zh-Hans' ? "姝ｅ湪鍚姩..." : "Launching...");
+                                            setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
                                             setLaunchingTool(activeTool);
                                             LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false)
                                                 .then(() => {
@@ -3304,9 +3307,9 @@ ${instruction}`;
                         <div className="codex-config-progress-panel">
                             <div className="codex-config-progress-title">
                                 {lang === 'zh-Hans' || lang === 'zh'
-                                    ? '姝ｅ湪鏇存柊 Codex 閰嶇疆'
+                                    ? '正在更新 Codex 配置'
                                     : lang === 'zh-Hant'
-                                        ? '姝ｅ湪鏇存柊 Codex 閰嶇疆'
+                                        ? '正在更新 Codex 配置'
                                         : 'Updating Codex configuration'}
                             </div>
                             <div className="codex-config-progress-track" aria-hidden="true">
@@ -3542,51 +3545,75 @@ ${instruction}`;
                                     </label>
                                     <div style={{ position: 'relative' }}>
                                         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                                            <input
-                                                type="text"
-                                                className="form-input"
-                                                data-field="model-id"
-                                                style={{ flex: 1 }}
-                                                value={(config as any)[activeTool].models[activeTab].model_id}
-                                                onChange={(e) => handleModelIdChange(e.target.value)}
-                                                placeholder={activeTool === 'codebuddy' ? "e.g. gpt-4,gpt-3.5-turbo" : (getDefaultModelId(activeTool, (config as any)[activeTool].models[activeTab].model_name) || "e.g. gpt-4")}
-                                                spellCheck={false}
-                                                autoComplete="off"
-                                            />
-                                            {(() => {
-                                                const providerName = (config as any)[activeTool].models[activeTab].model_name;
-                                                const models = (activeTool === 'claude' || (providerName !== '阿里云' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
-                                                if (!models || models.length === 0) return null;
-                                                return (
-                                                    <button
-                                                        style={{ border: '1px solid #d1d5db', background: '#ffffff', color: '#374151', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0 }}
-                                                        onClick={() => setShowModelRecommend(!showModelRecommend)}
-                                                        title="鎺ㄨ崘妯″瀷"
-                                                    >...</button>
-                                                );
-                                            })()}
-                                        </div>
-                                        {showModelRecommend && (() => {
-                                            const providerName = (config as any)[activeTool].models[activeTab].model_name;
-                                            const models = (activeTool === 'claude' || (providerName !== '阿里云' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
-                                            if (!models || models.length === 0) return null;
-                                            return (
-                                                <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: '4px', background: '#ffffff', border: '1px solid #d1d5db', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', minWidth: '200px', maxHeight: '240px', overflowY: 'auto', padding: '4px 0' }}>
-                                                    {models.map((m: any, i: number) => (
-                                                        <div
-                                                            key={i}
-                                                            style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', color: '#1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}
-                                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
-                                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                                                            onClick={() => { handleModelIdChange(m.id); setShowModelRecommend(false); }}
-                                                        >
-                                                            <span>{m.id}</span>
-                                                            {m.note && <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{m.note}</span>}
-                                                        </div>
+                                            {fetchedModelList.length > 0 ? (
+                                                <select
+                                                    className="form-input"
+                                                    data-field="model-id"
+                                                    style={{ flex: 1 }}
+                                                    value={(config as any)[activeTool].models[activeTab].model_id}
+                                                    onChange={(e) => handleModelIdChange(e.target.value)}
+                                                >
+                                                    {!(config as any)[activeTool].models[activeTab].model_id && (
+                                                        <option value="">{lang === 'zh-Hans' || lang === 'zh' ? '请选择模型' : 'Select a model'}</option>
+                                                    )}
+                                                    {(config as any)[activeTool].models[activeTab].model_id && !fetchedModelList.some(m => m.id === (config as any)[activeTool].models[activeTab].model_id) && (
+                                                        <option value={(config as any)[activeTool].models[activeTab].model_id}>{(config as any)[activeTool].models[activeTab].model_id}</option>
+                                                    )}
+                                                    {fetchedModelList.map((m, i) => (
+                                                        <option key={`${m.id}-${i}`} value={m.id}>
+                                                            {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
+                                                        </option>
                                                     ))}
-                                                </div>
-                                            );
-                                        })()}
+                                                </select>
+                                            ) : (
+                                                <input
+                                                    type="text"
+                                                    className="form-input"
+                                                    data-field="model-id"
+                                                    style={{ flex: 1 }}
+                                                    value={(config as any)[activeTool].models[activeTab].model_id}
+                                                    onChange={(e) => handleModelIdChange(e.target.value)}
+                                                    placeholder={fetchingModelList ? (lang === 'zh-Hans' || lang === 'zh' ? '加载中...' : 'Loading...') : (activeTool === 'codebuddy' ? "e.g. gpt-4,gpt-3.5-turbo" : (getDefaultModelId(activeTool, (config as any)[activeTool].models[activeTab].model_name) || "e.g. gpt-4"))}
+                                                    spellCheck={false}
+                                                    autoComplete="off"
+                                                />
+                                            )}
+                                            <button
+                                                className="btn-link"
+                                                disabled={fetchingModelList}
+                                                onClick={async () => {
+                                                    const currentModel = (config as any)[activeTool]?.models?.[activeTab];
+                                                    if (!currentModel) return;
+                                                    const url = currentModel.model_url;
+                                                    const key = currentModel.api_key;
+                                                    if (!url || !key) {
+                                                        setStatus(lang === 'zh-Hans' || lang === 'zh' ? '请先填写 API 地址和 API Key' : 'Please fill in API URL and API Key first');
+                                                        return;
+                                                    }
+                                                    const protocol = activeTool === 'claude' ? 'anthropic' : 'openai';
+                                                    setFetchingModelList(true);
+                                                    setFetchedModelList([]);
+                                                    try {
+                                                        const models = await FetchProviderModels(url, key, protocol);
+                                                        if (models && models.length > 0) {
+                                                            setFetchedModelList(models.map((m: any) => ({ id: m.id || '', name: m.name || '' })));
+                                                        } else {
+                                                            setStatus(lang === 'zh-Hans' || lang === 'zh' ? '服务商返回了空的模型列表' : 'Provider returned empty model list');
+                                                        }
+                                                    } catch (e) {
+                                                        setStatus(String(e));
+                                                    } finally {
+                                                        setFetchingModelList(false);
+                                                    }
+                                                }}
+                                                title={lang === 'zh-Hans' || lang === 'zh' ? '从服务商获取可用模型列表' : 'Fetch available models from provider'}
+                                                style={{ padding: '6px 10px', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0, opacity: fetchingModelList ? 0.6 : 1, cursor: fetchingModelList ? 'wait' : 'pointer' }}
+                                            >
+                                                {fetchingModelList
+                                                    ? (lang === 'zh-Hans' || lang === 'zh' ? '加载中...' : 'Loading...')
+                                                    : (lang === 'zh-Hans' || lang === 'zh' ? '模型列表' : 'Models')}
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             )}

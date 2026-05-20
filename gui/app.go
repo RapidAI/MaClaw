@@ -5176,12 +5176,20 @@ func updateTargetFileName() string {
 	return brandName + "-Setup.exe"
 }
 
-func r2ReleaseAssetURL(fileName string) string {
-	return fmt.Sprintf("%s/latest/%s", r2PublicBaseURL, fileName)
+func r2ReleaseAssetURL(fileName string, isBeta bool) string {
+	prefix := "latest"
+	if isBeta {
+		prefix = "beta"
+	}
+	return fmt.Sprintf("%s/%s/%s", r2PublicBaseURL, prefix, fileName)
 }
 
-func cosReleaseAssetURL(fileName string) string {
-	return fmt.Sprintf("%s/latest/%s", cosPublicBaseURL, fileName)
+func cosReleaseAssetURL(fileName string, isBeta bool) string {
+	prefix := "latest"
+	if isBeta {
+		prefix = "beta"
+	}
+	return fmt.Sprintf("%s/%s/%s", cosPublicBaseURL, prefix, fileName)
 }
 
 func combineDownloadURLList(urls ...string) string {
@@ -5202,15 +5210,15 @@ func combineDownloadURLs(primary, fallback string) string {
 	return combineDownloadURLList(primary, fallback)
 }
 
-func manifestAssetDownloadURLs(manifest updateManifest, targetFileName, tagName string) []string {
+func manifestAssetDownloadURLs(manifest updateManifest, targetFileName, tagName string, isBeta bool) []string {
 	urls := []string{}
 	if asset, ok := manifest.Assets[targetFileName]; ok {
 		urls = append(urls, asset.URLs...)
 		urls = append(urls, asset.URL)
 	}
 	if tagName != "" {
-		urls = append(urls, r2ReleaseAssetURL(targetFileName))
-		urls = append(urls, cosReleaseAssetURL(targetFileName))
+		urls = append(urls, r2ReleaseAssetURL(targetFileName, isBeta))
+		urls = append(urls, cosReleaseAssetURL(targetFileName, isBeta))
 	}
 	combined := combineDownloadURLList(urls...)
 	if combined == "" {
@@ -5328,7 +5336,8 @@ func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout tim
 		tagName = strings.TrimSpace(manifest.Version)
 	}
 	targetFileName := updateTargetFileName()
-	mirrorURLs := manifestAssetDownloadURLs(manifest, targetFileName, tagName)
+	isBeta := strings.Contains(tagName, "-beta") || strings.Contains(tagName, "-alpha") || strings.Contains(tagName, "-rc")
+	mirrorURLs := manifestAssetDownloadURLs(manifest, targetFileName, tagName, isBeta)
 	githubURL := ""
 	if tagName != "" {
 		githubURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)

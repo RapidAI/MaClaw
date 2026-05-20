@@ -114,5 +114,6 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
 
 // Get localized display name for a model, falling back to the raw name
 export const getModelDisplayName = (modelName: string, lang: string): string => {
-    return providerDisplayNames[lang]?.[modelName] ?? providerDisplayNames["en"]?.[modelName] ?? modelName;
+    const effectiveLang = lang === 'zh' ? 'zh-Hans' : lang;
+    return providerDisplayNames[effectiveLang]?.[modelName] ?? providerDisplayNames["en"]?.[modelName] ?? modelName;
 };

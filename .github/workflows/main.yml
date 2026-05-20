@@ -1399,6 +1399,12 @@ jobs:
           npm install -g wrangler@latest
           wrangler --version
           echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
+          # Determine asset prefix based on release channel (stable → latest/, beta → beta/)
+          ASSET_PREFIX="latest"
+          if [ "${RELEASE_CHANNEL}" = "beta" ]; then
+            ASSET_PREFIX="beta"
+          fi
+          echo "Channel=${RELEASE_CHANNEL} prefix=${ASSET_PREFIX}/ manifest=${MANIFEST_NAME}"
           printf '%s\n' "$R2_RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
             [ -n "$name" ] || continue
             path="$RELEASE_ASSETS_DIR/$name"
@@ -1406,10 +1412,10 @@ jobs:
               echo "R2 release asset not found: $name" >&2
               exit 1
             fi
-            echo "R2 upload $name size=$(stat -c%s "$path") key=latest/$name"
-            wrangler r2 object put "$R2_BUCKET/latest/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            echo "R2 upload $name size=$(stat -c%s "$path") key=$ASSET_PREFIX/$name"
+            wrangler r2 object put "$R2_BUCKET/$ASSET_PREFIX/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
           done
-          wrangler r2 object put "$R2_BUCKET/latest.json" --file release-assets/latest.json --remote --cache-control "public, max-age=60"
+          wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
 
       - name: Upload release assets to Tencent COS
         continue-on-error: true
