@@ -5250,7 +5250,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 		githubDownloadUrl = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
 	}
 	if cosDownloadUrl == "" {
-		cosDownloadUrl = cosReleaseAssetURL(targetFileName)
+		cosDownloadUrl = cosReleaseAssetURL(targetFileName, strings.Contains(tagName, "-beta") || strings.Contains(tagName, "-alpha") || strings.Contains(tagName, "-rc"))
 	}
 	downloadUrl := strings.TrimSpace(release.DownloadURL)
 	if downloadUrl == "" {
