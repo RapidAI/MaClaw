@@ -66,3 +66,12 @@ export function localExecutorParticipantID(value: LocalGroupExecutorRegistration
 export function localExecutorDisplayName(value: LocalGroupExecutorRegistration | null | undefined): string {
     return String(value?.display_name || value?.DisplayName || LOCAL_AI_DISPLAY_NAME_EN).trim() || LOCAL_AI_DISPLAY_NAME_EN;
 }
+
+export function participantNameForId(names: Record<string, string> | undefined | null, id: string): string | undefined {
+    if (!names) return undefined;
+    const normalized = normalizeParticipantId(id);
+    for (const [key, value] of Object.entries(names)) {
+        if (normalizeParticipantId(key) === normalized) return value;
+    }
+    return undefined;
+}

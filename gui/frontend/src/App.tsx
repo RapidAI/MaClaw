@@ -2244,8 +2244,10 @@ function App() {
 
             // Prepare mailto body
             const instruction = lang === 'zh-Hans'
- 请将刚才打开的文件夹中的压缩包（aicoder_log_....zip）作为附件添加到此邮件中发送。\n\n                : lang === 'zh-Hant'
- 請將剛才打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n                    : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
+                ? `请将刚才打开的文件夹中的压缩包（aicoder_log_....zip）作为附件添加到此邮件中发送。\n\n`
+                : lang === 'zh-Hant'
+                    ? `請將剛才打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n`
+                    : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
             const body = `Product: ${brandInfo?.displayName || 'MaClaw'}
 Version: ${APP_VERSION}
