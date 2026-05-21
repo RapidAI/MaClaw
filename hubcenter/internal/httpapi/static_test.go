@@ -135,6 +135,13 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
 	for _, required := range []string{
+		`id="hubs" class="list" role="status" aria-live="polite" aria-busy="false"`,
+		`const root=document.getElementById('hubs');if(root)root.setAttribute('aria-busy','true')`,
+		`const root=document.getElementById('hubs');if(root)root.setAttribute('aria-busy','false')`,
+		`id="blockedEmails" class="list" role="status" aria-live="polite" aria-busy="false"`,
+		`id="blockedIPs" class="list" role="status" aria-live="polite" aria-busy="false"`,
+		`const root=document.getElementById('blockedEmails');if(root)root.setAttribute('aria-busy','true')`,
+		`const root=document.getElementById('blockedIPs');if(root)root.setAttribute('aria-busy','true')`,
 		`id="routeQueryResult" class="route-query-empty hint" role="status" aria-live="polite" aria-busy="false"`,
 		`id="failureLogsList" role="status" aria-live="polite" aria-busy="false"`,
 		`id="failureLogsPagerMeta" class="pager-meta" aria-live="polite"`,
