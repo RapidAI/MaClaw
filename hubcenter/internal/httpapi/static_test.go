@@ -135,6 +135,13 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
 	for _, required := range []string{
+		`function enhanceStatusHints`,
+		`'haConfigReadinessHint','haRuntimeConfigHint','haClusterSecretHint'`,
+		`el.setAttribute('role','status');el.setAttribute('aria-live','polite')`,
+		`applyI18n();enhanceFormAccessibility();enhanceStatusHints();`,
+		`id="haOverviewGrid" class="ha-overview-grid" role="status" aria-live="polite" aria-busy="false"`,
+		`root.setAttribute('aria-busy', 'false');`,
+		`if(overview) overview.setAttribute('aria-busy', 'true');`,
 		`id="haSummaryList" role="status" aria-live="polite" aria-busy="false"`,
 		`id="haPeerList" class="ha-peer-list" role="status" aria-live="polite" aria-busy="false"`,
 		`id="haSyncDetailList" class="ha-sync-list" role="status" aria-live="polite" aria-busy="false"`,
