@@ -159,6 +159,9 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(user, `id="workspace-tab-account" class="tab active" type="button"`) || !strings.Contains(user, `id="workspace-tab-myskills" class="tab" type="button"`) {
 		t.Fatalf("workspace tabs must be non-submit buttons")
 	}
+	if !strings.Contains(user, `id="tx-prev-btn" type="button"`) || !strings.Contains(user, `aria-label="Previous transactions page"`) || !strings.Contains(user, `id="tx-next-btn" type="button"`) || !strings.Contains(user, `aria-label="Next transactions page"`) {
+		t.Fatalf("transaction pager icon buttons must expose accessible names")
+	}
 	for _, id := range []string{"login-email", "reg-email", "current-password", "credits-amount", "apikey-skill-id", "apikey-bulk"} {
 		if !strings.Contains(user, `for="`+id+`"`) {
 			t.Fatalf("missing form label for %s", id)

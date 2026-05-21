@@ -282,7 +282,7 @@
         </div>
         <div id="credits-msg" aria-live="polite"></div>
         <h3 style="margin-top:16px" data-i18n="credits.history">Transactions</h3>
-        <div class="table-wrap"><table><thead><tr><th data-i18n="tx.time">Time</th><th data-i18n="tx.type">Type</th><th data-i18n="tx.amount">Amount</th><th data-i18n="tx.balance">Balance</th><th data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list"></tbody></table></div><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" onclick="changeTxPage(-1)">&larr;</button><button class="btn btn-outline" id="tx-next-btn" onclick="changeTxPage(1)">&rarr;</button></div></div>
+        <div class="table-wrap"><table><thead><tr><th data-i18n="tx.time">Time</th><th data-i18n="tx.type">Type</th><th data-i18n="tx.amount">Amount</th><th data-i18n="tx.balance">Balance</th><th data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list"></tbody></table></div><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" type="button" onclick="changeTxPage(-1)" aria-label="Previous transactions page">&larr;</button><button class="btn btn-outline" id="tx-next-btn" type="button" onclick="changeTxPage(1)" aria-label="Next transactions page">&rarr;</button></div></div>
       </div>
     </div>
 
