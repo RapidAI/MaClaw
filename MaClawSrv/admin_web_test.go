@@ -177,9 +177,15 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	for _, needle := range []string{
 		`el.setAttribute("role","status")`,
 		`el.setAttribute("aria-live","polite")`,
+		`<div class="empty-state" role="status">`,
+		`<span aria-hidden="true"></span>`,
 		`function enhanceA11y()`,
 		`content.setAttribute("role","region")`,
 		`th.setAttribute("scope","col")`,
+		`box.setAttribute("aria-labelledby",h.id)`,
+		`wrap.setAttribute("tabindex","0")`,
+		`wrap.setAttribute("role","region")`,
+		`class="table-wrap log-table-wrap" tabindex="0" role="region"`,
 		`badge.className=`,
 	} {
 		if !strings.Contains(app, needle) {

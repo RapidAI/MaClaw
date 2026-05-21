@@ -135,6 +135,7 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
 	for _, required := range []string{
+		`id="failureLogsPagerMeta" class="pager-meta" aria-live="polite"`,
 		`id="gossipPrevBtn" type="button"`,
 		`aria-label="Previous gossip page"`,
 		`id="gossipPageInfo" aria-live="polite"`,
@@ -181,6 +182,9 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	}
 	if !strings.Contains(user, `id="tx-prev-btn" type="button"`) || !strings.Contains(user, `aria-label="Previous transactions page"`) || !strings.Contains(user, `id="tx-next-btn" type="button"`) || !strings.Contains(user, `aria-label="Next transactions page"`) {
 		t.Fatalf("transaction pager icon buttons must expose accessible names")
+	}
+	if !strings.Contains(user, `id="tx-page-info" aria-live="polite"`) {
+		t.Fatalf("transaction pager status must announce page changes")
 	}
 	for _, header := range []string{"tx.time", "tx.type", "tx.amount", "tx.balance", "tx.desc", "sk.name", "sk.version", "sk.status", "sk.rating", "sk.downloads", "sk.actions"} {
 		if !strings.Contains(user, `scope="col" data-i18n="`+header+`"`) {
