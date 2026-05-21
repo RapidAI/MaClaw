@@ -135,6 +135,15 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
 	for _, required := range []string{
+		`id="routeQueryResult" class="route-query-empty hint" role="status" aria-live="polite" aria-busy="false"`,
+		`id="failureLogsList" role="status" aria-live="polite" aria-busy="false"`,
+		`id="failureLogsPagerMeta" class="pager-meta" aria-live="polite"`,
+	} {
+		if !strings.Contains(admin, required) {
+			t.Fatalf("admin async result region missing accessibility contract %q", required)
+		}
+	}
+	for _, required := range []string{
 		`id="failureLogsPagerMeta" class="pager-meta" aria-live="polite"`,
 		`id="gossipPrevBtn" type="button"`,
 		`aria-label="Previous gossip page"`,
