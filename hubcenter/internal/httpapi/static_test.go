@@ -134,11 +134,27 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(admin, `function enhanceFormAccessibility`) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
+	if !strings.Contains(admin, `function enhanceButtonTypes`) || !strings.Contains(admin, `root.querySelectorAll('button:not([type])').forEach`) || !strings.Contains(admin, `enhanceFormAccessibility(node);enhanceButtonTypes(node)`) || !strings.Contains(admin, `applyI18n();enhanceFormAccessibility();enhanceButtonTypes();`) || !strings.Contains(admin, `btn.type='button';`) || !strings.Contains(admin, `if(typeof enhanceButtonTypes==='function')enhanceButtonTypes();`) {
+		t.Fatalf("admin page must normalize implicit submit buttons")
+	}
+	for _, required := range []string{
+		`function enhanceUserMgmtRegions`,
+		`'userMgmtRegistrationReport','userMgmtDashboard','userMgmtFromHub','userMgmtResult'`,
+		`el.setAttribute('role','status');el.setAttribute('aria-live','polite');el.setAttribute('aria-busy','false')`,
+		`function setUserMgmtBusy`,
+		`setUserMgmtBusy(['userMgmtRegistrationReport','userMgmtDashboard','userMgmtFromHub'],true)`,
+		`setUserMgmtBusy(['userMgmtFromHub','userMgmtResult'],true)`,
+		`setUserMgmtBusy(['userMgmtResult'],true)`,
+	} {
+		if !strings.Contains(admin, required) {
+			t.Fatalf("admin user management async region missing accessibility contract %q", required)
+		}
+	}
 	for _, required := range []string{
 		`function enhanceStatusHints`,
 		`'haConfigReadinessHint','haRuntimeConfigHint','haClusterSecretHint'`,
 		`el.setAttribute('role','status');el.setAttribute('aria-live','polite')`,
-		`applyI18n();enhanceFormAccessibility();enhanceStatusHints();`,
+		`applyI18n();enhanceFormAccessibility();enhanceButtonTypes();enhanceStatusHints();`,
 		`id="haOverviewGrid" class="ha-overview-grid" role="status" aria-live="polite" aria-busy="false"`,
 		`root.setAttribute('aria-busy', 'false');`,
 		`if(overview) overview.setAttribute('aria-busy', 'true');`,
