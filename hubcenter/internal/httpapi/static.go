@@ -81,6 +81,17 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 	registerStaticRoutes(mux, staticDir, routePrefix)
 }
 
+func registerSharedStaticAssets(mux *http.ServeMux, staticDir string) {
+	staticDir = resolveStaticDir(staticDir)
+	if strings.TrimSpace(staticDir) == "" {
+		return
+	}
+	cssPath := filepath.Join(staticDir, "pro-ui.css")
+	mux.HandleFunc("GET /pro-ui.css", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, cssPath)
+	})
+}
+
 func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir string, indexPath string, routePrefix string) {
 	relPath := strings.TrimPrefix(r.URL.Path, routePrefix)
 	relPath = strings.TrimPrefix(relPath, "/")

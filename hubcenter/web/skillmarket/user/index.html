@@ -84,9 +84,10 @@
     h1,h2,h3,.stat .val,.detail-item .val,.auth-metric .val,.logged-in-bar .email,button{font-weight:650;letter-spacing:0}.brand h1,.auth-brand-panel h2,.auth-card-head h3,.console-title h2,.card h3{letter-spacing:0;line-height:1.24}.card,.logged-in-bar,.console-hero,.auth-brand-panel,.auth-card,.auth-point,.auth-metric,.stat,.detail-item,.table-wrap{box-shadow:0 6px 18px rgba(35,41,55,.03);border-color:#e7ebf1}.btn-primary,.lang-switch button.active{box-shadow:0 8px 18px rgba(239,106,124,.14)}input,select{border-color:#e5e9f0}.auth-brand-panel h2::before,.auth-card-head h3::before,.console-title h2::before,.card h3::before{background:#fafbfc;border-color:#e8ebf1}.auth-brand-panel h2::after,.auth-card-head h3::after,.console-title h2::after,.card h3::after{opacity:.92}.tab.active{font-weight:650}.auth-point strong{font-weight:650}.table-wrap table{line-height:1.55}
     /* Softer text hierarchy */
     :root{--text:#59636f;--muted:#98a1ab}body{color:#59636f}.brand h1,.auth-brand-panel h2,.auth-card-head h3,.console-title h2,.card h3,.stat .val,.detail-item .val,.auth-metric .val,.logged-in-bar .email{color:#5b6470}.brand p,.console-sub,.auth-lead,.auth-point span,.auth-card-head p,.auth-desc,.auth-footnote,.stat .lbl,.detail-item .lbl,.muted,th,.empty,.form-row label,.auth-card .form-row label,.tab,.lang-switch button{color:#98a1ab}.auth-kicker{color:#98a1ab}.auth-brand-panel h2::after,.auth-card-head h3::after,.console-title h2::after,.card h3::after{background:#98a1ab}.auth-tab.active{background:#5b6470;border-color:#5b6470}</style>
+  <link rel="stylesheet" href="/pro-ui.css">
 </head>
 <body>
-<div id="toastStack" class="toast-stack"></div>
+<div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
 <div class="container">
   <header class="topbar">
     <div class="brand">
@@ -99,8 +100,8 @@
     <div class="nav-actions">
       <a class="nav-link" href="/skillmarket" data-i18n="nav.browse"><- Back to Skill Browse</a>
       <div class="lang-switch" aria-label="Language">
-        <button type="button" id="lang-zh" onclick="setLanguage('zh')">&#20013;&#25991;</button>
-        <button type="button" id="lang-en" onclick="setLanguage('en')">EN</button>
+        <button type="button" id="lang-zh" onclick="setLanguage('zh')" aria-pressed="false">&#20013;&#25991;</button>
+        <button type="button" id="lang-en" onclick="setLanguage('en')" aria-pressed="true">EN</button>
       </div>
     </div>
   </header>
@@ -132,56 +133,56 @@
         <p data-i18n="auth.card.desc">Choose a secure sign-in method to continue.</p>
       </div>
       <div class="auth-tabs" role="tablist" aria-label="Authentication modes">
-        <button class="auth-tab active" type="button" data-auth-tab="login" onclick="showAuthMode('login')" data-i18n="auth.login.title">Login</button>
-        <button class="auth-tab" type="button" data-auth-tab="register" onclick="showAuthMode('register')" data-i18n="auth.register.short">Register</button>
-        <button class="auth-tab" type="button" data-auth-tab="lookup" onclick="showAuthMode('lookup')" data-i18n="auth.lookup.short">Email Login</button>
-        <button class="auth-tab" type="button" data-auth-tab="forgot" onclick="showAuthMode('forgot')" data-i18n="auth.forgot.short">Recover</button>
+        <button id="auth-tab-login" class="auth-tab active" type="button" data-auth-tab="login" onclick="showAuthMode('login')" data-i18n="auth.login.title" role="tab" aria-selected="true" aria-controls="auth-mode-login">Login</button>
+        <button id="auth-tab-register" class="auth-tab" type="button" data-auth-tab="register" onclick="showAuthMode('register')" data-i18n="auth.register.short" role="tab" aria-selected="false" aria-controls="auth-mode-register">Register</button>
+        <button id="auth-tab-lookup" class="auth-tab" type="button" data-auth-tab="lookup" onclick="showAuthMode('lookup')" data-i18n="auth.lookup.short" role="tab" aria-selected="false" aria-controls="auth-mode-lookup">Email Login</button>
+        <button id="auth-tab-forgot" class="auth-tab" type="button" data-auth-tab="forgot" onclick="showAuthMode('forgot')" data-i18n="auth.forgot.short" role="tab" aria-selected="false" aria-controls="auth-mode-forgot">Recover</button>
       </div>
 
-      <div id="auth-mode-login" class="auth-mode-panel">
-        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="login-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
-        <div class="form-row"><label data-i18n="auth.password">Password</label><input id="login-password" type="password" data-i18n-placeholder="auth.password.placeholder" placeholder="Password"></div>
-        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="login-captcha-q"></span><span>=</span><input id="login-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('login')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+      <div id="auth-mode-login" class="auth-mode-panel" role="tabpanel" aria-labelledby="auth-tab-login">
+        <div class="form-row"><label for="login-email" data-i18n="auth.email">Email</label><input id="login-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label for="login-password" data-i18n="auth.password">Password</label><input id="login-password" type="password" data-i18n-placeholder="auth.password.placeholder" placeholder="Password"></div>
+        <div class="form-row"><label for="login-captcha-a" data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="login-captcha-q"></span><span>=</span><input id="login-captcha-a" type="text" placeholder="?"><button class="captcha-refresh" type="button" onclick="refreshCaptcha('login')" title="refresh" data-i18n="auth.refresh">Refresh</button></div></div>
         <div class="auth-actions"><button class="btn btn-primary" onclick="doLogin()" data-i18n="auth.login.btn">Login</button></div>
-        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('register')" data-i18n="auth.switch.register">No account? Register</span><span class="auth-toggle" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">Email verification login</span><span class="auth-toggle" onclick="showAuthMode('forgot')" data-i18n="auth.switch.forgot">Forgot password?</span></div>
-        <div id="login-msg"></div>
+        <div class="auth-links"><span class="auth-toggle" role="button" tabindex="0" onclick="showAuthMode('register')" data-i18n="auth.switch.register">No account? Register</span><span class="auth-toggle" role="button" tabindex="0" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">Email verification login</span><span class="auth-toggle" role="button" tabindex="0" onclick="showAuthMode('forgot')" data-i18n="auth.switch.forgot">Forgot password?</span></div>
+        <div id="login-msg" aria-live="polite"></div>
       </div>
 
-      <div id="auth-mode-register" class="auth-mode-panel" style="display:none">
+      <div id="auth-mode-register" class="auth-mode-panel" role="tabpanel" aria-labelledby="auth-tab-register" style="display:none">
         <p class="auth-desc" data-i18n="auth.register.desc">Create an account and activate it from your mailbox.</p>
-        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="reg-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
-        <div class="form-row"><label data-i18n="auth.password">Password</label><input id="reg-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters"></div>
-        <div class="form-row"><label data-i18n="auth.confirm.password">Confirm Password</label><input id="reg-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again"></div>
-        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="reg-captcha-q"></span><span>=</span><input id="reg-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('reg')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+        <div class="form-row"><label for="reg-email" data-i18n="auth.email">Email</label><input id="reg-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label for="reg-password" data-i18n="auth.password">Password</label><input id="reg-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters"></div>
+        <div class="form-row"><label for="reg-password2" data-i18n="auth.confirm.password">Confirm Password</label><input id="reg-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again"></div>
+        <div class="form-row"><label for="reg-captcha-a" data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="reg-captcha-q"></span><span>=</span><input id="reg-captcha-a" type="text" placeholder="?"><button class="captcha-refresh" type="button" onclick="refreshCaptcha('reg')" title="refresh" data-i18n="auth.refresh">Refresh</button></div></div>
         <div class="auth-actions"><button class="btn btn-success" onclick="doRegister()" data-i18n="auth.register.btn">Register</button></div>
-        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
-        <div id="reg-msg"></div>
+        <div class="auth-links"><span class="auth-toggle" role="button" tabindex="0" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
+        <div id="reg-msg" aria-live="polite"></div>
       </div>
 
-      <div id="auth-mode-lookup" class="auth-mode-panel" style="display:none">
+      <div id="auth-mode-lookup" class="auth-mode-panel" role="tabpanel" aria-labelledby="auth-tab-lookup" style="display:none">
         <p class="auth-desc" data-i18n="auth.lookup.desc">Enter your registered email. We will send a verification link to log you in.</p>
-        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="lookup-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
-        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="lookup-captcha-q"></span><span>=</span><input id="lookup-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('lookup')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+        <div class="form-row"><label for="lookup-email" data-i18n="auth.email">Email</label><input id="lookup-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label for="lookup-captcha-a" data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="lookup-captcha-q"></span><span>=</span><input id="lookup-captcha-a" type="text" placeholder="?"><button class="captcha-refresh" type="button" onclick="refreshCaptcha('lookup')" title="refresh" data-i18n="auth.refresh">Refresh</button></div></div>
         <div class="auth-actions"><button class="btn btn-primary" onclick="doLookup()" data-i18n="auth.lookup.btn">Send Verification Email</button></div>
-        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
-        <div id="lookup-msg"></div>
+        <div class="auth-links"><span class="auth-toggle" role="button" tabindex="0" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
+        <div id="lookup-msg" aria-live="polite"></div>
       </div>
 
-      <div id="auth-mode-forgot" class="auth-mode-panel" style="display:none">
+      <div id="auth-mode-forgot" class="auth-mode-panel" role="tabpanel" aria-labelledby="auth-tab-forgot" style="display:none">
         <p class="auth-desc" data-i18n="auth.forgot.desc">Enter your registered email. We will send a password reset link.</p>
-        <div class="form-row"><label data-i18n="auth.email">Email</label><input id="forgot-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
-        <div class="form-row"><label data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="forgot-captcha-q"></span><span>=</span><input id="forgot-captcha-a" type="text" placeholder="?"><span class="captcha-refresh" onclick="refreshCaptcha('forgot')" title="refresh" data-i18n="auth.refresh">Refresh</span></div></div>
+        <div class="form-row"><label for="forgot-email" data-i18n="auth.email">Email</label><input id="forgot-email" type="email" data-i18n-placeholder="auth.email.placeholder" placeholder="your@email.com"></div>
+        <div class="form-row"><label for="forgot-captcha-a" data-i18n="auth.captcha">Captcha</label><div class="captcha-box"><span class="captcha-display" id="forgot-captcha-q"></span><span>=</span><input id="forgot-captcha-a" type="text" placeholder="?"><button class="captcha-refresh" type="button" onclick="refreshCaptcha('forgot')" title="refresh" data-i18n="auth.refresh">Refresh</button></div></div>
         <div class="auth-actions"><button class="btn btn-primary" onclick="doForgotPassword()" data-i18n="auth.forgot.btn">Send Reset Email</button></div>
-        <div class="auth-links"><span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
-        <div id="forgot-msg"></div>
+        <div class="auth-links"><span class="auth-toggle" role="button" tabindex="0" onclick="showAuthMode('login')" data-i18n="auth.switch.login">Have an account? Login</span></div>
+        <div id="forgot-msg" aria-live="polite"></div>
       </div>
 
-      <div id="auth-mode-reset" class="auth-mode-panel" style="display:none">
+      <div id="auth-mode-reset" class="auth-mode-panel" role="tabpanel" aria-labelledby="auth-tab-forgot" style="display:none">
         <p class="auth-desc" data-i18n="auth.reset.desc">Set a new password from the secure reset link.</p>
-        <div class="form-row"><label data-i18n="auth.password">Password</label><input id="reset-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters"></div>
-        <div class="form-row"><label data-i18n="auth.confirm.password">Confirm Password</label><input id="reset-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again"></div>
+        <div class="form-row"><label for="reset-password" data-i18n="auth.password">Password</label><input id="reset-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters"></div>
+        <div class="form-row"><label for="reset-password2" data-i18n="auth.confirm.password">Confirm Password</label><input id="reset-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again"></div>
         <div class="auth-actions"><button class="btn btn-primary" onclick="doResetPassword()" data-i18n="auth.reset.btn">Reset Password</button></div>
-        <div id="reset-msg"></div>
+        <div id="reset-msg" aria-live="polite"></div>
       </div>
       <div class="auth-footnote" data-i18n="auth.footnote">Use the same mailbox you use for SkillMarket publishing and delivery.</div>
     </section>
@@ -210,12 +211,12 @@
         <button class="btn btn-outline" onclick="exportTransactions()" data-i18n="action.exportTx">Export Transactions</button>
       </div>
     </div>
-    <div class="tabs">
-      <button class="tab active" data-panel="account" data-i18n="tab.account">Account</button>
-      <button class="tab" data-panel="myskills" data-i18n="tab.myskills">My Skills</button>
+    <div class="tabs" role="tablist" aria-label="Workspace sections">
+      <button id="workspace-tab-account" class="tab active" data-panel="account" data-i18n="tab.account" role="tab" aria-selected="true" aria-controls="panel-account">Account</button>
+      <button id="workspace-tab-myskills" class="tab" data-panel="myskills" data-i18n="tab.myskills" role="tab" aria-selected="false" aria-controls="panel-myskills">My Skills</button>
     </div>
 
-    <div id="panel-account" class="panel active">
+    <div id="panel-account" class="panel active" role="tabpanel" aria-labelledby="workspace-tab-account">
       <div id="account-info" class="card">
         <div class="section-head">
           <h3 data-i18n="account.title">Account Info</h3>
@@ -241,22 +242,22 @@
       <div id="security-section" class="card">
         <div class="section-head"><h3 data-i18n="security.title">Security</h3><span class="badge badge-ok" data-i18n="security.passwordAuth">Password Login</span></div>
         <div class="form-row">
-          <label data-i18n="security.current">Current Password</label>
+          <label for="current-password" data-i18n="security.current">Current Password</label>
           <input id="current-password" type="password" data-i18n-placeholder="security.current.placeholder" placeholder="Current password">
         </div>
         <div class="form-row">
-          <label data-i18n="security.new">New Password</label>
+          <label for="new-password" data-i18n="security.new">New Password</label>
           <input id="new-password" type="password" data-i18n-placeholder="auth.password.short.placeholder" placeholder="At least 6 characters">
         </div>
         <div class="form-row">
-          <label data-i18n="security.confirm">Confirm</label>
+          <label for="new-password2" data-i18n="security.confirm">Confirm</label>
           <input id="new-password2" type="password" data-i18n-placeholder="auth.password.confirm.placeholder" placeholder="Enter password again">
         </div>
         <div class="form-row">
-          <label></label>
+          <label aria-hidden="true"></label>
           <button class="btn btn-primary" onclick="changePassword()" data-i18n="security.change">Change Password</button>
         </div>
-        <div id="security-msg"></div>
+        <div id="security-msg" aria-live="polite"></div>
       </div>
       <div id="tier-info" class="card" style="display:none">
         <div class="section-head"><h3 data-i18n="tier.title">Reputation Tier</h3><span class="badge" id="tier-badge">-</span></div>
@@ -274,18 +275,18 @@
           <div class="section-actions"><button class="btn btn-outline" onclick="exportTransactions()" data-i18n="action.exportTx">Export Transactions</button></div>
         </div>
         <div class="form-row">
-          <label data-i18n="credits.amount">Amount</label>
+          <label for="credits-amount" data-i18n="credits.amount">Amount</label>
           <input id="credits-amount" type="number" min="1" value="100" style="width:120px">
           <button class="btn btn-primary" onclick="topUp()" data-i18n="credits.topup">Top Up</button>
           <button class="btn btn-danger" onclick="withdraw()" data-i18n="credits.withdraw">Withdraw</button>
         </div>
-        <div id="credits-msg"></div>
+        <div id="credits-msg" aria-live="polite"></div>
         <h3 style="margin-top:16px" data-i18n="credits.history">Transactions</h3>
         <div class="table-wrap"><table><thead><tr><th data-i18n="tx.time">Time</th><th data-i18n="tx.type">Type</th><th data-i18n="tx.amount">Amount</th><th data-i18n="tx.balance">Balance</th><th data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list"></tbody></table></div><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" onclick="changeTxPage(-1)">&larr;</button><button class="btn btn-outline" id="tx-next-btn" onclick="changeTxPage(1)">&rarr;</button></div></div>
       </div>
     </div>
 
-    <div id="panel-myskills" class="panel">
+    <div id="panel-myskills" class="panel" role="tabpanel" aria-labelledby="workspace-tab-myskills">
       <div class="card">
         <div class="section-head">
           <h3 data-i18n="myskills.title">My Skills</h3>
@@ -300,17 +301,17 @@
       <div id="apikey-section" class="card">
         <h3 data-i18n="apikey.title">API Key Management</h3>
         <div class="form-row">
-          <label data-i18n="apikey.skillid">Skill ID</label>
+          <label for="apikey-skill-id" data-i18n="apikey.skillid">Skill ID</label>
           <input id="apikey-skill-id" style="flex:1" data-i18n-placeholder="apikey.skillid.placeholder">
           <button class="btn btn-primary" onclick="loadAPIKeyStatus()" data-i18n="apikey.query">Lookup</button>
         </div>
-        <div id="apikey-status"></div>
+        <div id="apikey-status" aria-live="polite"></div>
         <div class="form-row" style="margin-top:10px">
-          <label data-i18n="apikey.bulk">Bulk Upload</label>
+          <label for="apikey-bulk" data-i18n="apikey.bulk">Bulk Upload</label>
           <textarea id="apikey-bulk" rows="4" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:12px" data-i18n-placeholder="apikey.placeholder" placeholder="One API key per line"></textarea>
           <button class="btn btn-success" onclick="uploadAPIKeys()" data-i18n="apikey.upload">Upload</button>
         </div>
-        <div id="apikey-msg"></div>
+        <div id="apikey-msg" aria-live="polite"></div>
       </div>
     </div>
 
@@ -362,7 +363,7 @@ function decodeActionValue(value) {
 }
 
 function switchPanel(panel) {
-  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.panel === panel));
+  document.querySelectorAll('.tab').forEach(b => { const active = b.dataset.panel === panel; b.classList.toggle('active', active); b.setAttribute('aria-selected', active ? 'true' : 'false'); });
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.getElementById('panel-' + panel).classList.add('active');
   if (panel === 'myskills') loadMySkills();
@@ -634,7 +635,9 @@ function showAuthMode(mode) {
     document.getElementById('auth-mode-' + m).style.display = m === mode ? '' : 'none';
   });
   document.querySelectorAll('[data-auth-tab]').forEach(tab => {
-    tab.classList.toggle('active', tab.getAttribute('data-auth-tab') === mode);
+    const active = tab.getAttribute('data-auth-tab') === mode;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   if (mode === 'forgot') refreshCaptcha('forgot');
   else if (mode === 'register') refreshCaptcha('reg');
@@ -1024,11 +1027,19 @@ function showMsg(id, msg, isErr) {
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(b => { const active = b === tab; b.classList.toggle('active', active); b.setAttribute('aria-selected', active ? 'true' : 'false'); });
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
     if (tab.dataset.panel === 'myskills') loadMySkills();
+  });
+});
+
+document.querySelectorAll('.auth-toggle').forEach(toggle => {
+  toggle.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggle.click();
+    }
   });
 });
 
@@ -1037,7 +1048,7 @@ function applyI18n() {
   document.title = t('title');
   const zh = document.getElementById('lang-zh');
   const en = document.getElementById('lang-en');
-  if (zh && en) { zh.classList.toggle('active', LANG === 'zh'); en.classList.toggle('active', LANG === 'en'); }
+  if (zh && en) { zh.classList.toggle('active', LANG === 'zh'); en.classList.toggle('active', LANG === 'en'); zh.setAttribute('aria-pressed', LANG === 'zh' ? 'true' : 'false'); en.setAttribute('aria-pressed', LANG === 'en' ? 'true' : 'false'); }
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
     if (I18N[key]) el.textContent = I18N[key][LANG];

@@ -1,0 +1,163 @@
+/* HubCenter professional UI layer. Loaded after page-local styles. */
+:root {
+  --bg: #f6f8fb;
+  --bg-2: #ffffff;
+  --panel: #ffffff;
+  --panel-strong: #ffffff;
+  --card: #ffffff;
+  --soft: #f8fafc;
+  --soft-2: #eef2f7;
+  --text: #202938;
+  --muted: #667085;
+  --line: #d8e0eb;
+  --line-strong: #b8c6d9;
+  --primary: #2563eb;
+  --primary-strong: #1d4ed8;
+  --primary-soft: #eaf1ff;
+  --green: #16835f;
+  --ok: #16835f;
+  --warn: #b7791f;
+  --danger: #c2413d;
+  --shadow: 0 14px 34px rgba(15, 23, 42, .07);
+  --shadow-soft: 0 8px 22px rgba(15, 23, 42, .045);
+  --radius: 10px;
+}
+
+html { background: #f6f8fb; scrollbar-gutter: stable; }
+body {
+  background: linear-gradient(180deg, #fbfcff 0%, #f6f8fb 46%, #eef2f7 100%) !important;
+  color: var(--text) !important;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif !important;
+  font-size: 14px;
+  line-height: 1.55;
+  color-scheme: light;
+}
+
+body, input, select, textarea, button { letter-spacing: 0 !important; }
+h1, h2, h3, .brand h1, .top h2, .head h3, .card-name, .item-title, .metric-value, .metric strong,
+.stat .val, .stat strong, .detail h2, .auth-brand-panel h2, .auth-card-head h3, .console-title h2 {
+  color: var(--text) !important;
+  font-weight: 680 !important;
+  letter-spacing: 0 !important;
+}
+p, .subtitle, .brand-sub, .brand p, .desc, .hint, .item-meta, .muted, .section-note, .card-desc,
+.card-meta, .meta, .footer, .pager span, .console-sub, .auth-lead, .auth-desc, .auth-footnote,
+.detail p, .detail-meta, th, label {
+  color: var(--muted) !important;
+}
+a { text-underline-offset: 3px; }
+.footer a { display: inline-flex; align-items: center; min-height: 44px; }
+
+.wrap, .container { max-width: 1180px !important; }
+.shell, .main { background: transparent !important; }
+.main::before, .hero::after, .auth-brand-panel::before { display: none !important; }
+
+.hero, .search-panel, .insight-panel, .content-panel, .card, .panel, .item, .metric, .summary-card,
+.stat, .post, .state, .detail, .logged-in-bar, .console-hero, .auth-brand-panel, .auth-card,
+.auth-point, .auth-metric, .detail-item, .table-wrap, .admin-chip, .lang-switch, .stage-card,
+.status-card, .sm-section, .sm-config-card, .ha-overview-card, .ha-sync-card, .ha-peer-card,
+.ha-node-plan-card, .ha-peer-config-card, .user-link, .nav-btn, .nav-link {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: var(--shadow-soft) !important;
+}
+
+.hero, .search-panel, .content-panel, .panel, .card, .auth-card, .auth-brand-panel { padding: 20px !important; }
+.grid, .metrics, .market-shell, .summary, .stats, .split-grid, .grid2, .grid3 { gap: 14px !important; }
+.card:hover, .post:hover, .item:hover, .metric:hover {
+  border-color: var(--line-strong) !important;
+  box-shadow: var(--shadow) !important;
+  transform: translateY(-1px);
+}
+
+input, select, textarea, .toolbar input, .toolbar select, .toolbar button, .pager button,
+.rating-row button, .detail-close {
+  min-height: 44px !important;
+  min-width: 44px !important;
+  border-color: var(--line) !important;
+  border-radius: 9px !important;
+  background: #fff !important;
+  color: var(--text) !important;
+}
+input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible,
+[role="button"]:focus-visible, [role="tab"]:focus-visible {
+  outline: 2px solid transparent !important;
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .16) !important;
+}
+
+button, .btn, .tab, .cap-tab, .auth-tab, .filter, .user-link, .nav-link, .nav-btn, [role="button"] {
+  min-height: 44px !important;
+  min-width: 44px !important;
+  border-radius: 9px !important;
+  font-weight: 650 !important;
+}
+[role="button"] { cursor: pointer; }
+.btn-primary, .toolbar button, .lang-switch button.active, .tab.active, .cap-tab.active,
+.auth-tab.active, .rating-row button.selected, .rating-row button:hover {
+  background: linear-gradient(135deg, var(--primary), var(--primary-strong)) !important;
+  border-color: var(--primary) !important;
+  color: #fff !important;
+  box-shadow: 0 10px 20px rgba(37, 99, 235, .16) !important;
+}
+.btn-secondary, .btn-ghost, .btn-outline, .pager button, .rating-row button, .tab, .cap-tab, .auth-tab,
+.filter, .user-link, .nav-link, .nav-btn {
+  background: #fff !important;
+  border: 1px solid var(--line) !important;
+  color: #344054 !important;
+  box-shadow: none !important;
+}
+.btn-danger { background: #fff5f5 !important; border: 1px solid #f1c4c0 !important; color: var(--danger) !important; }
+.btn-success { background: #ecfdf3 !important; border: 1px solid #badfcb !important; color: var(--green) !important; }
+
+.tag, .trust, .badge, .price-pill, .sm-pill {
+  border-radius: 999px !important;
+  border: 1px solid var(--line) !important;
+  background: var(--soft) !important;
+  color: #475467 !important;
+  font-weight: 650 !important;
+}
+.ok, .badge-ok, .trust-official, .price-pill { background: #ecfdf3 !important; color: var(--green) !important; border-color: #badfcb !important; }
+.warn, .badge-warn { background: #fffbeb !important; color: var(--warn) !important; border-color: #f0d99a !important; }
+.danger, .msg-err { background: #fff5f5 !important; color: var(--danger) !important; border-color: #f1c4c0 !important; }
+.info, .msg-info { background: var(--primary-soft) !important; color: var(--primary-strong) !important; border-color: #c7d7fe !important; }
+
+.side {
+  background: #ffffff !important;
+  border-right-color: var(--line) !important;
+  box-shadow: 10px 0 30px rgba(15, 23, 42, .04) !important;
+}
+.side::before { background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important; }
+.brand-mark, .avatar { background: linear-gradient(135deg, #2563eb, #16835f) !important; }
+.nav button { border-radius: 12px !important; color: #344054 !important; }
+.nav button:hover, .nav button.active { background: var(--primary-soft) !important; border-color: #c7d7fe !important; box-shadow: none !important; }
+.nav-icon, .page-tab-icon, .head h3::before, h1::before, h2::before, h3::before, .card-name::before,
+.post-name::before { background: #fff !important; border-color: var(--line) !important; box-shadow: none !important; }
+.nav button.active .nav-icon, .nav button:hover .nav-icon, .page-tab-icon { color: var(--primary) !important; }
+.head h3::after, h1::after, h2::after, h3::after, .card-name::after, .post-name::after { background: var(--primary) !important; opacity: .9; }
+
+.metric, .stat, .summary-card, .auth-metric { background: var(--soft) !important; }
+.console { background: #0f172a !important; border-color: #1e293b !important; color: #dbeafe !important; }
+.state, .empty, .hint { border-style: dashed !important; background: #fbfcfe !important; }
+table { border-collapse: separate !important; border-spacing: 0; }
+th { background: #f1f5f9 !important; font-weight: 650 !important; }
+td, th { border-bottom-color: var(--line) !important; }
+.table-wrap { max-width: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .wrap, .container, .shell, .main { padding: 16px !important; }
+  .hero, .search-panel, .content-panel, .panel, .card, .auth-card, .auth-brand-panel { padding: 16px !important; }
+  h1, .hero h1, .search-panel h2, .auth-brand-panel h2, .top h2 { font-size: 24px !important; }
+  .toolbar, .topbar, .head, .section-head, .nav-actions { align-items: stretch !important; }
+  .toolbar input, .toolbar button, .nav-link, .user-link { width: 100%; }
+}

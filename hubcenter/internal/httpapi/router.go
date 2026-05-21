@@ -366,6 +366,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/moderation/config", RequireAdmin(adminService, GetModerationConfigHandler(systemSettings)))
 	mux.HandleFunc("POST /api/admin/moderation/config", RequireAdmin(adminService, UpdateModerationConfigHandler(systemSettings)))
 	mux.HandleFunc("POST /api/admin/moderation/test", RequireAdmin(adminService, TestModerationHandler(systemSettings)))
+	registerSharedStaticAssets(mux, "./web")
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerStaticRoutes(mux, "./web/skillhub", "/skillhub")
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")

@@ -26,6 +26,7 @@
     h1,.stat strong,.item-title,button{font-weight:650;letter-spacing:0}.card,.stat,.feed-item{box-shadow:0 6px 18px rgba(35,41,55,.03);border-color:#e7ebf1}.toolbar input,.toolbar select,.toolbar button{border-color:#e5e9f0}.feed{gap:10px}.footer{font-weight:500}h1::before{background:#fafbfc;border-color:#e8ebf1}h1::after{opacity:.92}
     /* Softer text hierarchy */
     :root{--text:#59636f;--muted:#98a1ab}body{color:#59636f}h1,.stat strong,.item-title{color:#5b6470}.stats,.footer,.item-meta,.muted,.feed-empty,input,select,button{color:#98a1ab}h1::after{background:#98a1ab}</style>
+  <link rel="stylesheet" href="/pro-ui.css">
 </head>
 <body>
 <div class="wrap">
@@ -42,16 +43,16 @@
   </div>
 
   <div class="toolbar">
-    <input id="searchInput">
-    <button type="button" class="filter active" data-cat="all" onclick="setFilter('all')" id="filterAll"></button>
-    <button type="button" class="filter" data-cat="gossip" onclick="setFilter('gossip')" id="filterGossip"></button>
-    <button type="button" class="filter" data-cat="owner" onclick="setFilter('owner')" id="filterOwner"></button>
-    <button type="button" class="filter" data-cat="project" onclick="setFilter('project')" id="filterProject"></button>
-    <button type="button" class="filter" data-cat="news" onclick="setFilter('news')" id="filterNews"></button>
+    <input id="searchInput" type="search" autocomplete="off" aria-label="Search nickname or content">
+    <button type="button" class="filter active" data-cat="all" onclick="setFilter('all')" id="filterAll" aria-pressed="true"></button>
+    <button type="button" class="filter" data-cat="gossip" onclick="setFilter('gossip')" id="filterGossip" aria-pressed="false"></button>
+    <button type="button" class="filter" data-cat="owner" onclick="setFilter('owner')" id="filterOwner" aria-pressed="false"></button>
+    <button type="button" class="filter" data-cat="project" onclick="setFilter('project')" id="filterProject" aria-pressed="false"></button>
+    <button type="button" class="filter" data-cat="news" onclick="setFilter('news')" id="filterNews" aria-pressed="false"></button>
     <select id="sortSelect" onchange="applyView()"></select>
   </div>
 
-  <div id="feed" class="feed"></div>
+  <div id="feed" class="feed" aria-live="polite" aria-busy="false"></div>
 
   <div id="pager" class="pager" style="display:none">
     <button id="prevBtn" type="button" onclick="changePage(-1)"></button>
@@ -70,10 +71,10 @@ function t(key,vars){var s=(I18N[key]&&I18N[key][LANG])||key;return String(s).re
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(ch){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];});}
 function formatDateShort(v){if(!v)return '';try{var d=new Date(v);if(isNaN(d))return String(v);return d.toLocaleDateString(LANG==='zh'?'zh-CN':'en-US');}catch(_){return String(v);}}
 function formatTimeAgo(v){if(!v)return '';var d=new Date(v),now=new Date(),diff=Math.floor((now-d)/1000);if(diff<60)return t('justNow');if(diff<3600)return t('minutesAgo',{count:Math.floor(diff/60)});if(diff<86400)return t('hoursAgo',{count:Math.floor(diff/3600)});if(diff<2592000)return t('daysAgo',{count:Math.floor(diff/86400)});return formatDateShort(v);}
-function applyI18n(){title.textContent=t('title');desc.textContent=t('desc');readonly.textContent=t('readonly');postsLabel.textContent=t('posts');votesLabel.textContent=t('votes');scoreLabel.textContent=t('score');searchInput.placeholder=t('search');filterAll.textContent=t('all');filterGossip.textContent=t('gossip');filterOwner.textContent=t('owner');filterProject.textContent=t('project');filterNews.textContent=t('news');sortSelect.innerHTML='<option value="newest">'+t('sortNewest')+'</option><option value="hottest">'+t('sortHottest')+'</option><option value="score">'+t('sortScore')+'</option>';prevBtn.textContent=t('prev');nextBtn.textContent=t('next');}
-function loadSnapshot(){var headers={};if(lastETag)headers['If-None-Match']=lastETag;fetch('/api/gossip/snapshot',{headers:headers}).then(function(r){if(r.status===304)return null;var etag=r.headers.get('ETag');if(etag)lastETag=etag;return r.json();}).then(function(data){if(!data)return;allPosts=data.posts||[];updateStats();applyView();}).catch(function(err){feed.className='state';feed.textContent=t('loadFailed',{error:err&&err.message?err.message:String(err)});});}
+function applyI18n(){title.textContent=t('title');desc.textContent=t('desc');readonly.textContent=t('readonly');postsLabel.textContent=t('posts');votesLabel.textContent=t('votes');scoreLabel.textContent=t('score');searchInput.placeholder=t('search');searchInput.setAttribute('aria-label',t('search'));filterAll.textContent=t('all');filterGossip.textContent=t('gossip');filterOwner.textContent=t('owner');filterProject.textContent=t('project');filterNews.textContent=t('news');sortSelect.innerHTML='<option value="newest">'+t('sortNewest')+'</option><option value="hottest">'+t('sortHottest')+'</option><option value="score">'+t('sortScore')+'</option>';prevBtn.textContent=t('prev');nextBtn.textContent=t('next');}
+function loadSnapshot(){feed.setAttribute('aria-busy','true');var headers={};if(lastETag)headers['If-None-Match']=lastETag;fetch('/api/gossip/snapshot',{headers:headers}).then(function(r){if(r.status===304)return null;var etag=r.headers.get('ETag');if(etag)lastETag=etag;return r.json();}).then(function(data){if(!data)return;allPosts=data.posts||[];updateStats();applyView();}).catch(function(err){feed.className='state';feed.textContent=t('loadFailed',{error:err&&err.message?err.message:String(err)});}).finally(function(){feed.setAttribute('aria-busy','false');});}
 function updateStats(){totalPosts.textContent=String(allPosts.length);var totalVotesNum=0,weighted=0,countVotes=0;for(var i=0;i<allPosts.length;i++){var item=allPosts[i];totalVotesNum+=Number(item.votes||0);if(Number(item.votes||0)>0){weighted+=Number(item.score||0);countVotes+=Number(item.votes||0);}}totalVotes.textContent=String(totalVotesNum);avgScore.textContent=countVotes>0?(weighted/countVotes).toFixed(1):'-';}
-function setFilter(cat){currentFilter=cat;Array.prototype.forEach.call(document.querySelectorAll('.filter'),function(btn){btn.classList.toggle('active',btn.dataset.cat===cat);});currentPage=1;applyView();}
+function setFilter(cat){currentFilter=cat;Array.prototype.forEach.call(document.querySelectorAll('.filter'),function(btn){var active=btn.dataset.cat===cat;btn.classList.toggle('active',active);btn.setAttribute('aria-pressed',active?'true':'false');});currentPage=1;applyView();}
 function applyView(){currentSort=sortSelect.value;var q=searchInput.value.trim().toLowerCase();var filtered=allPosts.filter(function(p){if(currentFilter!=='all'&&p.category!==currentFilter)return false;var nick=String(p.nickname||'').toLowerCase();var content=String(p.content||'').toLowerCase();return !q||nick.indexOf(q)!==-1||content.indexOf(q)!==-1;});if(currentSort==='newest')filtered.sort(function(a,b){return String(b.created_at||'').localeCompare(String(a.created_at||''));});else if(currentSort==='hottest')filtered.sort(function(a,b){return (Number(b.votes||0)-Number(a.votes||0))||(Number(b.score||0)-Number(a.score||0));});else filtered.sort(function(a,b){return (Number(b.score||0)-Number(a.score||0))||(Number(b.votes||0)-Number(a.votes||0));});var totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));if(currentPage>totalPages)currentPage=totalPages;var start=(currentPage-1)*PAGE_SIZE;renderFeed(filtered.slice(start,start+PAGE_SIZE),filtered.length);renderPager(totalPages,filtered.length);}
 function renderFeed(items,total){if(!items.length){feed.className='state';feed.textContent=allPosts.length?t('emptyFiltered'):t('empty');return;}feed.className='feed';feed.innerHTML=items.map(function(p){var cat=t(String(p.category||'owner').toLowerCase());var score=Number(p.votes||0)>0?Number(p.score||0).toFixed(1):'0';return '<div class="post"><div class="post-head"><div><div class="post-name">'+esc(p.nickname||'-')+'</div><div class="post-meta">'+esc(formatTimeAgo(p.created_at))+'</div></div><div><span class="tag">'+esc(cat)+'</span>'+(p.locked?' <span class="tag locked">'+t('locked')+'</span>':'')+'</div></div><div class="post-content">'+esc(p.content||'')+'</div><div class="post-foot"><span>'+t('score')+': '+score+'</span><span>'+t('votes')+': '+Number(p.votes||0)+' '+t('votesCount')+'</span><span>ID: '+esc(p.id||'-')+'</span></div></div>';}).join('');}
 function renderPager(totalPages,total){pager.style.display=totalPages>1?'flex':'none';pageInfo.textContent=t('page',{current:currentPage,total:totalPages,count:total});prevBtn.disabled=currentPage<=1;nextBtn.disabled=currentPage>=totalPages;}
