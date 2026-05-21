@@ -120,6 +120,9 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(admin, `class="lang-switch" aria-label="Language"`) || !strings.Contains(admin, `btn.setAttribute('aria-pressed'`) {
 		t.Fatalf("admin language switcher must expose pressed state")
 	}
+	if !strings.Contains(admin, `v.setAttribute('aria-current','page')`) || !strings.Contains(admin, `v.removeAttribute('aria-current')`) {
+		t.Fatalf("admin navigation must expose the current page")
+	}
 	if !strings.Contains(admin, `toast.setAttribute('role',type==='error'?'alert':'status')`) {
 		t.Fatalf("admin toasts must expose status/alert roles")
 	}

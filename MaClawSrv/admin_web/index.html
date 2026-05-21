@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/admin/styles.css" />
 </head>
 <body>
+  <a class="skip-link" href="#content">Skip to main content</a>
   <div id="app" class="app-shell">
     <aside class="sidebar">
       <div class="brand">
@@ -16,7 +17,7 @@
           <span data-i18n="adminConsole">Admin Console</span>
         </div>
       </div>
-      <nav id="nav" class="nav"></nav>
+      <nav id="nav" class="nav" aria-label="Admin sections"></nav>
       <div class="sidebar-footer">
         <select id="localeSelect" aria-label="Language">
           <option value="zh-CN">中文</option>
@@ -25,7 +26,7 @@
         <button id="logoutBtn" class="ghost" data-i18n="logout">Logout</button>
       </div>
     </aside>
-    <main class="main">
+    <main id="main" class="main" tabindex="-1">
       <header class="topbar">
         <div>
           <h1 id="pageTitle">MaClawSrv</h1>

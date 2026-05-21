@@ -39,6 +39,25 @@ body {
   letter-spacing: 0;
 }
 
+.skip-link {
+  position: fixed;
+  left: 16px;
+  top: 12px;
+  z-index: 200;
+  transform: translateY(-160%);
+  background: #ffffff;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 9px 12px;
+  box-shadow: var(--shadow);
+  font-weight: 750;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 button, input, select, textarea { font: inherit; }
 
 button, select, input, textarea { touch-action: manipulation; }
@@ -193,6 +212,14 @@ textarea:focus-visible {
 }
 
 .panel { max-width: 1100px; }
+.main > .panel:not(.hidden) {
+  margin: 0 auto;
+  width: min(100%, 1100px);
+}
+.main > #loginPanel:not(.hidden),
+.main > #bootstrapPanel:not(.hidden) {
+  margin-top: 6px;
+}
 .card:hover { border-color: var(--line-strong); }
 
 .grid {
@@ -429,6 +456,42 @@ pre {
   z-index: 100;
 }
 
+.error-panel {
+  border-color: #f0b5af;
+  background: linear-gradient(180deg, #fff8f7, #ffffff);
+}
+
+.loading-card {
+  min-height: 150px;
+  display: grid;
+  align-content: center;
+  gap: 12px;
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e6edf1;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .66), transparent);
+  animation: skeleton-shimmer 1.2s infinite;
+}
+
+.skeleton-title { width: min(340px, 70%); height: 22px; }
+.skeleton-line { width: min(620px, 92%); height: 14px; }
+.skeleton-line.short { width: min(420px, 62%); }
+
+@keyframes skeleton-shimmer {
+  100% { transform: translateX(100%); }
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -444,6 +507,7 @@ pre {
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
+  .skeleton::after { animation: none; }
 }
 
 @media (max-width: 1040px) {
