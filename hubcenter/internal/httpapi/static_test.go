@@ -123,6 +123,11 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(admin, `toast.setAttribute('role',type==='error'?'alert':'status')`) {
 		t.Fatalf("admin toasts must expose status/alert roles")
 	}
+	for _, id := range []string{"loginOutput", "output"} {
+		if !strings.Contains(admin, `id="`+id+`" class="console" role="status" aria-live="polite"`) {
+			t.Fatalf("admin console %s must announce async status text", id)
+		}
+	}
 	if !strings.Contains(admin, `function enhanceFormAccessibility`) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
