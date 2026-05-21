@@ -177,6 +177,9 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	for _, needle := range []string{
 		`el.setAttribute("role","status")`,
 		`el.setAttribute("aria-live","polite")`,
+		`pendingRequests: 0`,
+		`function setNetworkBusy(delta)`,
+		`document.body.classList.toggle("is-fetching",state.pendingRequests>0)`,
 		`<div class="empty-state" role="status">`,
 		`<span aria-hidden="true"></span>`,
 		`function enhanceA11y()`,
@@ -200,6 +203,11 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("admin css missing accessibility marker %s", needle)
+		}
+	}
+	for _, needle := range []string{`body.is-fetching::after`, `@keyframes network-progress`, `@media print`} {
+		if !strings.Contains(css, needle) {
+			t.Fatalf("admin css missing interaction polish marker %s", needle)
 		}
 	}
 	for _, needle := range []string{
