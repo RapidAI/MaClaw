@@ -207,13 +207,13 @@
       </div>
       <div class="quick-actions">
         <a class="btn btn-outline" href="/skillmarket" data-i18n="action.browse">Browse Market</a>
-        <button class="btn btn-primary" onclick="switchPanel('myskills')" data-i18n="action.manageSkills">Manage Skills</button>
-        <button class="btn btn-outline" onclick="exportTransactions()" data-i18n="action.exportTx">Export Transactions</button>
+        <button class="btn btn-primary" type="button" onclick="switchPanel('myskills')" data-i18n="action.manageSkills">Manage Skills</button>
+        <button class="btn btn-outline" type="button" onclick="exportTransactions()" data-i18n="action.exportTx">Export Transactions</button>
       </div>
     </div>
     <div class="tabs" role="tablist" aria-label="Workspace sections">
-      <button id="workspace-tab-account" class="tab active" data-panel="account" data-i18n="tab.account" role="tab" aria-selected="true" aria-controls="panel-account">Account</button>
-      <button id="workspace-tab-myskills" class="tab" data-panel="myskills" data-i18n="tab.myskills" role="tab" aria-selected="false" aria-controls="panel-myskills">My Skills</button>
+      <button id="workspace-tab-account" class="tab active" type="button" data-panel="account" data-i18n="tab.account" role="tab" aria-selected="true" aria-controls="panel-account">Account</button>
+      <button id="workspace-tab-myskills" class="tab" type="button" data-panel="myskills" data-i18n="tab.myskills" role="tab" aria-selected="false" aria-controls="panel-myskills">My Skills</button>
     </div>
 
     <div id="panel-account" class="panel active" role="tabpanel" aria-labelledby="workspace-tab-account">
@@ -1033,6 +1033,27 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.panel === 'myskills') loadMySkills();
   });
 });
+
+function bindTablistKeyboard(rootSelector,tabSelector){
+  const root = document.querySelector(rootSelector);
+  if (!root) return;
+  root.addEventListener('keydown', event => {
+    const keys = ['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'];
+    if (!keys.includes(event.key)) return;
+    const tabs = Array.from(root.querySelectorAll(tabSelector));
+    const index = tabs.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault();
+    let next = index;
+    if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else next = (index + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + tabs.length) % tabs.length;
+    tabs[next].focus();
+    tabs[next].click();
+  });
+}
+bindTablistKeyboard('[aria-label="Authentication modes"]','[data-auth-tab]');
+bindTablistKeyboard('[aria-label="Workspace sections"]','.tab');
 
 document.querySelectorAll('.auth-toggle').forEach(toggle => {
   toggle.addEventListener('keydown', event => {

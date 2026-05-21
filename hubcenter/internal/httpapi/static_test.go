@@ -153,6 +153,12 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(user, `document.querySelectorAll('.auth-toggle').forEach`) {
 		t.Fatalf("auth mode links must keep keyboard activation support")
 	}
+	if !strings.Contains(user, `function bindTablistKeyboard`) || !strings.Contains(user, `bindTablistKeyboard('[aria-label="Authentication modes"]','[data-auth-tab]')`) || !strings.Contains(user, `bindTablistKeyboard('[aria-label="Workspace sections"]','.tab')`) {
+		t.Fatalf("user console tablists must keep arrow-key keyboard navigation")
+	}
+	if !strings.Contains(user, `id="workspace-tab-account" class="tab active" type="button"`) || !strings.Contains(user, `id="workspace-tab-myskills" class="tab" type="button"`) {
+		t.Fatalf("workspace tabs must be non-submit buttons")
+	}
 	for _, id := range []string{"login-email", "reg-email", "current-password", "credits-amount", "apikey-skill-id", "apikey-bulk"} {
 		if !strings.Contains(user, `for="`+id+`"`) {
 			t.Fatalf("missing form label for %s", id)

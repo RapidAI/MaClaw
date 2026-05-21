@@ -148,3 +148,52 @@ func TestAdminWebDownloadsUseAuthenticatedFetch(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminWebAccessibilityContracts(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "root-admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	shell := w.Body.String()
+	for _, needle := range []string{
+		`class="skip-link"`,
+		`<nav id="nav" class="nav" aria-label="Admin sections">`,
+		`<main id="main" class="main" tabindex="-1">`,
+	} {
+		if !strings.Contains(shell, needle) {
+			t.Fatalf("admin shell missing accessibility marker %s", needle)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/app.js", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	app := w.Body.String()
+	for _, needle := range []string{
+		`el.setAttribute("role","status")`,
+		`el.setAttribute("aria-live","polite")`,
+		`function enhanceA11y()`,
+		`content.setAttribute("role","region")`,
+		`th.setAttribute("scope","col")`,
+		`badge.className=`,
+	} {
+		if !strings.Contains(app, needle) {
+			t.Fatalf("admin app missing accessibility marker %s", needle)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/styles.css", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	css := w.Body.String()
+	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before"} {
+		if !strings.Contains(css, needle) {
+			t.Fatalf("admin css missing accessibility marker %s", needle)
+		}
+	}
+}
