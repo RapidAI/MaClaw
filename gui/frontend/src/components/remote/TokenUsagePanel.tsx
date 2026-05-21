@@ -16,6 +16,14 @@ interface TokenUsageStat {
     OutputTokens?: number;
     TotalTokens?: number;
     TotalCostRMB?: number;
+    cached_input_tokens?: number;
+    cache_write_tokens?: number;
+    requests?: number;
+    cached_requests?: number;
+    CachedInputTokens?: number;
+    CacheWriteTokens?: number;
+    Requests?: number;
+    CachedRequests?: number;
 }
 
 const providerAliases: Record<string, string[]> = {
@@ -34,7 +42,7 @@ type ProviderState = {
     Current?: string;
 } | null;
 
-const emptyUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost_rmb: 0 };
+const emptyUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, total_cost_rmb: 0, cached_input_tokens: 0, cache_write_tokens: 0, requests: 0, cached_requests: 0 };
 
 const normalizeProviderState = (data?: ProviderState) => {
     const providers = (data?.providers ?? data?.Providers ?? [])
@@ -50,7 +58,11 @@ const normalizeUsage = (stat?: TokenUsageStat | null) => {
     const output = stat.output_tokens ?? stat.OutputTokens ?? 0;
     const total = stat.total_tokens ?? stat.TotalTokens ?? (input + output);
     const cost = stat.total_cost_rmb ?? stat.TotalCostRMB ?? 0;
-    return { input_tokens: input, output_tokens: output, total_tokens: total, total_cost_rmb: cost };
+    const cached = stat.cached_input_tokens ?? stat.CachedInputTokens ?? 0;
+    const cacheWrite = stat.cache_write_tokens ?? stat.CacheWriteTokens ?? 0;
+    const requests = stat.requests ?? stat.Requests ?? 0;
+    const cachedRequests = stat.cached_requests ?? stat.CachedRequests ?? 0;
+    return { input_tokens: input, output_tokens: output, total_tokens: total, total_cost_rmb: cost, cached_input_tokens: cached, cache_write_tokens: cacheWrite, requests, cached_requests: cachedRequests };
 };
 
 const getUsageForProvider = (usageMap: Record<string, TokenUsageStat>, provider: string) => {
@@ -216,6 +228,26 @@ export function TokenUsagePanel({ lang }: Props) {
                         <span style={{ color: colors.textSecondary }}>Output Tokens</span>
                         <span style={{ fontWeight: 600, color: "var(--theme-primary-strong)" }}>{formatTokens(usage.output_tokens)}</span>
                     </div>
+                    {(usage.cached_input_tokens > 0 || usage.cache_write_tokens > 0) && (
+                        <>
+                            <div style={statRowStyle}>
+                                <span style={{ color: colors.textSecondary }}>{t("Cache Read", "缓存读取")}</span>
+                                <span style={{ fontWeight: 600, color: colors.success }}>{formatTokens(usage.cached_input_tokens)}</span>
+                            </div>
+                            <div style={statRowStyle}>
+                                <span style={{ color: colors.textSecondary }}>{t("Cache Write", "缓存写入")}</span>
+                                <span style={{ fontWeight: 600, color: colors.textSecondary }}>{formatTokens(usage.cache_write_tokens)}</span>
+                            </div>
+                        </>
+                    )}
+                    {usage.requests > 0 && (
+                        <div style={statRowStyle}>
+                            <span style={{ color: colors.textSecondary }}>{t("Cache Hit Rate", "缓存命中率")}</span>
+                            <span style={{ fontWeight: 600, color: colors.text }}>
+                                {Math.round((usage.cached_requests / usage.requests) * 100)}%
+                            </span>
+                        </div>
+                    )}
                     <div style={{
                         ...statRowStyle,
                         borderTop: `1px solid ${colors.border}`, paddingTop: 6, marginTop: 2,

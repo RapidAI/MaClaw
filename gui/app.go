@@ -5137,6 +5137,10 @@ const (
 	r2PublicBaseURL         = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
 	cosLatestManifestURL    = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
 	cosPublicBaseURL        = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
+
+	// Beta channel manifest URLs
+	r2BetaManifestURL  = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta.json"
+	cosBetaManifestURL = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/beta.json"
 )
 
 type updateManifest struct {
@@ -5228,13 +5232,19 @@ func manifestAssetDownloadURLs(manifest updateManifest, targetFileName, tagName 
 }
 
 func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
-	targetFileName := updateTargetFileName()
 	release, source, err := a.fetchLatestReleaseFast()
 	if err != nil {
 		a.log(a.tr("CheckUpdate: all update sources failed: %v", err))
 		return UpdateResult{LatestVersion: "fetch_failed", ReleaseUrl: ""}, err
 	}
 	a.log(a.tr("CheckUpdate: using update source: %s", source))
+	return a.buildUpdateResult(currentVersion, release, false)
+}
+
+// buildUpdateResult is the shared version comparison and URL construction logic
+// used by both CheckUpdate (stable) and CheckUpdateBeta (beta).
+func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo, isBeta bool) (UpdateResult, error) {
+	targetFileName := updateTargetFileName()
 
 	tagName := strings.TrimSpace(release.TagName)
 	if tagName == "" {
@@ -5250,7 +5260,8 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 		githubDownloadUrl = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
 	}
 	if cosDownloadUrl == "" {
-		cosDownloadUrl = cosReleaseAssetURL(targetFileName, strings.Contains(tagName, "-beta") || strings.Contains(tagName, "-alpha") || strings.Contains(tagName, "-rc"))
+		betaTag := isBeta || strings.Contains(tagName, "-beta") || strings.Contains(tagName, "-alpha") || strings.Contains(tagName, "-rc")
+		cosDownloadUrl = cosReleaseAssetURL(targetFileName, betaTag)
 	}
 	downloadUrl := strings.TrimSpace(release.DownloadURL)
 	if downloadUrl == "" {
@@ -5265,13 +5276,46 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	latestVersionForComparison = strings.Split(latestVersionForComparison, " ")[0]
 	cleanCurrent := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(currentVersion)), "v")
 	cleanCurrent = strings.Split(cleanCurrent, " ")[0]
-	a.log(a.tr("CheckUpdate: Latest version: %s, Current version: %s, Display version: %s", latestVersionForComparison, cleanCurrent, displayVersion))
+
+	channel := "stable"
+	if isBeta {
+		channel = "beta"
+	}
+	a.log(a.tr("CheckUpdate[%s]: Latest=%s, Current=%s, Display=%s", channel, latestVersionForComparison, cleanCurrent, displayVersion))
 	if compareVersions(latestVersionForComparison, cleanCurrent) > 0 {
-		a.log(a.tr("CheckUpdate: Update available! %s > %s", latestVersionForComparison, cleanCurrent))
+		a.log(a.tr("CheckUpdate[%s]: Update available! %s > %s", channel, latestVersionForComparison, cleanCurrent))
 		return UpdateResult{HasUpdate: true, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl, DownloadUnavailable: downloadUrl == ""}, nil
 	}
-	a.log(a.tr("CheckUpdate: Already on latest version"))
+	a.log(a.tr("CheckUpdate[%s]: Already on latest version", channel))
 	return UpdateResult{HasUpdate: false, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl}, nil
+}
+
+// CheckUpdateBeta checks for beta/pre-release versions from the beta channel manifests.
+// Called when user opts in to "尝鲜测试版" (beta test version).
+func (a *App) CheckUpdateBeta(currentVersion string) (UpdateResult, error) {
+	release, source, err := a.fetchBetaReleaseFast()
+	if err != nil {
+		a.log(a.tr("CheckUpdateBeta: all beta sources failed: %v", err))
+		return UpdateResult{LatestVersion: "fetch_failed", ReleaseUrl: ""}, err
+	}
+	a.log(a.tr("CheckUpdateBeta: using beta source: %s", source))
+	return a.buildUpdateResult(currentVersion, release, true)
+}
+
+func (a *App) fetchBetaReleaseFast() (latestReleaseInfo, string, error) {
+	var errors []string
+	if release, err := a.fetchManifestLatestRelease("r2-beta", r2BetaManifestURL, 5*time.Second); err == nil {
+		return release, "r2-beta", nil
+	} else {
+		errors = append(errors, fmt.Sprintf("r2-beta: %v", err))
+		a.log(a.tr("CheckUpdateBeta: R2 beta check failed, trying COS: %v", err))
+	}
+	if release, err := a.fetchManifestLatestRelease("cos-beta", cosBetaManifestURL, 5*time.Second); err == nil {
+		return release, "cos-beta", nil
+	} else {
+		errors = append(errors, fmt.Sprintf("cos-beta: %v", err))
+		return latestReleaseInfo{}, "", fmt.Errorf("all beta manifest checks failed: %s", strings.Join(errors, "; "))
+	}
 }
 
 type latestReleaseInfo struct {

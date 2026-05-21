@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import type React from 'react';
 import { SidebarAiPane, isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeMiddleTabs } from '../SidebarAiPane';
 
 vi.mock('../SidebarToolSelector', () => ({ SidebarToolSelector: () => <div data-testid="tool-selector" /> }));
@@ -11,7 +12,7 @@ vi.mock('../SidebarHistorySessions', () => ({ SidebarHistorySessions: () => <div
 
 const noop = vi.fn();
 
-function renderPane(status: any) {
+function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof SidebarAiPane>> = {}) {
     render(
         <SidebarAiPane
             recentTasksPaneWidth={260}
@@ -55,6 +56,7 @@ function renderPane(status: any) {
             isRecentTasksResizing={false}
             switchTool={noop}
             digitalEmployeeFeatureStatus={status}
+            {...overrides}
         />,
     );
 }
@@ -87,6 +89,16 @@ describe('SidebarAiPane digital employee tabs', () => {
     it('treats expired digital employee authorization as unusable even if active is stale', () => {
         expect(isDigitalEmployeeAuthorizationUsable({ active: true, quota: 1, expires_at: '2026-05-15T00:00:00Z' }, Date.parse('2026-05-16T00:00:00Z'))).toBe(false);
         expect(isDigitalEmployeeAuthorizationUsable({ active: true, quota: 1, expires_at: '2026-05-17T00:00:00Z' }, Date.parse('2026-05-16T00:00:00Z'))).toBe(true);
+    });
+
+    it('restores digital employee navigation when the app shell knows Hub entries are reachable', () => {
+        renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 }, { showDigitalEmployeeNavigation: true });
+
+        fireEvent.click(screen.getByText('Digital Employees'));
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+
+        fireEvent.click(screen.getByText('History'));
+        expect(screen.getByTestId('history-sessions')).toBeTruthy();
     });
 
     it('shows digital employees and history tabs when feature status is visible', () => {

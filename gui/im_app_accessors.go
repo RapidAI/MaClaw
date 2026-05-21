@@ -323,7 +323,6 @@ func (h *IMMessageHandler) getToolSelector() *ToolSelector {
 	return h.app.toolSelector
 }
 
-
 // --- LLM Providers ---
 
 type llmProvidersResult struct {
@@ -339,16 +338,18 @@ func (h *IMMessageHandler) getMaclawLLMProviders() llmProvidersResult {
 	return llmProvidersResult{Providers: r.Providers, Current: r.Current}
 }
 
-
 // --- Token Accounting ---
 
 func (h *IMMessageHandler) accumulateLLMTokenUsage(providerName string, input, output int) {
+	h.accumulateLLMTokenUsageWithCache(providerName, input, output, 0, 0)
+}
+
+func (h *IMMessageHandler) accumulateLLMTokenUsageWithCache(providerName string, input, output, cacheRead, cacheWrite int) {
 	if h.app == nil {
 		return
 	}
-	h.app.AccumulateLLMTokenUsage(providerName, input, output)
+	h.app.AccumulateLLMTokenUsageWithCache(providerName, input, output, cacheRead, cacheWrite)
 }
-
 
 // --- MCP Server Resolution ---
 

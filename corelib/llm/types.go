@@ -57,6 +57,52 @@ type Usage struct {
 
 	InputTokens  int `json:"input_tokens,omitempty"`  // Anthropic style
 	OutputTokens int `json:"output_tokens,omitempty"` // Anthropic style
+
+	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
+}
+
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usageAlias Usage
+	var raw struct {
+		usageAlias
+		PromptTokensDetails map[string]int `json:"prompt_tokens_details"`
+		InputTokensDetails  map[string]int `json:"input_tokens_details"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*u = Usage(raw.usageAlias)
+	if u.InputTokens == 0 && u.PromptTokens > 0 {
+		u.InputTokens = u.PromptTokens
+	}
+	if u.OutputTokens == 0 && u.CompletionTokens > 0 {
+		u.OutputTokens = u.CompletionTokens
+	}
+	if u.TotalTokens == 0 {
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	}
+	if u.CachedInputTokens == 0 {
+		u.CachedInputTokens = firstPositiveUsageValue(raw.PromptTokensDetails["cached_tokens"], raw.InputTokensDetails["cached_tokens"])
+	}
+	if u.CacheWriteTokens == 0 {
+		u.CacheWriteTokens = firstPositiveUsageValue(
+			raw.PromptTokensDetails["cache_write_tokens"],
+			raw.PromptTokensDetails["cache_creation_input_tokens"],
+			raw.InputTokensDetails["cache_write_tokens"],
+			raw.InputTokensDetails["cache_creation_input_tokens"],
+		)
+	}
+	return nil
+}
+
+func firstPositiveUsageValue(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 type openAIWireResponse struct {

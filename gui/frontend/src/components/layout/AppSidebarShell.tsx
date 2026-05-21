@@ -79,6 +79,7 @@ interface AppSidebarShellProps {
     favoriteEmployees?: FavoriteEmployeeSlot[];
     veAuthorized?: boolean;
     digitalEmployeeFeatureStatus?: any;
+    showDigitalEmployeeNavigation?: boolean;
     onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
     onStartVEConversation?: (veId: string) => void;
     onReorderFavorites?: (newOrder: string[]) => void;
@@ -148,6 +149,7 @@ export const AppSidebarShell = ({
     favoriteEmployees = [],
     veAuthorized = false,
     digitalEmployeeFeatureStatus = null,
+    showDigitalEmployeeNavigation,
     onOpenHistoryDiscussion,
     onStartVEConversation,
     onReorderFavorites,
@@ -238,6 +240,7 @@ export const AppSidebarShell = ({
                         favoriteEmployeeIds={favoriteEmployeeIds}
                         showCodingToolEntry={showCodingToolEntry}
                         digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
+                        showDigitalEmployeeNavigation={showDigitalEmployeeNavigation}
                         onOpenHistoryDiscussion={onOpenHistoryDiscussion}
                     />
                 )}

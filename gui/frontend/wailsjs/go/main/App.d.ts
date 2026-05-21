@@ -12,6 +12,8 @@ export function CheckToolsStatus():Promise<Array<main.ToolStatus>>;
 
 export function CheckUpdate(arg1:string):Promise<main.UpdateResult>;
 
+export function CheckUpdateBeta(arg1:string):Promise<main.UpdateResult>;
+
 export function ClipboardGetText():Promise<string>;
 
 export function DeleteSkill(arg1:string,arg2:string):Promise<void>;

@@ -1137,7 +1137,13 @@ func (a *App) SetTrialReflectEnabled(enabled bool) error {
 // AccumulateLLMTokenUsage adds token counts for the given provider.
 // Called internally after each LLM API call. Thread-safe via tokenUsageMu.
 func (a *App) AccumulateLLMTokenUsage(providerName string, inputTokens, outputTokens int) {
-	if inputTokens == 0 && outputTokens == 0 {
+	a.AccumulateLLMTokenUsageWithCache(providerName, inputTokens, outputTokens, 0, 0)
+}
+
+// AccumulateLLMTokenUsageWithCache adds token counts plus provider-reported
+// prompt-cache read/write tokens for the given provider.
+func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) {
+	if inputTokens == 0 && outputTokens == 0 && cachedInputTokens == 0 && cacheWriteTokens == 0 {
 		return
 	}
 	a.tokenUsageMu.Lock()
@@ -1158,6 +1164,12 @@ func (a *App) AccumulateLLMTokenUsage(providerName string, inputTokens, outputTo
 	stat.InputTokens += int64(inputTokens)
 	stat.OutputTokens += int64(outputTokens)
 	stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+	stat.CachedInputTokens += int64(cachedInputTokens)
+	stat.CacheWriteTokens += int64(cacheWriteTokens)
+	stat.Requests++
+	if cachedInputTokens > 0 {
+		stat.CachedRequests++
+	}
 	if err := a.SaveConfig(cfg); err != nil {
 		log.Printf("[LLM] AccumulateLLMTokenUsage: save config: %v", err)
 		return

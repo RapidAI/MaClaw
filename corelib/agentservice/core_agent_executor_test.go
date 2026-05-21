@@ -130,6 +130,44 @@ func TestCoreAgentExecutorSupportsAskUserFlow(t *testing.T) {
 	}
 }
 
+func TestCoreAgentExecutorReturnsPromptBundleMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "ok",
+				},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	result, err := executor.Execute(context.Background(), ExecuteRequest{
+		Config: corelib.AppConfig{
+			MaclawLLMUrl:   server.URL,
+			MaclawLLMKey:   "test-key",
+			MaclawLLMModel: "test-model",
+		},
+		Principal: Principal{TenantID: "tenant-a", UserID: "user-a"},
+		DataDir:   t.TempDir(),
+		Instance:  Instance{Workspace: t.TempDir()},
+		Session:   Session{ID: "session-a", AgentID: "agent-a"},
+		Message:   Message{ID: "message-a", Content: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, key := range []string{"prompt_tokens_stable", "prompt_tokens_session", "prompt_tokens_retrieved", "prompt_tokens_total", "prompt_stable_cache_key"} {
+		if result.Metadata[key] == "" {
+			t.Fatalf("expected metadata %s, got %#v", key, result.Metadata)
+		}
+	}
+}
+
 type noOpKnowledgeStore struct{}
 
 func (noOpKnowledgeStore) Search(context.Context, knowledge.SearchOptions) ([]knowledge.SearchResult, error) {

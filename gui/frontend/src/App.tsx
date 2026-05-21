@@ -286,9 +286,16 @@ function App() {
         };
     }, [digitalEmployeeFeatureStatus?.authorization?.expires_at, refreshDigitalEmployeeFeatureStatus]);
 
-    // Middle panel tabs require active HubCenter authorization and an active local digital employee.
+    // Settings still require usable authorization, but the main navigation should stay available
+    // when Hub configuration, cached employees, or favorites already prove the feature is reachable.
     const digitalEmployeeAuthorizationUsable = isDigitalEmployeeAuthorizationUsable(digitalEmployeeFeatureStatus?.authorization);
-    const veAuthorized = shouldShowDigitalEmployeeFeatureTabs(digitalEmployeeFeatureStatus);
+    const hasDigitalEmployeeHubConfig = Boolean(config?.remote_hub_url && config?.remote_machine_id);
+    const veNavigationAvailable = shouldShowDigitalEmployeeFeatureTabs(digitalEmployeeFeatureStatus)
+        || digitalEmployeeAuthorizationUsable
+        || hasDigitalEmployeeHubConfig
+        || veList.length > 0
+        || favoriteEmployeeIds.length > 0;
+    const veAuthorized = veNavigationAvailable;
     const veSettingsAuthorized = digitalEmployeeAuthorizationUsable;
     useEffect(() => {
         if (!veSettingsAuthorized && settingsTab === 'virtualEmployee') setSettingsTab('general');
@@ -2468,6 +2475,7 @@ ${instruction}`;
                 favoriteEmployees={favoriteEmployeeSlots}
                 veAuthorized={veAuthorized}
                 digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
+                showDigitalEmployeeNavigation={veNavigationAvailable}
                 onStartVEConversation={handleStartFavoriteVEConversation}
                 onReorderFavorites={handleReorderFavorites}
                 onSetFavoriteEmployee={handleSetFavoriteEmployee}
@@ -3405,6 +3413,7 @@ ${instruction}`;
                     onCancelDownload={handleCancelDownload}
                     onDownload={handleDownload}
                     onInstall={handleInstall}
+                    onUpdateResultChange={setUpdateResult}
                     onClose={() => {
                         setShowUpdateModal(false);
                         if (isStartupUpdateCheck && config && !config.hide_startup_popup) {

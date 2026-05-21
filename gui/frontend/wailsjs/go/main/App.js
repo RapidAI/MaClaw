@@ -22,6 +22,10 @@ export function CheckUpdate(arg1) {
   return window['go']['main']['App']['CheckUpdate'](arg1);
 }
 
+export function CheckUpdateBeta(arg1) {
+  return window['go']['main']['App']['CheckUpdateBeta'](arg1);
+}
+
 export function ClipboardGetText() {
   return window['go']['main']['App']['ClipboardGetText']();
 }

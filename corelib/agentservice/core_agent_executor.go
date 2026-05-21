@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -74,6 +75,8 @@ type coreAgentCallbacks struct {
 	knowledgeStore             KnowledgeStore
 	mcpProvider                MCPToolProvider
 	skillProvider              SkillToolProvider
+	promptStats                agent.PromptBundleTokenStats
+	promptStableCacheKey       string
 }
 
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
@@ -128,6 +131,15 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		"model":    llmCfg.Model,
 		"protocol": llmCfg.Protocol,
 		"wire_api": llmCfg.WireAPI,
+	}
+	if cb.promptStats.TotalTokens > 0 {
+		metadata["prompt_tokens_stable"] = fmt.Sprint(cb.promptStats.StableSystemPromptTokens)
+		metadata["prompt_tokens_session"] = fmt.Sprint(cb.promptStats.SessionContextTokens)
+		metadata["prompt_tokens_retrieved"] = fmt.Sprint(cb.promptStats.RetrievedContextTokens)
+		metadata["prompt_tokens_total"] = fmt.Sprint(cb.promptStats.TotalTokens)
+	}
+	if cb.promptStableCacheKey != "" {
+		metadata["prompt_stable_cache_key"] = cb.promptStableCacheKey
 	}
 	if result.HardExit {
 		metadata["hard_exit"] = "true"
@@ -249,7 +261,7 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if roleDescription == "" {
 		roleDescription = "A REST-served MaClaw agent runtime for end-user assistance."
 	}
-	basePrompt := agent.BuildSystemPrompt(agent.SystemPromptDeps{
+	bundle := agent.BuildPromptBundle(agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
 			RoleName:        roleName,
 			RoleDescription: roleDescription,
@@ -257,18 +269,26 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 		},
 		MemoryStore:      c.memory,
 		HasKnowledgeBase: c.knowledgeStore != nil,
+		KnowledgeAutoRecall: func(b *strings.Builder, userMsg string) {
+			if c.knowledgeStore != nil && userMsg != "" && isFirstTurn {
+				c.appendKnowledgeAutoRecall(b, userMsg)
+			}
+		},
 	}, userText, isFirstTurn)
 
-	// Append knowledge auto-recall if knowledge store is available.
-	// Only on first turn — subsequent iterations have the same user text,
-	// and knowledge results are already in the prompt from turn 1.
-	if c.knowledgeStore != nil && userText != "" && isFirstTurn {
-		var b strings.Builder
-		b.WriteString(basePrompt)
-		c.appendKnowledgeAutoRecall(&b, userText)
-		return b.String()
+	// Record prompt bundle observability for cache-hit analysis.
+	c.promptStats = bundle.TokenStats()
+	c.promptStableCacheKey = bundle.StableCacheKey()
+	if os.Getenv("MACLAW_DEBUG_PROMPT_BUNDLE") == "1" {
+		fmt.Printf("[prompt-bundle] surface=core_agent stable=%d session=%d retrieved=%d total=%d stable_key=%s\n",
+			c.promptStats.StableSystemPromptTokens,
+			c.promptStats.SessionContextTokens,
+			c.promptStats.RetrievedContextTokens,
+			c.promptStats.TotalTokens,
+			c.promptStableCacheKey,
+		)
 	}
-	return basePrompt
+	return bundle.String()
 }
 
 type coreToolSpec struct {

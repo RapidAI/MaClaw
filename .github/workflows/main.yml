@@ -1311,6 +1311,8 @@ jobs:
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev' }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
           COS_RELEASE_ONLY_ASSETS: |
             MaClaw-aarch64-u2204.AppImage
             MaClaw-aarch64-u2404.AppImage
@@ -1338,12 +1340,12 @@ jobs:
             Ins-maclaw-linux-arm64
         run: |
           if [ -z "$COS_PUBLIC_BASE_URL" ]; then
-            echo "COS_PUBLIC_BASE_URL is not configured; latest.json cannot include fallback URLs." >&2
+            echo "COS_PUBLIC_BASE_URL is not configured; manifest cannot include fallback URLs." >&2
             exit 1
           fi
-          python3 .github/scripts/sync_cos_release.py --manifest-only
-          echo "latest.json preview:"
-          cat release-assets/latest.json
+          python3 .github/scripts/sync_cos_release.py --manifest-only --manifest-name "${MANIFEST_NAME}"
+          echo "${MANIFEST_NAME} preview:"
+          cat "release-assets/${MANIFEST_NAME}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -1428,6 +1430,8 @@ jobs:
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev' }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
+          RELEASE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          MANIFEST_OUTPUT_NAME: ${{ env.MANIFEST_NAME }}
           COS_UPLOAD_PART_SIZE_MB: 8
           COS_UPLOAD_THREADS: 8
           COS_RELEASE_ONLY_ASSETS: |

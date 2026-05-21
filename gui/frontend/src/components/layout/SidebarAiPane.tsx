@@ -72,6 +72,7 @@ type SidebarAiPaneProps = {
     favoriteEmployeeIds?: string[];
     showCodingToolEntry?: boolean;
     digitalEmployeeFeatureStatus?: any;
+    showDigitalEmployeeNavigation?: boolean;
 };
 
 export const SidebarAiPane = ({
@@ -127,10 +128,11 @@ export const SidebarAiPane = ({
     favoriteEmployeeIds = [],
     showCodingToolEntry = false,
     digitalEmployeeFeatureStatus = null,
+    showDigitalEmployeeNavigation,
 }: SidebarAiPaneProps) => {
     const [middleTab, setMiddleTab] = useState<MiddleTab>('tasks');
     const veTheme = useMemo(() => (aiThemeMode === 'dark' ? darkTheme : lightTheme), [aiThemeMode]);
-    const showDigitalEmployeeTabs = shouldShowDigitalEmployeeMiddleTabs(digitalEmployeeFeatureStatus);
+    const showDigitalEmployeeTabs = showDigitalEmployeeNavigation ?? shouldShowDigitalEmployeeMiddleTabs(digitalEmployeeFeatureStatus);
     const visibleTabs = useMemo<MiddleTab[]>(() => showDigitalEmployeeTabs ? ['tasks', 'employees', 'history'] : ['tasks'], [showDigitalEmployeeTabs]);
     useEffect(() => {
         if (!showDigitalEmployeeTabs && middleTab !== 'tasks') setMiddleTab('tasks');

@@ -23,6 +23,11 @@ only_assets = [
     if name.strip()
 ]
 
+# Release channel: "stable" or "beta". Determines the storage prefix for assets.
+# stable → latest/  |  beta → beta/
+release_channel = os.environ.get("RELEASE_CHANNEL", "stable")
+asset_prefix = "beta" if release_channel == "beta" else "latest"
+
 
 def upload_file(client, local_path, key, cache_control):
     size = local_path.stat().st_size
@@ -86,8 +91,8 @@ def validate_public_base_url(name, value):
 def asset_urls(path):
     urls = []
     if r2_public_base_url:
-        urls.append(f"{validate_public_base_url('R2_PUBLIC_BASE_URL', r2_public_base_url)}/latest/{path.name}")
-    urls.append(f"{validate_public_base_url('COS_PUBLIC_BASE_URL', public_base_url)}/latest/{path.name}")
+        urls.append(f"{validate_public_base_url('R2_PUBLIC_BASE_URL', r2_public_base_url)}/{asset_prefix}/{path.name}")
+    urls.append(f"{validate_public_base_url('COS_PUBLIC_BASE_URL', public_base_url)}/{asset_prefix}/{path.name}")
     return urls
 
 
@@ -104,21 +109,22 @@ def manifest_asset(path):
     }
 
 
-def write_latest_manifest(assets):
+def write_latest_manifest(assets, manifest_name="latest.json"):
     latest = {
         "version": tag,
         "tag": tag,
         "assets": {path.name: manifest_asset(path) for path in assets},
     }
-    latest_path = asset_dir / "latest.json"
+    latest_path = asset_dir / manifest_name
     latest_path.write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    log(f"wrote latest manifest {latest_path} assets={len(assets)}")
+    log(f"wrote manifest {latest_path} assets={len(assets)}")
     return latest_path
 
 
 def main():
+    manifest_name = os.environ.get("MANIFEST_OUTPUT_NAME", "latest.json")
     assets = collect_assets()
-    latest_path = write_latest_manifest(assets)
+    latest_path = write_latest_manifest(assets, manifest_name)
     missing = [
         name
         for name, value in {
@@ -137,15 +143,15 @@ def main():
     config = CosConfig(Region=region, SecretId=secret_id, SecretKey=secret_key, Scheme="https")
     client = CosS3Client(config)
 
-    log(f"bucket={bucket} region={region} tag={tag} prefix=latest/")
+    log(f"bucket={bucket} region={region} tag={tag} channel={release_channel} prefix={asset_prefix}/")
     for path in assets:
         upload_file(
             client,
             path,
-            f"latest/{path.name}",
+            f"{asset_prefix}/{path.name}",
             "public, max-age=31536000, immutable",
         )
-    upload_file(client, latest_path, "latest.json", "public, max-age=60")
+    upload_file(client, latest_path, manifest_name, "public, max-age=60")
 
     old_keys = list_objects_with_prefix(client, "releases/")
     log(f"cleanup old tagged release objects count={len(old_keys)}")
@@ -153,11 +159,19 @@ def main():
         log(f"delete old object {key}")
         client.delete_object(Bucket=bucket, Key=key)
 
-    log(f"synced COS release {tag}: uploaded={len(assets)} latest=latest.json deleted_old={len(old_keys)}")
+    log(f"synced COS release {tag}: uploaded={len(assets)} manifest={manifest_name} deleted_old={len(old_keys)}")
 
 
 if __name__ == "__main__":
-    if "--manifest-only" in os.sys.argv:
-        write_latest_manifest(collect_assets())
+    import sys
+    manifest_name = os.environ.get("MANIFEST_OUTPUT_NAME", "latest.json")
+    # Parse --manifest-name from CLI args (overrides env var)
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--manifest-name" and i + 1 < len(args):
+            manifest_name = args[i + 1]
+            break
+    if "--manifest-only" in args:
+        write_latest_manifest(collect_assets(), manifest_name)
     else:
         main()
