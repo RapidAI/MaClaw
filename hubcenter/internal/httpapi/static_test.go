@@ -120,6 +120,20 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(admin, `class="lang-switch" aria-label="Language"`) || !strings.Contains(admin, `btn.setAttribute('aria-pressed'`) {
 		t.Fatalf("admin language switcher must expose pressed state")
 	}
+	for _, required := range []string{
+		`aria-pressed="'+(mode==='daily'?'true':'false')+'"`,
+		`aria-pressed="'+(mode==='monthly'?'true':'false')+'"`,
+		`document.getElementById('gossipFilterAll').setAttribute('aria-pressed'`,
+		`document.getElementById('gossipFilterFlagged').setAttribute('aria-pressed'`,
+		`document.getElementById('catalogSubTabSkill').setAttribute('aria-pressed'`,
+		`document.getElementById('catalogSubTabMCP').setAttribute('aria-pressed'`,
+		`document.getElementById('mcpTypeRemoteBtn').setAttribute('aria-pressed'`,
+		`document.getElementById('mcpTypeLocalBtn').setAttribute('aria-pressed'`,
+	} {
+		if !strings.Contains(admin, required) {
+			t.Fatalf("admin segmented control missing pressed state contract %q", required)
+		}
+	}
 	if !strings.Contains(admin, `v.setAttribute('aria-current','page')`) || !strings.Contains(admin, `v.removeAttribute('aria-current')`) {
 		t.Fatalf("admin navigation must expose the current page")
 	}
@@ -138,6 +152,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must normalize implicit submit buttons")
 	}
 	for _, required := range []string{
+		`id="gossipFilterAll" aria-pressed="true"`,
+		`id="gossipFilterFlagged" aria-pressed="false"`,
+		`document.getElementById('gossipFilterAll').setAttribute('aria-pressed',f===''?'true':'false')`,
+		`id="catalogSubTabSkill" aria-pressed="true"`,
+		`id="catalogSubTabMCP" aria-pressed="false"`,
+		`document.getElementById('catalogSubTabSkill').setAttribute('aria-pressed', tab === 'skill' ? 'true' : 'false')`,
+		`id="mcpTypeRemoteBtn" aria-pressed="true"`,
+		`id="mcpTypeLocalBtn" aria-pressed="false"`,
+		`document.getElementById('mcpTypeRemoteBtn').setAttribute('aria-pressed', type === 'remote' ? 'true' : 'false')`,
+		`aria-pressed="'+(mode==='daily'?'true':'false')+'" onclick="setUserMgmtReportMode`,
 		`function enhanceUserMgmtRegions`,
 		`'userMgmtRegistrationReport','userMgmtDashboard','userMgmtFromHub','userMgmtResult'`,
 		`el.setAttribute('role','status');el.setAttribute('aria-live','polite');el.setAttribute('aria-busy','false')`,
