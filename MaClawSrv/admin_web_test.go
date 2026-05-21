@@ -181,6 +181,8 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 		`function setNetworkBusy(delta)`,
 		`document.body.classList.toggle("is-fetching",state.pendingRequests>0)`,
 		`function focusPrimaryInput(scope)`,
+		`document.onkeydown=(e)=>`,
+		`buttons[n-1]?.click()`,
 		`focusPrimaryInput($("loginPanel"))`,
 		`focusPrimaryInput($("bootstrapPanel"))`,
 		`<div class="empty-state" role="status">`,
@@ -208,7 +210,7 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 			t.Fatalf("admin css missing accessibility marker %s", needle)
 		}
 	}
-	for _, needle := range []string{`body.is-fetching::after`, `@keyframes network-progress`, `.field:focus-within label`, `@media print`} {
+	for _, needle := range []string{`body.is-fetching::after`, `@keyframes network-progress`, `.field:focus-within label`, `env(safe-area-inset-top)`, `@media print`} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("admin css missing interaction polish marker %s", needle)
 		}
