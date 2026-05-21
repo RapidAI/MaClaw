@@ -152,6 +152,15 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must normalize implicit submit buttons")
 	}
 	for _, required := range []string{
+		`id="stageToggle" class="stage-toggle hidden" role="tablist"`,
+		`id="setupStageButton" class="btn-secondary" type="button" role="tab" aria-controls="setupStage" aria-selected="true" aria-pressed="true"`,
+		`id="loginStageButton" class="btn-ghost" type="button" role="tab" aria-controls="loginStage" aria-selected="false" aria-pressed="false"`,
+		`id="setupStage" class="stage-card hidden" role="tabpanel" aria-labelledby="setupStageButton"`,
+		`id="loginStage" class="stage-card hidden" role="tabpanel" aria-labelledby="loginStageButton"`,
+		`setupBtn.setAttribute('aria-selected',setup?'true':'false')`,
+		`loginBtn.setAttribute('aria-pressed',setup?'false':'true')`,
+		`function enhanceAuthStageTabs`,
+		`enhanceStatusHints();enhanceAuthStageTabs();`,
 		`id="gossipFilterAll" aria-pressed="true"`,
 		`id="gossipFilterFlagged" aria-pressed="false"`,
 		`document.getElementById('gossipFilterAll').setAttribute('aria-pressed',f===''?'true':'false')`,
