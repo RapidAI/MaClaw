@@ -144,6 +144,11 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
+		`id="routeQueryResult" class="route-query-empty hint" role="status" aria-live="polite" aria-busy="false"`,
+		`root.setAttribute('aria-busy','true');root.textContent=tr('haLoading')`,
+		`root.setAttribute('aria-busy','false');const hubs=`,
+		`id="failureLogsList" role="status" aria-live="polite" aria-busy="false"`,
+		`if(root)root.setAttribute('aria-busy','true');try{const data=await api('/api/admin/failure-logs?'+params.toString())`,
 		`id="failureLogsPagerMeta" class="pager-meta" aria-live="polite"`,
 		`id="gossipPrevBtn" type="button"`,
 		`aria-label="Previous gossip page"`,
