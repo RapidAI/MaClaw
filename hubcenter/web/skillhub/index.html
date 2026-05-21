@@ -47,7 +47,7 @@
       <div class="summary-card"><strong id="summaryDownloads">0</strong><span id="summaryDownloadsLabel"></span></div>
     </div>
 
-    <div id="content" class="state" aria-live="polite" aria-busy="false"></div>
+    <div id="content" class="state" role="status" aria-live="polite" aria-busy="false"></div>
 
     <div id="pager" class="pager" style="display:none">
       <button id="prevBtn" type="button" onclick="doSearch(currentPage-1)"></button>
@@ -154,14 +154,14 @@
       var ratingText = ratingCount > 0 ? (Number(skill.avg_rating || 0).toFixed(1) + ' (' + ratingCount + ' ' + t('ratings') + ')') : '-';
       var desc = escapeHtml(skill.description || t('noDescription'));
       var dateText = skill.updated_at && skill.updated_at !== skill.created_at ? t('updated') + ': ' + formatDate(skill.updated_at) : formatDate(skill.created_at);
-      return '<div class="card">'
+      return '<article class="card" role="listitem" aria-label="' + escapeHtml(skill.name || '-') + '">'
         + '<div class="card-name">' + escapeHtml(skill.name || '-') + (skill.version ? ' <span style="font-size:12px;color:var(--muted);font-weight:500">v' + escapeHtml(skill.version) + '</span>' : '') + '</div>'
         + '<div><span class="trust ' + trust.cls + '">' + trust.text + '</span></div>'
         + '<div class="card-desc">' + desc + '</div>'
         + (tags ? '<div class="card-tags">' + tags + '</div>' : '')
         + '<div class="meta"><span>' + t('downloads') + ': ' + formatCompactNumber(skill.downloads || 0) + '</span><span>' + t('rating') + ': ' + ratingText + '</span></div>'
         + '<div class="footer"><span>' + escapeHtml(dateText) + '</span><span>' + escapeHtml(skill.source_url || '') + '</span></div>'
-      + '</div>';
+      + '</article>';
     }
 
     function renderList(items, total) {
@@ -171,11 +171,13 @@
       var content = document.getElementById('content');
       if (!items.length) {
         content.className = 'state';
+        content.setAttribute('role', 'status');
         content.textContent = t('emptyResult');
         document.getElementById('pager').style.display = 'none';
         return;
       }
       content.className = 'grid';
+      content.setAttribute('role', 'list');
       content.innerHTML = items.map(renderCard).join('');
     }
 
@@ -189,6 +191,7 @@
 
     function setLoading() {
       document.getElementById('content').className = 'state';
+      document.getElementById('content').setAttribute('role', 'status');
       document.getElementById('content').setAttribute('aria-busy', 'true');
       document.getElementById('content').textContent = t('loading');
       document.getElementById('searchBtn').disabled = true;
@@ -196,6 +199,7 @@
 
     function setLoadError(error) {
       document.getElementById('content').className = 'state';
+      document.getElementById('content').setAttribute('role', 'status');
       document.getElementById('content').textContent = t('loadFailed', { error: error && error.message ? error.message : String(error || '') });
       document.getElementById('pager').style.display = 'none';
     }
