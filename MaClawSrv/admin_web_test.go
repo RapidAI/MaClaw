@@ -162,6 +162,8 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	shell := w.Body.String()
 	for _, needle := range []string{
 		`class="skip-link"`,
+		`<meta name="theme-color" content="#121b24" media="(prefers-color-scheme: light)" />`,
+		`<meta name="theme-color" content="#0b1117" media="(prefers-color-scheme: dark)" />`,
 		`<nav id="nav" class="nav" aria-label="Admin sections">`,
 		`<main id="main" class="main" tabindex="-1">`,
 	} {
