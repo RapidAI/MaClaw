@@ -337,6 +337,54 @@ tr:last-child td { border-bottom: 0; }
 tr:hover td { background: #fbfdfe; }
 td:last-child { white-space: nowrap; }
 
+.cell-code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  color: #344955;
+}
+
+.cell-time {
+  color: #526470;
+  font-variant-numeric: tabular-nums;
+}
+
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.table-actions:empty::before {
+  content: "-";
+  color: #8a99a4;
+}
+
+.table-actions button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 7px;
+}
+
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.state-ok { background: var(--ok-soft); border-color: #b8e3c8; color: var(--ok); }
+.state-warn { background: var(--warn-soft); border-color: #f2d99a; color: var(--warn); }
+.state-bad { background: var(--danger-soft); border-color: #f0b5af; color: var(--danger); }
+.state-muted { background: #edf3f6; border-color: #d4e0e7; color: #526470; }
+
 .code,
 pre {
   background: var(--code);

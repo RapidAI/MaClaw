@@ -131,6 +131,17 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(admin, `function enhanceFormAccessibility`) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
+	for _, required := range []string{
+		`role="dialog" aria-modal="true" aria-labelledby="`,
+		`overlay.addEventListener('keydown'`,
+		`e.key==='Escape'`,
+		`veAuthModalReturnFocus.focus()`,
+		`enhanceFormAccessibility(overlay)`,
+	} {
+		if !strings.Contains(admin, required) {
+			t.Fatalf("admin VE auth modal missing accessibility contract %q", required)
+		}
+	}
 
 	user := read(t, "skillmarket", "user", "index.html")
 	if strings.Contains(user, `<span class="captcha-refresh"`) {
