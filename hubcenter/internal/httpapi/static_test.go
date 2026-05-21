@@ -47,6 +47,12 @@ func TestRegisterSharedStaticAssetsServesProUI(t *testing.T) {
 	if rec.Body.String() != "body{color:#202938}" {
 		t.Fatalf("unexpected css body %q", rec.Body.String())
 	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/css") {
+		t.Fatalf("content-type = %q, want text/css", contentType)
+	}
+	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "max-age=300") {
+		t.Fatalf("cache-control = %q, want max-age=300", cacheControl)
+	}
 }
 
 func TestWebPagesIncludeSharedProUI(t *testing.T) {
@@ -80,6 +86,21 @@ func TestWebPagesIncludeSharedProUI(t *testing.T) {
 	}
 }
 
+func TestPackageScriptCopiesFullWebTree(t *testing.T) {
+	scriptPath := filepath.Clean(filepath.Join("..", "..", "scripts", "package.ps1"))
+	body, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read package script: %v", err)
+	}
+	script := string(body)
+	if !strings.Contains(script, `Join-Path $root "web"`) || !strings.Contains(script, `Join-Path $pkgRoot "web"`) {
+		t.Fatalf("package script must copy the full web tree")
+	}
+	if strings.Contains(script, `web\admin`) {
+		t.Fatalf("package script must not package only web admin assets")
+	}
+}
+
 func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	webRoot := filepath.Clean(filepath.Join("..", "..", "web"))
 
@@ -95,6 +116,9 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	admin := read(t, "admin", "index.html")
 	if !strings.Contains(admin, `id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"`) {
 		t.Fatalf("admin toast stack must announce status changes")
+	}
+	if !strings.Contains(admin, `class="lang-switch" aria-label="Language"`) || !strings.Contains(admin, `btn.setAttribute('aria-pressed'`) {
+		t.Fatalf("admin language switcher must expose pressed state")
 	}
 	if !strings.Contains(admin, `toast.setAttribute('role',type==='error'?'alert':'status')`) {
 		t.Fatalf("admin toasts must expose status/alert roles")

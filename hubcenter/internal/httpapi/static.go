@@ -88,6 +88,8 @@ func registerSharedStaticAssets(mux *http.ServeMux, staticDir string) {
 	}
 	cssPath := filepath.Join(staticDir, "pro-ui.css")
 	mux.HandleFunc("GET /pro-ui.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=300")
 		http.ServeFile(w, r, cssPath)
 	})
 }
