@@ -137,12 +137,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	for _, required := range []string{
 		`id="gossipPrevBtn" type="button"`,
 		`aria-label="Previous gossip page"`,
+		`id="gossipPageInfo" aria-live="polite"`,
 		`id="skillhubPrevBtn" type="button"`,
 		`aria-label="Next SkillHub page"`,
+		`id="skillhubPageInfo" aria-live="polite"`,
 		`id="smPurchasePrevBtn" type="button"`,
 		`aria-label="Next purchases page"`,
+		`id="smPurchasePageInfo" aria-live="polite"`,
 		`id="newsPrevBtn" type="button"`,
 		`aria-label="Next news page"`,
+		`id="newsPageInfo" aria-live="polite"`,
 		`aria-label="Previous comments page"`,
 		`aria-label="Next comments page"`,
 	} {
@@ -193,10 +197,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(gossip, `class="toolbar" role="search" aria-label="Gossip filters"`) || !strings.Contains(gossip, `id="sortSelect" onchange="applyView()" aria-label="Sort posts"`) {
 		t.Fatalf("gossip toolbar must expose search/filter semantics")
 	}
+	if !strings.Contains(gossip, `id="pageInfo" aria-live="polite"`) {
+		t.Fatalf("gossip pager status must announce page changes")
+	}
 
 	skillhub := read(t, "skillhub", "index.html")
 	if !strings.Contains(skillhub, `class="toolbar" role="search" aria-label="Skill search"`) {
 		t.Fatalf("skillhub toolbar must expose search semantics")
+	}
+	if !strings.Contains(skillhub, `id="pageInfo" aria-live="polite"`) {
+		t.Fatalf("skillhub pager status must announce page changes")
 	}
 
 	market := read(t, "skillmarket", "index.html")

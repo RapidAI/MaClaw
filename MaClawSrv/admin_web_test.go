@@ -196,4 +196,14 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 			t.Fatalf("admin css missing accessibility marker %s", needle)
 		}
 	}
+	for _, needle := range []string{
+		`@media (prefers-color-scheme: dark)`,
+		`color-scheme: dark`,
+		`--bg: #0e141a`,
+		`.empty-state`,
+	} {
+		if !strings.Contains(css, needle) {
+			t.Fatalf("admin css missing dark mode marker %s", needle)
+		}
+	}
 }
