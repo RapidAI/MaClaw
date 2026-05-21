@@ -134,9 +134,9 @@
       </div>
       <div class="auth-tabs" role="tablist" aria-label="Authentication modes">
         <button id="auth-tab-login" class="auth-tab active" type="button" data-auth-tab="login" onclick="showAuthMode('login')" data-i18n="auth.login.title" role="tab" aria-selected="true" aria-controls="auth-mode-login">Login</button>
-        <button id="auth-tab-register" class="auth-tab" type="button" data-auth-tab="register" onclick="showAuthMode('register')" data-i18n="auth.register.short" role="tab" aria-selected="false" aria-controls="auth-mode-register">Register</button>
-        <button id="auth-tab-lookup" class="auth-tab" type="button" data-auth-tab="lookup" onclick="showAuthMode('lookup')" data-i18n="auth.lookup.short" role="tab" aria-selected="false" aria-controls="auth-mode-lookup">Email Login</button>
-        <button id="auth-tab-forgot" class="auth-tab" type="button" data-auth-tab="forgot" onclick="showAuthMode('forgot')" data-i18n="auth.forgot.short" role="tab" aria-selected="false" aria-controls="auth-mode-forgot">Recover</button>
+        <button id="auth-tab-register" class="auth-tab" type="button" data-auth-tab="register" onclick="showAuthMode('register')" data-i18n="auth.register.short" role="tab" aria-selected="false" aria-controls="auth-mode-register" tabindex="-1">Register</button>
+        <button id="auth-tab-lookup" class="auth-tab" type="button" data-auth-tab="lookup" onclick="showAuthMode('lookup')" data-i18n="auth.lookup.short" role="tab" aria-selected="false" aria-controls="auth-mode-lookup" tabindex="-1">Email Login</button>
+        <button id="auth-tab-forgot" class="auth-tab" type="button" data-auth-tab="forgot" onclick="showAuthMode('forgot')" data-i18n="auth.forgot.short" role="tab" aria-selected="false" aria-controls="auth-mode-forgot" tabindex="-1">Recover</button>
       </div>
 
       <div id="auth-mode-login" class="auth-mode-panel" role="tabpanel" aria-labelledby="auth-tab-login">
@@ -213,7 +213,7 @@
     </div>
     <div class="tabs" role="tablist" aria-label="Workspace sections">
       <button id="workspace-tab-account" class="tab active" type="button" data-panel="account" data-i18n="tab.account" role="tab" aria-selected="true" aria-controls="panel-account">Account</button>
-      <button id="workspace-tab-myskills" class="tab" type="button" data-panel="myskills" data-i18n="tab.myskills" role="tab" aria-selected="false" aria-controls="panel-myskills">My Skills</button>
+      <button id="workspace-tab-myskills" class="tab" type="button" data-panel="myskills" data-i18n="tab.myskills" role="tab" aria-selected="false" aria-controls="panel-myskills" tabindex="-1">My Skills</button>
     </div>
 
     <div id="panel-account" class="panel active" role="tabpanel" aria-labelledby="workspace-tab-account">
@@ -282,7 +282,7 @@
         </div>
         <div id="credits-msg" aria-live="polite"></div>
         <h3 style="margin-top:16px" data-i18n="credits.history">Transactions</h3>
-        <div class="table-wrap"><table><thead><tr><th scope="col" data-i18n="tx.time">Time</th><th scope="col" data-i18n="tx.type">Type</th><th scope="col" data-i18n="tx.amount">Amount</th><th scope="col" data-i18n="tx.balance">Balance</th><th scope="col" data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list"></tbody></table></div><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" aria-live="polite" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" type="button" onclick="changeTxPage(-1)" aria-label="Previous transactions page">&larr;</button><button class="btn btn-outline" id="tx-next-btn" type="button" onclick="changeTxPage(1)" aria-label="Next transactions page">&rarr;</button></div></div>
+        <div class="table-wrap"><table aria-label="Credit transactions"><thead><tr><th scope="col" data-i18n="tx.time">Time</th><th scope="col" data-i18n="tx.type">Type</th><th scope="col" data-i18n="tx.amount">Amount</th><th scope="col" data-i18n="tx.balance">Balance</th><th scope="col" data-i18n="tx.desc">Description</th></tr></thead><tbody id="tx-list" aria-live="polite"></tbody></table></div><div id="tx-pager" style="display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div id="tx-page-info" aria-live="polite" style="font-size:12px;color:var(--muted)"></div><div style="display:flex;gap:8px"><button class="btn btn-outline" id="tx-prev-btn" type="button" onclick="changeTxPage(-1)" aria-label="Previous transactions page">&larr;</button><button class="btn btn-outline" id="tx-next-btn" type="button" onclick="changeTxPage(1)" aria-label="Next transactions page">&rarr;</button></div></div>
       </div>
     </div>
 
@@ -293,9 +293,9 @@
           <div class="section-actions"><button class="btn btn-outline" onclick="loadMySkills()" data-i18n="action.refresh">Refresh</button><a class="btn btn-primary" href="/skillmarket" data-i18n="action.browse">Browse Market</a></div>
         </div>
         <p class="empty" id="myskills-empty" data-i18n="myskills.empty">No skills yet.</p>
-        <div class="table-wrap" id="myskills-wrap" style="display:none"><table id="myskills-table">
+        <div class="table-wrap" id="myskills-wrap" style="display:none"><table id="myskills-table" aria-label="Uploaded skills">
           <thead><tr><th scope="col" data-i18n="sk.name">Name</th><th scope="col" data-i18n="sk.version">Version</th><th scope="col" data-i18n="sk.status">Status</th><th scope="col" data-i18n="sk.rating">Rating</th><th scope="col" data-i18n="sk.downloads">Downloads</th><th scope="col" data-i18n="sk.actions">Actions</th></tr></thead>
-          <tbody id="myskills-list"></tbody>
+          <tbody id="myskills-list" aria-live="polite"></tbody>
         </table></div>
       </div>
       <div id="apikey-section" class="card">
@@ -570,12 +570,14 @@ const ERROR_MESSAGES = {
 };
 function t(key) { return (I18N[key] && I18N[key][LANG]) || key; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function enhanceButtonTypes(root=document) { root.querySelectorAll('button:not([type])').forEach(button => { button.type = 'button'; }); }
 
 function setLanguage(lang) {
   LANG = lang === 'en' ? 'en' : 'zh';
   localStorage.setItem('sm_lang', LANG);
   document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
   applyI18n();
+  enhanceButtonTypes();
   if (currentEmail) loadAccountData();
 }
 
@@ -638,6 +640,7 @@ function showAuthMode(mode) {
     const active = tab.getAttribute('data-auth-tab') === mode;
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    tab.tabIndex = active ? 0 : -1;
   });
   if (mode === 'forgot') refreshCaptcha('forgot');
   else if (mode === 'register') refreshCaptcha('reg');
@@ -906,12 +909,12 @@ async function loadTransactions(page) {
     const tbody = document.getElementById('tx-list');
     tbody.innerHTML = '';
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">' + esc(t('tx.empty')) + '</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty" role="status">' + esc(t('tx.empty')) + '</td></tr>';
       renderTxPager();
       return;
     }
     list.forEach(tx => {
-      tbody.innerHTML += '<tr><td>' + esc(tx.created_at||'') + '</td><td>' + esc(tx.type) + '</td><td>' + esc(String(tx.amount)) + '</td><td>' + esc(String(tx.balance)) + '</td><td>' + esc(tx.description||'') + '</td></tr>';
+      tbody.innerHTML += '<tr><th scope="row">' + esc(tx.created_at||'') + '</th><td>' + esc(tx.type) + '</td><td>' + esc(String(tx.amount)) + '</td><td>' + esc(String(tx.balance)) + '</td><td>' + esc(tx.description||'') + '</td></tr>';
     });
     renderTxPager();
   } catch(e) {}
@@ -972,12 +975,12 @@ async function loadMySkills() {
       const dl = s.download_count || s.downloads || 0;
       const encodedID = encodeURIComponent(s.id || '');
       tbody.innerHTML += `<tr>
-        <td>${esc(s.name)}</td>
+        <th scope="row">${esc(s.name)}</th>
         <td>${esc(s.version || '-')}</td>
         <td>${esc(statusLabel)}</td>
         <td>${rating}</td>
         <td>${dl}</td>
-        <td><button class="btn btn-outline" onclick="copyText(decodeActionValue('${encodedID}'),'msg.copied')">${t('action.copy')}</button> <button class="btn btn-danger" onclick="withdrawSkill(decodeActionValue('${encodedID}'))">${t('sk.withdraw')}</button></td>
+        <td><button class="btn btn-outline" type="button" aria-label="${esc(t('action.copy') + ' ' + (s.name || ''))}" onclick="copyText(decodeActionValue('${encodedID}'),'msg.copied')">${t('action.copy')}</button> <button class="btn btn-danger" type="button" aria-label="${esc(t('sk.withdraw') + ' ' + (s.name || ''))}" onclick="withdrawSkill(decodeActionValue('${encodedID}'))">${t('sk.withdraw')}</button></td>
       </tr>`;
     });
   } catch(e) {}
@@ -1027,7 +1030,7 @@ function showMsg(id, msg, isErr) {
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => { const active = b === tab; b.classList.toggle('active', active); b.setAttribute('aria-selected', active ? 'true' : 'false'); });
+    document.querySelectorAll('.tab').forEach(b => { const active = b === tab; b.classList.toggle('active', active); b.setAttribute('aria-selected', active ? 'true' : 'false'); b.tabIndex = active ? 0 : -1; });
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
     if (tab.dataset.panel === 'myskills') loadMySkills();
@@ -1088,6 +1091,7 @@ function applyI18n() {
 // Init
 async function init() {
   applyI18n();
+  enhanceButtonTypes();
   refreshCaptcha('login');
   refreshCaptcha('reg');
   refreshCaptcha('lookup');

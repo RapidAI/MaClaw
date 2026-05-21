@@ -262,14 +262,43 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(user, `function bindTablistKeyboard`) || !strings.Contains(user, `bindTablistKeyboard('[aria-label="Authentication modes"]','[data-auth-tab]')`) || !strings.Contains(user, `bindTablistKeyboard('[aria-label="Workspace sections"]','.tab')`) {
 		t.Fatalf("user console tablists must keep arrow-key keyboard navigation")
 	}
+	for _, required := range []string{
+		`id="auth-tab-register" class="auth-tab" type="button" data-auth-tab="register" onclick="showAuthMode('register')" data-i18n="auth.register.short" role="tab" aria-selected="false" aria-controls="auth-mode-register" tabindex="-1"`,
+		`id="workspace-tab-myskills" class="tab" type="button" data-panel="myskills" data-i18n="tab.myskills" role="tab" aria-selected="false" aria-controls="panel-myskills" tabindex="-1"`,
+		`tab.tabIndex = active ? 0 : -1`,
+		`b.tabIndex = active ? 0 : -1`,
+	} {
+		if !strings.Contains(user, required) {
+			t.Fatalf("user tablist missing roving tabindex contract %q", required)
+		}
+	}
 	if !strings.Contains(user, `id="workspace-tab-account" class="tab active" type="button"`) || !strings.Contains(user, `id="workspace-tab-myskills" class="tab" type="button"`) {
 		t.Fatalf("workspace tabs must be non-submit buttons")
+	}
+	if !strings.Contains(user, `function enhanceButtonTypes(root=document)`) || !strings.Contains(user, `root.querySelectorAll('button:not([type])').forEach`) || !strings.Contains(user, `applyI18n();
+  enhanceButtonTypes();`) {
+		t.Fatalf("user console must normalize implicit submit buttons")
 	}
 	if !strings.Contains(user, `id="tx-prev-btn" type="button"`) || !strings.Contains(user, `aria-label="Previous transactions page"`) || !strings.Contains(user, `id="tx-next-btn" type="button"`) || !strings.Contains(user, `aria-label="Next transactions page"`) {
 		t.Fatalf("transaction pager icon buttons must expose accessible names")
 	}
 	if !strings.Contains(user, `id="tx-page-info" aria-live="polite"`) {
 		t.Fatalf("transaction pager status must announce page changes")
+	}
+	for _, required := range []string{
+		`<table aria-label="Credit transactions">`,
+		`<tbody id="tx-list" aria-live="polite">`,
+		`<table id="myskills-table" aria-label="Uploaded skills">`,
+		`<tbody id="myskills-list" aria-live="polite">`,
+		`<td colspan="5" class="empty" role="status">`,
+		`<th scope="row">' + esc(tx.created_at||'') + '</th>`,
+		`<th scope="row">${esc(s.name)}</th>`,
+		`class="btn btn-outline" type="button" aria-label="${esc(t('action.copy') + ' ' + (s.name || ''))}"`,
+		`class="btn btn-danger" type="button" aria-label="${esc(t('sk.withdraw') + ' ' + (s.name || ''))}"`,
+	} {
+		if !strings.Contains(user, required) {
+			t.Fatalf("user tables missing accessibility contract %q", required)
+		}
 	}
 	for _, header := range []string{"tx.time", "tx.type", "tx.amount", "tx.balance", "tx.desc", "sk.name", "sk.version", "sk.status", "sk.rating", "sk.downloads", "sk.actions"} {
 		if !strings.Contains(user, `scope="col" data-i18n="`+header+`"`) {
@@ -289,6 +318,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(gossip, `id="pageInfo" aria-live="polite"`) {
 		t.Fatalf("gossip pager status must announce page changes")
 	}
+	for _, required := range []string{
+		`id="feed" class="feed" role="feed" aria-label="Gossip posts" aria-live="polite" aria-busy="false"`,
+		`feed.setAttribute('role','status')`,
+		`feed.setAttribute('role','feed')`,
+		`<article class="post" aria-label="`,
+	} {
+		if !strings.Contains(gossip, required) {
+			t.Fatalf("gossip feed missing semantic contract %q", required)
+		}
+	}
 
 	skillhub := read(t, "skillhub", "index.html")
 	if !strings.Contains(skillhub, `class="toolbar" role="search" aria-label="Skill search"`) {
@@ -296,6 +335,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	}
 	if !strings.Contains(skillhub, `id="pageInfo" aria-live="polite"`) {
 		t.Fatalf("skillhub pager status must announce page changes")
+	}
+	for _, required := range []string{
+		`id="content" class="state" role="status" aria-live="polite" aria-busy="false"`,
+		`content.setAttribute('role', 'status')`,
+		`content.setAttribute('role', 'list')`,
+		`<article class="card" role="listitem" aria-label="`,
+	} {
+		if !strings.Contains(skillhub, required) {
+			t.Fatalf("skillhub content missing semantic contract %q", required)
+		}
 	}
 
 	market := read(t, "skillmarket", "index.html")
@@ -306,6 +355,34 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	}
 	if !strings.Contains(market, `function bindTablistKeyboard`) || !strings.Contains(market, `bindTablistKeyboard('[aria-label="Skill views"]','.tab')`) {
 		t.Fatalf("market tablists must keep arrow-key keyboard navigation")
+	}
+	for _, required := range []string{
+		`id="capTabMCP" type="button" onclick="switchCapTab('mcp')" role="tab" aria-selected="false" aria-pressed="false" aria-controls="capMCPView" tabindex="-1"`,
+		`id="tabRating" type="button" role="tab" aria-selected="false" aria-controls="view-top-rating" tabindex="-1"`,
+		`btn.tabIndex=active?0:-1`,
+		`skills.setAttribute('aria-pressed', tab === 'skills' ? 'true' : 'false')`,
+		`mcp.setAttribute('aria-pressed', tab === 'mcp' ? 'true' : 'false')`,
+		`skills.tabIndex = tab === 'skills' ? 0 : -1`,
+	} {
+		if !strings.Contains(market, required) {
+			t.Fatalf("market tablist missing pressed or roving tabindex contract %q", required)
+		}
+	}
+	for _, required := range []string{
+		`id="searchResults" class="grid" aria-busy="false" aria-live="polite"`,
+		`id="ratingList" class="grid" aria-busy="false" aria-live="polite"`,
+		`id="downloadsList" class="grid" aria-busy="false" aria-live="polite"`,
+		`id="newestList" class="grid" aria-busy="false" aria-live="polite"`,
+		`id="mcpMarketList" class="grid" aria-busy="false" aria-live="polite"`,
+		`class="state" role="status" style="display:none" aria-live="polite"`,
+		`id="ratingRow" class="rating-row" role="group" aria-label="Skill rating score"`,
+		`btn.setAttribute('aria-label',t('rating')+' '+btn.textContent)`,
+		`btn.setAttribute('aria-pressed','false')`,
+		`btn.setAttribute('aria-pressed',selected?'true':'false')`,
+	} {
+		if !strings.Contains(market, required) {
+			t.Fatalf("market dynamic regions missing accessibility contract %q", required)
+		}
 	}
 	for _, required := range []string{
 		`if(!detailOverlay.classList.contains('active'))return`,

@@ -89,8 +89,8 @@
 
   <main class="content-panel">
     <div role="tablist" aria-label="Capability types" style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:12px">
-      <button class="cap-tab active" id="capTabSkills" type="button" onclick="switchCapTab('skills')" role="tab" aria-selected="true" aria-controls="capSkillsView" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#172033;border-color:#172033;color:#fff;font:inherit;font-size:15px;font-weight:800;cursor:pointer">Skills</button>
-      <button class="cap-tab" id="capTabMCP" type="button" onclick="switchCapTab('mcp')" role="tab" aria-selected="false" aria-controls="capMCPView" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;font-size:15px;font-weight:800;cursor:pointer">MCP</button>
+      <button class="cap-tab active" id="capTabSkills" type="button" onclick="switchCapTab('skills')" role="tab" aria-selected="true" aria-pressed="true" aria-controls="capSkillsView" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#172033;border-color:#172033;color:#fff;font:inherit;font-size:15px;font-weight:800;cursor:pointer">Skills</button>
+      <button class="cap-tab" id="capTabMCP" type="button" onclick="switchCapTab('mcp')" role="tab" aria-selected="false" aria-pressed="false" aria-controls="capMCPView" tabindex="-1" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;font-size:15px;font-weight:800;cursor:pointer">MCP</button>
     </div>
     <div id="capSkillsView" role="tabpanel" aria-labelledby="capTabSkills">
     <div class="section-head">
@@ -100,25 +100,25 @@
       </div>
       <div class="tabs" role="tablist" aria-label="Skill views">
         <button class="tab active" data-view="search" id="tabSearch" type="button" role="tab" aria-selected="true" aria-controls="view-search"></button>
-        <button class="tab" data-view="top-rating" id="tabRating" type="button" role="tab" aria-selected="false" aria-controls="view-top-rating"></button>
-        <button class="tab" data-view="top-downloads" id="tabDownloads" type="button" role="tab" aria-selected="false" aria-controls="view-top-downloads"></button>
-        <button class="tab" data-view="top-newest" id="tabNewest" type="button" role="tab" aria-selected="false" aria-controls="view-top-newest"></button>
+        <button class="tab" data-view="top-rating" id="tabRating" type="button" role="tab" aria-selected="false" aria-controls="view-top-rating" tabindex="-1"></button>
+        <button class="tab" data-view="top-downloads" id="tabDownloads" type="button" role="tab" aria-selected="false" aria-controls="view-top-downloads" tabindex="-1"></button>
+        <button class="tab" data-view="top-newest" id="tabNewest" type="button" role="tab" aria-selected="false" aria-controls="view-top-newest" tabindex="-1"></button>
       </div>
     </div>
 
     <div id="view-search" role="tabpanel" aria-labelledby="tabSearch">
-      <div id="searchResults" class="grid" aria-busy="false"></div>
-      <div id="searchEmpty" class="state" style="display:none" aria-live="polite"></div>
+      <div id="searchResults" class="grid" aria-busy="false" aria-live="polite"></div>
+      <div id="searchEmpty" class="state" role="status" style="display:none" aria-live="polite"></div>
     </div>
 
-    <div id="view-top-rating" role="tabpanel" aria-labelledby="tabRating" style="display:none"><div id="ratingList" class="grid" aria-busy="false"></div><div id="ratingEmpty" class="state" style="display:none" aria-live="polite"></div></div>
-    <div id="view-top-downloads" role="tabpanel" aria-labelledby="tabDownloads" style="display:none"><div id="downloadsList" class="grid" aria-busy="false"></div><div id="downloadsEmpty" class="state" style="display:none" aria-live="polite"></div></div>
-    <div id="view-top-newest" role="tabpanel" aria-labelledby="tabNewest" style="display:none"><div id="newestList" class="grid" aria-busy="false"></div><div id="newestEmpty" class="state" style="display:none" aria-live="polite"></div></div>
+    <div id="view-top-rating" role="tabpanel" aria-labelledby="tabRating" style="display:none"><div id="ratingList" class="grid" aria-busy="false" aria-live="polite"></div><div id="ratingEmpty" class="state" role="status" style="display:none" aria-live="polite"></div></div>
+    <div id="view-top-downloads" role="tabpanel" aria-labelledby="tabDownloads" style="display:none"><div id="downloadsList" class="grid" aria-busy="false" aria-live="polite"></div><div id="downloadsEmpty" class="state" role="status" style="display:none" aria-live="polite"></div></div>
+    <div id="view-top-newest" role="tabpanel" aria-labelledby="tabNewest" style="display:none"><div id="newestList" class="grid" aria-busy="false" aria-live="polite"></div><div id="newestEmpty" class="state" role="status" style="display:none" aria-live="polite"></div></div>
     </div>
     <div id="capMCPView" role="tabpanel" aria-labelledby="capTabMCP" style="display:none">
       <div class="section-head"><div><h3 id="mcpSectionTitle"></h3><div class="section-note" id="mcpSectionNote"></div></div></div>
-      <div id="mcpMarketList" class="grid" aria-busy="false"></div>
-      <div id="mcpMarketEmpty" class="state" style="display:none" aria-live="polite"></div>
+      <div id="mcpMarketList" class="grid" aria-busy="false" aria-live="polite"></div>
+      <div id="mcpMarketEmpty" class="state" role="status" style="display:none" aria-live="polite"></div>
     </div>
   </main>
 </div>
@@ -139,7 +139,7 @@
     </div>
     <div>
       <div id="rateLabel"></div>
-      <div id="ratingRow" class="rating-row"></div>
+      <div id="ratingRow" class="rating-row" role="group" aria-label="Skill rating score"></div>
       <p id="rateMsg" aria-live="polite"></p>
     </div>
   </div>
@@ -179,11 +179,11 @@ function renderCards(containerId,emptyId,items){var c=document.getElementById(co
 function showLoading(containerId,emptyId){var c=document.getElementById(containerId);c.setAttribute('aria-busy','true');c.innerHTML='';var e=document.getElementById(emptyId);e.style.display='';e.textContent=t('loading');}
 async function doSearch(){showLoading('searchResults','searchEmpty');try{const r=await fetch('/api/v1/skillmarket/search?q='+encodeURIComponent(searchInput.value.trim())+'&top_n=30');if(!r.ok)throw new Error(await r.text());const data=await r.json();const list=data.results||data||[];renderCards('searchResults','searchEmpty',Array.isArray(list)?list:[]);}catch(_){searchResults.setAttribute('aria-busy','false');updateMetrics([]);searchEmpty.style.display='';searchEmpty.textContent=t('network');}}
 async function loadTop(sortBy){var map={rating:['ratingList','ratingEmpty'],downloads:['downloadsList','downloadsEmpty'],newest:['newestList','newestEmpty']};showLoading(map[sortBy][0],map[sortBy][1]);try{const r=await fetch('/api/v1/skillmarket/top?sort='+sortBy+'&limit=20');if(!r.ok)throw new Error(await r.text());const data=await r.json();const list=data.entries||data||[];renderCards(map[sortBy][0],map[sortBy][1],Array.isArray(list)?list:[]);}catch(_){updateMetrics([]);document.getElementById(map[sortBy][0]).setAttribute('aria-busy','false');document.getElementById(map[sortBy][1]).style.display='';document.getElementById(map[sortBy][1]).textContent=t('network');}}
-function showDetail(s){detailReturnFocus=document.activeElement;detailName.textContent=s.name||'-';detailDesc.textContent=s.description||'';detailTags.innerHTML=(s.tags||[]).map(function(tag){return '<span class="tag">'+esc(tag)+'</span>';}).join('');detailRatingWrap.textContent=t('rating')+': '+Number(s.avg_rating||0).toFixed(1);detailDownloadsWrap.textContent=t('downloads')+': '+Number(s.download_count||0);detailPriceWrap.textContent=(s.price?String(s.price)+' '+t('credits'):t('priceFree'));detailVersionWrap.textContent=t('version')+': '+(s.version||'-');detailDateWrap.textContent=t('uploaded')+': '+(s.created_at?fmtDate(s.created_at):'-');if(s.status){detailStatusWrap.style.display='';detailStatusWrap.textContent=t('status')+': '+statusText(s.status);}else{detailStatusWrap.style.display='none';}ratingRow.innerHTML='';[-2,-1,0,1,2].forEach(function(score){var btn=document.createElement('button');btn.type='button';btn.textContent=score>0?('+'+score):String(score);btn.onclick=function(){submitRating(s.id,score);};ratingRow.appendChild(btn);});rateMsg.textContent='';detailOverlay.classList.add('active');detailOverlay.setAttribute('aria-hidden','false');detailClose.focus();}
+function showDetail(s){detailReturnFocus=document.activeElement;detailName.textContent=s.name||'-';detailDesc.textContent=s.description||'';detailTags.innerHTML=(s.tags||[]).map(function(tag){return '<span class="tag">'+esc(tag)+'</span>';}).join('');detailRatingWrap.textContent=t('rating')+': '+Number(s.avg_rating||0).toFixed(1);detailDownloadsWrap.textContent=t('downloads')+': '+Number(s.download_count||0);detailPriceWrap.textContent=(s.price?String(s.price)+' '+t('credits'):t('priceFree'));detailVersionWrap.textContent=t('version')+': '+(s.version||'-');detailDateWrap.textContent=t('uploaded')+': '+(s.created_at?fmtDate(s.created_at):'-');if(s.status){detailStatusWrap.style.display='';detailStatusWrap.textContent=t('status')+': '+statusText(s.status);}else{detailStatusWrap.style.display='none';}ratingRow.innerHTML='';[-2,-1,0,1,2].forEach(function(score){var btn=document.createElement('button');btn.type='button';btn.textContent=score>0?('+'+score):String(score);btn.setAttribute('aria-label',t('rating')+' '+btn.textContent);btn.setAttribute('aria-pressed','false');btn.onclick=function(){submitRating(s.id,score);};ratingRow.appendChild(btn);});rateMsg.textContent='';detailOverlay.classList.add('active');detailOverlay.setAttribute('aria-hidden','false');detailClose.focus();}
 function closeDetail(){var target=detailReturnFocus;detailOverlay.classList.remove('active');detailOverlay.setAttribute('aria-hidden','true');detailReturnFocus=null;if(target&&typeof target.focus==='function')target.focus();}
 detailOverlay.addEventListener('click',function(e){if(e.target===detailOverlay)closeDetail();});document.addEventListener('keydown',function(e){if(!detailOverlay.classList.contains('active'))return;if(e.key==='Escape'){closeDetail();return}if(e.key!=='Tab')return;var focusable='button,input,select,textarea,a[href],[tabindex]:not([tabindex="-1"])';var nodes=Array.prototype.slice.call(detailOverlay.querySelectorAll(focusable)).filter(function(el){return !el.disabled&&el.offsetParent!==null});if(!nodes.length)return;var first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}});
-async function submitRating(skillID,score){var email=window.prompt(t('rateNeedEmail'));if(!email)return;try{const r=await fetch('/api/v1/skillmarket/'+skillID+'/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,score:score})});if(!r.ok){rateMsg.textContent=await r.text();return;}rateMsg.textContent=t('rateOk');Array.prototype.forEach.call(document.querySelectorAll('#ratingRow button'),function(btn){btn.classList.toggle('selected',btn.textContent===(score>0?('+'+score):String(score)));});}catch(_){rateMsg.textContent=t('network');}}
-Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(tab){tab.addEventListener('click',function(){Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(btn){var active=btn===tab;btn.classList.toggle('active',active);btn.setAttribute('aria-selected',active?'true':'false');});['search','top-rating','top-downloads','top-newest'].forEach(function(id){document.getElementById('view-'+id).style.display=id===tab.dataset.view?'':'none';});updateSectionText();if(tab.dataset.view==='top-rating')loadTop('rating');if(tab.dataset.view==='top-downloads')loadTop('downloads');if(tab.dataset.view==='top-newest')loadTop('newest');if(tab.dataset.view==='search')doSearch();});});
+async function submitRating(skillID,score){var email=window.prompt(t('rateNeedEmail'));if(!email)return;try{const r=await fetch('/api/v1/skillmarket/'+skillID+'/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,score:score})});if(!r.ok){rateMsg.textContent=await r.text();return;}rateMsg.textContent=t('rateOk');Array.prototype.forEach.call(document.querySelectorAll('#ratingRow button'),function(btn){var selected=btn.textContent===(score>0?('+'+score):String(score));btn.classList.toggle('selected',selected);btn.setAttribute('aria-pressed',selected?'true':'false');});}catch(_){rateMsg.textContent=t('network');}}
+Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(tab){tab.addEventListener('click',function(){Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(btn){var active=btn===tab;btn.classList.toggle('active',active);btn.setAttribute('aria-selected',active?'true':'false');btn.tabIndex=active?0:-1;});['search','top-rating','top-downloads','top-newest'].forEach(function(id){document.getElementById('view-'+id).style.display=id===tab.dataset.view?'':'none';});updateSectionText();if(tab.dataset.view==='top-rating')loadTop('rating');if(tab.dataset.view==='top-downloads')loadTop('downloads');if(tab.dataset.view==='top-newest')loadTop('newest');if(tab.dataset.view==='search')doSearch();});});
 function bindTablistKeyboard(rootSelector,tabSelector){var root=document.querySelector(rootSelector);if(!root)return;root.addEventListener('keydown',function(e){var keys=['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'];if(keys.indexOf(e.key)===-1)return;var tabs=Array.prototype.slice.call(root.querySelectorAll(tabSelector));var index=tabs.indexOf(document.activeElement);if(index<0)return;e.preventDefault();var next=index;if(e.key==='Home')next=0;else if(e.key==='End')next=tabs.length-1;else next=(index+(e.key==='ArrowLeft'||e.key==='ArrowUp'?-1:1)+tabs.length)%tabs.length;tabs[next].focus();tabs[next].click();});}
 bindTablistKeyboard('[aria-label="Capability types"]','.cap-tab');
 bindTablistKeyboard('[aria-label="Skill views"]','.tab');
@@ -208,6 +208,10 @@ function switchCapTab(tab) {
   mcp.style.cssText = tab === 'mcp' ? activeStyle : inactiveStyle;
   skills.setAttribute('aria-selected', tab === 'skills' ? 'true' : 'false');
   mcp.setAttribute('aria-selected', tab === 'mcp' ? 'true' : 'false');
+  skills.setAttribute('aria-pressed', tab === 'skills' ? 'true' : 'false');
+  mcp.setAttribute('aria-pressed', tab === 'mcp' ? 'true' : 'false');
+  skills.tabIndex = tab === 'skills' ? 0 : -1;
+  mcp.tabIndex = tab === 'mcp' ? 0 : -1;
   document.getElementById('capSkillsView').style.display = tab === 'skills' ? '' : 'none';
   document.getElementById('capMCPView').style.display = tab === 'mcp' ? '' : 'none';
   if (tab === 'mcp') loadMCPMarket();
