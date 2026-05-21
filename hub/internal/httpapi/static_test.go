@@ -354,4 +354,29 @@ func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 			t.Fatalf("approval workflow editor missing keyboard contract %q", want)
 		}
 	}
+
+	admin := read(t, "admin", "index.html")
+	for _, want := range []string{
+		`<nav class="nav" aria-label="Admin sections">`,
+		`<main class="main" tabindex="-1">`,
+		`<div class="lang-switch" aria-label="Language">`,
+	} {
+		if !strings.Contains(admin, want) {
+			t.Fatalf("hub admin shell missing accessibility contract %q", want)
+		}
+	}
+
+	adminUI := read(t, "admin", "admin-ui.js")
+	for _, want := range []string{
+		`if (!nextAttrs.type) nextAttrs.type = 'button';`,
+		`function enhanceButtonTypes(root)`,
+		`scope.querySelectorAll('button:not([type])').forEach`,
+		`function enhanceLanguageSwitchStates(root)`,
+		`button.setAttribute('aria-pressed', button.classList.contains('active') ? 'true' : 'false')`,
+		`observer.observe(global.document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] })`,
+	} {
+		if !strings.Contains(adminUI, want) {
+			t.Fatalf("hub admin UI helper missing accessibility contract %q", want)
+		}
+	}
 }

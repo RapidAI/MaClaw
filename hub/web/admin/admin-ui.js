@@ -24,9 +24,46 @@
   }
   function actionButton(text, className, onclick, attrs) {
     const nextAttrs = Object.assign({}, attrs || {});
+    if (!nextAttrs.type) nextAttrs.type = 'button';
     if (onclick) nextAttrs.onclick = onclick;
     return '<button class="' + escapeHtml(className || 'btn-secondary') + '"' + attrsToString(nextAttrs) + '>' + escapeHtml(text || '') + '</button>';
   }
+  function enhanceButtonTypes(root) {
+    const scope = root || global.document;
+    if (!scope || !scope.querySelectorAll) return;
+    scope.querySelectorAll('button:not([type])').forEach(function(button) {
+      button.type = 'button';
+    });
+  }
+  function enhanceLanguageSwitchStates(root) {
+    const scope = root || global.document;
+    if (!scope || !scope.querySelectorAll) return;
+    scope.querySelectorAll('.lang-switch button').forEach(function(button) {
+      button.setAttribute('aria-pressed', button.classList.contains('active') ? 'true' : 'false');
+    });
+  }
+  function installButtonTypeNormalizer() {
+    if (!global.document || installButtonTypeNormalizer.done) return;
+    installButtonTypeNormalizer.done = true;
+    enhanceButtonTypes(global.document);
+    enhanceLanguageSwitchStates(global.document);
+    if (!global.MutationObserver) return;
+    const observer = new global.MutationObserver(function(records) {
+      records.forEach(function(record) {
+        record.addedNodes.forEach(function(node) {
+          if (!node || node.nodeType !== 1) return;
+          if (node.matches && node.matches('button:not([type])')) node.type = 'button';
+          enhanceButtonTypes(node);
+          enhanceLanguageSwitchStates(node);
+        });
+        if (record.type === 'attributes' && record.target && record.target.matches && record.target.matches('.lang-switch button')) {
+          enhanceLanguageSwitchStates(record.target.parentElement || global.document);
+        }
+      });
+    });
+    observer.observe(global.document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  }
+  installButtonTypeNormalizer.done = false;
   function simpleCard(options) {
     const opts = options || {};
     const style = opts.style ? ' style="' + escapeHtml(opts.style) + '"' : '';
@@ -84,6 +121,7 @@
   }
   installModalBackdropGuard.done = false;
   installModalBackdropGuard();
+  installButtonTypeNormalizer();
   global.AdminUI = {
     hint: hint,
     meta: meta,
@@ -91,6 +129,9 @@
     actionButton: actionButton,
     simpleCard: simpleCard,
     renderList: renderList,
+    enhanceButtonTypes: enhanceButtonTypes,
+    enhanceLanguageSwitchStates: enhanceLanguageSwitchStates,
+    installButtonTypeNormalizer: installButtonTypeNormalizer,
     rememberBackdropPointer: rememberBackdropPointer,
     dismissBackdropClick: dismissBackdropClick,
     bindModalOverlayDismiss: bindModalOverlayDismiss,

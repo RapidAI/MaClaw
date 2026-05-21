@@ -240,7 +240,7 @@
           </div>
         </div>
       </div>
-      <nav class="nav">
+      <nav class="nav" aria-label="Admin sections">
         <button data-tab="overview" class="active" onclick="openTab('overview')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5 10.5V20h14v-9.5"></path><path d="M10 20v-5h4v5"></path></svg></span><div class="nav-copy"><span data-i18n="navOverview"></span><small data-i18n="navOverviewDesc"></small></div></div></button>
         <button data-tab="center" onclick="openTab('center')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M4 12h16"></path><path d="M12 4a12 12 0 0 1 0 16"></path><path d="M12 4a12 12 0 0 0 0 16"></path></svg></span><div class="nav-copy"><span data-i18n="navCenter"></span><small data-i18n="navCenterDesc"></small></div></div></button>
         <button data-tab="tenants" onclick="openTab('tenants')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path><path d="M8 17h3"></path></svg></span><div class="nav-copy"><span id="navTenants"></span><small id="navTenantsDesc"></small></div></div></button>
@@ -263,11 +263,11 @@
       </nav>
       <div class="side-note"><span data-i18n="defaultCenter"></span><br><span class="mono">https://hubs.maclaw.top</span><br><br><span data-i18n="deployHint"></span></div>
     </aside>
-    <main class="main">
+    <main class="main" tabindex="-1">
       <div class="top">
         <div class="page-title-wrap"><span class="page-tab-icon" aria-hidden="true"></span><div class="page-copy"><div class="page-kicker" id="pageKicker" data-i18n="pageKicker"></div><h2 id="pageTitle"></h2><div class="subtle" id="pageSubtitle"></div></div></div>
         <div class="topbar">
-          <div class="lang-switch">
+          <div class="lang-switch" aria-label="Language">
             <button type="button" data-lang="en" onclick="setLanguage('en')">EN</button>
             <button type="button" data-lang="zh" onclick="setLanguage('zh')">ZH</button>
           </div>
