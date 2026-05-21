@@ -38,6 +38,11 @@
 
 html { min-width: 320px; }
 
+::selection {
+  background: rgba(15, 118, 110, .22);
+  color: var(--text);
+}
+
 body {
   margin: 0;
   background:
@@ -714,6 +719,93 @@ pre {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
   body.is-fetching::after { animation: none; transform: none; }
   .skeleton::after { animation: none; }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line: #8a99a4;
+    --line-strong: #526470;
+    --muted: #394a55;
+  }
+
+  body { background: var(--bg); }
+
+  .card,
+  .panel,
+  table,
+  input,
+  select,
+  textarea,
+  .badge,
+  .state-pill,
+  .empty-state {
+    border-width: 2px;
+  }
+
+  button.secondary { border-width: 2px; }
+
+  .nav button.active { box-shadow: inset 4px 0 0 var(--accent); }
+
+  .muted,
+  .metric span,
+  h3 { color: #394a55; }
+}
+
+@media (forced-colors: active) {
+  * { forced-color-adjust: auto; }
+
+  body,
+  .sidebar,
+  .card,
+  .panel,
+  table,
+  th,
+  td,
+  .code,
+  pre,
+  .empty-state {
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .sidebar,
+  .card,
+  .panel,
+  table,
+  input,
+  select,
+  textarea,
+  .badge,
+  .state-pill,
+  .empty-state,
+  .table-wrap {
+    border: 1px solid CanvasText;
+  }
+
+  button {
+    background: ButtonFace;
+    color: ButtonText;
+    border: 1px solid ButtonText;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  .table-wrap:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .nav button.active,
+  .state-ok,
+  .state-warn,
+  .state-bad,
+  .status-ok,
+  .status-warn,
+  .status-bad {
+    color: Highlight;
+  }
 }
 
 @media print {

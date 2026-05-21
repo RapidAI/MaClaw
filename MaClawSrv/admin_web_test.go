@@ -210,6 +210,11 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 			t.Fatalf("admin css missing interaction polish marker %s", needle)
 		}
 	}
+	for _, needle := range []string{`::selection`, `@media (prefers-contrast: more)`, `@media (forced-colors: active)`, `forced-color-adjust: auto`} {
+		if !strings.Contains(css, needle) {
+			t.Fatalf("admin css missing contrast support marker %s", needle)
+		}
+	}
 	for _, needle := range []string{
 		`@media (prefers-color-scheme: dark)`,
 		`color-scheme: dark`,
