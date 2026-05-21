@@ -27,6 +27,15 @@
 
 * { box-sizing: border-box; }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #b8c8d2 transparent;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #b8c8d2; border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
 html { min-width: 320px; }
 
 body {
@@ -154,6 +163,12 @@ textarea:focus-visible {
 .nav button:hover {
   background: rgba(255, 255, 255, .08);
   border-color: rgba(255, 255, 255, .1);
+  color: #ffffff;
+}
+
+.nav button:focus-visible {
+  outline-color: rgba(45, 212, 191, .42);
+  background: rgba(255, 255, 255, .08);
   color: #ffffff;
 }
 
@@ -353,7 +368,10 @@ table {
   width: 100%;
   overflow-x: auto;
   border-radius: 8px;
+  border: 1px solid transparent;
 }
+
+.table-wrap:focus-within { border-color: rgba(15, 118, 110, .24); }
 
 th,
 td {
@@ -370,6 +388,9 @@ th {
   background: var(--panel-muted);
   font-weight: 750;
   white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 td { color: #20313a; }
@@ -531,7 +552,7 @@ pre {
 @media (max-width: 820px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; }
-  .main { padding: 18px; }
+  .main { padding: 18px max(18px, env(safe-area-inset-right)) 18px max(18px, env(safe-area-inset-left)); }
   .topbar { display: grid; }
   .nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .nav button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
