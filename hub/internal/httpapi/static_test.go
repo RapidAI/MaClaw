@@ -373,6 +373,12 @@ func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 		`scope.querySelectorAll('button:not([type])').forEach`,
 		`function enhanceLanguageSwitchStates(root)`,
 		`button.setAttribute('aria-pressed', button.classList.contains('active') ? 'true' : 'false')`,
+		`function enhanceAdminNavigation(root)`,
+		`button.setAttribute('aria-current', active ? 'page' : 'false')`,
+		`button.tabIndex = active ? 0 : -1`,
+		`function bindAdminNavigationKeyboard()`,
+		`event.target.closest('.nav')`,
+		`buttons[next].click()`,
 		`observer.observe(global.document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] })`,
 	} {
 		if !strings.Contains(adminUI, want) {

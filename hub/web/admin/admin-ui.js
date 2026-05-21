@@ -42,11 +42,42 @@
       button.setAttribute('aria-pressed', button.classList.contains('active') ? 'true' : 'false');
     });
   }
+  function enhanceAdminNavigation(root) {
+    const scope = root || global.document;
+    if (!scope || !scope.querySelectorAll) return;
+    scope.querySelectorAll('.nav button[data-tab]').forEach(function(button) {
+      const active = button.classList.contains('active');
+      button.setAttribute('aria-current', active ? 'page' : 'false');
+      button.tabIndex = active ? 0 : -1;
+    });
+  }
+  function bindAdminNavigationKeyboard() {
+    if (!global.document || bindAdminNavigationKeyboard.done) return;
+    bindAdminNavigationKeyboard.done = true;
+    global.document.addEventListener('keydown', function(event) {
+      const nav = event.target && event.target.closest ? event.target.closest('.nav') : null;
+      if (!nav) return;
+      const keys = ['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft', 'Home', 'End'];
+      if (keys.indexOf(event.key) === -1) return;
+      const buttons = Array.prototype.slice.call(nav.querySelectorAll('button[data-tab]'));
+      const index = buttons.indexOf(global.document.activeElement);
+      if (index < 0) return;
+      event.preventDefault();
+      let next = index;
+      if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = buttons.length - 1;
+      else next = (index + (event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next].focus();
+      buttons[next].click();
+    });
+  }
+  bindAdminNavigationKeyboard.done = false;
   function installButtonTypeNormalizer() {
     if (!global.document || installButtonTypeNormalizer.done) return;
     installButtonTypeNormalizer.done = true;
     enhanceButtonTypes(global.document);
     enhanceLanguageSwitchStates(global.document);
+    enhanceAdminNavigation(global.document);
     if (!global.MutationObserver) return;
     const observer = new global.MutationObserver(function(records) {
       records.forEach(function(record) {
@@ -55,9 +86,13 @@
           if (node.matches && node.matches('button:not([type])')) node.type = 'button';
           enhanceButtonTypes(node);
           enhanceLanguageSwitchStates(node);
+          enhanceAdminNavigation(node);
         });
         if (record.type === 'attributes' && record.target && record.target.matches && record.target.matches('.lang-switch button')) {
           enhanceLanguageSwitchStates(record.target.parentElement || global.document);
+        }
+        if (record.type === 'attributes' && record.target && record.target.matches && record.target.matches('.nav button[data-tab]')) {
+          enhanceAdminNavigation(record.target.closest('.nav') || global.document);
         }
       });
     });
@@ -121,6 +156,7 @@
   }
   installModalBackdropGuard.done = false;
   installModalBackdropGuard();
+  bindAdminNavigationKeyboard();
   installButtonTypeNormalizer();
   global.AdminUI = {
     hint: hint,
@@ -131,6 +167,8 @@
     renderList: renderList,
     enhanceButtonTypes: enhanceButtonTypes,
     enhanceLanguageSwitchStates: enhanceLanguageSwitchStates,
+    enhanceAdminNavigation: enhanceAdminNavigation,
+    bindAdminNavigationKeyboard: bindAdminNavigationKeyboard,
     installButtonTypeNormalizer: installButtonTypeNormalizer,
     rememberBackdropPointer: rememberBackdropPointer,
     dismissBackdropClick: dismissBackdropClick,
