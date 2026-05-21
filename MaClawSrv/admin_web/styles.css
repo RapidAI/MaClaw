@@ -281,6 +281,43 @@ h3 { font-size: 13px; margin: 18px 0 8px; color: var(--muted); }
 .metric b { font-size: 24px; line-height: 1.15; font-variant-numeric: tabular-nums; word-break: break-word; }
 .metric span, .muted { color: var(--muted); }
 
+.empty-state {
+  min-height: 96px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  border: 1px dashed #c9d7df;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #fbfdfe, #f6f9fb);
+  color: var(--muted);
+  text-align: center;
+  padding: 18px;
+}
+
+.empty-state span {
+  width: 28px;
+  height: 28px;
+  border: 2px solid #c8d6de;
+  border-radius: 8px;
+  display: block;
+  position: relative;
+}
+
+.empty-state span::before,
+.empty-state span::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  height: 2px;
+  border-radius: 999px;
+  background: #c8d6de;
+}
+
+.empty-state span::before { top: 9px; }
+.empty-state span::after { top: 15px; }
+.empty-state p { margin: 0; font-weight: 650; }
+
 label { color: #26343c; font-weight: 650; }
 
 select,
