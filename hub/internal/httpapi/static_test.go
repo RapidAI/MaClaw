@@ -299,3 +299,59 @@ func TestHubProfessionalStylesheetsAreAsciiAndTokenized(t *testing.T) {
 		}
 	}
 }
+
+func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
+	read := func(t *testing.T, parts ...string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(append([]string{"..", "..", "web"}, parts...)...))
+		if err != nil {
+			t.Fatalf("read static asset: %v", err)
+		}
+		return string(body)
+	}
+
+	bind := read(t, "bind", "index.html")
+	for _, want := range []string{
+		`role="tablist" aria-label="Binding workflows"`,
+		`type="button" role="tab" data-tab="bind" id="tabButton-bind"`,
+		`aria-controls="tab-query"`,
+		`role="tabpanel" aria-labelledby="tabButton-unbind"`,
+		`role="radiogroup" aria-label="Verification channel"`,
+		`type="button" role="radio" aria-checked="true"`,
+		`role="status" aria-live="polite"`,
+		`function selectTab(btn)`,
+		`b.setAttribute('aria-selected', active ? 'true' : 'false')`,
+		`b.tabIndex = active ? 0 : -1`,
+		`function selectChannel(btn)`,
+		`b.setAttribute('aria-checked', active ? 'true' : 'false')`,
+	} {
+		if !strings.Contains(bind, want) {
+			t.Fatalf("bind page missing accessibility contract %q", want)
+		}
+	}
+
+	approval := read(t, "approval_workflow", "index.html")
+	for _, want := range []string{
+		`<button type="button" id="btnValidate">`,
+		`<button type="button" id="btnSubmit" class="btn-primary">`,
+		`role="button" tabindex="0" data-node-type="trigger"`,
+		`role="button" tabindex="0" data-node-type="terminal"`,
+		`aria-label="Close node configuration"`,
+	} {
+		if !strings.Contains(approval, want) {
+			t.Fatalf("approval workflow page missing accessibility contract %q", want)
+		}
+	}
+
+	editor := read(t, "approval_workflow", "workflow-editor.js")
+	for _, want := range []string{
+		`function addNodeToCanvas(nodeType, position)`,
+		`el.addEventListener('keydown', function (e)`,
+		`if (e.key !== 'Enter' && e.key !== ' ') return;`,
+		`addNodeToCanvas(el.getAttribute('data-node-type')`,
+	} {
+		if !strings.Contains(editor, want) {
+			t.Fatalf("approval workflow editor missing keyboard contract %q", want)
+		}
+	}
+}

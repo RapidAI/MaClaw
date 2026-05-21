@@ -503,65 +503,65 @@
           <span class="version-badge draft" id="versionBadge">DRAFT</span>
         </div>
         <div class="header-actions">
-          <button id="btnValidate">Validate</button>
-          <button id="btnSave">Save</button>
-          <button id="btnSubmit" class="btn-primary">Submit for Review</button>
+          <button type="button" id="btnValidate">Validate</button>
+          <button type="button" id="btnSave">Save</button>
+          <button type="button" id="btnSubmit" class="btn-primary">Submit for Review</button>
         </div>
       </header>
 
       <!-- Node Palette (Left Sidebar) -->
       <aside class="node-palette">
         <div class="palette-title">Node Types</div>
-        <div class="palette-node" draggable="true" data-node-type="trigger">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="trigger">
           <div class="palette-node-icon trigger">&#9654;</div>
           <div class="palette-node-info">
             <strong>Trigger</strong>
             <span>Workflow entry point</span>
           </div>
         </div>
-        <div class="palette-node" draggable="true" data-node-type="form">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="form">
           <div class="palette-node-icon form">&#9998;</div>
           <div class="palette-node-info">
             <strong>Form</strong>
             <span>Collect input data</span>
           </div>
         </div>
-        <div class="palette-node" draggable="true" data-node-type="approval">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="approval">
           <div class="palette-node-icon approval">&#10003;</div>
           <div class="palette-node-info">
             <strong>Approval</strong>
             <span>VE approval decision</span>
           </div>
         </div>
-        <div class="palette-node" draggable="true" data-node-type="condition_branch">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="condition_branch">
           <div class="palette-node-icon condition">&#9830;</div>
           <div class="palette-node-info">
             <strong>Condition Branch</strong>
             <span>Route by conditions</span>
           </div>
         </div>
-        <div class="palette-node" draggable="true" data-node-type="action">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="action">
           <div class="palette-node-icon action">&#9881;</div>
           <div class="palette-node-info">
             <strong>Action</strong>
             <span>Execute automated task</span>
           </div>
         </div>
-        <div class="palette-node" draggable="true" data-node-type="notification">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="notification">
           <div class="palette-node-icon notification">&#9993;</div>
           <div class="palette-node-info">
             <strong>Notification</strong>
             <span>Send notifications</span>
           </div>
         </div>
-        <div class="palette-node" draggable="true" data-node-type="sub_process">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="sub_process">
           <div class="palette-node-icon subprocess">&#8644;</div>
           <div class="palette-node-info">
             <strong>Sub-Process</strong>
             <span>Invoke nested workflow</span>
           </div>
         </div>
-        <div class="palette-node" draggable="true" data-node-type="terminal">
+        <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="terminal">
           <div class="palette-node-icon terminal">&#9632;</div>
           <div class="palette-node-info">
             <strong>Terminal</strong>
@@ -590,7 +590,7 @@
       <aside class="config-panel" id="configPanel">
         <div class="config-panel-title">
           <span id="configPanelTitle">Node Configuration</span>
-          <button class="config-panel-close" id="configPanelClose">&times;</button>
+          <button type="button" class="config-panel-close" id="configPanelClose" aria-label="Close node configuration">&times;</button>
         </div>
         <div id="configPanelBody"></div>
       </aside>

@@ -80,41 +80,41 @@
     <h1 id="pageTitle">MaClaw Binding Manager</h1>
     <p id="pageDesc"></p>
   </div>
-  <div class="tabs" role="tablist">
-    <button role="tab" data-tab="bind" class="active" aria-selected="true" data-i18n="tabBind">Bind Device</button>
-    <button role="tab" data-tab="query" aria-selected="false" data-i18n="tabQuery">Query Binding</button>
-    <button role="tab" data-tab="unbind" aria-selected="false" data-i18n="tabUnbind">Unbind Device</button>
+  <div class="tabs" role="tablist" aria-label="Binding workflows">
+    <button type="button" role="tab" data-tab="bind" id="tabButton-bind" class="active" aria-selected="true" aria-controls="tab-bind" data-i18n="tabBind">Bind Device</button>
+    <button type="button" role="tab" data-tab="query" id="tabButton-query" tabindex="-1" aria-selected="false" aria-controls="tab-query" data-i18n="tabQuery">Query Binding</button>
+    <button type="button" role="tab" data-tab="unbind" id="tabButton-unbind" tabindex="-1" aria-selected="false" aria-controls="tab-unbind" data-i18n="tabUnbind">Unbind Device</button>
   </div>
 
-  <div id="tab-bind" class="panel active" role="tabpanel">
+  <div id="tab-bind" class="panel active" role="tabpanel" aria-labelledby="tabButton-bind">
     <div class="field"><label for="bindEmail" data-i18n="emailLabel">Email</label><input id="bindEmail" type="email" placeholder="your@email.com"></div>
     <div id="bindCodeField" class="field"><label for="bindCode" data-i18n="inviteCodeLabel">Invitation Code</label><input id="bindCode" type="text"></div>
-    <button class="btn btn-primary" id="btnBind" data-i18n="bindAction">Bind</button>
-    <div id="bindResult" class="result hidden"></div>
+    <button type="button" class="btn btn-primary" id="btnBind" data-i18n="bindAction">Bind</button>
+    <div id="bindResult" class="result hidden" role="status" aria-live="polite"></div>
   </div>
 
-  <div id="tab-query" class="panel" role="tabpanel">
+  <div id="tab-query" class="panel" role="tabpanel" aria-labelledby="tabButton-query">
     <div class="field"><label for="queryEmail" data-i18n="emailLabel">Email</label><input id="queryEmail" type="email" placeholder="your@email.com"></div>
-    <button class="btn btn-secondary" id="btnQuery" data-i18n="queryAction">Query</button>
-    <div id="queryResult" class="result hidden"></div>
+    <button type="button" class="btn btn-secondary" id="btnQuery" data-i18n="queryAction">Query</button>
+    <div id="queryResult" class="result hidden" role="status" aria-live="polite"></div>
   </div>
 
-  <div id="tab-unbind" class="panel" role="tabpanel">
+  <div id="tab-unbind" class="panel" role="tabpanel" aria-labelledby="tabButton-unbind">
     <div id="unbindWarning" class="warn-box hidden"></div>
     <div class="field"><label for="unbindEmail" data-i18n="emailLabel">Email</label><input id="unbindEmail" type="email" placeholder="your@email.com"></div>
     <label data-i18n="sendCodeChannel">Verification Channel</label>
-    <div class="channel-select" role="radiogroup">
-      <button role="radio" aria-checked="true" class="active" data-channel="email" data-i18n="channelEmail">Email</button>
-      <button role="radio" aria-checked="false" data-channel="feishu" data-i18n="channelFeishu">Feishu</button>
-      <button role="radio" aria-checked="false" data-channel="both" data-i18n="channelBoth">Both</button>
+    <div class="channel-select" role="radiogroup" aria-label="Verification channel">
+      <button type="button" role="radio" aria-checked="true" class="active" data-channel="email" data-i18n="channelEmail">Email</button>
+      <button type="button" role="radio" aria-checked="false" tabindex="-1" data-channel="feishu" data-i18n="channelFeishu">Feishu</button>
+      <button type="button" role="radio" aria-checked="false" tabindex="-1" data-channel="both" data-i18n="channelBoth">Both</button>
     </div>
     <div class="code-row">
       <div class="field"><label for="unbindCode" data-i18n="verifyCodeLabel">Verification Code</label><input id="unbindCode" type="text" maxlength="6" inputmode="numeric" pattern="[0-9]*"></div>
-      <button id="sendCodeBtn" class="btn btn-secondary" data-i18n="sendCode">Send Code</button>
+      <button type="button" id="sendCodeBtn" class="btn btn-secondary" data-i18n="sendCode">Send Code</button>
     </div>
     <div style="height:16px"></div>
-    <button class="btn btn-danger" id="btnUnbind" data-i18n="unbindConfirm">Confirm Unbind</button>
-    <div id="unbindResult" class="result hidden"></div>
+    <button type="button" class="btn btn-danger" id="btnUnbind" data-i18n="unbindConfirm">Confirm Unbind</button>
+    <div id="unbindResult" class="result hidden" role="status" aria-live="polite"></div>
   </div>
 </div>
 
@@ -218,28 +218,68 @@
     warn.classList.remove('hidden');
   }).catch(function() {});
 
-  document.querySelector('.tabs').addEventListener('click', function(e) {
-    var btn = e.target.closest('[data-tab]');
-    if (!btn) return;
+  function selectTab(btn) {
     var name = btn.dataset.tab;
     document.querySelectorAll('.tabs [data-tab]').forEach(function(b) {
       var active = b.dataset.tab === name;
       b.classList.toggle('active', active);
-      b.setAttribute('aria-selected', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+      b.tabIndex = active ? 0 : -1;
     });
     document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
     document.getElementById('tab-' + name).classList.add('active');
+  }
+
+  document.querySelector('.tabs').addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-tab]');
+    if (!btn) return;
+    selectTab(btn);
   });
+
+  document.querySelector('.tabs').addEventListener('keydown', function(e) {
+    var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (keys.indexOf(e.key) === -1) return;
+    var tabs = Array.prototype.slice.call(this.querySelectorAll('[data-tab]'));
+    var index = tabs.indexOf(document.activeElement);
+    if (index < 0) return;
+    e.preventDefault();
+    var next = index;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    else next = (index + (e.key === 'ArrowLeft' ? -1 : 1) + tabs.length) % tabs.length;
+    tabs[next].focus();
+    selectTab(tabs[next]);
+  });
+
+  function selectChannel(btn) {
+    selectedChannel = btn.dataset.channel;
+    document.querySelectorAll('.channel-select [data-channel]').forEach(function(b) {
+      var active = b.dataset.channel === selectedChannel;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-checked', active ? 'true' : 'false');
+      b.tabIndex = active ? 0 : -1;
+    });
+  }
 
   document.querySelector('.channel-select').addEventListener('click', function(e) {
     var btn = e.target.closest('[data-channel]');
     if (!btn) return;
-    selectedChannel = btn.dataset.channel;
-    this.querySelectorAll('[data-channel]').forEach(function(b) {
-      var active = b.dataset.channel === selectedChannel;
-      b.classList.toggle('active', active);
-      b.setAttribute('aria-checked', active);
-    });
+    selectChannel(btn);
+  });
+
+  document.querySelector('.channel-select').addEventListener('keydown', function(e) {
+    var keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (keys.indexOf(e.key) === -1) return;
+    var buttons = Array.prototype.slice.call(this.querySelectorAll('[data-channel]'));
+    var index = buttons.indexOf(document.activeElement);
+    if (index < 0) return;
+    e.preventDefault();
+    var next = index;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = buttons.length - 1;
+    else next = (index + (e.key === 'ArrowLeft' ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+    selectChannel(buttons[next]);
   });
 
   function showResult(id, html, type) {

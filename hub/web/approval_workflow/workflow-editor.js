@@ -64,6 +64,21 @@
     canvasEmpty.style.display = state.nodes.length === 0 ? 'block' : 'none';
   }
 
+  function addNodeToCanvas(nodeType, position) {
+    if (!nodeType || !NODE_TYPES[nodeType]) return;
+    const node = {
+      id: generateNodeId(),
+      type: nodeType,
+      label: NODE_TYPES[nodeType].label,
+      position: position,
+      config: getDefaultConfig(nodeType),
+    };
+    state.nodes.push(node);
+    renderNode(node);
+    updateEmptyState();
+    selectNode(node.id);
+  }
+
   // --- Drag and Drop from Palette ---
   const paletteNodes = document.querySelectorAll('.palette-node');
   paletteNodes.forEach(function (el) {
@@ -75,6 +90,12 @@
     el.addEventListener('dragend', function () {
       state.draggingNodeType = null;
       dropIndicator.classList.remove('visible');
+    });
+    el.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      const offset = state.nodes.length * 24;
+      addNodeToCanvas(el.getAttribute('data-node-type'), { x: 120 + offset, y: 90 + offset });
     });
   });
 
@@ -104,20 +125,7 @@
     const x = e.clientX - rect.left - 80;
     const y = e.clientY - rect.top - 30;
 
-    const node = {
-      id: generateNodeId(),
-      type: nodeType,
-      label: NODE_TYPES[nodeType].label,
-      position: { x: Math.max(0, x), y: Math.max(0, y) },
-      config: getDefaultConfig(nodeType),
-    };
-
-    state.nodes.push(node);
-    renderNode(node);
-    updateEmptyState();
-
-    // Select the newly placed node and show config panel within 500ms
-    selectNode(node.id);
+    addNodeToCanvas(nodeType, { x: Math.max(0, x), y: Math.max(0, y) });
   });
 
   // --- Default config per node type ---
