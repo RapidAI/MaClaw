@@ -159,6 +159,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		}
 	}
 
+	market := read(t, "skillmarket", "index.html")
+	for _, id := range []string{"capTabSkills", "capTabMCP", "tabSearch", "tabRating", "tabDownloads", "tabNewest"} {
+		if !strings.Contains(market, `id="`+id+`" type="button"`) {
+			t.Fatalf("market tab %s must be a non-submit button", id)
+		}
+	}
+	if !strings.Contains(market, `function bindTablistKeyboard`) || !strings.Contains(market, `bindTablistKeyboard('[aria-label="Skill views"]','.tab')`) {
+		t.Fatalf("market tablists must keep arrow-key keyboard navigation")
+	}
+
 	css := read(t, "pro-ui.css")
 	if !strings.Contains(css, `[role="button"]`) {
 		t.Fatalf("shared css must size and focus custom button roles")

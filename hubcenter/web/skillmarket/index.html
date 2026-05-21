@@ -89,8 +89,8 @@
 
   <main class="content-panel">
     <div role="tablist" aria-label="Capability types" style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:12px">
-      <button class="cap-tab active" id="capTabSkills" onclick="switchCapTab('skills')" role="tab" aria-selected="true" aria-controls="capSkillsView" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#172033;border-color:#172033;color:#fff;font:inherit;font-size:15px;font-weight:800;cursor:pointer">Skills</button>
-      <button class="cap-tab" id="capTabMCP" onclick="switchCapTab('mcp')" role="tab" aria-selected="false" aria-controls="capMCPView" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;font-size:15px;font-weight:800;cursor:pointer">MCP</button>
+      <button class="cap-tab active" id="capTabSkills" type="button" onclick="switchCapTab('skills')" role="tab" aria-selected="true" aria-controls="capSkillsView" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#172033;border-color:#172033;color:#fff;font:inherit;font-size:15px;font-weight:800;cursor:pointer">Skills</button>
+      <button class="cap-tab" id="capTabMCP" type="button" onclick="switchCapTab('mcp')" role="tab" aria-selected="false" aria-controls="capMCPView" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;font-size:15px;font-weight:800;cursor:pointer">MCP</button>
     </div>
     <div id="capSkillsView" role="tabpanel" aria-labelledby="capTabSkills">
     <div class="section-head">
@@ -99,10 +99,10 @@
         <div class="section-note" id="sectionNote"></div>
       </div>
       <div class="tabs" role="tablist" aria-label="Skill views">
-        <button class="tab active" data-view="search" id="tabSearch" role="tab" aria-selected="true" aria-controls="view-search"></button>
-        <button class="tab" data-view="top-rating" id="tabRating" role="tab" aria-selected="false" aria-controls="view-top-rating"></button>
-        <button class="tab" data-view="top-downloads" id="tabDownloads" role="tab" aria-selected="false" aria-controls="view-top-downloads"></button>
-        <button class="tab" data-view="top-newest" id="tabNewest" role="tab" aria-selected="false" aria-controls="view-top-newest"></button>
+        <button class="tab active" data-view="search" id="tabSearch" type="button" role="tab" aria-selected="true" aria-controls="view-search"></button>
+        <button class="tab" data-view="top-rating" id="tabRating" type="button" role="tab" aria-selected="false" aria-controls="view-top-rating"></button>
+        <button class="tab" data-view="top-downloads" id="tabDownloads" type="button" role="tab" aria-selected="false" aria-controls="view-top-downloads"></button>
+        <button class="tab" data-view="top-newest" id="tabNewest" type="button" role="tab" aria-selected="false" aria-controls="view-top-newest"></button>
       </div>
     </div>
 
@@ -184,6 +184,9 @@ function closeDetail(){var target=detailReturnFocus;detailOverlay.classList.remo
 detailOverlay.addEventListener('click',function(e){if(e.target===detailOverlay)closeDetail();});document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDetail();});
 async function submitRating(skillID,score){var email=window.prompt(t('rateNeedEmail'));if(!email)return;try{const r=await fetch('/api/v1/skillmarket/'+skillID+'/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,score:score})});if(!r.ok){rateMsg.textContent=await r.text();return;}rateMsg.textContent=t('rateOk');Array.prototype.forEach.call(document.querySelectorAll('#ratingRow button'),function(btn){btn.classList.toggle('selected',btn.textContent===(score>0?('+'+score):String(score)));});}catch(_){rateMsg.textContent=t('network');}}
 Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(tab){tab.addEventListener('click',function(){Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(btn){var active=btn===tab;btn.classList.toggle('active',active);btn.setAttribute('aria-selected',active?'true':'false');});['search','top-rating','top-downloads','top-newest'].forEach(function(id){document.getElementById('view-'+id).style.display=id===tab.dataset.view?'':'none';});updateSectionText();if(tab.dataset.view==='top-rating')loadTop('rating');if(tab.dataset.view==='top-downloads')loadTop('downloads');if(tab.dataset.view==='top-newest')loadTop('newest');if(tab.dataset.view==='search')doSearch();});});
+function bindTablistKeyboard(rootSelector,tabSelector){var root=document.querySelector(rootSelector);if(!root)return;root.addEventListener('keydown',function(e){var keys=['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'];if(keys.indexOf(e.key)===-1)return;var tabs=Array.prototype.slice.call(root.querySelectorAll(tabSelector));var index=tabs.indexOf(document.activeElement);if(index<0)return;e.preventDefault();var next=index;if(e.key==='Home')next=0;else if(e.key==='End')next=tabs.length-1;else next=(index+(e.key==='ArrowLeft'||e.key==='ArrowUp'?-1:1)+tabs.length)%tabs.length;tabs[next].focus();tabs[next].click();});}
+bindTablistKeyboard('[aria-label="Capability types"]','.cap-tab');
+bindTablistKeyboard('[aria-label="Skill views"]','.tab');
 searchInput.addEventListener('keydown',function(e){if(e.key==='Enter')doSearch();});
 applyI18n();doSearch();
 
