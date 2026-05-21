@@ -135,6 +135,22 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
 	for _, required := range []string{
+		`id="gossipPrevBtn" type="button"`,
+		`aria-label="Previous gossip page"`,
+		`id="skillhubPrevBtn" type="button"`,
+		`aria-label="Next SkillHub page"`,
+		`id="smPurchasePrevBtn" type="button"`,
+		`aria-label="Next purchases page"`,
+		`id="newsPrevBtn" type="button"`,
+		`aria-label="Next news page"`,
+		`aria-label="Previous comments page"`,
+		`aria-label="Next comments page"`,
+	} {
+		if !strings.Contains(admin, required) {
+			t.Fatalf("admin pager icon button missing accessibility contract %q", required)
+		}
+	}
+	for _, required := range []string{
 		`role="dialog" aria-modal="true" aria-labelledby="`,
 		`overlay.addEventListener('keydown'`,
 		`e.key==='Escape'`,
@@ -161,6 +177,11 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	}
 	if !strings.Contains(user, `id="tx-prev-btn" type="button"`) || !strings.Contains(user, `aria-label="Previous transactions page"`) || !strings.Contains(user, `id="tx-next-btn" type="button"`) || !strings.Contains(user, `aria-label="Next transactions page"`) {
 		t.Fatalf("transaction pager icon buttons must expose accessible names")
+	}
+	for _, header := range []string{"tx.time", "tx.type", "tx.amount", "tx.balance", "tx.desc", "sk.name", "sk.version", "sk.status", "sk.rating", "sk.downloads", "sk.actions"} {
+		if !strings.Contains(user, `scope="col" data-i18n="`+header+`"`) {
+			t.Fatalf("table header %s must expose column scope", header)
+		}
 	}
 	for _, id := range []string{"login-email", "reg-email", "current-password", "credits-amount", "apikey-skill-id", "apikey-bulk"} {
 		if !strings.Contains(user, `for="`+id+`"`) {
