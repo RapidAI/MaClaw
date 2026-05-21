@@ -19,14 +19,14 @@ const HUB_LLM_I18N = {
     cacheClearFailed: 'Clear prompt cache failed: {error}',
     testing: 'Testing...',
     testBtn: 'Test Connection',
-    testOk: '\u2705 LLM connected ({ms}ms), reply: {reply}',
-    testFail: '\u274c LLM connection failed: {error}',
-    testError: '\u274c LLM test failed: {error}',
-    statusHealthy: '\ud83d\udfe2 Healthy',
-    statusHalfOpen: '\ud83d\udfe1 Recovering',
-    statusOpen: '\ud83d\udd34 Circuit Open',
-    statusNone: '\u26aa Not Configured',
-    statusUnknown: '\u26aa Status: {status}',
+    testOk: 'LLM connected ({ms}ms), reply: {reply}',
+    testFail: 'LLM connection failed: {error}',
+    testError: 'LLM test failed: {error}',
+    statusHealthy: 'Healthy',
+    statusHalfOpen: 'Recovering',
+    statusOpen: 'Circuit Open',
+    statusNone: 'Not Configured',
+    statusUnknown: 'Status: {status}',
     cacheRate: 'Cache rate {rate}%',
     cacheDisk: 'Disk cache {bytes}',
     cacheMemory: 'Memory {bytes}',
@@ -115,14 +115,14 @@ const HUB_LLM_I18N = {
     cacheClearFailed: '\u6e05\u7a7a\u7f13\u5b58\u5931\u8d25\uff1a{error}',
     testing: '\u6d4b\u8bd5\u4e2d...',
     testBtn: '\u6d4b\u8bd5\u8fde\u63a5',
-    testOk: '\u2705 LLM \u8fde\u63a5\u6210\u529f ({ms}ms)\uff0c\u56de\u590d: {reply}',
-    testFail: '\u274c LLM \u8fde\u63a5\u5931\u8d25: {error}',
-    testError: '\u274c LLM \u6d4b\u8bd5\u5931\u8d25: {error}',
-    statusHealthy: '\ud83d\udfe2 \u6b63\u5e38',
-    statusHalfOpen: '\ud83d\udfe1 \u6062\u590d\u4e2d',
-    statusOpen: '\ud83d\udd34 \u7194\u65ad\u4e2d',
-    statusNone: '\u26aa \u672a\u914d\u7f6e',
-    statusUnknown: '\u26aa \u72b6\u6001\uff1a{status}',
+    testOk: 'LLM \u8fde\u63a5\u6210\u529f ({ms}ms)\uff0c\u56de\u590d: {reply}',
+    testFail: 'LLM \u8fde\u63a5\u5931\u8d25: {error}',
+    testError: 'LLM \u6d4b\u8bd5\u5931\u8d25: {error}',
+    statusHealthy: '\u6b63\u5e38',
+    statusHalfOpen: '\u6062\u590d\u4e2d',
+    statusOpen: '\u7194\u65ad\u4e2d',
+    statusNone: '\u672a\u914d\u7f6e',
+    statusUnknown: '\u72b6\u6001\uff1a{status}',
     cacheRate: '\u7f13\u5b58\u7387 {rate}%',
     cacheDisk: '\u78c1\u76d8\u7f13\u5b58 {bytes}',
     cacheMemory: '\u5185\u5b58 {bytes}',
@@ -552,6 +552,8 @@ function fillHubLlmPromptCacheConfig(data) {
 
 function applyHubLlmRuntimeI18n() {
   const setText = (id, key) => { const el = document.getElementById(id); if (el) el.textContent = hli(key); };
+  setText('navHubLlm', 'paneTitle');
+  setText('navHubLlmDesc', 'paneDesc');
   setText('hubLlmPaneTitle', 'paneTitle');
   setText('hubLlmPaneDesc', 'paneDesc');
   setText('hubLlmEnabledLabel', 'enabledLabel');
@@ -742,6 +744,15 @@ async function loadHubLlmStatus() {
   } catch (_) {}
 }
 
+if (window.AdminTabRegistry && typeof window.AdminTabRegistry.registerTab === 'function') {
+  window.AdminTabRegistry.registerTab({
+    id: 'hubllm',
+    title: function() { return hli('paneTitle'); },
+    subtitle: function() { return hli('paneDesc'); },
+    onOpen: function() { loadHubLlmConfig(); loadHubLlmStatus(); }
+  });
+}
+
 if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange === 'function') {
   window.AdminTabRegistry.onLanguageChange(function() {
     applyHubLlmRuntimeI18n();
@@ -749,8 +760,6 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
 }
 
 applyHubLlmRuntimeI18n();
-
-
 
 
 

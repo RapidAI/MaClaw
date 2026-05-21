@@ -44,6 +44,7 @@
     grantStatusInactive: { zh: '\u672a\u751f\u6548', en: 'Inactive' },
     grantRetryAfterAt: { zh: '\u6062\u590d\u65f6\u95f4 {time}', en: 'Restores at {time}' },
     smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
+    smartRouteAllLabel: { zh: '\u5168\u5458\u667a\u80fd\u8def\u7531', en: 'Smart Route for all' },
     boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / SN...', en: 'Search email / SN...' },
     noMatches: { zh: '\u65e0\u5339\u914d\u7ed3\u679c', en: 'No matches' },
     loadContentAuditConfigFailed: { zh: '\u52a0\u8f7d\u5185\u5bb9\u5ba1\u6838\u914d\u7f6e\u5931\u8d25: ', en: 'Load content audit config failed: ' },
@@ -291,6 +292,13 @@
     }
   };
 
+  function applyGovernanceI18n() {
+    var smartAllLabel = document.getElementById('smartRouteAllLabel');
+    var smartAllLabelText = document.getElementById('smartRouteAllLabelText');
+    if (smartAllLabel) smartAllLabel.title = gt('smartRouteAllLabel');
+    if (smartAllLabelText) smartAllLabelText.textContent = gt('smartRouteAllLabel');
+  }
+
   global.addBlockedEmail = async function addBlockedEmail() {
     try {
       await api('/api/admin/blocklist', { method: 'POST', body: JSON.stringify({ email: document.getElementById('blockedEmail').value.trim(), reason: document.getElementById('blockedReason').value.trim() }) });
@@ -453,10 +461,13 @@
 
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.onLanguageChange === 'function') {
     global.AdminTabRegistry.onLanguageChange(function() {
+      applyGovernanceI18n();
       if (global._boundUsersAll && typeof global._renderBoundUsersPage === 'function') global._renderBoundUsersPage();
       if (global._invitesAll && typeof global.renderInvites === 'function') global.renderInvites(global._invitesAll);
     });
   }
+
+  applyGovernanceI18n();
 
 
   function governanceTenantScopedRefresh() {

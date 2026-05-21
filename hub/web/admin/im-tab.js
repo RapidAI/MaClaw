@@ -12,6 +12,15 @@
     return '<div class="item" style="margin-bottom:6px;padding:10px 12px;border-radius:12px;box-shadow:none"><div class="item-head" style="align-items:center;gap:8px"><div style="min-width:0;flex:1"><div class="item-title" style="font-size:13px">' + escapeHtml(title || '') + '</div><div class="item-meta mono" style="margin-top:2px;font-size:11px">' + escapeHtml(meta || '') + '</div></div><button class="btn-danger" style="height:30px;font-size:11px;padding:0 10px;flex-shrink:0" onclick="' + onclickExpr + '">' + escapeHtml(actionText || '') + '</button></div></div>';
   }
 
+  function tenantRuntimeReloadMessage(data, baseMessage) {
+    if (!data || data.runtime_reload_error === undefined || data.runtime_reload_ok !== false) return baseMessage;
+    return baseMessage + ' Runtime reload failed: ' + String(data.runtime_reload_error || 'unknown error');
+  }
+
+  function tenantRuntimeReloadToastType(data) {
+    return data && data.runtime_reload_ok === false ? 'error' : 'success';
+  }
+
   const DINGTALK_I18N = {
     en: {
       navLabel: 'DingTalk', navDesc: 'DingTalk bot integration', title: 'DingTalk Bot', desc: 'Configure DingTalk bot integration', reload: 'Reload', enabled: 'Enable', clientId: 'Client ID (AppKey)', clientSecret: 'Client Secret (AppSecret)', save: 'Save', guideTitle: 'DingTalk Setup Guide', guideContent: 'Visit <a href="https://open-dev.dingtalk.com" target="_blank">DingTalk Open Platform</a>.<br>Fill in AppKey (Client ID) and AppSecret (Client Secret).<br>Webhook: <code>{hub_url}/api/dingtalk/webhook</code><br>Enable Stream mode.<br><br><b>Note:</b><br>After Hub restarts, the bot reconnects within 6 seconds automatically.', bindingsTitle: 'Bindings', bindingsDesc: 'DingTalk user bindings', noBindings: 'No bindings loaded yet.', loadFailed: 'Load DingTalk config failed: {error}', saved: 'DingTalk config saved.', saveFailed: 'Save DingTalk config failed: {error}', bindingsLoadFailed: 'Load DingTalk bindings failed: {error}', unbind: 'Unbind', unbindConfirm: 'Remove DingTalk binding for {id}?', unbindSuccess: 'Unbind succeeded.', unbindFailed: 'Unbind failed: {error}'
@@ -24,22 +33,16 @@
     en: { navLabel: 'Content Audit', navDesc: 'Content Audit', title: 'Content Audit', desc: 'Configure IM content audit', reload: 'Reload', programPath: 'Program Path', programPathPlaceholder: './audit_program', timeout: 'Timeout (seconds)', timeoutPolicy: 'Timeout Policy', timeoutBlock: 'block', timeoutPass: 'pass', keywords: 'Keywords', keywordsPlaceholder: 'one keyword per line', save: 'Save', guideTitle: 'Content Audit Guide', guideContent: 'External audit program integration.<br>See hub/cmd/audit_program/ for reference.<br>Keyword-based filtering.<br>Stdin JSON input, stdout JSON output.' },
     zh: { navLabel: '\u5185\u5bb9\u5ba1\u6838', navDesc: '\u5185\u5bb9\u5ba1\u6838', title: '\u5185\u5bb9\u5ba1\u6838', desc: '\u914d\u7f6e IM \u5185\u5bb9\u5ba1\u6838', reload: '\u5237\u65b0', programPath: '\u7a0b\u5e8f\u8def\u5f84', programPathPlaceholder: './audit_program', timeout: '\u8d85\u65f6\uff08\u79d2\uff09', timeoutPolicy: '\u8d85\u65f6\u7b56\u7565', timeoutBlock: 'block', timeoutPass: 'pass', keywords: '\u5173\u952e\u8bcd', keywordsPlaceholder: '\u6bcf\u884c\u4e00\u4e2a\u5173\u952e\u8bcd', save: '\u4fdd\u5b58', guideTitle: '\u5185\u5bb9\u5ba1\u6838\u6307\u5357', guideContent: '\u5916\u90e8\u5ba1\u6838\u7a0b\u5e8f\u96c6\u6210\u3002<br>\u53ef\u53c2\u8003 hub/cmd/audit_program/\u3002<br>\u652f\u6301\u57fa\u4e8e\u5173\u952e\u8bcd\u7684\u8fc7\u6ee4\u3002<br>Stdin JSON \u8f93\u5165\uff0cstdout JSON \u8f93\u51fa\u3002' }
   };
-  const HUB_LLM_PANE_I18N = {
-    en: { navLabel: 'Hub LLM', navDesc: 'Hub LLM', title: 'Hub LLM Configuration', desc: 'Configure Hub-level LLM provider', enabled: 'Enable Hub LLM', smartRoute: 'Smart route single-device LLM', apiUrl: 'API Base URL', apiKey: 'API Key', model: 'Model', protocol: 'Protocol', apiUrlPlaceholder: 'https://api.deepseek.com/v1', apiKeyPlaceholder: 'sk-...', modelPlaceholder: 'deepseek-chat', save: 'Save', guideTitle: 'Hub LLM Guide', guideContent: 'Supports DeepSeek V3, OpenAI compatible APIs.<br>User-Agent: OpenClaw/1.0<br>Used for intent classification and smart routing.<br>Fallback to keyword matching when disabled.<br>Smart route single-device LLM routes to local LLM when only one device is online.', protocolOpenAI: 'OpenAI', protocolAnthropic: 'Anthropic' },
-    zh: { navLabel: 'Hub LLM', navDesc: 'Hub LLM', title: 'Hub LLM \u914d\u7f6e', desc: '\u914d\u7f6e Hub \u7ea7 LLM \u670d\u52a1\u5546', enabled: '\u542f\u7528 Hub LLM', smartRoute: '\u5355\u8bbe\u5907\u667a\u80fd\u8def\u7531 LLM', apiUrl: 'API \u57fa\u5730\u5740', apiKey: 'API Key', model: '\u6a21\u578b', protocol: '\u534f\u8bae', apiUrlPlaceholder: 'https://api.deepseek.com/v1', apiKeyPlaceholder: 'sk-...', modelPlaceholder: 'deepseek-chat', save: '\u4fdd\u5b58', guideTitle: 'Hub LLM \u6307\u5357', guideContent: '\u652f\u6301 DeepSeek V3 \u7b49 OpenAI \u517c\u5bb9 API\u3002<br>User-Agent: OpenClaw/1.0<br>\u7528\u4e8e\u610f\u56fe\u5206\u7c7b\u548c\u667a\u80fd\u8def\u7531\u3002<br>\u5173\u95ed\u65f6\u56de\u9000\u4e3a\u5173\u952e\u8bcd\u5339\u914d\u3002<br>\u5355\u8bbe\u5907\u667a\u80fd\u8def\u7531 LLM \u4f1a\u5728\u53ea\u6709\u4e00\u53f0\u8bbe\u5907\u5728\u7ebf\u65f6\u8def\u7531\u5230\u672c\u5730 LLM\u3002', protocolOpenAI: 'OpenAI', protocolAnthropic: 'Anthropic' }
-  };
   const dtk = (key, vars = {}) => ((DINGTALK_I18N[currentLang] || DINGTALK_I18N.en)[key] || DINGTALK_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
   const cai = (key, vars = {}) => ((CONTENT_AUDIT_I18N[currentLang] || CONTENT_AUDIT_I18N.en)[key] || CONTENT_AUDIT_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
-  const hpi = (key, vars = {}) => ((HUB_LLM_PANE_I18N[currentLang] || HUB_LLM_PANE_I18N.en)[key] || HUB_LLM_PANE_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
   function imAdminProfile() { return typeof global.adminProfile === 'function' ? global.adminProfile() : null; }
-  function imTenantScoped() { const profile = imAdminProfile(); return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant'); }
   function imHasProfile() { return !!imAdminProfile(); }
   function imAllowedSub(sub) {
     const value = String(sub || '').toLowerCase();
     if (!imHasProfile()) return true;
-    return imTenantScoped() ? value !== 'hubllm' : value === 'hubllm';
+    return value !== 'hubllm';
   }
-  function firstAllowedImSub() { return imTenantScoped() ? 'feishu' : 'hubllm'; }
+  function firstAllowedImSub() { return 'feishu'; }
   global.applyImScopeUI = function applyImScopeUI() {
     const allowed = firstAllowedImSub();
     document.querySelectorAll('.im-sidebar button[data-imsub]').forEach(function(btn) {
@@ -70,6 +73,8 @@
     _s('wecomBindingsReloadBtn', 'textContent', tr('reload'));
     _s('dingtalkConfigTitle', 'textContent', dtk('title'));
     _s('dingtalkConfigDesc', 'textContent', dtk('desc'));
+    _s('imSubDingTalkNav', 'textContent', dtk('navLabel'));
+    _s('imSubDingTalkNavDesc', 'textContent', dtk('navDesc'));
     _s('dingtalkReloadBtn', 'textContent', dtk('reload'));
     _s('dingtalkEnabledLabel', 'textContent', dtk('enabled'));
     _s('dingtalkClientIdLabel', 'textContent', dtk('clientId'));
@@ -80,24 +85,6 @@
     _s('dingtalkBindingsTitle', 'textContent', dtk('bindingsTitle'));
     _s('dingtalkBindingsDesc', 'textContent', dtk('bindingsDesc'));
     _s('dingtalkBindingsReloadBtn', 'textContent', dtk('reload'));
-    _s('imSubHubLlmNav', 'textContent', hpi('navLabel'));
-    _s('imSubHubLlmNavDesc', 'textContent', hpi('navDesc'));
-    _s('hubLlmPaneTitle', 'textContent', hpi('title'));
-    _s('hubLlmPaneDesc', 'textContent', hpi('desc'));
-    _s('hubLlmEnabledLabel', 'textContent', hpi('enabled'));
-    _s('hubLlmSmartRouteSingleLabel', 'textContent', hpi('smartRoute'));
-    _s('hubLlmApiUrlLabel', 'textContent', hpi('apiUrl'));
-    _s('hubLlmApiKeyLabel', 'textContent', hpi('apiKey'));
-    _s('hubLlmModelLabel', 'textContent', hpi('model'));
-    _s('hubLlmProtocolLabel', 'textContent', hpi('protocol'));
-    _s('hubLlmProtocolOpenAI', 'textContent', hpi('protocolOpenAI'));
-    _s('hubLlmProtocolAnthropic', 'textContent', hpi('protocolAnthropic'));
-    _s('hubLlmApiUrl', 'placeholder', hpi('apiUrlPlaceholder'));
-    _s('hubLlmApiKey', 'placeholder', hpi('apiKeyPlaceholder'));
-    _s('hubLlmModel', 'placeholder', hpi('modelPlaceholder'));
-    _s('hubLlmSaveBtn', 'textContent', hpi('save'));
-    _s('hubLlmGuideTitle', 'textContent', hpi('guideTitle'));
-    _s('hubLlmGuideContent', 'innerHTML', hpi('guideContent'));
     _s('imSubContentAuditNav', 'textContent', cai('navLabel'));
     _s('imSubContentAuditNavDesc', 'textContent', cai('navDesc'));
     _s('contentAuditTitle', 'textContent', cai('title'));
@@ -130,7 +117,6 @@
     if (sub === 'qqbot') global.loadQQBotConfig();
     if (sub === 'wecom') global.loadWeComConfig();
     if (sub === 'dingtalk') global.loadDingTalkConfig();
-    if (sub === 'hubllm') { loadHubLlmConfig(); loadHubLlmStatus(); }
     if (sub === 'contentaudit' && typeof loadContentAuditConfig === 'function') loadContentAuditConfig();
     if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();
   };
@@ -284,9 +270,9 @@
       document.getElementById('qqbotEnabled').checked = !!data.enabled;
       document.getElementById('qqbotAppId').value = data.app_id || '';
       document.getElementById('qqbotAppSecret').value = data.app_secret || '';
-      const msg = qqb('saved');
+      const msg = tenantRuntimeReloadMessage(data, qqb('saved'));
       setOutput(msg);
-      showToast(msg, 'success');
+      showToast(msg, tenantRuntimeReloadToastType(data));
     } catch (err) {
       const msg = qqb('saveFailed', { error: err.message });
       setOutput(msg);
@@ -347,9 +333,9 @@
       document.getElementById('wecomEnabled').checked = !!data.enabled;
       document.getElementById('wecomBotId').value = data.bot_id || '';
       document.getElementById('wecomSecret').value = data.secret || '';
-      const msg = wcm('saved');
+      const msg = tenantRuntimeReloadMessage(data, wcm('saved'));
       setOutput(msg);
-      showToast(msg, 'success');
+      showToast(msg, tenantRuntimeReloadToastType(data));
     } catch (err) {
       const msg = wcm('saveFailed', { error: err.message });
       setOutput(msg);
@@ -410,9 +396,9 @@
       document.getElementById('dingtalkEnabled').checked = !!data.enabled;
       document.getElementById('dingtalkClientId').value = data.client_id || '';
       document.getElementById('dingtalkClientSecret').value = data.client_secret || '';
-      const msg = dtk('saved');
+      const msg = tenantRuntimeReloadMessage(data, dtk('saved'));
       setOutput(msg);
-      showToast(msg, 'success');
+      showToast(msg, tenantRuntimeReloadToastType(data));
     } catch (err) {
       const msg = dtk('saveFailed', { error: err.message });
       setOutput(msg);

@@ -5,6 +5,8 @@
 (function(global) {
   var tenantCache = [];
   var loginTenantOptionsCache = [];
+  var tenantCreateBusy = false;
+  var tenantAdminCreateBusy = false;
   var TENANT_I18N = {
     nav: { zh: '\u79df\u6237\u7ba1\u7406', en: 'Tenants' },
     navDesc: { zh: '\u521b\u5efa\u79df\u6237\u548c\u79df\u6237\u7ba1\u7406\u5458', en: 'Create tenants and tenant admins' },
@@ -47,6 +49,7 @@
     forbidden: { zh: '\u9700\u8981\u5168\u5c40\u7ba1\u7406\u5458\u6743\u9650\u624d\u80fd\u67e5\u770b\u548c\u521b\u5efa\u79df\u6237\u3002', en: 'Global admin authorization is required to view and create tenants.' },
     required: { zh: '\u8bf7\u586b\u5199\u79df\u6237 Slug\u3001\u540d\u79f0\u3001\u521d\u59cb\u7ba1\u7406\u5458\u8d26\u53f7\u3001\u5bc6\u7801\u548c\u90ae\u7bb1\u3002', en: 'Fill tenant slug, name, initial admin username, password, and email.' },
     adminRequired: { zh: '\u8bf7\u9009\u62e9\u79df\u6237\u5e76\u586b\u5199\u7ba1\u7406\u5458\u7528\u6237\u540d\u3001\u5bc6\u7801\u548c\u90ae\u7bb1\u3002', en: 'Choose a tenant and fill admin username, password, and email.' },
+    invalidAdminEmail: { zh: '\u8bf7\u8f93\u5165\u6709\u6548\u7684\u7ba1\u7406\u5458\u90ae\u7bb1\u3002', en: 'Enter a valid admin email address.' },
     loadFailed: { zh: '\u52a0\u8f7d\u79df\u6237\u5931\u8d25: {error}', en: 'Load tenants failed: {error}' },
     createDone: { zh: '\u79df\u6237\u5df2\u521b\u5efa: {tenant}', en: 'Tenant created: {tenant}' },
     createFailed: { zh: '\u521b\u5efa\u79df\u6237\u5931\u8d25: {error}', en: 'Create tenant failed: {error}' },
@@ -56,7 +59,17 @@
     active: { zh: '\u5df2\u542f\u7528', en: 'Active' },
     inactive: { zh: '\u5df2\u505c\u7528', en: 'Inactive' },
     deleted: { zh: '\u5df2\u5220\u9664', en: 'Deleted' },
-    noActiveTenants: { zh: '\u6682\u65e0\u53ef\u7528\u79df\u6237', en: 'No active tenants' }
+    noActiveTenants: { zh: '\u6682\u65e0\u53ef\u7528\u79df\u6237', en: 'No active tenants' },
+    deactivate: { zh: '\u505c\u7528', en: 'Deactivate' },
+    reactivate: { zh: '\u542f\u7528', en: 'Reactivate' },
+    deleteTenant: { zh: '\u5220\u9664', en: 'Delete' },
+    deactivateConfirm: { zh: '\u786e\u8ba4\u505c\u7528\u79df\u6237 {tenant} \u5417\uff1f', en: 'Deactivate tenant {tenant}?' },
+    reactivateConfirm: { zh: '\u786e\u8ba4\u91cd\u65b0\u542f\u7528\u79df\u6237 {tenant} \u5417\uff1f', en: 'Reactivate tenant {tenant}?' },
+    deleteConfirm: { zh: '\u786e\u8ba4\u5220\u9664\u79df\u6237 {tenant} \u5417\uff1f\u6b64\u64cd\u4f5c\u4f1a\u7acb\u5373\u505c\u6b62\u8be5\u79df\u6237 IM \u8fd0\u884c\u65f6\u3002', en: 'Delete tenant {tenant}? This immediately stops tenant IM runtimes.' },
+    statusUpdated: { zh: '\u79df\u6237\u72b6\u6001\u5df2\u66f4\u65b0\u3002', en: 'Tenant status updated.' },
+    statusUpdateFailed: { zh: '\u66f4\u65b0\u79df\u6237\u72b6\u6001\u5931\u8d25: {error}', en: 'Update tenant status failed: {error}' },
+    deletedDone: { zh: '\u79df\u6237\u5df2\u5220\u9664\u3002', en: 'Tenant deleted.' },
+    deleteFailed: { zh: '\u5220\u9664\u79df\u6237\u5931\u8d25: {error}', en: 'Delete tenant failed: {error}' }
   };
 
   function lang() { return global.currentLang === 'zh' ? 'zh' : 'en'; }
@@ -74,6 +87,7 @@
     if (typeof global.showToast === 'function') global.showToast(message, type || 'info');
   }
   function val(id) { var el = byID(id); return el ? String(el.value || '').trim() : ''; }
+  function validEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim()); }
   function esc(value) {
     if (typeof global.escapeHtml === 'function') return global.escapeHtml(value || '');
     return String(value || '').replace(/[&<>"]/g, function(ch) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] || ch; });
@@ -96,6 +110,13 @@
     if (item.deleted_at) return 'deleted';
     return String(item.status || 'active').toLowerCase();
   }
+  function isReservedTenantID(id) {
+    id = String(id || '').trim();
+    return id === '__global__' || id === 'tenant_default';
+  }
+  function isAssignableTenant(item) {
+    return !!(item && item.id && !isReservedTenantID(item.id) && tenantIsActive(item));
+  }
   function tenantIsActive(item) { return tenantStatus(item) === 'active'; }
   function tenantStatusText(item) {
     var status = tenantStatus(item);
@@ -107,6 +128,17 @@
     if (status === 'active') return 'ok';
     if (status === 'deleted') return 'danger';
     return 'warn';
+  }
+  function tenantAdminActions(item) {
+    if (tenantScoped() || !item || !item.id || isReservedTenantID(item.id) || tenantStatus(item) === 'deleted') return '';
+    var label = tenantLabel(item) || item.id;
+    var nextStatus = tenantStatus(item) === 'active' ? 'inactive' : 'active';
+    var statusKey = nextStatus === 'active' ? 'reactivate' : 'deactivate';
+    var confirmKey = nextStatus === 'active' ? 'reactivateConfirm' : 'deactivateConfirm';
+    return '<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">'
+      + '<button class="btn-ghost" style="height:30px;font-size:11px;padding:0 10px" type="button" onclick="updateTenantStatus(' + JSON.stringify(item.id) + ',' + JSON.stringify(nextStatus) + ',' + JSON.stringify(label) + ',' + JSON.stringify(confirmKey) + ')">' + esc(tt(statusKey)) + '</button>'
+      + '<button class="btn-danger" style="height:30px;font-size:11px;padding:0 10px" type="button" onclick="deleteTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('deleteTenant')) + '</button>'
+      + '</div>';
   }
   function applyTenantI18n() {
     setText('navTenants', 'nav'); setText('navTenantsDesc', tenantScoped() ? 'navDescTenant' : 'navDesc'); setText('loginTenantLabel', 'loginTenant'); setText('loginTenantHint', 'loginTenantHint'); setText('tenantsTitle', 'title'); setText('tenantsDesc', tenantScoped() ? 'descTenant' : 'desc');
@@ -123,10 +155,11 @@
   function renderTenantSelect(items) {
     var select = byID('tenantAdminTenantID');
     if (!select) return;
+    var button = byID('tenantAdminCreateBtn');
     var current = select.value;
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     var tenantAdmin = isTenantAdminProfile(profile);
-    var list = tenantAdmin ? (items || []) : (items || []).filter(tenantIsActive);
+    var list = (items || []).filter(isAssignableTenant);
     if (!list.length) {
       select.innerHTML = '<option value="">' + esc(tt('noActiveTenants')) + '</option>';
     } else {
@@ -135,16 +168,17 @@
       }).join('');
     }
     if (current && list.some(function(item) { return item && item.id === current; })) select.value = current;
-    if (tenantAdmin && profile.tenant_id) {
+    if (tenantAdmin && profile.tenant_id && list.some(function(item) { return item && item.id === profile.tenant_id; })) {
       select.value = profile.tenant_id;
       select.disabled = true;
     } else {
       select.disabled = !list.length;
     }
+    if (button) button.disabled = !list.length;
   }
   function currentTenantItem() {
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
-    if (!isTenantAdminProfile(profile) || !profile.tenant_id) return null;
+    if (!isTenantAdminProfile(profile) || !profile.tenant_id || isReservedTenantID(profile.tenant_id)) return null;
     return { id: profile.tenant_id, slug: profile.tenant_id, name: profile.tenant_id, status: 'active' };
   }
   function renderLoginTenantOptions(items) {
@@ -152,19 +186,19 @@
     if (!select) return;
     var current = select.value;
     var options = ['<option value="">' + esc(tt('loginTenantChoose')) + '</option>', '<option value="__global__">' + esc(tt('loginTenantGlobal')) + '</option>'];
-    (items || []).forEach(function(item) {
-      if (!item || !item.id) return;
+    var available = (items || []).filter(function(item) { return item && item.id && !isReservedTenantID(item.id); });
+    available.forEach(function(item) {
       options.push('<option value="' + esc(item.id) + '">' + esc(tenantOptionLabel(item)) + '</option>');
     });
     select.innerHTML = options.join('');
     if (!current) current = '__global__';
-    if (current === '__global__' || (current && (items || []).some(function(item) { return item && item.id === current; }))) select.value = current;
+    if (current === '__global__' || (current && available.some(function(item) { return item && item.id === current; }))) select.value = current;
   }
 
   function renderTenants(items) {
     var root = byID('tenantList');
     var badge = byID('tenantCountBadge');
-    var list = Array.isArray(items) ? items : [];
+    var list = Array.isArray(items) ? items.filter(function(item) { return item && !isReservedTenantID(item.id); }) : [];
     if (badge) badge.textContent = String(list.length);
     renderTenantSelect(list);
     if (!root) return;
@@ -182,6 +216,7 @@
         + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">Slug</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.slug || '-') + '</div></div>'
         + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">' + esc(tt('domain')) + '</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(domain) + '</div></div>'
         + '<div style="display:flex;justify-content:flex-start"><span class="badge ' + esc(tenantBadgeClass(item)) + '" title="' + esc(statusTitle) + '">' + esc(tenantStatusText(item)) + '</span></div>'
+        + tenantAdminActions(item)
         + '</div></div>';
     }).join('') + '</div>';
   }
@@ -233,6 +268,7 @@
     }
   }
   async function createTenant() {
+    if (tenantCreateBusy) return;
     var payload = {
       id: val('tenantID'), slug: val('tenantSlug'), name: val('tenantName'), primary_domain: val('tenantDomain'),
       initial_admin_username: val('tenantAdminUsername'), initial_admin_password: val('tenantAdminPassword'), initial_admin_email: val('tenantAdminEmail'), initial_admin_name: val('tenantAdminName')
@@ -241,6 +277,13 @@
       setTenantOutput(tt('required'), 'info');
       return;
     }
+    if (!validEmail(payload.initial_admin_email)) {
+      setTenantOutput(tt('invalidAdminEmail'), 'info');
+      return;
+    }
+    var btn = byID('tenantCreateBtn');
+    tenantCreateBusy = true;
+    if (btn) btn.disabled = true;
     try {
       var data = await global.api('/api/admin/tenants', { method: 'POST', body: JSON.stringify(payload) });
       ['tenantID','tenantSlug','tenantName','tenantDomain','tenantAdminUsername','tenantAdminPassword','tenantAdminEmail','tenantAdminName'].forEach(function(id) { var el = byID(id); if (el) el.value = ''; });
@@ -249,22 +292,62 @@
       setTenantOutput(tt('createDone', { tenant: tenantLabel(data.tenant || payload) }), 'success');
     } catch (err) {
       setTenantOutput(tt('createFailed', { error: err.message || err }), 'error');
+    } finally {
+      tenantCreateBusy = false;
+      if (btn) btn.disabled = false;
     }
   }
 
   async function createTenantAdmin() {
+    if (tenantAdminCreateBusy) return;
     var tenantID = val('tenantAdminTenantID');
     var payload = { username: val('tenantExtraAdminUsername'), password: val('tenantExtraAdminPassword'), email: val('tenantExtraAdminEmail'), display_name: val('tenantExtraAdminName'), role: val('tenantAdminRole') || 'tenant_admin' };
-    if (!tenantID || !payload.username || !payload.password || !payload.email) {
+    if (!tenantID || isReservedTenantID(tenantID) || !payload.username || !payload.password || !payload.email) {
       setTenantOutput(tt('adminRequired'), 'info');
       return;
     }
+    if (!validEmail(payload.email)) {
+      setTenantOutput(tt('invalidAdminEmail'), 'info');
+      return;
+    }
+    var btn = byID('tenantAdminCreateBtn');
+    tenantAdminCreateBusy = true;
+    if (btn) btn.disabled = true;
     try {
       var data = await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/admins', { method: 'POST', body: JSON.stringify(payload) });
       ['tenantExtraAdminUsername','tenantExtraAdminPassword','tenantExtraAdminEmail','tenantExtraAdminName'].forEach(function(id) { var el = byID(id); if (el) el.value = ''; });
       setTenantOutput(tt('adminDone', { admin: (data.admin && (data.admin.username || data.admin.email)) || payload.username }), 'success');
     } catch (err) {
       setTenantOutput(tt('adminFailed', { error: err.message || err }), 'error');
+    } finally {
+      tenantAdminCreateBusy = false;
+      renderTenantSelect(tenantCache);
+    }
+  }
+
+  async function updateTenantStatus(tenantID, status, label, confirmKey) {
+    if (!tenantID) return;
+    if (!global.confirm(tt(confirmKey || 'deactivateConfirm', { tenant: label || tenantID }))) return;
+    try {
+      await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/status', { method: 'PATCH', body: JSON.stringify({ status: status }) });
+      await loadTenants();
+      await loadLoginTenants();
+      setTenantOutput(tt('statusUpdated'), 'success');
+    } catch (err) {
+      setTenantOutput(tt('statusUpdateFailed', { error: err.message || err }), 'error');
+    }
+  }
+
+  async function deleteTenant(tenantID, label) {
+    if (!tenantID) return;
+    if (!global.confirm(tt('deleteConfirm', { tenant: label || tenantID }))) return;
+    try {
+      await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID), { method: 'DELETE' });
+      await loadTenants();
+      await loadLoginTenants();
+      setTenantOutput(tt('deletedDone'), 'success');
+    } catch (err) {
+      setTenantOutput(tt('deleteFailed', { error: err.message || err }), 'error');
     }
   }
 
@@ -327,8 +410,8 @@
     var tenantAdmin = isTenantAdminProfile(profile);
     var hasProfile = !!profile;
     updateTenantAdminRoleOptions(profile);
-    var globalOnly = global.adminGlobalOnlyTabs || { center: true, console: true };
-    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, marketplace: true, machines: true, virtualemployees: true, invitationcodes: true, pwarequests: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true };
+    var globalOnly = global.adminGlobalOnlyTabs || { center: true, console: true, hubllm: true };
+    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, marketplace: true, im: true, machines: true, virtualemployees: true, invitationcodes: true, pwarequests: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true };
     global.document.querySelectorAll('.nav button[data-tab]').forEach(function(button) {
       var tab = button.dataset.tab || '';
       var hidden = false;
@@ -375,6 +458,8 @@
   global.loadTenants = loadTenants;
   global.createTenant = createTenant;
   global.createTenantAdmin = createTenantAdmin;
+  global.updateTenantStatus = updateTenantStatus;
+  global.deleteTenant = deleteTenant;
   applyAdminScopeUI();
 })(window);
 

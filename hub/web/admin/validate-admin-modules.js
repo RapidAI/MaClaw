@@ -141,7 +141,9 @@ function assertTenantAdminUIHooks() {
   [
     'id="loginTenant"',
     'data-tab="tenants"',
+    'data-tab="hubllm"',
     'id="tab-tenants"',
+    'id="tab-hubllm"',
     'id="tenantCreatePanel"',
     'src="/admin/tenant-tab.js"'
   ].forEach(function(marker) {
@@ -150,6 +152,11 @@ function assertTenantAdminUIHooks() {
     }
   });
   const admin = read('admin.js');
+  ['window.tr = tr', 'window.tabMeta = tabMeta', 'Object.assign(window', 'adminProfile', 'setOutput', 'showToast', 'openTab'].forEach(function(marker) {
+    if (!admin.includes(marker)) {
+      fail('admin.js must expose shared admin runtime marker: ' + marker);
+    }
+  });
   if (!admin.includes("tenant: document.getElementById('loginTenant')")) {
     fail('admin.js login payload must include selected tenant scope.');
   }
@@ -168,9 +175,24 @@ function assertTenantAdminUIHooks() {
     }
   });
   const im = read('im-tab.js');
-  ['applyImScopeUI', 'openDefaultImSub', "value === 'hubllm'"].forEach(function(marker) {
+  ['applyImScopeUI', 'openDefaultImSub', "value !== 'hubllm'", 'tenantRuntimeReloadMessage', 'runtime_reload_error'].forEach(function(marker) {
     if (!im.includes(marker)) {
       fail('im-tab.js is missing scoped IM marker: ' + marker);
+    }
+  });
+  if (/HUB_LLM_PANE_I18N|loadHubLlmConfig|loadHubLlmStatus|PromptCache/i.test(im)) {
+    fail('im-tab.js must not own Hub LLM or prompt-cache logic. Keep it in hub-llm-tab.js.');
+  }
+  const imSection = html.slice(html.indexOf('id="tab-im"'), html.indexOf('id="tab-hubllm"'));
+  ['imSubHubLlm', 'hubLlmPromptCache', 'hubLlmCacheConfig'].forEach(function(marker) {
+    if (imSection.includes(marker)) {
+      fail('index.html IM section still contains Hub LLM marker: ' + marker);
+    }
+  });
+  const hubllm = read('hub-llm-tab.js');
+  ['registerTab', "id: 'hubllm'", 'navHubLlm', 'loadHubLlmConfig', 'loadHubLlmStatus'].forEach(function(marker) {
+    if (!hubllm.includes(marker)) {
+      fail('hub-llm-tab.js is missing standalone Hub LLM marker: ' + marker);
     }
   });
   const tenant = read('tenant-tab.js');
@@ -179,6 +201,10 @@ function assertTenantAdminUIHooks() {
     'renderLoginTenantOptions',
     'applyAdminScopeUI',
     'createTenantAdmin',
+    'updateTenantStatus',
+    'deleteTenant',
+    'isReservedTenantID',
+    'tenant_default',
     'applyImScopeUI',
     "toggleNearest('machineCountHero'"
   ].forEach(function(marker) {
@@ -186,6 +212,104 @@ function assertTenantAdminUIHooks() {
       fail('tenant-tab.js is missing marker: ' + marker);
     }
   });
+  const health = read('admin-module-health.js');
+  ['TenantTab', 'loadTenants', 'createTenantAdmin', 'loadLoginTenants'].forEach(function(marker) {
+    if (!health.includes(marker)) {
+      fail('admin-module-health.js is missing tenant health marker: ' + marker);
+    }
+  });
+}
+
+function assertEmptyTextNodesAreOwned() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const scripts = expectedScripts.map(function(name) { return read(name); }).join('\n');
+  const allowedDynamic = {
+    setupGateList: true,
+    hubLlmTestResult: true
+  };
+  const emptyNode = /<([a-z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)>\s*<\/\1>/gi;
+  let match;
+  while ((match = emptyNode.exec(html))) {
+    const attrs = match[2] || '';
+    const id = match[3] || '';
+    if (!id || allowedDynamic[id]) continue;
+    if (attrs.includes('data-i18n=')) continue;
+    if (scripts.includes(id)) continue;
+    fail('index.html has empty text node without i18n or JS owner: #' + id);
+  }
+  if (html.includes('title=""')) {
+    fail('index.html contains an empty title attribute; visible controls need readable labels/tooltips.');
+  }
+  if (/<span>\s*<\/span>/i.test(html)) {
+    fail('index.html contains a blank span; visible controls need readable text or a JS-owned id.');
+  }
+}
+
+function assertBlankPlaceholdersAreOwned() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const scripts = expectedScripts.map(function(name) { return read(name); }).join('\n');
+  const allowedDynamic = {
+    llmEndpointAccessLogFilterProvider: true,
+    llmEndpointAccessLogFilterUpstreamHost: true,
+    llmEndpointAccessLogFilterClientIP: true,
+    llmEndpointAccessLogFilterEmail: true,
+    llmEndpointAccessLogFilterKeyword: true,
+    llmServiceGroupModels: true
+  };
+  const blankPlaceholder = /<([a-z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)\bplaceholder=""/gi;
+  let match;
+  while ((match = blankPlaceholder.exec(html))) {
+    const id = match[3] || '';
+    if (!id || allowedDynamic[id]) continue;
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const ownerPatterns = [
+      new RegExp("_s\\('" + escaped + "',\\s*'placeholder'"),
+      new RegExp('_s\\("' + escaped + '",\\s*"placeholder"'),
+      new RegExp('getElementById\\([\'\"]' + escaped + '[\'\"]\\)[^;\\n]*\\.placeholder'),
+      new RegExp(escaped + '[\'\"][^\n]{0,160}placeholder')
+    ];
+    if (!ownerPatterns.some(function(pattern) { return pattern.test(scripts); })) {
+      fail('index.html has blank placeholder without JS owner: #' + id);
+    }
+  }
+}
+
+function assertBlankControlsAreOwned() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const scripts = expectedScripts.map(function(name) { return read(name); }).join('\n');
+  const blankControl = /<(button|label)\b([^>]*\bid="([^"]+)"[^>]*)>\s*<\/\1>/gi;
+  let match;
+  while ((match = blankControl.exec(html))) {
+    const attrs = match[2] || '';
+    const id = match[3] || '';
+    if (!id || attrs.includes('data-i18n=')) continue;
+    if (scripts.includes(id)) continue;
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const ownerPatterns = [
+      new RegExp("_s\\('" + escaped + "',\\s*'textContent'"),
+      new RegExp('_s\\("' + escaped + '",\\s*"textContent"'),
+      new RegExp('getElementById\\([\'\"]' + escaped + '[\'\"]\\)[^;\\n]*\\.textContent'),
+      new RegExp('setText\\([\'\"]' + escaped + '[\'\"]')
+    ];
+    if (!ownerPatterns.some(function(pattern) { return pattern.test(scripts); })) {
+      fail('index.html has blank control without text owner: #' + id);
+    }
+  }
+}
+
+function assertDataI18nKeysHaveTranslations() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const scripts = expectedScripts.map(function(name) { return read(name); }).join('\n');
+  const keyPattern = /\bdata-i18n="([^"]+)"/g;
+  let match;
+  while ((match = keyPattern.exec(html))) {
+    const key = match[1];
+    const objectKey = new RegExp('(?:^|[\\s,{])' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:');
+    const assignedKey = new RegExp('\\.' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=');
+    if (!objectKey.test(scripts) && !assignedKey.test(scripts)) {
+      fail('index.html data-i18n key has no visible translation owner: ' + key);
+    }
+  }
 }
 
 function assertScopedRefreshHooks() {
@@ -199,6 +323,51 @@ function assertScopedRefreshHooks() {
     const content = read(entry[0]);
     if (!content.includes(entry[1])) {
       fail(entry[0] + ' is missing scoped refresh marker: ' + entry[1]);
+    }
+  });
+  const pwa = read('pwa-tab.js');
+  const legacyPendingLoginsPath = '/api/' + 'admin/' + 'enrollments/' + 'pending-logins';
+  if (!pwa.includes('/api/admin/pending-logins') || pwa.includes(legacyPendingLoginsPath)) {
+    fail('pwa-tab.js must use the registered pending-logins admin endpoint.');
+  }
+}
+
+function assertAdminApiRoutesRegistered() {
+  const routerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'router.go');
+  const router = fs.readFileSync(routerPath, 'utf8');
+  const routes = [];
+  const routePattern = /mux\.HandleFunc\("(GET|POST|PUT|PATCH|DELETE) (\/api\/admin\/[^" ]+)/g;
+  let routeMatch;
+  while ((routeMatch = routePattern.exec(router))) {
+    routes.push(routeMatch[2]);
+  }
+  const routeSet = new Set(routes);
+  const allowedDynamicPrefixes = [
+    '/api/admin/capability-market/groups/',
+    '/api/admin/capability-market/users/',
+    '/api/admin/security/users/'
+  ];
+  function routeCouldMatch(url) {
+    if (routeSet.has(url)) return true;
+    if (allowedDynamicPrefixes.some(function(prefix) { return url === prefix; })) return true;
+    const parts = url.split('/');
+    return routes.some(function(route) {
+      const routeParts = route.split('/');
+      if (routeParts.length !== parts.length) return false;
+      return routeParts.every(function(part, index) {
+        return (part.startsWith('{') && part.endsWith('}')) || part === parts[index];
+      });
+    });
+  }
+  expectedScripts.filter(function(name) { return name !== 'validate-admin-modules.js'; }).forEach(function(name) {
+    const content = read(name);
+    const apiPattern = /['"](\/api\/admin\/[^'"?+)]*)/g;
+    let match;
+    while ((match = apiPattern.exec(content))) {
+      const url = match[1];
+      if (!routeCouldMatch(url)) {
+        fail(name + ' references unregistered admin API route: ' + url);
+      }
     }
   });
 }
@@ -238,6 +407,15 @@ function assertLLMProviderPricingHooks() {
   ].forEach(function(marker) {
     if (!content.includes(marker)) {
       fail('llm-provider-tab.js is missing pricing marker: ' + marker);
+    }
+  });
+}
+
+function assertHubLlmStatusTextIsIconFree() {
+  const content = read('hub-llm-tab.js');
+  ['\\u2705', '\\u274c', '\\u26aa', '\\ud83d\\udfe2', '\\ud83d\\udfe1', '\\ud83d\\udd34'].forEach(function(marker) {
+    if (content.includes(marker)) {
+      fail('hub-llm-tab.js status/test text must stay icon-free: ' + marker);
     }
   });
 }
@@ -324,9 +502,15 @@ removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
 assertTenantAdminUIHooks();
+assertEmptyTextNodesAreOwned();
+assertBlankPlaceholdersAreOwned();
+assertBlankControlsAreOwned();
+assertDataI18nKeysHaveTranslations();
+assertAdminApiRoutesRegistered();
 assertGlobalAdminRuntimeHooks();
 assertScopedRefreshHooks();
 assertLegacyMirrorRemoved();
+assertHubLlmStatusTextIsIconFree();
 assertLLMProviderPricingHooks();
 assertSecurityCapabilityComplianceExportHooks();
 

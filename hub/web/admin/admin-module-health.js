@@ -6,11 +6,12 @@
   const checks = [
     { name: 'AdminTabRegistry', ok: function() { return !!global.AdminTabRegistry; } },
     { name: 'AdminUI', ok: function() { return !!global.AdminUI; } },
+    { name: 'TenantTab', ok: function() { return typeof global.loadTenants === 'function' && typeof global.createTenantAdmin === 'function' && typeof global.loadLoginTenants === 'function'; } },
     { name: 'CenterTab', ok: function() { return typeof global.loadCenterStatus === 'function'; } },
     { name: 'GovernanceTab', ok: function() { return typeof global.loadBlockedEmails === 'function' && typeof global.loadBoundUsers === 'function'; } },
     { name: 'SecurityTab', ok: function() { return typeof global.loadSecurityTab === 'function'; } },
     { name: 'MachinesTab', ok: function() { return typeof global.loadMachines === 'function' && typeof global.renderMachineList === 'function'; } },
-    { name: 'GroupDiscussionTab', ok: function() { return typeof global.loadGroupDiscussion === 'function'; } },
+    { name: 'VETab', ok: function() { return typeof global.loadVEList === 'function'; } },
     { name: 'ImTab', ok: function() { return typeof global.openImSub === 'function'; } },
     { name: 'HubLlmTab', ok: function() { return typeof global.loadHubLlmConfig === 'function' && typeof global.loadHubLlmStatus === 'function'; } },
     { name: 'FeishuTab', ok: function() { return typeof global.loadFeishuConfig === 'function'; } },
