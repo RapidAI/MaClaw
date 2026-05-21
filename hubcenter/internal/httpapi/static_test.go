@@ -174,6 +174,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	if !strings.Contains(market, `function bindTablistKeyboard`) || !strings.Contains(market, `bindTablistKeyboard('[aria-label="Skill views"]','.tab')`) {
 		t.Fatalf("market tablists must keep arrow-key keyboard navigation")
 	}
+	for _, required := range []string{
+		`if(!detailOverlay.classList.contains('active'))return`,
+		`if(e.key==='Escape'){closeDetail();return}`,
+		`e.key!=='Tab'`,
+		`last.focus()`,
+	} {
+		if !strings.Contains(market, required) {
+			t.Fatalf("market detail dialog missing focus-management contract %q", required)
+		}
+	}
 
 	css := read(t, "pro-ui.css")
 	if !strings.Contains(css, `[role="button"]`) {
