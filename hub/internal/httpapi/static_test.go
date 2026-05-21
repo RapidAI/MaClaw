@@ -161,6 +161,44 @@ func TestRegisterGetCreditsStaticRoutesServesPage(t *testing.T) {
 	}
 }
 
+func TestProfessionalStylesheetsServedByStaticRoutes(t *testing.T) {
+	cases := []struct {
+		name     string
+		prefix   string
+		register func(*http.ServeMux, string, string)
+	}{
+		{name: "admin", prefix: "/admin", register: registerAdminStaticRoutes},
+		{name: "bind", prefix: "/bind", register: registerBindStaticRoutes},
+		{name: "get-credits", prefix: "/get-credits", register: registerGetCreditsStaticRoutes},
+		{name: "approval_workflow", prefix: "/approval_workflow", register: registerStaticRoutes},
+		{name: "connector", prefix: "/connector", register: registerStaticRoutes},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("index-page"), 0644); err != nil {
+				t.Fatalf("write index: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "professional.css"), []byte("body{color:#172033}"), 0644); err != nil {
+				t.Fatalf("write css: %v", err)
+			}
+
+			mux := http.NewServeMux()
+			tc.register(mux, dir, tc.prefix)
+
+			req := httptest.NewRequest(http.MethodGet, tc.prefix+"/professional.css", nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("css status = %d", rec.Code)
+			}
+			if body := rec.Body.String(); body != "body{color:#172033}" {
+				t.Fatalf("css body = %q", body)
+			}
+		})
+	}
+}
+
 func TestAdminLegacyMirrorTreeRemoved(t *testing.T) {
 	legacyDir := filepath.Join("..", "..", "web", "admin", "js")
 	if _, err := os.Stat(legacyDir); !os.IsNotExist(err) {
@@ -213,6 +251,51 @@ func TestAdminIndexScriptRefsExist(t *testing.T) {
 		assetPath := filepath.Join("..", "..", "web", "admin", name)
 		if _, err := os.Stat(assetPath); err != nil {
 			t.Fatalf("script asset %q missing: %v", name, err)
+		}
+	}
+}
+
+func TestHubProfessionalStylesheetsLinkedAndExist(t *testing.T) {
+	pages := map[string]string{
+		"admin":             "/admin/professional.css",
+		"bind":              "/bind/professional.css",
+		"get-credits":       "/get-credits/professional.css",
+		"approval_workflow": "/approval_workflow/professional.css",
+		"connector":         "/connector/professional.css",
+	}
+	for dir, href := range pages {
+		indexPath := filepath.Join("..", "..", "web", dir, "index.html")
+		body, err := os.ReadFile(indexPath)
+		if err != nil {
+			t.Fatalf("read %s index: %v", dir, err)
+		}
+		if !strings.Contains(string(body), `href="`+href+`"`) {
+			t.Fatalf("%s index missing professional stylesheet %s", dir, href)
+		}
+		cssPath := filepath.Join("..", "..", "web", dir, "professional.css")
+		if _, err := os.Stat(cssPath); err != nil {
+			t.Fatalf("%s professional stylesheet missing: %v", dir, err)
+		}
+	}
+}
+
+func TestHubProfessionalStylesheetsAreAsciiAndTokenized(t *testing.T) {
+	for _, dir := range []string{"admin", "bind", "get-credits", "approval_workflow", "connector"} {
+		cssPath := filepath.Join("..", "..", "web", dir, "professional.css")
+		body, err := os.ReadFile(cssPath)
+		if err != nil {
+			t.Fatalf("read %s professional stylesheet: %v", dir, err)
+		}
+		for i, b := range body {
+			if b > 127 {
+				t.Fatalf("%s professional stylesheet contains non-ASCII byte at offset %d", dir, i)
+			}
+		}
+		content := string(body)
+		for _, want := range []string{"#2563eb", ":focus-visible"} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s professional stylesheet missing %s", dir, want)
+			}
 		}
 	}
 }

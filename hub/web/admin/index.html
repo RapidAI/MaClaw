@@ -73,6 +73,7 @@
     body{color:#59636f}.brand h1,.top h2,.head h3,.item-title,.metric strong,.usage-rank-value,.form h2,.stage-card h3,.session-modal h3{color:#5b6470}.hero h1{color:#5f6874}.brand p,.nav button .nav-copy small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.usage-rank-label,.session-label{color:#98a1ab}.hero p,.hero li{color:rgba(95,104,116,.6)}.metric label,label{color:#9aa3ad}.nav button{color:#6c7581}.nav button.active{color:#5b6470}.btn-secondary,.btn-ghost{color:#68717d}.console{color:#7f8894}.page-kicker,.mini{color:#98a1ab}.head h3::after,.page-tab-icon::before{background:#98a1ab}
     #systemRoutingCard{padding:12px 14px!important;box-shadow:none!important;border-color:#e7eaf0!important}#systemRoutingCard .system-routing-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #eef1f5}#systemRoutingCard .system-routing-title{display:grid;gap:2px;min-width:0}#systemRoutingCard .item-title{font-size:14px;line-height:1.25}#systemRoutingCard .item-meta{font-size:11px;line-height:1.4}#systemRoutingCard .system-routing-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}#systemRoutingCard .system-routing-grid{display:grid;grid-template-columns:minmax(220px,.9fr) minmax(260px,1.1fr);gap:10px;align-items:start}#systemRoutingCard label{margin-bottom:5px;font-size:11px}#systemRoutingCard input,#systemRoutingCard select{height:34px;font-size:13px;border-radius:10px}#systemRoutingCard textarea{min-height:72px;font-size:13px;border-radius:10px;line-height:1.45;resize:vertical}#systemRoutingCard .system-routing-domains{grid-column:1 / -1}#systemRoutingCard .system-routing-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}#systemRoutingCard .system-routing-footer .hint{flex:1;margin:0!important;padding:9px 12px;font-size:11px;line-height:1.4}#systemRoutingCard .system-routing-footer .actions{margin:0!important;padding:0;flex-shrink:0}#systemRoutingCard button{height:34px;padding:0 12px;font-size:12px;border-radius:10px}#systemRoutingSaveBtn{min-width:112px}#tab-failurelogs .failure-log-filter{padding:10px 12px!important;border-radius:12px;gap:0}#tab-failurelogs .failure-log-filter-grid{display:grid;grid-template-columns:minmax(260px,1.35fr) minmax(180px,.7fr) auto;gap:8px;align-items:end;max-width:760px}#tab-failurelogs .failure-log-filter label{margin-bottom:5px;font-size:11px}#tab-failurelogs .failure-log-filter input,#tab-failurelogs .failure-log-filter select{height:34px;border-radius:10px;font-size:13px}#tab-failurelogs .failure-log-filter-actions{display:flex;align-items:end;gap:6px;white-space:nowrap}#tab-failurelogs .failure-log-filter-actions button{height:34px;min-width:58px;padding:0 12px;border-radius:10px;font-size:12px}@media (max-width:760px){#systemRoutingCard .system-routing-head,#systemRoutingCard .system-routing-footer{align-items:stretch;flex-direction:column}#systemRoutingCard .system-routing-actions{justify-content:flex-start}#systemRoutingCard .system-routing-grid{grid-template-columns:1fr}#tab-failurelogs .failure-log-filter-grid{grid-template-columns:1fr;max-width:none}#tab-failurelogs .failure-log-filter-actions{justify-content:flex-start}}
   #marketplaceCapabilitiesList .item:hover,#marketplaceSearchResults .item:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(31,34,48,.08);border-color:rgba(239,106,124,.18)}</style>
+  <link rel="stylesheet" href="/admin/professional.css">
 </head>
 <body>
   <!-- Toast stack -->
@@ -144,12 +145,12 @@
     <div class="card" style="padding:16px 16px 14px;position:relative;border-radius:16px">
       <button type="button" id="setupGateCloseBtn" onclick="dismissSetupGate()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1">&times;</button>
       <div class="mini" data-gate="title"></div>
-      <h2 id="setupGateHeading" style="margin:8px 0 4px;font-size:16px"></h2>
-      <p class="subtle" id="setupGateDesc" style="font-size:12px"></p>
+      <h2 id="setupGateHeading" style="margin:8px 0 4px;font-size:16px" data-i18n="needsSetup"></h2>
+      <p class="subtle" id="setupGateDesc" style="font-size:12px" data-i18n="checking"></p>
       <div id="setupGateList" class="stage-card" style="margin-top:8px;padding:14px;border-radius:14px;gap:10px"></div>
       <div class="actions" style="margin-top:8px;gap:6px">
-        <button class="btn-primary" type="button" onclick="openSetupGateTarget()" id="setupGateAction" style="height:34px;font-size:12px;padding:0 12px"></button>
-        <button class="btn-ghost" type="button" onclick="recheckSetupGate()" id="setupGateRefresh" style="height:34px;font-size:12px;padding:0 12px"></button>
+        <button class="btn-primary" type="button" onclick="openSetupGateTarget()" id="setupGateAction" style="height:34px;font-size:12px;padding:0 12px" data-i18n="firstSetup"></button>
+        <button class="btn-ghost" type="button" onclick="recheckSetupGate()" id="setupGateRefresh" style="height:34px;font-size:12px;padding:0 12px" data-i18n="refreshStatus"></button>
       </div>
     </div>
   </div>
@@ -246,6 +247,7 @@
         <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
         <button data-tab="marketplace" onclick="openTab('marketplace')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span data-i18n="navMarketplace"></span><small data-i18n="navMarketplaceDesc"></small></div></div></button>
         <button data-tab="im" onclick="openTab('im')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v9H9l-4 3V7Z"></path><path d="M9 11h6"></path></svg></span><div class="nav-copy"><span id="navIM"></span><small id="navIMDesc"></small></div></div></button>
+        <button data-tab="hubllm" onclick="openTab('hubllm')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v3"></path><path d="M12 18v3"></path><path d="M4.6 7.5 7.2 9"></path><path d="m16.8 15 2.6 1.5"></path><path d="m19.4 7.5-2.6 1.5"></path><path d="M7.2 15l-2.6 1.5"></path><circle cx="12" cy="12" r="4"></circle><path d="M10.5 12h3"></path></svg></span><div class="nav-copy"><span id="navHubLlm"></span><small id="navHubLlmDesc"></small></div></div></button>
         <button data-tab="machines" onclick="openTab('machines')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 19h8"></path><path d="M12 16v3"></path></svg></span><div class="nav-copy"><span data-i18n="navMachines"></span><small data-i18n="navMachinesDesc"></small></div></div></button>
         <button data-tab="virtualemployees" onclick="openTab('virtualemployees')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span><div class="nav-copy"><span id="navVirtualEmployees"></span><small id="navVirtualEmployeesDesc"></small></div></div></button>
         <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z"></path><path d="M12 10v8"></path><path d="M9 13h6"></path></svg></span><div class="nav-copy"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></div></div></button>
@@ -313,10 +315,10 @@
                 <option value="manual" data-i18n="enrollmentManual"></option>
               </select>
               <label id="centerCorporateEmailDomainsLabel" for="centerCorporateEmailDomains" style="margin-top:10px"></label>
-              <textarea id="centerCorporateEmailDomains" rows="2" style="min-height:52px" placeholder=""></textarea>
+              <textarea id="centerCorporateEmailDomains" rows="2" style="min-height:52px" placeholder="rapidai.tech, subsidiary.example"></textarea>
               <div class="item-meta" id="centerCorporateEmailDomainsHint" style="margin-top:4px"></div>
               <label id="centerCorporateEmailDomainLabel" for="centerCorporateEmailDomain" style="margin-top:10px"></label>
-              <input id="centerCorporateEmailDomain" placeholder="">
+              <input id="centerCorporateEmailDomain" placeholder="rapidai.tech">
               <label style="margin-top:10px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="centerAcceptPublicSignup"> <span id="centerAcceptPublicSignupLabel"></span></label>
               <div class="item-meta" id="centerAcceptPublicSignupHint" style="margin-top:4px"></div>
               <div id="centerRegisterActions" class="actions" style="margin-top:10px;gap:8px">
@@ -426,8 +428,8 @@
           <div class="head" style="margin-bottom:6px">
             <div><div class="item-title" data-i18n="boundUsersTitle"></div><div class="item-meta" data-i18n="boundUsersDesc"></div></div>
             <div style="display:flex;align-items:center;gap:8px">
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer" title="">
-                <input type="checkbox" id="smartRouteAllToggle" onchange="toggleSmartRouteAll(this.checked)"><span> </span>
+              <label id="smartRouteAllLabel" style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer" title="Smart Route for all users">
+                <input type="checkbox" id="smartRouteAllToggle" onchange="toggleSmartRouteAll(this.checked)"><span id="smartRouteAllLabelText">Smart Route for all</span>
               </label>
               <button class="btn-ghost" onclick="loadBoundUsers()" data-i18n="reload"></button>
             </div>
@@ -591,7 +593,6 @@
             <button data-imsub="qqbot" onclick="openImSub('qqbot')"><span id="imSubQQBotNav"></span><small id="imSubQQBotNavDesc"></small></button>
             <button data-imsub="wecom" onclick="openImSub('wecom')"><span id="imSubWeComNav"></span><small id="imSubWeComNavDesc"></small></button>
             <button data-imsub="dingtalk" onclick="openImSub('dingtalk')"><span id="imSubDingTalkNav"></span><small id="imSubDingTalkNavDesc"></small></button>
-            <button data-imsub="hubllm" onclick="openImSub('hubllm')"><span id="imSubHubLlmNav"></span><small id="imSubHubLlmNavDesc"></small></button>
             <button data-imsub="contentaudit" onclick="openImSub('contentaudit')"><span id="imSubContentAuditNav"></span><small id="imSubContentAuditNavDesc"></small></button>
           </div>
           <div class="im-content">
@@ -608,7 +609,7 @@
                 </div>
                 <div class="grid2" style="margin-top:10px">
                   <div><label for="feishuAppId" id="feishuAppIdLabel"></label><input id="feishuAppId" placeholder="cli_xxxxxxxx"></div>
-                  <div><label for="feishuAppSecret" id="feishuAppSecretLabel"></label><input id="feishuAppSecret" type="password" placeholder=""></div>
+                  <div><label for="feishuAppSecret" id="feishuAppSecretLabel"></label><input id="feishuAppSecret" type="password" placeholder="app_secret"></div>
                 </div>
                 <div class="actions" style="margin-top:10px"><button class="btn-secondary" onclick="saveFeishuConfig()" id="feishuSaveBtn"></button></div>
                 <!-- Feishu auto-enroll -->
@@ -665,7 +666,7 @@
                 </div>
                 <div class="grid2" style="margin-top:10px">
                   <div><label for="openclawImWebhookUrl" id="openclawImWebhookUrlLabel"></label><input id="openclawImWebhookUrl" placeholder="http://127.0.0.1:3210/outbound"></div>
-                  <div><label for="openclawImSecret" id="openclawImSecretLabel"></label><input id="openclawImSecret" type="password" placeholder=""></div>
+                  <div><label for="openclawImSecret" id="openclawImSecretLabel"></label><input id="openclawImSecret" type="password" placeholder="shared secret"></div>
                 </div>
                 <div class="actions" style="margin-top:10px">
                   <button class="btn-secondary" onclick="saveOpenclawImConfig()" id="openclawImSaveBtn"></button>
@@ -700,8 +701,8 @@
                   <div></div>
                 </div>
                 <div class="grid2" style="margin-top:10px">
-                  <div><label for="qqbotAppId" id="qqbotAppIdLabel"></label><input id="qqbotAppId" placeholder=""></div>
-                  <div><label for="qqbotAppSecret" id="qqbotAppSecretLabel"></label><input id="qqbotAppSecret" type="password" placeholder=""></div>
+                  <div><label for="qqbotAppId" id="qqbotAppIdLabel"></label><input id="qqbotAppId" placeholder="1024xxxxxxxx"></div>
+                  <div><label for="qqbotAppSecret" id="qqbotAppSecretLabel"></label><input id="qqbotAppSecret" type="password" placeholder="app_secret"></div>
                 </div>
                 <div class="actions" style="margin-top:10px"><button class="btn-secondary" onclick="saveQQBotConfig()" id="qqbotSaveBtn"></button></div>
                 <div class="hint" style="margin-top:10px">
@@ -730,8 +731,8 @@
                   <div></div>
                 </div>
                 <div class="grid2" style="margin-top:10px">
-                  <div><label for="wecomBotId" id="wecomBotIdLabel"></label><input id="wecomBotId" placeholder=""></div>
-                  <div><label for="wecomSecret" id="wecomSecretLabel"></label><input id="wecomSecret" type="password" placeholder=""></div>
+                  <div><label for="wecomBotId" id="wecomBotIdLabel"></label><input id="wecomBotId" placeholder="wwxxxxxxxx"></div>
+                  <div><label for="wecomSecret" id="wecomSecretLabel"></label><input id="wecomSecret" type="password" placeholder="secret"></div>
                 </div>
                 <div class="actions" style="margin-top:10px"><button class="btn-secondary" onclick="saveWeComConfig()" id="wecomSaveBtn"></button></div>
                 <div class="hint" style="margin-top:10px">
@@ -760,8 +761,8 @@
                   <div></div>
                 </div>
                 <div class="grid2" style="margin-top:10px">
-                  <div><label for="dingtalkClientId" id="dingtalkClientIdLabel"></label><input id="dingtalkClientId" placeholder=""></div>
-                  <div><label for="dingtalkClientSecret" id="dingtalkClientSecretLabel"></label><input id="dingtalkClientSecret" type="password" placeholder=""></div>
+                  <div><label for="dingtalkClientId" id="dingtalkClientIdLabel"></label><input id="dingtalkClientId" placeholder="dingxxxxxxxx"></div>
+                  <div><label for="dingtalkClientSecret" id="dingtalkClientSecretLabel"></label><input id="dingtalkClientSecret" type="password" placeholder="app_secret"></div>
                 </div>
                 <div class="actions" style="margin-top:10px"><button class="btn-secondary" onclick="saveDingTalkConfig()" id="dingtalkSaveBtn"></button></div>
                 <div class="hint" style="margin-top:10px">
@@ -774,97 +775,6 @@
                     <button class="btn-ghost" onclick="loadDingTalkBindings()" id="dingtalkBindingsReloadBtn"></button>
                   </div>
                   <div id="dingtalkBindingsList"><div class="hint" data-i18n="loading"></div></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Hub LLM pane -->
-            <div id="im-pane-hubllm" class="im-pane">
-              <div class="item">
-                <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" id="hubLlmPaneTitle"></div><div class="item-meta" id="hubLlmPaneDesc"></div></div>
-                </div>
-                <div class="grid2">
-                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmEnabled"> <span id="hubLlmEnabledLabel"></span></label></div>
-                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmSmartRouteSingle"> <span id="hubLlmSmartRouteSingleLabel"></span></label></div>
-                </div>
-                <div class="grid2" style="margin-top:10px">
-                  <div><label for="hubLlmApiUrl" id="hubLlmApiUrlLabel"></label><input id="hubLlmApiUrl" placeholder=""></div>
-                  <div><label for="hubLlmApiKey" id="hubLlmApiKeyLabel"></label><input id="hubLlmApiKey" type="password" placeholder=""></div>
-                </div>
-                <div class="grid2" style="margin-top:10px">
-                  <div><label for="hubLlmModel" id="hubLlmModelLabel"></label><input id="hubLlmModel" placeholder=""></div>
-                  <div><label for="hubLlmProtocol" id="hubLlmProtocolLabel"></label><select id="hubLlmProtocol"><option value="openai" id="hubLlmProtocolOpenAI"></option><option value="anthropic" id="hubLlmProtocolAnthropic"></option></select></div>
-                </div>
-                <div class="actions" style="margin-top:10px">
-                  <button class="btn-secondary" onclick="saveHubLlmConfig()" id="hubLlmSaveBtn"></button>
-                  <button class="btn-primary" onclick="testHubLlm()" id="hubLlmTestBtn"></button>
-                  <span id="hubLlmStatusBadge" class="badge info" style="font-size:12px"></span>
-                </div>
-                <div class="item" style="margin-top:10px">
-                  <div class="item-title" id="hubLlmCacheConfigTitle"></div>
-                  <div class="item-meta" id="hubLlmCacheConfigDesc"></div>
-                  <div class="grid3" style="margin-top:10px">
-                    <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheEnabled"> <span id="hubLlmPromptCacheEnabledLabel"></span></label></div>
-                    <div><label for="hubLlmPromptCacheTTL" id="hubLlmPromptCacheTTLLabel"></label><input id="hubLlmPromptCacheTTL" type="number" min="1" step="1"></div>
-                    <div><label for="hubLlmPromptCacheMemoryEntries" id="hubLlmPromptCacheMemoryEntriesLabel"></label><input id="hubLlmPromptCacheMemoryEntries" type="number" min="1" step="1"></div>
-                  </div>
-                  <div class="grid2" style="margin-top:10px">
-                    <div><label for="hubLlmPromptCacheMemoryMB" id="hubLlmPromptCacheMemoryMBLabel"></label><input id="hubLlmPromptCacheMemoryMB" type="number" min="1" step="1"></div>
-                    <div><label for="hubLlmPromptCacheDiskMB" id="hubLlmPromptCacheDiskMBLabel"></label><input id="hubLlmPromptCacheDiskMB" type="number" min="1" step="1"></div>
-                  </div>
-                  <div class="grid2" style="margin-top:10px">
-                    <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheNormalizeDeterministic"> <span id="hubLlmPromptCacheNormalizeDeterministicLabel"></span></label></div>
-                    <div><label for="hubLlmPromptCacheSingleflightTimeoutMS" id="hubLlmPromptCacheSingleflightTimeoutMSLabel"></label><input id="hubLlmPromptCacheSingleflightTimeoutMS" type="number" min="1" step="100"></div>
-                  </div>
-                  <div class="grid3" style="margin-top:10px">
-                    <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreModel"> <span id="hubLlmPromptCacheIgnoreModelLabel"></span></label></div>
-                    <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreUser"> <span id="hubLlmPromptCacheIgnoreUserLabel"></span></label></div>
-                    <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreMetadata"> <span id="hubLlmPromptCacheIgnoreMetadataLabel"></span></label></div>
-                  </div>
-                  <div class="actions" style="margin-top:10px">
-                    <button class="btn-secondary" onclick="saveHubLlmPromptCacheConfig()" id="hubLlmPromptCacheSaveBtn"></button>
-                    <button class="btn-ghost" onclick="refreshHubLlmPromptCache()" id="hubLlmPromptCacheRefreshBtn"></button>
-                    <button class="btn-danger" onclick="clearHubLlmPromptCache()" id="hubLlmPromptCacheClearBtn"></button>
-                  </div>
-                  <div class="hint" style="margin-top:10px">
-                    <div id="hubLlmCacheSummary" style="font-size:13px;line-height:1.8"></div>
-                  </div>
-                </div>
-                <div class="item" style="margin-top:10px">
-                  <div class="item-title" id="hubLlmCacheHitBreakdownTitle"></div>
-                  <div id="hubLlmCacheHitBreakdown" style="margin-top:10px"></div>
-                </div>
-                <div class="item" style="margin-top:10px">
-                  <div class="item-title" id="hubLlmCacheRuntimeTitle"></div>
-                  <div id="hubLlmCacheRuntime" style="margin-top:10px;display:grid;gap:10px"></div>
-                </div>
-                <div class="item" style="margin-top:10px">
-                  <div class="item-title" id="hubLlmCacheEntriesTitle"></div>
-                  <div class="item-meta" id="hubLlmCacheEntriesDesc"></div>
-                  <div class="grid3" style="margin-top:10px">
-                    <div><label for="hubLlmCacheEntriesProvider" id="hubLlmCacheEntriesProviderLabel"></label><select id="hubLlmCacheEntriesProvider" onchange="document.getElementById('hubLlmCacheEntriesModel').value='';refreshHubLlmPromptCacheEntries()"></select></div>
-                    <div><label for="hubLlmCacheEntriesModel" id="hubLlmCacheEntriesModelLabel"></label><select id="hubLlmCacheEntriesModel" onchange="refreshHubLlmPromptCacheEntries()"></select></div>
-                    <div style="display:flex;align-items:flex-end"><button class="btn-ghost" style="width:100%" onclick="refreshHubLlmPromptCacheEntries()" id="hubLlmCacheEntriesRefreshBtn"></button></div>
-                  </div>
-                  <div id="hubLlmCacheEntries" style="margin-top:10px"></div>
-                  <div id="hubLlmCacheEntriesPager" class="pager hidden">
-                    <div id="hubLlmCacheEntriesPagerMeta" class="pager-meta"></div>
-                    <div class="pager-actions">
-                      <button id="hubLlmCacheEntriesPrevBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(-1)"></button>
-                      <button id="hubLlmCacheEntriesNextBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(1)"></button>
-                    </div>
-                  </div>
-                </div>
-                <div class="item" style="margin-top:10px">
-                  <div class="item-title" id="hubLlmCacheEntryDetailTitle"></div>
-                  <div class="item-meta" id="hubLlmCacheEntryDetailDesc"></div>
-                  <div id="hubLlmCacheEntryDetail" style="margin-top:10px"></div>
-                </div>
-                <div id="hubLlmTestResult" class="hint hidden" style="margin-top:10px"></div>
-                <div class="hint" style="margin-top:10px">
-                  <div style="font-weight:700;margin-bottom:8px" id="hubLlmGuideTitle"></div>
-                  <div style="font-size:13px;line-height:1.8" id="hubLlmGuideContent"></div>
                 </div>
               </div>
             </div>
@@ -896,6 +806,74 @@
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- Tab: Hub LLM -->
+      <section id="tab-hubllm" class="panel card">
+        <div class="head"><div><h3 id="hubLlmPaneTitle"></h3><div class="desc" id="hubLlmPaneDesc"></div></div></div>
+        <div class="item">
+          <div class="grid2">
+            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmEnabled"> <span id="hubLlmEnabledLabel"></span></label></div>
+            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmSmartRouteSingle"> <span id="hubLlmSmartRouteSingleLabel"></span></label></div>
+          </div>
+          <div class="grid2" style="margin-top:10px">
+            <div><label for="hubLlmApiUrl" id="hubLlmApiUrlLabel"></label><input id="hubLlmApiUrl" placeholder="https://api.example.com/v1"></div>
+            <div><label for="hubLlmApiKey" id="hubLlmApiKeyLabel"></label><input id="hubLlmApiKey" type="password" placeholder="sk-..."></div>
+          </div>
+          <div class="grid2" style="margin-top:10px">
+            <div><label for="hubLlmModel" id="hubLlmModelLabel"></label><input id="hubLlmModel" placeholder="gpt-4o-mini"></div>
+            <div><label for="hubLlmProtocol" id="hubLlmProtocolLabel"></label><select id="hubLlmProtocol"><option value="openai" id="hubLlmProtocolOpenAI"></option><option value="anthropic" id="hubLlmProtocolAnthropic"></option></select></div>
+          </div>
+          <div class="actions" style="margin-top:10px">
+            <button class="btn-secondary" onclick="saveHubLlmConfig()" id="hubLlmSaveBtn"></button>
+            <button class="btn-primary" onclick="testHubLlm()" id="hubLlmTestBtn"></button>
+            <span id="hubLlmStatusBadge" class="badge info" style="font-size:12px"></span>
+          </div>
+          <div class="item" style="margin-top:10px">
+            <div class="item-title" id="hubLlmCacheConfigTitle"></div>
+            <div class="item-meta" id="hubLlmCacheConfigDesc"></div>
+            <div class="grid3" style="margin-top:10px">
+              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheEnabled"> <span id="hubLlmPromptCacheEnabledLabel"></span></label></div>
+              <div><label for="hubLlmPromptCacheTTL" id="hubLlmPromptCacheTTLLabel"></label><input id="hubLlmPromptCacheTTL" type="number" min="1" step="1"></div>
+              <div><label for="hubLlmPromptCacheMemoryEntries" id="hubLlmPromptCacheMemoryEntriesLabel"></label><input id="hubLlmPromptCacheMemoryEntries" type="number" min="1" step="1"></div>
+            </div>
+            <div class="grid2" style="margin-top:10px">
+              <div><label for="hubLlmPromptCacheMemoryMB" id="hubLlmPromptCacheMemoryMBLabel"></label><input id="hubLlmPromptCacheMemoryMB" type="number" min="1" step="1"></div>
+              <div><label for="hubLlmPromptCacheDiskMB" id="hubLlmPromptCacheDiskMBLabel"></label><input id="hubLlmPromptCacheDiskMB" type="number" min="1" step="1"></div>
+            </div>
+            <div class="grid2" style="margin-top:10px">
+              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheNormalizeDeterministic"> <span id="hubLlmPromptCacheNormalizeDeterministicLabel"></span></label></div>
+              <div><label for="hubLlmPromptCacheSingleflightTimeoutMS" id="hubLlmPromptCacheSingleflightTimeoutMSLabel"></label><input id="hubLlmPromptCacheSingleflightTimeoutMS" type="number" min="1" step="100"></div>
+            </div>
+            <div class="grid3" style="margin-top:10px">
+              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreModel"> <span id="hubLlmPromptCacheIgnoreModelLabel"></span></label></div>
+              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreUser"> <span id="hubLlmPromptCacheIgnoreUserLabel"></span></label></div>
+              <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmPromptCacheIgnoreMetadata"> <span id="hubLlmPromptCacheIgnoreMetadataLabel"></span></label></div>
+            </div>
+            <div class="actions" style="margin-top:10px">
+              <button class="btn-secondary" onclick="saveHubLlmPromptCacheConfig()" id="hubLlmPromptCacheSaveBtn"></button>
+              <button class="btn-ghost" onclick="refreshHubLlmPromptCache()" id="hubLlmPromptCacheRefreshBtn"></button>
+              <button class="btn-danger" onclick="clearHubLlmPromptCache()" id="hubLlmPromptCacheClearBtn"></button>
+            </div>
+            <div class="hint" style="margin-top:10px"><div id="hubLlmCacheSummary" style="font-size:13px;line-height:1.8"></div></div>
+          </div>
+          <div class="item" style="margin-top:10px"><div class="item-title" id="hubLlmCacheHitBreakdownTitle"></div><div id="hubLlmCacheHitBreakdown" style="margin-top:10px"></div></div>
+          <div class="item" style="margin-top:10px"><div class="item-title" id="hubLlmCacheRuntimeTitle"></div><div id="hubLlmCacheRuntime" style="margin-top:10px;display:grid;gap:10px"></div></div>
+          <div class="item" style="margin-top:10px">
+            <div class="item-title" id="hubLlmCacheEntriesTitle"></div>
+            <div class="item-meta" id="hubLlmCacheEntriesDesc"></div>
+            <div class="grid3" style="margin-top:10px">
+              <div><label for="hubLlmCacheEntriesProvider" id="hubLlmCacheEntriesProviderLabel"></label><select id="hubLlmCacheEntriesProvider" onchange="document.getElementById('hubLlmCacheEntriesModel').value='';refreshHubLlmPromptCacheEntries()"></select></div>
+              <div><label for="hubLlmCacheEntriesModel" id="hubLlmCacheEntriesModelLabel"></label><select id="hubLlmCacheEntriesModel" onchange="refreshHubLlmPromptCacheEntries()"></select></div>
+              <div style="display:flex;align-items:flex-end"><button class="btn-ghost" style="width:100%" onclick="refreshHubLlmPromptCacheEntries()" id="hubLlmCacheEntriesRefreshBtn"></button></div>
+            </div>
+            <div id="hubLlmCacheEntries" style="margin-top:10px"></div>
+            <div id="hubLlmCacheEntriesPager" class="pager hidden"><div id="hubLlmCacheEntriesPagerMeta" class="pager-meta"></div><div class="pager-actions"><button id="hubLlmCacheEntriesPrevBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(-1)"></button><button id="hubLlmCacheEntriesNextBtn" class="btn-ghost" type="button" onclick="changeHubLlmCacheEntriesPage(1)"></button></div></div>
+          </div>
+          <div class="item" style="margin-top:10px"><div class="item-title" id="hubLlmCacheEntryDetailTitle"></div><div class="item-meta" id="hubLlmCacheEntryDetailDesc"></div><div id="hubLlmCacheEntryDetail" style="margin-top:10px"></div></div>
+          <div id="hubLlmTestResult" class="hint hidden" style="margin-top:10px"></div>
+          <div class="hint" style="margin-top:10px"><div style="font-weight:700;margin-bottom:8px" id="hubLlmGuideTitle"></div><div style="font-size:13px;line-height:1.8" id="hubLlmGuideContent"></div></div>
         </div>
       </section>
 
@@ -968,7 +946,7 @@
 
       <!-- Tab: Invitation Codes -->
       <section id="tab-invitationcodes" class="panel card">
-        <div class="head"><div><h3 id="invCodePageTitle"></h3><div class="desc" id="invCodePageDesc"></div></div></div>
+        <div class="head"><div><h3 id="invCodePageTitle" data-i18n="invitationCodesTabTitle"></h3><div class="desc" id="invCodePageDesc" data-i18n="invitationCodesTabSubtitle"></div></div></div>
         <div class="grid2" style="gap:10px">
           <div class="item" style="padding:12px 14px">
             <div class="item-title" id="invCodeToggleTitle"></div>
@@ -1035,7 +1013,7 @@
 
       <!-- Tab: PWA Requests -->
       <section id="tab-pwarequests" class="panel card">
-        <div class="head"><div><h3 id="pwaPageTitle"></h3><div class="desc" id="pwaPageDesc"></div></div></div>
+        <div class="head"><div><h3 id="pwaPageTitle" data-i18n="pwaRequestsTabTitle"></h3><div class="desc" id="pwaPageDesc" data-i18n="pwaRequestsTabSubtitle"></div></div></div>
         <div class="item" style="margin-bottom:10px;padding:12px 14px">
           <div class="item-title" id="pwaManualTitle" style="font-size:14px"></div>
           <div class="item-meta" id="pwaManualDesc" style="margin-bottom:8px"></div>

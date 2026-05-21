@@ -1,0 +1,26 @@
+/* Professional control-surface pass for Hub admin. Keep this file ASCII-only. */
+:root{
+  --bg:#f5f7fa;--bg-2:#fbfcfe;--panel:rgba(255,255,255,.96);--panel-strong:#fff;--soft:#f3f7fb;--soft-2:#eef3f8;
+  --text:#202733;--muted:#667386;--line:rgba(28,39,55,.11);--line-strong:rgba(28,39,55,.2);
+  --primary:#2563eb;--primary-strong:#1d4ed8;--primary-soft:rgba(37,99,235,.1);--accent:#0f9f8f;
+  --ok:#147d58;--warn:#9a6700;--danger:#c2413a;--shadow:0 18px 48px rgba(23,34,54,.08);--shadow-soft:0 8px 22px rgba(23,34,54,.055)
+}
+html{background:#f5f7fa}
+body{background:linear-gradient(180deg,#fbfcfe 0%,#f5f7fa 100%);color:var(--text);font-family:"Segoe UI",Arial,sans-serif;letter-spacing:0}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(90deg,rgba(28,39,55,.035) 1px,transparent 1px),linear-gradient(180deg,rgba(28,39,55,.026) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(180deg,rgba(0,0,0,.45),transparent 68%)}
+.card,.panel,.metric,.item,.stage-card,.admin-chip,.side-note,.console,.hint,.row,.feishu-bind-card,.user-card{border-color:var(--line);border-radius:8px;box-shadow:var(--shadow-soft);background:#fff}
+.app{grid-template-columns:268px minmax(0,1fr)}
+.side{background:rgba(255,255,255,.9);border-right:1px solid var(--line);box-shadow:8px 0 28px rgba(23,34,54,.045)}
+.side::before{background:linear-gradient(180deg,rgba(255,255,255,.92),rgba(245,247,250,.96))}
+.brand{border-bottom-color:var(--line)}.brand-mark{border-radius:8px;background:linear-gradient(135deg,#1d4ed8,#0f9f8f);box-shadow:0 12px 24px rgba(37,99,235,.18)}
+.mini,.page-kicker{border-radius:999px;background:#eef5ff;border:1px solid #dbe7ff;color:#1d4ed8;box-shadow:none;letter-spacing:.08em}
+.nav{gap:4px}.nav button{border-radius:8px;min-height:52px}.nav button .nav-row{grid-template-columns:30px minmax(0,1fr);padding:10px 11px}.nav button .nav-icon{border-radius:8px;background:#f1f5f9;border-color:#e2e8f0;color:#475569}.nav button:hover{background:#f8fafc;border-color:#dbe3ee}.nav button.active{background:#eef5ff;border-color:#cfe0ff;color:#172033;box-shadow:none}.nav button.active .nav-icon{background:#2563eb;border-color:#2563eb;color:#fff;box-shadow:none}.nav button::before{background:#2563eb;left:4px}
+.main{padding:16px 24px 24px}.main::before{display:none}.top{max-width:1240px;margin-bottom:14px}.top h2{font-size:23px;letter-spacing:0}.topbar{gap:8px}.lang-switch,.admin-chip{background:#fff;border-color:var(--line)}
+.metrics,.panel{max-width:1240px}.metrics{gap:10px;margin-bottom:12px}.metric{padding:14px}.metric label,label{letter-spacing:.04em;color:#64748b}.metric strong{font-size:23px;color:#172033}.metric span,.item-meta,.desc,.hint{color:#64748b}
+.panel{padding:18px 20px;border-radius:10px}.head{border-bottom-color:var(--line);margin-bottom:14px}.head h3{font-size:19px;letter-spacing:0}.item-title::before{background:#2563eb;box-shadow:none}.row{border-radius:8px}.row.header{background:#f8fafc;color:#64748b}.subtab.active{color:#1d4ed8;border-bottom-color:#2563eb}
+textarea,input,select{border-radius:8px;border-color:#d9e1ec;background:#fff;color:#172033}input:hover,select:hover,textarea:hover{border-color:#b9c7da}input:focus,select:focus,textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{background:#2563eb;color:#fff;box-shadow:0 8px 18px rgba(37,99,235,.18)}.btn-primary:hover{background:#1d4ed8}.btn-secondary,.btn-ghost{background:#fff;color:#243244;border:1px solid #d9e1ec}.btn-danger{background:#fff5f5;color:#b42318;border:1px solid #f0c4c0}.badge{border-radius:999px;letter-spacing:.03em}.info{background:#eef5ff;color:#1d4ed8}.ok{background:#eaf7f1;color:#147d58}.warn{background:#fff7e6;color:#9a6700}.danger{background:#fff0f0;color:#b42318}
+.hero{background:linear-gradient(135deg,#eef5ff 0%,#f7fbff 54%,#e9f7f4 100%);border-right:1px solid var(--line)}.hero h1{letter-spacing:0}.form{background:#fff}.login-card{border-radius:10px}.toast{border-radius:10px}
+:focus-visible{outline:3px solid rgba(37,99,235,.34);outline-offset:2px}
+@media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;border-right:0;border-bottom:1px solid var(--line)}.nav{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}.main{padding:16px}.metrics,.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3,.grid2{grid-template-columns:1fr}.top{display:grid}}
+@media (max-width:620px){.shell{padding:16px}.login-card{grid-template-columns:1fr}.metrics,.grid4{grid-template-columns:1fr}.nav{grid-template-columns:1fr}.topbar{justify-content:flex-start}.admin-chip{width:100%}}
