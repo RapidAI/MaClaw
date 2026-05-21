@@ -60,6 +60,46 @@ func TestGetLLMEndpointAccessLogsHandlerMergesPendingEntries(t *testing.T) {
 	}
 }
 
+func TestGetLLMEndpointAccessLogsHandlerUsesTenantScopedSettings(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	globalLLMEndpointAccessLogAccumulator.mu.Lock()
+	savedPending := globalLLMEndpointAccessLogAccumulator.pending
+	globalLLMEndpointAccessLogAccumulator.pending = map[store.SystemSettingsRepository]*llmEndpointAccessLogStore{}
+	globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	defer func() {
+		globalLLMEndpointAccessLogAccumulator.mu.Lock()
+		globalLLMEndpointAccessLogAccumulator.pending = savedPending
+		globalLLMEndpointAccessLogAccumulator.mu.Unlock()
+	}()
+
+	globalLogs := newLLMEndpointAccessLogStore()
+	globalLogs.add(llmEndpointAccessLogEntry{Email: "global@example.com", ClientIP: "10.0.0.1", StatusCode: http.StatusOK})
+	if err := saveLLMEndpointAccessLogs(context.Background(), system, globalLogs); err != nil {
+		t.Fatalf("save global access logs: %v", err)
+	}
+
+	tenantLogs := newLLMEndpointAccessLogStore()
+	tenantLogs.add(llmEndpointAccessLogEntry{Email: "tenant@example.com", ClientIP: "10.0.0.2", StatusCode: http.StatusOK})
+	if err := saveLLMEndpointAccessLogs(context.Background(), scopedSystemSettingsForTenant("tenant_a", system), tenantLogs); err != nil {
+		t.Fatalf("save tenant access logs: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/access-logs?limit=10", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant_a"}))
+	rec := httptest.NewRecorder()
+	GetLLMEndpointAccessLogsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp llmEndpointAccessLogResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Logs) != 1 || resp.Logs[0].Email != "tenant@example.com" {
+		t.Fatalf("tenant access logs should not read global settings: total=%d logs=%#v", resp.Total, resp.Logs)
+	}
+}
+
 func TestPruneLLMEndpointAccessLogsKeepsLatestEntries(t *testing.T) {
 	logs := newLLMEndpointAccessLogStore()
 	for i := 0; i < llmEndpointAccessLogsKeepEntries+5; i++ {

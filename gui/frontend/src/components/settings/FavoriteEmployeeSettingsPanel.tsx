@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
+import { MAX_FAVORITE_EMPLOYEES } from './favoriteEmployees';
 
 interface FavoriteEmployeeSettingsPanelProps {
     favoriteEmployeeIds: string[];
@@ -25,7 +26,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
 
     const handleDragStart = (index: number) => (e: React.DragEvent) => {
         dragSourceIndex.current = index;
-        e.dataTransfer.effectAllowed = 'move';
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
     };
 
     const handleDragOver = (index: number) => (e: React.DragEvent) => {
@@ -86,6 +87,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                             }} />
                             <span style={{ flex: 1, fontSize: '13px', fontWeight: 500 }}>{fav.name}</span>
                             <button
+                                type="button"
                                 onClick={() => onRemove(fav.id)}
                                 style={{
                                     fontSize: '11px', padding: '2px 8px', borderRadius: '4px',
@@ -101,9 +103,10 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
             )}
 
             {/* Add button */}
-            {favoriteVEs.length < 6 && (
+            {favoriteVEs.length < MAX_FAVORITE_EMPLOYEES && (
                 <div style={{ position: 'relative' }}>
                     <button
+                        type="button"
                         onClick={() => setShowAddPicker(!showAddPicker)}
                         style={{
                             fontSize: '12px', padding: '6px 14px', borderRadius: '6px',
@@ -128,11 +131,13 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                                 </div>
                             ) : (
                                 availableVEs.map(ve => (
-                                    <div
+                                    <button
                                         key={ve.id}
+                                        type="button"
                                         onClick={() => { onAdd(ve.id); setShowAddPicker(false); }}
                                         style={{
-                                            padding: '6px 14px', cursor: 'pointer', fontSize: '12px',
+                                            width: '100%', border: 0, background: 'transparent', color: 'inherit',
+                                            padding: '6px 14px', cursor: 'pointer', fontSize: '12px', textAlign: 'left',
                                             display: 'flex', alignItems: 'center', gap: '8px',
                                         }}
                                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--theme-hover, rgba(0,0,0,0.04))'; }}
@@ -143,7 +148,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                                             background: ve.online_status === 'online' ? '#22c55e' : '#9ca3af',
                                         }} />
                                         <span>{ve.name}</span>
-                                    </div>
+                                    </button>
                                 ))
                             )}
                         </div>

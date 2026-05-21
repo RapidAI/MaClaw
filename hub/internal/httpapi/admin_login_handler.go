@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 type AdminLoginRequest struct {
@@ -22,7 +25,7 @@ type AdminUpdateProfileRequest struct {
 	Email string `json:"email"`
 }
 
-func AdminLoginHandler(admins *auth.AdminService) http.HandlerFunc {
+func AdminLoginHandler(admins *auth.AdminService, tenantRepos ...store.TenantRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req AdminLoginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -34,8 +37,21 @@ func AdminLoginHandler(admins *auth.AdminService) http.HandlerFunc {
 			return
 		}
 
-		token, admin, err := admins.Login(r.Context(), req.Username, req.Password)
+		tenantScope := strings.TrimSpace(req.Tenant)
+		if tenantScope == "" {
+			tenantScope = auth.ExplicitGlobalAdminTenantScope
+		}
+		if !requestedTenantLoginAllowed(r.Context(), tenantScope, tenantRepos...) {
+			writeError(w, http.StatusUnauthorized, "LOGIN_FAILED", "Invalid username or password")
+			return
+		}
+
+		token, admin, err := admins.LoginScoped(r.Context(), req.Username, req.Password, tenantScope)
 		if err != nil {
+			writeError(w, http.StatusUnauthorized, "LOGIN_FAILED", "Invalid username or password")
+			return
+		}
+		if !adminTenantLoginAllowed(r.Context(), admin, tenantRepos...) {
 			writeError(w, http.StatusUnauthorized, "LOGIN_FAILED", "Invalid username or password")
 			return
 		}
@@ -46,6 +62,39 @@ func AdminLoginHandler(admins *auth.AdminService) http.HandlerFunc {
 			"admin":        adminDTO(admin),
 		})
 	}
+}
+
+func requestedTenantLoginAllowed(ctx context.Context, tenantID string, tenantRepos ...store.TenantRepository) bool {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
+		return true
+	}
+	return tenantLoginScopeActive(ctx, tenantID, tenantRepos...)
+}
+
+func adminTenantLoginAllowed(ctx context.Context, admin *store.AdminUser, tenantRepos ...store.TenantRepository) bool {
+	if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Scope), "tenant") {
+		return true
+	}
+	if len(tenantRepos) == 0 || tenantRepos[0] == nil {
+		return true
+	}
+	tenantID := strings.TrimSpace(admin.TenantID)
+	if tenantID == "" {
+		return false
+	}
+	return tenantLoginScopeActive(ctx, tenantID, tenantRepos...)
+}
+
+func tenantLoginScopeActive(ctx context.Context, tenantID string, tenantRepos ...store.TenantRepository) bool {
+	if len(tenantRepos) == 0 || tenantRepos[0] == nil {
+		return true
+	}
+	tenant, err := tenantRepos[0].GetByID(ctx, strings.TrimSpace(tenantID))
+	if err != nil || tenant == nil || tenant.DeletedAt != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(tenant.Status), "active")
 }
 
 func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
@@ -66,7 +115,7 @@ func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
 			return
 		}
 
-		token, updatedAdmin, err := admins.ChangePassword(r.Context(), admin.Username, req.CurrentPassword, req.NewPassword)
+		token, updatedAdmin, err := admins.ChangePasswordScoped(r.Context(), admin.Username, req.CurrentPassword, req.NewPassword, admin.Scope, admin.TenantID)
 		if err != nil {
 			if err == auth.ErrInvalidAdminPassword {
 				writeError(w, http.StatusUnauthorized, "INVALID_PASSWORD", "Current password is incorrect")
@@ -102,7 +151,7 @@ func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
 			return
 		}
 
-		token, updatedAdmin, err := admins.UpdateEmail(r.Context(), admin.Username, req.Email)
+		token, updatedAdmin, err := admins.UpdateEmailScoped(r.Context(), admin.Username, req.Email, admin.Scope, admin.TenantID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "UPDATE_PROFILE_FAILED", err.Error())
 			return

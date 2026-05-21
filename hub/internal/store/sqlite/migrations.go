@@ -48,12 +48,16 @@ func RunMigrations(db *sql.DB) error {
 		 VALUES ('tenant_default', 0, 0, 0, 'inactive', 'migration', '{}', 'migration', datetime('now'), datetime('now'));`,
 		`CREATE TABLE IF NOT EXISTS admin_users (
 			id TEXT PRIMARY KEY,
-			username TEXT NOT NULL UNIQUE,
+			username TEXT NOT NULL,
 			password_hash TEXT NOT NULL,
-			email TEXT NOT NULL UNIQUE,
+			email TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active',
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT 'global',
+			role TEXT NOT NULL DEFAULT 'global_owner',
+			tenant_id TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT ''
 		);`,
 
 		`CREATE TABLE IF NOT EXISTS system_settings (
@@ -734,6 +738,12 @@ func RunMigrations(db *sql.DB) error {
 		}
 	}
 
+	if err := migrateTenantScopedAdminUsersTable(db); err != nil {
+		return err
+	}
+	if err := migrateTenantScopedAdminUserIndexes(db); err != nil {
+		return err
+	}
 	if err := migrateTenantScopedUserTable(db); err != nil {
 		return err
 	}
@@ -750,6 +760,70 @@ func RunMigrations(db *sql.DB) error {
 		return err
 	}
 
+	return nil
+}
+
+func migrateTenantScopedAdminUsersTable(db *sql.DB) error {
+	usernameUnique, err := tableSQLContains(db, "admin_users", "username text not null unique")
+	if err != nil {
+		return err
+	}
+	emailUnique, err := tableSQLContains(db, "admin_users", "email text not null unique")
+	if err != nil {
+		return err
+	}
+	if !usernameUnique && !emailUnique {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin admin users tenant rebuild: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`CREATE TABLE admin_users_new (
+			id TEXT PRIMARY KEY,
+			username TEXT NOT NULL,
+			password_hash TEXT NOT NULL,
+			email TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT 'global',
+			role TEXT NOT NULL DEFAULT 'global_owner',
+			tenant_id TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT ''
+		);`,
+		`INSERT INTO admin_users_new (id, username, password_hash, email, status, created_at, updated_at, scope, role, tenant_id, display_name)
+		 SELECT id, username, password_hash, email, status, created_at, updated_at,
+		        COALESCE(NULLIF(scope, ''), 'global'),
+		        COALESCE(NULLIF(role, ''), CASE WHEN COALESCE(NULLIF(scope, ''), 'global') = 'tenant' THEN 'tenant_owner' ELSE 'global_owner' END),
+		        CASE WHEN COALESCE(NULLIF(scope, ''), 'global') = 'tenant' THEN COALESCE(NULLIF(tenant_id, ''), 'tenant_default') ELSE '' END,
+		        COALESCE(display_name, '')
+		 FROM admin_users;`,
+		`DROP TABLE admin_users;`,
+		`ALTER TABLE admin_users_new RENAME TO admin_users;`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("rebuild admin users tenant table: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit admin users tenant rebuild: %w", err)
+	}
+	return nil
+}
+
+func migrateTenantScopedAdminUserIndexes(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_users_scope_tenant_username ON admin_users(scope, tenant_id, username)`); err != nil {
+		return fmt.Errorf("create admin users scoped username index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_users_scope_tenant_email ON admin_users(scope, tenant_id, email)`); err != nil {
+		return fmt.Errorf("create admin users scoped email index: %w", err)
+	}
 	return nil
 }
 

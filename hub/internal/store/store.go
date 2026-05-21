@@ -230,13 +230,17 @@ type TenantRepository interface {
 	GetBySlug(ctx context.Context, slug string) (*Tenant, error)
 	List(ctx context.Context) ([]*Tenant, error)
 	EnsureDefault(ctx context.Context) (*Tenant, error)
+	DeleteByID(ctx context.Context, id string) error
 }
 type AdminUserRepository interface {
 	Create(ctx context.Context, admin *AdminUser) error
 	GetByUsername(ctx context.Context, username string) (*AdminUser, error)
+	GetByUsernameScoped(ctx context.Context, username, scope, tenantID string) (*AdminUser, error)
 	Count(ctx context.Context) (int, error)
 	UpdatePassword(ctx context.Context, username, passwordHash string, updatedAt time.Time) error
+	UpdatePasswordScoped(ctx context.Context, username, scope, tenantID, passwordHash string, updatedAt time.Time) error
 	UpdateEmail(ctx context.Context, username, email string, updatedAt time.Time) error
+	UpdateEmailScoped(ctx context.Context, username, scope, tenantID, email string, updatedAt time.Time) error
 	DeleteAll(ctx context.Context) error
 }
 

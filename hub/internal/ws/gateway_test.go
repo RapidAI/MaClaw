@@ -546,10 +546,11 @@ func TestGatewayHandleSessionSummaryBroadcastsToMachineWatcher(t *testing.T) {
 		MachineID: "machine-1",
 		UserID:    "user-1",
 		Summary: &session.SessionSummary{
-			SessionID: "sess-1",
-			MachineID: "machine-1",
-			Title:     "Claude Session",
-			Status:    "busy",
+			SessionID:  "sess-1",
+			MachineID:  "machine-1",
+			Title:      "Claude Session",
+			Status:     "busy",
+			TokenUsage: &session.SessionTokenUsage{InputTokens: 1200, OutputTokens: 80, CachedInputTokens: 768},
 		},
 	})
 
@@ -558,7 +559,8 @@ func TestGatewayHandleSessionSummaryBroadcastsToMachineWatcher(t *testing.T) {
 		MachineID string `json:"machine_id"`
 		SessionID string `json:"session_id"`
 		Payload   struct {
-			Status string `json:"status"`
+			Status     string                     `json:"status"`
+			TokenUsage *session.SessionTokenUsage `json:"token_usage,omitempty"`
 		} `json:"payload"`
 	}
 	if err := conn.ReadJSON(&msg); err != nil {
@@ -569,6 +571,9 @@ func TestGatewayHandleSessionSummaryBroadcastsToMachineWatcher(t *testing.T) {
 	}
 	if msg.Payload.Status != "busy" {
 		t.Fatalf("unexpected status %q", msg.Payload.Status)
+	}
+	if msg.Payload.TokenUsage == nil || msg.Payload.TokenUsage.CachedInputTokens != 768 {
+		t.Fatalf("expected diagnostic token usage in summary broadcast, got %#v", msg.Payload.TokenUsage)
 	}
 }
 

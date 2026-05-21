@@ -133,19 +133,7 @@ func cloneLLMProviderRegistry(reg *im.LLMProviderRegistry) *im.LLMProviderRegist
 	}
 	clone := *reg
 	clone.Providers = append([]im.LLMProvider(nil), reg.Providers...)
-	if reg.TokenUsage != nil {
-		clone.TokenUsage = make(map[string]*corelib.TokenUsageStat, len(reg.TokenUsage))
-		for key, stat := range reg.TokenUsage {
-			if stat == nil {
-				clone.TokenUsage[key] = nil
-				continue
-			}
-			copied := *stat
-			clone.TokenUsage[key] = &copied
-		}
-	} else {
-		clone.TokenUsage = nil
-	}
+	clone.TokenUsage = corelib.FilterRemoteCodingToolTokenUsage(reg.TokenUsage)
 	return &clone
 }
 

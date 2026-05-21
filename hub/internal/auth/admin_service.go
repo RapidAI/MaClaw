@@ -44,6 +44,8 @@ func NewAdminService(
 
 const adminTokenSecretKey = "admin_token_secret"
 
+const ExplicitGlobalAdminTenantScope = "__global__"
+
 type signedAdminTokenPayload struct {
 	Username       string `json:"username"`
 	IssuedAt       int64  `json:"issued_at"`
@@ -211,14 +213,38 @@ func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, pass
 }
 
 func (s *AdminService) Login(ctx context.Context, username, password string) (string, *store.AdminUser, error) {
-	admin, err := s.admins.GetByUsername(ctx, strings.TrimSpace(username))
+	return s.LoginScoped(ctx, username, password, ExplicitGlobalAdminTenantScope)
+}
+
+func (s *AdminService) LoginScoped(ctx context.Context, username, password, tenantID string) (string, *store.AdminUser, error) {
+	username = strings.TrimSpace(username)
+	tenantID = strings.TrimSpace(tenantID)
+	var (
+		admin *store.AdminUser
+		err   error
+	)
+	if strings.EqualFold(tenantID, ExplicitGlobalAdminTenantScope) {
+		admin, err = s.admins.GetByUsernameScoped(ctx, username, "global", "")
+		tenantID = ""
+	} else if tenantID != "" {
+		tenantID = normalizeTenantIDValue(tenantID)
+		admin, err = s.admins.GetByUsernameScoped(ctx, username, "tenant", tenantID)
+	} else {
+		return "", nil, ErrInvalidAdminCredentials
+	}
 	if err != nil {
 		return "", nil, err
 	}
-	if admin == nil {
+	if admin == nil || admin.Status != "active" {
 		return "", nil, ErrInvalidAdminCredentials
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(password)); err != nil {
+		return "", nil, ErrInvalidAdminCredentials
+	}
+	if tenantID == "" && normalizedAdminScope(admin) == "tenant" {
+		return "", nil, ErrInvalidAdminCredentials
+	}
+	if tenantID != "" && (normalizedAdminScope(admin) != "tenant" || normalizeTenantIDValue(admin.TenantID) != tenantID) {
 		return "", nil, ErrInvalidAdminCredentials
 	}
 
@@ -233,7 +259,7 @@ func (s *AdminService) Login(ctx context.Context, username, password string) (st
 			TenantID:    admin.TenantID,
 			AdminUserID: admin.ID,
 			Action:      "admin.login",
-			PayloadJSON: `{}`,
+			PayloadJSON: mustJSON(map[string]any{"tenant_id": admin.TenantID, "scope": normalizedAdminScope(admin)}),
 			CreatedAt:   time.Now(),
 		})
 	}
@@ -251,7 +277,7 @@ func (s *AdminService) Authenticate(ctx context.Context, token string) (*store.A
 	if err != nil {
 		return nil, ErrInvalidAdminCredentials
 	}
-	admin, err := s.admins.GetByUsername(ctx, payload.Username)
+	admin, err := s.admins.GetByUsernameScoped(ctx, payload.Username, payload.Scope, payload.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +292,11 @@ func (s *AdminService) Authenticate(ctx context.Context, token string) (*store.A
 }
 
 func (s *AdminService) ChangePassword(ctx context.Context, username, currentPassword, newPassword string) (string, *store.AdminUser, error) {
-	admin, err := s.admins.GetByUsername(ctx, strings.TrimSpace(username))
+	return s.ChangePasswordScoped(ctx, username, currentPassword, newPassword, "global", "")
+}
+
+func (s *AdminService) ChangePasswordScoped(ctx context.Context, username, currentPassword, newPassword, scope, tenantID string) (string, *store.AdminUser, error) {
+	admin, err := s.admins.GetByUsernameScoped(ctx, strings.TrimSpace(username), scope, strings.TrimSpace(tenantID))
 	if err != nil {
 		return "", nil, err
 	}
@@ -281,10 +311,10 @@ func (s *AdminService) ChangePassword(ctx context.Context, username, currentPass
 		return "", nil, err
 	}
 	now := time.Now()
-	if err := s.admins.UpdatePassword(ctx, admin.Username, string(passwordHash), now); err != nil {
+	if err := s.admins.UpdatePasswordScoped(ctx, admin.Username, admin.Scope, admin.TenantID, string(passwordHash), now); err != nil {
 		return "", nil, err
 	}
-	admin, err = s.admins.GetByUsername(ctx, admin.Username)
+	admin, err = s.admins.GetByUsernameScoped(ctx, admin.Username, admin.Scope, admin.TenantID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -309,7 +339,11 @@ func (s *AdminService) ChangePassword(ctx context.Context, username, currentPass
 }
 
 func (s *AdminService) UpdateEmail(ctx context.Context, username, email string) (string, *store.AdminUser, error) {
-	admin, err := s.admins.GetByUsername(ctx, strings.TrimSpace(username))
+	return s.UpdateEmailScoped(ctx, username, email, "global", "")
+}
+
+func (s *AdminService) UpdateEmailScoped(ctx context.Context, username, email, scope, tenantID string) (string, *store.AdminUser, error) {
+	admin, err := s.admins.GetByUsernameScoped(ctx, strings.TrimSpace(username), scope, strings.TrimSpace(tenantID))
 	if err != nil {
 		return "", nil, err
 	}
@@ -323,14 +357,16 @@ func (s *AdminService) UpdateEmail(ctx context.Context, username, email string) 
 	}
 
 	now := time.Now()
-	if err := s.admins.UpdateEmail(ctx, admin.Username, email, now); err != nil {
+	if err := s.admins.UpdateEmailScoped(ctx, admin.Username, admin.Scope, admin.TenantID, email, now); err != nil {
 		return "", nil, err
 	}
-	if err := s.settings.Set(ctx, "admin_email", mustJSON(map[string]string{"value": email})); err != nil {
-		return "", nil, err
+	if normalizedAdminScope(admin) == "global" {
+		if err := s.settings.Set(ctx, "admin_email", mustJSON(map[string]string{"value": email})); err != nil {
+			return "", nil, err
+		}
 	}
 
-	admin, err = s.admins.GetByUsername(ctx, admin.Username)
+	admin, err = s.admins.GetByUsernameScoped(ctx, admin.Username, admin.Scope, admin.TenantID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -477,7 +513,7 @@ func (s *AdminService) tokenSecret(ctx context.Context) (string, error) {
 }
 
 func normalizedAdminScope(admin *store.AdminUser) string {
-	if admin != nil && strings.TrimSpace(admin.Scope) == "tenant" {
+	if admin != nil && strings.EqualFold(strings.TrimSpace(admin.Scope), "tenant") {
 		return "tenant"
 	}
 	return "global"
@@ -494,9 +530,9 @@ func normalizedAdminRole(admin *store.AdminUser) string {
 }
 
 func normalizedTenantAdminRole(role string) string {
-	switch strings.TrimSpace(role) {
-	case "tenant_operator", "tenant_viewer":
-		return strings.TrimSpace(role)
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "tenant_admin", "tenant_owner":
+		return strings.ToLower(strings.TrimSpace(role))
 	default:
 		return "tenant_owner"
 	}

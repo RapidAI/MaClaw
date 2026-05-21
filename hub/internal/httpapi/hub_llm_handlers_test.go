@@ -124,6 +124,53 @@ func TestHubLLMStatusIncludesPromptCacheRate(t *testing.T) {
 	}
 }
 
+func TestHubLLMStatusIgnoresRemoteCodingToolUsagePollution(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	reg := &im.LLMProviderRegistry{
+		TokenUsage: map[string]*corelib.TokenUsageStat{
+			"codex:gpt-5.4": {
+				InputTokens:       1200,
+				CachedInputTokens: 768,
+				CacheWriteTokens:  128,
+				Requests:          1,
+				CachedRequests:    1,
+			},
+			"provider-a": {
+				InputTokens:       100,
+				CachedInputTokens: 40,
+				CacheWriteTokens:  10,
+				Requests:          4,
+				CachedRequests:    1,
+			},
+		},
+	}
+	if err := im.SaveLLMProviderRegistry(nil, settings, reg); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_status", nil)
+	rr := httptest.NewRecorder()
+	HubLLMStatusHandler(func(context.Context) string { return "healthy" }, settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		PromptCache struct {
+			InputTokens       int64 `json:"input_tokens"`
+			CachedInputTokens int64 `json:"cached_input_tokens"`
+			CacheWriteTokens  int64 `json:"cache_write_tokens"`
+			Requests          int64 `json:"requests"`
+			CachedRequests    int64 `json:"cached_requests"`
+		} `json:"prompt_cache"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.PromptCache.InputTokens != 100 || body.PromptCache.CachedInputTokens != 40 || body.PromptCache.CacheWriteTokens != 10 || body.PromptCache.Requests != 4 || body.PromptCache.CachedRequests != 1 {
+		t.Fatalf("remote coding tool usage leaked into Hub prompt cache status: %#v", body.PromptCache)
+	}
+}
+
 func TestHubLLMStatusIncludesMemoryAndDiskCacheStatusFromRuntimeCache(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	if err := im.SaveLLMProviderRegistry(nil, settings, &im.LLMProviderRegistry{}); err != nil {

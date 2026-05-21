@@ -42,6 +42,8 @@ type agentLoopCompletionOptions struct {
 	Debug                  bool
 	LastInputTokens        int
 	LastOutputTokens       int
+	LastCacheReadTokens    int
+	LastCacheWriteTokens   int
 	TotalToolCallsInLoop   int
 	EffectiveMax           int
 	ConfigMax              int
@@ -51,12 +53,14 @@ type agentLoopCompletionOptions struct {
 }
 
 type agentLoopCompletionResult struct {
-	Response        *IMAgentResponse
-	InputTokens     int
-	OutputTokens    int
-	UsageElapsed    time.Duration
-	UsageDone       bool
-	ToolExecElapsed time.Duration
+	Response         *IMAgentResponse
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	UsageElapsed     time.Duration
+	UsageDone        bool
+	ToolExecElapsed  time.Duration
 }
 
 func (h *IMMessageHandler) finishAgentLoopAndRecordTelemetry(opts agentLoopCompletionOptions, telemetry *agentLoopTelemetry) *IMAgentResponse {
@@ -64,6 +68,8 @@ func (h *IMMessageHandler) finishAgentLoopAndRecordTelemetry(opts agentLoopCompl
 	if telemetry != nil {
 		telemetry.LastLLMInputTokens = completion.InputTokens
 		telemetry.LastLLMOutputTokens = completion.OutputTokens
+		telemetry.LastLLMCacheReadTokens = completion.CacheReadTokens
+		telemetry.LastLLMCacheWriteTokens = completion.CacheWriteTokens
 		if completion.UsageDone {
 			telemetry.HandlerPostStreamUsageElapsed += completion.UsageElapsed
 			telemetry.PostStreamUsageDoneAt = time.Now()
@@ -75,8 +81,10 @@ func (h *IMMessageHandler) finishAgentLoopAndRecordTelemetry(opts agentLoopCompl
 
 func (h *IMMessageHandler) finishAgentLoopAfterMainIterations(opts agentLoopCompletionOptions) agentLoopCompletionResult {
 	result := agentLoopCompletionResult{
-		InputTokens:  opts.LastInputTokens,
-		OutputTokens: opts.LastOutputTokens,
+		InputTokens:      opts.LastInputTokens,
+		OutputTokens:     opts.LastOutputTokens,
+		CacheReadTokens:  opts.LastCacheReadTokens,
+		CacheWriteTokens: opts.LastCacheWriteTokens,
 	}
 	if h.manager != nil && h.manager.HasActiveSessions() {
 		bonusResult := h.runActiveSessionBonusRound(agentLoopBonusRoundOptions{
@@ -106,9 +114,11 @@ func (h *IMMessageHandler) finishAgentLoopAfterMainIterations(opts agentLoopComp
 			SendProgress:           opts.SendProgress,
 			Debug:                  opts.Debug,
 		})
-		if bonusResult.InputTokens > 0 || bonusResult.OutputTokens > 0 {
+		if bonusResult.InputTokens > 0 || bonusResult.OutputTokens > 0 || bonusResult.CacheReadTokens > 0 || bonusResult.CacheWriteTokens > 0 {
 			result.InputTokens = bonusResult.InputTokens
 			result.OutputTokens = bonusResult.OutputTokens
+			result.CacheReadTokens = bonusResult.CacheReadTokens
+			result.CacheWriteTokens = bonusResult.CacheWriteTokens
 		}
 		if bonusResult.UsageDone {
 			result.UsageElapsed = bonusResult.UsageElapsed

@@ -128,6 +128,7 @@ const labels: Record<string, string> = {
     mcpSlow: "Slow",
     mcpSubmitting: "Submitting",
     mcpTabLocal: "Local",
+    mcpTabMarketplace: "Marketplace",
     mcpTabRemote: "Remote",
     mcpToolList: "Tool list",
     mcpTools: "Tools",
@@ -135,6 +136,18 @@ const labels: Record<string, string> = {
 };
 
 const t = (key: string) => labels[key] || key;
+
+async function renderMarketplacePanel() {
+    const result = render(<MCPManagementPanel translate={t} />);
+    fireEvent.click(await screen.findByText("Marketplace"));
+    return result;
+}
+
+async function installAndOpenServerEditor() {
+    fireEvent.click(await screen.findByText("Install"));
+    fireEvent.click(await screen.findByText("Remote"));
+    fireEvent.click(await screen.findByText("Edit"));
+}
 
 const jiraServer = {
     id: "jira-server",
@@ -190,9 +203,9 @@ describe("MCPManagementPanel marketplace integration", () => {
     });
 
     it("opens secret configuration after installing a marketplace MCP and saves a local token", async () => {
-        render(<MCPManagementPanel translate={t} />);
+        await renderMarketplacePanel();
 
-        fireEvent.click(await screen.findByText("Install"));
+        await installAndOpenServerEditor();
 
         expect(await screen.findByText("MCP secrets")).toBeTruthy();
         fireEvent.change(screen.getByPlaceholderText("Save locally"), { target: { value: "jira-token" } });
@@ -218,9 +231,9 @@ describe("MCPManagementPanel marketplace integration", () => {
             { name: "api_key", label: "API key", required: true, storage_policy: "hub" },
         ]);
 
-        render(<MCPManagementPanel translate={t} />);
+        await renderMarketplacePanel();
 
-        fireEvent.click(await screen.findByText("Install"));
+        await installAndOpenServerEditor();
 
         expect(await screen.findByText("MCP secrets")).toBeTruthy();
         fireEvent.change(screen.getByPlaceholderText("Save in Hub"), { target: { value: "hub-secret" } });
@@ -238,9 +251,9 @@ describe("MCPManagementPanel marketplace integration", () => {
     });
 
     it("blocks saving when a required marketplace secret is missing", async () => {
-        render(<MCPManagementPanel translate={t} />);
+        await renderMarketplacePanel();
 
-        fireEvent.click(await screen.findByText("Install"));
+        await installAndOpenServerEditor();
         expect(await screen.findByText("MCP secrets")).toBeTruthy();
         fireEvent.click(screen.getByText("Save"));
 
@@ -250,9 +263,9 @@ describe("MCPManagementPanel marketplace integration", () => {
         expect(SaveHubMCPHubSecret).not.toHaveBeenCalled();
     });
     it("treats the native local auth secret field as satisfying a required marketplace secret", async () => {
-        render(<MCPManagementPanel translate={t} />);
+        await renderMarketplacePanel();
 
-        fireEvent.click(await screen.findByText("Install"));
+        await installAndOpenServerEditor();
         expect(await screen.findByText("MCP secrets")).toBeTruthy();
 
         fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "bearer" } });
@@ -278,9 +291,9 @@ describe("MCPManagementPanel marketplace integration", () => {
             { name: "api_token", label: "API token", required: true, storage_policy: "hub_or_local" },
         ]);
 
-        render(<MCPManagementPanel translate={t} />);
+        await renderMarketplacePanel();
 
-        fireEvent.click(await screen.findByText("Install"));
+        await installAndOpenServerEditor();
         expect(await screen.findByText("MCP secrets")).toBeTruthy();
 
         fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "bearer" } });

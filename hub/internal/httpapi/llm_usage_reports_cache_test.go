@@ -2,10 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func TestLLMUsageReportIncludesPromptCacheCounters(t *testing.T) {
@@ -127,5 +131,37 @@ func TestMonthlyUsageReportEntitySummaryDoesNotLeakGlobalTotals(t *testing.T) {
 	missing := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "monthly", "", "2026-04", "nobody@example.com", now)
 	if missing.Summary.TotalTokens != 0 || missing.Summary.TotalCostRMB != 0 || len(missing.Rows) != 0 {
 		t.Fatalf("missing entity should be empty, got summary=%+v rows=%#v", missing.Summary, missing.Rows)
+	}
+}
+
+func TestLLMUsageReportHandlerUsesTenantScopedSettings(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+
+	globalRep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	globalRep.addUsage(ts, "global@example.com", nil, corelib.TokenUsageStat{TotalTokens: 900, Requests: 1}, 0)
+	if err := saveLLMUsageReports(context.Background(), system, globalRep); err != nil {
+		t.Fatalf("save global usage report: %v", err)
+	}
+
+	tenantRep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	tenantRep.addUsage(ts, "tenant@example.com", nil, corelib.TokenUsageStat{TotalTokens: 123, Requests: 1}, 0)
+	if err := saveLLMUsageReports(context.Background(), scopedSystemSettingsForTenant("tenant_a", system), tenantRep); err != nil {
+		t.Fatalf("save tenant usage report: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/usage-report?period=monthly&month=2026-04", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant_a"}))
+	rec := httptest.NewRecorder()
+	GetLLMUsageReportHandler(system, nil)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp llmUsageReportResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Summary.TotalTokens != 123 || len(resp.Rows) != 1 || resp.Rows[0].ID != "tenant@example.com" {
+		t.Fatalf("tenant report should not read global settings, summary=%+v rows=%#v", resp.Summary, resp.Rows)
 	}
 }

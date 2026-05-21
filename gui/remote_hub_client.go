@@ -575,9 +575,29 @@ func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {
 	return err
 }
 
+func (c *RemoteHubClient) summaryWithSessionTokenUsage(summary SessionSummary) SessionSummary {
+	if c == nil || c.manager == nil || summary.TokenUsage != nil || strings.TrimSpace(summary.SessionID) == "" {
+		return summary
+	}
+	session, ok := c.manager.Get(summary.SessionID)
+	if !ok || session == nil {
+		return summary
+	}
+	session.mu.RLock()
+	usage := session.TokenUsage
+	session.mu.RUnlock()
+	if usage.IsZero() {
+		return summary
+	}
+	copy := usage
+	summary.TokenUsage = &copy
+	return summary
+}
+
 func (c *RemoteHubClient) SendSessionSummary(summary SessionSummary) error {
 	// Throttle: skip if the summary hasn't changed since last send.
 	summary.MachineID = c.machineID
+	summary = c.summaryWithSessionTokenUsage(summary)
 	data, err := json.Marshal(summary)
 	if err == nil {
 		key := string(data)

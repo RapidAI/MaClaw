@@ -349,6 +349,110 @@ describe("VEConversationView", () => {
             expect(screen.getAllByText("Queue once")).toHaveLength(1);
         });
 
+        it("queues the next user input until the current assistant stream ends", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "First turn");
+
+            fireEvent.change(textarea, { target: { value: "Second turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByText("Second turn")).toBeTruthy();
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Second turn");
+        });
+
+        it("does not re-arm the response gate when stream end arrives before send resolves", async () => {
+            let resolveFirstSend: (() => void) | undefined;
+            const send = vi
+                .fn()
+                .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirstSend = resolve; }))
+                .mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+            await act(async () => { resolveFirstSend?.(); });
+
+            fireEvent.change(textarea, { target: { value: "Second turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Second turn");
+        });
+
+        it("does not update queue state after unmounting with an in-flight send", async () => {
+            let resolveSend: (() => void) | undefined;
+            const send = vi.fn(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+            const { unmount } = renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "In flight" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            unmount();
+            await act(async () => { resolveSend?.(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+        });
+
+        it("releases queued input after reconnecting from an interrupted assistant stream", async () => {
+            const initiate = vi
+                .fn()
+                .mockResolvedValueOnce({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" })
+                .mockResolvedValueOnce({ session_id: "test-session-2", ve_id: "ve-1", ve_name: "Test VE" });
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ initiateConversation: initiate, sendMessage: send });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "Partial" });
+            });
+            expect(screen.getByTestId("ve-streaming-indicator")).toBeTruthy();
+
+            act(() => {
+                eventHandlers.get("ve:disconnected")?.({ session_id: "test-session-1" });
+            });
+            expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
+
+            fireEvent.change(textarea, { target: { value: "Second turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => {
+                vi.advanceTimersByTime(2000);
+                await vi.runOnlyPendingTimersAsync();
+            });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-2", "Second turn");
+        });
+
 
 
         it("closes an open mention popover when the live chat becomes read-only", () => {
@@ -659,6 +763,45 @@ describe("VEConversationView", () => {
                 resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
                 await vi.runOnlyPendingTimersAsync();
             });
+
+            expect(send).not.toHaveBeenCalled();
+        });
+
+        it("does not replay a stale queued message after read-only mode is lifted", async () => {
+            let resolveInit: (value: { session_id: string; ve_id: string; ve_name: string }) => void = () => {};
+            const initiate = vi.fn(() => new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveInit = resolve; }));
+            const send = vi.fn().mockResolvedValue(undefined);
+            const props = { initiateConversation: initiate, sendMessage: send } satisfies Partial<VEConversationViewProps>;
+            const { rerender } = renderConversation(props);
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Queued then stale" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    readOnly={true}
+                    {...props}
+                />
+            );
+
+            await act(async () => {
+                resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+                await vi.runOnlyPendingTimersAsync();
+            });
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    existingSessionId="test-session-1"
+                    readOnly={false}
+                    {...props}
+                />
+            );
+            await act(async () => { await Promise.resolve(); });
 
             expect(send).not.toHaveBeenCalled();
         });

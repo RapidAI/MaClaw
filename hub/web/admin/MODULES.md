@@ -23,6 +23,7 @@ This folder now uses a thin-shell structure.
 ## Domain modules
 
 - center-tab.js: Hub Center registration/status
+- tenant-tab.js: tenant management, login tenant selection, and admin scope UI
 - governance-tab.js: manual bind, blocklist, invites, content audit, smart route
 - marketplace-tab.js: capability marketplace policy, approvals, imports, MCP editor
 - security-tab.js: security management and org tree

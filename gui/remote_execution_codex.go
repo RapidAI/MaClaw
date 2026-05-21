@@ -133,6 +133,9 @@ type CodexSDKExecutionHandle struct {
 
 	// stderrLines accumulates stderr output for diagnostics on early exit.
 	stderrLines []string
+
+	usageMu    sync.Mutex
+	totalUsage CodexUsage
 }
 
 func (h *CodexSDKExecutionHandle) PID() int {
@@ -203,6 +206,21 @@ func (h *CodexSDKExecutionHandle) ThreadID() string {
 	return h.threadID
 }
 
+func (h *CodexSDKExecutionHandle) TotalUsage() CodexUsage {
+	h.usageMu.Lock()
+	defer h.usageMu.Unlock()
+	return h.totalUsage
+}
+
+func (h *CodexSDKExecutionHandle) recordUsage(usage CodexUsage) {
+	h.usageMu.Lock()
+	defer h.usageMu.Unlock()
+	h.totalUsage.InputTokens += usage.InputTokens
+	h.totalUsage.OutputTokens += usage.OutputTokens
+	h.totalUsage.CachedInputTokens += usage.CachedInputTokens
+	h.totalUsage.CacheWriteTokens += usage.CacheWriteTokens
+}
+
 func (h *CodexSDKExecutionHandle) readStdout() {
 	defer h.readerRC.Done()
 
@@ -235,6 +253,9 @@ func (h *CodexSDKExecutionHandle) readStdout() {
 			h.mu.Lock()
 			h.threadID = event.ThreadID
 			h.mu.Unlock()
+		}
+		if event.Type == "turn.completed" && event.Usage != nil {
+			h.recordUsage(*event.Usage)
 		}
 	}
 

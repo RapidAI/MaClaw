@@ -470,6 +470,45 @@ func TestRunAgentLoop_EstimatesTokenUsageWhenStreamOmitsUsage(t *testing.T) {
 	}
 }
 
+func TestTokenUsageResponseFieldsWithCacheIncludesCacheCounters(t *testing.T) {
+	fields := tokenUsageResponseFieldsWithCache(100, 25, 80, 12)
+	want := []IMResponseField{
+		{Label: "Input tokens", Value: "100"},
+		{Label: "Output tokens", Value: "25"},
+		{Label: "Total tokens", Value: "125"},
+		{Label: "Cache read tokens", Value: "80"},
+		{Label: "Cache write tokens", Value: "12"},
+	}
+	if len(fields) != len(want) {
+		t.Fatalf("fields len = %d, want %d: %+v", len(fields), len(want), fields)
+	}
+	for i := range want {
+		if fields[i] != want[i] {
+			t.Fatalf("field[%d] = %+v, want %+v", i, fields[i], want[i])
+		}
+	}
+}
+
+func TestAgentLoopTelemetryAttachIncludesCacheUsage(t *testing.T) {
+	telemetry := newAgentLoopTelemetry()
+	telemetry.LastLLMInputTokens = 100
+	telemetry.LastLLMOutputTokens = 25
+	telemetry.LastLLMCacheReadTokens = 80
+	telemetry.LastLLMCacheWriteTokens = 12
+
+	resp := &IMAgentResponse{}
+	telemetry.Attach(resp)
+
+	if resp.InputTokens != 100 || resp.OutputTokens != 25 || resp.TotalTokens != 125 {
+		t.Fatalf("token totals = input:%d output:%d total:%d", resp.InputTokens, resp.OutputTokens, resp.TotalTokens)
+	}
+	if resp.CacheReadTokens != 80 || resp.CacheWriteTokens != 12 {
+		t.Fatalf("cache tokens = read:%d write:%d", resp.CacheReadTokens, resp.CacheWriteTokens)
+	}
+	if len(resp.Fields) < 5 || resp.Fields[3].Label != "Cache read tokens" || resp.Fields[4].Label != "Cache write tokens" {
+		t.Fatalf("cache fields missing: %+v", resp.Fields)
+	}
+}
 func TestDeriveLLMTokenUsage_FallsBackPerMissingSide(t *testing.T) {
 	conversation := []interface{}{
 		map[string]interface{}{"role": "user", "content": "请帮我总结这个页面的问题并给出修复建议"},

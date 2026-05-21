@@ -37,16 +37,31 @@
     return;
   }
 
+  function isTenantAdminProfile(profile) {
+    return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
+  }
+
+  function callIfAvailable(name) {
+    var fn = global[name];
+    if (typeof fn !== 'function') return Promise.resolve({ skipped: name });
+    return Promise.resolve().then(fn);
+  }
+
+  function reportRefreshFailures(results) {
+    var failed = (results || []).filter(function(result) { return result && result.status === 'rejected'; });
+    if (!failed.length || typeof global.setOutput !== 'function') return;
+    var names = failed.map(function(result) { return result.reason && result.reason.message || String(result.reason || 'refresh failed'); }).join('; ');
+    global.setOutput((typeof global.tr === 'function' ? global.tr('requestFailed') : 'Refresh failed') + ': ' + names);
+  }
+
   global.refreshAll = async function refreshAll() {
-    await Promise.all([
-      loadCenterStatus(),
-      loadBlockedEmails(),
-      loadBoundUsers(),
-      loadMailConfig(),
-      loadFeishuConfig(),
-      loadMachines(),
-      loadPwaEnrollments()
-    ]);
+    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+    var tenantAdmin = isTenantAdminProfile(profile);
+    var tasks = tenantAdmin
+      ? ['loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
+      : ['loadCenterStatus', 'loadMailConfig', 'loadTenants'];
+    var results = await Promise.allSettled(tasks.map(callIfAvailable));
+    reportRefreshFailures(results);
   };
 
   try {

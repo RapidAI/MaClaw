@@ -66,6 +66,8 @@ type IMAgentResponse struct {
 	InputTokens                         int                           `json:"input_tokens,omitempty"`
 	OutputTokens                        int                           `json:"output_tokens,omitempty"`
 	TotalTokens                         int                           `json:"total_tokens,omitempty"`
+	CacheReadTokens                     int                           `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens                    int                           `json:"cache_write_tokens,omitempty"`
 	HandlerTailNanos                    int64                         `json:"-"`
 	HandlerBlackholeAfterUsageNanos     int64                         `json:"-"`
 	HandlerBlackholeBeforeReturnNanos   int64                         `json:"-"`

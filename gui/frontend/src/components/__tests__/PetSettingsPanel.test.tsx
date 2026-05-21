@@ -36,7 +36,7 @@ describe('PetSettingsPanel localization', () => {
 
         [
             '桌面宠物',
-            '启用宠物入口',
+            '启用桌面宠物',
             '待机',
             '聆听',
             '思考',
@@ -77,7 +77,7 @@ describe('PetSettingsPanel localization', () => {
         renderPetSettings('en');
 
         expect(screen.getByText('Desktop Pet')).toBeTruthy();
-        expect(screen.getByText('Enable Pet Entry')).toBeTruthy();
+        expect(screen.getByText('Enable Desktop Pet')).toBeTruthy();
         expect(screen.getByText('Idle')).toBeTruthy();
         expect(screen.getByText('Text First')).toBeTruthy();
         expect(screen.getByText('Done Only')).toBeTruthy();

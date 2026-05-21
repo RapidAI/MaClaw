@@ -789,12 +789,23 @@ function llmServiceRuntimeBadge(status) {
 function llmServiceRuntimeBool(value) {
   return value ? lsx('runtimeYes') : lsx('runtimeNo');
 }
+function llmServiceGlobalScoped() {
+  var profile = typeof adminProfile === 'function' ? adminProfile() : null;
+  return !profile || String(profile.scope || '').toLowerCase() !== 'tenant';
+}
+function llmServiceModelRuntimeRoots() {
+  var globalScoped = llmServiceGlobalScoped();
+  var roots = ['llmServiceModelRuntimeCard', 'llmProviderModelRuntimeCard'].map(function(id) { return document.getElementById(id); }).filter(Boolean);
+  roots.forEach(function(root) { root.classList.toggle('hidden', !globalScoped); });
+  return globalScoped ? roots : [];
+}
 function renderLLMServiceModelRuntime() {
-  var root = document.getElementById('llmServiceModelRuntimeCard');
-  if (!root) return;
+  var roots = llmServiceModelRuntimeRoots();
+  if (!roots.length) return;
   var data = llmServiceModelRuntimeCache;
+  roots.forEach(function(root) {
   if (!data) {
-    root.innerHTML = '<div class="item-head"><div><div class="item-title">' + escapeHtml(lsx('runtimeTitle')) + '</div><div class="item-meta">' + escapeHtml(lsx('runtimeDesc')) + '</div></div><div class="actions"><button class="btn-ghost" type="button" onclick="loadLLMServiceModelRuntime()" id="llmServiceModelRuntimeRefreshBtn">' + escapeHtml(lsx('runtimeRefresh')) + '</button><button class="btn-secondary" type="button" onclick="triggerLLMServiceModelDownload()" id="llmServiceModelRuntimeTriggerBtn">' + escapeHtml(lsx('runtimeTrigger')) + '</button></div></div><div class="hint" style="margin-top:10px">' + escapeHtml(lsx('loading')) + '</div>';
+    root.innerHTML = '<div class="item-head"><div><div class="item-title">' + escapeHtml(lsx('runtimeTitle')) + '</div><div class="item-meta">' + escapeHtml(lsx('runtimeDesc')) + '</div></div><div class="actions"><button class="btn-ghost" type="button" onclick="loadLLMServiceModelRuntime()">' + escapeHtml(lsx('runtimeRefresh')) + '</button><button class="btn-secondary" type="button" onclick="triggerLLMServiceModelDownload()">' + escapeHtml(lsx('runtimeTrigger')) + '</button></div></div><div class="hint" style="margin-top:10px">' + escapeHtml(lsx('loading')) + '</div>';
     return;
   }
   var expected = (data.expected_files || []).length ? (data.expected_files || []).map(escapeHtml).join('<br>') : escapeHtml(lsx('emptyValue'));
@@ -807,7 +818,7 @@ function renderLLMServiceModelRuntime() {
   var logTail = (data.log_tail || []).length ? escapeHtml((data.log_tail || []).join('\n')) : escapeHtml(lsx('emptyValue'));
   var triggerDisabled = data.trigger_supported ? '' : ' disabled';
   root.innerHTML = '' +
-    '<div class="item-head"><div><div class="item-title">' + escapeHtml(lsx('runtimeTitle')) + '</div><div class="item-meta">' + escapeHtml(lsx('runtimeDesc')) + '</div></div><div class="actions"><button class="btn-ghost" type="button" onclick="loadLLMServiceModelRuntime()" id="llmServiceModelRuntimeRefreshBtn">' + escapeHtml(lsx('runtimeRefresh')) + '</button><button class="btn-secondary" type="button" onclick="triggerLLMServiceModelDownload()" id="llmServiceModelRuntimeTriggerBtn"' + triggerDisabled + '>' + escapeHtml(lsx('runtimeTrigger')) + '</button></div></div>' +
+    '<div class="item-head"><div><div class="item-title">' + escapeHtml(lsx('runtimeTitle')) + '</div><div class="item-meta">' + escapeHtml(lsx('runtimeDesc')) + '</div></div><div class="actions"><button class="btn-ghost" type="button" onclick="loadLLMServiceModelRuntime()">' + escapeHtml(lsx('runtimeRefresh')) + '</button><button class="btn-secondary" type="button" onclick="triggerLLMServiceModelDownload()"' + triggerDisabled + '>' + escapeHtml(lsx('runtimeTrigger')) + '</button></div></div>' +
     '<div class="grid3" style="margin-top:10px">' +
     '<div><label>' + escapeHtml(lsx('runtimeStatus')) + '</label><div>' + llmServiceRuntimeBadge(data.status) + '</div></div>' +
     '<div><label>' + escapeHtml(lsx('runtimeFlags')) + '</label><div class="item-meta">' + escapeHtml(lsx('runtimeFlagInitialized')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.initialized)) + '<br>' + escapeHtml(lsx('runtimeFlagDownloading')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.downloading)) + '<br>' + escapeHtml(lsx('runtimeFlagReady')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.ready)) + '<br>' + escapeHtml(lsx('runtimeFlagTrigger')) + ': ' + escapeHtml(llmServiceRuntimeBool(data.trigger_supported)) + '</div></div>' +
@@ -823,9 +834,11 @@ function renderLLMServiceModelRuntime() {
     '<div><label>' + escapeHtml(lsx('runtimeLog')) + '</label><div class="console" style="min-height:200px;max-height:240px">' + logTail + '</div></div>' +
     '</div>' +
     ((data.last_download_error || '') ? ('<div class="hint" style="margin-top:10px;color:#b55246">' + escapeHtml(data.last_download_error) + '</div>') : '');
+  });
 }
 async function loadLLMServiceModelRuntime(options) {
-  ensureLLMServiceAdminUI();
+  if (!llmServiceGlobalScoped()) return;
+  if (!llmServiceModelRuntimeRoots().length) ensureLLMServiceAdminUI();
   var silent = !!(options && options.silent);
   try {
     llmServiceModelRuntimeCache = await api('/api/admin/model_download/status');
@@ -840,6 +853,7 @@ async function loadLLMServiceModelRuntime(options) {
   }
 }
 async function triggerLLMServiceModelDownload() {
+  if (!llmServiceGlobalScoped()) return;
   try {
     await api('/api/admin/model_download/trigger', { method: 'POST' });
     showToast(lsx('runtimeTriggerDone'), 'success');
@@ -875,8 +889,6 @@ function llmServiceApplyCardDurationDefaults() {
 function applyLLMServiceI18n() {
   _s('llmServiceAdminTitle', 'textContent', lsx('adminTitle'));
   _s('llmServiceAdminDesc', 'textContent', lsx('adminDesc'));
-  _s('llmServiceModelRuntimeRefreshBtn', 'textContent', lsx('runtimeRefresh'));
-  _s('llmServiceModelRuntimeTriggerBtn', 'textContent', lsx('runtimeTrigger'));
   _s('llmServiceExposeApiBaseLabel', 'textContent', lsx('apiBaseUrl'));
   _s('llmServiceExposeChatUrlLabel', 'textContent', lsx('chatCompletionsUrl'));
   _s('llmServiceExposeModelsUrlLabel', 'textContent', lsx('modelsUrl'));
@@ -1637,7 +1649,7 @@ async function loadLLMServiceAdmin() {
     const results = await Promise.all([
       api('/api/admin/llm/services?include_cards=false'),
       llmServiceLoadCardsPage(llmServiceCardPage || 1),
-      loadLLMServiceModelRuntime({ silent: true })
+      llmServiceGlobalScoped() ? loadLLMServiceModelRuntime({ silent: true }) : Promise.resolve(null)
     ]);
     const data = results[0];
     llmServiceAdminCache = data || { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
@@ -2277,6 +2289,17 @@ function applyLLMServiceTabI18n() {
   _s('serviceCardsReloadBtn', 'textContent', lsx('reload'));
   _s('llmServiceCardsListTitle', 'textContent', lsx('cards'));
 }
+function ensureLLMProviderRuntimeUI() {
+  const tab = document.getElementById('tab-llmproviders');
+  if (!tab || document.getElementById('llmProviderModelRuntimeCard')) return;
+  const host = document.createElement('div');
+  host.id = 'llmProviderModelRuntimeCard';
+  host.className = 'item';
+  host.style.marginTop = '16px';
+  host.style.padding = '14px 16px';
+  tab.appendChild(host);
+  renderLLMServiceModelRuntime();
+}
 function registerLLMServiceTabs() {
   if (!window.AdminTabRegistry || typeof window.AdminTabRegistry.registerTab !== 'function') return;
   window.AdminTabRegistry.registerTab({
@@ -2295,6 +2318,10 @@ function registerLLMServiceTabs() {
     id: 'system',
     onOpen: function() { ensureLLMServiceSystemUI(); applyLLMServiceSystemI18n(); ensureLLMServiceSystemSettingsLoaded(); }
   });
+  window.AdminTabRegistry.registerTab({
+    id: 'llmproviders',
+    onOpen: function() { if (typeof window.loadLlmProviders === 'function') window.loadLlmProviders(); ensureLLMProviderRuntimeUI(); applyLLMServiceTabI18n(); loadLLMServiceModelRuntime({ silent: true }); }
+  });
 }
 if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange === 'function') {
   window.AdminTabRegistry.onLanguageChange(function() {
@@ -2312,6 +2339,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
   });
 }
 window.loadLlmServiceGroups = loadLLMServiceAdmin;
+window.ensureLLMProviderRuntimeUI = ensureLLMProviderRuntimeUI;
 window.loadLLMServiceModelRuntime = loadLLMServiceModelRuntime;
 window.triggerLLMServiceModelDownload = triggerLLMServiceModelDownload;
 window.openLlmServiceGroupTab = function() { if (typeof openTab === 'function') openTab('modelservices'); };

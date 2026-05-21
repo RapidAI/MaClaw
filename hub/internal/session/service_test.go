@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,12 @@ func TestSessionServiceLifecycleUpdatesCacheAndRepository(t *testing.T) {
 		Severity:        "info",
 		CurrentTask:     "Running validation command",
 		ProgressSummary: "Running go test ./...",
+		TokenUsage: &SessionTokenUsage{
+			InputTokens:       1200,
+			OutputTokens:      80,
+			CachedInputTokens: 768,
+			CacheWriteTokens:  128,
+		},
 	}
 	err = svc.OnSessionSummary(context.Background(), "machine-1", "user-1", "session-1", summary)
 	if err != nil {
@@ -128,6 +135,12 @@ func TestSessionServiceLifecycleUpdatesCacheAndRepository(t *testing.T) {
 	}
 	if len(entry.RecentEvents) != 1 || entry.RecentEvents[0].Type != "session.error" {
 		t.Fatalf("expected recent error event to be recorded")
+	}
+	if entry.Summary.TokenUsage == nil || entry.Summary.TokenUsage.CachedInputTokens != 768 {
+		t.Fatalf("expected diagnostic token usage to stay on session summary, got %#v", entry.Summary.TokenUsage)
+	}
+	if !strings.Contains(repo.summaryJSON, `"token_usage"`) || !strings.Contains(repo.summaryJSON, `"cached_input_tokens":768`) {
+		t.Fatalf("expected summary JSON to persist diagnostic token usage, got %s", repo.summaryJSON)
 	}
 	if repo.closedID != "session-1" || repo.closedStatus != "exited" {
 		t.Fatalf("expected close to be persisted")

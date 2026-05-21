@@ -151,6 +151,7 @@ func TestListSessionsHandlerReturnsViewerSessions(t *testing.T) {
 		Severity:        "info",
 		CurrentTask:     "Inspecting project files",
 		ProgressSummary: "Reading relevant source files",
+		TokenUsage:      &session.SessionTokenUsage{InputTokens: 1200, OutputTokens: 80, CachedInputTokens: 768},
 		UpdatedAt:       time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("OnSessionSummary: %v", err)
@@ -168,6 +169,9 @@ func TestListSessionsHandlerReturnsViewerSessions(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "sess_list_1") || !strings.Contains(body, "demo-project") {
 		t.Fatalf("unexpected body=%s", body)
+	}
+	if !strings.Contains(body, `"token_usage"`) || !strings.Contains(body, `"cached_input_tokens":768`) {
+		t.Fatalf("expected session diagnostic token usage in response, body=%s", body)
 	}
 }
 
@@ -208,6 +212,7 @@ func TestGetSessionHandlerReturnsSnapshot(t *testing.T) {
 		Severity:        "info",
 		CurrentTask:     "Inspecting project files",
 		ProgressSummary: "Reading relevant source files",
+		TokenUsage:      &session.SessionTokenUsage{InputTokens: 1200, OutputTokens: 80, CachedInputTokens: 768},
 		UpdatedAt:       time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("OnSessionSummary: %v", err)
@@ -233,6 +238,9 @@ func TestGetSessionHandlerReturnsSnapshot(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, "demo-project") || !strings.Contains(body, "Reading main.go") {
 		t.Fatalf("unexpected body=%s", body)
+	}
+	if !strings.Contains(body, `"token_usage"`) || !strings.Contains(body, `"cached_input_tokens":768`) {
+		t.Fatalf("expected session diagnostic token usage in snapshot, body=%s", body)
 	}
 }
 

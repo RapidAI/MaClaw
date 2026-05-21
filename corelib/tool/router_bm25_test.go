@@ -458,7 +458,9 @@ func TestRouter_UICLowConfidenceDoesNotActivateConditionalTools(t *testing.T) {
 	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
 		Embedder: embedding.NoopEmbedder{},
 		LLMFunc: func(systemPrompt, userText string) (string, error) {
-			return `{"top":[{"skill":"browser","score":0.89},{"skill":"ssh","score":0.20},{"skill":"coding","score":0.10}]}`, nil
+			// Return a low-confidence result (below uicActivationThreshold=0.50).
+			// This simulates a scenario where the tree channel is uncertain.
+			return `{"top":[{"skill":"browser","score":0.35},{"skill":"ssh","score":0.30},{"skill":"coding","score":0.25}]}`, nil
 		},
 	}))
 

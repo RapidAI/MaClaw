@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/api_client.dart';
-import 'voiceprint_screen.dart';
 
 /// User profile / settings screen.
 class ProfileScreen extends StatelessWidget {
   final ApiClient api;
-  const ProfileScreen({super.key, required this.api});
+  final VoidCallback onLogout;
+  const ProfileScreen({super.key, required this.api, required this.onLogout});
 
   @override
   Widget build(BuildContext context) {
@@ -29,15 +29,6 @@ class ProfileScreen extends StatelessWidget {
           ),
           const SizedBox(height: 32),
           ListTile(
-            leading: const Icon(Icons.record_voice_over_outlined),
-            title: const Text('声纹管理'),
-            subtitle: const Text('注册/管理你的声纹'),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => VoiceprintScreen(api: api)),
-            ),
-          ),
-          ListTile(
             leading: const Icon(Icons.dark_mode_outlined),
             title: const Text('Theme'),
             trailing: Consumer<ThemeProvider>(
@@ -45,8 +36,14 @@ class ProfileScreen extends StatelessWidget {
                 value: theme.mode,
                 underline: const SizedBox(),
                 items: const [
-                  DropdownMenuItem(value: ThemeMode.system, child: Text('System')),
-                  DropdownMenuItem(value: ThemeMode.light, child: Text('Light')),
+                  DropdownMenuItem(
+                    value: ThemeMode.system,
+                    child: Text('System'),
+                  ),
+                  DropdownMenuItem(
+                    value: ThemeMode.light,
+                    child: Text('Light'),
+                  ),
                   DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
                 ],
                 onChanged: (mode) {
@@ -73,7 +70,7 @@ class ProfileScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.logout, color: Colors.red),
             title: const Text('Sign Out', style: TextStyle(color: Colors.red)),
-            onTap: () {},
+            onTap: onLogout,
           ),
         ],
       ),

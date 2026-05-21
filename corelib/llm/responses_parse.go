@@ -15,7 +15,7 @@ import (
 type responsesAPIResponse struct {
 	ID     string                   `json:"id"`
 	Output []responsesAPIOutputItem `json:"output"`
-	Usage  *responsesAPIUsage       `json:"usage,omitempty"`
+	Usage  *Usage                   `json:"usage,omitempty"`
 }
 
 type responsesAPIOutputItem struct {
@@ -32,10 +32,26 @@ type responsesAPIContentPart struct {
 	Text string `json:"text"`
 }
 
-type responsesAPIUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+type responsesAPIUsageEvent struct {
+	Usage    *Usage `json:"usage,omitempty"`
+	Response struct {
+		Usage *Usage `json:"usage,omitempty"`
+	} `json:"response,omitempty"`
+}
+
+// ExtractResponsesAPIUsageFromEventPayload extracts usage from Responses API
+// streaming event payloads. Current providers usually place usage under
+// response.usage on response.completed, while some proxies expose it at the
+// top level.
+func ExtractResponsesAPIUsageFromEventPayload(payload []byte) *Usage {
+	var event responsesAPIUsageEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return nil
+	}
+	if event.Response.Usage != nil {
+		return event.Response.Usage
+	}
+	return event.Usage
 }
 
 // ---------------------------------------------------------------------------
@@ -83,20 +99,9 @@ func ParseNonStreamResponsesAPIBody(body []byte) (*Response, error) {
 		finishReason = "tool_calls"
 	}
 
-	var usage *Usage
-	if wire.Usage != nil {
-		usage = &Usage{
-			InputTokens:      wire.Usage.InputTokens,
-			OutputTokens:     wire.Usage.OutputTokens,
-			TotalTokens:      wire.Usage.TotalTokens,
-			PromptTokens:     wire.Usage.InputTokens,
-			CompletionTokens: wire.Usage.OutputTokens,
-		}
-	}
-
 	return &Response{
 		Choices: []Choice{{Message: msg, FinishReason: finishReason}},
-		Usage:   usage,
+		Usage:   wire.Usage,
 	}, nil
 }
 

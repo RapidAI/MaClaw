@@ -1297,39 +1297,55 @@ func (a *App) normalizeKnowledgeScopePath(projectPath string) string {
 
 // ---------------------------------------------------------------------------
 // Deep Crawl Wails Bindings
+func (a *App) beginKnowledgeDeepCrawl(mode string) (context.Context, context.CancelFunc, error) {
+	ctx, cancel := context.WithCancel(a.knowledgeContext())
+	a.deepCrawlMu.Lock()
+	defer a.deepCrawlMu.Unlock()
+	if a.deepCrawlCancel != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("deep crawl already running in %s mode", firstNonEmptyKnowledgeString(a.deepCrawlMode, "unknown"))
+	}
+	a.deepCrawlCancel = cancel
+	a.deepCrawlCtx = ctx
+	a.deepCrawlMode = mode
+	return ctx, cancel, nil
+}
+
+func (a *App) finishKnowledgeDeepCrawl(ctx context.Context, cancel context.CancelFunc) {
+	a.deepCrawlMu.Lock()
+	if a.deepCrawlCtx == ctx {
+		a.deepCrawlCancel = nil
+		a.deepCrawlCtx = nil
+		a.deepCrawlMode = ""
+	}
+	a.deepCrawlMu.Unlock()
+	cancel()
+}
+
+func firstNonEmptyKnowledgeString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 // ---------------------------------------------------------------------------
 
 // KnowledgeDeepCrawl 启动深度检索（完整抓取模式）
 func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.DeepCrawlResult, error) {
+	ctx, cancel, err := a.beginKnowledgeDeepCrawl("crawl")
+	if err != nil {
+		return knowledge.DeepCrawlResult{}, err
+	}
+	defer a.finishKnowledgeDeepCrawl(ctx, cancel)
+
 	store, err := a.openKnowledgeStore()
 	if err != nil {
 		return knowledge.DeepCrawlResult{}, err
 	}
 	defer store.Close()
-
-	// Create a cancellable context with session timeout handled by the engine
-	ctx, cancel := context.WithCancel(a.knowledgeContext())
-
-	// Store the cancel func for KnowledgeDeepCrawlCancel
-	a.deepCrawlMu.Lock()
-	// Cancel any previously active crawl
-	if a.deepCrawlCancel != nil {
-		a.deepCrawlCancel()
-	}
-	a.deepCrawlCancel = cancel
-	a.deepCrawlCtx = ctx
-	a.deepCrawlMu.Unlock()
-
-	// Clear the cancel func when done (only if we're still the active crawl)
-	defer func() {
-		a.deepCrawlMu.Lock()
-		if a.deepCrawlCtx == ctx {
-			a.deepCrawlCancel = nil
-			a.deepCrawlCtx = nil
-		}
-		a.deepCrawlMu.Unlock()
-		cancel()
-	}()
 
 	// Create onProgress callback that emits Wails events
 	onProgress := func(progress knowledge.DeepCrawlProgress) {
@@ -1349,34 +1365,17 @@ func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.Deep
 
 // KnowledgeDeepCrawlPreview 预览模式（仅发现链接，不保存内容）
 func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowledge.DeepCrawlResult, error) {
+	ctx, cancel, err := a.beginKnowledgeDeepCrawl("preview")
+	if err != nil {
+		return knowledge.DeepCrawlResult{}, err
+	}
+	defer a.finishKnowledgeDeepCrawl(ctx, cancel)
+
 	store, err := a.openKnowledgeStore()
 	if err != nil {
 		return knowledge.DeepCrawlResult{}, err
 	}
 	defer store.Close()
-
-	// Create a cancellable context
-	ctx, cancel := context.WithCancel(a.knowledgeContext())
-
-	// Store the cancel func for KnowledgeDeepCrawlCancel
-	a.deepCrawlMu.Lock()
-	if a.deepCrawlCancel != nil {
-		a.deepCrawlCancel()
-	}
-	a.deepCrawlCancel = cancel
-	a.deepCrawlCtx = ctx
-	a.deepCrawlMu.Unlock()
-
-	// Clear the cancel func when done (only if we're still the active crawl)
-	defer func() {
-		a.deepCrawlMu.Lock()
-		if a.deepCrawlCtx == ctx {
-			a.deepCrawlCancel = nil
-			a.deepCrawlCtx = nil
-		}
-		a.deepCrawlMu.Unlock()
-		cancel()
-	}()
 
 	// Create onProgress callback that emits Wails events
 	onProgress := func(progress knowledge.DeepCrawlProgress) {
@@ -1398,6 +1397,11 @@ func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowled
 func (a *App) KnowledgeDeepCrawlCancel() error {
 	a.deepCrawlMu.Lock()
 	cancel := a.deepCrawlCancel
+	if cancel != nil {
+		a.deepCrawlCancel = nil
+		a.deepCrawlCtx = nil
+		a.deepCrawlMode = ""
+	}
 	a.deepCrawlMu.Unlock()
 
 	if cancel == nil {

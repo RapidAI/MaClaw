@@ -27,7 +27,7 @@ function renderStatus(credits: SidebarHubCredits) {
             telegramStatus=""
             weixinStatus=""
             lansengerStatus=""
-            sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw\u5b98\u65b9', isHubService: true, input: 0, output: 0, total: 0 }}
+            sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw\u5b98\u65b9', isHubService: true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
             sidebarHubCredits={credits}
             formatSidebarTokens={(value) => String(value)}
             formatSidebarHubExpiry={() => '05/06/26'}
@@ -66,6 +66,67 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(screen.queryByText('90')).toBeNull();
     });
 
+    it('shows prompt cache hit rate beside token usage', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 100, output: 20, total: 120, cachedInput: 40, cacheWrite: 30, requests: 5, cachedRequests: 2 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => `${value}`}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="unlimited"
+                noHubAuthorizationText="none"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        expect(screen.getByText(/cache 40%/)).toBeTruthy();
+        const cacheTitles = screen.getAllByTitle(/Cache hit: 40%/);
+        expect(cacheTitles[0].getAttribute('title')).toContain('Read 40');
+        expect(cacheTitles[0].getAttribute('title')).toContain('Write 30');
+    });
+
+    it('shows ssh background task count immediately after IM status', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sshBackgroundTaskCount={3}
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => String(value)}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="\u65e0\u9650"
+                noHubAuthorizationText="\u65e0"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        const signals = screen.getByLabelText('System status');
+        expect(signals.textContent).toContain('\u540e\u53f0\u4efb\u52a1\uff1a 3');
+        expect(signals.textContent?.indexOf('IM')).toBeLessThan(signals.textContent?.indexOf('\u540e\u53f0\u4efb\u52a1\uff1a 3') ?? -1);
+        expect(signals.textContent?.indexOf('HUB')).toBeLessThan(signals.textContent?.indexOf('IM') ?? -1);
+    });
+
     it('shows the active coding agent task status in the sidebar monitor', () => {
         render(
             <SidebarSystemStatus
@@ -76,7 +137,7 @@ describe('SidebarSystemStatus Hub credits', () => {
                 telegramStatus=""
                 weixinStatus=""
                 lansengerStatus=""
-                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12 }}
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
                 sidebarHubCredits={baseCredits}
                 formatSidebarTokens={(value) => String(value)}
                 formatSidebarHubExpiry={() => '05/06/26'}
@@ -112,7 +173,7 @@ describe('SidebarSystemStatus Hub credits', () => {
                 telegramStatus=""
                 weixinStatus=""
                 lansengerStatus=""
-                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12 }}
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
                 sidebarHubCredits={baseCredits}
                 formatSidebarTokens={(value) => String(value)}
                 formatSidebarHubExpiry={() => '05/06/26'}
@@ -249,7 +310,7 @@ describe('SidebarSystemStatus Hub credits', () => {
                 telegramStatus=""
                 weixinStatus=""
                 lansengerStatus=""
-                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12 }}
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
                 sidebarHubCredits={baseCredits}
                 formatSidebarTokens={(value) => String(value)}
                 formatSidebarHubExpiry={() => '05/06/26'}
@@ -302,7 +363,7 @@ describe('SidebarSystemStatus Hub credits', () => {
                 telegramStatus=""
                 weixinStatus=""
                 lansengerStatus=""
-                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12 }}
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
                 sidebarHubCredits={baseCredits}
                 formatSidebarTokens={(value) => String(value)}
                 formatSidebarHubExpiry={() => '05/06/26'}

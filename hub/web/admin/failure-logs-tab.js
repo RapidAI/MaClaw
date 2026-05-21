@@ -215,10 +215,17 @@
     global.AdminTabRegistry.onLanguageChange(function() { applyFailureLogsI18n(); });
   }
 
+
+  function failureLogsTenantScopedRefresh() {
+    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+    return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
+  }
+
   if (typeof global.refreshAll === 'function') {
     const baseRefreshAll = global.refreshAll;
     global.refreshAll = async function refreshAllWithFailureLogs() {
-      await Promise.all([baseRefreshAll(), global.loadFailureLogs()]);
+      if (failureLogsTenantScopedRefresh()) await Promise.all([baseRefreshAll(), global.loadFailureLogs()]);
+      else await baseRefreshAll();
     };
   }
 

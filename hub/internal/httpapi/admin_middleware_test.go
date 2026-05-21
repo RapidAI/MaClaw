@@ -341,6 +341,33 @@ func TestAdminPromptCacheEntryDeleteHandlerAcceptsToken(t *testing.T) {
 	}
 }
 
+func TestTenantCreateRollsBackTenantWhenInitialAdminCreateFails(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+	if _, err := ctx.admins.CreateTenantAdmin(context.Background(), "tenant_bad-admin", "admin", "StrongPassword123!", "existing-admin@example.com", "", "tenant_admin"); err != nil {
+		t.Fatalf("seed existing tenant admin: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "bad-admin",
+		"name":                   "Bad Admin Corp",
+		"initial_admin_username": "admin",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "bad-admin@example.com",
+	}, token)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("tenant create with duplicate admin status = %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	tenant, err := ctx.store.Tenants.GetByID(context.Background(), "tenant_bad-admin")
+	if err != nil {
+		t.Fatalf("load rolled back tenant: %v", err)
+	}
+	if tenant != nil {
+		t.Fatalf("tenant should be removed after initial admin create failure: %#v", tenant)
+	}
+}
+
 func TestTenantAdminRoutesRequireGlobalAdminForTenantCreate(t *testing.T) {
 	ctx := newAdminRouterTestContext(t)
 	token := issueHubAdminToken(t, ctx.handler)
@@ -360,6 +387,7 @@ func TestTenantAdminRoutesRequireGlobalAdminForTenantCreate(t *testing.T) {
 	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
 		"username": "acme-owner",
 		"password": "StrongPassword123!",
+		"tenant":   "tenant_acme",
 	}, "")
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
@@ -419,6 +447,7 @@ func TestTenantAdminLLMProviderTestKeyUsesTenantScope(t *testing.T) {
 	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
 		"username": "acme-owner",
 		"password": "StrongPassword123!",
+		"tenant":   "tenant_acme",
 	}, "")
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
@@ -468,6 +497,79 @@ func TestTenantAdminLLMProviderTestKeyUsesTenantScope(t *testing.T) {
 	}
 }
 
+func TestTenantAdminCanManageTenantScopedLLMProviders(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, ctx.handler)
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "acme",
+		"name":                   "Acme Corp",
+		"initial_admin_username": "acme-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@acme.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "acme-owner",
+		"password": "StrongPassword123!",
+		"tenant":   "tenant_acme",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+
+	saveResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/llm/providers", map[string]any{
+		"enabled":             true,
+		"current_provider_id": "tenant-provider",
+		"providers": []map[string]any{{
+			"id":      "tenant-provider",
+			"name":    "Tenant Provider",
+			"api_url": "https://tenant-provider.example/v1",
+			"api_key": "tenant-secret",
+			"model":   "tenant-model",
+		}},
+	}, loginPayload.AccessToken)
+	if saveResp.Code != http.StatusOK {
+		t.Fatalf("tenant save provider status = %d body=%s", saveResp.Code, saveResp.Body.String())
+	}
+
+	tenantGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/llm/providers", nil, loginPayload.AccessToken)
+	if tenantGet.Code != http.StatusOK {
+		t.Fatalf("tenant get provider status = %d body=%s", tenantGet.Code, tenantGet.Body.String())
+	}
+	var tenantPayload struct {
+		CurrentProviderID string `json:"current_provider_id"`
+		Providers         []struct {
+			ID    string `json:"id"`
+			Model string `json:"model"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(tenantGet.Body.Bytes(), &tenantPayload); err != nil {
+		t.Fatalf("decode tenant provider response: %v", err)
+	}
+	if tenantPayload.CurrentProviderID != "tenant-provider" || len(tenantPayload.Providers) != 1 || tenantPayload.Providers[0].ID != "tenant-provider" || tenantPayload.Providers[0].Model != "tenant-model" {
+		t.Fatalf("unexpected tenant provider response: %#v", tenantPayload)
+	}
+
+	globalGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/llm/providers", nil, globalToken)
+	if globalGet.Code != http.StatusForbidden {
+		t.Fatalf("global get tenant provider status = %d body=%s", globalGet.Code, globalGet.Body.String())
+	}
+	mismatchedTenant := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/llm/providers?tenant_id=tenant_other", nil, loginPayload.AccessToken)
+	if mismatchedTenant.Code != http.StatusForbidden {
+		t.Fatalf("tenant get mismatched provider scope status = %d body=%s", mismatchedTenant.Code, mismatchedTenant.Body.String())
+	}
+}
+
 func TestTenantAdminEmailInvitesAreTenantScoped(t *testing.T) {
 	ctx := newAdminRouterTestContext(t)
 	globalToken := issueHubAdminToken(t, ctx.handler)
@@ -485,6 +587,7 @@ func TestTenantAdminEmailInvitesAreTenantScoped(t *testing.T) {
 	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
 		"username": "acme-owner",
 		"password": "StrongPassword123!",
+		"tenant":   "tenant_acme",
 	}, "")
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
@@ -566,6 +669,7 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
 		"username": "acme-owner",
 		"password": "StrongPassword123!",
+		"tenant":   "tenant_acme",
 	}, "")
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
@@ -681,6 +785,7 @@ func TestTenantAdminInvitationCodeUnbindIsTenantScoped(t *testing.T) {
 	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
 		"username": "acme-owner",
 		"password": "StrongPassword123!",
+		"tenant":   "tenant_acme",
 	}, "")
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())

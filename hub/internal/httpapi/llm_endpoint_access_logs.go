@@ -521,6 +521,7 @@ func buildLLMEndpointAccessLogSummaryFromEntries(totalRequests int64, entries []
 
 func GetLLMEndpointAccessLogsHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		logs, err := currentLLMEndpointAccessLogs(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_ENDPOINT_ACCESS_LOG_LOAD_FAILED", err.Error())

@@ -108,10 +108,10 @@ describe('SkillsManagementPanel execution class', () => {
         renderPanel();
 
         await waitFor(() => {
-            expect(ListNLSkillsMock).toHaveBeenCalled();
+            expect(screen.getByText('类型')).toBeTruthy();
         });
 
-        expect(screen.getByText('类型')).toBeTruthy();
+        expect(ListNLSkillsMock).toHaveBeenCalled();
         expect(screen.getByText('代理 Skill')).toBeTruthy();
         expect(screen.getByText('原生 Skill')).toBeTruthy();
         expect(screen.getByTitle('导入的 Markdown 类 Skill，通过 agent skill 流程执行。')).toBeTruthy();
@@ -149,7 +149,7 @@ describe('SkillsManagementPanel modal backdrop mousedown+click guard', () => {
         });
 
         // Wait for the edit button to appear and click it to open the edit form
-        const editButtons = await screen.findAllByText('编辑');
+        const editButtons = await screen.findAllByRole('button', { name: '编辑' });
         fireEvent.click(editButtons[0]);
 
         // Wait for the form dialog to appear (loadData is called again inside openEditForm)

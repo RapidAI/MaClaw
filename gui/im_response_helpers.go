@@ -254,15 +254,15 @@ type IMResponseAction struct {
 }
 
 type IMResponseConfirmation struct {
-	ID             string                      `json:"id"`
-	Summary        string                      `json:"summary"`
-	TaskType       string                      `json:"task_type,omitempty"`
-	TargetPaths    []string                    `json:"target_paths,omitempty"`
-	PlannedActions []string                    `json:"planned_actions,omitempty"`
-	RiskFlags      []string                    `json:"risk_flags,omitempty"`
-	RevisionHints  []string                    `json:"revision_hints,omitempty"`
-	Status         string                      `json:"status,omitempty"`
-	Labels         *IMResponseConfirmLabels    `json:"labels,omitempty"`
+	ID             string                   `json:"id"`
+	Summary        string                   `json:"summary"`
+	TaskType       string                   `json:"task_type,omitempty"`
+	TargetPaths    []string                 `json:"target_paths,omitempty"`
+	PlannedActions []string                 `json:"planned_actions,omitempty"`
+	RiskFlags      []string                 `json:"risk_flags,omitempty"`
+	RevisionHints  []string                 `json:"revision_hints,omitempty"`
+	Status         string                   `json:"status,omitempty"`
+	Labels         *IMResponseConfirmLabels `json:"labels,omitempty"`
 }
 
 // IMResponseConfirmLabels carries localized section titles for the
@@ -351,10 +351,14 @@ func buildUnfinishedTaskPayload(slot *agent.UnfinishedTaskSlot) *IMResponseUnfin
 }
 
 func tokenUsageResponseFields(input, output int) []IMResponseField {
-	if input <= 0 && output <= 0 {
+	return tokenUsageResponseFieldsWithCache(input, output, 0, 0)
+}
+
+func tokenUsageResponseFieldsWithCache(input, output, cacheRead, cacheWrite int) []IMResponseField {
+	if input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite <= 0 {
 		return nil
 	}
-	fields := make([]IMResponseField, 0, 3)
+	fields := make([]IMResponseField, 0, 5)
 	if input > 0 {
 		fields = append(fields, IMResponseField{Label: "Input tokens", Value: strconv.Itoa(input)})
 	}
@@ -364,6 +368,12 @@ func tokenUsageResponseFields(input, output int) []IMResponseField {
 	total := input + output
 	if total > 0 {
 		fields = append(fields, IMResponseField{Label: "Total tokens", Value: strconv.Itoa(total)})
+	}
+	if cacheRead > 0 {
+		fields = append(fields, IMResponseField{Label: "Cache read tokens", Value: strconv.Itoa(cacheRead)})
+	}
+	if cacheWrite > 0 {
+		fields = append(fields, IMResponseField{Label: "Cache write tokens", Value: strconv.Itoa(cacheWrite)})
 	}
 	return fields
 }

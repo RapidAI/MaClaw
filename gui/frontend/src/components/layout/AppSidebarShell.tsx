@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
-import type { SidebarHubCredits } from '../../types/appShell';
+import type { SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
@@ -37,6 +37,7 @@ interface AppSidebarShellProps {
     weixinStatus: string;
     lansengerStatus: string;
     runningTaskCount: number;
+    sshBackgroundTaskCount?: number;
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
@@ -60,7 +61,7 @@ interface AppSidebarShellProps {
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
     hideTask: (projectPath: string) => Promise<unknown>;
-    sidebarCurrentProviderTokenUsage: { provider: string; isHubService: boolean; input: number; output: number; total: number };
+    sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     formatSidebarTokens: (value: number) => string;
     formatSidebarHubExpiry: (credits: SidebarHubCredits | null) => string;
@@ -107,6 +108,7 @@ export const AppSidebarShell = ({
     weixinStatus,
     lansengerStatus,
     runningTaskCount,
+    sshBackgroundTaskCount = 0,
     t,
     gossipAllowed,
     config,
@@ -199,6 +201,7 @@ export const AppSidebarShell = ({
                         telegramStatus={telegramStatus}
                         weixinStatus={weixinStatus}
                         lansengerStatus={lansengerStatus}
+                        sshBackgroundTaskCount={sshBackgroundTaskCount}
                         config={config}
                         activeTool={activeTool}
                         toolDropdownOpen={toolDropdownOpen}
@@ -247,5 +250,3 @@ export const AppSidebarShell = ({
             </div>
 </>
 );
-
-

@@ -51,6 +51,10 @@ func (r *tenantRepo) Create(ctx context.Context, tenant *store.Tenant) error {
 	return execWrite(ctx, r.batch, r.db, `INSERT INTO tenants (id, slug, name, status, primary_domain, settings_json, created_by_admin_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, t.ID, t.Slug, t.Name, t.Status, t.PrimaryDomain, t.SettingsJSON, t.CreatedByAdminID, t.CreatedAt.Format(time.RFC3339), t.UpdatedAt.Format(time.RFC3339), deletedAt)
 }
 
+func (r *tenantRepo) DeleteByID(ctx context.Context, id string) error {
+	return execWrite(ctx, r.batch, r.db, `DELETE FROM tenants WHERE id = ?`, id)
+}
+
 func (r *tenantRepo) EnsureDefault(ctx context.Context) (*store.Tenant, error) {
 	if existing, err := r.GetByID(ctx, store.DefaultTenantID); err != nil || existing != nil {
 		return existing, err

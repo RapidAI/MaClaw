@@ -541,8 +541,6 @@ hub/internal/httpapi/static_test.go,hub,Backend/Core,test,Go,84
 hub/internal/httpapi/tls_handler.go,hub,Backend/Core,prod,Go,152
 hub/internal/httpapi/user_handlers.go,hub,Backend/Core,prod,Go,277
 hub/internal/httpapi/user_handlers_test.go,hub,Backend/Core,test,Go,285
-hub/internal/httpapi/voiceprint_handler.go,hub,Backend/Core,prod,Go,150
-hub/internal/httpapi/voiceprint_user_handler.go,hub,Backend/Core,prod,Go,117
 hub/internal/httpapi/webhook_session_handlers.go,hub,Backend/Core,prod,Go,87
 hub/internal/im/adapter.go,hub,Backend/Core,prod,Go,71
 hub/internal/im/agent_types.go,hub,Backend/Core,prod,Go,48
@@ -599,9 +597,7 @@ hub/internal/store/sqlite/migrations.go,hub,Backend/Core,prod,Go,184
 hub/internal/store/sqlite/provider.go,hub,Backend/Core,prod,Go,106
 hub/internal/store/sqlite/repositories_stub.go,hub,Backend/Core,prod,Go,1408
 hub/internal/store/sqlite/repositories_test.go,hub,Backend/Core,test,Go,233
-hub/internal/store/sqlite/voiceprint_repo.go,hub,Backend/Core,prod,Go,81
 hub/internal/store/store.go,hub,Backend/Core,prod,Go,252
-hub/internal/voiceprint/service.go,hub,Backend/Core,prod,Go,194
 hub/internal/ws/envelope.go,hub,Backend/Core,prod,Go,10
 hub/internal/ws/gateway_test.go,hub,Backend/Core,test,Go,849
 hub/internal/ws/handlers_machine.go,hub,Backend/Core,prod,Go,1179

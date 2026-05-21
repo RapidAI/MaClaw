@@ -410,6 +410,7 @@ export function RemoteSessionConsole(props: Props) {
     const disabled = sessionClosed || sending;
     const isSDK = session.execution_mode === "sdk";
     const isStructured = isSDK || session.execution_mode === "gemini-acp" || session.execution_mode === "codex";
+    const pendingQuestion = session.summary?.pending_question;
 
     // Merge incoming lines with the local cache — content only grows.
     const incomingLines = session.raw_output_lines || session.preview?.preview_lines || [];
@@ -542,6 +543,11 @@ export function RemoteSessionConsole(props: Props) {
         inputValueRef.current = value;
         setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: value }));
     };
+
+    const handleQuestionOption = useCallback((value: string) => {
+        inputValueRef.current = value;
+        setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: value }));
+    }, [session.id, setRemoteInputDrafts]);
 
     const handleCtrlC = useCallback(async () => {
         try {
@@ -989,6 +995,43 @@ export function RemoteSessionConsole(props: Props) {
             </div>
 
             {/* ── Status feedback ── */}
+            {pendingQuestion && (
+                <div style={{
+                    flexShrink: 0,
+                    padding: "8px 10px",
+                    background: "#18150c",
+                    borderTop: "1px solid #3a3218",
+                    borderBottom: "1px solid #3a3218",
+                    color: "#dcdcaa",
+                    fontFamily: "Consolas, monospace",
+                    fontSize: "12px",
+                    display: "grid",
+                    gap: 6,
+                }}>
+                    {pendingQuestion.header && <div style={{ fontWeight: 700 }}>{pendingQuestion.header}</div>}
+                    {pendingQuestion.question && <div>{pendingQuestion.question}</div>}
+                    {pendingQuestion.hint && <div style={{ color: "#a9a06a" }}>Hint: {pendingQuestion.hint}</div>}
+                    {pendingQuestion.options && pendingQuestion.options.length > 0 && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {pendingQuestion.options.map((option) => {
+                                const label = option.label || option.description || "Option";
+                                return (
+                                    <button
+                                        key={label}
+                                        type="button"
+                                        onClick={() => handleQuestionOption(label)}
+                                        style={{ ...inputBtnStyle, color: "#dcdcaa", borderColor: "#7a6f35", minHeight: 28, padding: "4px 10px" }}
+                                        title={option.description || label}
+                                    >
+                                        {label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
+
             {lastSendInfo && (
                 <div style={{
                     padding: "2px 10px",

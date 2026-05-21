@@ -109,4 +109,31 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByTitle("C:\\Users\\demo\\notes\\report.pdf")).toBeTruthy();
         expect(screen.queryByText("Users")).toBeNull();
     });
+
+    it("renders GitHub-style pipe tables without leading outer pipes", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("Name | Status\n--- | ---\nAlpha | Ready\nBeta | Waiting", lightTheme)}</div>
+        );
+
+        expect(container.querySelector("table")).toBeTruthy();
+        expect(screen.getByText("Name")).toBeTruthy();
+        expect(screen.getByText("Ready")).toBeTruthy();
+        expect(screen.getByText("Waiting")).toBeTruthy();
+    });
+
+    it("renders escaped-newline GitHub-style pipe tables from digital employee text", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("Name | Status\\n--- | ---\\nAlpha | Ready", lightTheme)}</div>
+        );
+
+        expect(container.querySelector("table")).toBeTruthy();
+        expect(screen.getByText("Alpha")).toBeTruthy();
+    });
+
+    it("keeps ordinary pipe text as a plain line when it is not a markdown table", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("Use A | B as a label", lightTheme)}</div>);
+
+        expect(container.querySelector("table")).toBeNull();
+        expect(screen.getByText("Use A | B as a label")).toBeTruthy();
+    });
 });

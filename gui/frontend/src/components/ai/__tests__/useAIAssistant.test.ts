@@ -1666,6 +1666,8 @@ describe('useAIAssistant property tests', () => {
                 { Label: 'Input tokens', Value: '120' },
                 { Label: 'Output tokens', Value: '30' },
                 { Label: 'Total tokens', Value: '150' },
+                { Label: 'Cache read tokens', Value: '96' },
+                { Label: 'Cache write tokens', Value: '12' },
             ],
             Actions: null,
             RequestID: 'req-pascal',
@@ -1691,6 +1693,8 @@ describe('useAIAssistant property tests', () => {
                 { Label: 'Input tokens', Value: '120' },
                 { Label: 'Output tokens', Value: '30' },
                 { Label: 'Total tokens', Value: '150' },
+                { Label: 'Cache read tokens', Value: '96' },
+                { Label: 'Cache write tokens', Value: '12' },
             ],
             Actions: null,
             RequestID: 'req-pascal',
@@ -1716,6 +1720,8 @@ describe('useAIAssistant property tests', () => {
             { label: 'Input tokens', value: '120' },
             { label: 'Output tokens', value: '30' },
             { label: 'Total tokens', value: '150' },
+            { label: 'Cache read tokens', value: '96' },
+            { label: 'Cache write tokens', value: '12' },
         ]);
     });
 
@@ -1727,6 +1733,8 @@ describe('useAIAssistant property tests', () => {
                 { label: 'Input tokens', value: '120' },
                 { label: 'Output tokens', value: '30' },
                 { label: 'Total tokens', value: '150' },
+                { label: 'Cache read tokens', value: '96' },
+                { label: 'Cache write tokens', value: '12' },
             ],
             actions: null,
             input_tokens: 120,
@@ -1753,6 +1761,8 @@ describe('useAIAssistant property tests', () => {
                 { label: 'Input tokens', value: '120' },
                 { label: 'Output tokens', value: '30' },
                 { label: 'Total tokens', value: '150' },
+                { label: 'Cache read tokens', value: '96' },
+                { label: 'Cache write tokens', value: '12' },
             ],
             actions: null,
             input_tokens: 120,
@@ -1779,7 +1789,70 @@ describe('useAIAssistant property tests', () => {
             { label: 'Input tokens', value: '120' },
             { label: 'Output tokens', value: '30' },
             { label: 'Total tokens', value: '150' },
+            { label: 'Cache read tokens', value: '96' },
+            { label: 'Cache write tokens', value: '12' },
         ]);
+    });
+
+    it('builds token usage fields from numeric response counters when detail entry is enabled', async () => {
+        (LoadConfig as any).mockResolvedValueOnce({ show_ai_trace_entry: true });
+        mockSendResponse = {
+            Text: 'done',
+            Error: '',
+            Fields: null,
+            Actions: null,
+            InputTokens: 120,
+            OutputTokens: 30,
+            TotalTokens: 150,
+            CacheReadTokens: 96,
+            CacheWriteTokens: 12,
+        } as any;
+
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(LoadConfig).toHaveBeenCalled();
+            expect(result.current.messages).toEqual([]);
+        });
+        act(() => {
+            emitRuntimeEvent('config-changed', new main.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
+        });
+
+        await act(async () => {
+            await result.current.sendMessage('show numeric token usage');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Input tokens', value: '120' },
+            { label: 'Output tokens', value: '30' },
+            { label: 'Total tokens', value: '150' },
+            { label: 'Cache read tokens', value: '96' },
+            { label: 'Cache write tokens', value: '12' },
+        ]);
+    });
+
+    it('hides numeric token usage counters when detail entry is disabled', async () => {
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: null,
+            actions: null,
+            input_tokens: 120,
+            output_tokens: 30,
+            total_tokens: 150,
+            cache_read_tokens: 96,
+            cache_write_tokens: 12,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('hide numeric token usage');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toBeUndefined();
     });
 
     it('hides trace summary fields by default when trace entry is disabled', async () => {

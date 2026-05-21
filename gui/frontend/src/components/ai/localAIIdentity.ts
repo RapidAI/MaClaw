@@ -35,7 +35,7 @@ export function isLocalAIName(value: string | null | undefined): boolean {
     const name = String(value || "").trim();
     if (!name) return false;
     const compact = compactLocalAIName(name);
-    return compact === "localai" || compact === "local-ai" || compact === "本机ai" || compact === "本機ai";
+    return compact === "localai" || compact === "local-ai" || compact === "本机ai" || compact === "本機ai" || compact === "本地ai" || compact === "本地";
 }
 
 export function isLocalParticipantId(value: string | null | undefined, localParticipantIds?: string[]): boolean {
@@ -46,7 +46,7 @@ export function isLocalParticipantId(value: string | null | undefined, localPart
 }
 
 export function isLocalParticipant(tab: Pick<AITab, "localParticipantIds" | "participantNames">, participantId: string): boolean {
-    return isLocalParticipantId(participantId, tab.localParticipantIds) || isLocalAIName(tab.participantNames?.[participantId]);
+    return isLocalParticipantId(participantId, tab.localParticipantIds) || isLocalAIName(participantNameForId(tab.participantNames, participantId));
 }
 
 export function hasLocalAIParticipant(tab: Pick<AITab, "participants" | "localParticipantIds" | "participantNames">): boolean {

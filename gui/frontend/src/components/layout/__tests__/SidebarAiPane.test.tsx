@@ -41,7 +41,7 @@ function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof 
             renameTask={async () => undefined}
             pinTask={async () => undefined}
             hideTask={async () => undefined}
-            sidebarCurrentProviderTokenUsage={{ provider: '', isHubService: false, input: 0, output: 0, total: 0 }}
+            sidebarCurrentProviderTokenUsage={{ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
             sidebarHubCredits={null}
             formatSidebarTokens={(value) => String(value)}
             formatSidebarHubExpiry={() => ''}

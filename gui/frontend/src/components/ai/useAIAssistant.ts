@@ -76,6 +76,16 @@ interface AIAssistantSendResult {
     JobID?: string;
     run_id?: string;
     RunID?: string;
+    input_tokens?: number;
+    InputTokens?: number;
+    output_tokens?: number;
+    OutputTokens?: number;
+    total_tokens?: number;
+    TotalTokens?: number;
+    cache_read_tokens?: number;
+    CacheReadTokens?: number;
+    cache_write_tokens?: number;
+    CacheWriteTokens?: number;
 }
 
 interface AIAssistantContextMessage {
@@ -854,9 +864,36 @@ function isTokenFieldLabel(label: string): boolean {
     const normalized = label.trim().toLowerCase();
     return normalized === 'input tokens'
         || normalized === 'output tokens'
-        || normalized === 'total tokens';
+        || normalized === 'total tokens'
+        || normalized === 'cache read tokens'
+        || normalized === 'cache write tokens';
 }
 
+function numericTokenFieldValue(...values: unknown[]): number | undefined {
+    for (const value of values) {
+        if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+    }
+    return undefined;
+}
+
+function tokenUsageCounterFields(raw: AIAssistantSendResult, showDetailEntry: boolean, existingFields?: Array<{ label: string; value: string }>): Array<{ label: string; value: string }> {
+    if (!showDetailEntry) return [];
+    const existingLabels = new Set((existingFields || []).map(field => field.label.trim().toLowerCase()));
+    const fields: Array<{ label: string; value: string }> = [];
+    const add = (label: string, value?: number) => {
+        if (!value || existingLabels.has(label.toLowerCase())) return;
+        fields.push({ label, value: String(value) });
+    };
+    const input = numericTokenFieldValue(raw.input_tokens, raw.InputTokens);
+    const output = numericTokenFieldValue(raw.output_tokens, raw.OutputTokens);
+    const total = numericTokenFieldValue(raw.total_tokens, raw.TotalTokens) ?? ((input || output) ? (input || 0) + (output || 0) : undefined);
+    add('Input tokens', input);
+    add('Output tokens', output);
+    add('Total tokens', total);
+    add('Cache read tokens', numericTokenFieldValue(raw.cache_read_tokens, raw.CacheReadTokens));
+    add('Cache write tokens', numericTokenFieldValue(raw.cache_write_tokens, raw.CacheWriteTokens));
+    return fields;
+}
 function normalizeResponseFields(fields: any, showDetailEntry = false): Array<{ label: string; value: string }> | undefined {
     if (!Array.isArray(fields) || fields.length === 0) return undefined;
     const normalized = fields
@@ -922,11 +959,13 @@ function normalizeUnfinishedSlot(raw: AIAssistantResponseUnfinishedSlot | null |
 
 function normalizeSendResponse(response: AIAssistantSendResult | null | undefined, showDetailEntry = false): AIAssistantSendResult {
     const raw = response || {};
+    const normalizedFields = normalizeResponseFields(raw.fields ?? raw.Fields, showDetailEntry);
+    const counterFields = tokenUsageCounterFields(raw, showDetailEntry, normalizedFields);
     return {
         ...raw,
         text: typeof raw.text === 'string' ? raw.text : (typeof raw.Text === 'string' ? raw.Text : ''),
         error: typeof raw.error === 'string' ? raw.error : (typeof raw.Error === 'string' ? raw.Error : ''),
-        fields: normalizeResponseFields(raw.fields ?? raw.Fields, showDetailEntry),
+        fields: mergeResponseFields(normalizedFields, counterFields),
         actions: raw.actions ?? raw.Actions,
         confirmation: normalizeConfirmation(raw.confirmation ?? raw.Confirmation),
         unfinished_slot: normalizeUnfinishedSlot((raw as any).unfinished_slot ?? (raw as any).UnfinishedSlot),

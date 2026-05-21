@@ -1,4 +1,4 @@
-import type { SidebarHubCredits } from '../../types/appShell';
+import type { SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 
@@ -11,7 +11,8 @@ type SidebarSystemStatusProps = {
     telegramStatus: string;
     weixinStatus: string;
     lansengerStatus: string;
-    sidebarCurrentProviderTokenUsage: { provider: string; isHubService: boolean; input: number; output: number; total: number };
+    sshBackgroundTaskCount?: number;
+    sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     formatSidebarTokens: (value: number) => string;
     formatSidebarHubExpiry: (credits: SidebarHubCredits | null) => string;
@@ -78,6 +79,7 @@ export const SidebarSystemStatus = ({
     telegramStatus,
     weixinStatus,
     lansengerStatus,
+    sshBackgroundTaskCount = 0,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -93,14 +95,28 @@ export const SidebarSystemStatus = ({
     codingAgentTurnSnapshot = null,
 }: SidebarSystemStatusProps) => {
     const providerLabel = sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b');
+    const cacheRequests = sidebarCurrentProviderTokenUsage.requests ?? 0;
+    const cachedRequests = sidebarCurrentProviderTokenUsage.cachedRequests ?? 0;
+    const cachedInput = sidebarCurrentProviderTokenUsage.cachedInput ?? 0;
+    const cacheWrite = sidebarCurrentProviderTokenUsage.cacheWrite ?? 0;
+    const cacheHitRate = cacheRequests > 0
+        ? Math.round((cachedRequests / cacheRequests) * 100)
+        : null;
+    const cacheTitle = cacheHitRate === null
+        ? ''
+        : `${textForLang(lang, 'Cache hit', '\u7f13\u5b58\u547d\u4e2d', '\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Read', '\u8bfb\u53d6', '\u8b80\u53d6')} ${formatSidebarTokens(cachedInput)}${CREDIT_SEPARATOR}${textForLang(lang, 'Write', '\u5199\u5165', '\u5beb\u5165')} ${formatSidebarTokens(cacheWrite)}`;
     const onlineText = textForLang(lang, 'Online', '\u5728\u7ebf', '\u5728\u7dda');
     const offlineText = textForLang(lang, 'Offline', '\u79bb\u7ebf', '\u96e2\u7dda');
     const imOnline = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || (showLansenger && lansengerStatus === 'connected');
-    const statusSignals = [
-        { label: 'LLM', on: maclawLLMOnline },
-        { label: 'HUB', on: !!remoteActivationStatus?.activated },
-        { label: 'IM', on: imOnline },
-    ];
+    const backgroundTaskLabel = textForLang(lang, 'Background tasks', '\u540e\u53f0\u4efb\u52a1', '\u5f8c\u53f0\u4efb\u52d9');
+    const isChineseLang = lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'zh';
+    const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${sshBackgroundTaskCount}`;
+    const renderStatusSignal = (label: string, on: boolean) => (
+        <span className="sidebar-system-status__signal" data-online={on ? 'true' : 'false'} title={`${STATUS_DOT} ${label} ${on ? onlineText : offlineText}`}>
+            <span className="sidebar-system-status__dot" aria-hidden="true" />
+            <span className="sidebar-system-status__signal-label">{label}</span>
+        </span>
+    );
     const hubCreditStatus = String(sidebarHubCredits?.status || '').toLowerCase();
     const hubCreditRetryText = sidebarHubCredits ? formatRetryAfter(sidebarHubCredits.retryAfterSeconds, sidebarHubCredits.retryAfterAt, lang) : '';
     const hubCreditStateText = formatHubCreditStateText(hubCreditStatus, hubCreditRetryText, lang);
@@ -118,12 +134,12 @@ export const SidebarSystemStatus = ({
         <div className="sidebar-system-status">
             <div className="sidebar-system-status__panel">
                 <div className="sidebar-system-status__signals" aria-label="System status">
-                    {statusSignals.map(({ label, on }) => (
-                        <span className="sidebar-system-status__signal" data-online={on ? 'true' : 'false'} key={label} title={`${STATUS_DOT} ${label} ${on ? onlineText : offlineText}`}>
-                            <span className="sidebar-system-status__dot" aria-hidden="true" />
-                            <span className="sidebar-system-status__signal-label">{label}</span>
-                        </span>
-                    ))}
+                    {renderStatusSignal('LLM', maclawLLMOnline)}
+                    {renderStatusSignal('HUB', !!remoteActivationStatus?.activated)}
+                    {renderStatusSignal('IM', imOnline)}
+                    <span className="sidebar-system-status__signal sidebar-system-status__background-tasks" title={backgroundTaskText}>
+                        <span className="sidebar-system-status__signal-label">{backgroundTaskText}</span>
+                    </span>
                 </div>
 
                 {codingAgentProgress && (
@@ -135,8 +151,13 @@ export const SidebarSystemStatus = ({
                         {providerLabel}
                     </span>
                     <span className="sidebar-system-status__tokens">
-                        <strong>{formatSidebarTokens(sidebarCurrentProviderTokenUsage.total)}</strong>
+                        <strong title={cacheTitle || undefined}>{formatSidebarTokens(sidebarCurrentProviderTokenUsage.total)}</strong>
                         <span className="sidebar-system-status__tokens-unit">tokens</span>
+                        {cacheHitRate !== null && (
+                            <span className="sidebar-system-status__tokens-unit" title={cacheTitle}>
+                                {CREDIT_SEPARATOR}{textForLang(lang, 'cache', '\u7f13\u5b58', '\u5feb\u53d6')} {cacheHitRate}%
+                            </span>
+                        )}
                     </span>
                 </div>
 

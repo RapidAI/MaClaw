@@ -90,6 +90,13 @@ const formatEventTime = (ts?: number): string => {
     return d.toLocaleTimeString(getCurrentLang(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 };
 
+const formatCompactTokens = (value?: number): string => {
+    const n = Number(value || 0);
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+    return String(n);
+};
+
 export function RemoteSessionCard(props: Props) {
     const {
         session,
@@ -161,12 +168,15 @@ export function RemoteSessionCard(props: Props) {
     const lastResult = session.summary?.last_result || "-";
     const progressSummary = session.summary?.progress_summary || "-";
     const suggestedAction = session.summary?.suggested_action || "";
+    const pendingQuestion = session.summary?.pending_question;
     const lastCommand = session.summary?.last_command || "";
     const importantFiles = session.summary?.important_files || [];
     const displayTitle = getDisplayTitle(session);
     const events = session.events || [];
     const hasOutput = previewLines.length > 0;
     const hasEvents = events.length > 0;
+    const tokenUsage = session.token_usage || session.summary?.token_usage;
+    const hasTokenUsage = !!tokenUsage && ((tokenUsage.input_tokens || 0) > 0 || (tokenUsage.output_tokens || 0) > 0 || (tokenUsage.cached_input_tokens || 0) > 0 || (tokenUsage.cache_write_tokens || 0) > 0);
 
     return (
         <div
@@ -240,8 +250,13 @@ export function RemoteSessionCard(props: Props) {
                     </div>
 
                     {/* Extra summary info: suggested action, last command, important files */}
-                    {(suggestedAction || lastCommand || importantFiles.length > 0) && (
+                    {(pendingQuestion?.question || suggestedAction || lastCommand || importantFiles.length > 0 || hasTokenUsage) && (
                         <div style={{ display: "flex", gap: "6px", marginTop: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                            {pendingQuestion?.question && (
+                                <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.pill, background: colors.warningBg, color: colors.warning, fontWeight: 600 }}>
+                                    ? {pendingQuestion.question}
+                                </span>
+                            )}
                             {suggestedAction && (
                                 <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.pill, background: colors.warningBg, color: colors.warning, fontWeight: 500 }}>
                                     💡 {suggestedAction}
@@ -255,6 +270,12 @@ export function RemoteSessionCard(props: Props) {
                             {importantFiles.length > 0 && (
                                 <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>
                                     📁 {importantFiles.slice(0, 3).join(", ")}{importantFiles.length > 3 ? ` +${importantFiles.length - 3}` : ""}
+                                </span>
+                            )}
+                            {hasTokenUsage && (
+                                <span style={{ fontSize: "0.68rem", padding: "2px 8px", borderRadius: radius.sm, background: colors.successBg, color: colors.success, fontWeight: 600 }}>
+                                    {localizeText(currentLang, "Session tokens", "会话 Token", "會話 Token")}: {formatCompactTokens(tokenUsage?.input_tokens)} in / {formatCompactTokens(tokenUsage?.output_tokens)} out
+                                    {(tokenUsage?.cached_input_tokens || 0) > 0 ? ` | ${formatCompactTokens(tokenUsage?.cached_input_tokens)} cache` : ""}
                                 </span>
                             )}
                         </div>

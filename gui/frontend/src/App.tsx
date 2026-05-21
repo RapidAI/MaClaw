@@ -52,7 +52,9 @@ import { ProxySettingsPanel } from './components/settings/ProxySettingsPanel';
 import { IMSettingsPanel } from './components/settings/IMSettingsPanel';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
+import { countActiveSshBackgroundTasks, isActiveManageableBackgroundStatus } from './components/layout/backgroundTaskCount';
 import { FavoriteEmployeeSettingsPanel } from './components/settings/FavoriteEmployeeSettingsPanel';
+import { MAX_FAVORITE_EMPLOYEES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { VirtualEmployeeSettingsPanel } from './components/settings/VirtualEmployeeSettingsPanel';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
@@ -76,7 +78,7 @@ import { RemoteActivationDialog } from './components/modals/RemoteActivationDial
 import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDialog';
 import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
-import type { RemoteCenterHubOption, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
+import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 
 
 
@@ -187,9 +189,7 @@ function App() {
 
     // Load favorite employees from config
     useEffect(() => {
-        if (config?.favorite_employees) {
-            setFavoriteEmployeeIds(config.favorite_employees);
-        }
+        setFavoriteEmployeeIds(normalizeFavoriteEmployeeIds(config?.favorite_employees));
     }, [config?.favorite_employees]);
 
     // Fetch VE list for sidebar favorites resolution
@@ -202,7 +202,7 @@ function App() {
                 if (cancelled) return;
                 if ((mod as any).ListVirtualEmployees) {
                     (mod as any).ListVirtualEmployees().then((list: VirtualEmployeeEntry[]) => {
-                        if (!cancelled && list && list.length > 0) {
+                        if (!cancelled && Array.isArray(list)) {
                             setVeList(list);
                         }
                     }).catch(() => {
@@ -298,8 +298,8 @@ function App() {
     const veAuthorized = veNavigationAvailable;
     const veSettingsAuthorized = digitalEmployeeAuthorizationUsable;
     useEffect(() => {
-        if (!veSettingsAuthorized && settingsTab === 'virtualEmployee') setSettingsTab('general');
-    }, [veSettingsAuthorized, settingsTab]);
+        if (!veNavigationAvailable && settingsTab === 'virtualEmployee') setSettingsTab('general');
+    }, [settingsTab, veNavigationAvailable]);
     useEffect(() => {
         if (veAuthorized) return;
         setPendingVEOpen(null);
@@ -314,10 +314,11 @@ function App() {
     }, [favoriteEmployeeIds, veList]);
 
     const updateFavoriteEmployees = useCallback(async (newList: string[]) => {
-        setFavoriteEmployeeIds(newList);
+        const normalized = normalizeFavoriteEmployeeIds(newList);
+        setFavoriteEmployeeIds(normalized);
         try {
             const latest = await LoadConfig();
-            const updated = new main.AppConfig({ ...latest, favorite_employees: newList } as any);
+            const updated = new main.AppConfig({ ...latest, favorite_employees: normalized } as any);
             await SaveConfig(updated);
             setConfig(updated);
         } catch {}
@@ -329,7 +330,7 @@ function App() {
         // Without this, if veList hasn't loaded yet or the fetch failed, the slot would
         // show a fallback name (id.slice(0,6)) instead of the actual VE name.
         setVeList(prev => prev.some(v => v.id === ve.id) ? prev : [...prev, ve]);
-        if (favoriteEmployeeIds.length < 6) {
+        if (favoriteEmployeeIds.length < MAX_FAVORITE_EMPLOYEES) {
             updateFavoriteEmployees([...favoriteEmployeeIds, ve.id]);
         } else {
             setShowFavReplacePicker({ ve });
@@ -338,6 +339,10 @@ function App() {
 
     const handleReplaceFavorite = useCallback((index: number) => {
         if (!showFavReplacePicker) return;
+        if (index < 0 || index >= favoriteEmployeeIds.length) {
+            setShowFavReplacePicker(null);
+            return;
+        }
         const ve = showFavReplacePicker.ve;
         // Ensure the VE is in veList for immediate resolution (same as handleSetFavoriteEmployee)
         setVeList(prev => prev.some(v => v.id === ve.id) ? prev : [...prev, ve]);
@@ -390,7 +395,7 @@ function App() {
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
-    const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<{ provider: string; isHubService: boolean; input: number; output: number; total: number }>({ provider: '', isHubService: false, input: 0, output: 0, total: 0 });
+    const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
     const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
 
@@ -1540,7 +1545,11 @@ function App() {
             const input = stat?.input_tokens ?? stat?.InputTokens ?? 0;
             const output = stat?.output_tokens ?? stat?.OutputTokens ?? 0;
             const total = stat?.total_tokens ?? stat?.TotalTokens ?? input + output;
-            return { input, output, total };
+            const cachedInput = stat?.cached_input_tokens ?? stat?.CachedInputTokens ?? 0;
+            const cacheWrite = stat?.cache_write_tokens ?? stat?.CacheWriteTokens ?? 0;
+            const requests = stat?.requests ?? stat?.Requests ?? 0;
+            const cachedRequests = stat?.cached_requests ?? stat?.CachedRequests ?? 0;
+            return { input, output, total, cachedInput, cacheWrite, requests, cachedRequests };
         };
         const normalizeProviderState = (data?: {
             providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
@@ -1559,14 +1568,14 @@ function App() {
             return { providers: list, current };
         };
         const getUsageForProvider = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {
-            if (!provider) return { input: 0, output: 0, total: 0 };
+            if (!provider) return { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 };
             const direct = usageMap[provider];
             if (direct) return normalizeUsage(direct);
             for (const alias of sidebarProviderAliases[provider] || []) {
                 const stat = usageMap[alias];
                 if (stat) return normalizeUsage(stat);
             }
-            return { input: 0, output: 0, total: 0 };
+            return { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 };
         };
         const hasUsage = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {
             return getUsageForProvider(usageMap, provider).total > 0;
@@ -1620,7 +1629,7 @@ function App() {
                 }
             } catch {
                 if (!cancelled) {
-                    setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0 });
+                    setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 });
                     setSidebarHubCredits(null);
                 }
             }
@@ -1715,14 +1724,14 @@ function App() {
         }) || null;
     }, [remoteSessions, activeTool]);
 
-    // Track background loops for sidebar badge
+    // Track manageable background loops for the sidebar badge and system status.
     const [sidebarBgLoops, setSidebarBgLoops] = useState<any[]>([]);
     useEffect(() => {
         let cancelled = false;
         const refresh = async () => {
             try {
                 const loops = await ListBackgroundLoops();
-                if (!cancelled) setSidebarBgLoops(loops || []);
+                if (!cancelled) setSidebarBgLoops(Array.isArray(loops) ? loops : []);
             } catch { if (!cancelled) setSidebarBgLoops([]); }
         };
         refresh();
@@ -1741,9 +1750,11 @@ function App() {
             const status = String(session.status || session.summary?.status || "").toLowerCase();
             return !TERMINAL_SESSION_STATUSES.has(status);
         }).length;
-        const bgCount = sidebarBgLoops.filter((l: any) => l.status === "running" || l.status === "paused").length;
+        const bgCount = sidebarBgLoops.filter((loop: any) => isActiveManageableBackgroundStatus(loop?.status ?? loop?.Status)).length;
         return remoteCount + bgCount;
     }, [remoteSessions, sidebarBgLoops]);
+
+    const sshBackgroundTaskCount = useMemo(() => countActiveSshBackgroundTasks(sidebarBgLoops), [sidebarBgLoops]);
 
     // Show onboarding wizard if remote registration is not done (checked once on startup).
     const onboardingRegCheckDone = useRef(false);
@@ -2402,7 +2413,7 @@ ${instruction}`;
         : null;
 
     const currentProject = getCurrentProject();
-    const settingsTabOptions = getSettingsTabOptions(lang, { hideVirtualEmployee: !veSettingsAuthorized });
+    const settingsTabOptions = getSettingsTabOptions(lang, { hideVirtualEmployee: !veNavigationAvailable });
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
@@ -2434,6 +2445,7 @@ ${instruction}`;
                 weixinStatus={weixinStatus}
                 lansengerStatus={lansengerStatus}
                 runningTaskCount={runningTaskCount}
+                sshBackgroundTaskCount={sshBackgroundTaskCount}
                 t={t}
                 gossipAllowed={gossipAllowed}
                 config={config}
@@ -2744,8 +2756,7 @@ ${instruction}`;
                             <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>
                                 <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
-
-                            {veSettingsAuthorized && (
+                            {veNavigationAvailable && (
                                 <div className="settings-panel" style={{ display: settingsTab === 'virtualEmployee' ? 'block' : 'none' }}>
                                     <div style={{ maxWidth: '600px', margin: '0 auto' }}>
                                         <FavoriteEmployeeSettingsPanel
@@ -2757,9 +2768,11 @@ ${instruction}`;
                                             lang={lang}
                                         />
                                     </div>
-                                    <div style={{ maxWidth: '600px', margin: '24px auto 0', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
-                                        <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
-                                    </div>
+                                    {veSettingsAuthorized && (
+                                        <div style={{ maxWidth: '600px', margin: '24px auto 0', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
+                                            <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
+                                        </div>
+                                    )}
                                 </div>
                             )}
 

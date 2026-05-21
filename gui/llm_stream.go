@@ -1166,15 +1166,10 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 				StopReason  string `json:"stop_reason,omitempty"`
 			} `json:"delta,omitempty"`
 			Message struct {
-				StopReason string `json:"stop_reason,omitempty"`
-				Usage      *struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
-				} `json:"usage,omitempty"`
+				StopReason string     `json:"stop_reason,omitempty"`
+				Usage      *llm.Usage `json:"usage,omitempty"`
 			} `json:"message,omitempty"`
-			Usage *struct {
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage,omitempty"`
+			Usage *llm.Usage `json:"usage,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
 			continue
@@ -1247,10 +1242,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 			}
 			// Anthropic sends input_tokens in message_start.message.usage
 			if evt.Message.Usage != nil {
-				usage = &llm.Usage{
-					InputTokens:  evt.Message.Usage.InputTokens,
-					PromptTokens: evt.Message.Usage.InputTokens,
-				}
+				usage = evt.Message.Usage
 			}
 		}
 	}

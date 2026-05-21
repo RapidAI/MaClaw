@@ -43,6 +43,39 @@ func TestManualBindHandlerCreatesUser(t *testing.T) {
 	}
 }
 
+func issueTenantAdminTokenForTest(t *testing.T, services *hubAdminRouterTestServices, slug string) string {
+	t.Helper()
+	globalToken := issueHubAdminToken(t, services.handler)
+	createResp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   slug,
+		"name":                   "Tenant " + slug,
+		"initial_admin_username": slug + "-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    slug + "-owner@example.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+	loginResp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": slug + "-owner",
+		"password": "StrongPassword123!",
+		"tenant":   "tenant_" + slug,
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var payload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+	if strings.TrimSpace(payload.AccessToken) == "" {
+		t.Fatal("tenant admin token is empty")
+	}
+	return payload.AccessToken
+}
+
 func TestLookupUserHandlerReturnsBoundUser(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	token := issueHubAdminToken(t, router)
@@ -357,6 +390,7 @@ func TestListFailureLogsHandlerFiltersTenantAdminLogs(t *testing.T) {
 	loginResp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/login", map[string]any{
 		"username": "acme-admin",
 		"password": "TenantPass123!",
+		"tenant":   "tenant_acme",
 	}, "")
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("tenant login status=%d body=%s", loginResp.Code, loginResp.Body.String())
@@ -537,11 +571,12 @@ func TestGetCenterStatusHandlerSelectsTenantAuthorizationForGlobalAdmin(t *testi
 
 func TestAdminDiagnoseLLMServiceReturnsBillingRoutes(t *testing.T) {
 	services := newAdminRouterTestContext(t)
-	token := issueHubAdminToken(t, services.handler)
+	token := issueTenantAdminTokenForTest(t, services, "diag")
 	ctx := context.Background()
 	now := time.Now().UTC()
+	system := scopedSystemSettingsForTenant("tenant_diag", services.store.System)
 
-	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{
 			ID:           "grant-group",
 			Name:         "Grant Group",
@@ -576,7 +611,7 @@ func TestAdminDiagnoseLLMServiceReturnsBillingRoutes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
-	if err := im.SaveLLMProviderRegistry(ctx, services.store.System, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{
 		ID:     "provider-a",
 		Name:   "Provider A",
 		Model:  "test-model",
@@ -621,7 +656,7 @@ func TestAdminDiagnoseLLMServiceReturnsBillingRoutes(t *testing.T) {
 
 func TestAdminGenerateLLMProviderTestKey(t *testing.T) {
 	services := newAdminRouterTestContext(t)
-	token := issueHubAdminToken(t, services.handler)
+	token := issueTenantAdminTokenForTest(t, services, "key")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-key", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -637,8 +672,8 @@ func TestAdminGenerateLLMProviderTestKey(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload["email"] != "admin@example.com" {
-		t.Fatalf("expected admin@example.com, got %#v", payload["email"])
+	if payload["email"] != "key-owner@example.com" {
+		t.Fatalf("expected key-owner@example.com, got %#v", payload["email"])
 	}
 	if payload["token_type"] != "Bearer" {
 		t.Fatalf("expected Bearer token type, got %#v", payload["token_type"])

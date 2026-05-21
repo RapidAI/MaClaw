@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
-import type { SidebarHubCredits } from '../../types/appShell';
+import type { SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SidebarToolSelector } from './SidebarToolSelector';
 import { SidebarRecentTasks, type RecentProject, type TaskContextMenu } from './SidebarRecentTasks';
@@ -29,6 +29,7 @@ type SidebarAiPaneProps = {
     telegramStatus: string;
     weixinStatus: string;
     lansengerStatus: string;
+    sshBackgroundTaskCount?: number;
     config: any;
     activeTool: string;
     toolDropdownOpen: boolean;
@@ -48,7 +49,7 @@ type SidebarAiPaneProps = {
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
     hideTask: (projectPath: string) => Promise<unknown>;
-    sidebarCurrentProviderTokenUsage: { provider: string; isHubService: boolean; input: number; output: number; total: number };
+    sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     formatSidebarTokens: (value: number) => string;
     formatSidebarHubExpiry: (credits: SidebarHubCredits | null) => string;
@@ -86,6 +87,7 @@ export const SidebarAiPane = ({
     telegramStatus,
     weixinStatus,
     lansengerStatus,
+    sshBackgroundTaskCount = 0,
     config,
     activeTool,
     toolDropdownOpen,
@@ -152,7 +154,7 @@ export const SidebarAiPane = ({
                 {middleTab === 'tasks' && <SidebarRecentTasks lang={lang} themeMode={aiThemeMode} recentProjects={recentProjects} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeRecentProject={resumeRecentProject} assistantReady={assistantReady} onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked} createRecentTask={createRecentTask} refreshRecentProjects={refreshRecentProjects} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} />}
                 {middleTab === 'employees' && showDigitalEmployeeTabs && <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} /></div>}
                 {middleTab === 'history' && showDigitalEmployeeTabs && <SidebarHistorySessions lang={lang} enabled={(config as any)?.group_discussion?.enabled !== false} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} />}
-                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} />
+                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} sshBackgroundTaskCount={sshBackgroundTaskCount} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} />
             </div>
             <div onMouseDown={handleRecentTasksResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
         </>

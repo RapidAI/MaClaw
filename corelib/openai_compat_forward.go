@@ -175,7 +175,9 @@ func openAICompatCacheWriteUsageValue(usage map[string]interface{}) interface{} 
 		usage["cache_creation_input_tokens"],
 		usage["cache_write_input_tokens"],
 		openAICompatLookupMapValue(usage, "prompt_tokens_details", "cache_write_tokens"),
+		openAICompatLookupMapValue(usage, "prompt_tokens_details", "cache_creation_input_tokens"),
 		openAICompatLookupMapValue(usage, "input_tokens_details", "cache_write_tokens"),
+		openAICompatLookupMapValue(usage, "input_tokens_details", "cache_creation_input_tokens"),
 	)
 }
 
@@ -423,6 +425,41 @@ func convertResponsesTools(tools []map[string]interface{}) []map[string]interfac
 	return out
 }
 
+// responsesToOpenAIUsage converts Responses API usage into OpenAI-compatible
+// chat completion usage while preserving prompt-cache counters.
+func responsesToOpenAIUsage(raw interface{}) map[string]interface{} {
+	usage, _ := raw.(map[string]interface{})
+	var promptTokens, completionTokens float64
+	if usage != nil {
+		promptTokens, _ = usage["input_tokens"].(float64)
+		completionTokens, _ = usage["output_tokens"].(float64)
+	}
+	result := map[string]interface{}{
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": completionTokens,
+		"total_tokens":      promptTokens + completionTokens,
+	}
+	if usage == nil {
+		return result
+	}
+	cacheRead := numberToInt64(openAICompatCachedUsageValue(usage))
+	cacheWrite := numberToInt64(openAICompatCacheWriteUsageValue(usage))
+	if cacheRead > 0 || cacheWrite > 0 {
+		result["prompt_tokens_details"] = map[string]interface{}{
+			"cached_tokens": cacheRead,
+		}
+	}
+	if cacheRead > 0 {
+		result["cache_read_input_tokens"] = float64(cacheRead)
+	}
+	if cacheWrite > 0 {
+		result["cache_write_input_tokens"] = float64(cacheWrite)
+		details := result["prompt_tokens_details"].(map[string]interface{})
+		details["cache_creation_input_tokens"] = cacheWrite
+	}
+	return result
+}
+
 // responsesToOpenAI converts a Responses API response body
 // to an OpenAI Chat Completions response body.
 func responsesToOpenAI(resp map[string]interface{}, model string) map[string]interface{} {
@@ -482,12 +519,7 @@ func responsesToOpenAI(resp map[string]interface{}, model string) map[string]int
 		message["tool_calls"] = toolCalls
 		finishReason = "tool_calls"
 	}
-	var promptTokens, completionTokens float64
-	if usage, ok := resp["usage"].(map[string]interface{}); ok {
-		promptTokens, _ = usage["input_tokens"].(float64)
-		completionTokens, _ = usage["output_tokens"].(float64)
-	}
-	totalTokens := promptTokens + completionTokens
+	usage := responsesToOpenAIUsage(resp["usage"])
 	id, _ := resp["id"].(string)
 	if id == "" {
 		id = "chatcmpl-proxy"
@@ -503,11 +535,7 @@ func responsesToOpenAI(resp map[string]interface{}, model string) map[string]int
 				"finish_reason": finishReason,
 			},
 		},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     promptTokens,
-			"completion_tokens": completionTokens,
-			"total_tokens":      totalTokens,
-		},
+		"usage": usage,
 	}
 }
 

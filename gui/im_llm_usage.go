@@ -7,8 +7,14 @@ import (
 )
 
 type llmUsageSnapshot struct {
-	Input  int
-	Output int
+	Input      int
+	Output     int
+	CacheRead  int
+	CacheWrite int
+}
+
+func (s llmUsageSnapshot) HasAny() bool {
+	return s.Input > 0 || s.Output > 0 || s.CacheRead > 0 || s.CacheWrite > 0
 }
 
 func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, resp *llm.Response, conversation []interface{}) llmUsageSnapshot {
@@ -16,19 +22,19 @@ func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, resp *llm.Respon
 		return llmUsageSnapshot{}
 	}
 	input, output := deriveLLMTokenUsage(resp, conversation)
+	cacheRead, cacheWrite := deriveCacheTokens(resp)
 	providerName := h.getMaclawLLMProviders().Current
-	log.Printf("[LLM] usage %s provider=%q input=%d output=%d usage_nil=%t choices=%d", label, providerName, input, output, resp.Usage == nil, len(resp.Choices))
+	log.Printf("[LLM] usage %s provider=%q input=%d output=%d cache_read=%d cache_write=%d usage_nil=%t choices=%d", label, providerName, input, output, cacheRead, cacheWrite, resp.Usage == nil, len(resp.Choices))
 	if len(resp.Choices) > 0 {
 		log.Printf("[LLM] finish_reason=%q content_len=%d tool_calls=%d", resp.Choices[0].FinishReason, len(resp.Choices[0].Message.Content), len(resp.Choices[0].Message.ToolCalls))
 	}
-	cacheRead, cacheWrite := deriveCacheTokens(resp)
 	h.accumulateLLMTokenUsageWithCache(providerName, input, output, cacheRead, cacheWrite)
 	// OpenHuman-inspired: record cost for budget tracking
 	if input > 0 || output > 0 {
 		model := h.getMaclawLLMConfig().Model
 		h.recordLLMCost(model, input, output)
 	}
-	return llmUsageSnapshot{Input: input, Output: output}
+	return llmUsageSnapshot{Input: input, Output: output, CacheRead: cacheRead, CacheWrite: cacheWrite}
 }
 
 func deriveCacheTokens(resp *llm.Response) (int, int) {

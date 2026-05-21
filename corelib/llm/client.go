@@ -23,11 +23,11 @@ const maxToolArgumentsBytes = 180 * 1024
 // OpenAIChatRequestOptions controls how an OpenAI-compatible chat/completions
 // request is built.
 type OpenAIChatRequestOptions struct {
-	Stream        bool
-	Tools         []map[string]interface{}
-	ExtraBody     map[string]interface{}
-	PassThrough   map[string]interface{}
-	ToolChoice    interface{}
+	Stream         bool
+	Tools          []map[string]interface{}
+	ExtraBody      map[string]interface{}
+	PassThrough    map[string]interface{}
+	ToolChoice     interface{}
 	ResponseFormat interface{}
 }
 
@@ -125,7 +125,6 @@ func NewOpenAIChatRequest(
 	}
 	return req, data, endpoint, nil
 }
-
 
 func normalizeMiniMaxToolCallMessages(cfg corelib.MaclawLLMConfig, messages []interface{}) []interface{} {
 	if !strings.Contains(cfg.URL, "minimaxi.com") {
@@ -544,10 +543,10 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 
 	// toolCalls accumulated by index
 	type toolCallAcc struct {
-		ID       string
-		Type     string
-		Name     string
-		ArgsBuf  strings.Builder
+		ID      string
+		Type    string
+		Name    string
+		ArgsBuf strings.Builder
 	}
 	toolCalls := make(map[int]*toolCallAcc)
 
@@ -567,6 +566,9 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		var chunk sseChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -604,9 +606,6 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 			}
 		}
 
-		if chunk.Usage != nil {
-			usage = chunk.Usage
-		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("SSE stream read error: %w", err)

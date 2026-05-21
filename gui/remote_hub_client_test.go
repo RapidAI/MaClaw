@@ -99,6 +99,12 @@ func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
 			{SessionID: "sess-1", Type: "session.init", Summary: "Session started"},
 			{SessionID: "sess-1", Type: "command.started", Summary: "Running go test ./..."},
 		},
+		TokenUsage: RemoteSessionTokenUsage{
+			InputTokens:       1200,
+			OutputTokens:      80,
+			CachedInputTokens: 768,
+			CacheWriteTokens:  128,
+		},
 	}
 
 	client := NewRemoteHubClient(app, manager)
@@ -108,13 +114,26 @@ func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
 	}
 	defer func() { _ = client.Disconnect() }()
 
-	gotTypes := collectMessageTypes(t, messageCh, 8, 5*time.Second)
+	messages := collectMessages(t, messageCh, 8, 5*time.Second)
+	gotTypes := messageTypes(messages)
 	assertContainsType(t, gotTypes, "auth.machine")
 	assertContainsType(t, gotTypes, "machine.hello")
 	assertContainsType(t, gotTypes, "session.created")
 	assertContainsType(t, gotTypes, "session.important_event")
 	assertContainsType(t, gotTypes, "session.summary")
 	assertContainsType(t, gotTypes, "session.preview_delta")
+	summaryMsg := findMessageByType(t, messages, "session.summary")
+	payload, ok := summaryMsg["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected summary payload map, got %#v", summaryMsg["payload"])
+	}
+	usage, ok := payload["token_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected diagnostic token_usage in summary payload, got %#v", payload["token_usage"])
+	}
+	if usage["input_tokens"] != float64(1200) || usage["cached_input_tokens"] != float64(768) {
+		t.Fatalf("unexpected token_usage payload: %#v", usage)
+	}
 }
 
 func TestRemoteHubClientConnectAndSyncToolsWithMissingConfigSelector(t *testing.T) {

@@ -31,6 +31,30 @@
   const dtk = (key, vars = {}) => ((DINGTALK_I18N[currentLang] || DINGTALK_I18N.en)[key] || DINGTALK_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
   const cai = (key, vars = {}) => ((CONTENT_AUDIT_I18N[currentLang] || CONTENT_AUDIT_I18N.en)[key] || CONTENT_AUDIT_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
   const hpi = (key, vars = {}) => ((HUB_LLM_PANE_I18N[currentLang] || HUB_LLM_PANE_I18N.en)[key] || HUB_LLM_PANE_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+  function imAdminProfile() { return typeof global.adminProfile === 'function' ? global.adminProfile() : null; }
+  function imTenantScoped() { const profile = imAdminProfile(); return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant'); }
+  function imHasProfile() { return !!imAdminProfile(); }
+  function imAllowedSub(sub) {
+    const value = String(sub || '').toLowerCase();
+    if (!imHasProfile()) return true;
+    return imTenantScoped() ? value !== 'hubllm' : value === 'hubllm';
+  }
+  function firstAllowedImSub() { return imTenantScoped() ? 'feishu' : 'hubllm'; }
+  global.applyImScopeUI = function applyImScopeUI() {
+    const allowed = firstAllowedImSub();
+    document.querySelectorAll('.im-sidebar button[data-imsub]').forEach(function(btn) {
+      const sub = btn.getAttribute('data-imsub') || '';
+      btn.classList.toggle('hidden', !imAllowedSub(sub));
+    });
+    document.querySelectorAll('.im-pane[id^="im-pane-"]').forEach(function(pane) {
+      const sub = pane.id.replace('im-pane-', '');
+      pane.classList.toggle('hidden', !imAllowedSub(sub));
+      if (!imAllowedSub(sub)) pane.classList.remove('active');
+    });
+    const active = document.querySelector('.im-sidebar button.active');
+    if (!active || active.classList.contains('hidden')) global.openImSub(allowed);
+  };
+  global.openDefaultImSub = function openDefaultImSub() { global.openImSub(firstAllowedImSub()); };
   function applyLegacyImI18n() {
     _s('wecomConfigTitle', 'textContent', wcm('title'));
     _s('wecomConfigDesc', 'textContent', wcm('desc'));
@@ -93,6 +117,7 @@
   }
 
   global.openImSub = function openImSub(sub) {
+    if (!imAllowedSub(sub)) sub = firstAllowedImSub();
     document.querySelectorAll('.im-sidebar button').forEach(function(btn) { btn.classList.remove('active'); });
     document.querySelectorAll('.im-pane').forEach(function(pane) { pane.classList.remove('active'); });
     document.querySelectorAll('.im-sidebar button').forEach(function(btn) {
@@ -107,6 +132,7 @@
     if (sub === 'dingtalk') global.loadDingTalkConfig();
     if (sub === 'hubllm') { loadHubLlmConfig(); loadHubLlmStatus(); }
     if (sub === 'contentaudit' && typeof loadContentAuditConfig === 'function') loadContentAuditConfig();
+    if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();
   };
 
   global.loadOpenclawImConfig = async function loadOpenclawImConfig() {

@@ -147,8 +147,46 @@ func (r *adminRepo) GetByUsername(ctx context.Context, username string) (*store.
 	row := r.readDB.QueryRowContext(
 		ctx,
 		`SELECT id, username, password_hash, email, scope, role, tenant_id, display_name, status, created_at, updated_at
-		 FROM admin_users WHERE username = ?`,
-		username,
+		 FROM admin_users WHERE username = ? AND scope = 'global' AND tenant_id = ''`,
+		strings.TrimSpace(username),
+	)
+
+	var (
+		admin                store.AdminUser
+		createdAt, updatedAt string
+	)
+	if err := row.Scan(
+		&admin.ID,
+		&admin.Username,
+		&admin.PasswordHash,
+		&admin.Email,
+		&admin.Scope,
+		&admin.Role,
+		&admin.TenantID,
+		&admin.DisplayName,
+		&admin.Status,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	admin.CreatedAt = mustParseTime(createdAt)
+	admin.UpdatedAt = mustParseTime(updatedAt)
+	return &admin, nil
+}
+
+func (r *adminRepo) GetByUsernameScoped(ctx context.Context, username, scope, tenantID string) (*store.AdminUser, error) {
+	row := r.readDB.QueryRowContext(
+		ctx,
+		`SELECT id, username, password_hash, email, scope, role, tenant_id, display_name, status, created_at, updated_at
+		 FROM admin_users WHERE username = ? AND scope = ? AND tenant_id = ?`,
+		strings.TrimSpace(username),
+		normalizeAdminScope(scope),
+		strings.TrimSpace(tenantID),
 	)
 
 	var (
@@ -194,23 +232,35 @@ func (r *adminRepo) DeleteAll(ctx context.Context) error {
 }
 
 func (r *adminRepo) UpdatePassword(ctx context.Context, username, passwordHash string, updatedAt time.Time) error {
+	return r.UpdatePasswordScoped(ctx, username, "global", "", passwordHash, updatedAt)
+}
+
+func (r *adminRepo) UpdatePasswordScoped(ctx context.Context, username, scope, tenantID, passwordHash string, updatedAt time.Time) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE username = ?`,
+		`UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE username = ? AND scope = ? AND tenant_id = ?`,
 		passwordHash,
 		updatedAt.Format(time.RFC3339),
-		username,
+		strings.TrimSpace(username),
+		normalizeAdminScope(scope),
+		strings.TrimSpace(tenantID),
 	)
 	return err
 }
 
 func (r *adminRepo) UpdateEmail(ctx context.Context, username, email string, updatedAt time.Time) error {
+	return r.UpdateEmailScoped(ctx, username, "global", "", email, updatedAt)
+}
+
+func (r *adminRepo) UpdateEmailScoped(ctx context.Context, username, scope, tenantID, email string, updatedAt time.Time) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`UPDATE admin_users SET email = ?, updated_at = ? WHERE username = ?`,
+		`UPDATE admin_users SET email = ?, updated_at = ? WHERE username = ? AND scope = ? AND tenant_id = ?`,
 		email,
 		updatedAt.Format(time.RFC3339),
-		username,
+		strings.TrimSpace(username),
+		normalizeAdminScope(scope),
+		strings.TrimSpace(tenantID),
 	)
 	return err
 }

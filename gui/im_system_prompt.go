@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -158,7 +159,18 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 		deps.UserProfileSection = func() string { return model.FormatForPrompt() }
 	}
 
-	return agent.BuildSystemPrompt(deps, msg, includeMemoryGuide)
+	bundle := agent.BuildPromptBundle(deps, msg, includeMemoryGuide)
+	if os.Getenv("MACLAW_DEBUG_PROMPT_BUNDLE") == "1" {
+		stats := bundle.TokenStats()
+		log.Printf("[prompt-bundle] surface=gui_im stable=%d session=%d retrieved=%d total=%d stable_key=%s",
+			stats.StableSystemPromptTokens,
+			stats.SessionContextTokens,
+			stats.RetrievedContextTokens,
+			stats.TotalTokens,
+			bundle.StableCacheKey(),
+		)
+	}
+	return bundle.String()
 }
 
 // desktopWorkflowDocOverride returns a system prompt section that overrides

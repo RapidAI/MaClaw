@@ -144,7 +144,10 @@ export const SidebarNavRail = ({
             <FavoriteEmployeeButtons
                 slots={favoriteEmployees}
                 veAuthorized={veAuthorized}
-                onStartConversation={onStartVEConversation}
+                onStartConversation={(veId) => {
+                    switchTool('ai');
+                    onStartVEConversation(veId);
+                }}
                 onReorder={onReorderFavorites}
             />
 

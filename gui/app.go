@@ -174,6 +174,7 @@ type App struct {
 	deepCrawlMu                sync.Mutex               // guards deepCrawlCancel
 	deepCrawlCancel            context.CancelFunc       // cancels active deep crawl session
 	deepCrawlCtx               context.Context          // active deep crawl context (used to identify ownership)
+	deepCrawlMode              string                   // active deep crawl owner: crawl or preview
 	floatingAssistant          *FloatingAssistantManager
 	floatingAssistantMu        sync.Mutex
 	agentViewEmissionSeq       atomic.Int64

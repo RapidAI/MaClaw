@@ -548,6 +548,7 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 
 func GetLLMUsageReportHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		rep, err := loadLLMUsageReports(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_USAGE_REPORT_LOAD_FAILED", err.Error())

@@ -80,6 +80,8 @@ type agentLoopLLMDispatchResult struct {
 	RetryCount               int
 	InputTokens              int
 	OutputTokens             int
+	CacheReadTokens          int
+	CacheWriteTokens         int
 	UsageElapsed             time.Duration
 	PostStreamUsageCompleted bool
 	Exit                     *IMAgentResponse
@@ -126,9 +128,11 @@ func (h *IMMessageHandler) dispatchAgentLoopLLMRound(opts agentLoopLLMDispatchOp
 	result.FirstResponseAt = llmRound.FirstResponseAt
 	result.RetryWaitElapsed = llmRound.RetryWaitElapsed
 	result.RetryCount = llmRound.RetryCount
-	if llmRound.Usage.Input > 0 || llmRound.Usage.Output > 0 {
+	if llmRound.Usage.HasAny() {
 		result.InputTokens = llmRound.Usage.Input
 		result.OutputTokens = llmRound.Usage.Output
+		result.CacheReadTokens = llmRound.Usage.CacheRead
+		result.CacheWriteTokens = llmRound.Usage.CacheWrite
 	}
 	if llmRound.UsageDone {
 		result.UsageElapsed = llmRound.UsageElapsed
@@ -186,7 +190,7 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 	result.Response = guardResult.Response
 	result.Err = guardResult.Err
 	result.Conversation = guardResult.Conversation
-	if guardResult.Usage.Input > 0 || guardResult.Usage.Output > 0 {
+	if guardResult.Usage.HasAny() {
 		result.Usage = guardResult.Usage
 	}
 	result.Exit = guardResult.Exit

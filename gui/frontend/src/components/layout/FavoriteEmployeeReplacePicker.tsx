@@ -60,19 +60,26 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                     {isZh ? `将「${newVeName}」替换到：` : `Replace with "${newVeName}":`}
                 </div>
                 {currentSlots.map((slot, index) => (
-                    <div
+                    <button
                         key={slot.veId}
+                        type="button"
                         data-testid={`replace-slot-${index}`}
+                        aria-label={isZh ? `替换第 ${index + 1} 个常用数字员工：${slot.name}` : `Replace favorite slot ${index + 1}: ${slot.name}`}
                         onClick={() => onReplace(index)}
                         style={{
                             display: 'flex',
                             alignItems: 'center',
                             gap: '8px',
+                            width: '100%',
                             padding: '8px 12px',
                             borderRadius: '8px',
+                            border: 0,
+                            background: 'transparent',
+                            font: 'inherit',
                             cursor: 'pointer',
                             transition: 'background 0.12s',
                             marginBottom: '4px',
+                            textAlign: 'left',
                         }}
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--theme-hover, rgba(0,0,0,0.05))'; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ''; }}
@@ -91,10 +98,11 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                         <span style={{ fontSize: '10px', color: 'var(--theme-text-muted)' }}>
                             {isZh ? '点击替换' : 'click to replace'}
                         </span>
-                    </div>
+                    </button>
                 ))}
                 <div style={{ marginTop: '10px', textAlign: 'right' }}>
                     <button
+                        type="button"
                         onClick={onCancel}
                         style={{
                             fontSize: '11px', padding: '4px 12px', borderRadius: '6px',

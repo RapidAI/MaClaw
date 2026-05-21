@@ -188,10 +188,10 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
 		if len(chunk.Choices) == 0 {
-			if chunk.Usage != nil {
-				usage = chunk.Usage
-			}
 			continue
 		}
 
@@ -317,21 +317,16 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 				StopReason  string `json:"stop_reason,omitempty"`
 			} `json:"delta,omitempty"`
 			ContentBlock *struct {
-				Type  string `json:"type"`
-				ID    string `json:"id,omitempty"`
-				Name  string `json:"name,omitempty"`
-				Text  string `json:"text,omitempty"`
+				Type string `json:"type"`
+				ID   string `json:"id,omitempty"`
+				Name string `json:"name,omitempty"`
+				Text string `json:"text,omitempty"`
 			} `json:"content_block,omitempty"`
 			Message *struct {
 				StopReason string `json:"stop_reason,omitempty"`
-				Usage      *struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
-				} `json:"usage,omitempty"`
+				Usage      *Usage `json:"usage,omitempty"`
 			} `json:"message,omitempty"`
-			Usage *struct {
-				OutputTokens int `json:"output_tokens,omitempty"`
-			} `json:"usage,omitempty"`
+			Usage *Usage `json:"usage,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue
@@ -376,9 +371,7 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 			}
 		case "message_start":
 			if event.Message != nil && event.Message.Usage != nil {
-				usage = &Usage{
-					InputTokens: event.Message.Usage.InputTokens,
-				}
+				usage = event.Message.Usage
 			}
 		case "message_stop":
 			// Stream complete.
@@ -390,6 +383,8 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 				usage = &Usage{}
 			}
 			usage.OutputTokens = event.Usage.OutputTokens
+			usage.CompletionTokens = event.Usage.OutputTokens
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 	}
 	if err := scanner.Err(); err != nil {

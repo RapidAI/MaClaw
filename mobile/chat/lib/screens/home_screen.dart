@@ -7,7 +7,8 @@ import '../services/api_client.dart';
 /// Root screen with bottom navigation: Chat / Voice / Profile.
 class HomeScreen extends StatefulWidget {
   final ApiClient api;
-  const HomeScreen({super.key, required this.api});
+  final VoidCallback onLogout;
+  const HomeScreen({super.key, required this.api, required this.onLogout});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -19,7 +20,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final List<Widget> _screens = [
     const ConversationListScreen(),
     const ContactListScreen(),
-    ProfileScreen(api: widget.api),
+    ProfileScreen(api: widget.api, onLogout: widget.onLogout),
   ];
 
   @override
@@ -30,9 +31,12 @@ class _HomeScreenState extends State<HomeScreen> {
         currentIndex: _currentIndex,
         onTap: (i) => setState(() => _currentIndex = i),
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), label: 'Chat'),
-          BottomNavigationBarItem(icon: Icon(Icons.phone_outlined), label: 'Voice'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'Me'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.chat_bubble_outline), label: 'Chat'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.phone_outlined), label: 'Voice'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.person_outline), label: 'Me'),
         ],
       ),
     );

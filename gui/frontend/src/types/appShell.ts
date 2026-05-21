@@ -12,9 +12,29 @@ export interface SidebarTokenUsageStat {
     input_tokens?: number;
     output_tokens?: number;
     total_tokens?: number;
+    cached_input_tokens?: number;
+    cache_write_tokens?: number;
+    requests?: number;
+    cached_requests?: number;
     InputTokens?: number;
     OutputTokens?: number;
     TotalTokens?: number;
+    CachedInputTokens?: number;
+    CacheWriteTokens?: number;
+    Requests?: number;
+    CachedRequests?: number;
+}
+
+export interface SidebarCurrentProviderTokenUsage {
+    provider: string;
+    isHubService: boolean;
+    input: number;
+    output: number;
+    total: number;
+    cachedInput?: number;
+    cacheWrite?: number;
+    requests?: number;
+    cachedRequests?: number;
 }
 
 export interface SidebarHubCreditGrant {

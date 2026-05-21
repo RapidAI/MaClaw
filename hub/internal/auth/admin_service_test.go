@@ -149,3 +149,53 @@ func TestAdminServiceChangePassword(t *testing.T) {
 		t.Fatalf("expected new password to work, got %v", err)
 	}
 }
+
+func TestTenantAdminsCanShareUsernameAcrossTenantScopes(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	if err := svc.SetupInitialAdmin(ctx, "shared", "globalpass123", "shared@example.com"); err != nil {
+		t.Fatalf("SetupInitialAdmin: %v", err)
+	}
+	if _, err := svc.CreateTenantAdmin(ctx, "tenant_a", "shared", "tenantpass123", "tenant@example.com", "Tenant A", "tenant_admin"); err != nil {
+		t.Fatalf("create tenant a admin: %v", err)
+	}
+	if _, err := svc.CreateTenantAdmin(ctx, "tenant_b", "shared", "tenantpass123", "tenant@example.com", "Tenant B", "tenant_admin"); err != nil {
+		t.Fatalf("create tenant b admin with reused username/email: %v", err)
+	}
+
+	_, globalAdmin, err := svc.Login(ctx, "shared", "globalpass123")
+	if err != nil {
+		t.Fatalf("global login: %v", err)
+	}
+	if globalAdmin.Scope != "global" || globalAdmin.TenantID != "" {
+		t.Fatalf("expected global admin, got %#v", globalAdmin)
+	}
+	if _, _, err := svc.LoginScoped(ctx, "shared", "tenantpass123", ""); !errors.Is(err, ErrInvalidAdminCredentials) {
+		t.Fatalf("tenant admin login without tenant scope should fail, got %v", err)
+	}
+	_, tenantAdmin, err := svc.LoginScoped(ctx, "shared", "tenantpass123", "tenant_a")
+	if err != nil {
+		t.Fatalf("tenant login: %v", err)
+	}
+	if tenantAdmin.Scope != "tenant" || tenantAdmin.TenantID != "tenant_a" {
+		t.Fatalf("expected tenant_a admin, got %#v", tenantAdmin)
+	}
+
+	if _, _, err := svc.ChangePasswordScoped(ctx, "shared", "tenantpass123", "tenantnew123", "tenant", "tenant_a"); err != nil {
+		t.Fatalf("tenant change password: %v", err)
+	}
+	if _, _, err := svc.LoginScoped(ctx, "shared", "tenantpass123", "tenant_a"); !errors.Is(err, ErrInvalidAdminCredentials) {
+		t.Fatalf("expected old tenant_a password to fail, got %v", err)
+	}
+	if _, _, err := svc.LoginScoped(ctx, "shared", "tenantnew123", "tenant_a"); err != nil {
+		t.Fatalf("expected tenant_a new password to work: %v", err)
+	}
+	if _, _, err := svc.LoginScoped(ctx, "shared", "tenantpass123", "tenant_b"); err != nil {
+		t.Fatalf("tenant_b password should be unchanged: %v", err)
+	}
+	if _, _, err := svc.Login(ctx, "shared", "globalpass123"); err != nil {
+		t.Fatalf("global password should be unchanged: %v", err)
+	}
+}

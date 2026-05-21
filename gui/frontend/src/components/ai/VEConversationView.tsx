@@ -307,6 +307,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const sessionIdRef = useRef<string | null>(existingSessionId || null);
     const reconnectAttemptRef = useRef(0);
     const sendingRef = useRef(false);
+    const awaitingReplyRef = useRef(false);
+    const queueDrainRunningRef = useRef(false);
+    const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [queueDrainSignal, setQueueDrainSignal] = useState(0);
 
     sendingRef.current = sending;
 
@@ -320,6 +324,24 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         setMentionStart(-1);
         setMentionSelectedIndex(0);
     }, []);
+
+    const releaseResponseGate = useCallback(() => {
+        awaitingReplyRef.current = false;
+        if (responseWatchdogRef.current) {
+            clearTimeout(responseWatchdogRef.current);
+            responseWatchdogRef.current = null;
+        }
+        if (!mountedRef.current) return;
+        setQueueDrainSignal((value) => value + 1);
+    }, []);
+
+    const armResponseWatchdog = useCallback(() => {
+        if (responseWatchdogRef.current) clearTimeout(responseWatchdogRef.current);
+        responseWatchdogRef.current = setTimeout(() => {
+            responseWatchdogRef.current = null;
+            releaseResponseGate();
+        }, 120000);
+    }, [releaseResponseGate]);
 
     const scheduleInputFocus = useCallback((position?: number) => {
         if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
@@ -385,6 +407,19 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     useEffect(() => {
         if (readOnly) closeMentionPopover();
     }, [closeMentionPopover, readOnly]);
+
+    useEffect(() => {
+        if (!readOnly) return;
+        queuedMessagesRef.current = [];
+        sendingRef.current = false;
+        awaitingReplyRef.current = false;
+        queueDrainRunningRef.current = false;
+        if (responseWatchdogRef.current) {
+            clearTimeout(responseWatchdogRef.current);
+            responseWatchdogRef.current = null;
+        }
+        setSending(false);
+    }, [readOnly]);
 
     useEffect(() => {
         if (readOnly || !externalMentionInsert?.name) return;
@@ -534,6 +569,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (focusTimerRef.current) {
                 clearTimeout(focusTimerRef.current);
             }
+            if (responseWatchdogRef.current) {
+                clearTimeout(responseWatchdogRef.current);
+            }
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -559,6 +597,12 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             clearTimeout(reconnectTimerRef.current);
             reconnectTimerRef.current = null;
         }
+        if (responseWatchdogRef.current) {
+            clearTimeout(responseWatchdogRef.current);
+            responseWatchdogRef.current = null;
+        }
+        awaitingReplyRef.current = false;
+        queueDrainRunningRef.current = false;
         setPendingAttachments([]);
         setInputText("");
         closeMentionPopover();
@@ -704,6 +748,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     messages: [...prev.messages, newMsg],
                 };
             });
+            releaseResponseGate();
         };
 
         const handleDisconnect = (data: any) => {
@@ -711,8 +756,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
             if (reconnectTimerRef.current) return;
+            releaseResponseGate();
             setState((prev) => ({
                 ...prev,
+                streaming: false,
+                streamContent: "",
+                streamFromId: "",
+                streamFromName: "",
                 connectionState: "disconnected",
             }));
             attemptReconnect();
@@ -730,14 +780,14 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (typeof unsub3 === "function") unsub3();
             else EventsOff("ve:disconnected");
         };
-    }, [attemptReconnect]);
+    }, [attemptReconnect, releaseResponseGate]);
 
     // --- Message Sending ---
 
     const doSendMessage = useCallback(
-        async (content: string, filePaths?: string[], messageId?: string) => {
+        async (content: string, filePaths?: string[], messageId?: string): Promise<boolean> => {
             const sid = sessionIdRef.current;
-            if (!sid) return;
+            if (!sid) return false;
 
             try {
                 if (filePaths && filePaths.length > 0 && sendMessageWithAttachments) {
@@ -756,6 +806,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         await (mod as any).SendVEMessage(sid, content);
                     }
                 }
+                return true;
             } catch (err: any) {
                 if (mountedRef.current) {
                     // Mark last user message as failed
@@ -777,24 +828,31 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         };
                     });
                 }
+                return false;
             }
         },
         [participants, sendGroupMessage, sendMessage, sendMessageWithAttachments]
     );
 
     const drainQueuedMessages = useCallback(async () => {
-        if (!sessionIdRef.current || queuedMessagesRef.current.length === 0) return;
-        const queued = [...queuedMessagesRef.current];
-        queuedMessagesRef.current = [];
-        for (const msg of queued) {
-            await doSendMessage(msg.content, msg.filePaths, msg.id);
+        if (queueDrainRunningRef.current || awaitingReplyRef.current || !sessionIdRef.current || queuedMessagesRef.current.length === 0) return;
+        const msg = queuedMessagesRef.current.shift();
+        if (!msg) return;
+        queueDrainRunningRef.current = true;
+        awaitingReplyRef.current = true;
+        const sent = await doSendMessage(msg.content, msg.filePaths, msg.id);
+        queueDrainRunningRef.current = false;
+        if (sent && awaitingReplyRef.current) {
+            armResponseWatchdog();
+        } else {
+            releaseResponseGate();
         }
-    }, [doSendMessage]);
+    }, [armResponseWatchdog, doSendMessage, releaseResponseGate]);
 
     useEffect(() => {
-        if (readOnly || state.connectionState !== "connected" || !state.sessionId) return;
+        if (readOnly || state.connectionState !== "connected" || !state.sessionId || state.streaming) return;
         void drainQueuedMessages();
-    }, [drainQueuedMessages, readOnly, state.connectionState, state.sessionId]);
+    }, [drainQueuedMessages, queueDrainSignal, readOnly, state.connectionState, state.sessionId, state.streaming]);
 
     const handleSend = useCallback(async () => {
         const content = inputText.trim();
@@ -825,9 +883,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             })),
         };
 
-        // If disconnected or still creating the session, queue the backend send
-        // but still show the user's message immediately in the thread.
-        if (state.connectionState !== "connected" || !state.sessionId) {
+        // If disconnected, still creating the session, or waiting for the prior
+        // assistant turn to finish streaming, queue the backend send but still
+        // show the user's message immediately in the thread.
+        if (state.connectionState !== "connected" || !state.sessionId || state.streaming || awaitingReplyRef.current) {
             queuedMessagesRef.current.push({ id: userMsg.id, content, filePaths });
             setState((prev) => ({
                 ...prev,
@@ -852,12 +911,18 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         setPendingAttachments([]);
 
         try {
-            await doSendMessage(content, filePaths, userMsg.id);
+            awaitingReplyRef.current = true;
+            const sent = await doSendMessage(content, filePaths, userMsg.id);
+            if (sent && awaitingReplyRef.current) {
+                armResponseWatchdog();
+            } else {
+                releaseResponseGate();
+            }
         } finally {
             sendingRef.current = false;
             setSending(false);
         }
-    }, [clearConversation, doSendMessage, inputText, localSpeakerName, pendingAttachments, readOnly, state.connectionState, state.sessionId]);
+    }, [armResponseWatchdog, clearConversation, doSendMessage, inputText, localSpeakerName, pendingAttachments, readOnly, releaseResponseGate, state.connectionState, state.sessionId, state.streaming]);
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {

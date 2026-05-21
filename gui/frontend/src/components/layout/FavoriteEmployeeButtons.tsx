@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { MAX_FAVORITE_EMPLOYEES } from '../settings/favoriteEmployees';
 
 export interface FavoriteEmployeeSlot {
     veId: string;
@@ -54,13 +55,15 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
     const handleDragStart = (index: number) => (e: React.DragEvent) => {
         dragSourceIndex.current = index;
         didDrag.current = true;
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', String(index));
+        if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', String(index));
+        }
     };
 
     const handleDragOver = (index: number) => (e: React.DragEvent) => {
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
         setDragOverIndex(index);
     };
 
@@ -89,13 +92,14 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
         onStartConversation(veId);
     };
 
-    const isFull = slots.length >= 6;
+    const isFull = slots.length >= MAX_FAVORITE_EMPLOYEES;
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', width: '100%' }}>
             {slots.map((slot, index) => (
-                <div
+                <button
                     key={slot.veId}
+                    type="button"
                     data-testid={`fav-ve-${slot.veId}`}
                     draggable
                     onDragStart={handleDragStart(index)}
@@ -103,6 +107,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                     onDrop={handleDrop(index)}
                     onDragEnd={handleDragEnd}
                     onClick={handleClick(slot.veId)}
+                    aria-label={`${slot.name}${slot.online ? '' : ' offline'}`}
                     title={`${slot.name}${slot.skillDescription ? '\n' + slot.skillDescription : ''}`}
                     style={{
                         display: 'flex',
@@ -111,9 +116,13 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                         gap: '2px',
                         padding: '4px 0',
                         width: '100%',
+                        minHeight: 44,
                         cursor: 'pointer',
                         opacity: slot.online ? 1 : 0.5,
+                        border: 0,
                         borderTop: dragOverIndex === index ? '2px solid var(--theme-primary)' : '2px solid transparent',
+                        background: 'transparent',
+                        font: 'inherit',
                         transition: 'opacity 0.15s',
                     }}
                 >
@@ -157,9 +166,9 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                         whiteSpace: 'nowrap',
                         textAlign: 'center',
                     }}>
-                        {slot.name.length > 4 ? slot.name.slice(0, 4) + '…' : slot.name}
+                        {slot.name.length > 4 ? slot.name.slice(0, 4) + '...' : slot.name}
                     </span>
-                </div>
+                </button>
             ))}
             {/* Separator when at full capacity — visually separates employees from system buttons below */}
             {isFull && (

@@ -44,6 +44,10 @@ func enqueueLLMUsage(system store.SystemSettingsRepository, providerID string, u
 	if system == nil {
 		return
 	}
+	if isRemoteCodingToolUsageProviderID(providerID) {
+		log.Printf("[llm-usage] ignoring remote coding tool provider %q; remote tool tokens are session diagnostics, not Hub LLM usage", providerID)
+		return
+	}
 	globalLLMUsageAccumulator.start()
 	charge := globalLLMUsageAccumulator.enqueue(system, providerID, usage, email, serviceGroupIDs, userGroupIDs, credits)
 	if charge == nil {
@@ -185,6 +189,9 @@ func flushProviderUsage(ctx context.Context, system store.SystemSettingsReposito
 	}
 	for providerID, usage := range usageMap {
 		if strings.TrimSpace(providerID) == "" {
+			continue
+		}
+		if isRemoteCodingToolUsageProviderID(providerID) {
 			continue
 		}
 		stat := reg.TokenUsage[providerID]

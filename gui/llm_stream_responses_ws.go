@@ -342,27 +342,8 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			// No-op: items finalized when building the response below.
 
 		case responsesEventCompleted:
-			var completed struct {
-				Response struct {
-					Usage *struct {
-						InputTokens  int `json:"input_tokens"`
-						OutputTokens int `json:"output_tokens"`
-						TotalTokens  int `json:"total_tokens"`
-					} `json:"usage"`
-				} `json:"response"`
-			}
-			if json.Unmarshal(msgData, &completed) != nil {
-				continue
-			}
-			if completed.Response.Usage != nil {
-				u := completed.Response.Usage
-				usage = &llm.Usage{
-					InputTokens:      u.InputTokens,
-					OutputTokens:     u.OutputTokens,
-					TotalTokens:      u.TotalTokens,
-					PromptTokens:     u.InputTokens,
-					CompletionTokens: u.OutputTokens,
-				}
+			if eventUsage := llm.ExtractResponsesAPIUsageFromEventPayload(msgData); eventUsage != nil {
+				usage = eventUsage
 			}
 			goto postLoop
 

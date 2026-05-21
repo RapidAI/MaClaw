@@ -54,6 +54,7 @@ export interface RemoteSessionSummaryView {
     last_command?: string;
     updated_at?: number;
     pending_question?: PendingQuestionView;
+    token_usage?: RemoteSessionTokenUsageView;
 }
 
 export interface SessionPreviewView {
@@ -68,6 +69,13 @@ export interface SessionOutputImageView {
     media_type: string;
     data: string;          // base64-encoded
     after_line_idx: number; // insert after this raw-output-line index
+}
+
+export interface RemoteSessionTokenUsageView {
+    input_tokens?: number;
+    output_tokens?: number;
+    cached_input_tokens?: number;
+    cache_write_tokens?: number;
 }
 
 export interface RemoteSessionView {
@@ -92,6 +100,7 @@ export interface RemoteSessionView {
     events?: ImportantEventView[];
     raw_output_lines?: string[];
     output_images?: SessionOutputImageView[];
+    token_usage?: RemoteSessionTokenUsageView;
 }
 
 export interface RemoteToolReadinessView {

@@ -66,8 +66,11 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	type usageAlias Usage
 	var raw struct {
 		usageAlias
-		PromptTokensDetails map[string]int `json:"prompt_tokens_details"`
-		InputTokensDetails  map[string]int `json:"input_tokens_details"`
+		CacheReadInputTokens  int            `json:"cache_read_input_tokens"`
+		CacheWriteInputTokens int            `json:"cache_write_input_tokens"`
+		CacheCreationTokens   int            `json:"cache_creation_input_tokens"`
+		PromptTokensDetails   map[string]int `json:"prompt_tokens_details"`
+		InputTokensDetails    map[string]int `json:"input_tokens_details"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -76,17 +79,29 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	if u.InputTokens == 0 && u.PromptTokens > 0 {
 		u.InputTokens = u.PromptTokens
 	}
+	if u.PromptTokens == 0 && u.InputTokens > 0 {
+		u.PromptTokens = u.InputTokens
+	}
 	if u.OutputTokens == 0 && u.CompletionTokens > 0 {
 		u.OutputTokens = u.CompletionTokens
+	}
+	if u.CompletionTokens == 0 && u.OutputTokens > 0 {
+		u.CompletionTokens = u.OutputTokens
 	}
 	if u.TotalTokens == 0 {
 		u.TotalTokens = u.InputTokens + u.OutputTokens
 	}
 	if u.CachedInputTokens == 0 {
-		u.CachedInputTokens = firstPositiveUsageValue(raw.PromptTokensDetails["cached_tokens"], raw.InputTokensDetails["cached_tokens"])
+		u.CachedInputTokens = firstPositiveUsageValue(
+			raw.CacheReadInputTokens,
+			raw.PromptTokensDetails["cached_tokens"],
+			raw.InputTokensDetails["cached_tokens"],
+		)
 	}
 	if u.CacheWriteTokens == 0 {
 		u.CacheWriteTokens = firstPositiveUsageValue(
+			raw.CacheWriteInputTokens,
+			raw.CacheCreationTokens,
 			raw.PromptTokensDetails["cache_write_tokens"],
 			raw.PromptTokensDetails["cache_creation_input_tokens"],
 			raw.InputTokensDetails["cache_write_tokens"],
@@ -153,10 +168,7 @@ func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 	var anthropicResp struct {
 		Content    []AnthropicContentBlock `json:"content"`
 		StopReason string                  `json:"stop_reason"`
-		Usage      *struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage,omitempty"`
+		Usage      *Usage                  `json:"usage,omitempty"`
 	}
 	if err := json.Unmarshal(body, &anthropicResp); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
@@ -193,17 +205,9 @@ func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 		finishReason = "length"
 	}
 
-	var usage *Usage
-	if anthropicResp.Usage != nil {
-		usage = &Usage{
-			InputTokens:  anthropicResp.Usage.InputTokens,
-			OutputTokens: anthropicResp.Usage.OutputTokens,
-		}
-	}
-
 	return &Response{
 		Choices: []Choice{{Message: msg, FinishReason: finishReason}},
-		Usage:   usage,
+		Usage:   anthropicResp.Usage,
 	}, nil
 }
 

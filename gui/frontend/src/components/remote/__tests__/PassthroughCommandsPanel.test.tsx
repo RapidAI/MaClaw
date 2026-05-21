@@ -18,13 +18,26 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     SetPassthroughCommandEnabled: vi.fn(),
 }));
 
+vi.mock("../../CustomDialog", () => ({
+    useDialog: () => ({
+        showAlert: vi.fn(),
+        showConfirm: (message: string) => Promise.resolve(window.confirm(message)),
+    }),
+}));
+
+async function renderPanelWithForm() {
+    const result = render(<PassthroughCommandsPanel lang="zh-Hans" />);
+    fireEvent.click(await screen.findByText("+ 新建"));
+    return result;
+}
+
 describe("PassthroughCommandsPanel", () => {
     beforeEach(() => {
         vi.clearAllMocks();
     });
 
     it("keeps pristine new task form quiet while required actions stay disabled", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         expect(await screen.findByText("直通任务")).toBeTruthy();
         expect(screen.queryByText(/任务名不能为空/)).toBeNull();
@@ -34,7 +47,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("edits command templates with structured parameters", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         expect(await screen.findByText("直通任务")).toBeTruthy();
         expect(screen.getAllByText("命令模板").length).toBeGreaterThan(0);
@@ -59,7 +72,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("keeps Windows backslashes in command templates", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "repair-env" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -78,7 +91,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("keeps escaped quotes inside command template arguments", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "quoted-args" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -95,7 +108,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("preserves empty quoted command template arguments", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "empty-arg" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -122,7 +135,7 @@ describe("PassthroughCommandsPanel", () => {
             enabled: true,
             params: [],
         }]);
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         expect((await screen.findAllByText("quoted-args")).length).toBeGreaterThan(0);
         fireEvent.click(screen.getByText("编辑"));
@@ -139,7 +152,7 @@ describe("PassthroughCommandsPanel", () => {
 
     it("shows the simple /exec emergency example when enabled", async () => {
         const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(true);
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.click(await screen.findByText("允许 /exec 一次性系统命令（需 --confirm，不经过 shell）"));
 
@@ -151,7 +164,7 @@ describe("PassthroughCommandsPanel", () => {
 
     it("requires confirmation before enabling /exec from the monitor panel", async () => {
         const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         const toggle = await screen.findByText("允许 /exec 一次性系统命令（需 --confirm，不经过 shell）");
         fireEvent.click(toggle);
@@ -165,7 +178,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("shows registry path and remote /exec toggle commands", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         expect(await screen.findByText(/commands\.json/)).toBeTruthy();
         expect(screen.getByText(/\/runctl exec enable/)).toBeTruthy();
@@ -190,7 +203,7 @@ describe("PassthroughCommandsPanel", () => {
             value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard unavailable")) },
             configurable: true,
         });
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         expect(await screen.findByText("复制运行")).toBeTruthy();
         fireEvent.click(screen.getByText("复制注册"));
@@ -204,7 +217,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("warns before saving an unterminated quoted command template", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "bad-template" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -217,7 +230,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("warns when a command template references an undefined parameter", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "bad-template" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -229,7 +242,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("warns before saving an empty command template", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "empty-template" } });
 
@@ -239,7 +252,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("warns before saving an invalid task name", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "bad name" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -251,7 +264,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("warns before saving a timeout outside the backend limit", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "slow-task" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -264,7 +277,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("warns before saving an invalid numeric test value", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "bad-number" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -282,7 +295,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("warns before saving an invalid boolean default value", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "bad-boolean" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -300,7 +313,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("previews draft argv with test parameter values before saving", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "git-status" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -317,7 +330,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("saves test values as parameter examples for remote run snippets", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "git-status" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -338,7 +351,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("preserves explicit empty and padded parameter examples", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "precise-values" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -372,7 +385,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("uses equals syntax in run snippets when a parameter value starts with dashes", async () => {
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "flag-value" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -420,7 +433,7 @@ describe("PassthroughCommandsPanel", () => {
             output: "failed-output",
         });
         const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(true);
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "fail-test" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -459,7 +472,7 @@ describe("PassthroughCommandsPanel", () => {
 
     it("does not save when save-and-test confirmation is cancelled", async () => {
         const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
-        render(<PassthroughCommandsPanel lang="zh-Hans" />);
+        await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "cancel-test" } });
         fireEvent.change(screen.getByPlaceholderText("例如：git -C ${target} status --short"), {
@@ -490,6 +503,7 @@ describe("PassthroughCommandsPanel", () => {
         const enableButton = () => screen.getAllByText("启用").find((el) => el.tagName === "BUTTON") as HTMLElement;
         fireEvent.click(enableButton());
         expect(SetPassthroughCommandEnabled).not.toHaveBeenCalled();
+        await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
 
         fireEvent.click(enableButton());
         await waitFor(() => {

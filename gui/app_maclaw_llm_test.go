@@ -528,6 +528,112 @@ func TestUpdateCodeGenToolAPIKeyMatchesRenamedCodeGenEntryWithoutSwitchingCurren
 	}
 }
 
+func TestMaclawLLMTokenUsageIgnoresRemoteToolProviders(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	app.AccumulateLLMTokenUsageWithCache("codex:gpt-5.4", 1200, 80, 768, 128)
+	app.AccumulateLLMTokenUsageWithCache("GLM (智谱)", 100, 20, 40, 12)
+
+	all := app.GetAllLLMTokenUsage()
+	if _, ok := all["codex:gpt-5.4"]; ok {
+		t.Fatalf("remote tool usage should not be exposed as Maclaw usage: %+v", all)
+	}
+	stat := all["GLM (智谱)"]
+	if stat == nil || stat.InputTokens != 100 || stat.OutputTokens != 20 || stat.CachedInputTokens != 40 || stat.CacheWriteTokens != 12 {
+		t.Fatalf("Maclaw provider usage = %+v", stat)
+	}
+	if got := app.GetLLMTokenUsage("codex:gpt-5.4"); got.TotalTokens != 0 || got.CachedInputTokens != 0 {
+		t.Fatalf("remote tool provider should read as zero usage, got %+v", got)
+	}
+}
+
+func TestGetAllLLMTokenUsageFiltersPersistedRemoteToolPollution(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{LLMTokenUsage: map[string]*corelib.TokenUsageStat{
+		"codex:gpt-5.4": {InputTokens: 1200, OutputTokens: 80, TotalTokens: 1280},
+		"remote:claude": {InputTokens: 200, OutputTokens: 20, TotalTokens: 220},
+		"MiniMax":       {InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	all := app.GetAllLLMTokenUsage()
+	if len(all) != 1 || all["MiniMax"] == nil {
+		t.Fatalf("expected only Maclaw provider usage, got %+v", all)
+	}
+}
+
+func TestRemoteToolTokenUsageProviderMatchingIsCaseAndSpaceInsensitive(t *testing.T) {
+	for _, provider := range []string{
+		" Codex:gpt-5.4 ",
+		"CLAUDE:sonnet",
+		"Gemini:2.5-pro",
+		"remote:opencode",
+	} {
+		if !isRemoteToolTokenUsageProvider(provider) {
+			t.Fatalf("expected %q to be treated as remote-tool diagnostic usage", provider)
+		}
+	}
+	for _, provider := range []string{"", "GLM (智谱)", "MaClaw 官方", "custom-codex-provider"} {
+		if isRemoteToolTokenUsageProvider(provider) {
+			t.Fatalf("expected %q to remain normal Maclaw provider usage", provider)
+		}
+	}
+}
+
+func TestGetAllLLMTokenUsageReturnsCopies(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{LLMTokenUsage: map[string]*corelib.TokenUsageStat{
+		"MiniMax": {InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	all := app.GetAllLLMTokenUsage()
+	all["MiniMax"].InputTokens = 999
+
+	got := app.GetLLMTokenUsage("MiniMax")
+	if got.InputTokens != 10 {
+		t.Fatalf("GetAllLLMTokenUsage exposed mutable config stat, got %+v", got)
+	}
+}
+
+func TestGetLLMTokenUsageReturnsCopy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{LLMTokenUsage: map[string]*corelib.TokenUsageStat{
+		"MiniMax": {InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	stat := app.GetLLMTokenUsage("MiniMax")
+	stat.InputTokens = 999
+
+	got := app.GetLLMTokenUsage("MiniMax")
+	if got.InputTokens != 10 {
+		t.Fatalf("GetLLMTokenUsage exposed mutable config stat, got %+v", got)
+	}
+}
+
 func TestUpdateCodeGenToolAPIKeySkipsCustomSameURLProvider(t *testing.T) {
 	tc := corelib.ToolConfig{
 		CurrentModel: "Custom CodeGen Mirror",

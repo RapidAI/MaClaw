@@ -1160,6 +1160,55 @@ func TestResponsesToOpenAI(t *testing.T) {
 	}
 }
 
+func TestResponsesToOpenAIPreservesPromptCacheUsage(t *testing.T) {
+	result := responsesToOpenAI(map[string]interface{}{
+		"id": "resp_cache",
+		"output": []interface{}{map[string]interface{}{
+			"type": "message",
+			"content": []interface{}{map[string]interface{}{
+				"type": "output_text",
+				"text": "cached reply",
+			}},
+		}},
+		"usage": map[string]interface{}{
+			"input_tokens":  float64(500),
+			"output_tokens": float64(25),
+			"input_tokens_details": map[string]interface{}{
+				"cached_tokens":               float64(384),
+				"cache_creation_input_tokens": float64(64),
+			},
+		},
+	}, "model-cache")
+
+	usage := result["usage"].(map[string]interface{})
+	if usage["prompt_tokens"] != float64(500) || usage["completion_tokens"] != float64(25) || usage["total_tokens"] != float64(525) {
+		t.Fatalf("usage tokens = %#v", usage)
+	}
+	if usage["cache_read_input_tokens"] != float64(384) || usage["cache_write_input_tokens"] != float64(64) {
+		t.Fatalf("cache usage = %#v", usage)
+	}
+	details, ok := usage["prompt_tokens_details"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("prompt_tokens_details missing: %#v", usage)
+	}
+	if details["cached_tokens"] != int64(384) || details["cache_creation_input_tokens"] != int64(64) {
+		t.Fatalf("prompt_tokens_details = %#v", details)
+	}
+
+	stat := parseOpenAIUsageJSON(mustMarshalForTest(t, result))
+	if stat.CachedInputTokens != 384 || stat.CacheWriteTokens != 64 || stat.CachedRequests != 1 {
+		t.Fatalf("parsed stat = %+v", stat)
+	}
+}
+
+func mustMarshalForTest(t *testing.T, value interface{}) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return data
+}
 func TestForwardResponses_Success(t *testing.T) {
 	// Create a mock upstream Responses API server
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

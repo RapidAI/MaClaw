@@ -71,6 +71,31 @@ describe('TokenUsagePanel', () => {
         });
     });
 
+    it('renders prompt cache read, write, and request hit-rate stats', async () => {
+        getAllLLMTokenUsageMock.mockResolvedValue({
+            '智谱': {
+                InputTokens: 1000,
+                OutputTokens: 200,
+                TotalTokens: 1200,
+                CachedInputTokens: 600,
+                CacheWriteTokens: 128,
+                Requests: 5,
+                CachedRequests: 3,
+            },
+        });
+
+        const { getByText } = render(<TokenUsagePanel lang="en" />);
+
+        await waitFor(() => {
+            expect(getByText('Cache Read')).toBeTruthy();
+            expect(getByText('Cache Write')).toBeTruthy();
+            expect(getByText('Cache Hit Rate')).toBeTruthy();
+            expect(getByText('600')).toBeTruthy();
+            expect(getByText('128')).toBeTruthy();
+            expect(getByText('60%')).toBeTruthy();
+        });
+    });
+
     it('matches token stats when provider and usage keys use different Zhipu aliases', async () => {
         getAllLLMTokenUsageMock.mockResolvedValue({
             'GLM (智谱)': {
@@ -123,6 +148,25 @@ describe('TokenUsagePanel', () => {
             expect((container.querySelector('select') as HTMLSelectElement).value).toBe('GLM (智谱)');
             expect(getByText('180')).toBeTruthy();
             expect(getByText('40')).toBeTruthy();
+            expect(getByText('220')).toBeTruthy();
+        });
+    });
+
+    it('does not surface remote tool usage-only keys as Maclaw providers', async () => {
+        getMaclawLLMProvidersMock.mockResolvedValue({
+            Providers: [{ Name: 'GLM (智谱)' }],
+            Current: 'GLM (智谱)',
+        });
+        getAllLLMTokenUsageMock.mockResolvedValue({
+            'codex:gpt-5.4': { InputTokens: 5000, OutputTokens: 300, TotalTokens: 5300 },
+            'GLM (智谱)': { InputTokens: 180, OutputTokens: 40, TotalTokens: 220 },
+        });
+
+        const { container, getByText, queryByText } = render(<TokenUsagePanel lang="en" />);
+
+        await waitFor(() => {
+            expect((container.querySelector('select') as HTMLSelectElement).value).toBe('GLM (智谱)');
+            expect(queryByText('codex:gpt-5.4')).toBeNull();
             expect(getByText('220')).toBeTruthy();
         });
     });

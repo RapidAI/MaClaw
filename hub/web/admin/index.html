@@ -209,6 +209,11 @@
             <label for="loginPassword" data-i18n="adminPassword"></label>
             <input id="loginPassword" type="password">
           </div>
+          <div>
+            <label for="loginTenant" id="loginTenantLabel"></label>
+            <select id="loginTenant"><option value="__global__">Global admin</option></select>
+            <div class="item-meta" id="loginTenantHint" style="margin-top:5px"></div>
+          </div>
           <div class="actions"><button class="btn-primary" onclick="loginAdmin()" data-i18n="signIn"></button></div>
         </div>
         <div id="loginOutput" class="console"></div>
@@ -237,6 +242,7 @@
       <nav class="nav">
         <button data-tab="overview" class="active" onclick="openTab('overview')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5 10.5V20h14v-9.5"></path><path d="M10 20v-5h4v5"></path></svg></span><div class="nav-copy"><span data-i18n="navOverview"></span><small data-i18n="navOverviewDesc"></small></div></div></button>
         <button data-tab="center" onclick="openTab('center')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M4 12h16"></path><path d="M12 4a12 12 0 0 1 0 16"></path><path d="M12 4a12 12 0 0 0 0 16"></path></svg></span><div class="nav-copy"><span data-i18n="navCenter"></span><small data-i18n="navCenterDesc"></small></div></div></button>
+        <button data-tab="tenants" onclick="openTab('tenants')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path><path d="M8 17h3"></path></svg></span><div class="nav-copy"><span id="navTenants"></span><small id="navTenantsDesc"></small></div></div></button>
         <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
         <button data-tab="marketplace" onclick="openTab('marketplace')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span data-i18n="navMarketplace"></span><small data-i18n="navMarketplaceDesc"></small></div></div></button>
         <button data-tab="im" onclick="openTab('im')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v9H9l-4 3V7Z"></path><path d="M9 11h6"></path></svg></span><div class="nav-copy"><span id="navIM"></span><small id="navIMDesc"></small></div></div></button>
@@ -343,6 +349,45 @@
               <div><label id="centerDigitalEmployeeExpiresLabel">Authorization Expires</label><div class="mono" id="centerDigitalEmployeeExpiresHero"></div></div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- Tab: Tenants -->
+      <section id="tab-tenants" class="panel card">
+        <div class="head"><div><h3 id="tenantsTitle"></h3><div class="desc" id="tenantsDesc"></div></div><button class="btn-ghost" id="tenantsReloadBtn" type="button" onclick="loadTenants()"></button></div>
+        <div class="grid2" style="gap:10px">
+          <div class="item" id="tenantCreatePanel" style="padding:14px 16px">
+            <div class="item-title" id="tenantCreateTitle"></div>
+            <div class="item-meta" id="tenantCreateDesc" style="margin-top:4px"></div>
+            <div class="grid2" style="margin-top:10px">
+              <div><label for="tenantSlug" id="tenantSlugLabel"></label><input id="tenantSlug" placeholder="acme"></div>
+              <div><label for="tenantName" id="tenantNameLabel"></label><input id="tenantName" placeholder="Acme Corp"></div>
+              <div><label for="tenantID" id="tenantIDLabel"></label><input id="tenantID" placeholder="tenant_acme"></div>
+              <div><label for="tenantDomain" id="tenantDomainLabel"></label><input id="tenantDomain" placeholder="acme.example.com"></div>
+              <div><label for="tenantAdminUsername" id="tenantAdminUsernameLabel"></label><input id="tenantAdminUsername" placeholder="acme-admin"></div>
+              <div><label for="tenantAdminEmail" id="tenantAdminEmailLabel"></label><input id="tenantAdminEmail" type="email" placeholder="admin@acme.example.com"></div>
+              <div><label for="tenantAdminName" id="tenantAdminNameLabel"></label><input id="tenantAdminName" placeholder="Tenant Owner"></div>
+              <div><label for="tenantAdminPassword" id="tenantAdminPasswordLabel"></label><input id="tenantAdminPassword" type="password"></div>
+            </div>
+            <div class="actions" style="margin-top:10px"><button class="btn-primary" id="tenantCreateBtn" type="button" onclick="createTenant()"></button></div>
+          </div>
+          <div class="item" style="padding:14px 16px">
+            <div class="item-title" id="tenantAdminCreateTitle"></div>
+            <div class="item-meta" id="tenantAdminCreateDesc" style="margin-top:4px"></div>
+            <div class="grid2" style="margin-top:10px">
+              <div><label for="tenantAdminTenantID" id="tenantAdminTenantLabel"></label><select id="tenantAdminTenantID"></select></div>
+              <div><label for="tenantAdminRole" id="tenantAdminRoleLabel"></label><select id="tenantAdminRole"><option value="tenant_admin">tenant_admin</option><option value="tenant_owner">tenant_owner</option></select></div>
+              <div><label for="tenantExtraAdminUsername" id="tenantExtraAdminUsernameLabel"></label><input id="tenantExtraAdminUsername" placeholder="tenant-admin"></div>
+              <div><label for="tenantExtraAdminEmail" id="tenantExtraAdminEmailLabel"></label><input id="tenantExtraAdminEmail" type="email" placeholder="tenant-admin@example.com"></div>
+              <div><label for="tenantExtraAdminName" id="tenantExtraAdminNameLabel"></label><input id="tenantExtraAdminName" placeholder="Tenant Admin"></div>
+              <div><label for="tenantExtraAdminPassword" id="tenantExtraAdminPasswordLabel"></label><input id="tenantExtraAdminPassword" type="password"></div>
+            </div>
+            <div class="actions" style="margin-top:10px"><button class="btn-secondary" id="tenantAdminCreateBtn" type="button" onclick="createTenantAdmin()"></button></div>
+          </div>
+        </div>
+        <div class="item" style="margin-top:10px;padding:12px 14px">
+          <div class="head" style="margin-bottom:8px"><div><div class="item-title"><span id="tenantListTitle"></span> <span id="tenantCountBadge" class="badge info">0</span></div><div class="item-meta" id="tenantListDesc"></div></div></div>
+          <div id="tenantList"><div class="hint" id="tenantListEmpty"></div></div>
         </div>
       </section>
 
@@ -1207,6 +1252,7 @@
   </div>
 <script src="/admin/admin.js"></script>
 <script src="/admin/admin-tabs.js"></script>
+<script src="/admin/tenant-tab.js"></script>
 <script src="/admin/admin-ui.js"></script>
 <script src="/admin/center-tab.js"></script>
 <script src="/admin/governance-tab.js"></script>

@@ -25,6 +25,8 @@ type agentLoopTelemetry struct {
 	HandlerPostStreamNoToolBranchElapsed  time.Duration
 	LastLLMInputTokens                    int
 	LastLLMOutputTokens                   int
+	LastLLMCacheReadTokens                int
+	LastLLMCacheWriteTokens               int
 	FirstRequestMetrics                   *llmFirstRequestMetrics
 }
 
@@ -60,11 +62,13 @@ func (t *agentLoopTelemetry) Attach(resp *IMAgentResponse) {
 	if !t.StreamDoneAt.IsZero() && resp.HandlerTailNanos == 0 {
 		resp.HandlerTailNanos = time.Since(t.StreamDoneAt).Nanoseconds()
 	}
-	if t.LastLLMInputTokens > 0 || t.LastLLMOutputTokens > 0 {
-		resp.Fields = mergeIMResponseFields(resp.Fields, tokenUsageResponseFields(t.LastLLMInputTokens, t.LastLLMOutputTokens))
+	if t.LastLLMInputTokens > 0 || t.LastLLMOutputTokens > 0 || t.LastLLMCacheReadTokens > 0 || t.LastLLMCacheWriteTokens > 0 {
+		resp.Fields = mergeIMResponseFields(resp.Fields, tokenUsageResponseFieldsWithCache(t.LastLLMInputTokens, t.LastLLMOutputTokens, t.LastLLMCacheReadTokens, t.LastLLMCacheWriteTokens))
 		resp.InputTokens = t.LastLLMInputTokens
 		resp.OutputTokens = t.LastLLMOutputTokens
 		resp.TotalTokens = t.LastLLMInputTokens + t.LastLLMOutputTokens
+		resp.CacheReadTokens = t.LastLLMCacheReadTokens
+		resp.CacheWriteTokens = t.LastLLMCacheWriteTokens
 	}
 	resp.HandlerPostStreamUsageNanos = t.HandlerPostStreamUsageElapsed.Nanoseconds()
 	resp.HandlerPostStreamResponseNanos = t.HandlerPostStreamResponseElapsed.Nanoseconds()
@@ -109,9 +113,11 @@ func (t *agentLoopTelemetry) ApplyLLMDispatch(result agentLoopLLMDispatchResult)
 	t.FirstLLMResponseAt = result.FirstResponseAt
 	t.FirstLLMRetryWaitElapsed += result.RetryWaitElapsed
 	t.FirstLLMRetryCount += result.RetryCount
-	if result.InputTokens > 0 || result.OutputTokens > 0 {
+	if result.InputTokens > 0 || result.OutputTokens > 0 || result.CacheReadTokens > 0 || result.CacheWriteTokens > 0 {
 		t.LastLLMInputTokens = result.InputTokens
 		t.LastLLMOutputTokens = result.OutputTokens
+		t.LastLLMCacheReadTokens = result.CacheReadTokens
+		t.LastLLMCacheWriteTokens = result.CacheWriteTokens
 	}
 	if result.PostStreamUsageCompleted {
 		t.HandlerPostStreamUsageElapsed += result.UsageElapsed

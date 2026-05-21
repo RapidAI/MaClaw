@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
@@ -105,6 +106,32 @@ func TestLLMRuntimeCacheReturnsClones(t *testing.T) {
 	}
 	if got := system.GetCount(llmservice.RegistryKey); got != 1 {
 		t.Fatalf("service registry Get count = %d, want 1", got)
+	}
+}
+
+func TestLLMRuntimeCacheFiltersRemoteCodingToolUsagePollution(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	invalidateLLMRuntimeCaches(system)
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{
+		Providers: []im.LLMProvider{{ID: "provider-a", Model: "gpt-test"}},
+		TokenUsage: map[string]*corelib.TokenUsageStat{
+			"codex:gpt-5.4": {InputTokens: 1200, OutputTokens: 80, TotalTokens: 1280, Requests: 1},
+			"provider-a":    {InputTokens: 10, OutputTokens: 5, TotalTokens: 15, Requests: 1},
+		},
+	}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load provider registry: %v", err)
+	}
+	if _, ok := providerReg.TokenUsage["codex:gpt-5.4"]; ok {
+		t.Fatalf("remote coding tool usage key should be filtered from runtime cache clone: %#v", providerReg.TokenUsage)
+	}
+	if stat := providerReg.TokenUsage["provider-a"]; stat == nil || stat.TotalTokens != 15 || stat.Requests != 1 {
+		t.Fatalf("normal provider usage missing from runtime cache clone: %#v", stat)
 	}
 }
 

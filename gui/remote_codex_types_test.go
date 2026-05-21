@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestCodexWriteAskUserQuestionAnswerRequiresResumeSession(t *testing.T) {
@@ -97,6 +100,26 @@ func TestCodexEventUnmarshalTurnCompleted(t *testing.T) {
 	if event.Usage.OutputTokens != 122 {
 		t.Fatalf("OutputTokens = %d", event.Usage.OutputTokens)
 	}
+	if event.Usage.CachedInputTokens != 24448 {
+		t.Fatalf("CachedInputTokens = %d", event.Usage.CachedInputTokens)
+	}
+}
+
+func TestCodexEventUnmarshalTurnCompletedWithNestedCacheUsage(t *testing.T) {
+	raw := `{"type":"turn.completed","usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":768,"cache_creation_input_tokens":128}}}`
+	var event CodexEvent
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if event.Usage == nil {
+		t.Fatal("Usage is nil")
+	}
+	if event.Usage.InputTokens != 1200 || event.Usage.OutputTokens != 80 {
+		t.Fatalf("tokens = %d in, %d out", event.Usage.InputTokens, event.Usage.OutputTokens)
+	}
+	if event.Usage.CachedInputTokens != 768 || event.Usage.CacheWriteTokens != 128 {
+		t.Fatalf("cache tokens = read:%d write:%d", event.Usage.CachedInputTokens, event.Usage.CacheWriteTokens)
+	}
 }
 
 func TestCodexEventToTextAssistantMessage(t *testing.T) {
@@ -159,13 +182,73 @@ func TestCodexEventToTextTurnCompleted(t *testing.T) {
 	event := CodexEvent{
 		Type: "turn.completed",
 		Usage: &CodexUsage{
-			InputTokens:  1000,
-			OutputTokens: 200,
+			InputTokens:       1000,
+			CachedInputTokens: 900,
+			CacheWriteTokens:  64,
+			OutputTokens:      200,
 		},
 	}
 	text := codexEventToText(event)
-	if text != "✓ Turn completed (tokens: 1000 in, 200 out)" {
+	if text != "✓ Turn completed (tokens: 1000 in, 200 out, 900 cache read, 64 cache write)" {
 		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestCodexSDKExecutionHandleAccumulatesUsage(t *testing.T) {
+	h := &CodexSDKExecutionHandle{}
+	h.recordUsage(CodexUsage{InputTokens: 100, OutputTokens: 10, CachedInputTokens: 80, CacheWriteTokens: 4})
+	h.recordUsage(CodexUsage{InputTokens: 50, OutputTokens: 5, CachedInputTokens: 40, CacheWriteTokens: 2})
+	usage := h.TotalUsage()
+	if usage.InputTokens != 150 || usage.OutputTokens != 15 || usage.CachedInputTokens != 120 || usage.CacheWriteTokens != 6 {
+		t.Fatalf("total usage = %+v", usage)
+	}
+}
+
+func TestRemoteSessionTokenUsageFromCodex(t *testing.T) {
+	usage := remoteSessionTokenUsageFromCodex(CodexUsage{InputTokens: 100, OutputTokens: 10, CachedInputTokens: 80, CacheWriteTokens: 4})
+	if usage.InputTokens != 100 || usage.OutputTokens != 10 || usage.CachedInputTokens != 80 || usage.CacheWriteTokens != 4 {
+		t.Fatalf("session usage = %+v", usage)
+	}
+}
+
+func TestCodexRemoteSessionUsageDoesNotAccumulateMaclawLLMUsage(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig error: %v", err)
+	}
+
+	h := &CodexSDKExecutionHandle{outputCh: make(chan []byte, 1)}
+	h.recordUsage(CodexUsage{InputTokens: 1200, OutputTokens: 80, CachedInputTokens: 768, CacheWriteTokens: 128})
+	now := time.Now()
+	session := &RemoteSession{
+		ID:        "codex-usage-1",
+		Tool:      "codex",
+		Status:    SessionRunning,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary: SessionSummary{
+			SessionID: "codex-usage-1",
+			Tool:      "codex",
+			Status:    SessionRunning.String(),
+			UpdatedAt: now.Unix(),
+		},
+		Exec: h,
+	}
+	manager := NewRemoteSessionManager(app)
+
+	h.outputCh <- []byte(`{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":768,"output_tokens":80,"cache_write_tokens":128}}` + "\n")
+	close(h.outputCh)
+	manager.runCodexSDKOutputLoop(session)
+
+	if session.TokenUsage.InputTokens != 1200 || session.TokenUsage.OutputTokens != 80 || session.TokenUsage.CachedInputTokens != 768 || session.TokenUsage.CacheWriteTokens != 128 {
+		t.Fatalf("session TokenUsage = %+v", session.TokenUsage)
+	}
+	if usage := app.GetAllLLMTokenUsage(); len(usage) != 0 {
+		t.Fatalf("remote Codex session usage leaked into Maclaw LLM usage: %+v", usage)
 	}
 }
 

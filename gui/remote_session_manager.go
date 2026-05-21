@@ -1955,6 +1955,19 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		m.app.emitRemoteStateChanged()
 	}
 
+	usage := codexHandle.TotalUsage()
+	if !codexUsageIsZero(usage) {
+		s.mu.Lock()
+		s.TokenUsage = remoteSessionTokenUsageFromCodex(usage)
+		s.UpdatedAt = time.Now()
+		snap := s.Summary
+		s.mu.Unlock()
+		if m.hubClient != nil {
+			_ = m.hubClient.SendSessionSummary(snap)
+		}
+		m.app.emitRemoteStateChanged()
+	}
+
 	// If the output channel closed without any real codex output, the process
 	// likely crashed on startup.
 	// likely crashed on startup.  Update the summary so the user sees the issue.

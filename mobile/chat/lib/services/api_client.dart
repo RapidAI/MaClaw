@@ -14,9 +14,9 @@ class ApiClient {
   void setToken(String token) => _token = token;
 
   Map<String, String> get _headers => {
-        'Content-Type': 'application/json',
-        if (_token != null) 'Authorization': 'Bearer $_token',
-      };
+    'Content-Type': 'application/json',
+    if (_token != null) 'Authorization': 'Bearer $_token',
+  };
 
   /// Exposed for services that need to make direct HTTP calls.
   Map<String, String> get headers => _headers;
@@ -30,7 +30,9 @@ class ApiClient {
     );
     _checkResponse(resp);
     final list = jsonDecode(resp.body)['channels'] as List<dynamic>;
-    return list.map((j) => Channel.fromJson(j as Map<String, dynamic>)).toList();
+    return list
+        .map((j) => Channel.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   Future<Channel> createChannel({
@@ -63,12 +65,15 @@ class ApiClient {
     if (afterSeq != null) params['after_seq'] = '$afterSeq';
     if (beforeSeq != null) params['before_seq'] = '$beforeSeq';
 
-    final uri = Uri.parse('$baseUrl/api/chat/channels/$channelId/messages')
-        .replace(queryParameters: params);
+    final uri = Uri.parse(
+      '$baseUrl/api/chat/channels/$channelId/messages',
+    ).replace(queryParameters: params);
     final resp = await http.get(uri, headers: _headers);
     _checkResponse(resp);
     final list = jsonDecode(resp.body)['messages'] as List<dynamic>;
-    return list.map((j) => Message.fromJson(j as Map<String, dynamic>)).toList();
+    return list
+        .map((j) => Message.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   Future<Message> sendMessage({
@@ -104,8 +109,7 @@ class ApiClient {
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
-  Future<void> addChannelMembers(
-      String channelId, List<String> userIds) async {
+  Future<void> addChannelMembers(String channelId, List<String> userIds) async {
     final resp = await http.post(
       Uri.parse('$baseUrl/api/chat/channels/$channelId/members'),
       headers: _headers,
@@ -135,14 +139,19 @@ class ApiClient {
 
   Future<void> recallMessage(String channelId, String messageId) async {
     final resp = await http.post(
-      Uri.parse('$baseUrl/api/chat/channels/$channelId/messages/$messageId/recall'),
+      Uri.parse(
+        '$baseUrl/api/chat/channels/$channelId/messages/$messageId/recall',
+      ),
       headers: _headers,
     );
     _checkResponse(resp);
   }
 
   Future<Message> editMessage(
-      String channelId, String messageId, String newContent) async {
+    String channelId,
+    String messageId,
+    String newContent,
+  ) async {
     final resp = await http.put(
       Uri.parse('$baseUrl/api/chat/channels/$channelId/messages/$messageId'),
       headers: _headers,
@@ -176,7 +185,9 @@ class ApiClient {
       if (_token != null) 'Authorization': 'Bearer $_token',
     });
     request.fields['channel_id'] = channelId;
-    request.files.add(await http.MultipartFile.fromPath('file', filePath, filename: filename));
+    request.files.add(
+      await http.MultipartFile.fromPath('file', filePath, filename: filename),
+    );
 
     final streamResp = await request.send();
     final resp = await http.Response.fromStream(streamResp);
@@ -224,7 +235,10 @@ class ApiClient {
     _checkResponse(resp);
   }
 
-  Future<void> sendIceCandidate(String callId, Map<String, dynamic> candidate) async {
+  Future<void> sendIceCandidate(
+    String callId,
+    Map<String, dynamic> candidate,
+  ) async {
     final resp = await http.post(
       Uri.parse('$baseUrl/api/chat/voice/ice'),
       headers: _headers,
@@ -253,43 +267,6 @@ class ApiClient {
     _checkResponse(resp);
   }
 
-  // ── Voiceprint ─────────────────────────────────────────────
-
-  Future<Map<String, dynamic>> enrollVoiceprint(String filePath, {String label = 'default'}) async {
-    final request = http.MultipartRequest(
-      'POST',
-      Uri.parse('$baseUrl/api/chat/voiceprint/enroll'),
-    );
-    final authHeaders = <String, String>{
-      if (_token != null) 'Authorization': 'Bearer $_token',
-    };
-    request.headers.addAll(authHeaders);
-    request.fields['label'] = label;
-    request.files.add(await http.MultipartFile.fromPath('file', filePath, filename: 'audio.wav'));
-
-    final streamResp = await request.send();
-    final resp = await http.Response.fromStream(streamResp);
-    _checkResponse(resp);
-    return jsonDecode(resp.body) as Map<String, dynamic>;
-  }
-
-  Future<List<Map<String, dynamic>>> listMyVoiceprints() async {
-    final resp = await http.get(
-      Uri.parse('$baseUrl/api/chat/voiceprint/list'),
-      headers: _headers,
-    );
-    _checkResponse(resp);
-    final list = jsonDecode(resp.body)['voiceprints'] as List<dynamic>;
-    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-  }
-
-  Future<void> deleteVoiceprint(String id) async {
-    final uri = Uri.parse('$baseUrl/api/chat/voiceprint')
-        .replace(queryParameters: {'id': id});
-    final resp = await http.delete(uri, headers: _headers);
-    _checkResponse(resp);
-  }
-
   // ── Helpers ───────────────────────────────────────────────
 
   void _checkResponse(http.Response resp) {
@@ -297,10 +274,11 @@ class ApiClient {
       final body = resp.body.isNotEmpty ? jsonDecode(resp.body) : {};
       throw ApiException(
         statusCode: resp.statusCode,
-        message: body['message'] as String?
-            ?? body['error'] as String?
-            ?? resp.reasonPhrase
-            ?? 'Unknown error',
+        message:
+            body['message'] as String? ??
+            body['error'] as String? ??
+            resp.reasonPhrase ??
+            'Unknown error',
       );
     }
   }

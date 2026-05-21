@@ -149,7 +149,6 @@ Built-in document generation and processing:
 ### Voice Processing
 
 *   **Voice message recognition**: Voice messages from IM channels are automatically converted to WAV format with ASR support (built-in Moonshine model)
-*   **Voiceprint identification**: ECAPA embedding-based voiceprint enrollment and 1:N identity matching (Hub-side capability)
 
 ### Scheduled Tasks
 

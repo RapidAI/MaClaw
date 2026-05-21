@@ -143,10 +143,11 @@ describe('useRemotePanel provider sync', () => {
 
         await waitFor(() => {
             expect(result.current.selectedProvider).toBe('王');
+            expect(result.current.remoteActivationStatus?.activated).toBe(true);
         });
 
-        act(() => {
-            void result.current.quickStartRemoteSession('claude');
+        await act(async () => {
+            await result.current.quickStartRemoteSession('claude');
         });
 
         await waitFor(() => {

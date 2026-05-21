@@ -336,7 +336,9 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
 
 function isTableRow(line: string): boolean {
     const trimmed = line.trim();
-    return trimmed.startsWith("|") && trimmed.length > 1;
+    if (trimmed.startsWith("|") && trimmed.length > 1) return true;
+    if (!trimmed.includes("|")) return false;
+    return parseTableCells(trimmed).length >= 2;
 }
 
 function isSeparatorRow(line: string): boolean {
@@ -354,7 +356,11 @@ function parseTableCells(line: string): string[] {
 function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNode {
     const dataRows = tableLines.filter(line => !isSeparatorRow(line));
     if (tableLines.length < 2 || dataRows.length === 0) return null;
+    const hasSeparator = tableLines.some(isSeparatorRow);
+    const allRowsUseOuterPipes = tableLines.every(line => line.trim().startsWith("|"));
+    if (!hasSeparator && !allRowsUseOuterPipes) return null;
     const headerCells = parseTableCells(dataRows[0]);
+    if (headerCells.length < 2) return null;
     const bodyRows = dataRows.slice(1);
     const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, padding: "5px 10px", textAlign: "left", fontSize: "0.9em", lineHeight: 1.5 };
     return (

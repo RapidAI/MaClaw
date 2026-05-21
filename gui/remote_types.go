@@ -131,26 +131,27 @@ type CommandSpec struct {
 }
 
 type SessionSummary struct {
-	SessionID       string               `json:"session_id"`
-	MachineID       string               `json:"machine_id"`
-	Tool            string               `json:"tool"`
-	Title           string               `json:"title"`
-	Source          string               `json:"source,omitempty"`
-	Status          string               `json:"status"`
-	Severity        string               `json:"severity"`
-	WaitingForUser  bool                 `json:"waiting_for_user"`
-	Thinking        bool                 `json:"thinking"`
-	ThinkingSince   int64                `json:"thinking_since,omitempty"`
-	CurrentTask     string               `json:"current_task"`
-	ProgressSummary string               `json:"progress_summary"`
-	StepProgress    string               `json:"step_progress,omitempty"`
-	StepCount       int                  `json:"step_count,omitempty"`
-	LastResult      string               `json:"last_result"`
-	SuggestedAction string               `json:"suggested_action"`
-	ImportantFiles  []string             `json:"important_files"`
-	LastCommand     string               `json:"last_command"`
-	PendingQuestion *PendingQuestionView `json:"pending_question,omitempty"`
-	UpdatedAt       int64                `json:"updated_at"`
+	SessionID       string                   `json:"session_id"`
+	MachineID       string                   `json:"machine_id"`
+	Tool            string                   `json:"tool"`
+	Title           string                   `json:"title"`
+	Source          string                   `json:"source,omitempty"`
+	Status          string                   `json:"status"`
+	Severity        string                   `json:"severity"`
+	WaitingForUser  bool                     `json:"waiting_for_user"`
+	Thinking        bool                     `json:"thinking"`
+	ThinkingSince   int64                    `json:"thinking_since,omitempty"`
+	CurrentTask     string                   `json:"current_task"`
+	ProgressSummary string                   `json:"progress_summary"`
+	StepProgress    string                   `json:"step_progress,omitempty"`
+	StepCount       int                      `json:"step_count,omitempty"`
+	LastResult      string                   `json:"last_result"`
+	SuggestedAction string                   `json:"suggested_action"`
+	ImportantFiles  []string                 `json:"important_files"`
+	LastCommand     string                   `json:"last_command"`
+	PendingQuestion *PendingQuestionView     `json:"pending_question,omitempty"`
+	TokenUsage      *RemoteSessionTokenUsage `json:"token_usage,omitempty"`
+	UpdatedAt       int64                    `json:"updated_at"`
 }
 
 // PendingQuestionView contains sanitized AskUserQuestion data for the UI.
@@ -284,6 +285,10 @@ type RemoteSession struct {
 	// images with text.
 	OutputImages []SessionOutputImage
 
+	// TokenUsage stores provider-reported remote-tool diagnostics only. It is
+	// intentionally separate from Maclaw LLM provider usage and billing.
+	TokenUsage RemoteSessionTokenUsage
+
 	Exec     ExecutionHandle
 	Provider ProviderAdapter
 
@@ -370,6 +375,17 @@ type OutputResult struct {
 	Summary      *SessionSummary
 	PreviewDelta *SessionPreviewDelta
 	Events       []ImportantEvent
+}
+
+type RemoteSessionTokenUsage struct {
+	InputTokens       int `json:"input_tokens,omitempty"`
+	OutputTokens      int `json:"output_tokens,omitempty"`
+	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
+}
+
+func (u RemoteSessionTokenUsage) IsZero() bool {
+	return u.InputTokens == 0 && u.OutputTokens == 0 && u.CachedInputTokens == 0 && u.CacheWriteTokens == 0
 }
 
 func (r OutputResult) SummaryText() string {

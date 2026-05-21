@@ -746,7 +746,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                   <button
                     className="ve-btn ve-btn--ghost"
                     onClick={() => handleRemoveDirectory(dir)}
-                    data-testid={`ve-remove-dir-${idx}`}
+                    data-testid={`ve-remove-dir-${dir}`}
                     aria-label={textForLang(lang, `Remove ${dir}`, `删除 ${dir}`, `刪除 ${dir}`)}
                   >
                     ✕

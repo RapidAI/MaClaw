@@ -201,7 +201,7 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
         ChangeNotifierProvider.value(value: _callProvider!),
         ChangeNotifierProvider.value(value: _themeProvider),
       ],
-      child: HomeScreen(api: _api!),
+      child: HomeScreen(api: _api!, onLogout: _onLogout),
     );
   }
 }

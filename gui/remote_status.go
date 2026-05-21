@@ -37,35 +37,36 @@ type ProviderView struct {
 }
 
 type RemoteSessionView struct {
-	ID             string               `json:"id"`
-	Tool           string               `json:"tool"`
-	Title          string               `json:"title"`
-	LaunchSource   string               `json:"launch_source,omitempty"`
-	ProjectPath    string               `json:"project_path"`
-	WorkspacePath  string               `json:"workspace_path"`
-	WorkspaceRoot  string               `json:"workspace_root"`
-	WorkspaceMode  WorkspaceMode        `json:"workspace_mode"`
-	WorkspaceIsGit bool                 `json:"workspace_is_git"`
-	ModelID        string               `json:"model_id"`
-	Provider       string               `json:"provider,omitempty"`
-	JobID          string               `json:"job_id,omitempty"`
-	RunID          string               `json:"run_id,omitempty"`
-	CurrentURL     string               `json:"current_url,omitempty"`
-	CurrentTitle   string               `json:"current_title,omitempty"`
-	ReadyState     string               `json:"ready_state,omitempty"`
-	LastSnapshotID string               `json:"last_snapshot_id,omitempty"`
-	ExecutionMode  string               `json:"execution_mode"`
-	Status         SessionStatus        `json:"status"`
-	Thinking       bool                 `json:"thinking"`
-	ThinkingSince  int64                `json:"thinking_since,omitempty"`
-	PID            int                  `json:"pid"`
-	CreatedAt      time.Time            `json:"created_at"`
-	UpdatedAt      time.Time            `json:"updated_at"`
-	Summary        SessionSummary       `json:"summary"`
-	Preview        SessionPreview       `json:"preview"`
-	Events         []ImportantEvent     `json:"events"`
-	RawOutputLines []string             `json:"raw_output_lines"`
-	OutputImages   []SessionOutputImage `json:"output_images,omitempty"`
+	ID             string                   `json:"id"`
+	Tool           string                   `json:"tool"`
+	Title          string                   `json:"title"`
+	LaunchSource   string                   `json:"launch_source,omitempty"`
+	ProjectPath    string                   `json:"project_path"`
+	WorkspacePath  string                   `json:"workspace_path"`
+	WorkspaceRoot  string                   `json:"workspace_root"`
+	WorkspaceMode  WorkspaceMode            `json:"workspace_mode"`
+	WorkspaceIsGit bool                     `json:"workspace_is_git"`
+	ModelID        string                   `json:"model_id"`
+	Provider       string                   `json:"provider,omitempty"`
+	JobID          string                   `json:"job_id,omitempty"`
+	RunID          string                   `json:"run_id,omitempty"`
+	CurrentURL     string                   `json:"current_url,omitempty"`
+	CurrentTitle   string                   `json:"current_title,omitempty"`
+	ReadyState     string                   `json:"ready_state,omitempty"`
+	LastSnapshotID string                   `json:"last_snapshot_id,omitempty"`
+	ExecutionMode  string                   `json:"execution_mode"`
+	Status         SessionStatus            `json:"status"`
+	Thinking       bool                     `json:"thinking"`
+	ThinkingSince  int64                    `json:"thinking_since,omitempty"`
+	PID            int                      `json:"pid"`
+	CreatedAt      time.Time                `json:"created_at"`
+	UpdatedAt      time.Time                `json:"updated_at"`
+	Summary        SessionSummary           `json:"summary"`
+	Preview        SessionPreview           `json:"preview"`
+	Events         []ImportantEvent         `json:"events"`
+	RawOutputLines []string                 `json:"raw_output_lines"`
+	OutputImages   []SessionOutputImage     `json:"output_images,omitempty"`
+	TokenUsage     *RemoteSessionTokenUsage `json:"token_usage,omitempty"`
 }
 
 func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
@@ -79,6 +80,7 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 	events := append([]ImportantEvent(nil), s.Events...)
 	rawLines := append([]string(nil), s.RawOutputLines...)
 	outputImages := append([]SessionOutputImage(nil), s.OutputImages...)
+	tokenUsage := s.TokenUsage
 	status := s.Status
 	jobID := s.JobID
 	runID := s.RunID
@@ -138,7 +140,16 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		Events:         events,
 		RawOutputLines: rawLines,
 		OutputImages:   outputImages,
+		TokenUsage:     remoteSessionTokenUsageView(tokenUsage),
 	}
+}
+
+func remoteSessionTokenUsageView(usage RemoteSessionTokenUsage) *RemoteSessionTokenUsage {
+	if usage.IsZero() {
+		return nil
+	}
+	copy := usage
+	return &copy
 }
 
 func sanitizeSessionSummary(summary *SessionSummary) {

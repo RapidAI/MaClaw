@@ -86,10 +86,7 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 	var raw struct {
 		Content    []AnthropicContentBlock `json:"content"`
 		StopReason string                  `json:"stop_reason"`
-		Usage      *struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage,omitempty"`
+		Usage      *Usage                  `json:"usage,omitempty"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("parse anthropic response: %w", err)
@@ -125,20 +122,12 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 		finishReason = "length"
 	}
 
-	var usage *Usage
-	if raw.Usage != nil {
-		usage = &Usage{
-			InputTokens:  raw.Usage.InputTokens,
-			OutputTokens: raw.Usage.OutputTokens,
-		}
-	}
-
 	return &Response{
 		Choices: []Choice{{
 			Message:      msg,
 			FinishReason: finishReason,
 		}},
-		Usage: usage,
+		Usage: raw.Usage,
 	}, nil
 }
 

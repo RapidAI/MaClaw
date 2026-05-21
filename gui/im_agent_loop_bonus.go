@@ -43,14 +43,16 @@ type agentLoopBonusRoundOptions struct {
 }
 
 type agentLoopBonusRoundResult struct {
-	Response        *IMAgentResponse
-	Conversation    []interface{}
-	History         []agent.ConversationEntry
-	InputTokens     int
-	OutputTokens    int
-	UsageElapsed    time.Duration
-	UsageDone       bool
-	ToolExecElapsed time.Duration
+	Response         *IMAgentResponse
+	Conversation     []interface{}
+	History          []agent.ConversationEntry
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	UsageElapsed     time.Duration
+	UsageDone        bool
+	ToolExecElapsed  time.Duration
 }
 
 func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOptions) agentLoopBonusRoundResult {
@@ -75,6 +77,8 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 		usage := h.recordLLMUsageSnapshot("bonus_round", bonusResp, conversation)
 		result.InputTokens = usage.Input
 		result.OutputTokens = usage.Output
+		result.CacheReadTokens = usage.CacheRead
+		result.CacheWriteTokens = usage.CacheWrite
 		if opts.StreamDone {
 			result.UsageElapsed = time.Since(usageStartedAt)
 			result.UsageDone = true

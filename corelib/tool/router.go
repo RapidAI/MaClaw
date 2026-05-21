@@ -639,15 +639,36 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 		uicResult := r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
 
-		const uicToolActivationThreshold = 0.90
-		uicClear := !uicResult.Degraded &&
-			uicResult.Primary != intent.LabelUnknown &&
-			uicResult.Primary != intent.LabelAmbiguous &&
-			uicResult.Confidence >= uicToolActivationThreshold
+		// Two-tier activation:
+		//
+		// Tier 1 (activation): UIC returns a non-degraded, non-ambiguous top
+		// intent → activate that intent's ToolNames so the LLM can see and
+		// call them. This uses a LOW threshold because the cost of a false
+		// positive is small (an extra tool definition in context) while the
+		// cost of a false negative is high (LLM cannot perform the task and
+		// falls back to dangerous workarounds like raw ssh via bash).
+		//
+		// Tier 2 (eager pin): confidence is high enough to pin tools to the
+		// session so they survive follow-up messages without re-classification.
+		// This uses a HIGHER threshold to avoid polluting the session with
+		// tools from a single ambiguous message.
+		//
+		// The old design used a single 0.90 threshold for both activation AND
+		// pinning. Fusion-ambiguous results (e.g. ssh 0.695 vs search 0.676)
+		// never reach 0.90, causing the correct top-intent's tools to be
+		// completely hidden from the LLM.
+		const (
+			uicActivationThreshold = 0.50 // Tier 1: activate tools (low bar)
+			uicEagerPinThreshold   = 0.80 // Tier 2: session-pin tools (high bar)
+		)
 
-		if uicClear {
-			// Use ToolNames from the UIC result to populate condKeep. UIC is an
-			// execution-routing authority only when it is non-degraded and clear.
+		uicUsable := !uicResult.Degraded &&
+			uicResult.Primary != intent.LabelUnknown &&
+			uicResult.Primary != intent.LabelAmbiguous
+
+		uicShouldEagerPin := uicUsable && uicResult.Confidence >= uicEagerPinThreshold
+
+		if uicUsable && uicResult.Confidence >= uicActivationThreshold && len(uicResult.ToolNames) > 0 {
 			for _, toolName := range uicResult.ToolNames {
 				condKeep[toolName] = true
 			}
@@ -657,6 +678,18 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		for name := range allConditionalKeepTools {
 			if !condKeep[name] {
 				condFilterOut[name] = true
+			}
+		}
+
+		// Eager pin only at Tier 2 confidence. Tier 1 activation makes tools
+		// available for this message only; they won't persist to the next
+		// message unless the LLM actually calls them (which triggers
+		// ActivateSessionTool in the tool execution path).
+		if uicShouldEagerPin {
+			for name := range condKeep {
+				if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
+					r.ActivateSessionTool(name)
+				}
 			}
 		}
 
@@ -710,15 +743,17 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	// Eager pin: when semantic routing selects a conditional tool,
-	// pin it to the session immediately so it survives follow-up messages
-	// in the same task.
+	// Eager pin (fallback path only): when the IntentClassifier semantic
+	// enhancement selects a conditional tool, pin it to the session.
+	// The UIC path handles its own eager pin above with Tier 2 threshold.
 	// Tools from noMemoryPin rules are excluded (noEagerPinTools) because
 	// eager pinning is prone to false positives. They get pinned after
 	// actual successful use via ActivateSessionTool in the tool execution path.
-	for name := range condKeep {
-		if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
-			r.ActivateSessionTool(name)
+	if r.unifiedClassifier == nil {
+		for name := range condKeep {
+			if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
+				r.ActivateSessionTool(name)
+			}
 		}
 	}
 

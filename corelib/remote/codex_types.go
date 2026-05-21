@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -37,7 +38,67 @@ type CodexItem struct {
 type CodexUsage struct {
 	InputTokens       int `json:"input_tokens"`
 	CachedInputTokens int `json:"cached_input_tokens"`
+	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
 	OutputTokens      int `json:"output_tokens"`
+}
+
+func (u *CodexUsage) UnmarshalJSON(data []byte) error {
+	type rawUsage struct {
+		InputTokens              int            `json:"input_tokens"`
+		PromptTokens             int            `json:"prompt_tokens"`
+		OutputTokens             int            `json:"output_tokens"`
+		CompletionTokens         int            `json:"completion_tokens"`
+		CachedInputTokens        int            `json:"cached_input_tokens"`
+		CacheReadInputTokens     int            `json:"cache_read_input_tokens"`
+		CacheWriteTokens         int            `json:"cache_write_tokens"`
+		CacheCreationInputTokens int            `json:"cache_creation_input_tokens"`
+		PromptTokensDetails      map[string]int `json:"prompt_tokens_details"`
+		InputTokensDetails       map[string]int `json:"input_tokens_details"`
+	}
+	var raw rawUsage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	u.InputTokens = firstPositiveInt(raw.InputTokens, raw.PromptTokens)
+	u.OutputTokens = firstPositiveInt(raw.OutputTokens, raw.CompletionTokens)
+	u.CachedInputTokens = firstPositiveInt(
+		raw.CachedInputTokens,
+		raw.CacheReadInputTokens,
+		raw.PromptTokensDetails["cached_tokens"],
+		raw.InputTokensDetails["cached_tokens"],
+	)
+	u.CacheWriteTokens = firstPositiveInt(
+		raw.CacheWriteTokens,
+		raw.CacheCreationInputTokens,
+		raw.PromptTokensDetails["cache_write_tokens"],
+		raw.PromptTokensDetails["cache_creation_input_tokens"],
+		raw.InputTokensDetails["cache_write_tokens"],
+		raw.InputTokensDetails["cache_creation_input_tokens"],
+	)
+	return nil
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func codexUsageSummary(usage *CodexUsage) string {
+	if usage == nil {
+		return ""
+	}
+	parts := []string{fmt.Sprintf("%d in", usage.InputTokens), fmt.Sprintf("%d out", usage.OutputTokens)}
+	if usage.CachedInputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d cache read", usage.CachedInputTokens))
+	}
+	if usage.CacheWriteTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d cache write", usage.CacheWriteTokens))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // CodexEventToText converts a Codex JSONL event into readable text.
@@ -47,8 +108,7 @@ func CodexEventToText(event CodexEvent) string {
 		return ""
 	case "turn.completed":
 		if event.Usage != nil {
-			return fmt.Sprintf("Turn completed (tokens: %d in, %d out)",
-				event.Usage.InputTokens, event.Usage.OutputTokens)
+			return fmt.Sprintf("Turn completed (tokens: %s)", codexUsageSummary(event.Usage))
 		}
 		return "Turn completed"
 	case "turn.failed":

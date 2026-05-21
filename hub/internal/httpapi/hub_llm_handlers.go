@@ -189,7 +189,10 @@ func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsReposit
 	if err != nil || reg == nil {
 		return out
 	}
-	for _, stat := range reg.TokenUsage {
+	for providerID, stat := range reg.TokenUsage {
+		if isRemoteCodingToolUsageProviderID(providerID) {
+			continue
+		}
 		if stat == nil {
 			continue
 		}

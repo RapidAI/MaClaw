@@ -13,7 +13,6 @@ class ChatProvider extends ChangeNotifier {
 
   List<Channel> _channels = [];
   final Map<String, List<Message>> _messages = {};
-  String? _activeChannelId;
 
   static const _uuid = Uuid();
 
@@ -36,7 +35,6 @@ class ChatProvider extends ChangeNotifier {
 
   /// Enter a channel: load cached + sync incremental.
   Future<void> enterChannel(String channelId) async {
-    _activeChannelId = channelId;
     // Instant render from cache.
     _messages[channelId] = await sync.loadCached(channelId);
     notifyListeners();
@@ -49,7 +47,6 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void leaveChannel(String channelId) {
-    _activeChannelId = null;
     // Report read receipt.
     final msgs = _messages[channelId];
     if (msgs != null && msgs.isNotEmpty) {
@@ -119,7 +116,8 @@ class ChatProvider extends ChangeNotifier {
   }
 
   /// Send a voice note message.
-  Future<void> sendVoiceMessage(String channelId, String filePath, int durationMs) async {
+  Future<void> sendVoiceMessage(
+      String channelId, String filePath, int durationMs) async {
     final clientMsgId = _uuid.v4();
     try {
       final fileInfo = await api.uploadFile(channelId, filePath, 'voice.m4a');

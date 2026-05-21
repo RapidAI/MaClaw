@@ -102,7 +102,7 @@ describe('RemoteSessionConsole AskUserQuestion UI', () => {
         expect(screen.getByText('API Key')).toBeTruthy();
         expect(screen.getByText('Hint: Pick one option to continue')).toBeTruthy();
 
-        const input = screen.getByPlaceholderText('回答问题以继续...') as HTMLInputElement;
+        const input = screen.getByPlaceholderText('Type a message...') as HTMLInputElement;
         expect(input.value).toBe('');
 
         fireEvent.click(screen.getByRole('button', { name: 'OAuth' }));
@@ -127,8 +127,8 @@ describe('RemoteSessionConsole AskUserQuestion UI', () => {
             />,
         );
 
-        fireEvent.change(screen.getByPlaceholderText('回答问题以继续...'), { target: { value: 'API Key' } });
-        fireEvent.click(screen.getByTitle('发送'));
+        fireEvent.change(screen.getByPlaceholderText('Type a message...'), { target: { value: 'API Key' } });
+        fireEvent.click(screen.getByTitle('Send'));
 
         await waitFor(() => {
             expect(SendRemoteSessionInputMock).toHaveBeenCalledWith('sess-1', 'API Key\n');
@@ -164,7 +164,7 @@ describe('RemoteSessionConsole AskUserQuestion UI', () => {
     });
 });
 
-describe('RemoteSessionConsole browser controls', () => {
+describe('RemoteSessionConsole browser sessions', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         SendRemoteSessionInputMock.mockResolvedValue(undefined);
@@ -186,7 +186,7 @@ describe('RemoteSessionConsole browser controls', () => {
         });
     });
 
-    it('renders browser wait controls and usage hint', () => {
+    it('renders browser sessions as raw terminal sessions with command input', () => {
         const session = buildSession({
             tool: 'browser',
             launch_source: 'browser',
@@ -211,14 +211,13 @@ describe('RemoteSessionConsole browser controls', () => {
             />,
         );
 
-        expect(screen.getByText('Browser controls')).toBeTruthy();
-        expect(screen.getByText(/建议先执行一次 browser_observe/)).toBeTruthy();
-        expect(screen.getByRole('button', { name: '等待' })).toBeTruthy();
-        expect(screen.getByPlaceholderText('等待毫秒数，例如 1000')).toBeTruthy();
+        expect(screen.getByText(/browser \(browser-agent\)/)).toBeTruthy();
+        expect(screen.getByText('assistant: waiting for answer')).toBeTruthy();
+        expect(screen.getByPlaceholderText('Type a command...')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Raw' })).toBeTruthy();
     });
 
-    it('invokes browser_wait with target and duration', async () => {
-        InvokeBrowserToolMock.mockResolvedValue('{"display":"已等待 1500ms"}');
+    it('sends browser session input through raw terminal input', async () => {
         const refreshSessionsOnly = vi.fn().mockResolvedValue(undefined);
         const session = buildSession({
             id: 'browser-1',
@@ -241,186 +240,12 @@ describe('RemoteSessionConsole browser controls', () => {
             />,
         );
 
-        fireEvent.change(screen.getByPlaceholderText('ref 或 selector，例如 @e1 / button.submit'), { target: { value: '@e1' } });
-        fireEvent.change(screen.getByPlaceholderText('等待毫秒数，例如 1000'), { target: { value: '1500' } });
-        fireEvent.click(screen.getByRole('button', { name: '等待' }));
+        fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'go' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
 
         await waitFor(() => {
-            expect(InvokeBrowserToolMock).toHaveBeenCalledWith('browser_wait', { session_id: 'browser-1', ref: '@e1', duration_ms: 1500 });
-        });
-        await waitFor(() => {
-            expect(refreshSessionsOnly).toHaveBeenCalled();
-        });
-        expect(screen.getByText('✓ 已等待 1500ms')).toBeTruthy();
-    });
-
-    it('shows recent browser target recommendation when action target is empty', () => {
-        const session = buildSession({
-            id: 'browser-4',
-            tool: 'browser',
-            launch_source: 'browser',
-            execution_mode: 'browser-agent',
-            status: 'running',
-            summary: { status: 'running' },
-            latest_refs: [{ ref: '@recent', selector: 'button.primary', name: 'Primary action' }],
-        });
-
-        render(
-            <RemoteSessionConsole
-                session={session}
-                remoteInputDrafts={{}}
-                setRemoteInputDrafts={vi.fn()}
-                killRemoteSession={vi.fn().mockResolvedValue(undefined)}
-                refreshSessionsOnly={vi.fn().mockResolvedValue(undefined)}
-                onClose={vi.fn()}
-            />,
-        );
-
-        expect(screen.getByText(/最近可用目标：/)).toBeTruthy();
-        expect(screen.getByText('@recent')).toBeTruthy();
-        fireEvent.click(screen.getByRole('button', { name: '使用最近目标' }));
-        expect((screen.getByPlaceholderText('ref 或 selector，例如 @e1 / button.submit') as HTMLInputElement).value).toBe('@recent');
-    });
-
-    it('shows recent target quick actions and copies extract result', async () => {
-        InvokeBrowserToolMock.mockResolvedValueOnce('{"display":"已点击最近目标"}');
-        const session = buildSession({
-            id: 'browser-5',
-            tool: 'browser',
-            launch_source: 'browser',
-            execution_mode: 'browser-agent',
-            status: 'running',
-            summary: { status: 'running' },
-            latest_refs: [{ ref: '@quick', selector: 'button.quick', name: 'Quick action' }],
-        });
-
-        render(
-            <RemoteSessionConsole
-                session={session}
-                remoteInputDrafts={{}}
-                setRemoteInputDrafts={vi.fn()}
-                killRemoteSession={vi.fn().mockResolvedValue(undefined)}
-                refreshSessionsOnly={vi.fn().mockResolvedValue(undefined)}
-                onClose={vi.fn()}
-            />,
-        );
-
-        fireEvent.click(screen.getByRole('button', { name: '点击最近目标' }));
-        await waitFor(() => {
-            expect(InvokeBrowserToolMock).toHaveBeenCalledWith('browser_click', { session_id: 'browser-5', ref: '@quick' });
-        });
-    });
-
-    it('copies browser extract result', async () => {
-        InvokeBrowserToolMock.mockResolvedValue('{"display":"已提取目标内容","data":{"content":"copy me"}}');
-        const session = buildSession({
-            id: 'browser-6',
-            tool: 'browser',
-            launch_source: 'browser',
-            execution_mode: 'browser-agent',
-            status: 'running',
-            summary: { status: 'running' },
-        });
-
-        render(
-            <RemoteSessionConsole
-                session={session}
-                remoteInputDrafts={{}}
-                setRemoteInputDrafts={vi.fn()}
-                killRemoteSession={vi.fn().mockResolvedValue(undefined)}
-                refreshSessionsOnly={vi.fn().mockResolvedValue(undefined)}
-                onClose={vi.fn()}
-            />,
-        );
-
-        fireEvent.change(screen.getByPlaceholderText('提取目标，例如：页面主标题、正文摘要'), { target: { value: '正文摘要' } });
-        fireEvent.click(screen.getByRole('button', { name: '提取' }));
-
-        await waitFor(() => {
-            expect(screen.getByText('copy me')).toBeTruthy();
-        });
-
-        fireEvent.click(screen.getByRole('button', { name: '复制结果' }));
-        await waitFor(() => {
-            expect(ClipboardSetTextMock).toHaveBeenCalledWith('copy me');
-        });
-    });
-
-    it('extracts recent target and clears extract result', async () => {
-        InvokeBrowserToolMock.mockResolvedValue('{"display":"已提取最近目标","data":{"content":"recent content"}}');
-        const session = buildSession({
-            id: 'browser-7',
-            tool: 'browser',
-            launch_source: 'browser',
-            execution_mode: 'browser-agent',
-            status: 'running',
-            summary: { status: 'running' },
-            latest_refs: [{ ref: '@recentExtract', selector: 'div.content', name: 'Content block' }],
-        });
-
-        render(
-            <RemoteSessionConsole
-                session={session}
-                remoteInputDrafts={{}}
-                setRemoteInputDrafts={vi.fn()}
-                killRemoteSession={vi.fn().mockResolvedValue(undefined)}
-                refreshSessionsOnly={vi.fn().mockResolvedValue(undefined)}
-                onClose={vi.fn()}
-            />,
-        );
-
-        fireEvent.click(screen.getByRole('button', { name: '提取最近目标' }));
-        await waitFor(() => {
-            expect(InvokeBrowserToolMock).toHaveBeenCalledWith('browser_extract', {
-                session_id: 'browser-7',
-                query: '最近目标内容',
-                format: 'text',
-                ref: '@recentExtract',
-            });
-        });
-        await waitFor(() => {
-            expect(screen.getByText('recent content')).toBeTruthy();
-        });
-
-        fireEvent.click(screen.getByRole('button', { name: '清空结果' }));
-        expect(screen.queryByText('recent content')).toBeNull();
-    });
-
-    it('shows suggested action and runs wait from ref shortcuts', async () => {
-        InvokeBrowserToolMock.mockResolvedValue('{"display":"已等待元素出现"}');
-        const refreshSessionsOnly = vi.fn().mockResolvedValue(undefined);
-        const session = buildSession({
-            id: 'browser-3',
-            tool: 'browser',
-            launch_source: 'browser',
-            execution_mode: 'browser-agent',
-            status: 'running',
-            summary: {
-                status: 'running',
-                suggested_action: 'Run browser_observe to capture refs and page state',
-            },
-            latest_refs: [{ ref: '@e1', selector: 'button.submit', name: 'Submit' }],
-            preview: { preview_lines: ['preview'] },
-        });
-
-        render(
-            <RemoteSessionConsole
-                session={session}
-                remoteInputDrafts={{}}
-                setRemoteInputDrafts={vi.fn()}
-                killRemoteSession={vi.fn().mockResolvedValue(undefined)}
-                refreshSessionsOnly={refreshSessionsOnly}
-                onClose={vi.fn()}
-            />,
-        );
-
-        expect(screen.getByText(/建议操作：Run browser_observe to capture refs and page state/)).toBeTruthy();
-
-        fireEvent.click(screen.getByRole('button', { name: '预览' }));
-        fireEvent.click(screen.getByRole('button', { name: '等待 @e1' }));
-
-        await waitFor(() => {
-            expect(InvokeBrowserToolMock).toHaveBeenCalledWith('browser_wait', { session_id: 'browser-3', ref: '@e1', duration_ms: 1000 });
+            expect(SendRemoteSessionRawInputMock).toHaveBeenCalledWith('browser-1', 'g');
+            expect(SendRemoteSessionRawInputMock).toHaveBeenCalledWith('browser-1', '\r');
         });
         await waitFor(() => {
             expect(refreshSessionsOnly).toHaveBeenCalled();

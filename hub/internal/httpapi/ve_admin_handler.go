@@ -22,22 +22,24 @@ type veGroupConfig struct {
 }
 
 type digitalEmployeeEntry struct {
-	ID               string   `json:"id"`
-	MachineID        string   `json:"machine_id"`
-	OwnerUserID      string   `json:"owner_user_id"`
-	OwnerEmail       string   `json:"owner_email,omitempty"`
-	Name             string   `json:"name"`
-	SkillDescription string   `json:"skill_description"`
-	AccessPolicy     string   `json:"access_policy"`
-	Whitelist        []string `json:"whitelist,omitempty"`
-	Blacklist        []string `json:"blacklist,omitempty"`
-	Status           string   `json:"status"`
-	OnlineStatus     string   `json:"online_status"`
-	RegisteredAt     string   `json:"registered_at,omitempty"`
-	UpdatedAt        string   `json:"updated_at,omitempty"`
-	DisabledAt       string   `json:"disabled_at,omitempty"`
-	RejectedAt       string   `json:"rejected_at,omitempty"`
-	RejectReason     string   `json:"reject_reason,omitempty"`
+	ID                 string   `json:"id"`
+	MachineID          string   `json:"machine_id"`
+	PlatformID         string   `json:"platform_id,omitempty"`
+	PlatformEmployeeID string   `json:"platform_employee_id,omitempty"`
+	OwnerUserID        string   `json:"owner_user_id"`
+	OwnerEmail         string   `json:"owner_email,omitempty"`
+	Name               string   `json:"name"`
+	SkillDescription   string   `json:"skill_description"`
+	AccessPolicy       string   `json:"access_policy"`
+	Whitelist          []string `json:"whitelist,omitempty"`
+	Blacklist          []string `json:"blacklist,omitempty"`
+	Status             string   `json:"status"`
+	OnlineStatus       string   `json:"online_status"`
+	RegisteredAt       string   `json:"registered_at,omitempty"`
+	UpdatedAt          string   `json:"updated_at,omitempty"`
+	DisabledAt         string   `json:"disabled_at,omitempty"`
+	RejectedAt         string   `json:"rejected_at,omitempty"`
+	RejectReason       string   `json:"reject_reason,omitempty"`
 }
 
 type digitalEmployeeRegistry struct {
@@ -728,6 +730,15 @@ func (r digitalEmployeeRegistry) findByMachineID(machineID string) int {
 func (r digitalEmployeeRegistry) findByID(id string) int {
 	for i, entry := range r.Employees {
 		if entry.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (r digitalEmployeeRegistry) findByIDOrMachineID(id string) int {
+	for i, entry := range r.Employees {
+		if entry.ID == id || entry.MachineID == id {
 			return i
 		}
 	}

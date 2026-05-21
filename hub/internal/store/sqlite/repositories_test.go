@@ -84,6 +84,107 @@ func TestAdminUserRepositoryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAdminUserRepositoryScopesUsernameAndEmail(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	admins := []*store.AdminUser{
+		{ID: "adm_global", Username: "shared", PasswordHash: "hash", Email: "shared@example.com", Scope: "global", Role: "global_owner", Status: "active", CreatedAt: now, UpdatedAt: now},
+		{ID: "adm_tenant_a", Username: "shared", PasswordHash: "hash-a", Email: "tenant@example.com", Scope: "tenant", Role: "tenant_admin", TenantID: "tenant_a", Status: "active", CreatedAt: now, UpdatedAt: now},
+		{ID: "adm_tenant_b", Username: "shared", PasswordHash: "hash-b", Email: "tenant@example.com", Scope: "tenant", Role: "tenant_admin", TenantID: "tenant_b", Status: "active", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, admin := range admins {
+		if err := st.Admins.Create(ctx, admin); err != nil {
+			t.Fatalf("create admin %s: %v", admin.ID, err)
+		}
+	}
+
+	global, err := st.Admins.GetByUsername(ctx, "shared")
+	if err != nil {
+		t.Fatalf("get global admin: %v", err)
+	}
+	if global == nil || global.ID != "adm_global" {
+		t.Fatalf("GetByUsername should resolve global admin, got %#v", global)
+	}
+	tenantA, err := st.Admins.GetByUsernameScoped(ctx, "shared", "tenant", "tenant_a")
+	if err != nil {
+		t.Fatalf("get tenant admin: %v", err)
+	}
+	if tenantA == nil || tenantA.ID != "adm_tenant_a" {
+		t.Fatalf("unexpected tenant admin: %#v", tenantA)
+	}
+	if err := st.Admins.UpdateEmailScoped(ctx, "shared", "tenant", "tenant_a", "new-tenant@example.com", now.Add(time.Minute)); err != nil {
+		t.Fatalf("update tenant email: %v", err)
+	}
+	tenantB, err := st.Admins.GetByUsernameScoped(ctx, "shared", "tenant", "tenant_b")
+	if err != nil {
+		t.Fatalf("get tenant b admin: %v", err)
+	}
+	if tenantB == nil || tenantB.Email != "tenant@example.com" {
+		t.Fatalf("tenant_b email should be unchanged, got %#v", tenantB)
+	}
+
+	dup := &store.AdminUser{ID: "adm_tenant_a_dup", Username: "shared", PasswordHash: "hash", Email: "other@example.com", Scope: "tenant", Role: "tenant_admin", TenantID: "tenant_a", Status: "active", CreatedAt: now, UpdatedAt: now}
+	if err := st.Admins.Create(ctx, dup); err == nil {
+		t.Fatal("expected duplicate username in same tenant to fail")
+	}
+}
+
+func TestAdminUsersLegacyUniqueSchemaMigratesToScopedIndexes(t *testing.T) {
+	provider, err := NewProvider(Config{
+		DSN:               filepath.Join(t.TempDir(), "hub-legacy-admin-users.db"),
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  4,
+		MaxReadIdleConns:  2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+
+	if _, err := provider.Write.Exec(`CREATE TABLE admin_users (
+		id TEXT PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		email TEXT NOT NULL UNIQUE,
+		status TEXT NOT NULL DEFAULT 'active',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("create legacy admin_users: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO admin_users (id, username, password_hash, email, status, created_at, updated_at)
+		VALUES ('adm_legacy', 'shared', 'hash', 'shared@example.com', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert legacy admin: %v", err)
+	}
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	st := NewStore(provider)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, admin := range []*store.AdminUser{
+		{ID: "adm_tenant_a", Username: "shared", PasswordHash: "hash-a", Email: "tenant@example.com", Scope: "tenant", Role: "tenant_admin", TenantID: "tenant_a", Status: "active", CreatedAt: now, UpdatedAt: now},
+		{ID: "adm_tenant_b", Username: "shared", PasswordHash: "hash-b", Email: "tenant@example.com", Scope: "tenant", Role: "tenant_admin", TenantID: "tenant_b", Status: "active", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Admins.Create(ctx, admin); err != nil {
+			t.Fatalf("create scoped admin %s after migration: %v", admin.ID, err)
+		}
+	}
+	global, err := st.Admins.GetByUsername(ctx, "shared")
+	if err != nil {
+		t.Fatalf("get migrated global admin: %v", err)
+	}
+	if global == nil || global.ID != "adm_legacy" || global.Scope != "global" || global.TenantID != "" {
+		t.Fatalf("unexpected migrated global admin: %#v", global)
+	}
+}
+
 func TestTenantRepositoryEnsureDefaultAndRoundTrip(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

@@ -949,6 +949,27 @@ func TestToRemoteSessionViewIncludesPendingQuestion(t *testing.T) {
 	}
 }
 
+func TestToRemoteSessionViewIncludesTokenUsage(t *testing.T) {
+	session := &RemoteSession{
+		ID:     "sess-token-usage",
+		Tool:   "codex",
+		Status: SessionExited,
+		TokenUsage: RemoteSessionTokenUsage{
+			InputTokens:       1200,
+			OutputTokens:      80,
+			CachedInputTokens: 768,
+			CacheWriteTokens:  128,
+		},
+	}
+	view := toRemoteSessionView(session)
+	if view.TokenUsage == nil {
+		t.Fatal("TokenUsage is nil")
+	}
+	if view.TokenUsage.InputTokens != 1200 || view.TokenUsage.OutputTokens != 80 || view.TokenUsage.CachedInputTokens != 768 || view.TokenUsage.CacheWriteTokens != 128 {
+		t.Fatalf("TokenUsage = %+v", *view.TokenUsage)
+	}
+}
+
 func TestBuildRemoteLaunchSpecReturnsErrorWhenConfigSelectorMissing(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

@@ -157,6 +157,7 @@
       options.push('<option value="' + esc(item.id) + '">' + esc(tenantOptionLabel(item)) + '</option>');
     });
     select.innerHTML = options.join('');
+    if (!current) current = '__global__';
     if (current === '__global__' || (current && (items || []).some(function(item) { return item && item.id === current; }))) select.value = current;
   }
 
@@ -290,11 +291,15 @@
     if (node) node.classList.toggle('hidden', hidden);
   }
 
-  function applyOverviewScopeUI(tenantAdmin) {
+  function applyOverviewScopeUI(tenantAdmin, hasProfile) {
+    var globalAdmin = !!(hasProfile && !tenantAdmin);
     toggleNearest('centerStatusHero', '.metric', tenantAdmin);
     toggleNearest('digitalEmployeeHero', '.metric', tenantAdmin);
     toggleNearest('centerStatusDetail', '.hint', tenantAdmin);
     toggleNearest('centerAdvertisedURL', '.item', tenantAdmin);
+    toggleNearest('machineCountHero', '.metric', globalAdmin);
+    toggleNearest('blockedCountHero', '.metric', globalAdmin);
+    toggleNearest('inviteCountHero', '.metric', globalAdmin);
   }
 
   function applySystemScopeCopy(tenantAdmin) {
@@ -322,8 +327,8 @@
     var tenantAdmin = isTenantAdminProfile(profile);
     var hasProfile = !!profile;
     updateTenantAdminRoleOptions(profile);
-    var globalOnly = global.adminGlobalOnlyTabs || { center: true, llmproviders: true, console: true };
-    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, marketplace: true, machines: true, virtualemployees: true, invitationcodes: true, pwarequests: true, security: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true };
+    var globalOnly = global.adminGlobalOnlyTabs || { center: true, console: true };
+    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, marketplace: true, machines: true, virtualemployees: true, invitationcodes: true, pwarequests: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true };
     global.document.querySelectorAll('.nav button[data-tab]').forEach(function(button) {
       var tab = button.dataset.tab || '';
       var hidden = false;
@@ -346,8 +351,9 @@
       var card = byID(id);
       if (card) card.classList.toggle('hidden', !!(hasProfile && tenantAdmin));
     });
+    if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();
     applySystemScopeCopy(!!(hasProfile && tenantAdmin));
-    applyOverviewScopeUI(!!(hasProfile && tenantAdmin));
+    applyOverviewScopeUI(!!(hasProfile && tenantAdmin), hasProfile);
   }
   function registerTenantTab() {
     if (!global.AdminTabRegistry || typeof global.AdminTabRegistry.registerTab !== 'function') return;

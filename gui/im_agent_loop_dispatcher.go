@@ -169,6 +169,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		Debug:                  isDebug(),
 		LastInputTokens:        telemetry.LastLLMInputTokens,
 		LastOutputTokens:       telemetry.LastLLMOutputTokens,
+		LastCacheReadTokens:    telemetry.LastLLMCacheReadTokens,
+		LastCacheWriteTokens:   telemetry.LastLLMCacheWriteTokens,
 		TotalToolCallsInLoop:   runState.TotalToolCallsInLoop,
 		EffectiveMax:           effectiveMax,
 		ConfigMax:              maxIter,

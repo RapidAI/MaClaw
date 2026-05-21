@@ -113,7 +113,7 @@
   function startCenterPoll() {
     if (centerPollTimer) return;
     centerPollTimer = setInterval(function() {
-      if (!token()) {
+      if (!token() || !centerGlobalScoped()) {
         stopCenterPoll();
         return;
       }
@@ -126,6 +126,11 @@
       clearInterval(centerPollTimer);
       centerPollTimer = null;
     }
+  }
+
+  function centerGlobalScoped() {
+    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+    return !profile || String(profile.scope || '').toLowerCase() !== 'tenant';
   }
 
   global.renderCenterStatus = function renderCenterStatus(data) {
@@ -280,6 +285,10 @@
   };
 
   global.loadCenterStatus = async function loadCenterStatus() {
+    if (!centerGlobalScoped()) {
+      stopCenterPoll();
+      return;
+    }
     try {
       var data = await api('/api/admin/center/status');
       global.renderCenterStatus(data);
@@ -299,5 +308,6 @@
   }
 
   applyCenterTabI18n();
+  global._stopCenterPoll = stopCenterPoll;
   global.addEventListener('beforeunload', stopCenterPoll);
 })(window);

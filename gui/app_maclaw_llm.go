@@ -24,6 +24,7 @@ import (
 // MaclawLLMProvider and MaclawLLMConfig are defined in corelib.
 
 const codegenProviderName = "CodeGen"
+
 const legacyZhipuProviderName = "智谱"
 const zhipuLobsterProviderName = "智谱龙虾"
 const zhipuCodingProviderName = "智谱编程"
@@ -1146,6 +1147,10 @@ func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens,
 	if inputTokens == 0 && outputTokens == 0 && cachedInputTokens == 0 && cacheWriteTokens == 0 {
 		return
 	}
+	if isRemoteToolTokenUsageProvider(providerName) {
+		log.Printf("[LLM] ignoring remote-tool token usage for %q; remote coding tools are session diagnostics, not Maclaw usage", providerName)
+		return
+	}
 	a.tokenUsageMu.Lock()
 	defer a.tokenUsageMu.Unlock()
 	cfg, err := a.LoadConfig()
@@ -1189,11 +1194,18 @@ func (a *App) GetLLMTokenUsage(provider string) *corelib.TokenUsageStat {
 	if provider == "" {
 		provider = cfg.MaclawLLMCurrentProvider
 	}
+	if isRemoteToolTokenUsageProvider(provider) {
+		return &corelib.TokenUsageStat{}
+	}
 	if cfg.LLMTokenUsage == nil {
 		return &corelib.TokenUsageStat{}
 	}
 	if stat, ok := cfg.LLMTokenUsage[provider]; ok {
-		return stat
+		if stat == nil {
+			return &corelib.TokenUsageStat{}
+		}
+		copy := *stat
+		return &copy
 	}
 	return &corelib.TokenUsageStat{}
 }
@@ -1207,7 +1219,11 @@ func (a *App) GetAllLLMTokenUsage() map[string]*corelib.TokenUsageStat {
 	if cfg.LLMTokenUsage == nil {
 		return map[string]*corelib.TokenUsageStat{}
 	}
-	return cfg.LLMTokenUsage
+	return corelib.FilterRemoteCodingToolTokenUsage(cfg.LLMTokenUsage)
+}
+
+func isRemoteToolTokenUsageProvider(provider string) bool {
+	return corelib.IsRemoteCodingToolTokenUsageProvider(provider)
 }
 
 // ResetLLMTokenUsage resets the token usage stats for a specific provider.

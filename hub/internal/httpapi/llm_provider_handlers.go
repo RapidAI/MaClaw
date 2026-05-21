@@ -179,6 +179,7 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 		if req.TokenUsage == nil && oldReg != nil {
 			req.TokenUsage = oldReg.TokenUsage
 		}
+		req.TokenUsage = filterRemoteCodingToolTokenUsage(req.TokenUsage)
 		if req.DownstreamMaxConcurrency <= 0 {
 			if oldReg != nil && oldReg.DownstreamMaxConcurrency > 0 {
 				req.DownstreamMaxConcurrency = oldReg.DownstreamMaxConcurrency
@@ -1815,12 +1816,13 @@ func applyProviderUsageCost(usage corelib.TokenUsageStat, provider *im.LLMProvid
 }
 
 func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, warnings []string) llmProviderRegistryResponse {
+	usageByProvider := filterRemoteCodingToolTokenUsage(reg.TokenUsage)
 	providers := make([]any, 0, len(reg.Providers))
 	availableModels := make([]string, 0, len(reg.Providers))
 	seenModels := map[string]struct{}{}
 	for _, p := range reg.Providers {
 		usage := corelib.TokenUsageStat{}
-		if stat := reg.TokenUsage[p.ID]; stat != nil {
+		if stat := usageByProvider[p.ID]; stat != nil {
 			usage = *stat
 		}
 		wireAPI := normalizeProviderWireAPI(p.WireAPI)

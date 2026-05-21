@@ -11,6 +11,7 @@ const indexPath = path.join(root, 'index.html');
 const expectedScripts = [
   'admin.js',
   'admin-tabs.js',
+  'tenant-tab.js',
   'admin-ui.js',
   'center-tab.js',
   'governance-tab.js',
@@ -118,6 +119,88 @@ function assertHealthHook() {
   if (!content.includes('runAdminModuleHealthCheck')) {
     fail('admin-module-health.js should export runAdminModuleHealthCheck.');
   }
+}
+
+function assertGlobalAdminRuntimeHooks() {
+  const center = read('center-tab.js');
+  ['centerGlobalScoped', '_stopCenterPoll'].forEach(function(marker) {
+    if (!center.includes(marker)) {
+      fail('center-tab.js is missing global-only center marker: ' + marker);
+    }
+  });
+  const services = read('llm-service-tabs.js');
+  ['llmProviderModelRuntimeCard', 'ensureLLMProviderRuntimeUI', 'model_download/status', 'llmServiceGlobalScoped', 'llmServiceGlobalScoped() ? loadLLMServiceModelRuntime'].forEach(function(marker) {
+    if (!services.includes(marker)) {
+      fail('llm-service-tabs.js is missing global runtime marker: ' + marker);
+    }
+  });
+}
+
+function assertTenantAdminUIHooks() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  [
+    'id="loginTenant"',
+    'data-tab="tenants"',
+    'id="tab-tenants"',
+    'id="tenantCreatePanel"',
+    'src="/admin/tenant-tab.js"'
+  ].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html is missing tenant admin UI marker: ' + marker);
+    }
+  });
+  const admin = read('admin.js');
+  if (!admin.includes("tenant: document.getElementById('loginTenant')")) {
+    fail('admin.js login payload must include selected tenant scope.');
+  }
+  ['adminTabAllowed', 'window.adminGlobalOnlyTabs', 'window.adminTenantOnlyTabs', "return 'tenants'"].forEach(function(marker) {
+    if (!admin.includes(marker)) {
+      fail('admin.js must block programmatic cross-scope tab opens: ' + marker);
+    }
+  });
+  if (!admin.includes("normalized === 'system'") || !admin.includes("String(profile.scope || '').toLowerCase() === 'tenant'") || !admin.includes('openDefaultImSub')) {
+    fail('admin.js must avoid global-only system loads for tenant admins.');
+  }
+  const bootstrap = read('admin-bootstrap.js');
+  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
+    if (!bootstrap.includes(marker)) {
+      fail('admin-bootstrap.js is missing scoped refresh marker: ' + marker);
+    }
+  });
+  const im = read('im-tab.js');
+  ['applyImScopeUI', 'openDefaultImSub', "value === 'hubllm'"].forEach(function(marker) {
+    if (!im.includes(marker)) {
+      fail('im-tab.js is missing scoped IM marker: ' + marker);
+    }
+  });
+  const tenant = read('tenant-tab.js');
+  [
+    'loadLoginTenants',
+    'renderLoginTenantOptions',
+    'applyAdminScopeUI',
+    'createTenantAdmin',
+    'applyImScopeUI',
+    "toggleNearest('machineCountHero'"
+  ].forEach(function(marker) {
+    if (!tenant.includes(marker)) {
+      fail('tenant-tab.js is missing marker: ' + marker);
+    }
+  });
+}
+
+function assertScopedRefreshHooks() {
+  [
+    ['governance-tab.js', 'governanceTenantScopedRefresh'],
+    ['marketplace-tab.js', 'marketplaceTenantScopedRefresh'],
+    ['failure-logs-tab.js', 'failureLogsTenantScopedRefresh'],
+    ['llm-provider-tab.js', 'llmProviderTenantScopedRefresh'],
+    ['usage-stats-tab.js', 'usageStatsTenantScoped']
+  ].forEach(function(entry) {
+    const content = read(entry[0]);
+    if (!content.includes(entry[1])) {
+      fail(entry[0] + ' is missing scoped refresh marker: ' + entry[1]);
+    }
+  });
 }
 
 function assertModuleExports(name) {
@@ -240,6 +323,9 @@ expectedScripts.concat(['MODULES.md', 'validate-admin-modules.js', 'check-admin.
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
+assertTenantAdminUIHooks();
+assertGlobalAdminRuntimeHooks();
+assertScopedRefreshHooks();
 assertLegacyMirrorRemoved();
 assertLLMProviderPricingHooks();
 assertSecurityCapabilityComplianceExportHooks();

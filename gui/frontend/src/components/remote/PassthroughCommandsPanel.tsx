@@ -459,7 +459,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
 
     const saveAndTest = async () => {
         const name = form.name.trim() || text(lang, "当前草稿", "current draft");
-        if (!confirmTestRun(name)) return;
+        if (!(await confirmTestRun(name))) return;
         const saved = await save();
         if (saved) await runTest(saved, testValuesFor(saved.params || [], testValues), true);
     };

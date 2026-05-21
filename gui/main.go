@@ -25,9 +25,15 @@ import (
 var version = "dev"
 
 func main() {
+	args := os.Args
+	isTUI := isTUISubcommand(args)
+
 	// --- Log to file: ~/.maclaw/logs/maclaw.log ---
 	corelib.SyncLogDetailEnabledFromDefaultConfig()
 	initLogFile()
+	if isTUI {
+		setLogFallback(false, nil)
+	}
 
 	// --- Program log for programming tool output ---
 	programLogger.Init()
@@ -38,8 +44,7 @@ func main() {
 	// TUI is a terminal subcommand, not a desktop startup mode. Dispatch it
 	// before constructing the desktop App path so it cannot fall through into
 	// platform/window initialization.
-	args := os.Args
-	if len(args) > 1 && (args[1] == "tui" || args[1] == "ui") {
+	if isTUI {
 		runTUIMode(nil)
 		return
 	}
@@ -198,6 +203,14 @@ func main() {
 	}
 }
 
+func isTUISubcommand(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	subcommand := strings.TrimSpace(strings.ToLower(args[1]))
+	return subcommand == "tui" || subcommand == "ui"
+}
+
 // initLogFile sets up log output to <MaclawBaseDir>/logs/maclaw.log (with rotation)
 // while keeping stderr as a fallback. Logs are rotated when the file exceeds
 // 10 MB; the previous log is kept as maclaw.log.1.
@@ -234,13 +247,35 @@ type detailAwareLogWriter struct {
 
 func (w *detailAwareLogWriter) Write(p []byte) (int, error) {
 	if corelib.IsLogDetailEnabled() || isImportantLogLine(string(p)) {
-		_, err := io.MultiWriter(w.file, w.stderr).Write(p)
+		writers := make([]io.Writer, 0, 2)
+		if w.file != nil {
+			writers = append(writers, w.file)
+		}
+		if w.stderr != nil {
+			writers = append(writers, w.stderr)
+		}
+		if len(writers) == 0 {
+			return len(p), nil
+		}
+		_, err := io.MultiWriter(writers...).Write(p)
 		if err != nil {
 			return 0, err
 		}
 		return len(p), nil
 	}
 	return len(p), nil
+}
+
+func setLogFallback(desktop bool, stderr io.Writer) {
+	if !desktop {
+		log.SetOutput(io.Discard)
+		return
+	}
+	if stderr == nil {
+		log.SetOutput(io.Discard)
+		return
+	}
+	log.SetOutput(stderr)
 }
 
 func isImportantLogLine(line string) bool {

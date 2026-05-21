@@ -11,20 +11,30 @@ import (
 )
 
 type SessionSummary struct {
-	SessionID       string   `json:"session_id"`
-	MachineID       string   `json:"machine_id"`
-	Tool            string   `json:"tool"`
-	Title           string   `json:"title"`
-	Status          string   `json:"status"`
-	Severity        string   `json:"severity"`
-	WaitingForUser  bool     `json:"waiting_for_user"`
-	CurrentTask     string   `json:"current_task"`
-	ProgressSummary string   `json:"progress_summary"`
-	LastResult      string   `json:"last_result"`
-	SuggestedAction string   `json:"suggested_action"`
-	ImportantFiles  []string `json:"important_files"`
-	LastCommand     string   `json:"last_command"`
-	UpdatedAt       int64    `json:"updated_at"`
+	SessionID       string             `json:"session_id"`
+	MachineID       string             `json:"machine_id"`
+	Tool            string             `json:"tool"`
+	Title           string             `json:"title"`
+	Status          string             `json:"status"`
+	Severity        string             `json:"severity"`
+	WaitingForUser  bool               `json:"waiting_for_user"`
+	CurrentTask     string             `json:"current_task"`
+	ProgressSummary string             `json:"progress_summary"`
+	LastResult      string             `json:"last_result"`
+	SuggestedAction string             `json:"suggested_action"`
+	ImportantFiles  []string           `json:"important_files"`
+	LastCommand     string             `json:"last_command"`
+	TokenUsage      *SessionTokenUsage `json:"token_usage,omitempty"`
+	UpdatedAt       int64              `json:"updated_at"`
+}
+
+type SessionTokenUsage struct {
+	// Diagnostic usage reported by a remote coding tool session. This is not
+	// Maclaw LLM provider usage and must not feed billing or credit counters.
+	InputTokens       int `json:"input_tokens,omitempty"`
+	OutputTokens      int `json:"output_tokens,omitempty"`
+	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
 }
 
 type SessionPreview struct {
@@ -597,6 +607,10 @@ func cloneSessionSummary(summary SessionSummary) SessionSummary {
 	cloned := summary
 	if len(summary.ImportantFiles) > 0 {
 		cloned.ImportantFiles = append([]string(nil), summary.ImportantFiles...)
+	}
+	if summary.TokenUsage != nil {
+		usage := *summary.TokenUsage
+		cloned.TokenUsage = &usage
 	}
 	return cloned
 }

@@ -95,6 +95,14 @@ let usageStatsState = {
   month: '',
   entity: ''
 };
+function usageStatsTenantScoped() {
+  const profile = typeof adminProfile === 'function' ? adminProfile() : null;
+  return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
+}
+function syncUsageStatsScopeVisibility() {
+  const root = document.getElementById('usageStatsRoot');
+  if (root) root.classList.toggle('hidden', !usageStatsTenantScoped());
+}
 function ensureUsageStatsDefaults() {
   const now = new Date();
   if (!usageStatsState.date) usageStatsState.date = now.toISOString().slice(0, 10);
@@ -147,6 +155,7 @@ function ensureUsageStatsUI() {
     '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
     '</div>';
   tab.appendChild(host);
+  syncUsageStatsScopeVisibility();
 }
 function applyUsageStatsI18n() {
   if (typeof tabMeta === 'object') tabMeta.usagestats = ['usageStatsTabTitle', 'usageStatsTabSubtitle'];
@@ -289,6 +298,7 @@ function renderUsageStats() {
   }
 }
 function onUsageStatsFilterChange() {
+  if (!usageStatsTenantScoped()) return;
   const scopeEl = document.getElementById('usageStatsScope');
   const periodEl = document.getElementById('usageStatsPeriod');
   const dateEl = document.getElementById('usageStatsDate');
@@ -302,8 +312,13 @@ function onUsageStatsFilterChange() {
   loadUsageStats();
 }
 async function loadUsageStats() {
+  if (!usageStatsTenantScoped()) {
+    syncUsageStatsScopeVisibility();
+    return;
+  }
   ensureUsageStatsDefaults();
   ensureUsageStatsUI();
+  syncUsageStatsScopeVisibility();
   syncUsageStatsFiltersFromState();
   const root = document.getElementById('usageStatsRoot');
   if (!root) return;
@@ -336,9 +351,10 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
     applyUsageStatsI18n();
   });
 }
+window.loadUsageStats = loadUsageStats;
 registerUsageStatsTab();
 ensureUsageStatsUI();
 applyUsageStatsI18n();
-if (typeof token === 'function' && token() && localStorage.getItem(activeTabKey) === 'usagestats') {
+if (typeof token === 'function' && token() && usageStatsTenantScoped() && localStorage.getItem(activeTabKey) === 'usagestats') {
   openTab('usagestats');
 }
