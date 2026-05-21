@@ -702,6 +702,17 @@ pre {
 }
 
 .field label { display: block; margin-bottom: 6px; }
+.field:focus-within label {
+  color: var(--accent);
+}
+
+.field:focus-within input,
+.field:focus-within select,
+.field:focus-within textarea {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, .1);
+}
+
 .danger-zone { border-color: #f0b5af; background: var(--danger-soft); }
 .danger-zone h2 { color: var(--danger); }
 .danger-zone button.danger { box-shadow: 0 0 0 1px rgba(180, 35, 24, .08); }

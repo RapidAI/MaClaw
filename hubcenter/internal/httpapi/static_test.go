@@ -135,6 +135,14 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		t.Fatalf("admin page must keep generated form controls labeled")
 	}
 	for _, required := range []string{
+		`id="haSummaryList" role="status" aria-live="polite" aria-busy="false"`,
+		`id="haPeerList" class="ha-peer-list" role="status" aria-live="polite" aria-busy="false"`,
+		`id="haSyncDetailList" class="ha-sync-list" role="status" aria-live="polite" aria-busy="false"`,
+		`[summary, peers, syncDetails].forEach(el => el.setAttribute('aria-busy', 'false'))`,
+		`[summary, peers, syncDetails].forEach(el => { if(el) el.setAttribute('aria-busy', 'true'); })`,
+		`id="routingDiagnosticsGrid" class="grid3" role="status" aria-live="polite" aria-busy="false"`,
+		`root.setAttribute('aria-busy','false');const snapshot=data.snapshot`,
+		`root.setAttribute('aria-busy','true');root.innerHTML='<div class="hint">'+tr('haLoading')+'</div>'`,
 		`id="hubs" class="list" role="status" aria-live="polite" aria-busy="false"`,
 		`const root=document.getElementById('hubs');if(root)root.setAttribute('aria-busy','true')`,
 		`const root=document.getElementById('hubs');if(root)root.setAttribute('aria-busy','false')`,
