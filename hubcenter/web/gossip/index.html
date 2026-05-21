@@ -42,14 +42,14 @@
     <div class="stat"><strong id="avgScore">-</strong><span id="scoreLabel"></span></div>
   </div>
 
-  <div class="toolbar">
+  <div class="toolbar" role="search" aria-label="Gossip filters">
     <input id="searchInput" type="search" autocomplete="off" aria-label="Search nickname or content">
     <button type="button" class="filter active" data-cat="all" onclick="setFilter('all')" id="filterAll" aria-pressed="true"></button>
     <button type="button" class="filter" data-cat="gossip" onclick="setFilter('gossip')" id="filterGossip" aria-pressed="false"></button>
     <button type="button" class="filter" data-cat="owner" onclick="setFilter('owner')" id="filterOwner" aria-pressed="false"></button>
     <button type="button" class="filter" data-cat="project" onclick="setFilter('project')" id="filterProject" aria-pressed="false"></button>
     <button type="button" class="filter" data-cat="news" onclick="setFilter('news')" id="filterNews" aria-pressed="false"></button>
-    <select id="sortSelect" onchange="applyView()"></select>
+    <select id="sortSelect" onchange="applyView()" aria-label="Sort posts"></select>
   </div>
 
   <div id="feed" class="feed" aria-live="polite" aria-busy="false"></div>

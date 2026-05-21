@@ -165,6 +165,16 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		}
 	}
 
+	gossip := read(t, "gossip", "index.html")
+	if !strings.Contains(gossip, `class="toolbar" role="search" aria-label="Gossip filters"`) || !strings.Contains(gossip, `id="sortSelect" onchange="applyView()" aria-label="Sort posts"`) {
+		t.Fatalf("gossip toolbar must expose search/filter semantics")
+	}
+
+	skillhub := read(t, "skillhub", "index.html")
+	if !strings.Contains(skillhub, `class="toolbar" role="search" aria-label="Skill search"`) {
+		t.Fatalf("skillhub toolbar must expose search semantics")
+	}
+
 	market := read(t, "skillmarket", "index.html")
 	for _, id := range []string{"capTabSkills", "capTabMCP", "tabSearch", "tabRating", "tabDownloads", "tabNewest"} {
 		if !strings.Contains(market, `id="`+id+`" type="button"`) {
