@@ -24,9 +24,9 @@ import (
 // If it's read-only (search, query, fetch), it's automatically available to VE.
 var veBlockedTools = map[string]bool{
 	// --- File modification ---
-	"write_file":  true,
-	"edit_file":   true,
-	"edit_lines":  true,
+	"write_file": true,
+	"edit_file":  true,
+	"edit_lines": true,
 
 	// --- Command execution ---
 	"bash": true,
@@ -55,9 +55,9 @@ var veBlockedTools = map[string]bool{
 	"gui_record_stop":  true,
 
 	// --- System configuration ---
-	"manage_config":      true,
-	"manage_schedule":    true,
-	"manage_template":    true,
+	"manage_config":       true,
+	"manage_schedule":     true,
+	"manage_template":     true,
 	"switch_llm_provider": true, // backward-compat alias for manage_config
 
 	// --- Task management / delegation ---
@@ -84,6 +84,7 @@ var veBlockedTools = map[string]bool{
 	"knowledge_save_urls":        true,
 	"knowledge_save_text":        true,
 	"knowledge_import_directory": true,
+	"knowledge_import_files":     true,
 
 	// --- Project management ---
 	"project_manage":  true,

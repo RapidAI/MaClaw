@@ -26,7 +26,7 @@ const (
 	adminBootstrapVersion       = 1
 	adminSessionTokenPrefix     = "mca_"
 	adminSessionDuration        = 12 * time.Hour
-	adminPasswordMinLength      = 12
+	adminPasswordMinLength      = 10
 	maxAdminSessionsPerUser     = 20
 	adminBootstrapSetupTokenEnv = "MACLAW_ADMIN_SETUP_TOKEN"
 )

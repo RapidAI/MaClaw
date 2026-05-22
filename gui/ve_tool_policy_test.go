@@ -15,6 +15,8 @@ func TestIsVEToolBlocked_BlockedTools(t *testing.T) {
 		"control_session", "interrupt_session", "kill_session",
 		"parallel_execute", "craft_tool", "install_skill_hub",
 		"passthrough_task", "switch_llm_provider",
+		"knowledge_save_url", "knowledge_save_urls", "knowledge_save_text",
+		"knowledge_import_directory", "knowledge_import_files",
 	}
 	for _, name := range blocked {
 		if !isVEToolBlocked(name) {

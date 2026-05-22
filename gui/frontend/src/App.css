@@ -1574,8 +1574,8 @@ body {
 }
 
 .settings-top-tab.active {
-    color: var(--theme-primary-strong);
-    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    background: color-mix(in srgb, var(--theme-surface) 86%, var(--theme-primary) 14%);
     border-color: color-mix(in srgb, var(--theme-primary) 34%, var(--theme-border));
     box-shadow: var(--shadow-sm), inset 3px 0 0 var(--theme-primary);
 }
@@ -1586,11 +1586,12 @@ body {
 }
 
 .settings-top-tab.active .settings-top-tab__label {
-    color: var(--theme-primary-strong);
+    color: var(--theme-text-primary);
 }
 
 .settings-top-tab.active .settings-top-tab__desc {
-    color: var(--theme-text-secondary);
+    color: var(--theme-text-primary);
+    opacity: 0.78;
 }
 
 .settings-content {
@@ -9802,10 +9803,10 @@ body {
 }
 
 .main-container[data-ai-theme='dark'] .settings-top-tab.active {
-    color: var(--theme-primary-soft);
-    background: var(--theme-surface);
-    border-color: var(--theme-primary);
-    box-shadow: inset 3px 0 0 var(--theme-primary);
+    color: #f8fafc;
+    background: color-mix(in srgb, var(--theme-surface) 82%, var(--theme-primary) 18%);
+    border-color: color-mix(in srgb, var(--theme-primary) 62%, var(--theme-border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-primary) 22%, transparent), inset 3px 0 0 var(--theme-primary);
 }
 
 .main-container[data-ai-theme='dark'] .settings-top-tab__label {
@@ -9817,11 +9818,11 @@ body {
 }
 
 .main-container[data-ai-theme='dark'] .settings-top-tab.active .settings-top-tab__label {
-    color: var(--theme-primary-soft);
+    color: #ffffff;
 }
 
 .main-container[data-ai-theme='dark'] .settings-top-tab.active .settings-top-tab__desc {
-    color: var(--theme-text-secondary);
+    color: #cbd5e1;
 }
 
 /* 鈹€鈹€ Dark mode: launch controls (bottom of tool pages) 鈹€鈹€ */

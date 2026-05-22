@@ -515,9 +515,9 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 
 	allowedDirs := c.getVEAllowedDirectories()
 	if len(allowedDirs) > 0 {
-		sb.WriteString("- You cannot modify files, execute commands, or operate a browser; you may send files from allowed directories.\n")
+		sb.WriteString("- You cannot modify files, execute commands, or operate a browser; you may send files from the configured allowed directories.\n")
 	} else {
-		sb.WriteString("- You cannot modify files, execute commands, access the network, or operate a browser.\n")
+		sb.WriteString("- You cannot modify files, execute commands, access the network, operate a browser, or send files until the owner adds at least one allowed access directory in Settings > Digital Employee.\n")
 	}
 	sb.WriteString("- Sensitive files such as .env, private keys, and credentials are blocked and must not be read or sent.\n")
 	sb.WriteString("- If an operation is unsupported in digital employee mode, say so directly and do not invent reasons.\n")
@@ -539,13 +539,14 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 
 	if len(allowedDirs) > 0 {
 		sb.WriteString("\n## 文件发送能力 / File Sending\n")
-		sb.WriteString("- You may use send_file to send files from allowed directories.\n")
+		sb.WriteString("- You may use send_file to send files from the configured allowed directories.\n")
 		sb.WriteString("- When the user asks you to send, give, attach, or share a file, call send_file; do not paste the file contents as plain text unless the user explicitly asks to view/read the contents.\n")
+		sb.WriteString("- If the requested file is outside the allowed directories, say that the directory is not authorized and ask the owner to add it in Settings > Digital Employee > Allowed Access Directories.\n")
 		sb.WriteString("- Allowed directories:\n")
 		for _, dir := range allowedDirs {
 			sb.WriteString(fmt.Sprintf("  - %s\n", dir))
 		}
-		sb.WriteString("- Before sending, browse with list_directory and confirm content with read_file.\n")
+		sb.WriteString("- Before sending, browse with list_directory when needed and confirm the exact requested file.\n")
 		sb.WriteString("- File size limit: 50 MB.\n")
 		sb.WriteString("- 敏感文件 / Sensitive files must not be sent even from allowed directories.\n")
 	}
@@ -728,6 +729,9 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		// veConfigUnblockedTools are allowed through (execution-layer path
 		// validation enforces directory scoping below).
 		if !(len(allowedDirs) > 0 && veConfigUnblockedTools[name]) {
+			if name == "send_file" && len(allowedDirs) == 0 {
+				return "[error] send_file is unavailable because no allowed access directories are configured. Add a directory in Settings > Digital Employee > Allowed Access Directories first."
+			}
 			return fmt.Sprintf("[error] tool %s is unavailable in digital employee mode (safety policy)", name)
 		}
 	}

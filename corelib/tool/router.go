@@ -3,12 +3,15 @@ package tool
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -487,6 +490,157 @@ func (r *Router) WarmupDeferredEmbeddings(toolDefs []map[string]interface{}) {
 	}()
 }
 
+func narrowKnowledgeWriteTools(condKeep map[string]bool, userMessage string) map[string]bool {
+	if condKeep == nil {
+		condKeep = make(map[string]bool)
+	}
+	for _, name := range knowledgeWriteToolList {
+		delete(condKeep, name)
+	}
+	for name := range knowledgeWriteToolsForPayload(userMessage) {
+		condKeep[name] = true
+	}
+	return condKeep
+}
+
+func knowledgeWriteToolsForPayload(userMessage string) map[string]bool {
+	tools := map[string]bool{}
+	if knowledgePayloadHasURL(userMessage) {
+		tools["knowledge_save_url"] = true
+		tools["knowledge_save_urls"] = true
+	}
+	paths := knowledgePayloadLocalPaths(userMessage)
+	if len(paths) == 0 {
+		if len(tools) > 0 {
+			return tools
+		}
+		return map[string]bool{"knowledge_save_text": true}
+	}
+	hasFile := false
+	hasDir := false
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil {
+			if info.IsDir() {
+				hasDir = true
+			} else {
+				hasFile = true
+			}
+			continue
+		}
+		if filepath.Ext(p) == "" {
+			hasDir = true
+		} else {
+			hasFile = true
+		}
+	}
+	if hasFile {
+		tools["knowledge_import_files"] = true
+	}
+	if hasDir {
+		tools["knowledge_import_directory"] = true
+	}
+	if len(tools) == 0 {
+		tools["knowledge_save_text"] = true
+	}
+	return tools
+}
+
+func knowledgePayloadHasURL(text string) bool {
+	for _, field := range strings.Fields(text) {
+		trimmed := trimKnowledgePayloadToken(field)
+		u, err := url.Parse(trimmed)
+		if err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgePayloadLocalPaths(text string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		p = trimKnowledgePayloadToken(p)
+		if p == "" || seen[p] || !isLocalPathToken(p) {
+			return
+		}
+		for i := 0; i < len(out); i++ {
+			existing := out[i]
+			if isPathPrefixToken(p, existing) {
+				return
+			}
+			if isPathPrefixToken(existing, p) {
+				delete(seen, existing)
+				out = append(out[:i], out[i+1:]...)
+				i--
+			}
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, p := range windowsKnownFilePathPattern.FindAllString(text, -1) {
+		add(p)
+	}
+	for _, raw := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '\t'
+	}) {
+		line := strings.TrimSpace(raw)
+		if p := trimKnowledgePayloadToken(line); isLocalPathToken(p) {
+			add(p)
+			continue
+		}
+		for _, token := range strings.Fields(line) {
+			add(token)
+		}
+	}
+	for _, p := range windowsLocalPathPattern.FindAllString(text, -1) {
+		add(p)
+	}
+	return out
+}
+
+func isPathPrefixToken(prefix, full string) bool {
+	if len(prefix) >= len(full) || !strings.HasPrefix(full, prefix) {
+		return false
+	}
+	if strings.HasSuffix(prefix, `\`) || strings.HasSuffix(prefix, `/`) {
+		return true
+	}
+	next := full[len(prefix)]
+	return next == '\\' || next == '/' || unicode.IsSpace(rune(next))
+}
+
+var windowsKnownFilePathPattern = regexp.MustCompile(`[A-Za-z]:[\\/][^\r\n<>|"'，,。；;]+?\.(?i:pdf|docx?|xlsx?|pptx?|txt|md|csv|json|html?|xml|rtf|png|jpe?g|webp|gif|zip|7z|rar)`)
+
+var windowsLocalPathPattern = regexp.MustCompile(`[A-Za-z]:[\\/][^\s<>|"'，,。；;]+`)
+
+func trimKnowledgePayloadToken(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool {
+		if unicode.IsSpace(r) {
+			return true
+		}
+		switch r {
+		case '<', '>', '[', ']', '(', ')', '{', '}', '"', '\'', '`', ',', '.', ';', ':', '，', '。', '；', '：':
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func isLocalPathToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "://") {
+		return false
+	}
+	if filepath.IsAbs(s) || filepath.VolumeName(s) != "" {
+		return true
+	}
+	return strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") || strings.HasPrefix(s, `.\`) || strings.HasPrefix(s, `..\`)
+}
+
 // buildSearchText returns the enriched search text for a tool if an enrichment
 // store is configured, otherwise falls back to name + description + tags.
 func (r *Router) buildSearchText(name, description string) string {
@@ -630,6 +784,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	var condKeep map[string]bool
 	var condFilterOut map[string]bool
 	var cachedICResult *IntentResult
+	suppressedTools := map[string]bool{}
 
 	if r.unifiedClassifier != nil {
 		// UIC path: use UnifiedIntentClassifier to determine which conditional
@@ -667,11 +822,21 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			uicResult.Primary != intent.LabelAmbiguous
 
 		uicShouldEagerPin := uicUsable && uicResult.Confidence >= uicEagerPinThreshold
+		uicKnowledgeWrite := uicUsable && uicResult.Primary == intent.LabelKnowledgeWrite && uicResult.Confidence >= uicActivationThreshold
 
 		if uicUsable && uicResult.Confidence >= uicActivationThreshold && len(uicResult.ToolNames) > 0 {
 			for _, toolName := range uicResult.ToolNames {
 				condKeep[toolName] = true
 			}
+		}
+		if uicKnowledgeWrite {
+			condKeep = narrowKnowledgeWriteTools(condKeep, userMessage)
+			for name := range knowledgeWriteToolNames {
+				if !condKeep[name] {
+					suppressedTools[name] = true
+				}
+			}
+			suppressedTools["memory"] = true
 		}
 
 		// Filter out conditional tools NOT matched by UIC.
@@ -792,6 +957,9 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			continue // drop duplicates from allTools input
 		}
 		seenNames[name] = true
+		if suppressedTools[name] {
+			continue
+		}
 		if CoreToolNames[name] || r.sessionTools[name] || condKeep[name] {
 			core = append(core, t)
 		} else if condFilterOut[name] {
@@ -1007,6 +1175,9 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		if len(result) >= MaxToolBudget {
 			break
 		}
+		if suppressedTools[candidateNames[s.index]] {
+			continue
+		}
 		if !r.isBuiltin(candidateNames[s.index]) {
 			dynamicCount++
 			if dynamicCount > MaxDynamicRouted {
@@ -1053,6 +1224,22 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, rerankerResult, skillScore, matchedSkills)
 
 	return result
+}
+
+var knowledgeWriteToolList = []string{
+	"knowledge_save_text",
+	"knowledge_save_url",
+	"knowledge_save_urls",
+	"knowledge_import_files",
+	"knowledge_import_directory",
+}
+
+var knowledgeWriteToolNames = map[string]bool{
+	"knowledge_save_text":        true,
+	"knowledge_save_url":         true,
+	"knowledge_save_urls":        true,
+	"knowledge_import_files":     true,
+	"knowledge_import_directory": true,
 }
 
 func (r *Router) matchRecommendations(msgTokens []string) map[string]interface{} {

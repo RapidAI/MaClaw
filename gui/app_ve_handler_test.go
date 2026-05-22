@@ -680,8 +680,11 @@ func TestProperty5_ExecutionLayerBlocksWithoutAllowedDirs(t *testing.T) {
 		if !strings.Contains(result, "[error]") {
 			t.Fatalf("send_file should be blocked when allowedDirs is empty, got: %s", result)
 		}
-		if !strings.Contains(result, "在数字员工模式下不可用") {
-			t.Fatalf("send_file should return tool-blocked error, got: %s", result)
+		if !strings.Contains(result, "no allowed access directories are configured") {
+			t.Fatalf("send_file should explain missing allowed directories, got: %s", result)
+		}
+		if !strings.Contains(result, "Settings > Digital Employee > Allowed Access Directories") {
+			t.Fatalf("send_file should point users to the directory setting, got: %s", result)
 		}
 	})
 }

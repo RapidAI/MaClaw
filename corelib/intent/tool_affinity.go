@@ -19,7 +19,12 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 				"browser",
 				"gui_record_start", "gui_record_stop",
 			},
-			LabelOffice:       {"office"},
+			LabelOffice: {"office"},
+			LabelKnowledgeWrite: {
+				"knowledge_save_text",
+				"knowledge_save_url", "knowledge_save_urls",
+				"knowledge_import_files", "knowledge_import_directory",
+			},
 			LabelCoding:       {"generate_pdf", "office"},
 			LabelMaintenance:  {"generate_pdf", "office"},
 			LabelBugFix:       {},

@@ -322,6 +322,26 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{},
 		},
 		{
+			Label:    LabelKnowledgeWrite,
+			Domain:   "Knowledge Base",
+			TreeText: "The user is asking to persist supplied text, selected local files, local directories, or URLs into the MaClaw knowledge base / external brain / saved local corpus for future retrieval. This is a durable knowledge ingestion request, not a personal memory update and not a normal file-open/read task.",
+			EmbedTexts: []string{
+				"将这段材料录入知识库，后面可以检索引用",
+				"把用户选择的本地 PDF 导入外脑，作为知识库资料",
+				"把这个目录里的文档收录到本地知识库",
+				"归档这个网页到知识库供以后查找",
+				"save this note into the knowledge base for future retrieval",
+				"ingest the selected local document files into the saved corpus",
+				"archive this URL into my external brain",
+				"store these documents in the local knowledge base",
+			},
+			ToolNames: []string{
+				"knowledge_save_text",
+				"knowledge_save_url", "knowledge_save_urls",
+				"knowledge_import_files", "knowledge_import_directory",
+			},
+		},
+		{
 			Label:      LabelAmbiguous,
 			Domain:     "特殊 (Special)",
 			TreeText:   "消息不明确，可能属于多个类别，没有主导信号。",

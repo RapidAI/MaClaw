@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	coreintent "github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -709,6 +710,144 @@ func TestKnowledgeToolsAreRoutedForAgentKnowledgeRequests(t *testing.T) {
 	if !importNames["knowledge_import_directory"] && !importNames["knowledge_import_files"] {
 		t.Fatalf("expected a knowledge import tool to be routed, got %v", sortedKnowledgeToolNames(importNames))
 	}
+}
+
+func TestKnowledgeSaveTextIsRoutedForExplicitKnowledgeWrite(t *testing.T) {
+	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
+	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
+
+	routed := handler.routeTools("\u5c06\u4ee5\u4e0b\u5185\u5bb9\u4fdd\u5b58\u8fdb\u77e5\u8bc6\u5e93\uff1aPrism anchor uses route policy.", tools)
+	names := knowledgeToolNames(routed)
+	if !names["knowledge_save_text"] {
+		t.Fatalf("expected knowledge_save_text for explicit knowledge write, got %v", sortedKnowledgeToolNames(names))
+	}
+	allNames := allToolNames(routed)
+	if allNames["memory"] {
+		t.Fatalf("memory must be suppressed for explicit knowledge writes so the model cannot save to the wrong store")
+	}
+}
+
+func TestKnowledgeImportFilesIsRoutedForSelectedFileKnowledgeWrite(t *testing.T) {
+	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
+	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
+
+	routed := handler.routeTools("\u628a\u8fd9\u4e2a\u6587\u4ef6\u4fdd\u5b58\u8fdb\u77e5\u8bc6\u5e93\n\n[\u7528\u6237\u9009\u62e9\u7684\u672c\u5730\u6587\u4ef6\u8def\u5f84]\nD:\\cases\\evidence.pdf\n\u8bf7\u76f4\u63a5\u4f7f\u7528\u8fd9\u4e9b\u8def\u5f84\u3002", tools)
+	names := knowledgeToolNames(routed)
+	if !names["knowledge_import_files"] {
+		t.Fatalf("expected knowledge_import_files for selected-file knowledge write, got %v", sortedKnowledgeToolNames(names))
+	}
+	if names["knowledge_save_text"] {
+		t.Fatalf("selected local files must import file paths, not save the prompt text")
+	}
+	allNames := allToolNames(routed)
+	if allNames["memory"] {
+		t.Fatalf("memory must be suppressed for explicit selected-file knowledge writes")
+	}
+}
+
+func TestKnowledgeImportDirectoryIsRoutedForExplicitDirectoryKnowledgeWrite(t *testing.T) {
+	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
+	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
+
+	routed := handler.routeTools("\u5bfc\u5165\u8fd9\u4e2a\u76ee\u5f55\u5230\u77e5\u8bc6\u5e93\uff1aD:\\docs\\research", tools)
+	names := knowledgeToolNames(routed)
+	if !names["knowledge_import_directory"] {
+		t.Fatalf("expected knowledge_import_directory for explicit directory knowledge write, got %v", sortedKnowledgeToolNames(names))
+	}
+	if names["knowledge_save_text"] {
+		t.Fatalf("directory imports must not route knowledge_save_text")
+	}
+}
+
+func TestKnowledgeSaveURLIsRoutedForExplicitURLKnowledgeWrite(t *testing.T) {
+	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
+	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
+
+	routed := handler.routeTools("Archive https://example.com/research into my saved corpus", tools)
+	names := knowledgeToolNames(routed)
+	if !names["knowledge_save_url"] && !names["knowledge_save_urls"] {
+		t.Fatalf("expected URL knowledge save tools, got %v", sortedKnowledgeToolNames(names))
+	}
+	if names["knowledge_save_text"] || names["knowledge_import_files"] || names["knowledge_import_directory"] {
+		t.Fatalf("URL knowledge writes should only expose URL save tools, got %v", sortedKnowledgeToolNames(names))
+	}
+}
+
+func TestKnowledgeMixedPayloadRoutesEveryNeededKnowledgeWriter(t *testing.T) {
+	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
+	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
+
+	routed := handler.routeTools("Archive https://example.com/research and D:\\cases\\evidence.pdf into my saved corpus", tools)
+	names := knowledgeToolNames(routed)
+	if !names["knowledge_save_url"] || !names["knowledge_import_files"] {
+		t.Fatalf("expected URL and file knowledge writers, got %v", sortedKnowledgeToolNames(names))
+	}
+	if names["knowledge_save_text"] || names["knowledge_import_directory"] {
+		t.Fatalf("mixed URL/file payload should not expose unrelated writers, got %v", sortedKnowledgeToolNames(names))
+	}
+}
+
+func TestKnowledgeSaveQuestionDoesNotForceWriteTool(t *testing.T) {
+	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
+	setTestKnowledgeWriteIntent(handler, coreintent.LabelUnknown)
+
+	for _, msg := range []string{
+		"\u521a\u624d\u4fdd\u5b58\u5230\u77e5\u8bc6\u5e93\u4e86\u5417\uff1f",
+		"\u4eceAI\u52a9\u624b\u9762\u677f\u4e0d\u80fd\u4fdd\u5b58\u5185\u5bb9\u8fdb\u77e5\u8bc6\u5e93\uff1f",
+	} {
+		routed := handler.routeTools(msg, tools)
+		names := knowledgeToolNames(routed)
+		if names["knowledge_save_text"] {
+			t.Fatalf("non-write questions must not force knowledge_save_text, got %v", sortedKnowledgeToolNames(names))
+		}
+		allNames := allToolNames(routed)
+		if !allNames["memory"] {
+			t.Fatalf("memory should remain available for non-write knowledge questions")
+		}
+	}
+}
+
+func setTestKnowledgeWriteIntent(handler *IMMessageHandler, label coreintent.IntentLabel) {
+	if handler.toolRouter == nil {
+		return
+	}
+	handler.toolRouter.SetUnifiedClassifier(coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"` + string(label) + `","score":0.96}]}`, nil
+	}}))
+}
+
+func newCrowdedKnowledgeRoutingHandler(t *testing.T) (*IMMessageHandler, []map[string]interface{}) {
+	t.Helper()
+	app := &App{testHomeDir: t.TempDir()}
+	handler := &IMMessageHandler{app: app}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+	registerKnowledgeTools(handler.registry, app)
+	for i := 0; i < maxToolBudget; i++ {
+		handler.registry.Register(RegisteredTool{
+			Name:        "filler_tool_" + strconv.Itoa(i),
+			Description: "Filler tool for unrelated routing pressure " + strconv.Itoa(i),
+			Category:    ToolCategoryMCP,
+			Status:      RegToolAvailable,
+			Handler:     func(args map[string]interface{}) string { return "{}" },
+		})
+	}
+	tools := NewDynamicToolBuilder(handler.registry).BuildAll()
+	if len(tools) <= maxToolBudget {
+		t.Fatalf("need more than %d tools to verify routed visibility, got %d", maxToolBudget, len(tools))
+	}
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	router.SetRegistry(handler.registry)
+	handler.SetToolRouter(router)
+	return handler, tools
+}
+
+func allToolNames(tools []map[string]interface{}) map[string]bool {
+	names := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		names[extractToolName(tool)] = true
+	}
+	return names
 }
 
 func knowledgeToolNames(tools []map[string]interface{}) map[string]bool {
