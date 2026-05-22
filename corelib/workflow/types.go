@@ -184,26 +184,30 @@ func (p *WorkflowInputPayload) Clone() *WorkflowInputPayload {
 
 // PhaseInputOption defines a selectable option for select/multiselect fields.
 type PhaseInputOption struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
+	Label     string            `json:"label"`
+	Value     string            `json:"value"`
+	LabelI18N map[string]string `json:"label_i18n,omitempty"`
 }
 
 // PhaseInputField defines a single form field for structured information collection.
 // It maps directly to AgentViewField on the frontend — same field names, same semantics.
 type PhaseInputField struct {
-	Name        string             `json:"name"`
-	Label       string             `json:"label"`
-	Type        string             `json:"type"` // text|textarea|number|date|select|multiselect|boolean|file
-	Required    bool               `json:"required,omitempty"`
-	Description string             `json:"description,omitempty"`
-	Placeholder string             `json:"placeholder,omitempty"`
-	Options     []PhaseInputOption `json:"options,omitempty"`
-	Default     interface{}        `json:"default,omitempty"`
-	Min         *float64           `json:"min,omitempty"`
-	Max         *float64           `json:"max,omitempty"`
-	MinLength   *int               `json:"min_length,omitempty"`
-	MaxLength   *int               `json:"max_length,omitempty"`
-	Pattern     string             `json:"pattern,omitempty"`
+	Name            string             `json:"name"`
+	Label           string             `json:"label"`
+	Type            string             `json:"type"` // text|textarea|number|date|select|multiselect|boolean|file
+	Required        bool               `json:"required,omitempty"`
+	Description     string             `json:"description,omitempty"`
+	Placeholder     string             `json:"placeholder,omitempty"`
+	LabelI18N       map[string]string  `json:"label_i18n,omitempty"`
+	DescriptionI18N map[string]string  `json:"description_i18n,omitempty"`
+	PlaceholderI18N map[string]string  `json:"placeholder_i18n,omitempty"`
+	Options         []PhaseInputOption `json:"options,omitempty"`
+	Default         interface{}        `json:"default,omitempty"`
+	Min             *float64           `json:"min,omitempty"`
+	Max             *float64           `json:"max,omitempty"`
+	MinLength       *int               `json:"min_length,omitempty"`
+	MaxLength       *int               `json:"max_length,omitempty"`
+	Pattern         string             `json:"pattern,omitempty"`
 }
 
 // PhaseInputSchema declares a structured form for a phase's information collection.
@@ -211,9 +215,11 @@ type PhaseInputField struct {
 // directly. The user's form submission is injected into the PhasePrompt as
 // structured context before the LLM generates the phase deliverable.
 type PhaseInputSchema struct {
-	Title       string            `json:"title"`
-	Description string            `json:"description,omitempty"`
-	Fields      []PhaseInputField `json:"fields"`
+	Title           string            `json:"title"`
+	Description     string            `json:"description,omitempty"`
+	TitleI18N       map[string]string `json:"title_i18n,omitempty"`
+	DescriptionI18N map[string]string `json:"description_i18n,omitempty"`
+	Fields          []PhaseInputField `json:"fields"`
 }
 
 func (s *PhaseInputSchema) Clone() *PhaseInputSchema {
@@ -221,10 +227,18 @@ func (s *PhaseInputSchema) Clone() *PhaseInputSchema {
 		return nil
 	}
 	cp := *s
+	cp.TitleI18N = cloneStringMap(s.TitleI18N)
+	cp.DescriptionI18N = cloneStringMap(s.DescriptionI18N)
 	cp.Fields = make([]PhaseInputField, len(s.Fields))
 	for i, field := range s.Fields {
 		cp.Fields[i] = field
+		cp.Fields[i].LabelI18N = cloneStringMap(field.LabelI18N)
+		cp.Fields[i].DescriptionI18N = cloneStringMap(field.DescriptionI18N)
+		cp.Fields[i].PlaceholderI18N = cloneStringMap(field.PlaceholderI18N)
 		cp.Fields[i].Options = append([]PhaseInputOption(nil), field.Options...)
+		for j := range cp.Fields[i].Options {
+			cp.Fields[i].Options[j].LabelI18N = cloneStringMap(field.Options[j].LabelI18N)
+		}
 		cp.Fields[i].Default = cloneWorkflowValue(field.Default)
 		if field.Min != nil {
 			v := *field.Min
@@ -429,6 +443,17 @@ func cloneWorkflowMap(src map[string]interface{}) map[string]interface{} {
 	cp := make(map[string]interface{}, len(src))
 	for k, v := range src {
 		cp[k] = cloneWorkflowValue(v)
+	}
+	return cp
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(src))
+	for k, v := range src {
+		cp[k] = v
 	}
 	return cp
 }

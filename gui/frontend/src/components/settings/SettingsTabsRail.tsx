@@ -7,17 +7,23 @@ interface SettingsTabsRailProps {
 }
 
 export const SettingsTabsRail = ({ tabs, activeTab, onChange }: SettingsTabsRailProps) => (
-    <div className="settings-top-tabs">
+    <nav className="settings-top-tabs" aria-label="Settings sections">
         {tabs.map((tab) => (
             <button
                 key={tab.id}
                 type="button"
                 className={`settings-top-tab ${activeTab === tab.id ? 'active' : ''}`}
                 onClick={() => onChange(tab.id)}
+                role="tab"
+                aria-selected={activeTab === tab.id}
                 title={tab.desc}
             >
-                {tab.label}
+                <span className="settings-top-tab__mark" aria-hidden="true" />
+                <span className="settings-top-tab__text">
+                    <span className="settings-top-tab__label">{tab.label}</span>
+                    <span className="settings-top-tab__desc">{tab.desc}</span>
+                </span>
             </button>
         ))}
-    </div>
+    </nav>
 );

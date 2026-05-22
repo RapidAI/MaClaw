@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { InstallDefaultMarketplace } from '../../../wailsjs/go/main/App';
 
+// Styling for success action uses var(--theme-success) in App.css.
+
 type InstallSkillFooterProps = {
     activeTool: string;
     selectedSkillsToInstall: string[];
@@ -26,11 +28,11 @@ export const InstallSkillFooter = ({
     onInstallSelected,
     closeDisabled = false,
 }: InstallSkillFooterProps) => (
-    <div className="modal-footer" style={{ marginTop: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div className="modal-footer install-skill-footer">
         {activeTool === 'claude' ? (
             <button
-                className="btn-link"
-                style={{ color: 'var(--theme-primary)', fontSize: '0.85rem', padding: '4px 15px', display: 'flex', alignItems: 'center', gap: '6px', opacity: isMarketplaceInstalling ? 0.6 : 1, minWidth: '120px', justifyContent: 'center' }}
+                className="btn-link install-skill-footer__marketplace"
+                data-loading={isMarketplaceInstalling ? 'true' : 'false'}
                 disabled={isMarketplaceInstalling}
                 onClick={async () => {
                     setIsMarketplaceInstalling(true);
@@ -45,23 +47,22 @@ export const InstallSkillFooter = ({
                 }}
             >
                 {isMarketplaceInstalling && (
-                    <div style={{ width: '12px', height: '12px', border: '2px solid var(--theme-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+                    <div className="install-skill-footer__spinner install-skill-footer__spinner--primary" />
                 )}
                 {t("installDefaultMarketplace")}
             </button>
         ) : (
-            <div></div>
+            <div />
         )}
-        <div style={{ display: 'flex', gap: '10px' }}>
-            <button className="btn-secondary" onClick={onClose} disabled={closeDisabled} style={{ opacity: closeDisabled ? 0.6 : 1 }}>{t("cancel")}</button>
+        <div className="install-skill-footer__actions">
+            <button className="btn-secondary" onClick={onClose} disabled={closeDisabled}>{t("cancel")}</button>
             <button
-                className="btn-primary"
-                style={{ backgroundColor: 'var(--theme-success)', borderColor: 'var(--theme-success)', display: 'flex', alignItems: 'center', gap: '6px', opacity: (selectedSkillsToInstall.length === 0 || isBatchInstalling) ? 0.6 : 1 }}
+                className="btn-primary install-skill-footer__install"
                 disabled={selectedSkillsToInstall.length === 0 || isBatchInstalling}
                 onClick={onInstallSelected}
             >
                 {isBatchInstalling && (
-                    <div style={{ width: '12px', height: '12px', border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+                    <div className="install-skill-footer__spinner install-skill-footer__spinner--light" />
                 )}
                 {t("install")}
             </button>

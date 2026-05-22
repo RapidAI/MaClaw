@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestRemoteSDKBusyIdleTimeoutIsConservative(t *testing.T) {
@@ -19,10 +21,10 @@ func TestRemoteSDKBusyIdleTimeoutIsConservative(t *testing.T) {
 
 func TestBuildGuideLaunchInjectionMarksReferenceOnly(t *testing.T) {
 	got := buildGuideLaunchInjection(" saved context ")
-	if !strings.Contains(got, "saved context") || !strings.Contains(got, "Guide launch reference") {
+	if !strings.Contains(got, "saved context") || !strings.Contains(got, "引导发射参考") {
 		t.Fatalf("reference injection missing marker or content: %q", got)
 	}
-	if !strings.Contains(got, "Do not treat it as a new user turn") {
+	if !strings.Contains(got, "不要把它当作新的用户回合") {
 		t.Fatalf("reference injection should prevent treating context as user input: %q", got)
 	}
 	if buildGuideLaunchInjection("   ") != "" {
@@ -145,6 +147,40 @@ func TestPendingGuideReferenceDetectionRequiresInstructionWrapper(t *testing.T) 
 	h.accumulateInjection(desktopUserID, guideLaunchReferenceMarker+"\nliteral user text")
 	if h.hasPendingGuideReferenceInjection(desktopUserID) {
 		t.Fatal("literal marker without instruction wrapper should not be treated as guide reference")
+	}
+}
+
+func TestPendingGuideReferenceContinuesBeforeNoToolFinalization(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase *agentLoopPhase
+	}{
+		{name: "with phase", phase: &agentLoopPhase{}},
+		{name: "without phase", phase: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &IMMessageHandler{}
+			h.accumulateInjection(desktopUserID, buildGuideLaunchInjection("answer this before finishing"))
+
+			result := h.handleAgentLoopNoToolPath(agentLoopNoToolPathOptions{
+				UserID:         desktopUserID,
+				UserText:       "original task",
+				MessageContent: "final-looking answer",
+				Phase:          tc.phase,
+				Choice: llm.Choice{Message: llm.Message{
+					Role:    "assistant",
+					Content: "final-looking answer",
+				}},
+				LengthContinuationBuffer: &strings.Builder{},
+			})
+
+			if !result.ContinueLoop {
+				t.Fatal("expected pending guide reference to continue loop before no-tool finalization")
+			}
+			if result.Response != nil {
+				t.Fatalf("expected no final response while guide reference is pending, got %#v", result.Response)
+			}
+		})
 	}
 }
 

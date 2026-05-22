@@ -72,12 +72,6 @@ const textForLang = (
   zhHant = zhHans,
 ) => (lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans);
 
-const STATUS_COLORS: Record<VEStatus, string> = {
-  pending: "#f59e0b",
-  active: "#10b981",
-  disabled: "#6b7280",
-  rejected: "#ef4444",
-};
 
 const statusLabel = (status: VEStatus, lang?: string) =>
   ({
@@ -435,8 +429,8 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
           textForLang(
             lang,
             `Directory "${selected}" is already in the list.`,
-            `目录 "${selected}" 已在列表中。`,
-            `目錄 "${selected}" 已在列表中。`,
+            `\u76ee\u5f55 "${selected}" \u5df2\u5728\u5217\u8868\u4e2d\u3002`,
+            `\u76ee\u9304 "${selected}" \u5df2\u5728\u5217\u8868\u4e2d\u3002`,
           ),
         );
         return;
@@ -456,7 +450,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
       setAllowedDirs(updated);
       setDirDuplicateWarning("");
     } catch {
-      // Persist failed — keep UI unchanged
+      // Persist failed 闁?keep UI unchanged
     }
   }
 
@@ -586,6 +580,42 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
 
   const showListEditor =
     accessPolicy === "whitelist" || accessPolicy === "blacklist";
+  const approvalWorkflowDesign = (
+    <div data-testid="ve-approval-workflow-design-section" className="ve-form-group ve-form-group--nested">
+      <div className="ve-form-row">
+        <label className="ve-form-label">
+          {textForLang(lang, "Approval Workflow", "\u5ba1\u6279\u5de5\u4f5c\u6d41", "\u5be9\u6279\u5de5\u4f5c\u6d41")}
+        </label>
+        <div className="ve-form-field">
+          <button
+            className="ve-btn ve-btn--secondary"
+            data-testid="ve-approval-workflow-design-btn"
+            onClick={async () => {
+              try {
+                const cfg = await LoadConfig() as { remote_hub_url?: string } | null;
+                const hubUrl = (cfg?.remote_hub_url || "").replace(/\/+$/, "");
+                if (hubUrl) {
+                  BrowserOpenURL(`${hubUrl}/approval_workflow`);
+                }
+              } catch {
+                // Config load failed 闁?ignore silently
+              }
+            }}
+          >
+            {textForLang(lang, "Approval Workflow Design", "\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1", "\u5be9\u6279\u5de5\u4f5c\u6d41\u8a2d\u8a08")}
+          </button>
+          <p className="ve-form-hint">
+            {textForLang(
+              lang,
+              "Open the visual workflow designer on Hub to create and edit approval workflows.",
+              "\u6253\u5f00 Hub \u4e0a\u7684\u53ef\u89c6\u5316\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668\uff0c\u521b\u5efa\u548c\u7f16\u8f91\u5ba1\u6279\u5de5\u4f5c\u6d41\u3002",
+              "\u958b\u555f Hub \u4e0a\u7684\u8996\u89ba\u5316\u5de5\u4f5c\u6d41\u8a2d\u8a08\u5668\uff0c\u5efa\u7acb\u548c\u7de8\u8f2f\u5be9\u6279\u5de5\u4f5c\u6d41\u3002",
+            )}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div data-testid="ve-settings-panel" className="ve-settings-panel">
@@ -595,7 +625,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
           <span
             data-testid="ve-status-badge"
             className="ve-status-badge"
-            style={{ color: STATUS_COLORS[status], borderColor: STATUS_COLORS[status] }}
+            data-status={status}
           >
             {statusLabel(status, lang)}
           </span>
@@ -714,42 +744,41 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
 
         <p className="ve-form-hint ve-sensitive-hint">{c.sensitiveHint}</p>
 
-        {/* 允许访问目录 section (Requirements 1.1-1.8, 2.2) */}
+        {/* Allowed access directory section (Requirements 1.1-1.8, 2.2) */}
         <div data-testid="ve-allowed-dirs-section" className="ve-form-group">
           <div className="ve-dirs-header">
             <label className="ve-form-label">
-              {textForLang(lang, "Allowed Access Directories", "允许访问目录", "允許存取目錄")}
+              {textForLang(lang, "Allowed Access Directories", "\u5141\u8bb8\u8bbf\u95ee\u76ee\u5f55", "\u5141\u8a31\u5b58\u53d6\u76ee\u9304")}
             </label>
             <button
               className="ve-btn ve-btn--link"
               onClick={handleAddDirectory}
               data-testid="ve-add-dir-btn"
             >
-              {textForLang(lang, "Add Directory", "添加目录", "新增目錄")}
+              {textForLang(lang, "Add Directory", "\u6dfb\u52a0\u76ee\u5f55", "\u65b0\u589e\u76ee\u9304")}
             </button>
           </div>
           {dirDuplicateWarning && (
             <div
-              className="ve-notice ve-notice--warning"
+              className="ve-notice ve-notice--warning ve-notice--compact"
               role="alert"
               data-testid="ve-dir-duplicate-warning"
-              style={{ marginTop: 4, marginBottom: 4 }}
             >
               {dirDuplicateWarning}
             </div>
           )}
           {allowedDirs.length > 0 && (
             <ul data-testid="ve-allowed-dirs-list" className="ve-list-items">
-              {allowedDirs.map((dir, idx) => (
+              {allowedDirs.map((dir) => (
                 <li key={dir} className="ve-list-item">
                   <span className="ve-list-item-text" title={dir}>{dir}</span>
                   <button
                     className="ve-btn ve-btn--ghost"
                     onClick={() => handleRemoveDirectory(dir)}
                     data-testid={`ve-remove-dir-${dir}`}
-                    aria-label={textForLang(lang, `Remove ${dir}`, `删除 ${dir}`, `刪除 ${dir}`)}
+                    aria-label={`Remove ${dir}`}
                   >
-                    ✕
+                    {c.remove}
                   </button>
                 </li>
               ))}
@@ -760,50 +789,11 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
               {textForLang(
                 lang,
                 "No directories configured. The VE cannot send files until at least one directory is added.",
-                "未配置目录。数字员工在添加至少一个目录前无法发送文件。",
-                "未設定目錄。數字員工在新增至少一個目錄前無法傳送檔案。",
+                "\u672a\u914d\u7f6e\u76ee\u5f55\u3002\u6570\u5b57\u5458\u5de5\u5728\u6dfb\u52a0\u81f3\u5c11\u4e00\u4e2a\u76ee\u5f55\u524d\u65e0\u6cd5\u53d1\u9001\u6587\u4ef6\u3002",
+                "\u672a\u8a2d\u5b9a\u76ee\u9304\u3002\u6578\u5b57\u54e1\u5de5\u5728\u65b0\u589e\u81f3\u5c11\u4e00\u500b\u76ee\u9304\u524d\u7121\u6cd5\u50b3\u9001\u6a94\u6848\u3002",
               )}
             </p>
           )}
-        </div>
-
-        {/* Approval Capability Section (Requirements 3.1, 3.4, 3.5, 3.6, 3.7) */}
-        <VEApprovalCapabilitySection lang={lang} />
-
-        {/* Approval Workflow Design Button (Requirement 1.1) */}
-        <div data-testid="ve-approval-workflow-design-section" className="ve-form-group">
-          <div className="ve-form-row">
-            <label className="ve-form-label">
-              {textForLang(lang, "Approval Workflow", "审批工作流", "審批工作流")}
-            </label>
-            <div className="ve-form-field">
-              <button
-                className="ve-btn ve-btn--secondary"
-                data-testid="ve-approval-workflow-design-btn"
-                onClick={async () => {
-                  try {
-                    const cfg = await LoadConfig() as { remote_hub_url?: string } | null;
-                    const hubUrl = (cfg?.remote_hub_url || "").replace(/\/+$/, "");
-                    if (hubUrl) {
-                      BrowserOpenURL(`${hubUrl}/approval_workflow`);
-                    }
-                  } catch {
-                    // Config load failed — ignore silently
-                  }
-                }}
-              >
-                {textForLang(lang, "Approval Workflow Design", "审批工作流设计", "審批工作流設計")}
-              </button>
-              <p className="ve-form-hint">
-                {textForLang(
-                  lang,
-                  "Open the visual workflow designer on Hub to create and edit approval workflows.",
-                  "打开 Hub 上的可视化工作流设计器，创建和编辑审批工作流。",
-                  "開啟 Hub 上的視覺化工作流設計器，建立和編輯審批工作流。",
-                )}
-              </p>
-            </div>
-          </div>
         </div>
 
         {showListEditor && !formDisabled && (
@@ -858,6 +848,9 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
             </button>
           </div>
         )}
+
+        {/* Approval Capability Section (Requirements 3.1, 3.4, 3.5, 3.6, 3.7) */}
+        <VEApprovalCapabilitySection lang={lang} footerSlot={approvalWorkflowDesign} />
       </div>
     </div>
   );

@@ -50,6 +50,10 @@ func SetupAdminHandler(admins *auth.AdminService) http.HandlerFunc {
 		}
 
 		if err := admins.SetupInitialAdmin(r.Context(), req.Username, req.Password, req.Email); err != nil {
+			if isAdminValidationError(err) {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "SETUP_FAILED", err.Error())
 			return
 		}

@@ -637,7 +637,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const echo: ChatMessage = {
             id: `guide-reference-${Date.now()}-${Math.random().toString(36).slice(2)}`,
             role: 'system',
-            content: `Guide reference injected:\n${text}`,
+            content: `引导已注入下一轮：\n${text}`,
             timestamp: Date.now(),
         };
         const existingState = getTabState(targetTabId);

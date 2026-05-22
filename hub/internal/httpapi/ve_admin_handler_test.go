@@ -19,6 +19,10 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+func tenantAdminContext(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, adminUserContextKey, &store.AdminUser{ID: "admin-tenant", Scope: "tenant", TenantID: tenantID})
+}
+
 type fakeVEMachineAuth struct {
 	principals map[string]*auth.MachinePrincipal
 	token      string
@@ -66,8 +70,8 @@ func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
 	authn := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-a": {UserID: "user-a", MachineID: "machine-a"},
-			"machine-b": {UserID: "user-b", MachineID: "machine-b"},
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
 		},
 	}
 
@@ -86,6 +90,7 @@ func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
 	}
 
 	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
 	approveReq.SetPathValue("id", "ve_machine-a")
 	approveRec := httptest.NewRecorder()
 	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
@@ -99,14 +104,14 @@ func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
 	}
 }
 
-func TestDigitalEmployeeInitiateCreatesMachineIDDiscussion(t *testing.T) {
+func TestDigitalEmployeeDiscoverableExcludesOwnMachineCaseInsensitive(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	enableVEDigitalEmployeeAuthorization(t, settings, 2)
 	authn := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-a": {UserID: "user-a", MachineID: "machine-a"},
-			"machine-b": {UserID: "user-b", MachineID: "machine-b"},
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"MACHINE-A": {TenantID: "tenant-a", UserID: "user-a", MachineID: "MACHINE-A"},
 		},
 	}
 
@@ -120,6 +125,45 @@ func TestDigitalEmployeeInitiateCreatesMachineIDDiscussion(t *testing.T) {
 	}
 
 	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
+	approveReq.SetPathValue("id", "ve_machine-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "MACHINE-A", "machine-token")
+	if discoverRR.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+	if bytes.Contains(discoverRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) {
+		t.Fatalf("own digital employee leaked in discover response: %s", discoverRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeInitiateCreatesMachineIDDiscussion(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":              "Legal Researcher",
+		"skill_description": "Contract review",
+		"access_policy":     "public",
+	}, "machine-a", "machine-token")
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
 	approveReq.SetPathValue("id", "ve_machine-a")
 	approveRec := httptest.NewRecorder()
 	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
@@ -131,7 +175,6 @@ func TestDigitalEmployeeInitiateCreatesMachineIDDiscussion(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
 	req.Header.Set("X-Machine-ID", "machine-b")
 	req.Header.Set("Authorization", "Bearer machine-token")
-	req.Header.Set("X-Tenant-ID", "tenant-a")
 	req.SetPathValue("id", "ve_machine-a")
 	rec := httptest.NewRecorder()
 	VEInitiateHandler(settings, groupSvc, authn).ServeHTTP(rec, req)
@@ -239,13 +282,58 @@ func TestVEAdminActionEventType(t *testing.T) {
 	}
 }
 
+func TestVEAdminActionPostsPlatformEmployeeCallback(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	callbackBodies := make(chan map[string]any, 1)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hub/callback/employee" {
+			t.Fatalf("unexpected callback path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-VE-Callback-Secret") != "secret-1" || r.Header.Get("X-VE-Callback-Timestamp") == "" || r.Header.Get("X-VE-Callback-Nonce") == "" {
+			t.Fatalf("callback headers incomplete: %#v", r.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback: %v", err)
+		}
+		callbackBodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer callback.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusPending, OnlineStatus: "platform"}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/ve_employee_1/approve?tenant_id=tenant-a", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-1", Scope: "tenant", TenantID: "tenant-a"}))
+	req.SetPathValue("id", "ve_employee_1")
+	rec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case body := <-callbackBodies:
+		if body["employee_id"] != "platform-employee-1" || body["hub_tenant_id"] != "tenant-a" || body["hub_employee_id"] != "ve_employee_1" || body["hub_account_id"] != "hub-account-1" || body["hub_status"] != "published" {
+			t.Fatalf("callback body missing employee identity: %#v", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("employee callback was not posted")
+	}
+}
+
 func TestDigitalEmployeeAdminActionEmitsMachineEvents(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	enableVEDigitalEmployeeAuthorization(t, settings, 1)
 	authn := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-a": {UserID: "user-a", MachineID: "machine-a"},
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
 		},
 	}
 	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Legal Researcher"}, "machine-a", "machine-token"); rr.Code != http.StatusOK {
@@ -254,6 +342,7 @@ func TestDigitalEmployeeAdminActionEmitsMachineEvents(t *testing.T) {
 
 	sender := &fakeVEMachineEventSender{}
 	req := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
 	req.SetPathValue("id", "ve_machine-a")
 	rec := httptest.NewRecorder()
 	VEAdminActionHandler(settings, "approve", sender).ServeHTTP(rec, req)
@@ -280,8 +369,8 @@ func TestDigitalEmployeeAuthorizationBlocksRegisterAndDiscovery(t *testing.T) {
 	authn := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-a": {UserID: "user-a", MachineID: "machine-a"},
-			"machine-b": {UserID: "user-b", MachineID: "machine-b"},
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
 		},
 	}
 
@@ -297,6 +386,7 @@ func TestDigitalEmployeeAuthorizationBlocksRegisterAndDiscovery(t *testing.T) {
 		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
 	approveReq.SetPathValue("id", "ve_machine-a")
 	approveRec := httptest.NewRecorder()
 	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
@@ -347,7 +437,7 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 	authn := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-a": {UserID: "user-a", MachineID: "machine-a"},
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
 		},
 	}
 	owners := fakeVEOwnerLookup{users: map[string]*store.User{"user-a": {ID: "user-a", Email: "owner@example.com"}}}
@@ -355,6 +445,7 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq = approveReq.WithContext(tenantAdminContext(approveReq.Context(), "tenant-a"))
 	approveReq.SetPathValue("id", "ve_machine-a")
 	approveRec := httptest.NewRecorder()
 	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
@@ -382,7 +473,7 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ve/ve_machine-a/history?limit=5", nil)
-	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
 	req.SetPathValue("id", "ve_machine-a")
 	rec := httptest.NewRecorder()
 	VEHistoryHandler(settings, groupSvc, owners).ServeHTTP(rec, req)
@@ -391,7 +482,7 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 	}
 
 	searchReq := httptest.NewRequest(http.MethodGet, "/api/ve/history/search?q=owner%40example.com&limit=5", nil)
-	searchReq.Header.Set("X-Tenant-ID", "tenant-a")
+	searchReq = searchReq.WithContext(tenantAdminContext(searchReq.Context(), "tenant-a"))
 	searchRec := httptest.NewRecorder()
 	VEHistorySearchHandler(settings, groupSvc, owners).ServeHTTP(searchRec, searchReq)
 	if searchRec.Code != http.StatusOK || !bytes.Contains(searchRec.Body.Bytes(), []byte("Contract review")) || !bytes.Contains(searchRec.Body.Bytes(), []byte("Legal Researcher")) {
@@ -399,7 +490,7 @@ func TestDigitalEmployeeHistorySearchAndPreview(t *testing.T) {
 	}
 
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/ve/history/"+session.ID+"/detail", nil)
-	detailReq.Header.Set("X-Tenant-ID", "tenant-a")
+	detailReq = detailReq.WithContext(tenantAdminContext(detailReq.Context(), "tenant-a"))
 	detailReq.SetPathValue("id", session.ID)
 	detailRec := httptest.NewRecorder()
 	VEHistoryDetailHandler(groupSvc).ServeHTTP(detailRec, detailReq)
@@ -435,7 +526,7 @@ func TestDigitalEmployeeHistorySearchBlankQueryDoesNotEnumerate(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ve/history/search?q=%20%20%20&limit=5", nil)
-	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
 	rec := httptest.NewRecorder()
 	VEHistorySearchHandler(settings, groupSvc, owners).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"matches":[]`)) || !bytes.Contains(rec.Body.Bytes(), []byte(`"discussions":[]`)) {
@@ -452,8 +543,8 @@ func TestDigitalEmployeeHistorySearchMergesMatches(t *testing.T) {
 	authn := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-a": {UserID: "user-a", MachineID: "machine-a"},
-			"machine-b": {UserID: "user-b", MachineID: "machine-b"},
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
 		},
 	}
 	owners := fakeVEOwnerLookup{users: map[string]*store.User{
@@ -507,7 +598,7 @@ func TestDigitalEmployeeHistorySearchMergesMatches(t *testing.T) {
 	}
 
 	searchReq := httptest.NewRequest(http.MethodGet, "/api/ve/history/search?q=example.com&limit=5", nil)
-	searchReq.Header.Set("X-Tenant-ID", "tenant-a")
+	searchReq = searchReq.WithContext(tenantAdminContext(searchReq.Context(), "tenant-a"))
 	searchRec := httptest.NewRecorder()
 	VEHistorySearchHandler(settings, groupSvc, owners).ServeHTTP(searchRec, searchReq)
 	if searchRec.Code != http.StatusOK {
@@ -528,7 +619,7 @@ func TestDigitalEmployeeHistorySearchMergesMatches(t *testing.T) {
 	}
 
 	noMatchReq := httptest.NewRequest(http.MethodGet, "/api/ve/history/search?q=missing&limit=5", nil)
-	noMatchReq.Header.Set("X-Tenant-ID", "tenant-a")
+	noMatchReq = noMatchReq.WithContext(tenantAdminContext(noMatchReq.Context(), "tenant-a"))
 	noMatchRec := httptest.NewRecorder()
 	VEHistorySearchHandler(settings, groupSvc, owners).ServeHTTP(noMatchRec, noMatchReq)
 	if noMatchRec.Code != http.StatusOK || !bytes.Contains(noMatchRec.Body.Bytes(), []byte(`"matches":[]`)) {
@@ -542,8 +633,8 @@ func TestDigitalEmployeeHistorySearchCapsFlattenedDiscussions(t *testing.T) {
 	authn := fakeVEMachineAuth{
 		token: "machine-token",
 		principals: map[string]*auth.MachinePrincipal{
-			"machine-a": {UserID: "user-a", MachineID: "machine-a"},
-			"machine-b": {UserID: "user-b", MachineID: "machine-b"},
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
 		},
 	}
 	owners := fakeVEOwnerLookup{users: map[string]*store.User{
@@ -578,7 +669,7 @@ func TestDigitalEmployeeHistorySearchCapsFlattenedDiscussions(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ve/history/search?q=example.com&limit=2", nil)
-	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
 	rec := httptest.NewRecorder()
 	VEHistorySearchHandler(settings, groupSvc, owners).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -602,7 +693,12 @@ func TestDigitalEmployeeHistoryAdminRoutesAreWired(t *testing.T) {
 		t.Fatalf("expected history search to require admin token, got %d body=%s", unauthorized.Code, unauthorized.Body.String())
 	}
 
-	token := issueHubAdminToken(t, router)
+	globalToken := issueHubAdminToken(t, router)
+	globalSearch := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/ve/history/search?q=owner%40example.com", nil, globalToken)
+	if globalSearch.Code != http.StatusForbidden {
+		t.Fatalf("expected global admin to be blocked from tenant VE history, got %d body=%s", globalSearch.Code, globalSearch.Body.String())
+	}
+	token := issueTenantAdminToken(t, router, globalToken, "acme", "ve-admin")
 	search := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/ve/history/search?q=owner%40example.com", nil, token)
 	if search.Code != http.StatusOK || !bytes.Contains(search.Body.Bytes(), []byte(`"matches":[]`)) {
 		t.Fatalf("history search route not wired correctly, status=%d body=%s", search.Code, search.Body.String())
@@ -624,8 +720,10 @@ func TestDigitalEmployeeConfigValidation(t *testing.T) {
 
 func TestDigitalEmployeeFileRelayRoutesRequireAuthenticatedParticipant(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
+	globalToken := issueHubAdminToken(t, router)
+	adminToken := issueTenantAdminToken(t, router, globalToken, "acme", "ve-relay-admin")
 
-	enrollRR := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/enroll/start", map[string]any{
+	enrollRR := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/enroll/start?tenant_id=tenant_acme", map[string]any{
 		"email":        "relay-owner@example.com",
 		"machine_name": "relay-machine",
 		"platform":     "windows",
@@ -770,7 +868,6 @@ func TestDigitalEmployeeFileRelayRoutesRequireAuthenticatedParticipant(t *testin
 		t.Fatalf("expected admin attachment download to require admin auth, got %d body=%s", adminUnauthDownload.Code, adminUnauthDownload.Body.String())
 	}
 
-	adminToken := issueHubAdminToken(t, router)
 	adminDownloadReq := httptest.NewRequest(http.MethodGet, adminAttachmentPath, nil)
 	adminDownloadReq.Header.Set("Authorization", "Bearer "+adminToken)
 	adminDownload := httptest.NewRecorder()
@@ -787,7 +884,7 @@ func TestDigitalEmployeeFileRelayRoutesRequireAuthenticatedParticipant(t *testin
 		t.Fatalf("expected wrong-session admin download to be 403, got %d body=%s", adminWrongSession.Code, adminWrongSession.Body.String())
 	}
 
-	outsiderRR := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/enroll/start", map[string]any{
+	outsiderRR := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/enroll/start?tenant_id=tenant_acme", map[string]any{
 		"email":        "relay-outsider@example.com",
 		"machine_name": "outsider-machine",
 		"platform":     "windows",
@@ -820,6 +917,59 @@ func TestDigitalEmployeeFileRelayRoutesRequireAuthenticatedParticipant(t *testin
 		t.Fatalf("expected outsider cancel to be 403, got %d body=%s", outsiderCancelRR.Code, outsiderCancelRR.Body.String())
 	}
 }
+
+func TestDigitalEmployeeA2AIgnoresSpoofedTenantHeaders(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	globalToken := issueHubAdminToken(t, router)
+	acmeToken := issueTenantAdminToken(t, router, globalToken, "acme", "ve-a2a-acme-admin")
+	otherToken := issueTenantAdminToken(t, router, globalToken, "other", "ve-a2a-other-admin")
+
+	enrollRR := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/enroll/start?tenant_id=tenant_acme", map[string]any{
+		"email":        "tenant-spoof-owner@example.com",
+		"machine_name": "tenant-spoof-machine",
+		"platform":     "windows",
+	}, "")
+	if enrollRR.Code != http.StatusOK {
+		t.Fatalf("enroll status=%d body=%s", enrollRR.Code, enrollRR.Body.String())
+	}
+	var enroll struct {
+		MachineID    string `json:"machine_id"`
+		MachineToken string `json:"machine_token"`
+	}
+	if err := json.Unmarshal(enrollRR.Body.Bytes(), &enroll); err != nil {
+		t.Fatalf("decode enroll: %v", err)
+	}
+
+	createBody, _ := json.Marshal(map[string]any{
+		"from_id":  enroll.MachineID,
+		"topic":    "tenant spoof guard",
+		"question": "Which tenant owns this discussion?",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/a2a/consultations", bytes.NewReader(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	createReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	createReq.Header.Set("X-Tenant-ID", "tenant_other")
+	createReq.Header.Set("X-Hub-Tenant-ID", "tenant_other")
+	createRR := httptest.NewRecorder()
+	router.ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusCreated {
+		t.Fatalf("create discussion status=%d body=%s", createRR.Code, createRR.Body.String())
+	}
+
+	acmeList := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/admin/a2a/group-discussions", nil, acmeToken)
+	if acmeList.Code != http.StatusOK || !bytes.Contains(acmeList.Body.Bytes(), []byte("tenant spoof guard")) {
+		t.Fatalf("tenant_acme list should include machine-owned discussion, status=%d body=%s", acmeList.Code, acmeList.Body.String())
+	}
+	otherList := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/admin/a2a/group-discussions", nil, otherToken)
+	if otherList.Code != http.StatusOK {
+		t.Fatalf("tenant_other list status=%d body=%s", otherList.Code, otherList.Body.String())
+	}
+	if bytes.Contains(otherList.Body.Bytes(), []byte("tenant spoof guard")) {
+		t.Fatalf("spoofed tenant saw discussion: %s", otherList.Body.String())
+	}
+}
+
 func TestDigitalEmployeeMachineAuthRequired(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{}}

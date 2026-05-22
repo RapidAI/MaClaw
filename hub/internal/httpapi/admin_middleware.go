@@ -49,7 +49,7 @@ func tenantAdminScopeActive(ctx context.Context, admin *store.AdminUser, tenantR
 		return true
 	}
 	tenantID := strings.TrimSpace(admin.TenantID)
-	if tenantID == "" {
+	if tenantID == "" || strings.EqualFold(tenantID, store.DefaultTenantID) || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
 		return false
 	}
 	tenant, err := tenantRepos[0].GetByID(ctx, tenantID)
@@ -62,6 +62,16 @@ func tenantAdminScopeActive(ctx context.Context, admin *store.AdminUser, tenantR
 func RequireGlobalAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if AdminFromContext(r.Context()) == nil || !IsGlobalAdmin(r.Context()) || strings.TrimSpace(r.URL.Query().Get("tenant_id")) != "" {
+			writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Global admin authorization required")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func RequireGlobalAdminAllowTenantQuery(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if AdminFromContext(r.Context()) == nil || !IsGlobalAdmin(r.Context()) {
 			writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Global admin authorization required")
 			return
 		}

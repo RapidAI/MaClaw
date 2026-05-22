@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -212,8 +214,9 @@ func (rl *rateLimiter) allow(userID string) bool {
 // routes incoming messages through identity mapping, rate limiting, and
 // then transparently relays to the MaClaw Agent via MessageRouter.
 type Adapter struct {
-	mu      sync.RWMutex
-	plugins map[string]IMPlugin
+	mu            sync.RWMutex
+	plugins       map[string]IMPlugin
+	tenantPlugins map[string]map[string]IMPlugin
 
 	messageRouter       *MessageRouter
 	coordinator         *Coordinator         // optional; nil = passthrough to messageRouter
@@ -230,6 +233,7 @@ type Adapter struct {
 func NewAdapter(router *MessageRouter, identity IdentityResolver) *Adapter {
 	return &Adapter{
 		plugins:       make(map[string]IMPlugin),
+		tenantPlugins: make(map[string]map[string]IMPlugin),
 		messageRouter: router,
 		identity:      identity,
 		limiter:       newRateLimiter(),
@@ -283,7 +287,7 @@ func (a *Adapter) InitTaskDispatcher(capacity int) {
 	}
 
 	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {
-		plugin := a.GetPlugin(platformName)
+		plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), platformName)
 		if plugin == nil {
 			log.Printf("[TaskDispatcher] no plugin for platform %q, cannot deliver result", platformName)
 			return
@@ -321,11 +325,96 @@ func (a *Adapter) RegisterPlugin(plugin IMPlugin) error {
 	return nil
 }
 
+// RegisterTenantPlugin registers a tenant-scoped runtime for a platform.
+// It lets native IM gateways use per-tenant credentials while preserving the
+// public platform name used by messages and bindings.
+func (a *Adapter) RegisterTenantPlugin(tenantID string, plugin IMPlugin) error {
+	tenantID = normalizeTenantID(tenantID)
+	if tenantID == store.DefaultTenantID {
+		return a.RegisterPlugin(plugin)
+	}
+	name := plugin.Name()
+	if name == "" {
+		return fmt.Errorf("im: plugin Name() returned empty string, refusing to register")
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.tenantPlugins[tenantID] == nil {
+		a.tenantPlugins[tenantID] = make(map[string]IMPlugin)
+	}
+	if _, exists := a.tenantPlugins[tenantID][name]; exists {
+		return fmt.Errorf("im: tenant %q plugin %q already registered", tenantID, name)
+	}
+
+	plugin.ReceiveMessage(func(msg IncomingMessage) {
+		if msg.TenantID == "" {
+			msg.TenantID = tenantID
+		}
+		a.HandleMessage(context.Background(), msg)
+	})
+	a.tenantPlugins[tenantID][name] = plugin
+	log.Printf("[IM Adapter] registered tenant plugin: tenant=%s plugin=%s", tenantID, name)
+	return nil
+}
+
+func (a *Adapter) UnregisterTenantPlugin(tenantID, name string) IMPlugin {
+	tenantID = normalizeTenantID(tenantID)
+	if tenantID == store.DefaultTenantID || strings.TrimSpace(name) == "" {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	plugins := a.tenantPlugins[tenantID]
+	if plugins == nil {
+		return nil
+	}
+	plugin := plugins[name]
+	delete(plugins, name)
+	if len(plugins) == 0 {
+		delete(a.tenantPlugins, tenantID)
+	}
+	if plugin != nil {
+		log.Printf("[IM Adapter] unregistered tenant plugin: tenant=%s plugin=%s", tenantID, name)
+	}
+	return plugin
+}
+
 // GetPlugin returns the registered plugin by name, or nil.
 func (a *Adapter) GetPlugin(name string) IMPlugin {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.plugins[name]
+}
+
+func (a *Adapter) GetPluginForTenant(tenantID, name string) IMPlugin {
+	tenantID = normalizeTenantID(tenantID)
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if tenantID != store.DefaultTenantID {
+		if plugins := a.tenantPlugins[tenantID]; plugins != nil {
+			if plugin := plugins[name]; plugin != nil {
+				return plugin
+			}
+		}
+	}
+	return a.plugins[name]
+}
+
+func (a *Adapter) PluginsForTenant(tenantID string) map[string]IMPlugin {
+	tenantID = normalizeTenantID(tenantID)
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make(map[string]IMPlugin, len(a.plugins))
+	for name, plugin := range a.plugins {
+		out[name] = plugin
+	}
+	if tenantID != store.DefaultTenantID {
+		for name, plugin := range a.tenantPlugins[tenantID] {
+			out[name] = plugin
+		}
+	}
+	return out
 }
 
 // HandleMessage is the main entry point called by IM plugins when they
@@ -339,7 +428,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if msg.TenantID != "" {
 		ctx = WithTenant(ctx, msg.TenantID)
 	}
-	plugin := a.GetPlugin(msg.PlatformName)
+	plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), msg.PlatformName)
 	if plugin == nil {
 		log.Printf("[IM Adapter] no plugin registered for platform %q", msg.PlatformName)
 		return
@@ -364,6 +453,9 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 	ctx = WithTenant(ctx, tenantID)
+	if tenantPlugin := a.GetPluginForTenant(tenantID, msg.PlatformName); tenantPlugin != nil {
+		plugin = tenantPlugin
+	}
 	msg.TenantID = tenantID
 	msg.UnifiedUserID = unifiedID
 	target.UnifiedUserID = unifiedID
@@ -940,10 +1032,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 // IM plugin. This is used by the MessageRouter to relay intermediate status
 // updates from the Agent during long-running tasks.
 func (a *Adapter) DeliverProgress(ctx context.Context, platformName, userID, platformUID, text string) {
-	a.mu.RLock()
-	plugin, ok := a.plugins[platformName]
-	a.mu.RUnlock()
-	if !ok {
+	plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), platformName)
+	if plugin == nil {
 		log.Printf("[IM Adapter] DeliverProgress: no plugin for platform %q", platformName)
 		return
 	}
@@ -962,10 +1052,8 @@ func (a *Adapter) DeliverProgress(ctx context.Context, platformName, userID, pla
 // IM plugin. This is used by the MessageRouter to deliver image/file
 // responses individually in broadcast mode.
 func (a *Adapter) DeliverResponse(ctx context.Context, platformName, userID, platformUID string, resp *GenericResponse) {
-	a.mu.RLock()
-	plugin, ok := a.plugins[platformName]
-	a.mu.RUnlock()
-	if !ok {
+	plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), platformName)
+	if plugin == nil {
 		log.Printf("[IM Adapter] DeliverResponse: no plugin for platform %q", platformName)
 		return
 	}

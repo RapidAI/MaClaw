@@ -37,9 +37,11 @@ func GetDingTalkConfigHandler(system store.SystemSettingsRepository) http.Handle
 	}
 }
 
-func UpdateDingTalkConfigHandler(system store.SystemSettingsRepository, plugin *dingtalk.Plugin) http.HandlerFunc {
+func UpdateDingTalkConfigHandler(system store.SystemSettingsRepository, plugin *dingtalk.Plugin, runtimeReloaders ...TenantIMRuntimeReloader) http.HandlerFunc {
+	runtimeReloader := firstTenantIMRuntimeReloader(runtimeReloaders)
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := scopedSystemSettingsForRequest(r, system)
+		tenantID := RequestTenantID(r)
 		var cfg DingTalkConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -60,16 +62,23 @@ func UpdateDingTalkConfigHandler(system store.SystemSettingsRepository, plugin *
 
 		// Hot-reload only for the Hub-level singleton gateway. Tenant-scoped
 		// settings are consumed per tenant and must not rewire the shared process.
+		var reloadErr error
 		if plugin != nil && shouldReloadSharedRuntimeForRequest(r) {
 			_ = plugin.Stop(r.Context())
 			if cfg.Enabled {
 				_ = plugin.Start(r.Context())
 			}
+		} else if isTenantScopedAdminRequest(r) {
+			reloadErr = reloadTenantIMRuntime(r.Context(), runtimeReloader, tenantID, "dingtalk")
 		}
 
 		resp := cfg
 		if resp.ClientSecret != "" {
 			resp.ClientSecret = maskSecret(resp.ClientSecret)
+		}
+		if isTenantScopedAdminRequest(r) {
+			writeJSON(w, http.StatusOK, tenantIMConfigResponse(resp, reloadErr))
+			return
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}

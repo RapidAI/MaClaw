@@ -15,58 +15,39 @@ type Props = {
 const isTerminalSkillInstallPhase = (phase?: string) =>
     phase === 'done' || phase === 'scan-complete' || phase === 'blocked' || phase === 'rejected';
 
-const skillInstallProgressColor = (phase?: string) => {
-    if (phase === 'blocked' || phase === 'rejected') return 'var(--theme-danger)';
-    if (phase === 'done' || phase === 'scan-complete') return 'var(--theme-success)';
-    return 'var(--theme-primary)';
+const skillInstallProgressTone = (phase?: string) => {
+    if (phase === 'blocked' || phase === 'rejected') return 'danger';
+    if (phase === 'done' || phase === 'scan-complete') return 'success';
+    return 'primary';
 };
 
 export const InstallSkillProgress = ({ progress, isInstalling }: Props) => {
     if (!progress) return null;
 
     return (
-        <div
-            role="status"
-            aria-live="polite"
-            style={{
-                marginTop: '12px',
-                padding: '10px 12px',
-                border: '1px solid var(--theme-border)',
-                borderRadius: '8px',
-                background: 'var(--theme-bg-secondary)',
-                color: 'var(--theme-text)',
-                display: 'grid',
-                gap: '8px',
-            }}
-        >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+        <div className="install-skill-progress" role="status" aria-live="polite">
+            <div className="install-skill-progress__head">
                 {isInstalling && !isTerminalSkillInstallPhase(progress.phase) && (
-                    <div style={{ width: '14px', height: '14px', border: `2px solid ${skillInstallProgressColor(progress.phase)}`, borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite', flex: '0 0 auto' }} />
+                    <div className="install-skill-progress__spinner" data-tone={skillInstallProgressTone(progress.phase)} />
                 )}
-                <div style={{ minWidth: 0, fontSize: '0.86rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div className="install-skill-progress__title">
                     {progress.skill ? progress.skill : 'Skill install'}
                     {progress.level ? ` - risk ${progress.level}` : ''}
                 </div>
             </div>
             <div
-                style={{
-                    height: '4px',
-                    borderRadius: '999px',
-                    background: 'var(--theme-border)',
-                    overflow: 'hidden',
-                }}
+                className="install-skill-progress__track"
                 aria-hidden="true"
             >
                 <div
+                    className="install-skill-progress__bar"
+                    data-tone={skillInstallProgressTone(progress.phase)}
                     style={{
                         width: String(progress.percent ?? 25) + '%',
-                        height: '100%',
-                        background: skillInstallProgressColor(progress.phase),
-                        transition: 'width 0.25s ease',
                     }}
                 />
             </div>
-            <div style={{ fontSize: '0.82rem', color: 'var(--theme-text-secondary)', lineHeight: 1.4 }}>
+            <div className="install-skill-progress__status">
                 {progress.status || progress.summary || 'Working...'}
             </div>
         </div>

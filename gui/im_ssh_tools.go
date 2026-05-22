@@ -232,7 +232,7 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	}
 
 	// 自动升级：长时间命令且 wait_seconds 未显式设置大值时，自动转为后台模式
-	waitSec := 5
+	waitSec := 15
 	if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
 		waitSec = int(w)
 	}

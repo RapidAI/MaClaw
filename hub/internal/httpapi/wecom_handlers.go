@@ -38,9 +38,11 @@ func GetWeComConfigHandler(system store.SystemSettingsRepository) http.HandlerFu
 	}
 }
 
-func UpdateWeComConfigHandler(system store.SystemSettingsRepository, plugin *wecom.Plugin) http.HandlerFunc {
+func UpdateWeComConfigHandler(system store.SystemSettingsRepository, plugin *wecom.Plugin, runtimeReloaders ...TenantIMRuntimeReloader) http.HandlerFunc {
+	runtimeReloader := firstTenantIMRuntimeReloader(runtimeReloaders)
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := scopedSystemSettingsForRequest(r, system)
+		tenantID := RequestTenantID(r)
 		var cfg WeComConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -60,16 +62,23 @@ func UpdateWeComConfigHandler(system store.SystemSettingsRepository, plugin *wec
 
 		// Hot-reload only for the Hub-level singleton gateway. Tenant-scoped
 		// settings are consumed per tenant and must not rewire the shared process.
+		var reloadErr error
 		if plugin != nil && shouldReloadSharedRuntimeForRequest(r) {
 			_ = plugin.Stop(r.Context())
 			if cfg.Enabled {
 				_ = plugin.Start(r.Context())
 			}
+		} else if isTenantScopedAdminRequest(r) {
+			reloadErr = reloadTenantIMRuntime(r.Context(), runtimeReloader, tenantID, "wecom")
 		}
 
 		resp := cfg
 		if resp.Secret != "" {
 			resp.Secret = maskSecret(resp.Secret)
+		}
+		if isTenantScopedAdminRequest(r) {
+			writeJSON(w, http.StatusOK, tenantIMConfigResponse(resp, reloadErr))
+			return
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}

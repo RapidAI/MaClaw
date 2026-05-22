@@ -409,3 +409,28 @@ allowed_commands:
 		t.Fatalf("approved close_all lost policy strength metadata: %#v", got[0])
 	}
 }
+
+func TestEngine_ActiveWorkflowUserIDForPhaseFindsSingleMatch(t *testing.T) {
+	engine, _ := newTestEngine()
+	if _, err := engine.StartWorkflow("u_phase_single", StructuredIntent{Category: WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	userID, ok := engine.ActiveWorkflowUserIDForPhase("requirements")
+	if !ok || userID != "u_phase_single" {
+		t.Fatalf("expected u_phase_single match, got userID=%q ok=%v", userID, ok)
+	}
+}
+
+func TestEngine_ActiveWorkflowUserIDForPhaseRejectsAmbiguousMatch(t *testing.T) {
+	engine, _ := newTestEngine()
+	for _, userID := range []string{"u_phase_a", "u_phase_b"} {
+		if _, err := engine.StartWorkflow(userID, StructuredIntent{Category: WorkflowCoding, Summary: "build app"}); err != nil {
+			t.Fatalf("StartWorkflow(%s) failed: %v", userID, err)
+		}
+	}
+
+	if userID, ok := engine.ActiveWorkflowUserIDForPhase("requirements"); ok || userID != "" {
+		t.Fatalf("expected ambiguous match to fail, got userID=%q ok=%v", userID, ok)
+	}
+}

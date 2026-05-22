@@ -198,7 +198,12 @@ GET /health
 
 
 
-- `MACLAW_ADMIN_SECRET`：管理端密钥，建议至�?24 字符
+- `MACLAW_ADMIN_SECRET`：管理端密钥，建议至少 24 字符。它就是 Admin Web 里 “Admin Secret” 登录方式使用的密钥，也会作为 `X-MaClaw-Admin-Secret` 发送到管理接口；适合自动化、紧急管理或直接控制面调用，不是管理员账号密码。
+
+
+
+
+- `MACLAW_ADMIN_SETUP_TOKEN`：可选的首次初始化令牌，只用于创建第一个 owner 管理员；初始化完成后不要把它当作 Admin Secret 使用。
 
 
 

@@ -56,6 +56,21 @@ func (m *mockPlugin) SendCard(_ context.Context, _ UserTarget, card OutgoingMess
 	return nil
 }
 
+func (m *mockPlugin) lastText() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.sentTexts) == 0 {
+		return ""
+	}
+	return m.sentTexts[len(m.sentTexts)-1]
+}
+
+func (m *mockPlugin) textCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sentTexts)
+}
+
 type mockVoicePlugin struct {
 	mockPlugin
 	sentVoices []string
@@ -568,5 +583,74 @@ func TestIsIncomingVoiceMessageUsesStructuralModality(t *testing.T) {
 	}
 	if isIncomingVoiceMessage(IncomingMessage{MessageType: "text", Text: "发我一段语音"}) {
 		t.Fatal("text content must not be treated as voice modality")
+	}
+}
+
+func TestAdapterTenantPluginOverridesSharedPluginForDelivery(t *testing.T) {
+	adapter := NewAdapter(nil, nil)
+	shared := &mockPlugin{name: "qqbot"}
+	tenant := &mockPlugin{name: "qqbot"}
+	if err := adapter.RegisterPlugin(shared); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	if err := adapter.RegisterTenantPlugin("tenant_a", tenant); err != nil {
+		t.Fatalf("RegisterTenantPlugin: %v", err)
+	}
+
+	adapter.DeliverResponse(WithTenant(context.Background(), "tenant_a"), "qqbot", "user-1", "platform-1", &GenericResponse{Body: "tenant reply"})
+	if tenant.lastText() != "tenant reply" {
+		t.Fatalf("tenant plugin text = %q", tenant.lastText())
+	}
+	if shared.textCount() != 0 {
+		t.Fatalf("shared plugin received tenant delivery")
+	}
+
+	adapter.DeliverResponse(context.Background(), "qqbot", "user-1", "platform-1", &GenericResponse{Body: "global reply"})
+	if shared.lastText() != "global reply" {
+		t.Fatalf("shared plugin text = %q", shared.lastText())
+	}
+}
+
+func TestAdapterUnregisterTenantPluginFallsBackToSharedPlugin(t *testing.T) {
+	adapter := NewAdapter(nil, nil)
+	shared := &mockPlugin{name: "qqbot"}
+	tenant := &mockPlugin{name: "qqbot"}
+	if err := adapter.RegisterPlugin(shared); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	if err := adapter.RegisterTenantPlugin("tenant_a", tenant); err != nil {
+		t.Fatalf("RegisterTenantPlugin: %v", err)
+	}
+	removed := adapter.UnregisterTenantPlugin("tenant_a", "qqbot")
+	if removed != tenant {
+		t.Fatalf("removed plugin = %#v, want tenant plugin", removed)
+	}
+
+	adapter.DeliverResponse(WithTenant(context.Background(), "tenant_a"), "qqbot", "user-1", "platform-1", &GenericResponse{Body: "fallback reply"})
+	if tenant.textCount() != 0 {
+		t.Fatalf("tenant plugin received delivery after unregister")
+	}
+	if shared.lastText() != "fallback reply" {
+		t.Fatalf("shared plugin text = %q", shared.lastText())
+	}
+}
+
+func TestRegisterTenantPluginInjectsTenantHintForInboundMessages(t *testing.T) {
+	identity := &mockTenantIdentity{tenantID: "tenant_a", userID: "user-1"}
+	adapter := NewAdapter(NewMessageRouter(&mockDeviceFinder{machineID: "machine-1", found: true}), identity)
+	tenant := &mockPlugin{name: "qqbot"}
+	if err := adapter.RegisterTenantPlugin("tenant_a", tenant); err != nil {
+		t.Fatalf("RegisterTenantPlugin: %v", err)
+	}
+
+	tenant.mu.Lock()
+	handler := tenant.handler
+	tenant.mu.Unlock()
+	if handler == nil {
+		t.Fatal("tenant plugin handler was not registered")
+	}
+	handler(IncomingMessage{PlatformName: "qqbot", PlatformUID: "platform-1", MessageType: "text", Text: "hello"})
+	if identity.seen != "tenant_a" {
+		t.Fatalf("identity saw tenant %q, want tenant_a", identity.seen)
 	}
 }

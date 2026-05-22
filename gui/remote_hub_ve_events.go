@@ -189,9 +189,9 @@ func (c *RemoteHubClient) cachePushedVEDiscussionSnapshot(envelope a2a.GroupEnve
 	if strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	client, cfg, err := c.app.groupDiscussionClient()
+	client, cfg, err := c.app.veA2AHubClient()
 	if err != nil {
-		log.Printf("[hub-client] cachePushedVEDiscussionSnapshot: group discussion client unavailable: %v", err)
+		log.Printf("[hub-client] cachePushedVEDiscussionSnapshot: VE A2A client unavailable: %v", err)
 		return
 	}
 	ctx, cancel := groupDiscussionContext()

@@ -186,7 +186,7 @@ func (h *VEMessageHandler) sendApprovalResponse(originalEnvelope a2a.GroupEnvelo
 		Kind:    a2a.MessageStatement,
 		Content: string(payload),
 	}
-	if err := h.app.GroupDiscussionSendMessage(sessionID, msg); err != nil {
+	if err := h.app.sendVEA2AMessage(sessionID, msg); err != nil {
 		log.Printf("[ve-handler] failed to send approval response for request %s: %v", requestID, err)
 	}
 }
@@ -1041,8 +1041,8 @@ func (h *VEMessageHandler) sendMessage(sessionID string, msg a2a.GroupDiscussion
 		msg.CreatedAt = time.Now()
 	}
 
-	// Send via the existing GroupDiscussionSendMessage method
-	if err := h.app.GroupDiscussionSendMessage(sessionID, msg); err != nil {
+	// Send via the VE A2A path so direct employee chat works without enabling group discussion tools.
+	if err := h.app.sendVEA2AMessage(sessionID, msg); err != nil {
 		log.Printf("[ve-handler] failed to send message for session %s: %v", sessionID, err)
 	}
 }

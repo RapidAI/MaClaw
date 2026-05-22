@@ -19,7 +19,6 @@ const hubLLMConfigKey = "hub_llm_config"
 // indicates whether a key has been configured.
 func GetHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
 		raw, err := system.Get(r.Context(), hubLLMConfigKey)
 		if err != nil || raw == "" {
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -57,7 +56,6 @@ func GetHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerF
 // key is preserved so that saving other fields doesn't wipe the key.
 func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
 		var cfg im.HubLLMConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -94,7 +92,6 @@ func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.Handl
 // and the key is valid. Returns success/failure + latency.
 func TestHubLLMHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
 		cfg := loadHubLLMConfig(r, system)
 		if cfg == nil || cfg.APIURL == "" || cfg.APIKey == "" {
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -161,7 +158,6 @@ type hubLLMCacheStatus struct {
 
 func HubLLMStatusHandler(statusFn func(context.Context) string, system store.SystemSettingsRepository, promptCacheSources ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
 		status := "not_configured"
 		if statusFn != nil {
 			status = statusFn(r.Context())

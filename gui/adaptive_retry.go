@@ -265,14 +265,47 @@ func (r *AdaptiveRetry) persistFailureMemory(toolName string, category FailureCa
 	}
 	tags := adaptiveRetryMemoryTags(toolName, categoryText, count, decision, r.disabledTools[toolName], existingTags)
 	if _, err := r.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
-		ID:         entryID,
-		Title:      "Adaptive retry: " + toolName + " / " + categoryText,
-		Content:    content,
-		Tags:       tags,
-		SourceType: string(experienceTraceSourceToolUsage),
-		SourceURL:  "experience://adaptive_retry/" + adaptiveRetrySafeID(toolName) + "/" + adaptiveRetrySafeID(categoryText),
+		ID:                entryID,
+		Title:             "Adaptive retry: " + toolName + " / " + categoryText,
+		Content:           content,
+		Tags:              tags,
+		SourceType:        string(experienceTraceSourceToolUsage),
+		SourceURL:         "experience://adaptive_retry/" + adaptiveRetrySafeID(toolName) + "/" + adaptiveRetrySafeID(categoryText),
+		MergeExistingTags: adaptiveRetryMergeMemoryTags,
 	}); err != nil {
 		log.Printf("[adaptive-retry] failed to upsert retry memory %s: %v", entryID, err)
+	}
+}
+
+func adaptiveRetryMergeMemoryTags(existing, desired []string) []string {
+	merged := append([]string(nil), desired...)
+	for _, tag := range existing {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || adaptiveRetryVolatileMemoryTag(tag) {
+			continue
+		}
+		merged = append(merged, tag)
+	}
+	return normalizeUsageMemoryTags(merged)
+}
+
+func adaptiveRetryVolatileMemoryTag(tag string) bool {
+	switch {
+	case tag == experienceReviewRequiredTag,
+		tag == experienceReviewResolvedTag,
+		strings.HasPrefix(tag, experienceReviewStatusTagPrefix),
+		strings.HasPrefix(tag, experienceReviewedAtTagPrefix),
+		strings.HasPrefix(tag, adaptiveRetryReviewedFailureCountPrefix),
+		normalizeExperienceReviewLifecycleTagKind(tag).IsStateTag():
+		return true
+	case strings.HasPrefix(tag, "failure_count:"),
+		strings.HasPrefix(tag, "action:"),
+		strings.HasPrefix(tag, "provider:"),
+		strings.HasPrefix(tag, "model:"),
+		strings.HasPrefix(tag, "wire_api:"):
+		return true
+	default:
+		return false
 	}
 }
 

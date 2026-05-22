@@ -58,15 +58,14 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
     };
 
     return (
-        <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
-            <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+        <section className="system-settings-card data-directory-section">
+            <h4>
                 {textForLang(lang, 'Data Directory', '数据目录', '資料目錄')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div className="data-directory-section__row">
                 <input
                     className="form-input"
                     type="text"
-                    style={{ flex: 1, minWidth: 0 }}
                     placeholder={textForLang(lang, 'Default: ~/.maclaw', '默认: ~/.maclaw', '預設: ~/.maclaw')}
                     value={dataDirInput}
                     onChange={(e) => setDataDirInput(e.target.value)}
@@ -75,7 +74,6 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
                     type="button"
                     onClick={handleBrowseDataDir}
                     disabled={dataDirSaving}
-                    style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted, #f0f0f5)', color: 'var(--theme-text-secondary, #333)', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', flexShrink: 0, opacity: dataDirSaving ? 0.6 : 1 }}
                 >
                     {textForLang(lang, 'Browse', '浏览', '瀏覽')}
                 </button>
@@ -83,18 +81,18 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
                     type="button"
                     onClick={handleSaveDataDir}
                     disabled={dataDirSaving}
-                    style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-primary)', color: '#fff', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', flexShrink: 0, opacity: dataDirSaving ? 0.6 : 1 }}
+                    className="data-directory-section__save"
                 >
                     {dataDirSaving ? '...' : textForLang(lang, 'Save', '保存', '儲存')}
                 </button>
             </div>
-            <div style={{ marginTop: '6px', fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.5, textAlign: 'left' }}>
+            <p>
                 {textForLang(lang,
                     'Set a custom directory for all maclaw data (memories, logs, skills, etc.). config.json always stays at ~/.maclaw. Changes take effect after restart.',
                     '设置自定义数据目录（记忆、日志、技能等）。config.json 始终保留在 ~/.maclaw 下。修改后重启生效，数据将自动迁移。',
                     '設定自訂資料目錄（記憶、日誌、技能等）。config.json 始終保留在 ~/.maclaw 下。修改後重啟生效，資料將自動遷移。'
                 )}
-            </div>
-        </div>
+            </p>
+        </section>
     );
 };

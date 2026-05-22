@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import { CheckUpdateBeta } from '../../../wailsjs/go/main/App';
 
+// Info panels use var(--theme-info-bg). Latest marker replaces legacy \u2714\uFE0F with CSS.
+
 type UpdateModalProps = {
     updateResult: any;
     appVersion: string;
@@ -56,73 +58,71 @@ export const UpdateModal = ({
 
     return (
         <div className="modal-overlay">
-            <div className="modal-content" style={{ width: '400px', textAlign: 'left' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                    <h3 style={{ margin: 0 }}>{t("foundNewVersion")}</h3>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: 'var(--theme-text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+            <div className="modal-content update-modal">
+                <div className="update-modal__header">
+                    <h3>{t("foundNewVersion")}</h3>
+                    <label className="update-modal__beta-toggle">
                         <input
                             type="checkbox"
                             checked={betaChecked}
                             onChange={(e) => handleBetaToggle(e.target.checked)}
                             disabled={isDownloading || betaLoading}
-                            style={{ cursor: 'pointer' }}
                         />
                         {t("betaChannel")}
                     </label>
                 </div>
 
                 {betaLoading ? (
-                    <div style={{ backgroundColor: 'var(--theme-info-bg)', padding: '12px', borderRadius: '6px', border: '1px solid var(--theme-border)', textAlign: 'center' }}>
-                        <p style={{ margin: '10px 0', fontSize: '0.9rem', color: 'var(--theme-text-secondary)' }}>{t("checkingUpdate")}</p>
+                    <div className="update-modal__info update-modal__info--center">
+                        <p className="update-modal__checking">{t("checkingUpdate")}</p>
                     </div>
                 ) : updateResult.has_update ? (
                     <>
-                        <div style={{ backgroundColor: 'var(--theme-info-bg)', padding: '12px', borderRadius: '6px', marginBottom: '15px', border: '1px solid var(--theme-border)' }}>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-secondary)', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                            <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-primary)', marginBottom: '12px' }}>v{appVersion}</div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-secondary)', marginBottom: '8px' }}>{t("latestVersion")}</div>
-                            <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-success)' }}>{updateResult.latest_version}</div>
+                        <div className="update-modal__info update-modal__info--version">
+                            <div className="update-modal__label">{t("currentVersion")}</div>
+                            <div className="update-modal__version update-modal__version--current">v{appVersion}</div>
+                            <div className="update-modal__label">{t("latestVersion")}</div>
+                            <div className="update-modal__version update-modal__version--latest">{updateResult.latest_version}</div>
                         </div>
 
-                        <div style={{ marginTop: '15px' }}>
+                        <div className="update-modal__workflow">
                             {isDownloading ? (
-                                <div style={{ width: '100%' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
+                                <div className="update-modal__download">
+                                    <div className="update-modal__download-head">
                                         <span>{t("downloading")}</span>
                                         <span>{downloadProgress}%</span>
                                     </div>
-                                    <div style={{ width: '100%', height: '10px', backgroundColor: 'var(--theme-surface-muted)', borderRadius: '5px', overflow: 'hidden' }}>
-                                        <div style={{ width: String(downloadProgress) + '%', height: '100%', backgroundColor: 'var(--theme-primary)', transition: 'width 0.2s ease' }}></div>
+                                    <div className="update-modal__progress-track">
+                                        <div className="update-modal__progress-bar" style={{ width: String(downloadProgress) + '%' }} />
                                     </div>
                                     <button
-                                        className="btn-link"
-                                        style={{ marginTop: '10px', color: 'var(--theme-danger)' }}
+                                        className="btn-link update-modal__cancel-download"
                                         onClick={onCancelDownload}
                                     >
                                         {t("cancelDownload")}
                                     </button>
                                 </div>
                             ) : installerPath ? (
-                                <div style={{ textAlign: 'center', padding: '10px' }}>
-                                    <p style={{ color: 'var(--theme-success)', fontWeight: 'bold', marginBottom: '15px' }}>{t("downloadComplete")}</p>
-                                    <button className="btn-primary" style={{ width: '100%' }} onClick={onInstall}>
+                                <div className="update-modal__complete">
+                                    <p>{t("downloadComplete")}</p>
+                                    <button className="btn-primary update-modal__full-button" onClick={onInstall}>
                                         {t("installNow")}
                                     </button>
                                 </div>
                             ) : (
                                 <div>
                                     {downloadError && (
-                                        <div style={{ marginBottom: '10px' }}>
-                                            <p style={{ color: 'var(--theme-danger)', fontSize: '0.85rem', marginBottom: '5px' }}>{t("downloadError").replace("{error}", downloadError)}</p>
-                                            <button className="btn-primary" style={{ width: '100%', backgroundColor: 'var(--theme-danger)' }} onClick={onDownload}>
+                                        <div className="update-modal__error-block">
+                                            <p>{t("downloadError").replace("{error}", downloadError)}</p>
+                                            <button className="btn-primary update-modal__full-button update-modal__danger-button" onClick={onDownload}>
                                                 {t("retry")}
                                             </button>
                                         </div>
                                     )}
                                     {!downloadError && (
                                         <>
-                                            <p style={{ margin: '10px 0', fontSize: '0.9rem', color: 'var(--theme-text-primary)' }}>{t("foundNewVersionMsg")}</p>
-                                            <button className="btn-primary" style={{ width: '100%' }} onClick={onDownload}>
+                                            <p className="update-modal__message">{t("foundNewVersionMsg")}</p>
+                                            <button className="btn-primary update-modal__full-button" onClick={onDownload}>
                                                 {t("downloadAndUpdate")}
                                             </button>
                                         </>
@@ -132,15 +132,15 @@ export const UpdateModal = ({
                         </div>
                     </>
                 ) : (
-                    <div style={{ backgroundColor: 'var(--theme-info-bg)', padding: '12px', borderRadius: '6px', border: '1px solid var(--theme-border)' }}>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-secondary)', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                        <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-primary)', marginBottom: '12px' }}>v{appVersion}</div>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-secondary)', marginBottom: '8px' }}>{t("latestVersion")}</div>
-                        <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-success)', marginBottom: '12px' }}>{updateResult.latest_version}</div>
-                        <p style={{ margin: '0', fontSize: '0.9rem', color: 'var(--theme-success)', fontWeight: '500' }}>{'\u2714\uFE0F ' + t("isLatestVersion")}</p>
+                    <div className="update-modal__info">
+                        <div className="update-modal__label">{t("currentVersion")}</div>
+                        <div className="update-modal__version update-modal__version--current">v{appVersion}</div>
+                        <div className="update-modal__label">{t("latestVersion")}</div>
+                        <div className="update-modal__version update-modal__version--latest update-modal__version--spaced">{updateResult.latest_version}</div>
+                        <p className="update-modal__latest-ok">{t("isLatestVersion")}</p>
                     </div>
                 )}
-                <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
+                <div className="update-modal__actions">
                     <button className="btn-primary" disabled={isDownloading} onClick={onClose}>{t("close")}</button>
                 </div>
             </div>

@@ -1,5 +1,5 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { pillButtonStyle, textForLang } from './imSettingsShared';
+﻿import type { Dispatch, SetStateAction } from 'react';
+import { textForLang } from './imSettingsShared';
 
 export type IMSubTab = 'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty';
 
@@ -19,13 +19,15 @@ export const imSubTabOptions = (lang: string, options: { showLansenger?: boolean
 ]);
 
 export const IMSubTabs = ({ lang, imSubTab, setImSubTab, showLansenger = false }: IMSubTabsProps) => (
-    <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap' }}>
+    <div className="im-settings-subtabs" role="tablist" aria-label={textForLang(lang, 'Messaging channel', '\u6d88\u606f\u901a\u9053', '\u6d88\u606f\u901a\u9053')}>
         {imSubTabOptions(lang, { showLansenger }).map((tab) => (
             <button
                 key={tab.key}
                 type="button"
+                role="tab"
+                aria-selected={imSubTab === tab.key}
+                data-active={imSubTab === tab.key}
                 onClick={() => setImSubTab(tab.key)}
-                style={pillButtonStyle(imSubTab === tab.key)}
             >
                 {tab.label}
             </button>

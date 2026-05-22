@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { main } from '../../../wailsjs/go/models';
 
+// Styling for selector surface uses var(--theme-surface) in App.css.
+
 type InstallLocation = 'user' | 'project';
 
 type InstallLocationSelectorProps = {
@@ -20,28 +22,17 @@ export const InstallLocationSelector = ({
     setInstallProject,
     t,
 }: InstallLocationSelectorProps) => (
-    <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        padding: '4px 12px',
-        backgroundColor: 'var(--theme-surface)',
-        border: '1px solid var(--theme-border)',
-        borderRadius: '20px',
-        fontSize: '0.8rem',
-        marginLeft: '5px'
-    }}>
-        <span style={{ color: 'var(--theme-text-muted)', fontWeight: '500' }}>{t("installLocation")}</span>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'user' ? 'var(--theme-success)' : 'var(--theme-text-secondary)', fontWeight: installLocation === 'user' ? 'bold' : 'normal' }}>
+    <div className="install-location-selector">
+        <span className="install-location-selector__title">{t("installLocation")}</span>
+        <label className="install-location-selector__option" data-active={installLocation === 'user' ? 'true' : 'false'}>
             <input
                 type="radio"
                 name="installLocation"
                 checked={installLocation === 'user'}
                 onChange={() => setInstallLocation('user')}
-                style={{ margin: 0 }}
             /> {t("userLocation")}
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'project' ? 'var(--theme-success)' : 'var(--theme-text-secondary)', fontWeight: installLocation === 'project' ? 'bold' : 'normal' }}>
+        <label className="install-location-selector__option" data-active={installLocation === 'project' ? 'true' : 'false'}>
             <input
                 type="radio"
                 name="installLocation"
@@ -52,22 +43,13 @@ export const InstallLocationSelector = ({
                         setInstallProject(config.current_project);
                     }
                 }}
-                style={{ margin: 0 }}
             /> {t("projectLocation")}
         </label>
         {installLocation === 'project' && config?.projects && (
             <select
+                className="install-location-selector__select"
                 value={installProject}
                 onChange={(e) => setInstallProject(e.target.value)}
-                style={{
-                    padding: '2px 4px',
-                    borderRadius: '4px',
-                    border: '1px solid var(--theme-border)',
-                    background: 'var(--theme-surface)',
-                    color: 'var(--theme-text-primary)',
-                    fontSize: '0.8rem',
-                    maxWidth: '120px'
-                }}
             >
                 {config.projects.map((proj: any) => (
                     <option key={proj.id} value={proj.id}>

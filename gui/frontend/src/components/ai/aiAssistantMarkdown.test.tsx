@@ -136,4 +136,24 @@ describe("renderContentWithCodeBlocks", () => {
         expect(container.querySelector("table")).toBeNull();
         expect(screen.getByText("Use A | B as a label")).toBeTruthy();
     });
+
+    it("renders compact digital-employee pipe tables that lost line breaks", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("北京天气|项目|详情|---|---|天气|小阵雨|温度|17C", lightTheme)}</div>
+        );
+
+        expect(container.querySelector("table")).toBeTruthy();
+        expect(screen.getByText("项目")).toBeTruthy();
+        expect(screen.getByText("小阵雨")).toBeTruthy();
+    });
+
+    it("renders compact tables with doubled pipe row boundaries", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("||项目详情|---|---||天气|小阵雨||湿度|100%", lightTheme)}</div>
+        );
+
+        expect(container.querySelector("table")).toBeTruthy();
+        expect(screen.getByText("天气")).toBeTruthy();
+        expect(screen.getByText("100%")).toBeTruthy();
+    });
 });

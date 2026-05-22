@@ -13,6 +13,8 @@ const { openFileOrShowInFolderMock, showItemInFolderMock } = vi.hoisted(() => ({
 
 const scrollIntoViewMock = vi.fn();
 const scrollToMock = vi.fn();
+const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
 
 Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
     configurable: true,
@@ -124,6 +126,17 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantP
     return render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
 }
 
+function mockURLObjectURLs(value: string) {
+    Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        value: vi.fn(() => value),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        value: vi.fn(),
+    });
+}
+
 describe('AIAssistantPanel property tests', () => {
     afterEach(() => {
         cleanup();
@@ -134,6 +147,10 @@ describe('AIAssistantPanel property tests', () => {
         openFileOrShowInFolderMock.mockResolvedValue(undefined);
         showItemInFolderMock.mockReset();
         showItemInFolderMock.mockResolvedValue(undefined);
+        if (originalCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', originalCreateObjectURL);
+        else delete (URL as any).createObjectURL;
+        if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
+        else delete (URL as any).revokeObjectURL;
     });
 
     it('keeps inline root as a flex item with clipped overflow', () => {
@@ -541,6 +558,8 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
         const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
         expect(fireButton).toBeTruthy();
+        expect(fireButton?.getAttribute('title')).toBe('引导发射');
+        expect(fireButton?.getAttribute('aria-label')).toBe('引导进入下一次 agent loop');
         fireEvent.click(fireButton!);
 
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('guide this next', 'desktop-user'));
@@ -720,11 +739,11 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(fireButton!);
 
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project guide context', 'desktop-user:D:/tasks/weather'));
-        await waitFor(() => expect(document.body.textContent || '').toContain('Guide reference injected'));
+        await waitFor(() => expect(document.body.textContent || '').toContain('引导已注入下一轮'));
         expect(document.body.textContent || '').toContain('project guide context');
 
         fireEvent.click(getByTestId('ai-tab-local'));
-        expect(document.body.textContent || '').not.toContain('Guide reference injected');
+        expect(document.body.textContent || '').not.toContain('引导已注入下一轮');
     });
 
     it('keeps delayed project guide reference echo bound to the fired tab', async () => {
@@ -773,7 +792,7 @@ describe('AIAssistantPanel property tests', () => {
             fireEvent.click(getByTestId('ai-tab-overflow-btn'));
             fireEvent.click(getByText('Delayed guide task'));
         }
-        await waitFor(() => expect(document.body.textContent || '').toContain('Guide reference injected'));
+        await waitFor(() => expect(document.body.textContent || '').toContain('引导已注入下一轮'));
         expect(document.body.textContent || '').toContain('delayed project guide');
     });
     it('preserves multiple rapid project guide reference echoes', async () => {
@@ -811,6 +830,68 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').not.toContain('first project guide');
         expect(document.body.textContent || '').not.toContain('second project guide');
     });
+
+    it('accepts a pasted clipboard file as an attachment and sends its path', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            actions: { sendMessage },
+        });
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        const pastedFile = new File(['contract'], 'contract.pdf', { type: 'application/pdf' });
+        Object.defineProperty(pastedFile, 'path', {
+            configurable: true,
+            value: 'D:\\cases\\contract.pdf',
+        });
+
+        fireEvent.paste(input, {
+            clipboardData: {
+                items: [{ kind: 'file', type: 'application/pdf', getAsFile: () => pastedFile }],
+                files: [pastedFile],
+            },
+        });
+
+        await waitFor(() => expect(getByTestId('ai-pending-attachments').textContent || '').toContain('contract.pdf'));
+        expect(getByTestId('ai-pending-attachments').textContent || '').toContain('PDF');
+
+        fireEvent.change(input, { target: { value: 'please review' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        const outgoing = String(sendMessage.mock.calls[0]?.[0] || '');
+        expect(outgoing).toContain('please review');
+        expect(outgoing).toContain('D:\\cases\\contract.pdf');
+    });
+
+    it('keeps queued pasted image thumbnails visible until the entry is fired', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        mockURLObjectURLs('blob:test-image');
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: true, ready: true },
+            actions: { sendMessage },
+        });
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        const pastedFile = new File(['image'], 'shot.png', { type: 'image/png' });
+        Object.defineProperty(pastedFile, 'path', {
+            configurable: true,
+            value: 'D:\\shots\\shot.png',
+        });
+
+        fireEvent.paste(input, {
+            clipboardData: {
+                items: [{ kind: 'file', type: 'image/png', getAsFile: () => pastedFile }],
+                files: [pastedFile],
+            },
+        });
+        fireEvent.change(input, { target: { value: 'use this image' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const queuedThumbnail = document.querySelector('[data-testid^="buffer-entry-"] img') as HTMLImageElement | null;
+        expect(queuedThumbnail?.getAttribute('src')).toBe('blob:test-image');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
     it('moves a queued edit into the main composer and appends the edited text at the queue tail', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const { getAllByText, getByTestId, getByText } = renderPanel({

@@ -472,6 +472,53 @@ func TestAdminChangePasswordHandler(t *testing.T) {
 	}
 }
 
+func TestAdminChangePasswordRejectsBlankWhitespacePassword(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+
+	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/password", map[string]any{
+		"current_password": "StrongPassword123!",
+		"new_password":     "   ",
+	}, token)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if body := resp.Body.String(); !containsAll(body, `"code":"INVALID_INPUT"`) {
+		t.Fatalf("expected invalid input error, got %s", body)
+	}
+}
+
+func TestAdminSetupRejectsInvalidEmailAsBadRequest(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+
+	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/setup", map[string]any{
+		"username": "admin",
+		"password": "StrongPassword123!",
+		"email":    "not-an-email",
+	}, "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if body := resp.Body.String(); !containsAll(body, `"code":"INVALID_INPUT"`, "valid admin email") {
+		t.Fatalf("expected invalid input email error, got %s", body)
+	}
+}
+
+func TestAdminUpdateProfileRejectsInvalidEmailAsBadRequest(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+
+	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/profile", map[string]any{
+		"email": "not-an-email",
+	}, token)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if body := resp.Body.String(); !containsAll(body, `"code":"INVALID_INPUT"`, "valid admin email") {
+		t.Fatalf("expected invalid input email error, got %s", body)
+	}
+}
+
 func containsAll(body string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(body, part) {

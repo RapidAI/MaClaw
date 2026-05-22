@@ -39,6 +39,13 @@ func ScopedSystemSettingsForTenant(tenantID string, base store.SystemSettingsRep
 	return tenantScopedSystemSettings{tenantID: tenantID, base: base}
 }
 
+func globalSystemSettings(base store.SystemSettingsRepository) store.SystemSettingsRepository {
+	if scoped, ok := base.(tenantScopedSystemSettings); ok {
+		return scoped.base
+	}
+	return base
+}
+
 func (s tenantScopedSystemSettings) Set(ctx context.Context, key, valueJSON string) error {
 	return s.base.Set(ctx, s.key(key), valueJSON)
 }

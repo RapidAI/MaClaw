@@ -29,17 +29,17 @@ export const ProjectProxySettingsDialog = ({
 
     return (
         <div className="modal-overlay">
-            <div className="modal-content" style={{ width: '540px', textAlign: 'left' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                    <h3 style={{ margin: 0, color: '#6366f1' }}>
+            <div className="modal-content project-proxy-modal">
+                <div className="project-proxy-modal__header">
+                    <h3>
                         {t("proxySettings")}
                     </h3>
                     <button className="modal-close" onClick={onClose}>&times;</button>
                 </div>
 
                 {config?.default_proxy_host && (
-                    <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#eef2ff', borderRadius: '6px', fontSize: '0.85rem' }}>
-                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+                    <div className="project-proxy-modal__default">
+                        <label className="project-proxy-modal__check">
                             <input
                                 type="checkbox"
                                 checked={!!selectedProject && !selectedProject.proxy_host}
@@ -53,24 +53,23 @@ export const ProjectProxySettingsDialog = ({
                                         SaveConfig(newConfig);
                                     }
                                 }}
-                                style={{ marginRight: '8px' }}
                             />
                             <span>{t("useDefaultProxy")} ({config.default_proxy_host}:{config.default_proxy_port})</span>
                         </label>
                     </div>
                 )}
 
-                <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyHost")}</label>
+                <div className="project-proxy-modal__row project-proxy-modal__row--host">
+                    <div className="project-proxy-modal__field">
+                        <label className="form-label project-proxy-modal__label">{t("proxyHost")}</label>
                         <input type="text" className="form-input" spellCheck={false}
                             placeholder={t("proxyHostPlaceholder")}
                             value={selectedProject?.proxy_host || ''}
                             onChange={(e) => updateSelectedProject({ proxy_host: e.target.value })}
                         />
                     </div>
-                    <div style={{ width: '90px', flexShrink: 0 }}>
-                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPort")}</label>
+                    <div className="project-proxy-modal__field project-proxy-modal__field--port">
+                        <label className="form-label project-proxy-modal__label">{t("proxyPort")}</label>
                         <input type="text" className="form-input" spellCheck={false}
                             placeholder={t("proxyPortPlaceholder")}
                             value={selectedProject?.proxy_port || ''}
@@ -79,16 +78,16 @@ export const ProjectProxySettingsDialog = ({
                     </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyUsername")}</label>
+                <div className="project-proxy-modal__row">
+                    <div className="project-proxy-modal__field">
+                        <label className="form-label project-proxy-modal__label">{t("proxyUsername")}</label>
                         <input type="text" className="form-input" spellCheck={false} autoComplete="off"
                             value={selectedProject?.proxy_username || ''}
                             onChange={(e) => updateSelectedProject({ proxy_username: e.target.value })}
                         />
                     </div>
-                    <div style={{ flex: 1 }}>
-                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPassword")}</label>
+                    <div className="project-proxy-modal__field">
+                        <label className="form-label project-proxy-modal__label">{t("proxyPassword")}</label>
                         <input type="password" className="form-input" autoComplete="new-password"
                             value={selectedProject?.proxy_password || ''}
                             onChange={(e) => updateSelectedProject({ proxy_password: e.target.value })}
@@ -96,8 +95,8 @@ export const ProjectProxySettingsDialog = ({
                     </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
-                    <button className="btn-secondary" onClick={onClose} style={{ padding: '8px 16px' }}>
+                <div className="project-proxy-modal__actions">
+                    <button className="btn-secondary project-proxy-modal__button" onClick={onClose}>
                         {t("cancel")}
                     </button>
                     <button className="btn-primary" onClick={() => {
@@ -109,7 +108,7 @@ export const ProjectProxySettingsDialog = ({
                         } else {
                             SaveConfig(config);
                         }
-                    }} style={{ padding: '8px 16px' }}>
+                    }}>
                         {saveLabel}
                     </button>
                 </div>

@@ -3087,7 +3087,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 ? await InjectAIAssistantGuideReferenceForSession(text, normalizedSessionKey)
                 : await InjectAIAssistantGuideReference(text);
             if (accepted && (!normalizedSessionKey || normalizedSessionKey === 'desktop-user')) {
-                setMessages(prev => [...prev, createSystemMessage("Guide reference injected:\n" + text)]);
+                setMessages(prev => [...prev, createSystemMessage("引导已注入下一轮：\n" + text)]);
             }
             return accepted;
         } catch {
@@ -3111,15 +3111,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [injectSupplementary, sendMessage]);
 
-    const dismissAgentView = useCallback(async (viewId: string | undefined) => {
+    const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>) => {
         setAgentView(null);
+        const payload = JSON.stringify({ view_id: viewId || "", data: data || {} });
         try {
-            await DismissAgentView({ view_id: viewId || "" });
+            await DismissAgentView({ view_id: viewId || "", data: data || {} });
             return;
         } catch {
             // Older desktop bindings may not expose the structured task-panel API yet.
         }
-        const message = `__agent_view_dismiss__ ${JSON.stringify({ view_id: viewId || "" })}`;
+        const message = `__agent_view_dismiss__ ${payload}`;
         const injected = await injectSupplementary(message);
         if (!injected) {
             await sendMessage(message, { uiAction: true, displayText: "Close task panel" });

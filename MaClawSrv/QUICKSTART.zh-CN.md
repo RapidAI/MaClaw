@@ -6,6 +6,7 @@
 
 - `MaClawSrv` 是 Maclaw 的 REST 服务入口。
 - 鉴权分两层：管理接口用 `X-MaClaw-Admin-Secret`，用户接口用 Bearer token。
+- Admin Web 有两种管理登录方式：用初始化后创建的 owner/operator 管理员账号密码登录，或用服务启动环境变量 `MACLAW_ADMIN_SECRET` 直接登录。`MACLAW_ADMIN_SETUP_TOKEN` 只用于首次创建 owner。
 - config、skill、MCP 都是 user 级共享资源，不是 instance 私有资源。
 - 真正聊天时，优先使用 `POST /api/v1/instances/{instanceId}/messages`。
 

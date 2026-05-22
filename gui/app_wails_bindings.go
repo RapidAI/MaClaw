@@ -2192,6 +2192,116 @@ func (a *App) SavePastedImage(base64Data string, extension string) (string, erro
 	return absPath, nil
 }
 
+// SavePastedFile saves a base64-encoded clipboard file to a temporary file and
+// returns the absolute path. It is used when the WebView clipboard does not
+// expose a direct local filesystem path for a pasted file.
+func (a *App) SavePastedFile(base64Data string, fileName string, mimeType string) (string, error) {
+	safeName := sanitizePastedFileName(fileName)
+	if safeName == "" {
+		safeName = "pasted-file"
+	}
+
+	const maxBase64Size = 100 * 1024 * 1024
+	if len(base64Data) > maxBase64Size {
+		return "", fmt.Errorf("file data too large (max 100MB)")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("invalid base64 data: %w", err)
+	}
+
+	tempDir := filepath.Join(os.TempDir(), "maclaw-paste")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	now := time.Now()
+	randBytes := make([]byte, 2)
+	if _, err := rand.Read(randBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random suffix: %w", err)
+	}
+	randHex := fmt.Sprintf("%x", randBytes)
+	ext := filepath.Ext(safeName)
+	base := strings.TrimSuffix(safeName, ext)
+	if base == "" {
+		base = "pasted-file"
+	}
+	if ext == "" {
+		ext = pastedFileExtensionFromMIME(mimeType)
+	}
+	filePath := filepath.Join(tempDir, fmt.Sprintf("paste_%s_%s_%s%s", now.Format("20060102_150405"), randHex, base, ext))
+
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write pasted file: %w", err)
+	}
+
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return filePath, nil
+	}
+	return absPath, nil
+}
+
+func sanitizePastedFileName(fileName string) string {
+	normalizedPath := strings.ReplaceAll(strings.TrimSpace(fileName), "\\", "/")
+	name := strings.TrimSpace(filepath.Base(normalizedPath))
+	if name == "." || name == string(filepath.Separator) {
+		return ""
+	}
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
+			return '_'
+		}
+		if r < 32 {
+			return '_'
+		}
+		return r
+	}, name)
+	name = strings.Trim(name, " .")
+	if len([]rune(name)) > 180 {
+		ext := filepath.Ext(name)
+		base := strings.TrimSuffix(name, ext)
+		if len(ext) > 20 {
+			ext = ""
+		}
+		limit := 180 - len(ext)
+		if limit < 1 {
+			limit = 1
+		}
+		baseRunes := []rune(base)
+		if len(baseRunes) > limit {
+			base = string(baseRunes[:limit])
+		}
+		name = base + ext
+	}
+	return name
+}
+
+func pastedFileExtensionFromMIME(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	case "text/csv":
+		return ".csv"
+	case "application/json":
+		return ".json"
+	case "application/zip", "application/x-zip-compressed":
+		return ".zip"
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		return ".docx"
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return ".xlsx"
+	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return ".pptx"
+	default:
+		return ""
+	}
+}
+
 // ReadErrorLog reads maclaw.log and returns only lines
 // containing error-level keywords. Returns the most recent 500 error lines
 // in reverse chronological order (newest first).

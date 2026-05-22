@@ -7,6 +7,8 @@ import { InstallLocationSelector } from './InstallLocationSelector';
 import { InstallSkillFooter } from './InstallSkillFooter';
 import { InstallSkillProgress, type SkillInstallProgress } from './InstallSkillProgress';
 
+// Title and skills link styling use var(--theme-success) and var(--theme-primary) in App.css.
+
 type InstallSkillModalProps = {
     config: main.AppConfig;
     skills: main.Skill[];
@@ -121,9 +123,9 @@ export const InstallSkillModal = ({
 
     return (
         <div className="modal-overlay">
-            <div className="modal-content" style={{ width: '500px', maxWidth: '95vw' }}>
-                <div className="modal-header" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-                    <h3 style={{ margin: 0, color: 'var(--theme-success)', whiteSpace: 'nowrap' }}>{t("selectSkillsToInstall")}</h3>
+            <div className="modal-content install-skill-modal">
+                <div className="modal-header install-skill-modal__header">
+                    <h3>{t("selectSkillsToInstall")}</h3>
 
                     <InstallLocationSelector
                         config={config}
@@ -137,26 +139,13 @@ export const InstallSkillModal = ({
                     <button
                         onClick={() => { if (!isBatchInstalling) { onClose(); switchTool('skills'); } }}
                         disabled={isBatchInstalling}
-                        style={{
-                            background: 'none',
-                            border: '1px solid var(--theme-border)',
-                            borderRadius: '16px',
-                            padding: '4px 10px',
-                            fontSize: '0.8rem',
-                            cursor: 'pointer',
-                            color: 'var(--theme-primary)',
-                            opacity: isBatchInstalling ? 0.6 : 1,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                            whiteSpace: 'nowrap',
-                        }}
+                        className="install-skill-modal__skills-link"
                         title={t("skills")}
                     >
-                        {'\u{1F6E0}\uFE0F'} {t("skills")}
+                        {t("skills")}
                     </button>
 
-                    <button onClick={onClose} disabled={isBatchInstalling} className="btn-close" style={{ marginLeft: 'auto', opacity: isBatchInstalling ? 0.6 : 1 }}>&times;</button>
+                    <button onClick={onClose} disabled={isBatchInstalling} className="btn-close install-skill-modal__close">&times;</button>
                 </div>
                 <InstallSkillList
                     filteredSkills={filteredSkills}

@@ -68,7 +68,7 @@ export interface AIAssistantPanelHookActions {
     refreshNews: () => void;
     cancelSession: () => Promise<CancelAIAssistantResult>;
     submitAgentView: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
-    dismissAgentView: (viewId: string | undefined) => void | Promise<void>;
+    dismissAgentView: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
 }
 
 /**

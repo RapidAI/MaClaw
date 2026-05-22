@@ -37,9 +37,11 @@ func GetQQBotConfigHandler(system store.SystemSettingsRepository) http.HandlerFu
 	}
 }
 
-func UpdateQQBotConfigHandler(system store.SystemSettingsRepository, plugin *qqbot.Plugin) http.HandlerFunc {
+func UpdateQQBotConfigHandler(system store.SystemSettingsRepository, plugin *qqbot.Plugin, runtimeReloaders ...TenantIMRuntimeReloader) http.HandlerFunc {
+	runtimeReloader := firstTenantIMRuntimeReloader(runtimeReloaders)
 	return func(w http.ResponseWriter, r *http.Request) {
 		system := scopedSystemSettingsForRequest(r, system)
+		tenantID := RequestTenantID(r)
 		var cfg QQBotConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -60,16 +62,23 @@ func UpdateQQBotConfigHandler(system store.SystemSettingsRepository, plugin *qqb
 
 		// Hot-reload only for the Hub-level singleton gateway. Tenant-scoped
 		// settings are consumed per tenant and must not rewire the shared process.
+		var reloadErr error
 		if plugin != nil && shouldReloadSharedRuntimeForRequest(r) {
 			_ = plugin.Stop(r.Context())
 			if cfg.Enabled {
 				_ = plugin.Start(r.Context())
 			}
+		} else if isTenantScopedAdminRequest(r) {
+			reloadErr = reloadTenantIMRuntime(r.Context(), runtimeReloader, tenantID, "qqbot")
 		}
 
 		resp := cfg
 		if resp.AppSecret != "" {
 			resp.AppSecret = maskSecret(resp.AppSecret)
+		}
+		if isTenantScopedAdminRequest(r) {
+			writeJSON(w, http.StatusOK, tenantIMConfigResponse(resp, reloadErr))
+			return
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}

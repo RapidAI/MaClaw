@@ -53,6 +53,7 @@ export namespace main {
 	    entry_count: number;
 	    pinned: boolean;
 	    archived: boolean;
+	    has_output: boolean;
 	    source_urls?: string[];
 	    recent_artifacts?: ProjectSearchArtifact[];
 
@@ -72,6 +73,7 @@ export namespace main {
 	        this.entry_count = source["entry_count"];
 	        this.pinned = source["pinned"];
 	        this.archived = source["archived"];
+	        this.has_output = source["has_output"];
 	        this.source_urls = source["source_urls"];
 	        this.recent_artifacts = this.convertValues(source["recent_artifacts"], ProjectSearchArtifact);
 	    }

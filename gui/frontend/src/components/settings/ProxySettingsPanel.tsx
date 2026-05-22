@@ -21,24 +21,25 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
     const updateConfig = (patch: Record<string, any>) => setConfig(buildConfig(config, patch));
 
     return (
-    <div className="settings-panel">
-        <div style={{ marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}>
+    <div className="settings-panel proxy-settings-panel">
+        <label className="proxy-settings-enable">
+            <span className="proxy-settings-enable__text">{t("proxyEnabled")}</span>
+            <span className="proxy-settings-switch">
                 <input
                     type="checkbox"
+                    aria-label={t("proxyEnabled")}
                     checked={config?.default_proxy_enabled || false}
                     onChange={(e) => updateConfig({ default_proxy_enabled: e.target.checked })}
                 />
-                <span style={{ fontWeight: 500, color: 'var(--theme-text-primary)' }}>{t("proxyEnabled")}</span>
-            </label>
-        </div>
+                <span aria-hidden="true" />
+            </span>
+        </label>
 
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-            <div style={{ width: '110px', flexShrink: 0 }}>
-                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyProtocol")}</label>
+        <div className="proxy-settings-grid proxy-settings-grid--server">
+            <div className="proxy-settings-field proxy-settings-field--protocol">
+                <label className="form-label">{t("proxyProtocol")}</label>
                 <select
                     className="form-input"
-                    style={{ height: '34px' }}
                     value={config?.default_proxy_protocol || 'http'}
                     onChange={(e) => updateConfig({ default_proxy_protocol: e.target.value })}
                 >
@@ -47,8 +48,8 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
                     <option value="socks5">SOCKS5</option>
                 </select>
             </div>
-            <div style={{ flex: 1 }}>
-                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyHost")}</label>
+            <div className="proxy-settings-field">
+                <label className="form-label">{t("proxyHost")}</label>
                 <input
                     type="text"
                     className="form-input"
@@ -58,8 +59,8 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
                     onChange={(e) => updateConfig({ default_proxy_host: e.target.value })}
                 />
             </div>
-            <div style={{ width: '90px', flexShrink: 0 }}>
-                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPort")}</label>
+            <div className="proxy-settings-field proxy-settings-field--port">
+                <label className="form-label">{t("proxyPort")}</label>
                 <input
                     type="text"
                     className="form-input"
@@ -71,9 +72,9 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
             </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-            <div style={{ flex: 1 }}>
-                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyUsername")}</label>
+        <div className="proxy-settings-grid proxy-settings-grid--auth">
+            <div className="proxy-settings-field">
+                <label className="form-label">{t("proxyUsername")}</label>
                 <input
                     type="text"
                     className="form-input"
@@ -83,8 +84,8 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
                     onChange={(e) => updateConfig({ default_proxy_username: e.target.value })}
                 />
             </div>
-            <div style={{ flex: 1 }}>
-                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPassword")}</label>
+            <div className="proxy-settings-field">
+                <label className="form-label">{t("proxyPassword")}</label>
                 <input
                     type="password"
                     className="form-input"
@@ -95,8 +96,8 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
             </div>
         </div>
 
-        <div style={{ marginBottom: '12px' }}>
-            <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyBypass")}</label>
+        <div className="proxy-settings-field">
+            <label className="form-label">{t("proxyBypass")}</label>
             <textarea
                 className="form-input"
                 rows={2}
@@ -104,14 +105,13 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
                 placeholder={t("proxyBypassPlaceholder")}
                 value={config?.default_proxy_bypass || ''}
                 onChange={(e) => updateConfig({ default_proxy_bypass: e.target.value })}
-                style={{ resize: 'vertical', minHeight: '40px', fontFamily: 'monospace', fontSize: '0.78rem' }}
             />
-            <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '3px' }}>{t("proxyBypassHint")}</div>
+            <div className="proxy-settings-hint">{t("proxyBypassHint")}</div>
         </div>
 
         <ProxyScopeSettings config={config} isWindows={isWindows} t={t} updateConfig={updateConfig} />
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
+        <div className="proxy-settings-actions">
             <button
                 className="btn-primary"
                 onClick={() => {
@@ -132,7 +132,6 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
                         });
                     } catch {}
                 }}
-                style={{ padding: '8px 16px' }}
             >
                 {textForLang(lang, 'Save', '\u4fdd\u5b58', '\u4fdd\u5b58')}
             </button>

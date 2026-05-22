@@ -76,13 +76,13 @@ function renderSimpleMarkdown(text: string): React.ReactNode[] {
         if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
         const m = match[0];
         if (match[1]) {
-            parts.push(<code key={idx++} style={inlineCodeStyle}>{m.slice(1, -1)}</code>);
+            parts.push(<code key={idx++} className="im-audit-inline-code">{m.slice(1, -1)}</code>);
         } else if (match[2]) {
             parts.push(<strong key={idx++}>{m.slice(2, -2)}</strong>);
         } else if (match[3]) {
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {
-                parts.push(<a key={idx++} href={lm[2]} target="_blank" rel="noopener noreferrer" style={{ color: "var(--theme-primary, #6366f1)" }}>{lm[1]}</a>);
+                parts.push(<a key={idx++} href={lm[2]} target="_blank" rel="noopener noreferrer" className="im-audit-link">{lm[1]}</a>);
             }
         }
         lastIndex = re.lastIndex;
@@ -210,58 +210,52 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
     };
 
     return (
-        <div style={overlayStyle} onClick={onClose}>
-            <div style={panelStyle} onClick={e => e.stopPropagation()}>
-                <div style={headerStyle}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
-                        <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--theme-text-primary, #1f2937)" }}>{title}</span>
-                        <span style={{ fontSize: "12px", color: "var(--theme-text-muted, #9ca3af)", flexShrink: 0 }}>{isZh ? "\u5171 " + total + " \u6761" : total + " total"}</span>
+        <div className="im-audit-overlay" onClick={onClose}>
+            <div className="im-audit-panel" onClick={e => e.stopPropagation()}>
+                <div className="im-audit-header">
+                    <div className="im-audit-title-wrap">
+                        <span className="im-audit-title">{title}</span>
+                        <span className="im-audit-total">{isZh ? "\u5171 " + total + " \u6761" : total + " total"}</span>
                     </div>
-                    <button onClick={onClose} aria-label={isZh ? "\u5173\u95ed" : "Close"} style={closeBtnStyle}>x</button>
+                    <button onClick={onClose} aria-label={isZh ? "\u5173\u95ed" : "Close"} className="im-audit-close">x</button>
                 </div>
 
-                <div style={toolbarStyle}>
+                <div className="im-audit-toolbar">
                     <input
                         type="text"
                         value={searchInput}
                         onChange={e => setSearchInput(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter") handleSearch(); }}
                         placeholder={isZh ? "\u641c\u7d22\u6d88\u606f\u5185\u5bb9..." : "Search messages..."}
-                        style={inputStyle}
+                        className="im-audit-input"
                     />
-                    <button onClick={handleSearch} style={toolbarBtnStyle}>{isZh ? "\u641c\u7d22" : "Search"}</button>
-                    <button onClick={handleRefresh} disabled={loading} style={toolbarBtnStyle}>{loading ? "..." : (isZh ? "\u5237\u65b0" : "Refresh")}</button>
+                    <button onClick={handleSearch} className="im-audit-toolbar-button">{isZh ? "\u641c\u7d22" : "Search"}</button>
+                    <button onClick={handleRefresh} disabled={loading} className="im-audit-toolbar-button">{loading ? "..." : (isZh ? "\u5237\u65b0" : "Refresh")}</button>
 
                     {users.length > 0 && (
-                        <select value={userID} onChange={e => { setUserID(e.target.value); setPage(1); }} style={selectStyle}>
+                        <select value={userID} onChange={e => { setUserID(e.target.value); setPage(1); }} className="im-audit-select">
                             <option value="">{isZh ? "\u5168\u90e8\u7528\u6237" : "All users"}</option>
                             {users.map(u => <option key={u} value={u}>{u}</option>)}
                         </select>
                     )}
 
-                    <button onClick={handleExport} disabled={exporting} style={toolbarBtnStyle}>{exporting ? "..." : (isZh ? "\u5bfc\u51fa CSV" : "Export CSV")}</button>
+                    <button onClick={handleExport} disabled={exporting} className="im-audit-toolbar-button">{exporting ? "..." : (isZh ? "\u5bfc\u51fa CSV" : "Export CSV")}</button>
 
-                    <div style={{ position: "relative" }}>
-                        <button onClick={() => setShowCleanup(!showCleanup)} style={{ ...toolbarBtnStyle, color: "var(--theme-danger, #ef4444)", borderColor: "var(--theme-danger, #ef4444)" }}>
+                    <div className="im-audit-cleanup-wrap">
+                        <button onClick={() => setShowCleanup(!showCleanup)} className="im-audit-toolbar-button im-audit-toolbar-button--danger">
                             {isZh ? "\u6e05\u7406" : "Cleanup"}
                         </button>
                         {showCleanup && (
-                            <div style={cleanupPopoverStyle}>
-                                <div style={{ fontSize: "12px", color: "var(--theme-text-secondary, #6b7280)", marginBottom: "8px" }}>
+                            <div className="im-audit-cleanup-popover">
+                                <div className="im-audit-cleanup-copy">
                                     {isZh ? "\u5220\u9664\u591a\u5c11\u5929\u524d\u7684\u8bb0\u5f55\uff1f" : "Delete records older than:"}
                                 </div>
-                                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "10px" }}>
+                                <div className="im-audit-cleanup-days">
                                     {[7, 14, 30, 60, 90].map(d => (
-                                        <button key={d} onClick={() => setCleanupDays(d)} style={{
-                                            padding: "3px 10px", borderRadius: "12px", fontSize: "12px",
-                                            border: cleanupDays === d ? "1.5px solid var(--theme-primary, #6366f1)" : "1px solid var(--theme-border, #d1d5db)",
-                                            background: cleanupDays === d ? "var(--theme-info-bg, #eef2ff)" : "transparent",
-                                            color: cleanupDays === d ? "var(--theme-primary, #6366f1)" : "var(--theme-text-secondary, #6b7280)",
-                                            cursor: "pointer",
-                                        }}>{d} {isZh ? "\u5929" : "days"}</button>
+                                        <button key={d} onClick={() => setCleanupDays(d)} className="im-audit-day-button" data-active={cleanupDays === d ? "true" : "false"}>{d} {isZh ? "\u5929" : "days"}</button>
                                     ))}
                                 </div>
-                                <button onClick={handleCleanup} style={cleanupConfirmStyle}>
+                                <button onClick={handleCleanup} className="im-audit-cleanup-confirm">
                                     {isZh ? "\u786e\u8ba4\u5220\u9664 " + cleanupDays + " \u5929\u524d\u7684\u8bb0\u5f55" : "Delete records older than " + cleanupDays + " days"}
                                 </button>
                             </div>
@@ -269,20 +263,20 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
                     </div>
                 </div>
 
-                {message && <div style={messageStyle}>{message}</div>}
+                {message && <div className="im-audit-message">{message}</div>}
 
-                <div ref={listRef} style={listStyle}>
-                    {loading && <div style={emptyStyle}>{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
-                    {!loading && messages.length === 0 && <div style={emptyStyle}>{isZh ? "\u6682\u65e0\u6d88\u606f\u8bb0\u5f55" : "No messages found"}</div>}
+                <div ref={listRef} className="im-audit-list">
+                    {loading && <div className="im-audit-empty">{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
+                    {!loading && messages.length === 0 && <div className="im-audit-empty">{isZh ? "\u6682\u65e0\u6d88\u606f\u8bb0\u5f55" : "No messages found"}</div>}
                     {!loading && messages.map(msg => {
                         const isUser = msg.role === "user";
                         return (
-                            <div key={msg.id} style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start", maxWidth: "100%" }}>
-                                <div style={{ ...metaStyle, flexDirection: isUser ? "row-reverse" : "row" }}>
+                            <div key={msg.id} className="im-audit-item" data-role={isUser ? "user" : "assistant"}>
+                                <div className="im-audit-meta">
                                     <span>{isUser ? (msg.user_id || (isZh ? "\u7528\u6237" : "User")) : "MaClaw"}</span>
                                     <span>{formatTimestamp(msg.timestamp)}</span>
                                 </div>
-                                <div style={{ ...bubbleStyle, ...(isUser ? userBubbleStyle : assistantBubbleStyle) }}>
+                                <div className="im-audit-bubble">
                                     {renderSimpleMarkdown(msg.content)}
                                 </div>
                             </div>
@@ -291,206 +285,13 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
                 </div>
 
                 {totalPages > 1 && (
-                    <div style={paginationStyle}>
-                        <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))} style={{ ...pageBtnStyle, opacity: page <= 1 ? 0.4 : 1 }}>prev</button>
-                        <span style={{ fontSize: "12px", color: "var(--theme-text-secondary, #6b7280)" }}>{page} / {totalPages}</span>
-                        <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))} style={{ ...pageBtnStyle, opacity: page >= totalPages ? 0.4 : 1 }}>next</button>
+                    <div className="im-audit-pagination">
+                        <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))} className="im-audit-page-button">prev</button>
+                        <span className="im-audit-page-label">{page} / {totalPages}</span>
+                        <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))} className="im-audit-page-button">next</button>
                     </div>
                 )}
             </div>
         </div>
     );
 }
-
-const overlayStyle: React.CSSProperties = {
-    position: "fixed",
-    inset: 0,
-    zIndex: 20000,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "rgba(0,0,0,0.45)",
-};
-
-const panelStyle: React.CSSProperties = {
-    width: "min(780px, 92vw)",
-    maxHeight: "88vh",
-    display: "flex",
-    flexDirection: "column",
-    background: "var(--theme-surface, #fff)",
-    color: "var(--theme-text-primary, #1f2937)",
-    border: "1px solid var(--theme-border, #e5e7eb)",
-    borderRadius: "12px",
-    boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
-    overflow: "hidden",
-};
-
-const headerStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "14px 20px",
-    borderBottom: "1px solid var(--theme-border, #e5e7eb)",
-    flexShrink: 0,
-};
-
-const closeBtnStyle: React.CSSProperties = {
-    background: "transparent",
-    border: "1px solid var(--theme-border, #e5e7eb)",
-    borderRadius: "6px",
-    color: "var(--theme-text-muted, #9ca3af)",
-    cursor: "pointer",
-    padding: "2px 8px",
-};
-
-const toolbarStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: "10px 20px",
-    borderBottom: "1px solid var(--theme-border, #e5e7eb)",
-    flexWrap: "wrap",
-    flexShrink: 0,
-};
-
-const inputStyle: React.CSSProperties = {
-    flex: 1,
-    minWidth: "140px",
-    padding: "6px 10px",
-    borderRadius: "6px",
-    border: "1px solid var(--theme-border, #d1d5db)",
-    fontSize: "13px",
-    background: "var(--theme-surface-muted, #f9fafb)",
-    color: "var(--theme-text-primary, #1f2937)",
-    outline: "none",
-};
-
-const selectStyle: React.CSSProperties = {
-    padding: "5px 8px",
-    borderRadius: "6px",
-    border: "1px solid var(--theme-border, #d1d5db)",
-    fontSize: "12px",
-    background: "var(--theme-surface-muted, #f9fafb)",
-    color: "var(--theme-text-primary, #1f2937)",
-};
-
-const toolbarBtnStyle: React.CSSProperties = {
-    padding: "5px 12px",
-    borderRadius: "6px",
-    border: "1px solid var(--theme-border, #d1d5db)",
-    background: "transparent",
-    color: "var(--theme-text-secondary, #6b7280)",
-    fontSize: "12px",
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    flexShrink: 0,
-};
-
-const cleanupPopoverStyle: React.CSSProperties = {
-    position: "absolute",
-    top: "100%",
-    right: 0,
-    marginTop: "4px",
-    background: "var(--theme-surface, #fff)",
-    border: "1px solid var(--theme-border, #d1d5db)",
-    borderRadius: "8px",
-    padding: "10px 14px",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
-    zIndex: 10,
-    minWidth: "200px",
-};
-
-const cleanupConfirmStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "6px",
-    borderRadius: "6px",
-    border: "1px solid var(--theme-danger, #ef4444)",
-    fontSize: "12px",
-    fontWeight: 600,
-    background: "var(--theme-danger-bg, rgba(239,68,68,0.12))",
-    color: "var(--theme-danger, #ef4444)",
-    cursor: "pointer",
-};
-
-const messageStyle: React.CSSProperties = {
-    margin: "8px 20px 0",
-    padding: "7px 10px",
-    borderRadius: "8px",
-    background: "var(--theme-info-bg, rgba(99,102,241,0.10))",
-    color: "var(--theme-text-secondary, #6b7280)",
-    fontSize: "12px",
-};
-
-const listStyle: React.CSSProperties = {
-    flex: 1,
-    overflowY: "auto",
-    padding: "16px 20px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-};
-
-const emptyStyle: React.CSSProperties = {
-    textAlign: "center",
-    padding: "32px 0",
-    color: "var(--theme-text-muted, #9ca3af)",
-    fontSize: "13px",
-};
-
-const metaStyle: React.CSSProperties = {
-    fontSize: "11px",
-    color: "var(--theme-text-muted, #9ca3af)",
-    marginBottom: "3px",
-    display: "flex",
-    gap: "6px",
-    alignItems: "center",
-};
-
-const bubbleStyle: React.CSSProperties = {
-    maxWidth: "75%",
-    padding: "10px 14px",
-    fontSize: "13px",
-    lineHeight: 1.6,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    textAlign: "left",
-};
-
-const userBubbleStyle: React.CSSProperties = {
-    borderRadius: "14px 14px 4px 14px",
-    background: "var(--theme-primary, #6366f1)",
-    color: "#fff",
-};
-
-const assistantBubbleStyle: React.CSSProperties = {
-    borderRadius: "14px 14px 14px 4px",
-    background: "var(--theme-surface-muted, #f3f4f6)",
-    color: "var(--theme-text-primary, #1f2937)",
-};
-
-const inlineCodeStyle: React.CSSProperties = {
-    background: "rgba(0,0,0,0.06)",
-    padding: "1px 4px",
-    borderRadius: "3px",
-    fontSize: "0.9em",
-};
-
-const paginationStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: "8px",
-    padding: "10px 20px",
-    borderTop: "1px solid var(--theme-border, #e5e7eb)",
-    flexShrink: 0,
-};
-
-const pageBtnStyle: React.CSSProperties = {
-    padding: "4px 10px",
-    borderRadius: "6px",
-    border: "1px solid var(--theme-border, #d1d5db)",
-    background: "transparent",
-    color: "var(--theme-text-secondary, #6b7280)",
-    fontSize: "12px",
-    cursor: "pointer",
-};

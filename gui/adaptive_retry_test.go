@@ -567,7 +567,7 @@ func TestReviewedToolRecoveryUsesFailureCountCooldown(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected one adaptive retry memory, got %#v", entries)
 	}
-	if hasTag(entries[0].Tags, experienceReviewRequiredTag) || !hasTag(entries[0].Tags, experienceReviewResolvedTag) || !hasTag(entries[0].Tags, adaptiveRetryReviewedFailureCountPrefix+"3") {
+	if hasTag(entries[0].Tags, experienceReviewRequiredTag) || !hasTag(entries[0].Tags, experienceReviewResolvedTag) || !hasTag(entries[0].Tags, adaptiveRetryReviewedFailureCountPrefix+"3") || hasTag(entries[0].Tags, "failure_count:1") {
 		t.Fatalf("reviewed recovery should stay resolved during cooldown: %#v", entries[0].Tags)
 	}
 	if !strings.Contains(entries[0].Content, "Experience review record:") || !strings.Contains(entries[0].Content, "known noisy args") {

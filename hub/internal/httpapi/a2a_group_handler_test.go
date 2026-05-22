@@ -18,20 +18,27 @@ import (
 func groupReq(method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req = req.WithContext(WithRequestTenant(req.Context(), "tenant-a"))
 	return req
 }
 
-func TestRequestGroupDiscussionTenantIDUsesMachineHeaderAndDefaultTenant(t *testing.T) {
+func TestRequestGroupDiscussionTenantIDUsesAuthenticatedContextAndDefaultTenant(t *testing.T) {
 	defaultReq := httptest.NewRequest(http.MethodGet, "/api/a2a/experts", nil)
 	if got := requestGroupDiscussionTenantID(defaultReq); got != store.DefaultTenantID {
 		t.Fatalf("default tenant = %q, want %q", got, store.DefaultTenantID)
 	}
 
+	spoofReq := httptest.NewRequest(http.MethodGet, "/api/a2a/experts?tenant_id=tenant_query", nil)
+	spoofReq.Header.Set("X-Hub-Tenant-ID", "tenant_spoof")
+	spoofReq.Header.Set("X-Tenant-ID", "tenant_spoof")
+	if got := requestGroupDiscussionTenantID(spoofReq); got != store.DefaultTenantID {
+		t.Fatalf("spoofed tenant = %q, want default tenant", got)
+	}
+
 	tenantReq := httptest.NewRequest(http.MethodGet, "/api/a2a/experts", nil)
-	tenantReq.Header.Set("X-Hub-Tenant-ID", "tenant_acme")
+	tenantReq = tenantReq.WithContext(WithRequestTenant(tenantReq.Context(), "tenant_acme"))
 	if got := requestGroupDiscussionTenantID(tenantReq); got != "tenant_acme" {
-		t.Fatalf("header tenant = %q, want tenant_acme", got)
+		t.Fatalf("context tenant = %q, want tenant_acme", got)
 	}
 
 	adminReq := httptest.NewRequest(http.MethodGet, "/api/admin/a2a/group-discussions?tenant_id=tenant_query", nil)
@@ -113,6 +120,75 @@ func TestGroupDiscussionMessagePushesToOtherParticipants(t *testing.T) {
 	}
 	if envelope.Message.ID == "" || envelope.Message.SessionID != created.Discussion.ID || envelope.Message.CreatedAt.IsZero() {
 		t.Fatalf("push payload should use persisted message metadata: %+v", envelope.Message)
+	}
+}
+
+func TestGroupDiscussionInviteAndCancelPushToTargetParticipant(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"direct","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/invites", `{"from_id":"maclaw-a","to_id":"maclaw-b","role":"review"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("invite status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("sent invite messages = %+v", sender.messages)
+	}
+	invite := sender.messages[0]
+	if invite.machineID != "maclaw-b" || invite.msg["type"] != "ve:discussion_invite" {
+		t.Fatalf("unexpected invite push: %+v", invite)
+	}
+	invitePayload, ok := invite.msg["payload"].(map[string]any)
+	if !ok || invitePayload["invite_id"] == "" {
+		t.Fatalf("invite payload missing id: %#v", invite.msg["payload"])
+	}
+	inviteEnvelope, ok := invitePayload["envelope"].(corea2a.GroupEnvelope)
+	if !ok || inviteEnvelope.Invitation == nil || inviteEnvelope.SessionID != created.Discussion.ID || inviteEnvelope.Type != corea2a.GroupMessageInvitation {
+		t.Fatalf("unexpected invite envelope: %#v", invitePayload["envelope"])
+	}
+
+	invites := svc.ListInvitations("tenant-a", "maclaw-b", "pending")
+	if len(invites) != 1 {
+		t.Fatalf("pending invites = %+v", invites)
+	}
+	if err := svc.RespondInvitation("tenant-a", invites[0].ID, corea2a.GroupInvitationResponse{FromID: "maclaw-b", Decision: corea2a.GroupInvitationAccept}); err != nil {
+		t.Fatalf("RespondInvitation: %v", err)
+	}
+	sender.messages = nil
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/cancel", `{}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("sent cancel messages = %+v", sender.messages)
+	}
+	cancel := sender.messages[0]
+	if cancel.machineID != "maclaw-b" || cancel.msg["type"] != "ve:discussion_cancel" {
+		t.Fatalf("unexpected cancel push: %+v", cancel)
+	}
+	cancelPayload, ok := cancel.msg["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("cancel payload type = %T", cancel.msg["payload"])
+	}
+	cancelEnvelope, ok := cancelPayload["envelope"].(corea2a.GroupEnvelope)
+	if !ok || cancelEnvelope.SessionID != created.Discussion.ID {
+		t.Fatalf("unexpected cancel envelope: %#v", cancelPayload["envelope"])
 	}
 }
 

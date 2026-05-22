@@ -24,7 +24,7 @@ func setAgentViewLang(lang string) {
 // When the current language is Chinese (default), returns zh; otherwise returns en.
 func avTr(en, zh string) string {
 	lang, _ := agentViewCurrentLang.Load().(string)
-	if lang == "en" {
+	if normalizeAppLanguageKind(lang).IsEnglish() {
 		return en
 	}
 	return zh

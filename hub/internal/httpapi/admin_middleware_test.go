@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
@@ -18,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
+	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
@@ -102,6 +105,14 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 	centerSvc := center.NewService(testCfg, st.System)
 	deviceSvc := device.NewService(st.Machines, device.NewRuntime())
 	sessionSvc := session.NewService(session.NewCache(), st.Sessions)
+	securityStore := securitypkg.NewSecurityStore(provider.Write)
+	if err := securityStore.InitSchema(context.Background()); err != nil {
+		t.Fatalf("init security schema: %v", err)
+	}
+	if err := securityStore.InitRootGroup(context.Background()); err != nil {
+		t.Fatalf("init security root group: %v", err)
+	}
+	securitySvc := securitypkg.NewSecurityService(securityStore, st.System, st.AdminAudit)
 	gateway := &ws.Gateway{Identity: identity, Devices: deviceSvc, Sessions: sessionSvc}
 	router := NewRouter(
 		admins,
@@ -134,13 +145,14 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		nil,
 		nil,
 		nil,
-		nil,
+		securitySvc,
 		testCfg,
 		"",
 		nil,
 		"",
 		"/app",
 		"",
+		nil,
 		st.Tenants,
 	)
 	return &hubAdminRouterTestServices{
@@ -197,6 +209,41 @@ func issueHubAdminToken(t *testing.T, handler http.Handler) string {
 	token, _ := payload["access_token"].(string)
 	if token == "" {
 		t.Fatalf("expected access token, got %v", payload)
+	}
+	return token
+}
+
+func issueTenantAdminToken(t *testing.T, handler http.Handler, globalToken, tenantSlug, username string) string {
+	t.Helper()
+
+	tenantID := "tenant_" + tenantSlug
+	createResp := doHubAdminJSONRequest(t, handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   tenantSlug,
+		"name":                   tenantSlug + " tenant",
+		"initial_admin_username": username,
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    username + "@example.com",
+	}, globalToken)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant %s status = %d body=%s", tenantSlug, createResp.Code, createResp.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": username,
+		"password": "StrongPassword123!",
+		"tenant":   tenantID,
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode tenant login response: %v", err)
+	}
+	token, _ := payload["access_token"].(string)
+	if token == "" {
+		t.Fatalf("expected tenant access token, got %v", payload)
 	}
 	return token
 }
@@ -267,6 +314,50 @@ func TestAdminDebugHandlersRequireToken(t *testing.T) {
 	}
 }
 
+func TestBridgeChannelsReturnReadableChineseLabels(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	tenantAdmin := &store.AdminUser{ID: "tenant-admin", Scope: "tenant", TenantID: "tenant_acme"}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/bridge/channels", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, tenantAdmin))
+	rec := httptest.NewRecorder()
+	GetBridgeChannelsHandler(ctx.store.System, "")(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bridge channels status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Channels []struct {
+			ID     string `json:"id"`
+			NameZH string `json:"name_zh"`
+			DescZH string `json:"desc_zh"`
+			Fields []struct {
+				Key     string `json:"key"`
+				LabelZH string `json:"label_zh"`
+			} `json:"fields"`
+		} `json:"channels"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bridge channels: %v body=%s", err, rec.Body.String())
+	}
+	var foundWeChat, foundDingTalk bool
+	for _, channel := range payload.Channels {
+		switch channel.ID {
+		case "wechatwork":
+			foundWeChat = true
+			if channel.NameZH != "\u4f01\u4e1a\u5fae\u4fe1" || channel.DescZH != "\u8fde\u63a5\u4f01\u4e1a\u5fae\u4fe1\u673a\u5668\u4eba\u3002" {
+				t.Fatalf("wechatwork zh labels are not readable: %#v", channel)
+			}
+		case "dingtalk":
+			foundDingTalk = true
+			if channel.NameZH != "\u9489\u9489" || channel.DescZH != "\u8fde\u63a5\u9489\u9489\u673a\u5668\u4eba\u3002" {
+				t.Fatalf("dingtalk zh labels are not readable: %#v", channel)
+			}
+		}
+	}
+	if !foundWeChat || !foundDingTalk {
+		t.Fatalf("expected wechatwork and dingtalk channels, got %#v", payload.Channels)
+	}
+}
+
 func TestAdminStatusHandlerReflectsInitialization(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 
@@ -286,6 +377,156 @@ func TestAdminStatusHandlerReflectsInitialization(t *testing.T) {
 	}
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"initialized":true`)) {
 		t.Fatalf("expected initialized response, got %s", resp.Body.String())
+	}
+}
+
+func TestAdminLoginTenantsExposeOnlyActiveTenantsAndGlobalLoginScope(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+
+	now := time.Now().UTC()
+	for _, tenant := range []*store.Tenant{
+		{ID: "tenant_active", Slug: "active", Name: "Active Tenant", Status: "active", CreatedAt: now, UpdatedAt: now},
+		{ID: "tenant_inactive", Slug: "inactive", Name: "Inactive Tenant", Status: "inactive", CreatedAt: now, UpdatedAt: now},
+		{ID: "tenant_deleted", Slug: "deleted", Name: "Deleted Tenant", Status: "active", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := ctx.store.Tenants.Create(context.Background(), tenant); err != nil {
+			t.Fatalf("seed tenant %s: %v", tenant.ID, err)
+		}
+	}
+	if err := ctx.store.Tenants.DeleteByID(context.Background(), "tenant_deleted"); err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/login/tenants", nil, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("login tenants status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte("tenant_active")) {
+		t.Fatalf("expected active tenant in login choices, body=%s", resp.Body.String())
+	}
+	if bytes.Contains(resp.Body.Bytes(), []byte("tenant_inactive")) || bytes.Contains(resp.Body.Bytes(), []byte("tenant_deleted")) {
+		t.Fatalf("inactive or deleted tenant leaked into login choices, body=%s", resp.Body.String())
+	}
+	if bytes.Contains(resp.Body.Bytes(), []byte(store.DefaultTenantID)) {
+		t.Fatalf("default tenant leaked into login choices, body=%s", resp.Body.String())
+	}
+	listResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/tenants", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("tenant list status=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+	if bytes.Contains(listResp.Body.Bytes(), []byte(store.DefaultTenantID)) {
+		t.Fatalf("default tenant leaked into admin tenant list, body=%s", listResp.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "admin",
+		"password": "StrongPassword123!",
+		"tenant":   auth.ExplicitGlobalAdminTenantScope,
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("global login scope status=%d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	if requestedTenantLoginAllowed(context.Background(), store.DefaultTenantID, ctx.store.Tenants) {
+		t.Fatal("default tenant login scope should be rejected")
+	}
+	if adminTenantLoginAllowed(context.Background(), &store.AdminUser{Scope: "tenant", TenantID: store.DefaultTenantID}, ctx.store.Tenants) {
+		t.Fatal("default tenant admin login should be rejected")
+	}
+}
+
+func TestGlobalAdminCanDeactivateReactivateAndDeleteTenant(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+	callbackBodies := make(chan map[string]any, 4)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hub/callback/tenant" {
+			t.Fatalf("unexpected callback path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-VE-Callback-Secret") != "secret-1" {
+			t.Fatalf("unexpected callback secret %q", r.Header.Get("X-VE-Callback-Secret"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback body: %v", err)
+		}
+		callbackBodies <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer callback.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", VirtualMailDomain: "ve.example.com", RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), ctx.store.System, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "lifecycle",
+		"name":                   "Lifecycle Tenant",
+		"initial_admin_username": "life-admin",
+		"initial_admin_password": "TenantPass123!",
+		"initial_admin_email":    "life@example.com",
+	}, token)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+	waitTenantCallbackStatus(t, callbackBodies, "active")
+
+	deactivateResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPatch, "/api/admin/tenants/tenant_lifecycle/status", map[string]any{"status": "inactive"}, token)
+	if deactivateResp.Code != http.StatusOK || !bytes.Contains(deactivateResp.Body.Bytes(), []byte(`"status":"inactive"`)) {
+		t.Fatalf("deactivate tenant status=%d body=%s", deactivateResp.Code, deactivateResp.Body.String())
+	}
+	waitTenantCallbackStatus(t, callbackBodies, "disabled")
+	inactiveLogin := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{"username": "life-admin", "password": "TenantPass123!", "tenant": "tenant_lifecycle"}, "")
+	if inactiveLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("inactive tenant login status = %d body=%s", inactiveLogin.Code, inactiveLogin.Body.String())
+	}
+
+	reactivateResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPatch, "/api/admin/tenants/tenant_lifecycle/status", map[string]any{"status": "active"}, token)
+	if reactivateResp.Code != http.StatusOK || !bytes.Contains(reactivateResp.Body.Bytes(), []byte(`"status":"active"`)) {
+		t.Fatalf("reactivate tenant status=%d body=%s", reactivateResp.Code, reactivateResp.Body.String())
+	}
+	waitTenantCallbackStatus(t, callbackBodies, "active")
+	activeLogin := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{"username": "life-admin", "password": "TenantPass123!", "tenant": "tenant_lifecycle"}, "")
+	if activeLogin.Code != http.StatusOK {
+		t.Fatalf("reactivated tenant login status = %d body=%s", activeLogin.Code, activeLogin.Body.String())
+	}
+
+	deleteResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodDelete, "/api/admin/tenants/tenant_lifecycle", nil, token)
+	if deleteResp.Code != http.StatusOK || !bytes.Contains(deleteResp.Body.Bytes(), []byte(`"deleted_at"`)) {
+		t.Fatalf("delete tenant status=%d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	waitTenantCallbackStatus(t, callbackBodies, "deleted")
+	deletedLogin := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{"username": "life-admin", "password": "TenantPass123!", "tenant": "tenant_lifecycle"}, "")
+	if deletedLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("deleted tenant login status = %d body=%s", deletedLogin.Code, deletedLogin.Body.String())
+	}
+	audits, err := ctx.store.AdminAudit.List(context.Background(), store.AdminAuditLogFilter{Query: "tenant_lifecycle", Limit: 10})
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	var sawStatus, sawDelete bool
+	for _, item := range audits {
+		if item.Action == "tenant.status_updated" {
+			sawStatus = true
+		}
+		if item.Action == "tenant.deleted" {
+			sawDelete = true
+		}
+	}
+	if !sawStatus || !sawDelete {
+		t.Fatalf("tenant lifecycle audit logs missing status=%v delete=%v logs=%#v", sawStatus, sawDelete, audits)
+	}
+}
+
+func waitTenantCallbackStatus(t *testing.T, callbackBodies <-chan map[string]any, want string) {
+	t.Helper()
+	select {
+	case body := <-callbackBodies:
+		if body["hub_tenant_id"] != "tenant_lifecycle" || body["status"] != want {
+			t.Fatalf("unexpected tenant callback body: %#v want status %s", body, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tenant callback status %s was not posted", want)
 	}
 }
 
@@ -416,6 +657,39 @@ func TestTenantAdminRoutesRequireGlobalAdminForTenantCreate(t *testing.T) {
 	}, loginPayload.AccessToken)
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("tenant admin create tenant status = %d body=%s", denied.Code, denied.Body.String())
+	}
+
+	listDenied := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/tenants", nil, loginPayload.AccessToken)
+	if listDenied.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin list tenants status = %d body=%s", listDenied.Code, listDenied.Body.String())
+	}
+	statusDenied := doHubAdminJSONRequest(t, ctx.handler, http.MethodPatch, "/api/admin/tenants/tenant_acme/status", map[string]any{"status": "inactive"}, loginPayload.AccessToken)
+	if statusDenied.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin update tenant status = %d body=%s", statusDenied.Code, statusDenied.Body.String())
+	}
+	deleteDenied := doHubAdminJSONRequest(t, ctx.handler, http.MethodDelete, "/api/admin/tenants/tenant_acme", nil, loginPayload.AccessToken)
+	if deleteDenied.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin delete tenant status = %d body=%s", deleteDenied.Code, deleteDenied.Body.String())
+	}
+	ownDetail := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/tenants/tenant_acme", nil, loginPayload.AccessToken)
+	if ownDetail.Code != http.StatusOK {
+		t.Fatalf("tenant admin own tenant detail status = %d body=%s", ownDetail.Code, ownDetail.Body.String())
+	}
+	ownAdmin := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants/tenant_acme/admins", map[string]any{
+		"username": "acme-admin",
+		"password": "StrongPassword123!",
+		"email":    "acme-admin@example.com",
+	}, loginPayload.AccessToken)
+	if ownAdmin.Code != http.StatusCreated {
+		t.Fatalf("tenant admin create own admin status = %d body=%s", ownAdmin.Code, ownAdmin.Body.String())
+	}
+	defaultAdmin := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants/"+store.DefaultTenantID+"/admins", map[string]any{
+		"username": "default-admin",
+		"password": "StrongPassword123!",
+		"email":    "default-admin@example.com",
+	}, token)
+	if defaultAdmin.Code != http.StatusBadRequest {
+		t.Fatalf("global admin create default tenant admin status = %d body=%s", defaultAdmin.Code, defaultAdmin.Body.String())
 	}
 
 	centerUpdate := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/center/config", map[string]any{"base_url": "https://center.example.com"}, loginPayload.AccessToken)
@@ -698,56 +972,217 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		t.Fatalf("tenant smart route = %s", tenantGet.Body.String())
 	}
 
-	globalAudit := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/content_audit/config", map[string]any{"program_path": "global-audit", "timeout_seconds": 3, "timeout_policy": "pass"}, globalToken)
-	if globalAudit.Code != http.StatusOK {
-		t.Fatalf("global content audit status = %d body=%s", globalAudit.Code, globalAudit.Body.String())
+	assertTenantForbidden := func(method, target string, body any) {
+		t.Helper()
+		resp := doHubAdminJSONRequest(t, ctx.handler, method, target, body, loginPayload.AccessToken)
+		if resp.Code != http.StatusForbidden {
+			t.Fatalf("tenant %s %s status = %d body=%s", method, target, resp.Code, resp.Body.String())
+		}
 	}
+	for _, endpoint := range []struct {
+		method string
+		target string
+		body   any
+	}{
+		{http.MethodGet, "/api/admin/center/status", nil},
+		{http.MethodGet, "/api/admin/hub_llm_config", nil},
+		{http.MethodPut, "/api/admin/hub_llm_config", map[string]any{"enabled": true, "api_url": "https://tenant.example/v1", "api_key": "tenant-key", "model": "tenant-model"}},
+		{http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil},
+		{http.MethodPut, "/api/admin/hub_llm_prompt_cache_config", map[string]any{"enabled": true}},
+		{http.MethodPost, "/api/admin/hub_llm_prompt_cache_clear", nil},
+		{http.MethodGet, "/api/admin/hub_llm_prompt_cache_entries", nil},
+		{http.MethodGet, "/api/admin/hub_llm_prompt_cache_entry?cache_key=test", nil},
+		{http.MethodDelete, "/api/admin/hub_llm_prompt_cache_entry?cache_key=test", nil},
+		{http.MethodPost, "/api/admin/hub_llm_test", map[string]any{}},
+		{http.MethodGet, "/api/admin/hub_llm_status", nil},
+	} {
+		assertTenantForbidden(endpoint.method, endpoint.target, endpoint.body)
+	}
+
+	assertGlobalForbidden := func(method, target string, body any) {
+		t.Helper()
+		resp := doHubAdminJSONRequest(t, ctx.handler, method, target, body, globalToken)
+		if resp.Code != http.StatusForbidden {
+			t.Fatalf("global %s %s status = %d body=%s", method, target, resp.Code, resp.Body.String())
+		}
+	}
+	for _, endpoint := range []struct {
+		method string
+		target string
+		body   any
+	}{
+		{http.MethodGet, "/api/admin/billing/customer-account", nil},
+		{http.MethodGet, "/api/admin/billing/licenses", nil},
+		{http.MethodPost, "/api/admin/capabilities", map[string]any{"capability_id": "global-cap", "display_name": "Global Cap"}},
+		{http.MethodGet, "/api/admin/capability-market/policy", nil},
+		{http.MethodPut, "/api/admin/capability-market/policy", map[string]any{"policy": map[string]any{"enterprise_only_search": true}}},
+		{http.MethodGet, "/api/admin/capability-market/acquisition-requests", nil},
+		{http.MethodGet, "/api/admin/capability-market/acquisition-requests/request-1", nil},
+		{http.MethodPost, "/api/admin/capability-market/acquisition-requests/request-1/approve", map[string]any{}},
+		{http.MethodPost, "/api/admin/capability-market/acquisition-requests/request-1/reject", map[string]any{}},
+		{http.MethodPost, "/api/admin/capability-market/acquisition-requests/request-1/complete", map[string]any{}},
+		{http.MethodPost, "/api/admin/capability-market/managed-deployments", map[string]any{}},
+		{http.MethodDelete, "/api/admin/capability-market/managed-deployments/deploy-1", nil},
+		{http.MethodPost, "/api/admin/capability-market/recommendations", map[string]any{}},
+		{http.MethodDelete, "/api/admin/capability-market/recommendations/reco-1", nil},
+		{http.MethodGet, "/api/admin/capability-market/groups/group-1/effective-policies", nil},
+		{http.MethodGet, "/api/admin/capability-market/users/user@example.com/inventory", nil},
+		{http.MethodGet, "/api/admin/capability-market/users/user@example.com/effective-policies", nil},
+		{http.MethodGet, "/api/admin/capability-market/users/user@example.com/compliance", nil},
+		{http.MethodPost, "/api/admin/capability-market/mcp", map[string]any{}},
+		{http.MethodPut, "/api/admin/capability-market/mcp", map[string]any{}},
+		{http.MethodPost, "/api/admin/capability-market/mcp/test", map[string]any{}},
+		{http.MethodPost, "/api/admin/capability-market/mcp-secret-requirements", map[string]any{}},
+		{http.MethodGet, "/api/admin/capabilities/external-search", nil},
+		{http.MethodPost, "/api/admin/capabilities/mcp/validate", map[string]any{}},
+		{http.MethodPost, "/api/admin/capabilities/import-intent", map[string]any{}},
+		{http.MethodGet, "/api/admin/security/groups", nil},
+		{http.MethodGet, "/api/admin/security/groups/root", nil},
+		{http.MethodPost, "/api/admin/security/groups", map[string]any{}},
+		{http.MethodPut, "/api/admin/security/groups/group-1", map[string]any{}},
+		{http.MethodDelete, "/api/admin/security/groups/group-1", nil},
+		{http.MethodGet, "/api/admin/security/groups/group-1/members", nil},
+		{http.MethodPost, "/api/admin/security/groups/group-1/members", map[string]any{}},
+		{http.MethodDelete, "/api/admin/security/groups/group-1/members/user@example.com", nil},
+		{http.MethodGet, "/api/admin/security/groups/group-1/policy", nil},
+		{http.MethodPut, "/api/admin/security/groups/group-1/policy", map[string]any{}},
+		{http.MethodGet, "/api/admin/security/users/user@example.com/effective-policy", nil},
+		{http.MethodGet, "/api/admin/security/settings", nil},
+		{http.MethodPut, "/api/admin/security/settings", map[string]any{}},
+		{http.MethodPut, "/api/admin/security/settings/default-group", map[string]any{}},
+		{http.MethodGet, "/api/v1/admin/reviews", nil},
+		{http.MethodGet, "/api/v1/admin/reviews/version-1", nil},
+		{http.MethodPost, "/api/v1/admin/reviews/version-1/approve", map[string]any{}},
+		{http.MethodPost, "/api/v1/admin/reviews/version-1/reject", map[string]any{}},
+		{http.MethodPost, "/api/v1/admin/reviews/version-1/unpublish", map[string]any{}},
+		{http.MethodGet, "/api/admin/a2a/group-discussions", nil},
+		{http.MethodGet, "/api/ve/list", nil},
+		{http.MethodGet, "/api/ve/ve-1/history", nil},
+		{http.MethodGet, "/api/ve/history/search?q=user%40example.com", nil},
+		{http.MethodGet, "/api/ve/history/discussion-1/detail", nil},
+		{http.MethodGet, "/api/ve/config", nil},
+		{http.MethodPut, "/api/ve/config", map[string]any{"max_group_participants": 3}},
+		{http.MethodPost, "/api/ve/ve-1/approve", nil},
+		{http.MethodPost, "/api/ve/ve-1/reject", nil},
+		{http.MethodPost, "/api/ve/ve-1/disable", nil},
+		{http.MethodGet, "/api/admin/feishu/bindings", nil},
+		{http.MethodDelete, "/api/admin/feishu/bindings?user_id=u1", nil},
+		{http.MethodGet, "/api/admin/feishu/auto-enroll", nil},
+		{http.MethodPost, "/api/admin/feishu/auto-enroll", map[string]any{"enabled": true}},
+		{http.MethodPost, "/api/admin/settings/openclaw_im/test", map[string]any{}},
+		{http.MethodGet, "/api/admin/bridge/status", nil},
+		{http.MethodGet, "/api/admin/qqbot/bindings", nil},
+		{http.MethodDelete, "/api/admin/qqbot/bindings?user_id=u1", nil},
+		{http.MethodGet, "/api/admin/wecom/bindings", nil},
+		{http.MethodDelete, "/api/admin/wecom/bindings?user_id=u1", nil},
+		{http.MethodGet, "/api/admin/dingtalk/bindings", nil},
+		{http.MethodDelete, "/api/admin/dingtalk/bindings?user_id=u1", nil},
+	} {
+		assertGlobalForbidden(endpoint.method, endpoint.target, endpoint.body)
+	}
+
+	tenantSecurity := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/security/settings", nil, loginPayload.AccessToken)
+	if tenantSecurity.Code != http.StatusOK {
+		t.Fatalf("tenant security settings status = %d body=%s", tenantSecurity.Code, tenantSecurity.Body.String())
+	}
+	tenantReviews := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/v1/admin/reviews", nil, loginPayload.AccessToken)
+	if tenantReviews.Code != http.StatusOK {
+		t.Fatalf("tenant workflow reviews status = %d body=%s", tenantReviews.Code, tenantReviews.Body.String())
+	}
+	tenantVEConfig := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/ve/config", nil, loginPayload.AccessToken)
+	if tenantVEConfig.Code != http.StatusOK {
+		t.Fatalf("tenant VE config status = %d body=%s", tenantVEConfig.Code, tenantVEConfig.Body.String())
+	}
+
+	tenantPolicy := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/capability-market/policy", map[string]any{"policy": map[string]any{"enterprise_only_search": true, "view_mode": "enterprise_only"}}, loginPayload.AccessToken)
+	if tenantPolicy.Code != http.StatusOK {
+		t.Fatalf("tenant capability market policy status = %d body=%s", tenantPolicy.Code, tenantPolicy.Body.String())
+	}
+	tenantPolicyGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/capability-market/policy", nil, loginPayload.AccessToken)
+	if !bytes.Contains(tenantPolicyGet.Body.Bytes(), []byte(`"enterprise_only_search":true`)) || !bytes.Contains(tenantPolicyGet.Body.Bytes(), []byte(`"view_mode":"enterprise_only"`)) {
+		t.Fatalf("tenant capability market policy = %s", tenantPolicyGet.Body.String())
+	}
+	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", capabilityMarketPolicySettingKey, `"view_mode":"enterprise_only"`)
+
+	assertGlobalForbidden(http.MethodPut, "/api/admin/content_audit/config", map[string]any{"program_path": "global-audit", "timeout_seconds": 3, "timeout_policy": "pass"})
 	tenantAudit := doHubAdminJSONRequest(t, ctx.handler, http.MethodPut, "/api/admin/content_audit/config", map[string]any{"program_path": "tenant-audit", "timeout_seconds": 5, "timeout_policy": "block"}, loginPayload.AccessToken)
 	if tenantAudit.Code != http.StatusOK {
 		t.Fatalf("tenant content audit status = %d body=%s", tenantAudit.Code, tenantAudit.Body.String())
 	}
-	globalAuditGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/content_audit/config", nil, globalToken)
+	assertGlobalForbidden(http.MethodGet, "/api/admin/content_audit/config", nil)
 	tenantAuditGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/content_audit/config", nil, loginPayload.AccessToken)
-	if !bytes.Contains(globalAuditGet.Body.Bytes(), []byte(`"program_path":"global-audit"`)) {
-		t.Fatalf("global content audit leaked tenant update: %s", globalAuditGet.Body.String())
-	}
 	if !bytes.Contains(tenantAuditGet.Body.Bytes(), []byte(`"program_path":"tenant-audit"`)) {
 		t.Fatalf("tenant content audit = %s", tenantAuditGet.Body.String())
 	}
 
-	globalBridge := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "global-token"}}, globalToken)
-	if globalBridge.Code != http.StatusOK {
-		t.Fatalf("global bridge status = %d body=%s", globalBridge.Code, globalBridge.Body.String())
-	}
+	assertGlobalForbidden(http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "global-token"}})
 	tenantBridge := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/bridge/channels", map[string]any{"id": "telegram", "enabled": false, "fields": map[string]string{"botToken": "tenant-token"}}, loginPayload.AccessToken)
 	if tenantBridge.Code != http.StatusOK {
 		t.Fatalf("tenant bridge status = %d body=%s", tenantBridge.Code, tenantBridge.Body.String())
 	}
-	globalBridgeGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/bridge/channels", nil, globalToken)
+	assertGlobalForbidden(http.MethodGet, "/api/admin/bridge/channels", nil)
 	tenantBridgeGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/bridge/channels", nil, loginPayload.AccessToken)
-	if !bytes.Contains(globalBridgeGet.Body.Bytes(), []byte(`"botToken":"global-token"`)) || bytes.Contains(globalBridgeGet.Body.Bytes(), []byte("tenant-token")) {
-		t.Fatalf("global bridge channels leaked tenant update: %s", globalBridgeGet.Body.String())
-	}
-	if !bytes.Contains(tenantBridgeGet.Body.Bytes(), []byte(`"botToken":"tenant-token"`)) || bytes.Contains(tenantBridgeGet.Body.Bytes(), []byte("global-token")) {
-		t.Fatalf("tenant bridge channels leaked global update: %s", tenantBridgeGet.Body.String())
+	if !bytes.Contains(tenantBridgeGet.Body.Bytes(), []byte(`"botToken":"tenant-token"`)) {
+		t.Fatalf("tenant bridge channels = %s", tenantBridgeGet.Body.String())
 	}
 
-	globalFeishu := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/feishu/config", map[string]any{"enabled": true, "app_id": "global-feishu", "app_secret": "global-secret"}, globalToken)
-	if globalFeishu.Code != http.StatusOK {
-		t.Fatalf("global feishu status = %d body=%s", globalFeishu.Code, globalFeishu.Body.String())
-	}
+	assertGlobalForbidden(http.MethodPost, "/api/admin/feishu/config", map[string]any{"enabled": true, "app_id": "global-feishu", "app_secret": "global-secret"})
 	tenantFeishu := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/feishu/config", map[string]any{"enabled": true, "app_id": "tenant-feishu", "app_secret": "tenant-secret"}, loginPayload.AccessToken)
 	if tenantFeishu.Code != http.StatusOK {
 		t.Fatalf("tenant feishu status = %d body=%s", tenantFeishu.Code, tenantFeishu.Body.String())
 	}
-	globalFeishuGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/feishu/config", nil, globalToken)
+	assertGlobalForbidden(http.MethodGet, "/api/admin/feishu/config", nil)
 	tenantFeishuGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/feishu/config", nil, loginPayload.AccessToken)
-	if !bytes.Contains(globalFeishuGet.Body.Bytes(), []byte(`"app_id":"global-feishu"`)) || bytes.Contains(globalFeishuGet.Body.Bytes(), []byte("tenant-feishu")) {
-		t.Fatalf("global feishu config leaked tenant update: %s", globalFeishuGet.Body.String())
+	if !bytes.Contains(tenantFeishuGet.Body.Bytes(), []byte(`"app_id":"tenant-feishu"`)) {
+		t.Fatalf("tenant feishu config = %s", tenantFeishuGet.Body.String())
 	}
-	if !bytes.Contains(tenantFeishuGet.Body.Bytes(), []byte(`"app_id":"tenant-feishu"`)) || bytes.Contains(tenantFeishuGet.Body.Bytes(), []byte("global-feishu")) {
-		t.Fatalf("tenant feishu config leaked global update: %s", tenantFeishuGet.Body.String())
+
+	assertGlobalForbidden(http.MethodPost, "/api/admin/settings/openclaw_im", map[string]any{"enabled": true, "webhook_url": "http://127.0.0.1:3210/global", "secret": "global-openclaw"})
+	tenantOpenclawIM := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/settings/openclaw_im", map[string]any{"enabled": true, "webhook_url": "http://127.0.0.1:3210/tenant", "secret": "tenant-openclaw"}, loginPayload.AccessToken)
+	if tenantOpenclawIM.Code != http.StatusOK {
+		t.Fatalf("tenant openclaw im status = %d body=%s", tenantOpenclawIM.Code, tenantOpenclawIM.Body.String())
 	}
+	assertGlobalForbidden(http.MethodGet, "/api/admin/settings/openclaw_im", nil)
+	tenantOpenclawIMGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/openclaw_im", nil, loginPayload.AccessToken)
+	if !bytes.Contains(tenantOpenclawIMGet.Body.Bytes(), []byte(`"webhook_url":"http://127.0.0.1:3210/tenant"`)) {
+		t.Fatalf("tenant openclaw im config = %s", tenantOpenclawIMGet.Body.String())
+	}
+
+	assertGlobalForbidden(http.MethodPost, "/api/admin/settings/qqbot", map[string]any{"enabled": true, "app_id": "global-qq", "app_secret": "global-secret"})
+	tenantQQBot := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/settings/qqbot", map[string]any{"enabled": true, "app_id": "tenant-qq", "app_secret": "tenant-secret"}, loginPayload.AccessToken)
+	if tenantQQBot.Code != http.StatusOK {
+		t.Fatalf("tenant qqbot status = %d body=%s", tenantQQBot.Code, tenantQQBot.Body.String())
+	}
+	assertGlobalForbidden(http.MethodGet, "/api/admin/settings/qqbot", nil)
+	tenantQQBotGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/qqbot", nil, loginPayload.AccessToken)
+	if !bytes.Contains(tenantQQBotGet.Body.Bytes(), []byte(`"app_id":"tenant-qq"`)) {
+		t.Fatalf("tenant qqbot config = %s", tenantQQBotGet.Body.String())
+	}
+	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", qqbotConfigKey, `"app_id":"tenant-qq"`)
+
+	assertGlobalForbidden(http.MethodPost, "/api/admin/settings/wecom", map[string]any{"enabled": true, "bot_id": "global-wecom", "secret": "global-secret"})
+	tenantWeCom := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/settings/wecom", map[string]any{"enabled": true, "bot_id": "tenant-wecom", "secret": "tenant-secret"}, loginPayload.AccessToken)
+	if tenantWeCom.Code != http.StatusOK {
+		t.Fatalf("tenant wecom status = %d body=%s", tenantWeCom.Code, tenantWeCom.Body.String())
+	}
+	assertGlobalForbidden(http.MethodGet, "/api/admin/settings/wecom", nil)
+	tenantWeComGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/wecom", nil, loginPayload.AccessToken)
+	if !bytes.Contains(tenantWeComGet.Body.Bytes(), []byte(`"bot_id":"tenant-wecom"`)) {
+		t.Fatalf("tenant wecom config = %s", tenantWeComGet.Body.String())
+	}
+	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", wecomConfigKey, `"bot_id":"tenant-wecom"`)
+
+	assertGlobalForbidden(http.MethodPost, "/api/admin/settings/dingtalk", map[string]any{"enabled": true, "client_id": "global-dingtalk", "client_secret": "global-secret"})
+	tenantDingTalk := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/settings/dingtalk", map[string]any{"enabled": true, "client_id": "tenant-dingtalk", "client_secret": "tenant-secret"}, loginPayload.AccessToken)
+	if tenantDingTalk.Code != http.StatusOK {
+		t.Fatalf("tenant dingtalk status = %d body=%s", tenantDingTalk.Code, tenantDingTalk.Body.String())
+	}
+	assertGlobalForbidden(http.MethodGet, "/api/admin/settings/dingtalk", nil)
+	tenantDingTalkGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/settings/dingtalk", nil, loginPayload.AccessToken)
+	if !bytes.Contains(tenantDingTalkGet.Body.Bytes(), []byte(`"client_id":"tenant-dingtalk"`)) {
+		t.Fatalf("tenant dingtalk config = %s", tenantDingTalkGet.Body.String())
+	}
+	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", dingtalkConfigKey, `"client_id":"tenant-dingtalk"`)
 
 	globalInviteRequired := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/invitation-codes/toggle", map[string]any{"required": false}, globalToken)
 	if globalInviteRequired.Code != http.StatusOK {
@@ -840,5 +1275,20 @@ func TestTenantAdminInvitationCodeUnbindIsTenantScoped(t *testing.T) {
 	}
 	if found, err := ctx.store.InvitationCodes.GetByID(context.Background(), tenantCode.ID); err != nil || found != nil {
 		t.Fatalf("tenant code should be deleted after own unbind, found=%#v err=%v", found, err)
+	}
+}
+
+func assertTenantSettingOnly(t *testing.T, system store.SystemSettingsRepository, tenantID, key, wantFragment string) {
+	t.Helper()
+	tenantRaw, err := system.Get(context.Background(), "tenant:"+tenantID+":"+key)
+	if err != nil {
+		t.Fatalf("get tenant setting %s/%s: %v", tenantID, key, err)
+	}
+	if !strings.Contains(tenantRaw, wantFragment) {
+		t.Fatalf("tenant setting %s/%s = %s, want fragment %s", tenantID, key, tenantRaw, wantFragment)
+	}
+	globalRaw, err := system.Get(context.Background(), key)
+	if err == nil && strings.Contains(globalRaw, wantFragment) {
+		t.Fatalf("tenant setting leaked into global %s: %s", key, globalRaw)
 	}
 }

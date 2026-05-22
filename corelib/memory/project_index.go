@@ -44,14 +44,20 @@ type ProjectRecord struct {
 	// Categories lists the distinct memory categories present for this project.
 	Categories []Category `json:"categories,omitempty"`
 
+	// HasOutput marks records backed by a tangible user-visible output.
+	HasOutput bool `json:"has_output,omitempty"`
+
 	// Archived indicates whether this project has been archived.
 	// Archived projects are hidden by default but can be found via search.
 	Archived bool `json:"archived,omitempty"`
 
 	// seenIDs tracks entry IDs already counted to prevent double-counting
 	// when the same entry is re-indexed (e.g. after tag merge in dedup paths).
-	seenIDs      map[string]bool `json:"-"`
-	nameExplicit bool            `json:"-"` // true if Name was set from Entry.Title (not content heuristic)
+	seenIDs            map[string]bool `json:"-"`
+	nameExplicit       bool            `json:"-"` // true if Name was set from Entry.Title (not content heuristic)
+	nameFromOutput     bool            `json:"-"`
+	outputLastActivity time.Time       `json:"-"`
+	outputPreview      string          `json:"-"`
 }
 
 // ProjectIndex maintains a lightweight in-memory index that maps
@@ -152,6 +158,7 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 	}
 
 	// Determine project path from entry metadata.
+	isOutput := isRecentTaskOutputEntry(e)
 	projPath := inferProjectPath(e)
 	if projPath == "" {
 		return false, ""
@@ -190,6 +197,19 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 
 	// Track categories.
 	rec.Categories = addCategoryDedup(rec.Categories, e.Category)
+	outputBecameLatest := false
+	if isOutput {
+		if !rec.HasOutput {
+			changed = true
+		}
+		rec.HasOutput = true
+		if e.UpdatedAt.After(rec.outputLastActivity) {
+			rec.outputLastActivity = e.UpdatedAt
+			rec.outputPreview = truncateRunes(outputPreviewLine(e.Content), 150)
+			outputBecameLatest = true
+			changed = true
+		}
+	}
 
 	// Extract name.
 	// Priority: Entry.Title (explicit, set by writer) > content-extracted title (heuristic).
@@ -206,6 +226,10 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 		switch {
 		case rec.Name == "":
 			better = true
+		case isOutput && !rec.nameFromOutput:
+			better = true
+		case isOutput && outputBecameLatest && candidateIsExplicit:
+			better = true
 		case candidateIsExplicit && !rec.nameExplicit:
 			// Explicit Title wins over any content-extracted name.
 			better = true
@@ -217,6 +241,7 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 		if better {
 			rec.Name = candidateName
 			rec.nameExplicit = candidateIsExplicit
+			rec.nameFromOutput = isOutput
 		}
 	}
 
@@ -263,13 +288,12 @@ func (pi *ProjectIndex) Search(query string, limit int) []ProjectRecord {
 	var results []scored
 
 	for _, rec := range pi.records {
-		score := pi.scoreRecord(rec, queryLower, queryTokens)
+		if !rec.HasOutput {
+			continue
+		}
+		clone := pi.outputRecordCloneLocked(rec)
+		score := pi.scoreRecord(&clone, queryLower, queryTokens)
 		if score > 0 {
-			clone := *rec
-			// Populate Archived from prefs.
-			if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
-				clone.Archived = true
-			}
 			results = append(results, scored{rec: clone, score: score})
 		}
 	}
@@ -517,7 +541,10 @@ func (pi *ProjectIndex) allSortedByActivityLocked(limit int) []ProjectRecord {
 		if p, ok := pi.prefs[rec.ProjectPath]; ok && (p.Hidden || p.Archived) {
 			continue
 		}
-		all = append(all, *rec)
+		if !rec.HasOutput {
+			continue
+		}
+		all = append(all, pi.outputRecordCloneLocked(rec))
 	}
 	// Sort: pinned first (by activity within pinned group), then unpinned by activity.
 	sort.SliceStable(all, func(i, j int) bool {
@@ -534,6 +561,18 @@ func (pi *ProjectIndex) allSortedByActivityLocked(limit int) []ProjectRecord {
 	return all
 }
 
+func (pi *ProjectIndex) outputRecordCloneLocked(rec *ProjectRecord) ProjectRecord {
+	clone := *rec
+	if !clone.outputLastActivity.IsZero() {
+		clone.LastActivity = clone.outputLastActivity
+		clone.Preview = clone.outputPreview
+	}
+	if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
+		clone.Archived = true
+	}
+	return clone
+}
+
 func (pi *ProjectIndex) scoreRecord(rec *ProjectRecord, queryLower string, queryTokens []string) float64 {
 	var score float64
 
@@ -543,7 +582,7 @@ func (pi *ProjectIndex) scoreRecord(rec *ProjectRecord, queryLower string, query
 
 	// Archive keyword matching: "归档" or "archived" finds archived tasks.
 	if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
-		if strings.Contains(queryLower, "归档") || strings.Contains(queryLower, "archived") {
+		if strings.Contains(queryLower, "归档") || strings.Contains(queryLower, "褰掓。") || strings.Contains(queryLower, "archived") {
 			score += 10.0
 		}
 	}
@@ -580,12 +619,78 @@ func (pi *ProjectIndex) scoreRecord(rec *ProjectRecord, queryLower string, query
 		score += 1.0
 	}
 
-	// Recency boost: projects active in the last 24h get a small bonus.
-	if time.Since(rec.LastActivity) < 24*time.Hour {
+	// Recency boost should rank matched projects, not make every recent project a match.
+	if score > 0 && time.Since(rec.LastActivity) < 24*time.Hour {
 		score += 0.5
 	}
 
 	return score
+}
+
+func hasRecentTaskOutputTag(tags []string) bool {
+	for _, tag := range tags {
+		if tag == "tangible_output" || strings.HasPrefix(tag, "output_tool:") {
+			return true
+		}
+	}
+	return false
+}
+
+func isRecentTaskOutputEntry(e *Entry) bool {
+	if e == nil {
+		return false
+	}
+	cat := MapToCanonical(e.Category)
+	sourceType := strings.ToLower(strings.TrimSpace(e.SourceType))
+	if cat == CategoryProjectKnowledge {
+		return sourceType == "task_sediment" && hasRecentTaskOutputTag(e.Tags)
+	}
+	if cat != CategoryTaskArtifact {
+		return false
+	}
+	switch sourceType {
+	case "", "task_artifact", "workflow_output", "workflow_output_ref":
+		return true
+	case "manual":
+		return hasRecentTaskOutputTag(e.Tags) || looksLikeProjectPath(inferProjectPath(e))
+	case "conversation_trim_ref", "context_checkpoint_ref", "session_start_extraction":
+		return false
+	default:
+		return strings.Contains(sourceType, "workflow_output")
+	}
+}
+
+func outputPreviewLine(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimLeft(line, "#>*- \t"))
+		lower := strings.ToLower(trimmed)
+		for _, prefix := range []string{"result:", "output:", "artifact:", "artifacts:"} {
+			if strings.HasPrefix(lower, prefix) {
+				candidate := strings.TrimSpace(trimmed[len(prefix):])
+				if candidate != "" && !isGenericOutputPreviewLine(candidate) {
+					return candidate
+				}
+				for _, next := range lines[i+1:] {
+					candidate = strings.TrimSpace(strings.TrimLeft(next, "#>*- \t"))
+					if candidate != "" && !isGenericOutputPreviewLine(candidate) {
+						return candidate
+					}
+				}
+			}
+		}
+	}
+	return firstMeaningfulLine(content)
+}
+
+func isGenericOutputPreviewLine(line string) bool {
+	lower := strings.ToLower(strings.Trim(strings.TrimSpace(line), " .,!?:;"))
+	switch lower {
+	case "", "done", "completed", "finished", "updated", "fixed", "success", "ok":
+		return true
+	default:
+		return false
+	}
 }
 
 // inferProjectPath extracts a project path from an entry's metadata.

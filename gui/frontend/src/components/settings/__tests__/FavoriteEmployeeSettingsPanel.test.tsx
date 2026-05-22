@@ -25,7 +25,7 @@ describe('FavoriteEmployeeSettingsPanel', () => {
         const onReorder = vi.fn();
         render(<FavoriteEmployeeSettingsPanel favoriteEmployeeIds={['ve-1', 've-2']} veList={veList} onAdd={vi.fn()} onRemove={onRemove} onReorder={onReorder} lang="en" />);
 
-        fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+        fireEvent.click(screen.getByRole('button', { name: 'Remove favorite employee: Researcher' }));
         expect(onRemove).toHaveBeenCalledWith('ve-1');
 
         const researcherRow = screen.getByText('Researcher').closest('[draggable="true"]') as HTMLElement;

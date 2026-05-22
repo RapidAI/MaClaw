@@ -260,6 +260,10 @@ Required security variables:
 
 - `MACLAW_ADMIN_SECRET`: admin control-plane secret, at least 24 chars.
 
+  This is the direct Admin API secret sent as `X-MaClaw-Admin-Secret`. In Admin Web it corresponds to the "Admin Secret" tab and is intended for automation, owner emergency access, or direct control-plane calls. It is not an admin user's password.
+
+- `MACLAW_ADMIN_SETUP_TOKEN`: optional first-run setup token for creating the initial owner account. It is not accepted as an Admin Secret after bootstrap.
+
 
 
 
@@ -9341,7 +9345,6 @@ Delete a snapshot:
 DELETE /api/v1/admin/snapshots/{snapshot_id}?confirm=true
 X-MaClaw-Admin-Secret: <admin-secret>
 ```
-
 
 
 

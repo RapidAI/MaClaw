@@ -450,6 +450,45 @@ func workflowAttachmentBypass(engine *workflow.WorkflowEngine, userID string, at
 	return hasImageAttachment && len([]rune(trimmed)) < 50
 }
 
+func workflowHasPendingPhaseForm(engine *workflow.WorkflowEngine, userID string) bool {
+	if engine == nil {
+		return false
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil {
+		return false
+	}
+	tmpl := engine.GetRegistry().Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return false
+	}
+	phase := tmpl.Phases[ws.PhaseIndex]
+	if phase.ID != ws.CurrentPhase || phase.InputSchema == nil {
+		return false
+	}
+	return !ws.PhaseFormSubmitted && !ws.PhaseFormSkipped && len(ws.PhaseFormData) == 0
+}
+
+func isWorkflowFormDirectRunCommand(text string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	trimmed = strings.Trim(trimmed, " .。!！")
+	switch trimmed {
+	case "直接写", "直接执行", "直接做", "直接开始", "直接生成", "开工", "开始", "启动", "继续", "跳过", "跳过表单", "不用填", "不填了", "go", "go ahead", "start", "continue", "skip", "skip form":
+		return true
+	}
+	return strings.Contains(trimmed, "不用填") || strings.Contains(trimmed, "跳过表单") || strings.Contains(trimmed, "直接") && (strings.Contains(trimmed, "做") || strings.Contains(trimmed, "写") || strings.Contains(trimmed, "执行") || strings.Contains(trimmed, "生成"))
+}
+
+func isWorkflowCancelText(text string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	trimmed = strings.Trim(trimmed, " .。!！")
+	switch trimmed {
+	case "/cancel", "cancel", "abort", "stop", "quit", "取消", "停止", "放弃", "退出":
+		return true
+	}
+	return false
+}
+
 func buildPendingWorkflowConfirmation(userID, text string, intent workflow.StructuredIntent, startReply string, lang string, projectPaths ...string) *pendingConfirmation {
 	now := time.Now()
 	goals := normalizeWorkflowConfirmationGoals(intent.Goals)
@@ -672,7 +711,14 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	// they mention a project or document. UIC owns the semantic distinction:
 	// workflow_type + CreationOriented means multi-phase; confident non-workflow
 	// labels mean the normal agent loop should execute directly.
-	if h.shouldBypassWorkflowForIntent(userID, text) && !engine.IsAwaitingReview(userID) {
+	_, workflowLoopPending := h.workflowAgentLoopMarker.Load(userID)
+	activeFormGate := workflowHasPendingPhaseForm(engine, userID)
+	formDirectRun := activeFormGate && isWorkflowFormDirectRunCommand(text)
+	if activeFormGate && !formDirectRun && !isWorkflowCancelText(text) && normalizeIMMessagePlatformKind(platform).IsDesktop() {
+		log.Printf("[WorkflowInterception] bypassing pending desktop workflow form for chat input: user=%s text=%q", userID, truncateRunes(text, 60))
+		return nil
+	}
+	if !workflowLoopPending && !formDirectRun && h.shouldBypassWorkflowForIntent(userID, text, activeFormGate) && !engine.IsAwaitingReview(userID) {
 		if engine.GetActiveWorkflow(userID) != nil {
 			h.stashedPhasePrompt.Delete(userID)
 			h.workflowAgentLoopMarker.Delete(userID)
@@ -785,7 +831,7 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	return nil
 }
 
-func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string) bool {
+func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string, classifyShortMessages bool) bool {
 	if strings.TrimSpace(text) == "" {
 		return false
 	}
@@ -798,7 +844,7 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string) bo
 	const shortMessageThreshold = 10
 	trimmedText := strings.TrimSpace(text)
 	runeCount := utf8.RuneCountInString(trimmedText)
-	if runeCount < shortMessageThreshold {
+	if runeCount < shortMessageThreshold && !classifyShortMessages {
 		log.Printf("[WorkflowInterception] UIC fusion skipped: short message (%d runes < %d threshold), text=%q",
 			runeCount, shortMessageThreshold, trimmedText)
 		return false
@@ -957,6 +1003,14 @@ func conversationEntryText(content any) string {
 
 // handleActiveWorkflow processes input for a user with an active workflow.
 func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine, userID, text, platform string, attachments []MessageAttachment) *IMAgentResponse {
+	if workflowHasPendingPhaseForm(engine, userID) && isWorkflowFormDirectRunCommand(text) {
+		if err := engine.SkipPhaseForm(userID); err != nil {
+			log.Printf("[WorkflowEngine] SkipPhaseForm direct-run failed: user=%s err=%v", userID, err)
+			return &IMAgentResponse{Text: fmt.Sprintf(avTr("Workflow form state could not be saved: %v", "工作流表单状态保存失败：%v"), err)}
+		}
+		log.Printf("[WorkflowEngine] skipped pending workflow form by direct-run command: user=%s text=%q", userID, truncateRunes(text, 40))
+	}
+
 	// Cross-type task detection via UIC.
 	//
 	// Before delegating to the engine, check if the message is a completely
@@ -1098,13 +1152,14 @@ func (h *IMMessageHandler) workflowFormResponse(engine *workflow.WorkflowEngine,
 		phaseID = ws.CurrentPhase
 	}
 	if normalizeIMMessagePlatformKind(platform).IsIMChannel() {
-		guidance := buildIMFormGuidanceText(resp.FormSchema)
+		formSchema := localizeWorkflowPhaseInputSchema(resp.FormSchema, h.getWorkflowLang())
+		guidance := buildIMFormGuidanceText(formSchema)
 		if guidance == "" {
-			guidance = resp.FormSchema.Description
+			guidance = formSchema.Description
 		}
 		if err := engine.SkipPhaseForm(userID); err != nil {
 			log.Printf("[WorkflowEngine] SkipPhaseForm failed: user=%s err=%v", userID, err)
-			return &IMAgentResponse{Text: fmt.Sprintf("Workflow form state could not be saved: %v", err)}
+			return &IMAgentResponse{Text: fmt.Sprintf(avTr("Workflow form state could not be saved: %v", "工作流表单状态保存失败：%v"), err)}
 		}
 		if strings.TrimSpace(resp.Text) != "" {
 			guidance = strings.TrimSpace(resp.Text) + "\n\n" + guidance
@@ -1112,7 +1167,7 @@ func (h *IMMessageHandler) workflowFormResponse(engine *workflow.WorkflowEngine,
 		return &IMAgentResponse{Text: strings.TrimSpace(guidance)}
 	}
 	h.emitWorkflowPhaseForm(userID, resp.FormSchema, phaseID)
-	text := "Please fill in the workflow information form in the right-side panel and submit it."
+	text := avTr("Please fill in the workflow information form in the right-side panel and submit it.", "请在右侧面板填写工作流信息表单并提交。")
 	if strings.TrimSpace(resp.Text) != "" {
 		text = strings.TrimSpace(resp.Text) + "\n\n" + text
 	}

@@ -57,18 +57,19 @@ func (a *App) ReviewExperienceTrace(traceID string, req ExperienceTraceReviewReq
 	entry.Content = appendExperienceReviewRecord(entry.Content, outcome, reviewKind, req.Note, a.defaultExperienceReviewReviewer(req.Reviewer), now)
 	entry.Tags = applyExperienceReviewTags(entry.Tags, reviewKind, outcome, now)
 	if _, err := a.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
-		ID:          entry.ID,
-		Title:       entry.Title,
-		Content:     entry.Content,
-		Tags:        entry.Tags,
-		Scope:       entry.Scope,
-		OwnerID:     entry.OwnerID,
-		SourceType:  entry.SourceType,
-		SourceURL:   entry.SourceURL,
-		EvidenceIDs: entry.EvidenceIDs,
-		RelatedIDs:  entry.RelatedIDs,
-		DerivedKind: entry.DerivedKind,
-		Boundary:    entry.Boundary,
+		ID:                entry.ID,
+		Title:             entry.Title,
+		Content:           entry.Content,
+		Tags:              entry.Tags,
+		Scope:             entry.Scope,
+		OwnerID:           entry.OwnerID,
+		SourceType:        entry.SourceType,
+		SourceURL:         entry.SourceURL,
+		EvidenceIDs:       entry.EvidenceIDs,
+		RelatedIDs:        entry.RelatedIDs,
+		DerivedKind:       entry.DerivedKind,
+		Boundary:          entry.Boundary,
+		MergeExistingTags: experienceReviewMergeMemoryTags,
 	}); err != nil {
 		return ExperienceTraceReviewRecord{}, err
 	}
@@ -86,6 +87,21 @@ func (a *App) ReviewExperienceTrace(traceID string, req ExperienceTraceReviewReq
 		RecommendedToolCall:     experienceTraceInspectionRecommendedToolCall(traceID, entry.Title, "manual review outcome recorded for priority experience trace"),
 		NonExecutingBoundary:    "manual review audit record only; no rollback ran, no skill was created or installed, no routing changed, no memory was rewritten beyond review audit evidence, no files were written, no tools were run, and no notifications were sent",
 	}, nil
+}
+
+func experienceReviewMergeMemoryTags(existing, desired []string) []string {
+	merged := append([]string(nil), desired...)
+	for _, tag := range existing {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || tag == experienceReviewRequiredTag || tag == experienceReviewResolvedTag || normalizeExperienceReviewLifecycleTagKind(tag).IsStateTag() {
+			continue
+		}
+		if strings.HasPrefix(tag, experienceReviewStatusTagPrefix) || strings.HasPrefix(tag, experienceReviewedAtTagPrefix) || strings.HasPrefix(tag, adaptiveRetryReviewedFailureCountPrefix) {
+			continue
+		}
+		merged = append(merged, tag)
+	}
+	return normalizeUsageMemoryTags(merged)
 }
 
 func (a *App) defaultExperienceReviewReviewer(value string) string {
@@ -233,16 +249,17 @@ func experienceReviewableTags(tags []string) bool {
 }
 
 func adaptiveRetryCurrentFailureCount(tags []string) int {
+	maxCount := 0
 	for _, tag := range tags {
 		if !strings.HasPrefix(tag, "failure_count:") {
 			continue
 		}
 		var count int
-		if _, err := fmt.Sscanf(strings.TrimPrefix(tag, "failure_count:"), "%d", &count); err == nil && count > 0 {
-			return count
+		if _, err := fmt.Sscanf(strings.TrimPrefix(tag, "failure_count:"), "%d", &count); err == nil && count > maxCount {
+			maxCount = count
 		}
 	}
-	return 0
+	return maxCount
 }
 
 func withoutExperienceReviewStateTags(tags []string) []string {

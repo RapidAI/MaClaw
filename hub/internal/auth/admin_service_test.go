@@ -59,6 +59,52 @@ func TestAdminServiceSetupRequiresEmail(t *testing.T) {
 	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err == nil {
 		t.Fatal("expected setup to require admin email")
 	}
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "not-an-email"); err == nil {
+		t.Fatal("expected setup to reject invalid admin email")
+	}
+}
+
+func TestAdminServiceSetupRejectsBlankUsernameOrPassword(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	if err := svc.SetupInitialAdmin(ctx, "   ", "pass123456", "admin@example.com"); err == nil {
+		t.Fatal("expected setup to reject blank username")
+	}
+	if err := svc.SetupInitialAdmin(ctx, "admin", "   ", "admin@example.com"); err == nil {
+		t.Fatal("expected setup to reject blank password")
+	}
+	initialized, err := svc.IsInitialized(ctx)
+	if err != nil {
+		t.Fatalf("IsInitialized: %v", err)
+	}
+	if initialized {
+		t.Fatal("invalid setup attempts should not initialize admin")
+	}
+}
+
+func TestAdminServiceTenantAdminRequiresValidEmail(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenantAdmin(ctx, "tenant_a", "admin", "pass123456", "not-an-email", "Tenant Admin", "tenant_admin"); err == nil {
+		t.Fatal("expected tenant admin creation to reject invalid email")
+	}
+}
+
+func TestAdminServiceUpdateEmailRequiresValidEmail(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
+		t.Fatalf("SetupInitialAdmin: %v", err)
+	}
+	if _, _, err := svc.UpdateEmail(ctx, "admin", "not-an-email"); err == nil {
+		t.Fatal("expected update email to reject invalid email")
+	}
 }
 
 func TestAdminServiceResetAdminCredentials(t *testing.T) {
@@ -92,6 +138,25 @@ func TestAdminServiceResetAdminCredentials(t *testing.T) {
 	}
 	if admin == nil || admin.Email != "owner@local.admin" {
 		t.Fatalf("unexpected reset admin: %+v", admin)
+	}
+}
+
+func TestAdminServiceResetAdminCredentialsRejectsBlankInput(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
+		t.Fatalf("SetupInitialAdmin: %v", err)
+	}
+	if err := svc.ResetAdminCredentials(ctx, "   ", "reset123456"); err == nil {
+		t.Fatal("expected reset to reject blank username")
+	}
+	if err := svc.ResetAdminCredentials(ctx, "owner", "   "); err == nil {
+		t.Fatal("expected reset to reject blank password")
+	}
+	if _, _, err := svc.Login(ctx, "admin", "pass123456"); err != nil {
+		t.Fatalf("blank reset attempts should not delete existing admin: %v", err)
 	}
 }
 
@@ -147,6 +212,22 @@ func TestAdminServiceChangePassword(t *testing.T) {
 	}
 	if _, _, err := svc.Login(ctx, "admin", "newpass123456"); err != nil {
 		t.Fatalf("expected new password to work, got %v", err)
+	}
+}
+
+func TestAdminServiceChangePasswordRejectsBlankNewPassword(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
+		t.Fatalf("SetupInitialAdmin: %v", err)
+	}
+	if _, _, err := svc.ChangePassword(ctx, "admin", "pass123456", "   "); err == nil {
+		t.Fatal("expected blank new password to be rejected")
+	}
+	if _, _, err := svc.Login(ctx, "admin", "pass123456"); err != nil {
+		t.Fatalf("blank password change should leave old password intact: %v", err)
 	}
 }
 

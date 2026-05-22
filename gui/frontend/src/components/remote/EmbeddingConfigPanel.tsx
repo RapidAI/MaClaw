@@ -4,7 +4,6 @@ import {
     GetScreenParsingEnabled, SetScreenParsingEnabled, CheckYOLOModel, DownloadYOLOModel,
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import { colors } from "./styles";
 import { ModelStatusBox } from "./ModelStatusBox";
 
 // --- Main panel ---
@@ -151,21 +150,21 @@ export function EmbeddingConfigPanel({ lang }: Props) {
         }
     };
 
-    if (loading) return <div style={{ padding: 20, color: colors.textMuted }}>{t('Loading...', '加载中...', '加載中...')}</div>;
+    if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '加載中...')}</div>;
 
     return (
-        <div style={{ padding: '0 2px' }}>
+        <div className="model-config-panel">
             {/* ===== Section 1: OminiParser-V2 (Screen Parsing) ===== */}
-            <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-warning, #e6a23c)', marginBottom: 12, marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+            <h4 className="model-config-heading model-config-heading--warning">
                 {t('OminiParser-V2 (Screen Parsing)', 'OminiParser-V2（屏幕解析）', 'OminiParser-V2（螢幕解析）')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={spEnabled} onChange={e => handleSpToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            <div className="model-config-toggle-row">
+                <label className="model-config-check">
+                    <input type='checkbox' checked={spEnabled} onChange={e => handleSpToggle(e.target.checked)} />
                     {t('Enable Screen Parsing', '启用屏幕解析', '啟用螢幕解析')}
                 </label>
             </div>
-            <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '0 0 16px 0', lineHeight: 1.5 }}>
+            <p className="model-config-copy">
                 {t(
                     'OminiParser-V2 uses a YOLO-based model to detect and parse UI elements on screen, enabling vision-based interaction. Model file ~77MB, downloaded from Hub.',
                     'OminiParser-V2 使用 YOLO 模型检测和解析屏幕上的 UI 元素，实现基于视觉的界面交互。模型文件约 77MB，将从 Hub 下载到本地。',
@@ -182,16 +181,16 @@ export function EmbeddingConfigPanel({ lang }: Props) {
             )}
 
             {/* ===== Section 2: Embedding Model (Vector Search) ===== */}
-            <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: 12, marginTop: 24, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+            <h4 className="model-config-heading model-config-heading--primary model-config-heading--spaced">
                 {t('Embedding Model (Vector Search)', '嵌入模型（向量搜索）', '嵌入模型（向量搜索）')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={embEnabled} onChange={e => handleEmbToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            <div className="model-config-toggle-row">
+                <label className="model-config-check">
+                    <input type='checkbox' checked={embEnabled} onChange={e => handleEmbToggle(e.target.checked)} />
                     {t('Enable Vector Search', '启用向量搜索', '啟用向量搜索')}
                 </label>
             </div>
-            <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '0 0 16px 0', lineHeight: 1.5 }}>
+            <p className="model-config-copy">
                 {t(
                     'Vector search uses EmbeddingGemma 300M model to generate semantic vectors for memory and documents, improving search accuracy. Model file ~300MB, downloaded from Hub.',
                     '向量搜索使用 EmbeddingGemma 300M 模型为记忆和文档生成语义向量，提升搜索精度。模型文件约 300MB，将从 Hub 下载到本地。',

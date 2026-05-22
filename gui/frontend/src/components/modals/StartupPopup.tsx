@@ -2,6 +2,8 @@ import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { SaveConfig } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
+// Startup modal surface uses var(--theme-surface) in App.css.
+
 type StartupPopupProps = {
     config: main.AppConfig | null;
     setConfig: (config: main.AppConfig) => void;
@@ -11,93 +13,41 @@ type StartupPopupProps = {
 };
 
 export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPopupProps) => (
-    <div className="modal-overlay" style={{ backgroundColor: 'rgba(0, 0, 0, 0.4)', backdropFilter: 'blur(4px)' }}>
-        <div className="modal-content" style={{
-            width: '320px',
-            textAlign: 'center',
-            padding: 0,
-            borderRadius: '16px',
-            overflow: 'hidden',
-            border: 'none',
-            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
-        }}>
-            <div style={{
-                background: 'linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface)) 0%, color-mix(in srgb, var(--theme-primary) 20%, var(--theme-surface)) 100%)',
-                padding: '25px 20px',
-                color: 'var(--theme-text-primary)',
-                position: 'relative',
-                borderBottom: '1px solid var(--theme-border)'
-            }}>
-                <button
-                    className="modal-close"
-                    onClick={onClose}
-                    style={{ color: 'var(--theme-text-muted)', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
-                >&times;</button>
-                <div style={{
-                    fontSize: '2.5rem',
-                    marginBottom: '10px',
-                    background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    fontWeight: '900',
-                    lineHeight: 1,
-                    filter: 'drop-shadow(0 2px 4px rgba(59, 130, 246, 0.1))'
-                }}>{`</>`}</div>
-                <h3 style={{ margin: 0, color: 'var(--theme-text-primary)', fontSize: '1.2rem', fontWeight: 'bold' }}>{t("startupTitle")}</h3>
-                <p style={{
-                    margin: '6px 0 0 0',
-                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    fontSize: '0.95rem',
-                    fontWeight: '700'
-                }}>
-                    {t("slogan")}
-                </p>
+    <div className="modal-overlay startup-modal-overlay">
+        <div className="modal-content startup-modal">
+            <button className="modal-close startup-modal__close" onClick={onClose} aria-label={t("close")}>&times;</button>
+
+            <div className="startup-modal__header">
+                <div className="startup-modal__mark" aria-hidden="true">{`</>`}</div>
+                <div className="startup-modal__title-block">
+                    <h3>{t("startupTitle")}</h3>
+                    <p>{t("slogan")}</p>
+                </div>
             </div>
 
-            <div style={{ padding: '20px 25px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
+            <div className="startup-modal__body">
+                <div className="startup-modal__quick-row" aria-hidden="true">
+                    <span>{t("launch")}</span>
+                    <span>{t("modelSettings")}</span>
+                    <span>{t("manageProjects")}</span>
+                </div>
+
+                <div className="startup-modal__actions">
                     <button
-                        style={{
-                            width: '100%',
-                            padding: '10px',
-                            borderRadius: '10px',
-                            fontSize: '0.95rem',
-                            fontWeight: '600',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '8px',
-                            background: 'linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface)), color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface)))',
-                            color: 'var(--theme-primary)',
-                            border: '1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border))',
-                            boxShadow: '0 2px 4px rgba(59, 130, 246, 0.1)',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s'
-                        }}
+                        type="button"
+                        className="startup-modal__action startup-modal__action--primary"
+                        data-legacy-icon="\u{1F3AC}"
                         onClick={() => {
                             BrowserOpenURL("https://www.bilibili.com/video/BV1wmvoBnEF1");
                         }}
                     >
-                        <span>{'\u{1F3AC}'}</span> {t("quickStart")}
+                        <span className="startup-modal__action-index" aria-hidden="true">01</span>
+                        <span>{t("quickStart")}</span>
                     </button>
                     <button
-                        className="btn-link"
-                        style={{
-                            padding: '10px',
-                            border: '1px solid var(--theme-border)',
-                            borderRadius: '10px',
-                            fontSize: '0.95rem',
-                            fontWeight: '500',
-                            color: 'var(--theme-text-secondary)',
-                            backgroundColor: 'var(--theme-surface)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '8px',
-                            boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
-                        }}
+                        type="button"
+                        className="startup-modal__action"
+                        data-legacy-icon="\u{1F4D6}"
                         onClick={() => {
                             const manualUrl = (lang === 'zh-Hans' || lang === 'zh-Hant')
                                 ? "https://github.com/rapidai/maclaw/blob/main/UserManual_CN.md"
@@ -105,43 +55,25 @@ export const StartupPopup = ({ config, setConfig, lang, t, onClose }: StartupPop
                             BrowserOpenURL(manualUrl);
                         }}
                     >
-                        <span>{'\u{1F4D6}'}</span> {t("manual")}
+                        <span className="startup-modal__action-index" aria-hidden="true">02</span>
+                        <span>{t("manual")}</span>
                     </button>
                 </div>
 
-                <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
-                }}>
-                    <label style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        cursor: 'pointer',
-                        fontSize: '0.8rem',
-                        color: 'var(--theme-text-muted)'
-                    }}>
-                        <input
-                            type="checkbox"
-                            checked={config?.hide_startup_popup || false}
-                            style={{
-                                width: '14px',
-                                height: '14px',
-                                cursor: 'pointer'
-                            }}
-                            onChange={(e) => {
-                                if (config) {
-                                    const newConfig = new main.AppConfig({ ...config, hide_startup_popup: e.target.checked });
-                                    setConfig(newConfig);
-                                    SaveConfig(newConfig);
-                                }
-                            }}
-                        />
-                        {t("dontShowAgain")}
-                    </label>
-                </div>
+                <label className="startup-modal__option">
+                    <input
+                        type="checkbox"
+                        checked={config?.hide_startup_popup || false}
+                        onChange={(e) => {
+                            if (config) {
+                                const newConfig = new main.AppConfig({ ...config, hide_startup_popup: e.target.checked });
+                                setConfig(newConfig);
+                                SaveConfig(newConfig);
+                            }
+                        }}
+                    />
+                    <span>{t("dontShowAgain")}</span>
+                </label>
             </div>
         </div>
     </div>

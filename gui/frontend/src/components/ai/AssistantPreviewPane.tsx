@@ -12,7 +12,7 @@ interface AssistantPreviewPaneProps {
     codePreviewState: CodePreviewUIState;
     closeCodePreview: () => void;
     closeDocPreview: () => void;
-    dismissAgentView?: (viewId: string | undefined) => void | Promise<void>;
+    dismissAgentView?: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
     inline: boolean;
     lang: string;
     onToggleMaximize?: () => void;

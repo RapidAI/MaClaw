@@ -25,12 +25,12 @@ export const UISettingsPanel = ({
     chatFontSize,
     setChatFontSize,
 }: UISettingsPanelProps) => (
-    <div className="settings-panel">
-        <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
-            <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+    <div className="settings-panel ui-settings-panel">
+        <section className="ui-settings-card">
+            <h4>
                 {textForLang(lang, 'UI Zoom', '\u754c\u9762\u7f29\u653e', '\u4ecb\u9762\u7e2e\u653e')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div className="ui-settings-slider-row">
                 <input
                     type="range"
                     min={50}
@@ -46,26 +46,25 @@ export const UISettingsPanel = ({
                         setUiZoom(v);
                         await SetUIZoomFactor(v).catch(() => {});
                     }}
-                    style={{ flex: 1, accentColor: 'var(--theme-primary)' }}
+                    aria-label={textForLang(lang, 'UI Zoom', '\u754c\u9762\u7f29\u653e', '\u4ecb\u9762\u7e2e\u653e')}
                 />
-                <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{Math.round(uiZoom * 100)}%</span>
+                <span className="ui-settings-value">{Math.round(uiZoom * 100)}%</span>
                 <button
                     onClick={() => { setUiZoom(1.0); SetUIZoomFactor(1.0).catch(() => {}); }}
-                    style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}
                 >
                     {textForLang(lang, 'Reset', '\u91cd\u7f6e', '\u91cd\u7f6e')}
                 </button>
             </div>
-            <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
+            <p>
                 {textForLang(lang, 'Adjust overall UI scale for HiDPI displays or personal preference.', '\u8c03\u6574\u754c\u9762\u6574\u4f53\u7f29\u653e\u6bd4\u4f8b\uff0c\u9002\u914d\u9ad8 DPI \u5c4f\u5e55\u6216\u4e2a\u4eba\u504f\u597d\u3002', '\u8abf\u6574\u4ecb\u9762\u6574\u9ad4\u7e2e\u653e\u6bd4\u4f8b\uff0c\u9069\u914d\u9ad8 DPI \u87a2\u5e55\u6216\u500b\u4eba\u504f\u597d\u3002')}
             </p>
-        </div>
+        </section>
 
-        <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px', marginBottom: '16px' }}>
-            <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+        <section className="ui-settings-card">
+            <h4>
                 {textForLang(lang, 'AI Assistant Font Size', 'AI \u52a9\u624b\u9762\u677f\u5b57\u53f7', 'AI \u52a9\u624b\u9762\u677f\u5b57\u865f')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div className="ui-settings-slider-row">
                 <input
                     type="range"
                     min={12}
@@ -78,19 +77,18 @@ export const UISettingsPanel = ({
                         setChatFontSize(v);
                         await SetChatFontSize(v).catch(() => {});
                     }}
-                    style={{ flex: 1, accentColor: 'var(--theme-primary)' }}
+                    aria-label={textForLang(lang, 'AI Assistant Font Size', 'AI \u52a9\u624b\u9762\u677f\u5b57\u53f7', 'AI \u52a9\u624b\u9762\u677f\u5b57\u865f')}
                 />
-                <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
+                <span className="ui-settings-value">{chatFontSize}px</span>
                 <button
                     onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
-                    style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}
                 >
                     {textForLang(lang, 'Reset', '\u91cd\u7f6e', '\u91cd\u7f6e')}
                 </button>
             </div>
-            <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
+            <p>
                 {textForLang(lang, 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.', '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002', '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002')}
             </p>
-        </div>
+        </section>
     </div>
 );

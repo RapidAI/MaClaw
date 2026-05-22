@@ -5,6 +5,8 @@
     [ValidateSet('rapidai', 'tigerclaw')]
     [string]$Brand = 'rapidai',
 
+    [string]$SkipTargets = '',
+
     [switch]$NoCheck
 )
 
@@ -982,6 +984,25 @@ $targets = @(
     }
 )
 
+$skipTargetsValue = $SkipTargets
+if ([string]::IsNullOrWhiteSpace($skipTargetsValue)) {
+    $skipTargetsValue = Get-EnvOrDefault 'DEPLOY_SKIP_TARGETS' ''
+}
+if (-not [string]::IsNullOrWhiteSpace($skipTargetsValue)) {
+    $skipSet = @{}
+    $skipTargetsValue -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
+        $skipSet[$_.Trim().ToLowerInvariant()] = $true
+    }
+    $targets = @($targets | Where-Object {
+        -not ($skipSet.ContainsKey($_.Name.ToLowerInvariant()) -or
+            $skipSet.ContainsKey($_.Host.ToLowerInvariant()) -or
+            (-not [string]::IsNullOrWhiteSpace($_.HubPublicUrl) -and $skipSet.ContainsKey(([uri]$_.HubPublicUrl).Host.ToLowerInvariant())))
+    })
+    if ($targets.Count -eq 0) {
+        throw 'DEPLOY_SKIP_TARGETS excluded all deployment targets.'
+    }
+}
+
 if ($Scope -eq 'hubcenter-only') {
     foreach ($target in $targets) {
         $target.DeployHub = $false
@@ -1050,7 +1071,7 @@ try {
     }
 
     Write-Host '[5/9] Building local Linux binaries and staging deploy assets...' -ForegroundColor Cyan
-    $shouldBuildHub = ($targets | Where-Object { $_.DeployHub }).Count -gt 0
+    $shouldBuildHub = @($targets | Where-Object { $_.DeployHub }).Count -gt 0
     Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub
     Stage-DeployAssets -SourceRoot $rootDir -StageRoot $stageRoot
 

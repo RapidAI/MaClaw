@@ -647,16 +647,16 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
     };
 
     return (
-        <div style={{ border: "1px solid " + colors.border, borderRadius: radius.lg, padding: "14px 16px", marginBottom: 14, background: colors.surface }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
-                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text }}>
+        <div className="memory-learning-panel" style={{ border: "1px solid " + colors.border, borderRadius: radius.lg, padding: "14px 16px", marginBottom: 14, background: colors.surface }}>
+            <div className="memory-learning-panel__header">
+                <div className="memory-learning-panel__title">
                     {t("Experience Learning", "\u7ecf\u9a8c\u5b66\u4e60", "\u7d93\u9a57\u5b78\u7fd2")}
                 </div>
-                <span style={{ fontSize: "0.66rem", color: colors.textMuted, border: "1px solid " + colors.borderLight, borderRadius: radius.sm, padding: "1px 6px" }}>
+                <span className="memory-learning-panel__badge" style={{ border: "1px solid " + colors.borderLight, borderRadius: radius.sm }}>
                     {t("review-gated", "\u5ba1\u9605\u95e8\u63a7", "\u5be9\u95b1\u95dc\u5361")}
                 </span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: hasSignals || error ? 10 : 0 }}>
+            <div className="memory-learning-stat-grid" style={{ marginBottom: hasSignals || error ? 10 : 0 }}>
                 <LearningStat label={t("Routing Hints", "\u8def\u7531\u63d0\u793a", "\u8def\u7531\u63d0\u793a")} value={routingHintCount} />
                 <LearningStat label={t("Skill Nudges", "\u6280\u80fd\u5019\u9009", "\u6280\u80fd\u5019\u9078")} value={skillNudgeCount} />
                 <LearningStat label={t("Usage Patterns", "\u5de5\u5177\u6a21\u5f0f", "\u5de5\u5177\u6a21\u5f0f")} value={usagePatternCount} />
@@ -899,9 +899,9 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
 
 function LearningStat({ label, value }: { label: string; value: number }) {
     return (
-        <div style={{ borderTop: "1px solid " + colors.borderLight, paddingTop: 6 }}>
-            <div style={{ fontSize: "0.9rem", fontWeight: 700, color: colors.text, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-            <div style={{ fontSize: "0.66rem", color: colors.textMuted }}>{label}</div>
+        <div className="memory-learning-stat" style={{ borderTop: "1px solid " + colors.borderLight }}>
+            <div className="memory-learning-stat__value">{value}</div>
+            <div className="memory-learning-stat__label">{label}</div>
         </div>
     );
 }
@@ -998,11 +998,11 @@ function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewAct
         },
     ];
     return (
-        <div style={triggeredRollbackReview ? governanceNoticeAlertStyle : governanceNoticeStyle}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 700 }}>{t("Governance Summary", "\u6cbb\u7406\u6458\u8981", "\u6cbb\u7406\u6458\u8981")}</span>
+        <div className="memory-governance-panel" style={triggeredRollbackReview ? governanceNoticeAlertStyle : governanceNoticeStyle}>
+            <div className="memory-governance-panel__header">
+                <span className="memory-governance-panel__title">{t("Governance Summary", "\u6cbb\u7406\u6458\u8981", "\u6cbb\u7406\u6458\u8981")}</span>
                 {recommendedAction && (
-                    <span style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <span className="memory-governance-panel__actions">
                         {previewActive && <span style={neutralBadgeStyle}>{t("Preview", "\u9884\u89c8", "\u9810\u89bd")}</span>}
                         {triggeredRollbackReview && <span style={warningBadgeStyle}>{t("Triggered", "\u5df2\u89e6\u53d1", "\u5df2\u89f8\u767c")}</span>}
                         {canDraftMaintenance && (

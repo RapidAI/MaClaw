@@ -962,6 +962,30 @@ func (e *WorkflowEngine) GetActiveWorkflow(userID string) *WorkflowState {
 	return nil
 }
 
+// ActiveWorkflowUserIDForPhase returns the user ID for the single active
+// workflow currently on phaseID. If no workflow or multiple workflows match,
+// it returns false so callers do not guess across sessions.
+func (e *WorkflowEngine) ActiveWorkflowUserIDForPhase(phaseID string) (string, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	phaseID = strings.TrimSpace(phaseID)
+	if phaseID == "" {
+		return "", false
+	}
+	matchedUserID := ""
+	for userID, ws := range e.workflows {
+		if ws == nil || ws.Status != WorkflowActive || ws.CurrentPhase != phaseID {
+			continue
+		}
+		if matchedUserID != "" {
+			return "", false
+		}
+		matchedUserID = userID
+	}
+	return matchedUserID, matchedUserID != ""
+}
+
 // ---------------------------------------------------------------------------
 // Cancel
 // ---------------------------------------------------------------------------

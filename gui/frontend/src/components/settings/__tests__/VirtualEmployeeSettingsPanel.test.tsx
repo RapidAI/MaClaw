@@ -36,6 +36,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     GetVEAllowedDirectoriesMock(...args),
   SetVEAllowedDirectories: (...args: unknown[]) =>
     SetVEAllowedDirectoriesMock(...args),
+  LoadConfig: vi.fn(async () => ({ remote_hub_url: "http://hub.local" })),
   GetVEApprovalConfig: (...args: unknown[]) =>
     GetVEApprovalConfigMock(...args),
   SaveVEApprovalConfig: (...args: unknown[]) =>
@@ -45,6 +46,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
 vi.mock("../../../../wailsjs/runtime", () => ({
   EventsOn: vi.fn(() => vi.fn()),
   EventsOff: vi.fn(),
+  BrowserOpenURL: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -91,6 +93,19 @@ describe("VirtualEmployeeSettingsPanel", () => {
       screen.getByText("\u6570\u5b57\u5458\u5de5\u8bbe\u7f6e"),
     ).toBeTruthy();
     expect(screen.queryByText(/\u865a\u62df\u5458\u5de5/)).toBeNull();
+  });
+
+  it("places register above approval capability and approval save at the bottom", async () => {
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="machine-123" />);
+
+    const submit = screen.getByTestId("ve-submit-btn");
+    const approval = await screen.findByTestId("ve-approval-section");
+    const workflow = screen.getByTestId("ve-approval-workflow-design-section");
+    const save = screen.getByTestId("ve-approval-save-btn");
+
+    expect(Boolean(submit.compareDocumentPosition(approval) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(Boolean(approval.compareDocumentPosition(workflow) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(Boolean(workflow.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
   it("validates required fields with readable Chinese copy", () => {

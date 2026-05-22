@@ -14,6 +14,41 @@ interface AssistantAttachmentsStripProps {
     theme: Theme;
 }
 
+function attachmentKindLabel(fileName: string, extension: string): string {
+    const raw = (extension || fileName.match(/\.[^./\\]+$/)?.[0] || "").replace(/^\./, "").trim();
+    if (!raw) return "FILE";
+    return raw.slice(0, 4).toUpperCase();
+}
+
+function attachmentFileName(filePath: string): string {
+    return filePath.split(/[\/\\]/).pop() || filePath;
+}
+
+function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) {
+    return (
+        <span
+            aria-hidden="true"
+            style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "34px",
+                height: "34px",
+                flexShrink: 0,
+                borderRadius: "5px",
+                background: theme.codeBlockBorder,
+                color: theme.pathColor,
+                fontSize: label.length > 3 ? "8px" : "10px",
+                fontWeight: 800,
+                letterSpacing: 0,
+                lineHeight: 1,
+            }}
+        >
+            {label}
+        </span>
+    );
+}
+
 export function AssistantAttachmentsStrip({
     cancelPending,
     clearSelectedFile,
@@ -29,16 +64,18 @@ export function AssistantAttachmentsStrip({
             {pendingAttachments.length > 0 && (
                 <div data-testid="ai-pending-attachments" style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                     {pendingAttachments.map((att, index) => {
-                        const showImageOnly = !!att.thumbnailDataUrl && att.isImage;
+                        const fileName = att.fileName || attachmentFileName(att.filePath);
+                        const typeLabel = attachmentKindLabel(fileName, att.extension);
                         return (
                             <div
                                 key={att.filePath + "-" + index}
                                 style={{
                                     display: "flex",
                                     alignItems: "center",
-                                    gap: showImageOnly ? "5px" : "6px",
-                                    maxWidth: showImageOnly ? "72px" : "220px",
-                                    padding: showImageOnly ? "4px 5px" : "5px 7px",
+                                    gap: "7px",
+                                    maxWidth: "240px",
+                                    minWidth: 0,
+                                    padding: "5px 7px",
                                     borderRadius: "7px",
                                     background: t.codeBlockBg,
                                     border: `1px solid ${t.codeBlockBorder}`,
@@ -50,16 +87,21 @@ export function AssistantAttachmentsStrip({
                                 {att.thumbnailDataUrl ? (
                                     <img
                                         src={att.thumbnailDataUrl}
-                                        alt={att.fileName || "pasted image"}
+                                        alt={fileName || "pasted image"}
                                         style={{ width: "34px", height: "34px", objectFit: "cover", borderRadius: "4px", flexShrink: 0 }}
                                     />
                                 ) : (
-                                    <span>{"file"}</span>
+                                    <AttachmentTypeBadge label={typeLabel} theme={t} />
                                 )}
-                                {!showImageOnly && (
-                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.fileName}</span>
-                                )}
-                                <button type="button" onClick={() => setPendingAttachments(prev => prev.filter((_, i) => i !== index))} style={{ border: "none", background: "transparent", color: t.textMuted, cursor: "pointer", padding: showImageOnly ? "0 2px" : undefined }}>{"x"}</button>
+                                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{fileName}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setPendingAttachments(prev => prev.filter((_, i) => i !== index))}
+                                    style={{ border: "none", background: "transparent", color: t.textMuted, cursor: "pointer", padding: "0 2px" }}
+                                    aria-label={lang === "en" ? `Remove ${fileName}` : `\u79fb\u9664 ${fileName}`}
+                                >
+                                    {"x"}
+                                </button>
                             </div>
                         );
                     })}
@@ -68,7 +110,7 @@ export function AssistantAttachmentsStrip({
             {selectedFilePaths.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     {selectedFilePaths.map((filePath: string, index: number) => {
-                        const fileName = filePath.split(/[\/\\]/).pop() || filePath;
+                        const fileName = attachmentFileName(filePath);
                         return (
                             <div key={filePath + index} style={{
                                 display: "flex",
@@ -82,7 +124,7 @@ export function AssistantAttachmentsStrip({
                                 color: t.text,
                                 fontSize: "12px",
                             }}>
-                                <span style={{ color: t.pathColor, flexShrink: 0 }}>{isImageFilePath(filePath) ? "img" : "file"}</span>
+                                <AttachmentTypeBadge label={isImageFilePath(filePath) ? "IMG" : attachmentKindLabel(fileName, "")} theme={t} />
                                 <div style={{ minWidth: 0, flex: 1 }} title={filePath}>
                                     <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600 }}>{fileName}</div>
                                     <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: t.textMuted, fontSize: "11px" }}>{filePath}</div>

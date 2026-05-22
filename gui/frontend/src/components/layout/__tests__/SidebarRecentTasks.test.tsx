@@ -60,6 +60,25 @@ describe('SidebarRecentTasks', () => {
         expect(resumeRecentProject).toHaveBeenCalledWith(baseProject.project_path);
     });
 
+    it('hides recent projects without tangible output', () => {
+        renderRecentTasks({
+            recentProjects: [
+                { ...baseProject, has_output: false },
+                { ...baseProject, id: 'task-2', name: 'Saved report', project_path: 'D:/work/tasks/saved-report', has_output: true },
+            ],
+        });
+
+        expect(screen.queryByText('Build dashboard')).toBeNull();
+        expect(screen.getByText('Saved report')).toBeTruthy();
+    });
+
+    it('shows the empty state when every recent project lacks output', () => {
+        renderRecentTasks({ recentProjects: [{ ...baseProject, has_output: false }] });
+
+        expect(screen.getByText('No recent tasks')).toBeTruthy();
+        expect(screen.queryByText('Build dashboard')).toBeNull();
+    });
+
     it('blocks task switching while the assistant is warming up', () => {
         const resumeRecentProject = vi.fn();
         const onRecentTaskSwitchBlocked = vi.fn();

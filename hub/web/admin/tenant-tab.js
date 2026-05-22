@@ -12,22 +12,25 @@
     navDesc: { zh: '\u521b\u5efa\u79df\u6237\u548c\u79df\u6237\u7ba1\u7406\u5458', en: 'Create tenants and tenant admins' },
     navDescTenant: { zh: '\u7ba1\u7406\u672c\u79df\u6237\u4fe1\u606f\u548c\u7ba1\u7406\u5458', en: 'Manage this tenant and its admins' },
     title: { zh: '\u79df\u6237\u7ba1\u7406', en: 'Tenant Management' },
-    desc: { zh: '\u5168\u5c40\u7ba1\u7406\u5458\u5728\u8fd9\u91cc\u521b\u5efa Hub \u79df\u6237\u3001\u6307\u5b9a\u57df\u540d\u5e76\u914d\u7f6e\u79df\u6237\u7ba1\u7406\u5458\u3002', en: 'Global admins create Hub tenants, assign domains, and provision tenant admins here.' },
+    desc: { zh: '\u5168\u5c40\u7ba1\u7406\u5458\u5728\u8fd9\u91cc\u521b\u5efa Hub \u79df\u6237\u3002\u57df\u540d\u548c\u521d\u59cb\u79df\u6237\u7ba1\u7406\u5458\u90fd\u53ef\u9009\uff0c\u53ef\u7528\u4e8e\u63a5\u6536\u96f6\u6563\u7528\u6237\u3002', en: 'Global admins create Hub tenants here. Domain and initial tenant admin are optional, so a tenant can receive loose non-enterprise users.' },
     descTenant: { zh: '\u79df\u6237\u7ba1\u7406\u5458\u5728\u8fd9\u91cc\u67e5\u770b\u81ea\u5df1\u7684\u79df\u6237\u4fe1\u606f\uff0c\u5e76\u6dfb\u52a0\u672c\u79df\u6237\u7684\u7ba1\u7406\u8d26\u53f7\u3002', en: 'Tenant admins review their own tenant and add admin accounts within that tenant.' },
     createTitle: { zh: '\u521b\u5efa\u79df\u6237', en: 'Create Tenant' },
-    createDesc: { zh: '\u79df\u6237 Slug\u3001\u540d\u79f0\u548c\u521d\u59cb\u7ba1\u7406\u5458\u4e3a\u5fc5\u586b\u9879\u3002Tenant ID \u7559\u7a7a\u65f6\u81ea\u52a8\u751f\u6210\u3002', en: 'Tenant slug, name, and initial admin credentials are required. Tenant ID is generated when blank.' },
+    createDesc: { zh: '\u53ea\u9700\u586b\u79df\u6237\u540d\u79f0\u5373\u53ef\u521b\u5efa\u3002Tenant ID \u53ef\u7559\u7a7a\u81ea\u52a8\u751f\u6210\uff0c\u90ae\u7bb1\u57df\u540d\u53ef\u9009\u4e14\u652f\u6301\u591a\u4e2a\u3002\u521d\u59cb\u7ba1\u7406\u5458\u53ef\u7559\u7a7a\uff0c\u4e4b\u540e\u518d\u6dfb\u52a0\u3002', en: 'Only tenant name is required. Tenant ID can be generated automatically, email domains are optional and can contain multiple entries, and initial admin can be added later.' },
     adminCreateTitle: { zh: '\u6dfb\u52a0\u79df\u6237\u7ba1\u7406\u5458', en: 'Add Tenant Admin' },
     adminCreateDesc: { zh: '\u4e3a\u5df2\u6709\u79df\u6237\u589e\u52a0\u79df\u6237\u8303\u56f4\u7684\u7ba1\u7406\u8d26\u53f7\u3002', en: 'Add a tenant-scoped admin account to an existing tenant.' },
     listTitle: { zh: '\u79df\u6237\u5217\u8868', en: 'Tenant List' },
-    listDesc: { zh: '\u5f53\u524d Hub \u79df\u6237\u53ca\u5176\u72b6\u6001\u548c\u4e3b\u57df\u540d\u3002', en: 'Hub tenants, status, and primary domains.' },
+    listDesc: { zh: '\u5f53\u524d Hub \u79df\u6237\u53ca\u5176\u72b6\u6001\u548c\u90ae\u7bb1\u57df\u540d\u8def\u7531\u3002', en: 'Hub tenants, status, and email domain routing.' },
     listDescTenant: { zh: '\u5f53\u524d\u767b\u5f55\u7ba1\u7406\u5458\u6240\u5c5e\u7684\u79df\u6237\u3002', en: 'The tenant owned by the signed-in tenant admin.' },
     reload: { zh: '\u91cd\u65b0\u52a0\u8f7d', en: 'Reload' },
     create: { zh: '\u521b\u5efa\u79df\u6237', en: 'Create Tenant' },
     addAdmin: { zh: '\u6dfb\u52a0\u7ba1\u7406\u5458', en: 'Add Admin' },
-    slug: { zh: '\u79df\u6237 Slug', en: 'Tenant Slug' },
+    slug: { zh: '\u79df\u6237\u7f16\u7801', en: 'Tenant Code' },
     name: { zh: '\u79df\u6237\u540d\u79f0', en: 'Tenant Name' },
     tenantID: { zh: 'Tenant ID', en: 'Tenant ID' },
-    domain: { zh: '\u4e3b\u57df\u540d', en: 'Primary Domain' },
+    domain: { zh: '\u90ae\u7bb1\u57df\u540d\uff08\u53ef\u9009\uff0c\u591a\u4e2a\uff09', en: 'Email Domains (optional, multiple)' },
+    saveDomains: { zh: '\u4fdd\u5b58\u57df\u540d', en: 'Save Domains' },
+    domainsSaved: { zh: '\u79df\u6237\u57df\u540d\u5df2\u66f4\u65b0\u3002', en: 'Tenant domains updated.' },
+    domainsSaveFailed: { zh: '\u66f4\u65b0\u79df\u6237\u57df\u540d\u5931\u8d25: {error}', en: 'Update tenant domains failed: {error}' },
     adminUser: { zh: '\u7ba1\u7406\u5458\u7528\u6237\u540d', en: 'Admin Username' },
     adminEmail: { zh: '\u7ba1\u7406\u5458\u90ae\u7bb1', en: 'Admin Email' },
     adminName: { zh: '\u663e\u793a\u540d\u79f0', en: 'Display Name' },
@@ -47,7 +50,8 @@
     empty: { zh: '\u6682\u65e0\u79df\u6237\u3002', en: 'No tenants yet.' },
     loading: { zh: '\u52a0\u8f7d\u4e2d...', en: 'Loading...' },
     forbidden: { zh: '\u9700\u8981\u5168\u5c40\u7ba1\u7406\u5458\u6743\u9650\u624d\u80fd\u67e5\u770b\u548c\u521b\u5efa\u79df\u6237\u3002', en: 'Global admin authorization is required to view and create tenants.' },
-    required: { zh: '\u8bf7\u586b\u5199\u79df\u6237 Slug\u3001\u540d\u79f0\u3001\u521d\u59cb\u7ba1\u7406\u5458\u8d26\u53f7\u3001\u5bc6\u7801\u548c\u90ae\u7bb1\u3002', en: 'Fill tenant slug, name, initial admin username, password, and email.' },
+    required: { zh: '\u8bf7\u586b\u5199\u79df\u6237\u540d\u79f0\u3002', en: 'Fill tenant name.' },
+    partialAdminRequired: { zh: '\u521d\u59cb\u7ba1\u7406\u5458\u5982\u679c\u586b\u5199\uff0c\u9700\u540c\u65f6\u586b\u5199\u7528\u6237\u540d\u3001\u5bc6\u7801\u548c\u90ae\u7bb1\u3002', en: 'If creating an initial admin, fill username, password, and email together.' },
     adminRequired: { zh: '\u8bf7\u9009\u62e9\u79df\u6237\u5e76\u586b\u5199\u7ba1\u7406\u5458\u7528\u6237\u540d\u3001\u5bc6\u7801\u548c\u90ae\u7bb1\u3002', en: 'Choose a tenant and fill admin username, password, and email.' },
     invalidAdminEmail: { zh: '\u8bf7\u8f93\u5165\u6709\u6548\u7684\u7ba1\u7406\u5458\u90ae\u7bb1\u3002', en: 'Enter a valid admin email address.' },
     loadFailed: { zh: '\u52a0\u8f7d\u79df\u6237\u5931\u8d25: {error}', en: 'Load tenants failed: {error}' },
@@ -102,8 +106,26 @@
   function tenantOptionLabel(item) {
     if (!item) return '';
     var label = tenantLabel(item);
-    var suffix = item.primary_domain || item.slug || item.id || '';
+    var domains = tenantDomains(item);
+    var suffix = domains.length ? domains[0] : (item.slug || item.id || '');
     return suffix && suffix !== label ? label + ' (' + suffix + ')' : label;
+  }
+  function splitDomains(value) {
+    var seen = {};
+    var out = [];
+    String(value || '').split(/[\s,;]+/).forEach(function(part) {
+      var domain = String(part || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+      if (!domain || seen[domain]) return;
+      seen[domain] = true;
+      out.push(domain);
+    });
+    return out;
+  }
+  function tenantDomains(item) {
+    if (!item) return [];
+    var domains = Array.isArray(item.domains) ? item.domains.slice() : [];
+    if (item.primary_domain) domains.unshift(item.primary_domain);
+    return splitDomains(domains.join('\n'));
   }
   function tenantStatus(item) {
     if (!item) return 'active';
@@ -144,7 +166,7 @@
     setText('navTenants', 'nav'); setText('navTenantsDesc', tenantScoped() ? 'navDescTenant' : 'navDesc'); setText('loginTenantLabel', 'loginTenant'); setText('loginTenantHint', 'loginTenantHint'); setText('tenantsTitle', 'title'); setText('tenantsDesc', tenantScoped() ? 'descTenant' : 'desc');
     setText('tenantsReloadBtn', 'reload'); setText('tenantCreateTitle', 'createTitle'); setText('tenantCreateDesc', 'createDesc');
     setText('tenantAdminCreateTitle', 'adminCreateTitle'); setText('tenantAdminCreateDesc', 'adminCreateDesc'); setText('tenantListTitle', 'listTitle'); setText('tenantListDesc', tenantScoped() ? 'listDescTenant' : 'listDesc');
-    setText('tenantCreateBtn', 'create'); setText('tenantAdminCreateBtn', 'addAdmin'); setText('tenantSlugLabel', 'slug'); setText('tenantNameLabel', 'name'); setText('tenantIDLabel', 'tenantID'); setText('tenantDomainLabel', 'domain');
+    setText('tenantCreateBtn', 'create'); setText('tenantAdminCreateBtn', 'addAdmin'); setText('tenantNameLabel', 'name'); setText('tenantIDLabel', 'tenantID'); setText('tenantDomainLabel', 'domain');
     setText('tenantAdminUsernameLabel', 'adminUser'); setText('tenantAdminEmailLabel', 'adminEmail'); setText('tenantAdminNameLabel', 'adminName'); setText('tenantAdminPasswordLabel', 'adminPassword');
     setText('tenantAdminTenantLabel', 'tenant'); setText('tenantAdminRoleLabel', 'role'); setText('tenantExtraAdminUsernameLabel', 'adminUser'); setText('tenantExtraAdminEmailLabel', 'adminEmail'); setText('tenantExtraAdminNameLabel', 'adminName'); setText('tenantExtraAdminPasswordLabel', 'adminPassword');
     var empty = byID('tenantListEmpty'); if (empty) empty.textContent = tt('empty');
@@ -206,18 +228,22 @@
       root.innerHTML = '<div class="hint" id="tenantListEmpty">' + esc(tt('empty')) + '</div>';
       return;
     }
-    root.innerHTML = '<div style="display:grid;gap:8px">' + list.map(function(item) {
-      var domain = item.primary_domain || '-';
+    root.innerHTML = '<div style="display:grid;gap:8px">' + list.map(function(item, index) {
+      var domains = tenantDomains(item);
+      var domain = domains.length ? domains.join(', ') : '-';
       var statusTitle = tt('updated') + ': ' + fmtTime(item.updated_at);
       if (item.deleted_at) statusTitle += ' / ' + tt('deleted') + ': ' + fmtTime(item.deleted_at);
+      var canEditDomains = item && item.id && !isReservedTenantID(item.id) && tenantStatus(item) !== 'deleted';
       return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:center">'
         + '<div style="min-width:0"><div class="item-title" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(tenantLabel(item)) + '</div><div class="item-meta mono" style="font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.id || '') + '</div></div>'
-        + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">Slug</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.slug || '-') + '</div></div>'
+        + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">' + esc(tt('slug')) + '</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.slug || '-') + '</div></div>'
         + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">' + esc(tt('domain')) + '</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(domain) + '</div></div>'
         + '<div style="display:flex;justify-content:flex-start"><span class="badge ' + esc(tenantBadgeClass(item)) + '" title="' + esc(statusTitle) + '">' + esc(tenantStatusText(item)) + '</span></div>'
         + tenantAdminActions(item)
-        + '</div></div>';
+        + '</div>'
+        + (canEditDomains ? '<div style="display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:8px;align-items:end;margin-top:8px"><div><label style="margin:0 0 4px;font-size:10px">' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" style="min-height:54px;font-size:12px;line-height:1.4;resize:vertical" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><button class="btn-secondary" style="height:32px;font-size:11px;padding:0 10px" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveDomains')) + '</button></div>' : '')
+        + '</div>';
     }).join('') + '</div>';
   }
 
@@ -269,15 +295,21 @@
   }
   async function createTenant() {
     if (tenantCreateBusy) return;
+    var createDomains = splitDomains(val('tenantDomain'));
     var payload = {
-      id: val('tenantID'), slug: val('tenantSlug'), name: val('tenantName'), primary_domain: val('tenantDomain'),
+      id: val('tenantID'), name: val('tenantName'), primary_domain: createDomains[0] || '', domains: createDomains,
       initial_admin_username: val('tenantAdminUsername'), initial_admin_password: val('tenantAdminPassword'), initial_admin_email: val('tenantAdminEmail'), initial_admin_name: val('tenantAdminName')
     };
-    if (!payload.slug || !payload.name || !payload.initial_admin_username || !payload.initial_admin_password || !payload.initial_admin_email) {
+    if (!payload.name) {
       setTenantOutput(tt('required'), 'info');
       return;
     }
-    if (!validEmail(payload.initial_admin_email)) {
+    var adminRequested = !!(payload.initial_admin_username || payload.initial_admin_password || payload.initial_admin_email || payload.initial_admin_name);
+    if (adminRequested && (!payload.initial_admin_username || !payload.initial_admin_password || !payload.initial_admin_email)) {
+      setTenantOutput(tt('partialAdminRequired'), 'info');
+      return;
+    }
+    if (adminRequested && !validEmail(payload.initial_admin_email)) {
       setTenantOutput(tt('invalidAdminEmail'), 'info');
       return;
     }
@@ -286,7 +318,7 @@
     if (btn) btn.disabled = true;
     try {
       var data = await global.api('/api/admin/tenants', { method: 'POST', body: JSON.stringify(payload) });
-      ['tenantID','tenantSlug','tenantName','tenantDomain','tenantAdminUsername','tenantAdminPassword','tenantAdminEmail','tenantAdminName'].forEach(function(id) { var el = byID(id); if (el) el.value = ''; });
+      ['tenantID','tenantName','tenantDomain','tenantAdminUsername','tenantAdminPassword','tenantAdminEmail','tenantAdminName'].forEach(function(id) { var el = byID(id); if (el) el.value = ''; });
       await loadTenants();
       await loadLoginTenants();
       setTenantOutput(tt('createDone', { tenant: tenantLabel(data.tenant || payload) }), 'success');
@@ -295,6 +327,21 @@
     } finally {
       tenantCreateBusy = false;
       if (btn) btn.disabled = false;
+    }
+  }
+
+  async function saveTenantDomains(index) {
+    var item = tenantCache[index];
+    if (!item || !item.id) return;
+    var domains = splitDomains(val('tenantDomainsEdit_' + index));
+    try {
+      var data = await global.api('/api/admin/tenants/' + encodeURIComponent(item.id) + '/domains', { method: 'PATCH', body: JSON.stringify({ primary_domain: domains[0] || '', domains: domains }) });
+      if (data && data.tenant) tenantCache[index] = data.tenant;
+      await loadTenants();
+      await loadLoginTenants();
+      setTenantOutput(tt('domainsSaved'), 'success');
+    } catch (err) {
+      setTenantOutput(tt('domainsSaveFailed', { error: err.message || err }), 'error');
     }
   }
 
@@ -458,6 +505,7 @@
   global.loadTenants = loadTenants;
   global.createTenant = createTenant;
   global.createTenantAdmin = createTenantAdmin;
+  global.saveTenantDomains = saveTenantDomains;
   global.updateTenantStatus = updateTenantStatus;
   global.deleteTenant = deleteTenant;
   applyAdminScopeUI();

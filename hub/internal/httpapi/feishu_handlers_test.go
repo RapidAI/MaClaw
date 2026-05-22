@@ -118,7 +118,8 @@ func TestFeishuConfigLoadEmpty(t *testing.T) {
 func TestFeishuRouteViaRouter(t *testing.T) {
 	// This test verifies the route is actually reachable through the full router.
 	router, _ := newAdminRouterTestServices(t)
-	token := issueHubAdminToken(t, router)
+	globalToken := issueHubAdminToken(t, router)
+	token := issueTenantAdminToken(t, router, globalToken, "feishu-route", "feishu-owner")
 
 	payload, _ := json.Marshal(map[string]any{
 		"enabled":    true,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlPanel } from './DeepCrawlPanel';
@@ -89,7 +89,6 @@ import {
     SelectKnowledgeDirectory,
     SelectKnowledgeFiles,
 } from '../../../wailsjs/go/main/App';
-import { colors, radius } from '../remote/styles';
 
 type Props = {
     lang?: string;
@@ -1250,6 +1249,13 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
 
     const summary = knowledgeHealthSummaryModel(health);
     const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
+    const knowledgeTabs = useMemo(() => ([
+        { id: 'overview' as const, label: t('Overview', '总览'), desc: t('Health, score, and capabilities', '健康、评分与能力') },
+        { id: 'ingest' as const, label: t('Ingest', '导入'), desc: t('Text, URL, files, and crawl', '文本、URL、文件与抓取') },
+        { id: 'search' as const, label: t('Search', '检索'), desc: t('Query and facets', '查询与分面') },
+        { id: 'sources' as const, label: t('Sources', '来源'), desc: t('Inspect and manage source records', '查看并管理来源') },
+        { id: 'quality' as const, label: t('Quality', '质量'), desc: t('Reports and maintenance plans', '报告与维护计划') },
+    ]), [t]);
     // Invalidate stale results when the query payload changes (filter or capabilities update).
     // sourcePayload is the direct input to KnowledgeListSources — sources is its cached output.
     useEffect(() => { setSources(null); }, [sourcePayload]);
@@ -1536,44 +1542,52 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
 
     return (
         <>
-        <section style={panelStyle}>
-            <div style={sectionHeaderStyle}>
+        <section className="knowledge-panel">
+            <div className="knowledge-panel-header">
                 <div>
-                    <h2 style={titleStyle}>{t('Knowledge Base', '知识库')}</h2>
-                    <p style={subtleStyle}>{t('Ingest, search, inspect, and maintain local knowledge sources.', '导入、检索、查看并维护本地知识来源。')}</p>
+                    <h2 className="knowledge-panel-title">{t('Knowledge Base', '知识库')}</h2>
+                    <p className="knowledge-panel-subtitle">{t('Ingest, search, inspect, and maintain local knowledge sources.', '导入、检索、查看并维护本地知识来源。')}</p>
                 </div>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                    <button type="button" style={buttonStyle} onClick={refresh} disabled={loading}>
+                <div className="knowledge-panel-actions">
+                    <button type="button" className="knowledge-button knowledge-button--secondary" onClick={refresh} disabled={loading}>
                         {loading ? t('Refreshing...', '刷新中...') : t('Refresh', '刷新')}
                     </button>
-                    <button type="button" style={dangerButtonStyle} onClick={handleClearAll} disabled={!!busy}>
+                    <button type="button" className="knowledge-button knowledge-button--danger" onClick={handleClearAll} disabled={!!busy}>
                         {t('Clear All', '清空')}
                     </button>
                 </div>
             </div>
-            {error ? <div style={errorBoxStyle}>{error}</div> : null}
-            {successMessage ? <div style={successBoxStyle}>{successMessage}</div> : null}
-            <div style={tabsStyle}>
-                {([
-                    ['overview', t('Overview', '总览')],
-                    ['ingest', t('Ingest', '导入')],
-                    ['search', t('Search', '检索')],
-                    ['sources', t('Sources', '来源')],
-                    ['quality', t('Quality', '质量')],
-                ] as Array<[KnowledgeSubTab, string]>).map(([tab, label]) => (
-                    <button key={tab} type="button" onClick={() => setActiveTab(tab)} style={tabButtonStyle(activeTab === tab)}>{label}</button>
+            {error ? <div className="knowledge-alert knowledge-alert--error">{error}</div> : null}
+            {successMessage ? <div className="knowledge-alert knowledge-alert--success">{successMessage}</div> : null}
+            <div className="settings-subtab-bar settings-subtab-bar--knowledge" role="tablist" aria-label={t('Knowledge sections', '知识库分区')}>
+                {knowledgeTabs.map(tab => (
+                    <button
+                        key={tab.id}
+                        id={`knowledge-tab-${tab.id}`}
+                        className="settings-subtab-button"
+                        data-active={activeTab === tab.id ? 'true' : undefined}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeTab === tab.id}
+                        aria-controls={`knowledge-panel-${tab.id}`}
+                        aria-label={tab.label}
+                        onClick={() => setActiveTab(tab.id)}
+                    >
+                        <span className="settings-subtab-button__label">{tab.label}</span>
+                        <span className="settings-subtab-button__desc">{tab.desc}</span>
+                    </button>
                 ))}
             </div>
 
             {activeTab === 'overview' && (
-                <div style={stackStyle}>
-                    <div style={statsGridStyle}>
+                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-overview" aria-labelledby="knowledge-tab-overview">
+                    <div className="knowledge-stats-grid">
                         <Stat label={t('Status', '状态')} value={summary?.status || 'Unknown'} />
                         <Stat label={t('Score', '评分')} value={summary?.score ?? 0} />
                         <Stat label={t('Quality', '质量')} value={summary?.qualityAvgScore ?? 0} />
                         <Stat label={t('Actions', '动作')} value={summary?.actions?.length ?? 0} />
                     </div>
-                    <div style={twoColumnStyle}>
+                    <div className="knowledge-two-column">
                         <PanelBlock title={t('Health Signals', '健康信号')}>
                             <KeyValueList values={[...(summary?.gradeEntries || []), ...(summary?.signalEntries || []), ...(summary?.findingEntries || [])]} empty={t('No health signals.', '暂无健康信号。')} />
                         </PanelBlock>
@@ -1588,33 +1602,33 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                     </div>
                     <PanelBlock title={t('Recommended Maintenance', '建议维护')}>
                         {(summary?.actions || []).length ? (
-                            <div style={listStyle}>
+                            <div className="knowledge-list">
                                 {(summary?.actions || []).map((action: any, index: number) => (
-                                    <div key={`${action.kind || action.tool || index}`} style={rowStyle}>
-                                        <div style={rowMainStyle}>
+                                    <div key={`${action.kind || action.tool || index}`} className="knowledge-row">
+                                        <div className="knowledge-row-main">
                                             <strong>{action.title || action.kind || action.tool || t('Action', '动作')}</strong>
-                                            <span style={mutedLineStyle}>{action.description || [action.kind || action.tool, action.count ? `${action.count} sources` : ''].filter(Boolean).join(' · ')}</span>
+                                            <span className="knowledge-muted-line">{action.description || [action.kind || action.tool, action.count ? `${action.count} sources` : ''].filter(Boolean).join(' · ')}</span>
                                         </div>
                                         {knowledgeHealthActionExecutable(action) ? (
-                                            <button type="button" style={buttonStyle} disabled={!!busy} onClick={() => executeQualityAction(action)}>{t('Preview', '预览')}</button>
-                                        ) : <span style={badgeStyle}>{knowledgeHealthActionManualLabel(action)}</span>}
+                                            <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => executeQualityAction(action)}>{t('Preview', '预览')}</button>
+                                        ) : <span className="knowledge-chip knowledge-chip--badge">{knowledgeHealthActionManualLabel(action)}</span>}
                                     </div>
                                 ))}
                             </div>
-                        ) : <div style={emptyStyle}>{t('No maintenance action is required.', '暂无需要执行的维护动作。')}</div>}
+                        ) : <div className="knowledge-empty">{t('No maintenance action is required.', '暂无需要执行的维护动作。')}</div>}
                     </PanelBlock>
                 </div>
             )}
 
             {activeTab === 'ingest' && (
-                <>
+                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-ingest" aria-labelledby="knowledge-tab-ingest">
                 <PanelBlock title={t('Import Documents', '导入文档')}>
-                    <div style={documentImportStyle}>
-                        <div style={documentImportCopyStyle}>
+                    <div className="knowledge-import-card-row">
+                        <div className="knowledge-import-card-copy">
                             <strong>{t('Add local documents', '添加本地文档')}</strong>
-                            <span style={mutedLineStyle}>{t('Import files or directories into your knowledge base', '将文件或目录导入到知识库中')}</span>
+                            <span className="knowledge-muted-line">{t('Import files or directories into your knowledge base', '将文件或目录导入到知识库中')}</span>
                         </div>
-                        <button type="button" style={documentImportButtonStyle} onClick={() => setShowImportDialog(true)}>
+                        <button type="button" className="knowledge-button knowledge-button--primary knowledge-button--prominent" onClick={() => setShowImportDialog(true)}>
                             {t('Import Documents', '导入文档')}
                         </button>
                     </div>
@@ -1622,18 +1636,18 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                         <ImportJobSummary t={t} job={importJob} />
                     )}
                 </PanelBlock>
-                <div style={twoColumnStyle}>
+                <div className="knowledge-two-column">
                     <PanelBlock title={t('Save Text', '保存文本')}>
-                        <input style={inputStyle} value={textForm.title} onChange={event => setTextForm({ ...textForm, title: event.target.value })} placeholder={t('Title', '标题')} />
-                        <textarea style={textareaStyle} value={textForm.text} onChange={event => setTextForm({ ...textForm, text: event.target.value })} placeholder={t('Paste text or notes', '粘贴文本或笔记')} />
+                        <input className="knowledge-input" value={textForm.title} onChange={event => setTextForm({ ...textForm, title: event.target.value })} placeholder={t('Title', '标题')} />
+                        <textarea className="knowledge-input knowledge-textarea" value={textForm.text} onChange={event => setTextForm({ ...textForm, text: event.target.value })} placeholder={t('Paste text or notes', '粘贴文本或笔记')} />
                         <MetadataControls t={t} labels={textForm.labels} topicHint={textForm.topicHint} saveScope={textForm.saveScope} distillMode={textForm.distillMode} distillModes={distillModes} onChange={patch => setTextForm({ ...textForm, ...patch })} />
-                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={saveText}>{busy === 'saveText' ? t('Saving...', '保存中...') : t('Save Text', '保存文本')}</button>
+                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={saveText}>{busy === 'saveText' ? t('Saving...', '保存中...') : t('Save Text', '保存文本')}</button>
                     </PanelBlock>
                     <PanelBlock title={t('Save URLs', '保存 URL')}>
-                        <textarea style={textareaStyle} value={urlForm.urls} onChange={event => setURLForm({ ...urlForm, urls: event.target.value })} placeholder={t('One or more URLs, separated by line breaks', '一个或多个 URL，可换行分隔')} />
+                        <textarea className="knowledge-input knowledge-textarea" value={urlForm.urls} onChange={event => setURLForm({ ...urlForm, urls: event.target.value })} placeholder={t('One or more URLs, separated by line breaks', '一个或多个 URL，可换行分隔')} />
                         <MetadataControls t={t} labels={urlForm.labels} topicHint={urlForm.topicHint} saveScope={urlForm.saveScope} distillMode={urlForm.distillMode} distillModes={distillModes} onChange={patch => setURLForm({ ...urlForm, ...patch })} />
-                        <label style={checkboxStyle}><input type="checkbox" checked={urlForm.autoLabels} onChange={event => setURLForm({ ...urlForm, autoLabels: event.target.checked })} /> {t('Auto labels', '自动标签')}</label>
-                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={saveURLs}>{busy === 'saveURLs' ? t('Saving...', '保存中...') : t('Save URLs', '保存 URL')}</button>
+                        <label className="knowledge-checkbox"><input type="checkbox" checked={urlForm.autoLabels} onChange={event => setURLForm({ ...urlForm, autoLabels: event.target.checked })} /> {t('Auto labels', '自动标签')}</label>
+                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={saveURLs}>{busy === 'saveURLs' ? t('Saving...', '保存中...') : t('Save URLs', '保存 URL')}</button>
                     </PanelBlock>
                 </div>
                 <DeepCrawlPanel
@@ -1642,24 +1656,24 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                     onStartCrawl={handleDeepCrawlStart}
                     busy={deepCrawlBusy}
                 />
-                </>
+                </div>
             )}
 
             {activeTab === 'search' && (
-                <div style={stackStyle}>
+                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-search" aria-labelledby="knowledge-tab-search">
                     <PanelBlock title={t('Search', '检索')}>
-                        <div style={compactGridStyle}>
-                            <input style={inputStyle} value={searchForm.query} onChange={event => setSearchForm({ ...searchForm, query: event.target.value })} placeholder={t('Ask or search knowledge', '输入问题或关键词')} />
-                            <select style={inputStyle} value={searchForm.resultType} onChange={event => setSearchForm({ ...searchForm, resultType: event.target.value })}><option value="all">{t('All result types', '全部结果类型')}</option><option value="node">node</option><option value="card">card</option><option value="fact">fact</option></select>
-                            <input style={inputStyle} value={searchForm.sourceKind} onChange={event => setSearchForm({ ...searchForm, sourceKind: event.target.value })} placeholder={t('Source kind', '来源类型')} />
-                            <input style={inputStyle} value={searchForm.domain} onChange={event => setSearchForm({ ...searchForm, domain: event.target.value })} placeholder={t('Domain', '域名')} />
-                            <input style={inputStyle} value={searchForm.labels} onChange={event => setSearchForm({ ...searchForm, labels: event.target.value })} placeholder={t('Labels', '标签')} />
-                            <input style={inputStyle} type="number" value={searchForm.limit} onChange={event => setSearchForm({ ...searchForm, limit: Number(event.target.value) })} />
+                        <div className="knowledge-compact-grid">
+                            <input className="knowledge-input" value={searchForm.query} onChange={event => setSearchForm({ ...searchForm, query: event.target.value })} placeholder={t('Ask or search knowledge', '输入问题或关键词')} />
+                            <select className="knowledge-input" value={searchForm.resultType} onChange={event => setSearchForm({ ...searchForm, resultType: event.target.value })}><option value="all">{t('All result types', '全部结果类型')}</option><option value="node">node</option><option value="card">card</option><option value="fact">fact</option></select>
+                            <input className="knowledge-input" value={searchForm.sourceKind} onChange={event => setSearchForm({ ...searchForm, sourceKind: event.target.value })} placeholder={t('Source kind', '来源类型')} />
+                            <input className="knowledge-input" value={searchForm.domain} onChange={event => setSearchForm({ ...searchForm, domain: event.target.value })} placeholder={t('Domain', '域名')} />
+                            <input className="knowledge-input" value={searchForm.labels} onChange={event => setSearchForm({ ...searchForm, labels: event.target.value })} placeholder={t('Labels', '标签')} />
+                            <input className="knowledge-input" type="number" value={searchForm.limit} onChange={event => setSearchForm({ ...searchForm, limit: Number(event.target.value) })} />
                         </div>
-                        <label style={checkboxStyle}><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => setSearchForm({ ...searchForm, includeDisabled: event.target.checked })} /> {t('Include disabled sources', '包含已禁用来源')}</label>
-                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={runSearch}>{busy === 'search' ? t('Searching...', '检索中...') : t('Search', '检索')}</button>
+                        <label className="knowledge-checkbox"><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => setSearchForm({ ...searchForm, includeDisabled: event.target.checked })} /> {t('Include disabled sources', '包含已禁用来源')}</label>
+                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={runSearch}>{busy === 'search' ? t('Searching...', '检索中...') : t('Search', '检索')}</button>
                     </PanelBlock>
-                    <div style={twoColumnStyle}>
+                    <div className="knowledge-two-column">
                         <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`}>
                             <ResultList results={searchResults} empty={t('No results yet.', '暂无检索结果。')} query={searchForm.query} />
                         </PanelBlock>
@@ -1676,53 +1690,53 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             )}
 
             {activeTab === 'sources' && (
-                <div style={stackStyle}>
+                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-sources" aria-labelledby="knowledge-tab-sources">
                     <SourceFilters t={t} filter={sourceFilter} coverageOptions={coverageOptions} onChange={setSourceFilter} />
-                    <div style={inlineActionsStyle}>
-                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={loadSources}>{busy === 'sources' ? t('Loading...', '加载中...') : t('Load Sources', '加载来源')}</button>
-                        {sources !== null && <span style={mutedLineStyle}>{sources.length >= sourceFilter.limit ? `${sources.length}+ ${t('results (limit reached)', '条结果（已达上限）')}` : `${sources.length} ${t('results', '条结果')}`}</span>}
-                        <span style={mutedLineStyle}>{t('Payload', '条件')} {JSON.stringify(sourcePayload)}</span>
+                    <div className="knowledge-inline-actions">
+                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={loadSources}>{busy === 'sources' ? t('Loading...', '加载中...') : t('Load Sources', '加载来源')}</button>
+                        {sources !== null && <span className="knowledge-muted-line">{sources.length >= sourceFilter.limit ? `${sources.length}+ ${t('results (limit reached)', '条结果（已达上限）')}` : `${sources.length} ${t('results', '条结果')}`}</span>}
+                        <span className="knowledge-muted-line">{t('Payload', '条件')} {JSON.stringify(sourcePayload)}</span>
                     </div>
-                    <div style={listStyle}>
+                    <div className="knowledge-list">
                         {sources === null ? (
-                            <div style={emptyStyle}>{t('Click "Load Sources" to query.', '点击「加载来源」按钮进行查询。')}</div>
+                            <div className="knowledge-empty">{t('Click "Load Sources" to query.', '点击「加载来源」按钮进行查询。')}</div>
                         ) : sources.length ? sources.map(source => (
-                            <div key={source.id || source.uri || source.title} style={rowStyle}>
-                                <div style={rowMainStyle}>
+                            <div key={source.id || source.uri || source.title} className="knowledge-row">
+                                <div className="knowledge-row-main">
                                     <strong>{source.title || source.relative_path || source.uri || source.id}</strong>
-                                    <span style={mutedLineStyle}>{[source.kind, source.status, source.relative_path || source.uri, source.labels?.join(', ')].filter(Boolean).join(' · ')}</span>
-                                    <span style={mutedLineStyle}>{[`nodes ${source.node_count || 0}`, `cards ${source.card_count || 0}`, `facts ${source.fact_count || 0}`].join(' · ')}</span>
+                                    <span className="knowledge-muted-line">{[source.kind, source.status, source.relative_path || source.uri, source.labels?.join(', ')].filter(Boolean).join(' · ')}</span>
+                                    <span className="knowledge-muted-line">{[`nodes ${source.node_count || 0}`, `cards ${source.card_count || 0}`, `facts ${source.fact_count || 0}`].join(' · ')}</span>
                                 </div>
-                                <div style={inlineActionsStyle}>
-                                    <button type="button" style={buttonStyle} disabled={!!busy} onClick={() => toggleSource(source)}>{String(source.status || '').toLowerCase() === 'disabled' ? t('Enable', '启用') : t('Disable', '禁用')}</button>
-                                    <button type="button" style={dangerButtonStyle} disabled={!!busy} onClick={() => deleteSource(source)}>{t('Delete', '删除')}</button>
+                                <div className="knowledge-inline-actions">
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => toggleSource(source)}>{String(source.status || '').toLowerCase() === 'disabled' ? t('Enable', '启用') : t('Disable', '禁用')}</button>
+                                    <button type="button" className="knowledge-button knowledge-button--danger" disabled={!!busy} onClick={() => deleteSource(source)}>{t('Delete', '删除')}</button>
                                 </div>
                             </div>
-                        )) : <div style={emptyStyle}>{t('No sources match the current filters.', '当前筛选条件下没有匹配的来源。')}</div>}
+                        )) : <div className="knowledge-empty">{t('No sources match the current filters.', '当前筛选条件下没有匹配的来源。')}</div>}
                     </div>
                 </div>
             )}
 
             {activeTab === 'quality' && (
-                <div style={stackStyle}>
+                <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-quality" aria-labelledby="knowledge-tab-quality">
                     <SourceFilters t={t} filter={qualityFilter} coverageOptions={qualityCoverageOptions} onChange={setQualityFilter} />
-                    <div style={compactGridStyle}>
-                        <select style={inputStyle} value={qualityOptions.policy} onChange={event => setQualityOptions({ ...qualityOptions, policy: event.target.value })}><option value="balanced">balanced</option><option value="conservative">conservative</option><option value="aggressive">aggressive</option></select>
-                        <select style={inputStyle} value={qualityOptions.distillMode} onChange={event => setQualityOptions({ ...qualityOptions, distillMode: event.target.value })}><option value="">{t('Default distill mode', '默认蒸馏模式')}</option>{distillModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}</select>
-                        <input style={inputStyle} type="number" value={qualityOptions.maxSourcesPerAction} onChange={event => setQualityOptions({ ...qualityOptions, maxSourcesPerAction: Number(event.target.value) })} />
+                    <div className="knowledge-compact-grid">
+                        <select className="knowledge-input" value={qualityOptions.policy} onChange={event => setQualityOptions({ ...qualityOptions, policy: event.target.value })}><option value="balanced">balanced</option><option value="conservative">conservative</option><option value="aggressive">aggressive</option></select>
+                        <select className="knowledge-input" value={qualityOptions.distillMode} onChange={event => setQualityOptions({ ...qualityOptions, distillMode: event.target.value })}><option value="">{t('Default distill mode', '默认蒸馏模式')}</option>{distillModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}</select>
+                        <input className="knowledge-input" type="number" value={qualityOptions.maxSourcesPerAction} onChange={event => setQualityOptions({ ...qualityOptions, maxSourcesPerAction: Number(event.target.value) })} />
                     </div>
-                    <div style={inlineActionsStyle}>
-                        <label style={checkboxStyle}><input type="checkbox" checked={qualityOptions.dryRun} onChange={event => setQualityOptions({ ...qualityOptions, dryRun: event.target.checked })} /> {t('Preview only', '仅预览')}</label>
-                        <label style={checkboxStyle}><input type="checkbox" checked={qualityOptions.allowSensitiveDisable} onChange={event => setQualityOptions({ ...qualityOptions, allowSensitiveDisable: event.target.checked })} /> {t('Allow sensitive isolation', '允许敏感隔离')}</label>
-                        <label style={checkboxStyle}><input type="checkbox" checked={qualityOptions.allowDuplicateSuppression} onChange={event => setQualityOptions({ ...qualityOptions, allowDuplicateSuppression: event.target.checked })} /> {t('Allow duplicate suppression', '允许重复抑制')}</label>
+                    <div className="knowledge-inline-actions">
+                        <label className="knowledge-checkbox"><input type="checkbox" checked={qualityOptions.dryRun} onChange={event => setQualityOptions({ ...qualityOptions, dryRun: event.target.checked })} /> {t('Preview only', '仅预览')}</label>
+                        <label className="knowledge-checkbox"><input type="checkbox" checked={qualityOptions.allowSensitiveDisable} onChange={event => setQualityOptions({ ...qualityOptions, allowSensitiveDisable: event.target.checked })} /> {t('Allow sensitive isolation', '允许敏感隔离')}</label>
+                        <label className="knowledge-checkbox"><input type="checkbox" checked={qualityOptions.allowDuplicateSuppression} onChange={event => setQualityOptions({ ...qualityOptions, allowDuplicateSuppression: event.target.checked })} /> {t('Allow duplicate suppression', '允许重复抑制')}</label>
                     </div>
-                    <div style={inlineActionsStyle}>
-                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={loadQuality}>{busy === 'quality' ? t('Loading...', '加载中...') : t('Build Report + Plan', '生成报告和计划')}</button>
-                        <button type="button" style={buttonStyle} disabled={!!busy || !(qualityPlan?.actions || []).length} onClick={() => executeQualityAction()}>{qualityOptions.dryRun ? t('Preview Plan', '预览计划') : t('Run Plan', '执行计划')}</button>
+                    <div className="knowledge-inline-actions">
+                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={loadQuality}>{busy === 'quality' ? t('Loading...', '加载中...') : t('Build Report + Plan', '生成报告和计划')}</button>
+                        <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !(qualityPlan?.actions || []).length} onClick={() => executeQualityAction()}>{qualityOptions.dryRun ? t('Preview Plan', '预览计划') : t('Run Plan', '执行计划')}</button>
                     </div>
-                    <div style={twoColumnStyle}>
+                    <div className="knowledge-two-column">
                         <PanelBlock title={t('Quality Report', '质量报告')}>
-                            <div style={statsGridStyle}>
+                            <div className="knowledge-stats-grid">
                                 <Stat label={t('Sources', '来源')} value={qualityReport?.count || 0} />
                                 <Stat label={t('Average', '平均分')} value={qualityReport?.average_score || 0} />
                                 <Stat label={t('Actions', '动作')} value={qualityPlan?.actions?.length || 0} />
@@ -1730,15 +1744,15 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                             <KeyValueList values={[...topCounts(qualityReport?.grades, 4), ...topCounts(qualityReport?.signals, 6), ...topCounts(qualityReport?.actions, 6)]} empty={t('No report yet.', '暂无报告。')} />
                         </PanelBlock>
                         <PanelBlock title={t('Maintenance Plan', '维护计划')}>
-                            {(qualityPlan?.actions || []).length ? <div style={listStyle}>{(qualityPlan?.actions || []).map((action, index) => (
-                                <div key={`${action.kind || index}`} style={rowStyle}>
-                                    <div style={rowMainStyle}>
+                            {(qualityPlan?.actions || []).length ? <div className="knowledge-list">{(qualityPlan?.actions || []).map((action, index) => (
+                                <div key={`${action.kind || index}`} className="knowledge-row">
+                                    <div className="knowledge-row-main">
                                         <strong>{action.title || action.kind}</strong>
-                                        <span style={mutedLineStyle}>{[action.description, action.severity, action.count ? `${action.count} sources` : '', action.signals?.join(', ')].filter(Boolean).join(' · ')}</span>
+                                        <span className="knowledge-muted-line">{[action.description, action.severity, action.count ? `${action.count} sources` : '', action.signals?.join(', ')].filter(Boolean).join(' · ')}</span>
                                     </div>
-                                    <button type="button" style={buttonStyle} disabled={!!busy} onClick={() => executeQualityAction(action)}>{qualityOptions.dryRun ? t('Preview', '预览') : t('Run', '执行')}</button>
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => executeQualityAction(action)}>{qualityOptions.dryRun ? t('Preview', '预览') : t('Run', '执行')}</button>
                                 </div>
-                            ))}</div> : <div style={emptyStyle}>{t('No plan has been built.', '尚未生成维护计划。')}</div>}
+                            ))}</div> : <div className="knowledge-empty">{t('No plan has been built.', '尚未生成维护计划。')}</div>}
                         </PanelBlock>
                     </div>
                 </div>
@@ -1751,8 +1765,8 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                     ) : null}
                     {importJob && operationResult?.id === importJob.id ? <ImportJobSummary t={t} job={importJob} /> : null}
                     <details>
-                        <summary style={detailsSummaryStyle}>{t('Raw payload', '原始数据')}</summary>
-                        <pre style={preStyle}>{JSON.stringify(operationResult, null, 2)}</pre>
+                        <summary className="knowledge-details-summary">{t('Raw payload', '原始数据')}</summary>
+                        <pre className="knowledge-raw-pre">{JSON.stringify(operationResult, null, 2)}</pre>
                     </details>
                 </PanelBlock>
             ) : null}
@@ -1779,16 +1793,14 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
 }
 
 function PanelBlock({ title, children }: { title: string; children: ReactNode }) {
-    return <div style={blockStyle}><h3 style={blockTitleStyle}>{title}</h3><div style={blockBodyStyle}>{children}</div></div>;
+    return <div className="knowledge-block"><h3 className="knowledge-block-title">{title}</h3><div className="knowledge-block-body">{children}</div></div>;
 }
 
 function KeyValueList({ values, empty }: { values: string[]; empty: string }) {
     const cleanValues = values.map(value => String(value || '').trim()).filter(Boolean);
-    if (!cleanValues.length) return <div style={emptyStyle}>{empty}</div>;
-    return <div style={chipListStyle}>{cleanValues.map(value => <span key={value} style={chipStyle}>{value}</span>)}</div>;
+    if (!cleanValues.length) return <div className="knowledge-empty">{empty}</div>;
+    return <div className="knowledge-chip-list">{cleanValues.map(value => <span key={value} className="knowledge-chip">{value}</span>)}</div>;
 }
-
-const highlightMarkStyle: React.CSSProperties = { background: '#facc15', color: '#1a1a2e', borderRadius: 2, padding: '0 2px' };
 
 function buildHighlightRegex(query: string): RegExp | null {
     if (!query) return null;
@@ -1805,18 +1817,18 @@ function highlightText(text: string, regex: RegExp | null): React.ReactNode {
     return <>{parts.map((part, i) => {
         if (!part) return null;
         // split with capturing group: odd indices are matches
-        return i % 2 === 1 ? <mark key={i} style={highlightMarkStyle}>{part}</mark> : part;
+        return i % 2 === 1 ? <mark key={i} className="knowledge-highlight-mark">{part}</mark> : part;
     })}</>;
 }
 
 function ResultList({ results, empty, query }: { results: SearchResult[]; empty: string; query?: string }) {
-    if (!results.length) return <div style={emptyStyle}>{empty}</div>;
+    if (!results.length) return <div className="knowledge-empty">{empty}</div>;
     const regex = buildHighlightRegex((query || '').trim());
-    return <div style={listStyle}>{results.map((result, index) => (
-        <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || index}`} style={rowStyle}>
-            <div style={rowMainStyle}>
+    return <div className="knowledge-list">{results.map((result, index) => (
+        <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || index}`} className="knowledge-row">
+            <div className="knowledge-row-main">
                 <strong>{highlightText(result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result', regex)}</strong>
-                <span style={mutedLineStyle}>{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>
+                <span className="knowledge-muted-line">{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>
                 <span>{highlightText(result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '), regex)}</span>
             </div>
         </div>
@@ -1832,22 +1844,22 @@ function ExecutionSummary({ t, result, context }: {
     const failures = knowledgeExecutionFailureDetails(result, 8);
     const label = knowledgeQualityExecutionContextLabel(context);
     return (
-        <div style={stackStyle}>
-            <div style={statsGridStyle}>
+        <div className="knowledge-stack">
+            <div className="knowledge-stats-grid">
                 <Stat label={t('Mode', '模式')} value={result.dry_run ? t('Preview', '预览') : t('Run', '执行')} />
                 <Stat label={t('Actions', '动作')} value={result.results?.length || 0} />
                 <Stat label={t('Sources', '来源')} value={result.count || sourceIDs.length || 0} />
                 <Stat label={t('Failures', '失败')} value={failures.length} />
             </div>
-            {label ? <div style={mutedLineStyle}>{label}</div> : null}
-            {sourceIDs.length ? <div style={mutedLineStyle}>{knowledgeExecutionSourceFilterLabel(label, sourceIDs.length)}</div> : null}
+            {label ? <div className="knowledge-muted-line">{label}</div> : null}
+            {sourceIDs.length ? <div className="knowledge-muted-line">{knowledgeExecutionSourceFilterLabel(label, sourceIDs.length)}</div> : null}
             <KeyValueList values={sourceIDs} empty={t('No affected sources reported.', '未报告受影响来源。')} />
             {failures.length ? (
-                <div style={listStyle}>
+                <div className="knowledge-list">
                     {failures.map((failure, index) => (
-                        <div key={`${failure.action}-${failure.sourceID}-${index}`} style={failureRowStyle}>
+                        <div key={`${failure.action}-${failure.sourceID}-${index}`} className="knowledge-failure-row">
                             <strong>{failure.action || t('Execution', '执行')}</strong>
-                            <span style={mutedLineStyle}>{failure.sourceID}</span>
+                            <span className="knowledge-muted-line">{failure.sourceID}</span>
                             <span>{failure.error}</span>
                         </div>
                     ))}
@@ -1862,10 +1874,10 @@ function ImportJobSummary({ t, job }: {
     job: ImportJob;
 }) {
     return (
-        <div style={jobStatusStyle}>
+        <div className="knowledge-job-status">
             <strong>{t('Directory Import', '目录导入')} {job.id}</strong>
-            <span style={mutedLineStyle}>{[job.status, job.result?.root_path, job.result?.current_file, job.error].filter(Boolean).join(' · ')}</span>
-            <div style={statsGridStyle}>
+            <span className="knowledge-muted-line">{[job.status, job.result?.root_path, job.result?.current_file, job.error].filter(Boolean).join(' · ')}</span>
+            <div className="knowledge-stats-grid">
                 <Stat label={t('Processed', '已处理')} value={job.result?.processed_files || 0} />
                 <Stat label={t('Imported', '已导入')} value={job.result?.imported_files || 0} />
                 <Stat label={t('Skipped', '已跳过')} value={job.result?.skipped_files || 0} />
@@ -1885,15 +1897,15 @@ function MetadataControls({ t, labels, topicHint, saveScope, distillMode, distil
     onChange: (patch: any) => void;
 }) {
     return (
-        <div style={compactGridStyle}>
-            <input style={inputStyle} value={labels} onChange={event => onChange({ labels: event.target.value })} placeholder={t('Labels', '标签')} />
-            <input style={inputStyle} value={topicHint} onChange={event => onChange({ topicHint: event.target.value })} placeholder={t('Topic hint', '主题提示')} />
-            <select style={inputStyle} value={saveScope} onChange={event => onChange({ saveScope: event.target.value })}>
+        <div className="knowledge-compact-grid">
+            <input className="knowledge-input" value={labels} onChange={event => onChange({ labels: event.target.value })} placeholder={t('Labels', '标签')} />
+            <input className="knowledge-input" value={topicHint} onChange={event => onChange({ topicHint: event.target.value })} placeholder={t('Topic hint', '主题提示')} />
+            <select className="knowledge-input" value={saveScope} onChange={event => onChange({ saveScope: event.target.value })}>
                 <option value="project">{t('Project', '项目')}</option>
                 <option value="personal">{t('Personal', '个人')}</option>
                 <option value="local_only">{t('Local only', '仅本地')}</option>
             </select>
-            <select style={inputStyle} value={distillMode} onChange={event => onChange({ distillMode: event.target.value })}>
+            <select className="knowledge-input" value={distillMode} onChange={event => onChange({ distillMode: event.target.value })}>
                 <option value="">{t('Default distill mode', '默认蒸馏模式')}</option>
                 {distillModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
             </select>
@@ -1909,10 +1921,10 @@ function SourceFilters({ t, filter, coverageOptions, onChange }: {
 }) {
     return (
         <PanelBlock title={t('Filters', '筛选')}>
-            <div style={compactGridStyle}>
-                <input style={inputStyle} value={filter.query} onChange={event => onChange({ ...filter, query: event.target.value })} placeholder={t('Query', '关键词')} />
-                <input style={inputStyle} value={filter.kind} onChange={event => onChange({ ...filter, kind: event.target.value })} placeholder={t('Kind', '类型')} />
-                <select style={inputStyle} value={filter.status} onChange={event => onChange({ ...filter, status: event.target.value })}>
+            <div className="knowledge-compact-grid">
+                <input className="knowledge-input" value={filter.query} onChange={event => onChange({ ...filter, query: event.target.value })} placeholder={t('Query', '关键词')} />
+                <input className="knowledge-input" value={filter.kind} onChange={event => onChange({ ...filter, kind: event.target.value })} placeholder={t('Kind', '类型')} />
+                <select className="knowledge-input" value={filter.status} onChange={event => onChange({ ...filter, status: event.target.value })}>
                     <option value="all">{t('All statuses', '全部状态')}</option>
                     <option value="active">{t('active (non-disabled)', 'active（非禁用）')}</option>
                     <option value="pending">pending</option>
@@ -1922,12 +1934,12 @@ function SourceFilters({ t, filter, coverageOptions, onChange }: {
                     <option value="failed">failed</option>
                     <option value="disabled">disabled</option>
                 </select>
-                <select style={inputStyle} value={filter.coverage} onChange={event => onChange({ ...filter, coverage: event.target.value })}>
+                <select className="knowledge-input" value={filter.coverage} onChange={event => onChange({ ...filter, coverage: event.target.value })}>
                     {coverageOptions.map(option => <option key={option} value={option}>{option}</option>)}
                 </select>
-                <input style={inputStyle} value={filter.domain} onChange={event => onChange({ ...filter, domain: event.target.value })} placeholder={t('Domain', '域名')} />
-                <input style={inputStyle} value={filter.labels} onChange={event => onChange({ ...filter, labels: event.target.value })} placeholder={t('Labels', '标签')} />
-                <input style={inputStyle} type="number" value={filter.limit} onChange={event => onChange({ ...filter, limit: Number(event.target.value) })} />
+                <input className="knowledge-input" value={filter.domain} onChange={event => onChange({ ...filter, domain: event.target.value })} placeholder={t('Domain', '域名')} />
+                <input className="knowledge-input" value={filter.labels} onChange={event => onChange({ ...filter, labels: event.target.value })} placeholder={t('Labels', '标签')} />
+                <input className="knowledge-input" type="number" value={filter.limit} onChange={event => onChange({ ...filter, limit: Number(event.target.value) })} />
             </div>
         </PanelBlock>
     );
@@ -1935,53 +1947,12 @@ function SourceFilters({ t, filter, coverageOptions, onChange }: {
 
 function Stat({ label, value }: { label: string; value: string | number }) {
     return (
-        <div style={statStyle}>
-            <div style={statLabelStyle}>{label}</div>
-            <div style={statValueStyle}>{value}</div>
+        <div className="knowledge-stat">
+            <div className="knowledge-stat-label">{label}</div>
+            <div className="knowledge-stat-value">{value}</div>
         </div>
     );
 }
-
-const panelStyle: CSSProperties = { display: 'grid', gap: 14, padding: 16, border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface };
-const sectionHeaderStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' };
-const titleStyle: CSSProperties = { margin: 0, fontSize: 18, fontWeight: 700, color: colors.text };
-const subtleStyle: CSSProperties = { margin: '6px 0 0', color: colors.textMuted, fontSize: 13 };
-const buttonStyle: CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '7px 10px', background: colors.surface, color: colors.text, cursor: 'pointer' };
-const primaryButtonStyle: CSSProperties = { ...buttonStyle, border: `1px solid ${colors.primary}`, background: colors.primaryLight, color: colors.primaryDark, fontWeight: 700 };
-const dangerButtonStyle: CSSProperties = { ...buttonStyle, border: '1px solid #fecaca', color: '#b91c1c' };
-const errorBoxStyle: CSSProperties = { border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#b91c1c' };
-const successBoxStyle: CSSProperties = { border: '1px solid #bbf7d0', borderRadius: radius.sm, padding: 10, background: '#f0fdf4', color: '#166534' };
-const statsGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 };
-const statStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted };
-const statLabelStyle: CSSProperties = { fontSize: 12, color: colors.textMuted };
-const statValueStyle: CSSProperties = { marginTop: 4, fontSize: 18, fontWeight: 700, color: colors.text };
-const tabsStyle: CSSProperties = { display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: `1px solid ${colors.borderLight}`, paddingBottom: 8 };
-const tabButtonStyle = (active: boolean): CSSProperties => ({ border: `1px solid ${active ? colors.primary : colors.border}`, borderRadius: radius.sm, padding: '7px 10px', background: active ? colors.primaryLight : colors.surface, color: active ? colors.primaryDark : colors.textMuted, fontWeight: active ? 700 : 600, cursor: 'pointer' });
-const stackStyle: CSSProperties = { display: 'grid', gap: 12 };
-const twoColumnStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, alignItems: 'start' };
-const documentImportStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' };
-const documentImportCopyStyle: CSSProperties = { minWidth: 220, display: 'grid', gap: 4, color: colors.text, fontSize: 13 };
-const documentImportButtonStyle: CSSProperties = { ...primaryButtonStyle, padding: '9px 18px', fontSize: 13, flexShrink: 0 };
-const compactGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 };
-const blockStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 12, background: colors.surface };
-const blockTitleStyle: CSSProperties = { margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: colors.text };
-const blockBodyStyle: CSSProperties = { display: 'grid', gap: 10 };
-const inputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '7px 9px', background: colors.surface, color: colors.text, fontSize: 13 };
-const textareaStyle: CSSProperties = { ...inputStyle, minHeight: 110, resize: 'vertical', fontFamily: 'inherit' };
-const checkboxStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, color: colors.textMuted, fontSize: 13 };
-const inlineActionsStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
-const listStyle: CSSProperties = { display: 'grid', gap: 8 };
-const rowStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted };
-const rowMainStyle: CSSProperties = { minWidth: 0, display: 'grid', gap: 4, color: colors.text, fontSize: 13 };
-const mutedLineStyle: CSSProperties = { color: colors.textMuted, fontSize: 12, overflowWrap: 'anywhere' };
-const emptyStyle: CSSProperties = { color: colors.textMuted, fontSize: 13 };
-const chipListStyle: CSSProperties = { display: 'flex', gap: 6, flexWrap: 'wrap' };
-const chipStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: '4px 7px', color: colors.textMuted, background: colors.surfaceMuted, fontSize: 12 };
-const badgeStyle: CSSProperties = { ...chipStyle, color: colors.textMuted };
-const jobStatusStyle: CSSProperties = { display: 'grid', gap: 4, border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted, color: colors.text, fontSize: 13 };
-const failureRowStyle: CSSProperties = { display: 'grid', gap: 4, border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#7f1d1d', fontSize: 13 };
-const detailsSummaryStyle: CSSProperties = { color: colors.textMuted, cursor: 'pointer', fontSize: 12, fontWeight: 700 };
-const preStyle: CSSProperties = { margin: 0, maxHeight: 260, overflow: 'auto', border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted, color: colors.text, fontSize: 12 };
 
 export function parseURLBatch(value: string): string[] {
     return uniqueNormalizedParts(String(value || '').split(/[\s,;，；、]+/), item => item.trim());

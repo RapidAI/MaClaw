@@ -1,4 +1,4 @@
-import type { CSSProperties, Dispatch, SetStateAction } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import { main } from '../../../wailsjs/go/models';
 import { IMAuditPanel } from '../remote/IMAuditPanel';
 import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
@@ -16,7 +16,6 @@ type IMSettingsPanelProps = {
     setImSubTab: Dispatch<SetStateAction<IMSubTab>>;
     imAuditPlatform: string | null;
     setIMAuditPlatform: Dispatch<SetStateAction<string | null>>;
-    imAuditBtnStyle: CSSProperties;
     saveRemoteConfigField: (patch: Record<string, any>) => any;
     showToastMessage: (message: string) => void;
     qqBotStatus: string; setQQBotStatus: Dispatch<SetStateAction<string>>;
@@ -45,7 +44,6 @@ export const IMSettingsPanel = ({
     setImSubTab,
     imAuditPlatform,
     setIMAuditPlatform,
-    imAuditBtnStyle,
     saveRemoteConfigField,
     showToastMessage,
     qqBotStatus,
@@ -78,7 +76,7 @@ export const IMSettingsPanel = ({
     weixinQRError,
     setWeixinQRError,
 }: IMSettingsPanelProps) => (
-                            <div className="settings-panel" style={{ display: settingsTab === 'im' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel im-settings-panel" hidden={settingsTab !== 'im'}>
                                 <IMSubTabs lang={lang} imSubTab={imSubTab} setImSubTab={setImSubTab} showLansenger={showLansenger} />
 
                                 {imSubTab === 'qq' && (
@@ -86,7 +84,6 @@ export const IMSettingsPanel = ({
                                         config={config}
                                         setConfig={setConfig}
                                         lang={lang}
-                                        imAuditBtnStyle={imAuditBtnStyle}
                                         saveRemoteConfigField={saveRemoteConfigField}
                                         qqBotStatus={qqBotStatus}
                                         setQQBotStatus={setQQBotStatus}
@@ -101,7 +98,6 @@ export const IMSettingsPanel = ({
                                         config={config}
                                         setConfig={setConfig}
                                         lang={lang}
-                                        imAuditBtnStyle={imAuditBtnStyle}
                                         saveRemoteConfigField={saveRemoteConfigField}
                                         telegramStatus={telegramStatus}
                                         setTelegramStatus={setTelegramStatus}
@@ -116,7 +112,6 @@ export const IMSettingsPanel = ({
                                         config={config}
                                         setConfig={setConfig}
                                         lang={lang}
-                                        imAuditBtnStyle={imAuditBtnStyle}
                                         weixinStatus={weixinStatus}
                                         setWeixinStatus={setWeixinStatus}
                                         weixinLocalMode={weixinLocalMode}
@@ -138,7 +133,6 @@ export const IMSettingsPanel = ({
                                         config={config}
                                         setConfig={setConfig}
                                         lang={lang}
-                                        imAuditBtnStyle={imAuditBtnStyle}
                                         saveRemoteConfigField={saveRemoteConfigField}
                                         lansengerStatus={lansengerStatus}
                                         setLansengerStatus={setLansengerStatus}
@@ -153,7 +147,6 @@ export const IMSettingsPanel = ({
                                         config={config}
                                         setConfig={setConfig}
                                         lang={lang}
-                                        imAuditBtnStyle={imAuditBtnStyle}
                                         saveRemoteConfigField={saveRemoteConfigField}
                                         showToastMessage={showToastMessage}
                                         setIMAuditPlatform={setIMAuditPlatform}

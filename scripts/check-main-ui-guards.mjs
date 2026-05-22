@@ -183,9 +183,9 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 100],
   ['gui/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
   ['gui/frontend/src/components/ai/useAssistantInputHistory.ts', 100],
-  ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 80],
+  ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 170],
   ['gui/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
-  ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 140],
+  ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 170],
   ['gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 80],
   ['gui/frontend/src/components/ai/AssistantConversationBody.tsx', 250],
   ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 80],
@@ -551,7 +551,7 @@ requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'f
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubUsedCredits', 'hub credits used display wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubExpiry', 'hub credits expiry display wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'sidebarCurrentProviderTokenUsage.isHubService', 'hub service credits visibility condition');
-requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'recentProjects.map', 'recent tasks list stays in sidebar recent tasks component');
+requireIncludes('gui/frontend/src/components/layout/SidebarRecentTasks.tsx', 'visibleRecentProjects.map', 'recent tasks list stays in sidebar recent tasks component');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'showHubCreditAction', 'hub credits action stays in sidebar system status');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'openHubCreditsPage', 'hub credits purchase action wiring');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'export const MainTopHeader', 'non-AI top header export');

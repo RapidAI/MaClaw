@@ -14,10 +14,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -81,8 +83,10 @@ func (f failingPlatformSettingsRepo) Get(ctx context.Context, key string) (strin
 
 func (f failingPlatformSettingsRepo) Set(ctx context.Context, key, valueJSON string) error {
 	_ = ctx
-	_ = key
 	_ = valueJSON
+	if key == platformRequestNonceRegistryKey {
+		return nil
+	}
 	return errors.New("set failed")
 }
 
@@ -108,6 +112,18 @@ func TestPlatformAwareMachineSenderPrefersPlatformCallback(t *testing.T) {
 		if got := r.Header.Get("X-VE-Callback-Secret"); got != "secret-1" {
 			t.Fatalf("unexpected callback secret %q", got)
 		}
+		if r.Header.Get("X-VE-Callback-Timestamp") == "" || r.Header.Get("X-VE-Callback-Nonce") == "" {
+			t.Fatalf("callback missing replay headers")
+		}
+		if got := r.Header.Get("X-VE-Hub-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("unexpected Hub tenant header %q", got)
+		}
+		if got := r.Header.Get("X-VE-Hub-Employee-ID"); got != "ve_employee_1" {
+			t.Fatalf("unexpected Hub employee header %q", got)
+		}
+		if got := r.Header.Get("X-VE-Hub-Account-ID"); got != "ve-account-1" {
+			t.Fatalf("unexpected Hub account header %q", got)
+		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode callback body: %v", err)
@@ -124,7 +140,7 @@ func TestPlatformAwareMachineSenderPrefersPlatformCallback(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: "platform", RegisteredAt: time.Now().UTC().Format(time.RFC3339)}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account-1", Status: veStatusActive, OnlineStatus: "platform", RegisteredAt: time.Now().UTC().Format(time.RFC3339)}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -139,6 +155,144 @@ func TestPlatformAwareMachineSenderPrefersPlatformCallback(t *testing.T) {
 	}
 	if fallback.calls != 0 {
 		t.Fatalf("fallback should not be used for platform employees when callback succeeds, got %d calls", fallback.calls)
+	}
+}
+
+func TestPlatformA2APayloadExtractsEnvelopeIDs(t *testing.T) {
+	envelope := corea2a.NewGroupEnvelope("env-1", corea2a.GroupMessageDiscussionMessage, "maclaw-a", time.Now().UTC())
+	envelope.SessionID = "discussion-1"
+	envelope.Message = &corea2a.GroupDiscussionMessage{ID: "message-1", SessionID: "discussion-1", FromID: "maclaw-a", Content: "hello"}
+
+	payload := platformA2APayload(map[string]any{
+		"type": "ve:discussion_message",
+		"payload": map[string]any{
+			"envelope": envelope,
+		},
+	})
+	if payload["request_id"] != "env-1" || payload["hub_discussion_id"] != "discussion-1" || payload["hub_message_id"] != "message-1" || payload["content"] != "hello" {
+		t.Fatalf("unexpected platform A2A payload: %#v", payload)
+	}
+	if payload["event_type"] != "ve:discussion_message" {
+		t.Fatalf("event_type=%#v", payload["event_type"])
+	}
+	if payload["protocol_event_type"] != string(corea2a.GroupMessageDiscussionMessage) {
+		t.Fatalf("protocol_event_type=%#v", payload["protocol_event_type"])
+	}
+}
+
+func TestPlatformA2APayloadPreservesOuterEventType(t *testing.T) {
+	envelope := corea2a.NewGroupEnvelope("env-cancel", corea2a.GroupMessageDiscussionResult, "maclaw-a", time.Now().UTC())
+	envelope.SessionID = "discussion-1"
+
+	payload := platformA2APayload(map[string]any{
+		"type": "ve:discussion_cancel",
+		"payload": map[string]any{
+			"envelope": envelope,
+		},
+	})
+	if payload["event_type"] != "ve:discussion_cancel" {
+		t.Fatalf("event_type=%#v", payload["event_type"])
+	}
+	if payload["protocol_event_type"] != string(corea2a.GroupMessageDiscussionResult) {
+		t.Fatalf("protocol_event_type=%#v", payload["protocol_event_type"])
+	}
+}
+
+func TestPlatformAwareMachineSenderRoutesA2AInviteAndCancel(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	seen := make(chan string, 2)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.URL.Path
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer callback.Close()
+
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account-1", Status: veStatusActive, OnlineStatus: "platform", RegisteredAt: time.Now().UTC().Format(time.RFC3339)}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+
+	sender := platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	if err := sender.SendToMachine("ve_employee_1", map[string]any{"type": "ve:discussion_invite"}); err != nil {
+		t.Fatalf("invite SendToMachine returned error: %v", err)
+	}
+	if err := sender.SendToMachine("ve_employee_1", map[string]any{"type": "ve:discussion_cancel"}); err != nil {
+		t.Fatalf("cancel SendToMachine returned error: %v", err)
+	}
+
+	got := []string{<-seen, <-seen}
+	want := []string{"/a2a/employees/platform-employee-1/invite", "/a2a/employees/platform-employee-1/cancel"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("callback paths=%v want %v", got, want)
+	}
+}
+
+func TestPlatformA2AEndpointSuffixDoesNotTreatInvitationResponseAsInvite(t *testing.T) {
+	if got := platformA2AEndpointSuffix(map[string]any{"payload": map[string]any{"envelope": corea2a.NewGroupEnvelope("env-response", corea2a.GroupMessageInvitationResponse, "maclaw-a", time.Now().UTC())}}); got != "/messages" {
+		t.Fatalf("invitation response suffix=%q want /messages", got)
+	}
+	if got := platformA2AEndpointSuffix(map[string]any{"payload": map[string]any{"envelope": corea2a.NewGroupEnvelope("env-invite", corea2a.GroupMessageInvitation, "maclaw-a", time.Now().UTC())}}); got != "/invite" {
+		t.Fatalf("invitation suffix=%q want /invite", got)
+	}
+}
+
+func TestPostPlatformCallbackAddsReplayHeaders(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer callback.Close()
+
+	postPlatformCallback(platformProviderEntry{CallbackBaseURL: callback.URL, CallbackSecret: "secret-1"}, "/api/hub/callback/migration", map[string]any{"migration_id": "mig-1", "status": "approved"})
+	select {
+	case header := <-seen:
+		if header.Get("X-VE-Callback-Secret") != "secret-1" || header.Get("X-VE-Callback-Timestamp") == "" || header.Get("X-VE-Callback-Nonce") == "" {
+			t.Fatalf("callback headers incomplete: %#v", header)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback was not posted")
+	}
+}
+
+func TestPostPlatformTenantCallbacksSendsTenantReadiness(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	seen := make(chan map[string]any, 1)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hub/callback/tenant" {
+			t.Fatalf("unexpected callback path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("X-VE-Callback-Secret"); got != "secret-1" {
+			t.Fatalf("unexpected callback secret %q", got)
+		}
+		if r.Header.Get("X-VE-Callback-Timestamp") == "" || r.Header.Get("X-VE-Callback-Nonce") == "" {
+			t.Fatalf("callback missing replay headers")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback body: %v", err)
+		}
+		seen <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer callback.Close()
+
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", VirtualMailDomain: "ve.example.com", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a", VirtualMailDomain: "tenant-a.custom.example.com"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	postPlatformTenantCallbacks(context.Background(), settings, &store.Tenant{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "tenant-a.example.com"}, "")
+	select {
+	case body := <-seen:
+		if body["hub_tenant_id"] != "tenant-a" || body["status"] != "active" || body["virtual_mail_domain"] != "tenant-a.custom.example.com" || body["ve_enabled"] != true {
+			t.Fatalf("unexpected tenant callback body: %#v", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tenant callback was not posted")
 	}
 }
 
@@ -400,6 +554,129 @@ func TestPlatformKnowledgeImportValidatesHubTenantAndEmployee(t *testing.T) {
 	}
 }
 
+func TestPlatformMigrationCallbackIncludesTargetHubIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	callbackBody := make(chan map[string]any, 2)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback: %v", err)
+		}
+		callbackBody <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer callback.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	handler := PlatformMigrationSubmitHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}})
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/migrations", "platform-1", privateKey, map[string]any{"migration_id": "mig-1", "hub_tenant_id": "tenant-a", "target_employee_id": "platform-employee-1"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("migration submit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	seenCompleted := false
+	for i := 0; i < 2; i++ {
+		select {
+		case body := <-callbackBody:
+			if body["status"] == "completed" {
+				seenCompleted = true
+			}
+			if body["hub_tenant_id"] != "tenant-a" || body["hub_employee_id"] != "ve_employee_1" || body["hub_account_id"] != "hub-account-1" {
+				t.Fatalf("callback missing target identity: %#v", body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("callback was not posted")
+		}
+	}
+	if !seenCompleted {
+		t.Fatal("migration callback never reached completed status")
+	}
+}
+
+func TestPlatformMigrationRejectsMismatchedTargetIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	handler := PlatformMigrationSubmitHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}})
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/migrations", "platform-1", privateKey, map[string]any{"migration_id": "mig-1", "hub_tenant_id": "tenant-a", "target_employee_id": "platform-employee-1", "target_hub_employee_id": "other-employee"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !bytes.Contains(rec.Body.Bytes(), []byte("EMPLOYEE_IDENTITY_MISMATCH")) {
+		t.Fatalf("identity mismatch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPlatformKnowledgeImportCallbackIncludesEmployeeIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	callbackBody := make(chan map[string]any, 2)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback: %v", err)
+		}
+		callbackBody <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer callback.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	handler := PlatformKnowledgeImportHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}})
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/knowledge/imports", "platform-1", privateKey, map[string]any{"import_id": "kimp-1", "hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("knowledge submit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	seenCompleted := false
+	for i := 0; i < 2; i++ {
+		select {
+		case body := <-callbackBody:
+			if body["status"] == "completed" {
+				seenCompleted = true
+			}
+			if body["hub_tenant_id"] != "tenant-a" || body["hub_employee_id"] != "ve_employee_1" || body["hub_account_id"] != "hub-account-1" {
+				t.Fatalf("callback missing employee identity: %#v", body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("callback was not posted")
+		}
+	}
+	if !seenCompleted {
+		t.Fatal("knowledge import callback never reached completed status")
+	}
+}
+
 func TestPlatformEmployeeStatusAcceptsPlatformEmployeeID(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -426,6 +703,120 @@ func TestPlatformEmployeeStatusAcceptsPlatformEmployeeID(t *testing.T) {
 		t.Fatalf("employee status was not updated: %#v", updated.Employees)
 	}
 }
+
+func TestPlatformEmployeeStatusRejectsMismatchedHubIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	handler := PlatformEmployeeStatusHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}})
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/ve_employee_1/status", "platform-1", privateKey, map[string]any{"platform_employee_id": "platform-employee-1", "hub_tenant_id": "tenant-a", "hub_employee_id": "other-employee", "service_status": "disabled"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !bytes.Contains(rec.Body.Bytes(), []byte("EMPLOYEE_IDENTITY_MISMATCH")) {
+		t.Fatalf("identity mismatch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusActive {
+		t.Fatalf("employee status should not change: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformSyncJobRunValidatesEmployeeIdentity(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/sync/jobs/sync-1/run", "platform-1", privateKey, map[string]any{"job_id": "sync-1", "hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "hub_employee_id": "ve_employee_1", "hub_account_id": "hub-account-1"})
+	rec := httptest.NewRecorder()
+	PlatformSyncJobRunHandler(settings, tenants).ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted || !bytes.Contains(rec.Body.Bytes(), []byte("hub_sync_job_id")) {
+		t.Fatalf("sync run status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	badReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/sync/jobs/sync-1/run", "platform-1", privateKey, map[string]any{"job_id": "sync-1", "hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "hub_employee_id": "other-employee"})
+	badRec := httptest.NewRecorder()
+	PlatformSyncJobRunHandler(settings, tenants).ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusForbidden || !bytes.Contains(badRec.Body.Bytes(), []byte("EMPLOYEE_IDENTITY_MISMATCH")) {
+		t.Fatalf("identity mismatch status=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+}
+
+func TestPlatformSyncJobRunPostsCallbacks(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	callbackBody := make(chan map[string]any, 2)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hub/callback/sync" {
+			t.Fatalf("unexpected callback path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-VE-Callback-Secret") != "secret-1" || r.Header.Get("X-VE-Callback-Timestamp") == "" || r.Header.Get("X-VE-Callback-Nonce") == "" {
+			t.Fatalf("callback headers incomplete: %#v", r.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback: %v", err)
+		}
+		callbackBody <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer callback.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/sync/jobs/sync-1/run", "platform-1", privateKey, map[string]any{"job_id": "sync-1", "hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1"})
+	rec := httptest.NewRecorder()
+	PlatformSyncJobRunHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("sync run status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	seenCompleted := false
+	for i := 0; i < 2; i++ {
+		select {
+		case body := <-callbackBody:
+			if body["status"] == "completed" {
+				seenCompleted = true
+			}
+			if body["job_id"] != "sync-1" || body["hub_tenant_id"] != "tenant-a" || body["hub_employee_id"] != "ve_employee_1" || body["hub_account_id"] != "hub-account-1" {
+				t.Fatalf("callback missing sync identity: %#v", body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("sync callback was not posted")
+		}
+	}
+	if !seenCompleted {
+		t.Fatal("sync callback never reached completed status")
+	}
+}
+
 func TestPlatformTenantDomainsReturnsSaveFailure(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -469,8 +860,11 @@ func TestPlatformTenantEndpointsRequireActiveTenants(t *testing.T) {
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("tenant list status=%d body=%s", listRec.Code, listRec.Body.String())
 	}
-	if !bytes.Contains(listRec.Body.Bytes(), []byte("tenant-active")) || bytes.Contains(listRec.Body.Bytes(), []byte("tenant-inactive")) || bytes.Contains(listRec.Body.Bytes(), []byte("tenant-deleted")) {
-		t.Fatalf("tenant list should include only active tenants: %s", listRec.Body.String())
+	if !bytes.Contains(listRec.Body.Bytes(), []byte("tenant-active")) || !bytes.Contains(listRec.Body.Bytes(), []byte("tenant-inactive")) || bytes.Contains(listRec.Body.Bytes(), []byte("tenant-deleted")) {
+		t.Fatalf("tenant list should include active and inactive non-deleted tenants: %s", listRec.Body.String())
+	}
+	if !bytes.Contains(listRec.Body.Bytes(), []byte(`"ve_enabled":false`)) {
+		t.Fatalf("inactive tenant should be returned with ve_enabled=false: %s", listRec.Body.String())
 	}
 
 	tenantDomainsReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/providers/tenant-domains", "platform-1", privateKey, map[string]any{"tenant_domains": []map[string]any{{"hub_tenant_id": "tenant-active", "tenant_id": "source-active"}, {"hub_tenant_id": "tenant-inactive", "tenant_id": "source-inactive"}}})
@@ -516,6 +910,13 @@ func TestPlatformTenantEndpointsRequireActiveTenants(t *testing.T) {
 		t.Fatalf("inactive tenant knowledge import status=%d body=%s", knowledgeRec.Code, knowledgeRec.Body.String())
 	}
 
+	syncReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/sync/jobs/sync-inactive/run", "platform-1", privateKey, map[string]any{"job_id": "sync-inactive", "hub_tenant_id": "tenant-inactive", "platform_employee_id": "platform-employee-1"})
+	syncRec := httptest.NewRecorder()
+	PlatformSyncJobRunHandler(settings, tenants).ServeHTTP(syncRec, syncReq)
+	if syncRec.Code != http.StatusNotFound {
+		t.Fatalf("inactive tenant sync status=%d body=%s", syncRec.Code, syncRec.Body.String())
+	}
+
 	updatedTenant, updated, err := updatePlatformEmployeeStatus(context.Background(), settings, tenants, "platform-1", "platform-employee-1", veStatusDisabled)
 	if err != nil {
 		t.Fatalf("update inactive tenant employee status: %v", err)
@@ -524,6 +925,46 @@ func TestPlatformTenantEndpointsRequireActiveTenants(t *testing.T) {
 		t.Fatalf("inactive tenant employee should not be updated, tenant=%q updated=%v", updatedTenant, updated)
 	}
 }
+
+func TestPlatformTenantsListIncludesVirtualEmployeeImportFields(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), VirtualMailDomain: "ve.example.com", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-b", VirtualMailDomain: "custom-b.ve.example.com"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "tenant-a.example.com", UpdatedAt: time.Now().UTC()}, {ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active", PrimaryDomain: "tenant-b.example.com", UpdatedAt: time.Now().UTC()}}}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/tenants/list", "platform-1", privateKey, map[string]any{})
+	rec := httptest.NewRecorder()
+	PlatformTenantsListHandler(settings, tenants).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Tenants []struct {
+			HubTenantID       string `json:"hub_tenant_id"`
+			VirtualMailDomain string `json:"virtual_mail_domain"`
+			VEEnabled         bool   `json:"ve_enabled"`
+		} `json:"tenants"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Tenants) != 2 {
+		t.Fatalf("expected two tenants, got %#v", resp.Tenants)
+	}
+	if resp.Tenants[0].HubTenantID != "tenant-a" || resp.Tenants[0].VirtualMailDomain != "tenant-a.ve.example.com" || !resp.Tenants[0].VEEnabled {
+		t.Fatalf("tenant-a missing import fields: %#v", resp.Tenants[0])
+	}
+	if resp.Tenants[1].HubTenantID != "tenant-b" || resp.Tenants[1].VirtualMailDomain != "custom-b.ve.example.com" || !resp.Tenants[1].VEEnabled {
+		t.Fatalf("tenant-b missing custom import fields: %#v", resp.Tenants[1])
+	}
+}
+
 func newSignedPlatformJSONRequest(t *testing.T, method, target, platformID string, privateKey *rsa.PrivateKey, payload any) *http.Request {
 	t.Helper()
 	body, err := json.Marshal(payload)
@@ -535,7 +976,13 @@ func newSignedPlatformJSONRequest(t *testing.T, method, target, platformID strin
 
 func newSignedPlatformRawRequest(t *testing.T, method, target, platformID string, privateKey *rsa.PrivateKey, body []byte) *http.Request {
 	t.Helper()
-	digest := sha256.Sum256(body)
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	var nonceBytes [8]byte
+	if _, err := rand.Read(nonceBytes[:]); err != nil {
+		t.Fatalf("generate nonce: %v", err)
+	}
+	nonce := strings.ReplaceAll(t.Name(), "/", "-") + "-" + base64.RawURLEncoding.EncodeToString(nonceBytes[:])
+	digest := sha256.Sum256(platformSignaturePayload(method, target, timestamp, nonce, body))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
 	if err != nil {
 		t.Fatalf("sign payload: %v", err)
@@ -544,6 +991,8 @@ func newSignedPlatformRawRequest(t *testing.T, method, target, platformID string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-VE-Platform-ID", platformID)
 	req.Header.Set("X-VE-Signature", base64.StdEncoding.EncodeToString(sig))
+	req.Header.Set("X-VE-Timestamp", timestamp)
+	req.Header.Set("X-VE-Nonce", nonce)
 	return req
 }
 

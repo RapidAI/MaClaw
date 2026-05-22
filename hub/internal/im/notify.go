@@ -60,6 +60,7 @@ func (b *NotifyBroadcaster) BroadcastVerifyCode(ctx context.Context, email, code
 
 func (b *NotifyBroadcaster) BroadcastVerifyCodeForTenant(ctx context.Context, tenantID, email, code, excludePlatform string) (sentTo string, err error) {
 	tenantID = normalizeTenantID(tenantID)
+	ctx = WithTenant(ctx, tenantID)
 	var channels []string
 	var firstErr error
 
@@ -80,12 +81,7 @@ func (b *NotifyBroadcaster) BroadcastVerifyCodeForTenant(ctx context.Context, te
 
 	// 2. Send to all other bound IM platforms
 	if b.adapter != nil {
-		b.adapter.mu.RLock()
-		plugins := make(map[string]IMPlugin, len(b.adapter.plugins))
-		for k, v := range b.adapter.plugins {
-			plugins[k] = v
-		}
-		b.adapter.mu.RUnlock()
+		plugins := b.adapter.PluginsForTenant(tenantID)
 
 		msg := fmt.Sprintf("🔑 MaClaw Hub 绑定验证码: %s\n\n请在发起绑定的 IM 中回复此验证码完成绑定（5 分钟内有效）。", code)
 
@@ -127,16 +123,12 @@ func (b *NotifyBroadcaster) BroadcastLoginLink(ctx context.Context, email, confi
 
 func (b *NotifyBroadcaster) BroadcastLoginLinkForTenant(ctx context.Context, tenantID, email, confirmURL string) []string {
 	tenantID = normalizeTenantID(tenantID)
+	ctx = WithTenant(ctx, tenantID)
 	if b.adapter == nil {
 		return nil
 	}
 
-	b.adapter.mu.RLock()
-	plugins := make(map[string]IMPlugin, len(b.adapter.plugins))
-	for k, v := range b.adapter.plugins {
-		plugins[k] = v
-	}
-	b.adapter.mu.RUnlock()
+	plugins := b.adapter.PluginsForTenant(tenantID)
 
 	msg := fmt.Sprintf("🔐 MaClaw Hub 登录确认\n\n请点击以下链接完成登录:\n%s\n\n链接 15 分钟内有效，如非本人操作请忽略。", confirmURL)
 
@@ -166,16 +158,12 @@ func (b *NotifyBroadcaster) BroadcastText(ctx context.Context, email, subject, t
 
 func (b *NotifyBroadcaster) BroadcastTextForTenant(ctx context.Context, tenantID, email, subject, text string) {
 	tenantID = normalizeTenantID(tenantID)
+	ctx = WithTenant(ctx, tenantID)
 	imSent := false
 
 	// 1. Try all bound IM platforms first.
 	if b.adapter != nil {
-		b.adapter.mu.RLock()
-		plugins := make(map[string]IMPlugin, len(b.adapter.plugins))
-		for k, v := range b.adapter.plugins {
-			plugins[k] = v
-		}
-		b.adapter.mu.RUnlock()
+		plugins := b.adapter.PluginsForTenant(tenantID)
 
 		for name, plugin := range plugins {
 			uid := lookupBindingUID(plugin, tenantID, email)
@@ -209,16 +197,12 @@ func (b *NotifyBroadcaster) BroadcastFile(ctx context.Context, email, b64Data, f
 
 func (b *NotifyBroadcaster) BroadcastFileForTenant(ctx context.Context, tenantID, email, b64Data, fileName, mimeType, message string) {
 	tenantID = normalizeTenantID(tenantID)
+	ctx = WithTenant(ctx, tenantID)
 	if b.adapter == nil {
 		return
 	}
 
-	b.adapter.mu.RLock()
-	plugins := make(map[string]IMPlugin, len(b.adapter.plugins))
-	for k, v := range b.adapter.plugins {
-		plugins[k] = v
-	}
-	b.adapter.mu.RUnlock()
+	plugins := b.adapter.PluginsForTenant(tenantID)
 
 	for name, plugin := range plugins {
 		uid := lookupBindingUID(plugin, tenantID, email)
@@ -315,6 +299,7 @@ func (b *NotifyBroadcaster) SendToActive(ctx context.Context, userID, email, sub
 
 func (b *NotifyBroadcaster) SendToActiveForTenant(ctx context.Context, tenantID, userID, email, subject, text string) {
 	tenantID = normalizeTenantID(tenantID)
+	ctx = WithTenant(ctx, tenantID)
 	if b.activeProvider != nil {
 		platformName, platformUID, ok := b.activeProvider.GetActiveUser(userID)
 		if ok && b.adapter != nil {
@@ -326,12 +311,7 @@ func (b *NotifyBroadcaster) SendToActiveForTenant(ctx context.Context, tenantID,
 	// Prefer remote gateways (weixin, qqbot_remote, telegram) over hub-native
 	// plugins since they are more commonly used in multi-machine setups.
 	if b.adapter != nil {
-		b.adapter.mu.RLock()
-		plugins := make(map[string]IMPlugin, len(b.adapter.plugins))
-		for k, v := range b.adapter.plugins {
-			plugins[k] = v
-		}
-		b.adapter.mu.RUnlock()
+		plugins := b.adapter.PluginsForTenant(tenantID)
 
 		preferred := []string{"weixin", "qqbot_remote", "telegram", "feishu", "qqbot", "openclaw"}
 		for _, name := range preferred {

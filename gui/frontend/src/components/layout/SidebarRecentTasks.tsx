@@ -12,6 +12,7 @@ export type RecentProject = {
     preview?: string;
     last_activity?: string;
     pinned?: boolean;
+    has_output?: boolean;
 };
 
 export type TaskContextMenu = { x: number; y: number; projectPath: string; name: string; pinned: boolean } | null;
@@ -72,6 +73,7 @@ export const SidebarRecentTasks = ({
     const [sceneDetailLoading, setSceneDetailLoading] = useState(false);
     const creatingTaskRef = useRef(false);
     const createBackdropMouseDownRef = useRef(false);
+    const visibleRecentProjects = recentProjects.filter(proj => proj.has_output !== false);
 
     const openCreateDialog = () => {
         if (creatingTaskRef.current) return;
@@ -144,11 +146,11 @@ export const SidebarRecentTasks = ({
                 +
             </button>
         </div>
-        {recentProjects.length === 0 ? (
+        {visibleRecentProjects.length === 0 ? (
             <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
                 {textForLang(lang, 'No recent tasks', '\u6682\u65e0\u6700\u8fd1\u4efb\u52a1', '\u66ab\u7121\u6700\u8fd1\u4efb\u52d9')}
             </div>
-        ) : recentProjects.map(proj => (
+        ) : visibleRecentProjects.map(proj => (
             <div key={proj.id || proj.project_path}>
                 <div onDoubleClick={() => handleTaskDoubleClick(proj.project_path)} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.15s' }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <span style={{ flexShrink: 0, color: '#ff3b73', fontSize: '0.82rem', lineHeight: '1.2', width: '16px', textAlign: 'center', overflow: 'hidden' }}>{proj.pinned ? '\uD83D\uDCCC' : '\uD83D\uDE80'}</span>

@@ -65,6 +65,10 @@ func (s *AdminService) IsInitialized(ctx context.Context) (bool, error) {
 }
 
 func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password, email string) error {
+	username = strings.TrimSpace(username)
+	if username == "" || strings.TrimSpace(password) == "" {
+		return fmt.Errorf("username and password are required")
+	}
 	initialized, err := s.IsInitialized(ctx)
 	if err != nil {
 		return err
@@ -80,12 +84,12 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 
 	now := time.Now()
 	email = normalizeEmail(email)
-	if email == "" {
-		return fmt.Errorf("admin email is required")
+	if !isValidAdminEmail(email) {
+		return fmt.Errorf("valid admin email is required")
 	}
 	admin := &store.AdminUser{
 		ID:           newID("adm"),
-		Username:     strings.TrimSpace(username),
+		Username:     username,
 		PasswordHash: string(passwordHash),
 		Email:        email,
 		Scope:        "global",
@@ -121,7 +125,7 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 
 func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username, password, email, displayName, role string) (*store.AdminUser, error) {
 	tenantID = normalizeTenantIDValue(tenantID)
-	if tenantID == "" {
+	if tenantID == "" || strings.EqualFold(tenantID, store.DefaultTenantID) || strings.EqualFold(tenantID, ExplicitGlobalAdminTenantScope) {
 		return nil, fmt.Errorf("tenant id is required")
 	}
 	username = strings.TrimSpace(username)
@@ -129,8 +133,8 @@ func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username
 		return nil, fmt.Errorf("username and password are required")
 	}
 	email = normalizeEmail(email)
-	if email == "" {
-		return nil, fmt.Errorf("admin email is required")
+	if !isValidAdminEmail(email) {
+		return nil, fmt.Errorf("valid admin email is required")
 	}
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -167,6 +171,10 @@ func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username
 }
 
 func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, password string) error {
+	username = strings.TrimSpace(username)
+	if username == "" || strings.TrimSpace(password) == "" {
+		return fmt.Errorf("username and password are required")
+	}
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -175,7 +183,7 @@ func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, pass
 	now := time.Now()
 	admin := &store.AdminUser{
 		ID:           newID("adm"),
-		Username:     strings.TrimSpace(username),
+		Username:     username,
 		PasswordHash: string(passwordHash),
 		Email:        synthesizeAdminEmail(username),
 		Scope:        "global",
@@ -228,6 +236,9 @@ func (s *AdminService) LoginScoped(ctx context.Context, username, password, tena
 		tenantID = ""
 	} else if tenantID != "" {
 		tenantID = normalizeTenantIDValue(tenantID)
+		if strings.EqualFold(tenantID, store.DefaultTenantID) {
+			return "", nil, ErrInvalidAdminCredentials
+		}
 		admin, err = s.admins.GetByUsernameScoped(ctx, username, "tenant", tenantID)
 	} else {
 		return "", nil, ErrInvalidAdminCredentials
@@ -296,6 +307,9 @@ func (s *AdminService) ChangePassword(ctx context.Context, username, currentPass
 }
 
 func (s *AdminService) ChangePasswordScoped(ctx context.Context, username, currentPassword, newPassword, scope, tenantID string) (string, *store.AdminUser, error) {
+	if strings.TrimSpace(newPassword) == "" {
+		return "", nil, fmt.Errorf("new password is required")
+	}
 	admin, err := s.admins.GetByUsernameScoped(ctx, strings.TrimSpace(username), scope, strings.TrimSpace(tenantID))
 	if err != nil {
 		return "", nil, err
@@ -352,8 +366,8 @@ func (s *AdminService) UpdateEmailScoped(ctx context.Context, username, email, s
 	}
 
 	email = normalizeEmail(email)
-	if email == "" {
-		return "", nil, errors.New("admin email is required")
+	if !isValidAdminEmail(email) {
+		return "", nil, errors.New("valid admin email is required")
 	}
 
 	now := time.Now()
@@ -395,7 +409,12 @@ func normalizeEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
 }
 
+var adminEmailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 var adminEmailSlugPattern = regexp.MustCompile(`[^a-z0-9._-]+`)
+
+func isValidAdminEmail(email string) bool {
+	return adminEmailPattern.MatchString(normalizeEmail(email))
+}
 
 func synthesizeAdminEmail(username string) string {
 	slug := strings.ToLower(strings.TrimSpace(username))

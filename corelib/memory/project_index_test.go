@@ -102,13 +102,109 @@ func TestProjectIndex_Search(t *testing.T) {
 		t.Errorf("expected first result to be 'Chat App', got %q", results[0].Name)
 	}
 
-	// Empty query returns all sorted by recency.
+	// Empty query returns output-backed projects sorted by recency.
 	results = pi.Search("", 10)
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results for empty query, got %d", len(results))
+	if len(results) != 2 {
+		t.Fatalf("expected 2 output results for empty query, got %d", len(results))
 	}
-	if results[0].Name != "Todo List" {
+	if results[0].Name != "Chat App" {
 		t.Errorf("expected most recent project first, got %q", results[0].Name)
+	}
+}
+
+func TestProjectIndex_RecentRequiresTangibleOutput(t *testing.T) {
+	pi := NewProjectIndex()
+	now := time.Now()
+
+	pi.Rebuild([]Entry{
+		{
+			ID:         "chat",
+			Title:      "Continue",
+			Content:    "Task: continue\nResult: ok",
+			Category:   CategoryProjectKnowledge,
+			SourceType: "task_sediment",
+			Tags:       []string{"task_sediment", "D:\\workprj\\chatty"},
+			UpdatedAt:  now,
+		},
+		{
+			ID:         "output",
+			Title:      "Improve Recent Tasks Filtering",
+			Content:    "Task: filter recent tasks\nResult: Added has_output filter and tests",
+			Category:   CategoryProjectKnowledge,
+			SourceType: "task_sediment",
+			Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", "D:\\workprj\\maclaw"},
+			UpdatedAt:  now.Add(-time.Minute),
+		},
+	})
+
+	recent := pi.ListRecent(10)
+	if len(recent) != 1 {
+		t.Fatalf("ListRecent returned %d records, want 1", len(recent))
+	}
+	if recent[0].Name != "Improve Recent Tasks Filtering" || !recent[0].HasOutput {
+		t.Fatalf("recent[0] = %+v, want output-backed task", recent[0])
+	}
+	if got := pi.Search("continue", 10); len(got) != 0 {
+		t.Fatalf("Search returned non-output small talk: %+v", got)
+	}
+}
+
+func TestProjectIndex_OutputTitleAndPreviewWin(t *testing.T) {
+	pi := NewProjectIndex()
+	now := time.Now()
+	projectPath := "D:\\workprj\\maclaw"
+
+	pi.IndexEntry(&Entry{
+		ID:        "note",
+		Title:     "Review/Fix/Optimize",
+		Content:   "Review/Fix/Optimize",
+		Category:  CategoryProjectKnowledge,
+		Tags:      []string{projectPath},
+		UpdatedAt: now.Add(-2 * time.Hour),
+	})
+	pi.IndexEntry(&Entry{
+		ID:         "older-output",
+		Title:      "Filter Recent Tasks By Output",
+		Content:    "Task: recent tasks\nResult: Hidden small talk from the sidebar",
+		Category:   CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", projectPath},
+		UpdatedAt:  now.Add(-time.Hour),
+	})
+	pi.IndexEntry(&Entry{
+		ID:         "newer-output",
+		Title:      "Improve Recent Task Titles",
+		Content:    "Task: title quality\nResult: Generated descriptive titles from task results",
+		Category:   CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", projectPath},
+		UpdatedAt:  now,
+	})
+
+	recent := pi.ListRecent(1)
+	if len(recent) != 1 {
+		t.Fatalf("ListRecent len = %d, want 1", len(recent))
+	}
+	if recent[0].Name != "Improve Recent Task Titles" {
+		t.Fatalf("Name = %q, want latest output title", recent[0].Name)
+	}
+	if recent[0].Preview != "Generated descriptive titles from task results" {
+		t.Fatalf("Preview = %q, want output result preview", recent[0].Preview)
+	}
+}
+
+func TestProjectIndex_PathlessOutputArtifactIgnored(t *testing.T) {
+	pi := NewProjectIndex()
+	pi.IndexEntry(&Entry{
+		ID:         "pathless",
+		Title:      "Generated Report",
+		Content:    "Result: Generated report",
+		Category:   CategoryTaskArtifact,
+		SourceType: "workflow_output",
+		UpdatedAt:  time.Now(),
+	})
+	if pi.Count() != 0 {
+		t.Fatalf("pathless output should not create project, count=%d", pi.Count())
 	}
 }
 

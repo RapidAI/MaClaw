@@ -241,6 +241,15 @@ func mimeTypeForFile(path string) string {
 //
 // On upload failure, returns a specific error; the message text is preserved for retry.
 func (a *App) SendVEMessageWithAttachments(sessionID string, content string, filePaths []string) error {
+ return a.sendVEAttachmentMessage(sessionID, content, filePaths, nil)
+}
+
+// SendVEGroupMessageWithAttachments sends a VE group message with file attachments and @mention routing.
+func (a *App) SendVEGroupMessageWithAttachments(sessionID string, content string, mentionedIds []string, filePaths []string) error {
+ return a.sendVEAttachmentMessage(sessionID, content, filePaths, mentionedIds)
+}
+
+func (a *App) sendVEAttachmentMessage(sessionID string, content string, filePaths []string, mentionedIds []string) error {
 	if strings.TrimSpace(content) == "" && len(filePaths) == 0 {
 		return fmt.Errorf("message content and attachments are both empty")
 	}
@@ -332,11 +341,33 @@ func (a *App) SendVEMessageWithAttachments(sessionID string, content string, fil
 		CreatedAt:        time.Now(),
 	}
 
+	targets, err := a.resolveVEGroupMentionTargets(sessionID, content, mentionedIds)
+	if err != nil {
+		return err
+	}
+
+	if targets.Explicit && targets.Local && len(targets.RemoteToIDs) == 0 {
+		if !a.tryLocalExecutorDispatch(sessionID, msg) {
+			if _, err := a.RegisterLocalExecutorInGroup(sessionID); err != nil {
+				return fmt.Errorf("local AI is not ready in this group: %w", err)
+			}
+			if !a.tryLocalExecutorDispatch(sessionID, msg) {
+				return fmt.Errorf("local AI is not ready in this group; please add it again")
+			}
+		}
+		return nil
+	}
+
+	if targets.Explicit && len(targets.RemoteToIDs) > 0 && !targets.Local {
+		msg.ToIDs = targets.RemoteToIDs
+		return a.sendVEA2AMessage(sessionID, msg)
+	}
+
 	// Local dispatch shortcut: when local AI is enabled for this session,
 	// dispatch directly to the local agent without waiting for Hub round-trip.
 	if a.tryLocalExecutorDispatch(sessionID, msg) {
 		return nil
 	}
 
-	return a.GroupDiscussionSendMessage(sessionID, msg)
+	return a.sendVEA2AMessage(sessionID, msg)
 }

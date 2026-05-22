@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -120,20 +121,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	// Hub LLM Coordinator 闂?sits between Adapter and MessageRouter.
 	// Provides seamless smart mode when Hub LLM is configured.
 	llmConfigProvider := func(ctx context.Context) *im.HubLLMConfig {
-		tenantID := im.TenantIDFromContext(ctx)
-		system := scopedSystemSettingsForTenant(tenantID, st.System)
-		raw, err := system.Get(context.Background(), "hub_llm_config")
-		if err != nil || raw == "" {
-			return nil
-		}
-		var cfg im.HubLLMConfig
-		if json.Unmarshal([]byte(raw), &cfg) != nil {
-			return nil
-		}
-		if !cfg.Enabled {
-			return nil
-		}
-		return &cfg
+		return loadGlobalHubLLMConfig(ctx, st.System)
 	}
 	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
 	imAdapter.SetCoordinator(coordinator)
@@ -285,7 +273,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	}
 	// Provide the hub's public URL so IM plugins can serve temp files for large uploads.
 	// GetPublicBaseURL prefers the database value (set via admin panel) over the config file.
-	if publicBaseURL := centerService.GetPublicBaseURL(context.Background()); publicBaseURL != "" {
+	publicBaseURL := centerService.GetPublicBaseURL(context.Background())
+	if publicBaseURL != "" {
 		qqbotPlugin.SetPublicBaseURL(publicBaseURL)
 		feishuPlugin.SetPublicBaseURL(publicBaseURL)
 	}
@@ -309,7 +298,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	if err := imAdapter.RegisterPlugin(wecomPlugin); err != nil {
 		log.Printf("[bootstrap] failed to register wecom plugin: %v", err)
 	}
-	if publicBaseURL := centerService.GetPublicBaseURL(context.Background()); publicBaseURL != "" {
+	if publicBaseURL != "" {
 		wecomPlugin.SetPublicBaseURL(publicBaseURL)
 	}
 	if err := wecomPlugin.Start(context.Background()); err != nil {
@@ -331,6 +320,9 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	if err := imAdapter.RegisterPlugin(dingtalkPlugin); err != nil {
 		log.Printf("[bootstrap] failed to register dingtalk plugin: %v", err)
 	}
+	if publicBaseURL != "" {
+		dingtalkPlugin.SetPublicBaseURL(publicBaseURL)
+	}
 	if err := dingtalkPlugin.Start(context.Background()); err != nil {
 		log.Printf("[bootstrap] failed to start dingtalk plugin: %v", err)
 	}
@@ -343,6 +335,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	feishuNotifier.SetBroadcaster(broadcaster)
 	wecomPlugin.SetBroadcaster(broadcaster)
 	dingtalkPlugin.SetBroadcaster(broadcaster)
+	tenantNativeIMRuntimes := newTenantNativeIMRuntimeManager(imAdapter, st.System, st.Users, mailer, broadcaster, publicBaseURL)
+	tenantNativeIMRuntimes.ReloadAll(context.Background(), st.Tenants)
 
 	// 10. Proactive message sender 闂?allows MaClaw clients to push
 	//     non-request-based messages (e.g. scheduled task results) to users.
@@ -472,6 +466,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,
+		tenantNativeIMRuntimes,
 		st.Tenants,
 	)
 	return &App{
@@ -506,6 +501,24 @@ type userEmailLookup struct {
 	users interface {
 		GetByID(ctx context.Context, id string) (*store.User, error)
 	}
+}
+
+func loadGlobalHubLLMConfig(ctx context.Context, system store.SystemSettingsRepository) *im.HubLLMConfig {
+	if system == nil {
+		return nil
+	}
+	raw, err := system.Get(ctx, "hub_llm_config")
+	if err != nil || raw == "" {
+		return nil
+	}
+	var cfg im.HubLLMConfig
+	if json.Unmarshal([]byte(raw), &cfg) != nil {
+		return nil
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	return &cfg
 }
 
 func (u *userEmailLookup) GetEmail(ctx context.Context, tenantID, userID string) (string, error) {
@@ -608,4 +621,222 @@ func isGlobalHeartbeatSettingKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+type nativeIMMailer interface {
+	Send(ctx context.Context, to []string, subject string, body string) error
+}
+
+type tenantNativeIMRuntimeManager struct {
+	mu            sync.Mutex
+	adapter       *im.Adapter
+	system        store.SystemSettingsRepository
+	users         store.UserRepository
+	mailer        nativeIMMailer
+	broadcaster   *im.NotifyBroadcaster
+	publicBaseURL string
+	runtimes      map[string]map[string]im.IMPlugin
+}
+
+func newTenantNativeIMRuntimeManager(adapter *im.Adapter, system store.SystemSettingsRepository, users store.UserRepository, mailer nativeIMMailer, broadcaster *im.NotifyBroadcaster, publicBaseURL string) *tenantNativeIMRuntimeManager {
+	return &tenantNativeIMRuntimeManager{adapter: adapter, system: system, users: users, mailer: mailer, broadcaster: broadcaster, publicBaseURL: publicBaseURL, runtimes: make(map[string]map[string]im.IMPlugin)}
+}
+
+func (m *tenantNativeIMRuntimeManager) ReloadAll(ctx context.Context, tenants store.TenantRepository) {
+	if m == nil || tenants == nil || m.adapter == nil || m.system == nil || m.users == nil {
+		return
+	}
+	items, err := tenants.List(ctx)
+	if err != nil {
+		log.Printf("[bootstrap] tenant IM runtimes unavailable: list tenants failed: %v", err)
+		return
+	}
+	activeTenants := make(map[string]struct{})
+	for _, tenant := range items {
+		if tenant == nil {
+			continue
+		}
+		tenantID := strings.TrimSpace(tenant.ID)
+		if tenantID == "" {
+			continue
+		}
+		if tenantID == store.DefaultTenantID || tenant.DeletedAt != nil || !strings.EqualFold(strings.TrimSpace(tenant.Status), "active") {
+			m.StopTenantIMs(ctx, tenantID)
+			continue
+		}
+		activeTenants[tenantID] = struct{}{}
+		for _, platform := range []string{"qqbot", "wecom", "dingtalk"} {
+			if err := m.ReloadTenantIM(ctx, tenantID, platform); err != nil {
+				log.Printf("[bootstrap] failed to reload tenant IM runtime: tenant=%s platform=%s err=%v", tenantID, platform, err)
+			}
+		}
+	}
+	for _, tenantID := range m.tenantRuntimeIDs() {
+		if _, ok := activeTenants[tenantID]; !ok {
+			m.StopTenantIMs(ctx, tenantID)
+		}
+	}
+}
+
+func (m *tenantNativeIMRuntimeManager) ReloadTenantIM(ctx context.Context, tenantID, platform string) error {
+	if m == nil || m.adapter == nil || m.system == nil || m.users == nil {
+		return nil
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if tenantID == "" || tenantID == store.DefaultTenantID {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopLocked(ctx, tenantID, platform)
+	tenantSystem := httpapi.ScopedSystemSettingsForTenant(tenantID, m.system)
+	var plugin im.IMPlugin
+	switch platform {
+	case "qqbot":
+		plugin = buildTenantQQBotPlugin(ctx, tenantSystem, m.users, m.mailer, m.broadcaster, m.publicBaseURL)
+	case "wecom":
+		plugin = buildTenantWeComPlugin(ctx, tenantSystem, m.users, m.mailer, m.broadcaster, m.publicBaseURL)
+	case "dingtalk":
+		plugin = buildTenantDingTalkPlugin(ctx, tenantSystem, m.users, m.mailer, m.broadcaster, m.publicBaseURL)
+	default:
+		return nil
+	}
+	if plugin == nil {
+		return nil
+	}
+	return m.registerAndStartTenantPluginLocked(ctx, tenantID, platform, plugin)
+}
+
+func (m *tenantNativeIMRuntimeManager) registerAndStartTenantPluginLocked(ctx context.Context, tenantID, platform string, plugin im.IMPlugin) error {
+	if err := m.adapter.RegisterTenantPlugin(tenantID, plugin); err != nil {
+		return err
+	}
+	if err := plugin.Start(ctx); err != nil {
+		removed := m.adapter.UnregisterTenantPlugin(tenantID, platform)
+		if removed != nil {
+			_ = removed.Stop(ctx)
+		}
+		return err
+	}
+	if m.runtimes[tenantID] == nil {
+		m.runtimes[tenantID] = make(map[string]im.IMPlugin)
+	}
+	m.runtimes[tenantID][platform] = plugin
+	return nil
+}
+
+func (m *tenantNativeIMRuntimeManager) stopLocked(ctx context.Context, tenantID, platform string) {
+	removed := m.adapter.UnregisterTenantPlugin(tenantID, platform)
+	if removed != nil {
+		_ = removed.Stop(ctx)
+	}
+	if m.runtimes[tenantID] != nil {
+		if existing := m.runtimes[tenantID][platform]; existing != nil {
+			if existing != removed {
+				_ = existing.Stop(ctx)
+			}
+		}
+		delete(m.runtimes[tenantID], platform)
+		if len(m.runtimes[tenantID]) == 0 {
+			delete(m.runtimes, tenantID)
+		}
+	}
+}
+
+func (m *tenantNativeIMRuntimeManager) StopTenantIMs(ctx context.Context, tenantID string) {
+	if m == nil || m.adapter == nil {
+		return
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, platform := range []string{"qqbot", "wecom", "dingtalk"} {
+		m.stopLocked(ctx, tenantID, platform)
+	}
+}
+
+func (m *tenantNativeIMRuntimeManager) tenantRuntimeIDs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.runtimes))
+	for tenantID := range m.runtimes {
+		out = append(out, tenantID)
+	}
+	return out
+}
+
+func buildTenantQQBotPlugin(ctx context.Context, system store.SystemSettingsRepository, users store.UserRepository, mailer nativeIMMailer, broadcaster *im.NotifyBroadcaster, publicBaseURL string) im.IMPlugin {
+	if cfg := loadTenantQQBotConfig(ctx, system); !cfg.Enabled || cfg.AppID == "" || cfg.AppSecret == "" {
+		return nil
+	}
+	plugin := qqbot.New(func() qqbot.Config { return loadTenantQQBotConfig(context.Background(), system) }, users, system, mailer)
+	if publicBaseURL != "" {
+		plugin.SetPublicBaseURL(publicBaseURL)
+	}
+	plugin.SetBroadcaster(broadcaster)
+	return plugin
+}
+
+func buildTenantWeComPlugin(ctx context.Context, system store.SystemSettingsRepository, users store.UserRepository, mailer nativeIMMailer, broadcaster *im.NotifyBroadcaster, publicBaseURL string) im.IMPlugin {
+	if cfg := loadTenantWeComConfig(ctx, system); !cfg.Enabled || cfg.BotID == "" || cfg.Secret == "" {
+		return nil
+	}
+	plugin := wecom.New(func() wecom.Config { return loadTenantWeComConfig(context.Background(), system) }, users, system, mailer)
+	if publicBaseURL != "" {
+		plugin.SetPublicBaseURL(publicBaseURL)
+	}
+	plugin.SetBroadcaster(broadcaster)
+	return plugin
+}
+
+func buildTenantDingTalkPlugin(ctx context.Context, system store.SystemSettingsRepository, users store.UserRepository, mailer nativeIMMailer, broadcaster *im.NotifyBroadcaster, publicBaseURL string) im.IMPlugin {
+	if cfg := loadTenantDingTalkConfig(ctx, system); !cfg.Enabled || cfg.ClientID == "" || cfg.ClientSecret == "" {
+		return nil
+	}
+	plugin := dingtalk.New(func() dingtalk.Config { return loadTenantDingTalkConfig(context.Background(), system) }, users, system, mailer)
+	if publicBaseURL != "" {
+		plugin.SetPublicBaseURL(publicBaseURL)
+	}
+	plugin.SetBroadcaster(broadcaster)
+	return plugin
+}
+
+func loadTenantQQBotConfig(ctx context.Context, system store.SystemSettingsRepository) qqbot.Config {
+	raw, err := system.Get(ctx, "qqbot_config")
+	if err != nil || raw == "" {
+		return qqbot.Config{}
+	}
+	var cfg qqbot.Config
+	if json.Unmarshal([]byte(raw), &cfg) != nil {
+		return qqbot.Config{}
+	}
+	return cfg
+}
+
+func loadTenantWeComConfig(ctx context.Context, system store.SystemSettingsRepository) wecom.Config {
+	raw, err := system.Get(ctx, "wecom_config")
+	if err != nil || raw == "" {
+		return wecom.Config{}
+	}
+	var cfg wecom.Config
+	if json.Unmarshal([]byte(raw), &cfg) != nil {
+		return wecom.Config{}
+	}
+	return cfg
+}
+
+func loadTenantDingTalkConfig(ctx context.Context, system store.SystemSettingsRepository) dingtalk.Config {
+	raw, err := system.Get(ctx, "dingtalk_config")
+	if err != nil || raw == "" {
+		return dingtalk.Config{}
+	}
+	var cfg dingtalk.Config
+	if json.Unmarshal([]byte(raw), &cfg) != nil {
+		return dingtalk.Config{}
+	}
+	return cfg
 }

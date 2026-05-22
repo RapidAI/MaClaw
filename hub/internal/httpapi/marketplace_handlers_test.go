@@ -2225,7 +2225,13 @@ func openCapabilityTestDB(t *testing.T) *sql.DB {
 
 func TestAdminMCPMarketplaceUpsertRouteIsWired(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
-	token := issueHubAdminToken(t, router)
+	globalToken := issueHubAdminToken(t, router)
+	token := issueTenantAdminToken(t, router, globalToken, "acme", "market-admin")
+
+	globalResp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/capability-market/mcp", map[string]any{}, globalToken)
+	if globalResp.Code != http.StatusForbidden {
+		t.Fatalf("global upsert route status=%d body=%s", globalResp.Code, globalResp.Body.String())
+	}
 
 	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/capability-market/mcp", map[string]any{
 		"publisher":     "acme",
@@ -2252,7 +2258,10 @@ func TestAdminMCPMarketplaceUpsertRouteIsWired(t *testing.T) {
 		t.Fatalf("unexpected created capability: %+v", created)
 	}
 
-	listResp := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/capabilities?type=mcp", nil, "")
+	listReq := httptest.NewRequest(http.MethodGet, "/api/capabilities?type=mcp", nil)
+	listReq.Header.Set("X-Tenant-ID", "tenant_acme")
+	listResp := httptest.NewRecorder()
+	router.ServeHTTP(listResp, listReq)
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listResp.Code, listResp.Body.String())
 	}

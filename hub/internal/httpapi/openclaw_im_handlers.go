@@ -151,6 +151,10 @@ func TestOpenclawIMWebhookHandler(system store.SystemSettingsRepository) http.Ha
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"hub":       "maclaw-hub",
 		}
+		tenantID := RequestTenantID(r)
+		if tenantID != "" && tenantID != store.DefaultTenantID {
+			payload["tenant_id"] = tenantID
+		}
 		body, _ := json.Marshal(payload)
 
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, cfg.WebhookURL, bytes.NewReader(body))
@@ -160,6 +164,9 @@ func TestOpenclawIMWebhookHandler(system store.SystemSettingsRepository) http.Ha
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-OpenClaw-Event", "ping")
+		if tenantID != "" && tenantID != store.DefaultTenantID {
+			req.Header.Set("X-Tenant-ID", tenantID)
+		}
 
 		if cfg.Secret != "" {
 			mac := hmac.New(sha256.New, []byte(cfg.Secret))

@@ -122,8 +122,7 @@ func stripGuideLaunchReferenceWrappers(text string) string {
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
 	for i := 0; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == guideLaunchReferenceMarker && i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == guideLaunchReferenceInstruction {
+		if isGuideLaunchReferenceHeader(lines, i) {
 			i++
 			continue
 		}

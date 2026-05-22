@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { CSSProperties } from 'react';
 import { GetTTSEnabled, SetTTSEnabled, GetTTSVoiceID, SetTTSVoiceID, CheckTTSModel, DownloadTTSModel } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import { colors } from "./styles";
 import { ModelStatusBox } from "./ModelStatusBox";
 
 type Props = { lang: string };
@@ -99,34 +97,23 @@ export function TTSConfigPanel({ lang }: Props) {
         }
     };
 
-    if (loading) return <div style={{ padding: 20, color: colors.textMuted }}>{t('Loading...', '加载中...', '載入中...')}</div>;
+    if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '載入中...')}</div>;
 
     const accentColor = 'var(--theme-info, #409eff)';
-    const selectStyle: CSSProperties = {
-        minWidth: 220,
-        height: 32,
-        borderRadius: 6,
-        border: `1px solid ${colors.border}`,
-        background: colors.surface,
-        color: colors.text,
-        padding: '0 10px',
-        fontSize: '0.8rem',
-        outline: 'none',
-    };
 
     return (
-        <div style={{ padding: '0 2px', marginTop: 20 }}>
-            <h4 style={{ fontSize: '0.8rem', color: accentColor, marginBottom: 12, marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+        <div className="model-config-panel model-config-panel--spaced">
+            <h4 className="model-config-heading model-config-heading--info">
                 {t('TTS Model (Voice Playback)', 'TTS 语音合成模型', 'TTS 語音合成模型')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-                <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            <div className="model-config-toggle-row model-config-toggle-row--compact">
+                <label className="model-config-check">
+                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} />
                     {t('Enable TTS Voice Playback', '启用语音播报', '啟用語音播報')}
                 </label>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-                <label htmlFor='tts-voice-select' style={{ fontSize: '0.78rem', color: colors.textSecondary }}>
+            <div className="model-config-inline-field">
+                <label htmlFor='tts-voice-select' className="model-config-inline-label">
                     {t('Voice', '音色', '音色')}
                 </label>
                 <select
@@ -134,7 +121,7 @@ export function TTSConfigPanel({ lang }: Props) {
                     value={voiceID}
                     onChange={e => handleVoiceChange(e.target.value)}
                     disabled={downloading}
-                    style={selectStyle}
+                    className="model-config-select"
                 >
                     {ttsVoiceOptions.map(option => (
                         <option key={option.id} value={option.id}>
@@ -143,7 +130,7 @@ export function TTSConfigPanel({ lang }: Props) {
                     ))}
                 </select>
             </div>
-            <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '0 0 16px 0', lineHeight: 1.5 }}>
+            <p className="model-config-copy">
                 {t(
                     'TTS uses the local Kokoro-82M q8 model for voice playback. The model and selected voice files are downloaded from GitHub first, with Hub as fallback.',
                     'TTS 使用本地 Kokoro-82M q8 模型进行语音播报。模型和音色文件会优先从 GitHub 下载，无法访问时从 Hub 回退下载。',

@@ -280,6 +280,7 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 			writeError(w, http.StatusBadRequest, "INVITE_REJECTED", err.Error())
 			return
 		}
+		h.notifyDiscussionInvite(tid, id, inviteID, inv)
 		writeJSON(w, http.StatusCreated, map[string]any{"invite_id": inviteID})
 	case "messages":
 		var msg corea2a.GroupDiscussionMessage
@@ -389,6 +390,9 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "STATE_REJECTED", err.Error())
 			return
+		}
+		if action == "cancel" {
+			h.notifyDiscussionCancel(session, groupDiscussionInitiatorID(current))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
 	default:
@@ -613,15 +617,22 @@ func requestGroupDiscussionTenantID(r *http.Request) string {
 	if AdminFromContext(r.Context()) != nil {
 		return store.NormalizeTenantID(RequestTenantID(r))
 	}
-	for _, key := range []string{"X-Hub-Tenant-ID", "X-Tenant-ID"} {
-		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
-			return store.NormalizeTenantID(value)
-		}
-	}
-	if tenantID := RequestTenantID(r); strings.TrimSpace(tenantID) != "" {
+	if tenantID := requestContextTenantID(r); strings.TrimSpace(tenantID) != "" {
 		return store.NormalizeTenantID(tenantID)
 	}
 	return store.DefaultTenantID
+}
+
+func requestContextTenantID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if value := r.Context().Value(requestTenantContextKey{}); value != nil {
+		if tenantID, ok := value.(string); ok {
+			return strings.TrimSpace(tenantID)
+		}
+	}
+	return ""
 }
 
 func persistedGroupDiscussionMessage(session *corea2a.Session, fallback corea2a.GroupDiscussionMessage) corea2a.GroupDiscussionMessage {
@@ -680,4 +691,66 @@ func (h *GroupDiscussionHandler) notifyDiscussionMessage(session *corea2a.Sessio
 			},
 		})
 	}
+}
+
+func (h *GroupDiscussionHandler) notifyDiscussionInvite(tenantID, sessionID, inviteID string, inv corea2a.GroupInvitation) {
+	if h == nil || h.sender == nil {
+		return
+	}
+	targetID := strings.TrimSpace(inv.ToID)
+	if targetID == "" {
+		return
+	}
+	if inv.RequestID == "" {
+		inv.RequestID = sessionID
+	}
+	envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageInvitation, inv.FromID, time.Now().UTC())
+	envelope.SessionID = strings.TrimSpace(sessionID)
+	envelope.ToIDs = []string{targetID}
+	envelope.Invitation = &inv
+	_ = h.sender.SendToMachine(targetID, map[string]any{
+		"type": "ve:discussion_invite",
+		"ts":   time.Now().Unix(),
+		"payload": map[string]any{
+			"envelope":  envelope,
+			"invite_id": strings.TrimSpace(inviteID),
+			"tenant_id": strings.TrimSpace(tenantID),
+		},
+	})
+}
+
+func (h *GroupDiscussionHandler) notifyDiscussionCancel(session *corea2a.Session, fromID string) {
+	if h == nil || h.sender == nil || session == nil {
+		return
+	}
+	fromID = strings.TrimSpace(fromID)
+	for _, participant := range session.Participants {
+		targetID := strings.TrimSpace(participant.ID)
+		if targetID == "" || strings.EqualFold(targetID, fromID) {
+			continue
+		}
+		envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionResult, fromID, time.Now().UTC())
+		envelope.SessionID = session.ID
+		envelope.ToIDs = []string{targetID}
+		_ = h.sender.SendToMachine(targetID, map[string]any{
+			"type": "ve:discussion_cancel",
+			"ts":   time.Now().Unix(),
+			"payload": map[string]any{
+				"envelope":    envelope,
+				"target_role": strings.TrimSpace(participant.RoleCode),
+			},
+		})
+	}
+}
+
+func groupDiscussionInitiatorID(session *corea2a.Session) string {
+	if session == nil {
+		return ""
+	}
+	for _, participant := range session.Participants {
+		if strings.EqualFold(strings.TrimSpace(participant.RoleCode), "initiator") {
+			return strings.TrimSpace(participant.ID)
+		}
+	}
+	return ""
 }

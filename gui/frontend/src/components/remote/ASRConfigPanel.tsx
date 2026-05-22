@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { GetASREnabled, SetASREnabled, CheckASRModel, DownloadASRModel, LoadConfig, SaveConfig } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import { colors } from "./styles";
 import { ModelStatusBox } from "./ModelStatusBox";
 
 type Props = { lang: string };
@@ -260,22 +259,22 @@ export function ASRConfigPanel({ lang }: Props) {
         } catch {}
     }, [t]);
 
-    if (loading) return <div style={{ padding: 20, color: colors.textMuted }}>{t('Loading...', '加载中...', '加載中...')}</div>;
+    if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '加載中...')}</div>;
 
     const accentColor = 'var(--theme-success)';
 
     return (
-        <div style={{ padding: '0 2px', marginTop: 20 }}>
-            <h4 style={{ fontSize: '0.8rem', color: accentColor, marginBottom: 12, marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+        <div className="model-config-panel model-config-panel--spaced">
+            <h4 className="model-config-heading model-config-heading--success">
                 {t('Speech Recognition Model', '语音识别模型', '語音識別模型')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            <div className="model-config-toggle-row">
+                <label className="model-config-check">
+                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} />
                     {t('Enable Speech Recognition', '启用语音识别', '啟用語音識別')}
                 </label>
             </div>
-            <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '0 0 16px 0', lineHeight: 1.5 }}>
+            <p className="model-config-copy">
                 {t(
                     'Speech recognition uses Moonshine Base Chinese model to transcribe IM voice messages. The model (~200MB) will be downloaded from GitHub or Hub.',
                     '语音识别使用 Moonshine Base 中文模型，将 IM 语音消息自动转为文字。模型文件约 200MB，将从 GitHub 或 Hub 下载到本地。',
@@ -293,11 +292,11 @@ export function ASRConfigPanel({ lang }: Props) {
 
             {/* Microphone two-phase calibration */}
             {enabled && modelExists && (
-                <div style={{ marginTop: 20, padding: '12px 14px', background: 'var(--theme-bg-secondary, #1a1a2e)', borderRadius: 8, border: '1px solid var(--theme-border, #333)' }}>
-                    <div style={{ fontSize: '0.78rem', color: colors.text, marginBottom: 8, fontWeight: 500 }}>
+                <div className="model-config-calibration">
+                    <div className="model-config-calibration__title">
                         {t('Microphone Calibration', '麦克风校准', '麥克風校準')}
                     </div>
-                    <p style={{ fontSize: '0.73rem', color: colors.textSecondary, margin: '0 0 10px 0', lineHeight: 1.5 }}>
+                    <p className="model-config-calibration__copy">
                         {t(
                             'Calibrate your microphone for better speech detection. The process takes about 8 seconds: first measuring background noise, then your voice level.',
                             '校准麦克风以获得更好的语音检测效果。整个过程约 8 秒：先测量背景噪声，再测量您的语音音量。',
@@ -307,23 +306,23 @@ export function ASRConfigPanel({ lang }: Props) {
 
                     {/* Phase indicator & reading prompt */}
                     {calibPhase === 'silence' && (
-                        <div style={{ padding: '10px 12px', marginBottom: 10, borderRadius: 6, background: 'var(--theme-bg-tertiary, #2a2a3e)', border: '1px solid var(--theme-border, #444)' }}>
-                            <div style={{ fontSize: '0.76rem', color: '#f59e0b', marginBottom: 4, fontWeight: 500 }}>
+                        <div className="model-config-phase-card">
+                            <div className="model-config-phase-title model-config-phase-title--warning">
                                 🤫 {t('Phase 1/2 — Measuring background noise...', '第 1 步（共 2 步）— 正在测量背景噪声...', '第 1 步（共 2 步）— 正在測量背景噪聲...')}
                             </div>
-                            <div style={{ fontSize: '0.73rem', color: colors.textSecondary }}>
+                            <div className="model-config-phase-copy">
                                 {t('Please stay quiet for 3 seconds.', '请保持安静 3 秒。', '請保持安靜 3 秒。')}
                             </div>
                         </div>
                     )}
                     {calibPhase === 'speech' && (
-                        <div style={{ padding: '10px 12px', marginBottom: 10, borderRadius: 6, background: 'var(--theme-bg-tertiary, #2a2a3e)', border: '1px solid var(--theme-border, #444)' }}>
-                            <div style={{ fontSize: '0.76rem', color: accentColor, marginBottom: 6, fontWeight: 500 }}>
+                        <div className="model-config-phase-card">
+                            <div className="model-config-phase-title model-config-phase-title--success">
                                 🎤 {t('Phase 2/2 — Please read aloud:', '第 2 步（共 2 步）— 请用正常音量朗读：', '第 2 步（共 2 步）— 請用正常音量朗讀：')}
                             </div>
-                            <div style={{ fontSize: '0.82rem', color: colors.text, lineHeight: 1.7, padding: '4px 0' }}>
+                            <div className="model-config-reading-list">
                                 {(READING_SENTENCES[lang] || READING_SENTENCES['zh-Hans']).map((s, i) => (
-                                    <div key={i} style={{ marginBottom: 4 }}>{s}</div>
+                                    <div key={i}>{s}</div>
                                 ))}
                             </div>
                         </div>
@@ -331,27 +330,18 @@ export function ASRConfigPanel({ lang }: Props) {
 
                     {/* Real-time level bar during calibration */}
                     {(calibPhase === 'silence' || calibPhase === 'speech') && (
-                        <div style={{ height: 6, borderRadius: 3, background: 'var(--theme-bg-tertiary, #222)', marginBottom: 10, overflow: 'hidden' }}>
+                        <div className="model-config-level-track">
                             <div style={{
-                                height: '100%', borderRadius: 3,
                                 width: `${Math.round(calibLevelBar * 100)}%`,
-                                background: calibPhase === 'speech' ? accentColor : '#f59e0b',
-                                transition: 'width 0.1s ease-out',
-                            }} />
+                            }} className={`model-config-level-fill ${calibPhase === 'speech' ? 'model-config-level-fill--success' : 'model-config-level-fill--warning'}`} />
                         </div>
                     )}
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <div className="model-config-actions">
                         <button
                             onClick={startCalibration}
                             disabled={calibPhase !== 'idle'}
-                            style={{
-                                padding: '5px 14px', fontSize: '0.76rem', borderRadius: 6,
-                                border: '1px solid var(--theme-border, #555)',
-                                background: calibPhase !== 'idle' ? 'var(--theme-bg-tertiary, #2a2a3e)' : 'var(--theme-bg-secondary, #1a1a2e)',
-                                color: calibPhase !== 'idle' ? colors.textMuted : accentColor,
-                                cursor: calibPhase !== 'idle' ? 'not-allowed' : 'pointer',
-                            }}
+                            className="model-config-button model-config-button--accent"
                         >
                             {calibPhase !== 'idle'
                                 ? t('Calibrating...', '校准中...', '校準中...')
@@ -360,25 +350,19 @@ export function ASRConfigPanel({ lang }: Props) {
                         {(calibratedValue > 0 || speechLevelValue > 0) && calibPhase === 'idle' && (
                             <button
                                 onClick={clearCalibration}
-                                style={{
-                                    padding: '5px 12px', fontSize: '0.73rem', borderRadius: 6,
-                                    border: '1px solid var(--theme-border, #444)',
-                                    background: 'transparent',
-                                    color: colors.textSecondary,
-                                    cursor: 'pointer',
-                                }}
+                                className="model-config-button"
                             >
                                 {t('Clear', '清除', '清除')}
                             </button>
                         )}
                     </div>
                     {calibrationMsg && (
-                        <div style={{ fontSize: '0.73rem', color: calibratedValue > 0 ? accentColor : colors.textSecondary, marginTop: 8 }}>
+                        <div className={`model-config-calibration__message ${calibratedValue > 0 ? 'is-success' : ''}`}>
                             {calibrationMsg}
                         </div>
                     )}
                     {calibratedValue > 0 && !calibrationMsg && (
-                        <div style={{ fontSize: '0.73rem', color: colors.textSecondary, marginTop: 8 }}>
+                        <div className="model-config-calibration__message">
                             {t(
                                 `Noise: ${calibratedValue.toFixed(4)}` + (speechLevelValue > 0 ? `, Speech: ${speechLevelValue.toFixed(4)}` : ''),
                                 `噪声基线：${calibratedValue.toFixed(4)}` + (speechLevelValue > 0 ? `，语音音量：${speechLevelValue.toFixed(4)}` : ''),

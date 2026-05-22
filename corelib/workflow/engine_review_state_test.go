@@ -1198,8 +1198,18 @@ func TestEngine_ResponseSchemasAndInputRequirementAreSnapshots(t *testing.T) {
 			Name:        "Collect",
 			Prompt:      "collect",
 			Deliverable: "doc",
-			InputSchema: &PhaseInputSchema{Fields: []PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true, Options: []PhaseInputOption{{Label: "A", Value: "a"}}}}},
-			ToolPolicy:  ToolFilterDocOnly,
+			InputSchema: &PhaseInputSchema{
+				TitleI18N: map[string]string{"zh": "上下文"},
+				Fields: []PhaseInputField{{
+					Name:      "goal",
+					Label:     "Goal",
+					LabelI18N: map[string]string{"zh": "目标"},
+					Type:      "text",
+					Required:  true,
+					Options:   []PhaseInputOption{{Label: "A", Value: "a", LabelI18N: map[string]string{"zh": "甲"}}},
+				}},
+			},
+			ToolPolicy: ToolFilterDocOnly,
 		}},
 	})
 	if _, err := engine.StartWorkflow("u_schema_snapshot", StructuredIntent{Category: workflowType, Summary: "test"}); err != nil {
@@ -1216,11 +1226,14 @@ func TestEngine_ResponseSchemasAndInputRequirementAreSnapshots(t *testing.T) {
 	}
 	resp.FormSchema.Fields[0].Label = "Mutated"
 	resp.FormSchema.Fields[0].Options[0].Label = "B"
+	resp.FormSchema.TitleI18N["zh"] = "已变更"
+	resp.FormSchema.Fields[0].LabelI18N["zh"] = "已变更"
+	resp.FormSchema.Fields[0].Options[0].LabelI18N["zh"] = "乙"
 	next, err := engine.HandleInput("u_schema_snapshot", "")
 	if err != nil {
 		t.Fatalf("HandleInput failed: %v", err)
 	}
-	if next.FormSchema.Fields[0].Label != "Goal" || next.FormSchema.Fields[0].Options[0].Label != "A" {
+	if next.FormSchema.Fields[0].Label != "Goal" || next.FormSchema.Fields[0].Options[0].Label != "A" || next.FormSchema.TitleI18N["zh"] != "上下文" || next.FormSchema.Fields[0].LabelI18N["zh"] != "目标" || next.FormSchema.Fields[0].Options[0].LabelI18N["zh"] != "甲" {
 		t.Fatalf("form schema mutation leaked into template: %#v", next.FormSchema.Fields[0])
 	}
 }

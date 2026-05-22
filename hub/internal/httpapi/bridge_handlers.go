@@ -44,7 +44,7 @@ var knownChannels = []KnownChannel{
 		ID: "telegram", Name: "Telegram", NameZH: "Telegram",
 		Package: "@openclaw/telegram", AltPackage: "openclaw-channel-telegram",
 		Description: "Connect a Telegram bot to receive and send messages.",
-		DescZH:      "连接 Telegram 机器人收发消息。",
+		DescZH:      "\u8fde\u63a5 Telegram \u673a\u5668\u4eba\u6536\u53d1\u6d88\u606f\u3002",
 		Fields: []Field{
 			{Key: "botToken", Label: "Bot Token", LabelZH: "Bot Token", Type: "password", Placeholder: "123456:ABC-DEF..."},
 		},
@@ -53,7 +53,7 @@ var knownChannels = []KnownChannel{
 		ID: "discord", Name: "Discord", NameZH: "Discord",
 		Package: "@openclaw/discord", AltPackage: "openclaw-channel-discord",
 		Description: "Connect a Discord bot.",
-		DescZH:      "连接 Discord 机器人。",
+		DescZH:      "\u8fde\u63a5 Discord \u673a\u5668\u4eba\u3002",
 		Fields: []Field{
 			{Key: "botToken", Label: "Bot Token", LabelZH: "Bot Token", Type: "password", Placeholder: ""},
 			{Key: "applicationId", Label: "Application ID", LabelZH: "Application ID", Type: "text", Placeholder: ""},
@@ -63,30 +63,30 @@ var knownChannels = []KnownChannel{
 		ID: "slack", Name: "Slack", NameZH: "Slack",
 		Package: "@openclaw/slack", AltPackage: "openclaw-channel-slack",
 		Description: "Connect a Slack bot.",
-		DescZH:      "连接 Slack 机器人。",
+		DescZH:      "\u8fde\u63a5 Slack \u673a\u5668\u4eba\u3002",
 		Fields: []Field{
 			{Key: "botToken", Label: "Bot Token", LabelZH: "Bot Token", Type: "password", Placeholder: "xoxb-..."},
 			{Key: "appToken", Label: "App Token", LabelZH: "App Token", Type: "password", Placeholder: "xapp-..."},
 		},
 	},
 	{
-		ID: "wechatwork", Name: "WeChat Work", NameZH: "企业微信",
+		ID: "wechatwork", Name: "WeChat Work", NameZH: "\u4f01\u4e1a\u5fae\u4fe1",
 		Package: "@openclaw/wechatwork", AltPackage: "openclaw-channel-wechatwork",
-		Description: "Connect WeChat Work (企业微信) bot.",
-		DescZH:      "连接企业微信机器人。",
+		Description: "Connect WeChat Work bot.",
+		DescZH:      "\u8fde\u63a5\u4f01\u4e1a\u5fae\u4fe1\u673a\u5668\u4eba\u3002",
 		Fields: []Field{
-			{Key: "corpId", Label: "Corp ID", LabelZH: "企业 ID", Type: "text", Placeholder: ""},
-			{Key: "agentId", Label: "Agent ID", LabelZH: "应用 ID", Type: "text", Placeholder: ""},
-			{Key: "secret", Label: "Secret", LabelZH: "应用密钥", Type: "password", Placeholder: ""},
+			{Key: "corpId", Label: "Corp ID", LabelZH: "\u4f01\u4e1a ID", Type: "text", Placeholder: ""},
+			{Key: "agentId", Label: "Agent ID", LabelZH: "\u5e94\u7528 ID", Type: "text", Placeholder: ""},
+			{Key: "secret", Label: "Secret", LabelZH: "\u5e94\u7528\u5bc6\u94a5", Type: "password", Placeholder: ""},
 			{Key: "token", Label: "Token", LabelZH: "Token", Type: "password", Placeholder: ""},
 			{Key: "encodingAESKey", Label: "Encoding AES Key", LabelZH: "EncodingAESKey", Type: "password", Placeholder: ""},
 		},
 	},
 	{
-		ID: "dingtalk", Name: "DingTalk", NameZH: "钉钉",
+		ID: "dingtalk", Name: "DingTalk", NameZH: "\u9489\u9489",
 		Package: "@openclaw/dingtalk", AltPackage: "openclaw-channel-dingtalk",
-		Description: "Connect DingTalk (钉钉) bot.",
-		DescZH:      "连接钉钉机器人。",
+		Description: "Connect DingTalk bot.",
+		DescZH:      "\u8fde\u63a5\u9489\u9489\u673a\u5668\u4eba\u3002",
 		Fields: []Field{
 			{Key: "appKey", Label: "App Key", LabelZH: "App Key", Type: "text", Placeholder: ""},
 			{Key: "appSecret", Label: "App Secret", LabelZH: "App Secret", Type: "password", Placeholder: ""},
@@ -176,7 +176,7 @@ func SaveBridgeChannelHandler(system store.SystemSettingsRepository, bridgeDir s
 			return
 		}
 
-		// Load existing states, update this channel — only accept known field keys
+		// Load existing states and only accept known field keys.
 		validKeys := make(map[string]bool, len(known.Fields))
 		for _, f := range known.Fields {
 			validKeys[f.Key] = true

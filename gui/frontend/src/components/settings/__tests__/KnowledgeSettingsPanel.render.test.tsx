@@ -132,11 +132,11 @@ describe('KnowledgeSettingsPanel component', () => {
 
         expect(screen.getByRole('heading', { name: 'Knowledge Base' })).toBeTruthy();
         expect(screen.queryByText(/available after the panel source is restored/i)).toBeNull();
-        expect(screen.getByRole('button', { name: 'Overview' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Ingest' })).toBeTruthy();
-        expect(screen.getAllByRole('button', { name: 'Search' }).length).toBeGreaterThan(0);
-        expect(screen.getByRole('button', { name: 'Sources' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Quality' })).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Ingest' })).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Search' })).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Sources' })).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Quality' })).toBeTruthy();
 
         await waitFor(() => expect(KnowledgeHealth).toHaveBeenCalled());
         expect(KnowledgeCapabilities).toHaveBeenCalled();
@@ -145,7 +145,7 @@ describe('KnowledgeSettingsPanel component', () => {
     it('keeps document import as a full-width ingest section', async () => {
         render(<KnowledgeSettingsPanel lang="en" />);
 
-        fireEvent.click(screen.getByRole('button', { name: 'Ingest' }));
+        fireEvent.click(screen.getByRole('tab', { name: 'Ingest' }));
 
         expect(await screen.findByRole('heading', { name: 'Import Documents' })).toBeTruthy();
         expect(screen.getByText('Add local documents')).toBeTruthy();

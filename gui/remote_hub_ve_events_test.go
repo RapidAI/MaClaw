@@ -178,7 +178,7 @@ func TestCachePushedVEDiscussionSnapshotFallsBackToRemoteClientID(t *testing.T) 
 		RemoteHubURL:       server.URL,
 		RemoteClientID:     "client-1",
 		RemoteMachineToken: "token-1",
-		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
 	}
 	app.configCacheValid = true
 	client := &RemoteHubClient{app: app}
@@ -239,7 +239,7 @@ func TestCachePushedVEDiscussionSnapshotCachesHubDetail(t *testing.T) {
 		RemoteHubURL:       server.URL,
 		RemoteMachineID:    "machine-1",
 		RemoteMachineToken: "token-1",
-		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
 	}
 	app.configCacheValid = true
 	client := &RemoteHubClient{app: app}

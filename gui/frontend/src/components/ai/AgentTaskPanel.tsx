@@ -6,7 +6,7 @@ import { agentViewStrings, type AgentViewStrings } from "./agentViewI18n";
 
 interface AgentTaskPanelProps {
     view: AgentView;
-    onDismiss?: (viewId: string | undefined) => void | Promise<void>;
+    onDismiss?: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
     onResizeStart?: () => void;
     onToggleMaximize?: () => void;
     onSubmit?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
@@ -945,6 +945,12 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
         background: theme.sendBtnBorder,
         color: theme.sendBtnColor,
     };
+    const dismissPayload = (): Record<string, unknown> => {
+        if (view.type === "form") {
+            return formSubmissionPayload(renderedFields, formData, activeVariant);
+        }
+        return {};
+    };
 
     return (
         <section style={panelStyle} data-testid="agent-task-panel">
@@ -966,7 +972,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     {view.description && <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4, lineHeight: 1.4 }}>{view.description}</div>}
                 </div>
                 {onDismiss && (
-                    <button type="button" onClick={() => onDismiss(view.id)} style={{ ...buttonStyle, borderColor: theme.divider, color: theme.closeBtnColor, "--wails-draggable": "no-drag" } as React.CSSProperties}>
+                    <button type="button" onClick={() => onDismiss(view.id, dismissPayload())} style={{ ...buttonStyle, borderColor: theme.divider, color: theme.closeBtnColor, "--wails-draggable": "no-drag" } as React.CSSProperties}>
                         {s.close}
                     </button>
                 )}

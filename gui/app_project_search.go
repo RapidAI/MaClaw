@@ -27,6 +27,7 @@ type ProjectSearchResult struct {
 	Tags            []string                `json:"tags"`          // Union of all entry tags
 	LastActivity    string                  `json:"last_activity"` // RFC3339 formatted timestamp
 	EntryCount      int                     `json:"entry_count"`   // Number of memory entries
+	HasOutput       bool                    `json:"has_output"`    // Whether the task has tangible output
 	Pinned          bool                    `json:"pinned"`        // Whether the task is pinned to top
 	Archived        bool                    `json:"archived"`      // Whether the task is archived
 	SourceURLs      []string                `json:"source_urls,omitempty"`
@@ -124,6 +125,7 @@ func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectReco
 		Tags:         rec.Tags,
 		LastActivity: rec.LastActivity.Format(time.RFC3339),
 		EntryCount:   rec.EntryCount,
+		HasOutput:    rec.HasOutput,
 		Pinned:       pi.IsPinned(rec.ProjectPath),
 		Archived:     pi.IsArchived(rec.ProjectPath),
 	}
@@ -249,12 +251,12 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
-		return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1}
+		return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 	}
 	if rec := pi.Get(taskDir); rec != nil {
 		return projectRecordToSearchResult(pi, *rec)
 	}
-	return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1}
+	return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 }
 
 // ForkConversationToProject copies the current local tab's conversation history
@@ -291,6 +293,9 @@ func (a *App) ForkConversationToProject(projectPath string) {
 
 func normalizeRecentTaskName(name string) string {
 	normalized := strings.Join(strings.Fields(name), " ")
+	if isGenericSedimentRequest(normalized) {
+		return ""
+	}
 	runes := []rune(normalized)
 	if len(runes) > 120 {
 		normalized = string(runes[:120])

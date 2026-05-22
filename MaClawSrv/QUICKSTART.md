@@ -6,6 +6,7 @@ This document is for first-time integrators of `MaClawSrv`: frontend teams, thir
 
 - `MaClawSrv` is the REST entrypoint for Maclaw.
 - Auth has two layers: admin APIs use `X-MaClaw-Admin-Secret`, user APIs use Bearer tokens.
+- The Admin Web supports two admin sign-in modes: account login with the bootstrapped owner/operator username and password, or direct Admin Secret login with `MACLAW_ADMIN_SECRET`. `MACLAW_ADMIN_SETUP_TOKEN` is only for first-run owner creation.
 - Config, skills, and MCP servers are user-scoped shared resources, not instance-private resources.
 - For actual chat/message execution, prefer `POST /api/v1/instances/{instanceId}/messages`.
 

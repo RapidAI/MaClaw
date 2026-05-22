@@ -47,6 +47,16 @@ if /I "%~1"=="--brand" (
   shift
   goto parse_args
 )
+if /I "%~1"=="--skip-targets" (
+  if "%~2"=="" (
+    echo [ERROR] Missing value for --skip-targets
+    exit /b 1
+  )
+  set "PS_ARGS=%PS_ARGS% -SkipTargets %~2"
+  shift
+  shift
+  goto parse_args
+)
 echo [ERROR] Unknown argument: %~1
 exit /b 1
 
@@ -68,5 +78,5 @@ exit /b %EXIT_CODE%
 
 :usage
 echo Usage:
-echo   deploy_all.cmd [full^|hubcenter-only] [--no-check] [--brand rapidai^|tigerclaw]
+echo   deploy_all.cmd [full^|hubcenter-only] [--no-check] [--brand rapidai^|tigerclaw] [--skip-targets hc-3,hubs2.maclaw.top,hub2.maclaw.top]
 exit /b 0

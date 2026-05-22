@@ -63,16 +63,18 @@ func innovationInputSchema() *PhaseInputSchema {
 // workflow's requirement scoping phase.
 func businessPlanInputSchema() *PhaseInputSchema {
 	return &PhaseInputSchema{
-		Title:       "Business plan brief",
-		Description: "Capture the business plan context before market and financial planning.",
+		Title:           "Business plan brief",
+		TitleI18N:       map[string]string{"zh": "商业计划简报"},
+		Description:     "Capture the business plan context before market and financial planning.",
+		DescriptionI18N: map[string]string{"zh": "在市场和财务规划前，先收集商业计划背景。"},
 		Fields: []PhaseInputField{
-			{Name: "project_name", Label: "Project or company name", Type: "text", Required: true, Placeholder: "Example: AI customer support SaaS platform"},
-			{Name: "target_audience", Label: "Target reader", Type: "select", Required: true, Options: []PhaseInputOption{{Label: "Investors (angel/VC/PE)", Value: "investor"}, {Label: "Bank or loan reviewer", Value: "bank"}, {Label: "Government grant reviewer", Value: "government"}, {Label: "Internal decision maker", Value: "internal"}, {Label: "Partner or channel", Value: "partner"}}},
-			{Name: "stage", Label: "Company stage", Type: "select", Required: true, Options: []PhaseInputOption{{Label: "Concept only", Value: "concept"}, {Label: "Seed / MVP", Value: "seed"}, {Label: "Growth with users or revenue", Value: "growth"}, {Label: "Mature and profitable", Value: "mature"}}},
-			{Name: "industry", Label: "Industry", Type: "text", Required: true, Placeholder: "Example: artificial intelligence, healthcare, renewable energy"},
-			{Name: "funding_amount", Label: "Funding amount", Type: "text", Placeholder: "Example: 5M RMB, 10M RMB, or leave empty if not applicable"},
-			{Name: "doc_length", Label: "Document depth", Type: "select", Options: []PhaseInputOption{{Label: "Brief version (10-15 pages)", Value: "short"}, {Label: "Standard version (20-30 pages)", Value: "standard"}, {Label: "Detailed version (40+ pages)", Value: "detailed"}}},
-			{Name: "core_description", Label: "Project summary", Type: "textarea", Required: true, Placeholder: "In 2-3 sentences, explain what it does, what problem it solves, and who it serves."},
+			{Name: "project_name", Label: "Project or company name", LabelI18N: map[string]string{"zh": "项目或公司名称"}, Type: "text", Required: true, Placeholder: "Example: AI customer support SaaS platform", PlaceholderI18N: map[string]string{"zh": "例如：AI 客服 SaaS 平台"}},
+			{Name: "target_audience", Label: "Target reader", LabelI18N: map[string]string{"zh": "目标读者"}, Type: "select", Required: true, Options: []PhaseInputOption{{Label: "Investors (angel/VC/PE)", Value: "investor", LabelI18N: map[string]string{"zh": "投资人（天使/VC/PE）"}}, {Label: "Bank or loan reviewer", Value: "bank", LabelI18N: map[string]string{"zh": "银行或贷款审核方"}}, {Label: "Government grant reviewer", Value: "government", LabelI18N: map[string]string{"zh": "政府补贴评审方"}}, {Label: "Internal decision maker", Value: "internal", LabelI18N: map[string]string{"zh": "内部决策者"}}, {Label: "Partner or channel", Value: "partner", LabelI18N: map[string]string{"zh": "合作伙伴或渠道"}}}},
+			{Name: "stage", Label: "Company stage", LabelI18N: map[string]string{"zh": "公司阶段"}, Type: "select", Required: true, Options: []PhaseInputOption{{Label: "Concept only", Value: "concept", LabelI18N: map[string]string{"zh": "仅概念阶段"}}, {Label: "Seed / MVP", Value: "seed", LabelI18N: map[string]string{"zh": "种子期 / MVP"}}, {Label: "Growth with users or revenue", Value: "growth", LabelI18N: map[string]string{"zh": "已有用户或收入的成长期"}}, {Label: "Mature and profitable", Value: "mature", LabelI18N: map[string]string{"zh": "成熟盈利期"}}}},
+			{Name: "industry", Label: "Industry", LabelI18N: map[string]string{"zh": "所属行业"}, Type: "text", Required: true, Placeholder: "Example: artificial intelligence, healthcare, renewable energy", PlaceholderI18N: map[string]string{"zh": "例如：人工智能、医疗健康、可再生能源"}},
+			{Name: "funding_amount", Label: "Funding amount", LabelI18N: map[string]string{"zh": "融资金额"}, Type: "text", Placeholder: "Example: 5M RMB, 10M RMB, or leave empty if not applicable", PlaceholderI18N: map[string]string{"zh": "例如：500 万人民币、1000 万人民币；不适用可留空"}},
+			{Name: "doc_length", Label: "Document depth", LabelI18N: map[string]string{"zh": "文档深度"}, Type: "select", Options: []PhaseInputOption{{Label: "Brief version (10-15 pages)", Value: "short", LabelI18N: map[string]string{"zh": "简版（10-15 页）"}}, {Label: "Standard version (20-30 pages)", Value: "standard", LabelI18N: map[string]string{"zh": "标准版（20-30 页）"}}, {Label: "Detailed version (40+ pages)", Value: "detailed", LabelI18N: map[string]string{"zh": "详细版（40 页以上）"}}}},
+			{Name: "core_description", Label: "Project summary", LabelI18N: map[string]string{"zh": "项目摘要"}, Type: "textarea", Required: true, Placeholder: "In 2-3 sentences, explain what it does, what problem it solves, and who it serves.", PlaceholderI18N: map[string]string{"zh": "用 2-3 句话说明它做什么、解决什么问题、服务谁。"}},
 		},
 	}
 }

@@ -358,7 +358,7 @@ func TestHubLLMPromptCacheConfigHandlersRoundTrip(t *testing.T) {
 	}
 }
 
-func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
+func TestHubLLMPromptCacheConfigHandlersIgnoreTenantAdminScope(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	cache := llmcache.New(nil, llmcache.Config{MemoryMaxEntries: 8, MemoryMaxBytes: 1024})
 	globalCfg := HubLLMPromptCacheConfig{Enabled: true, TTLSeconds: 1800, MemoryMaxEntries: 8, MemoryMaxBytes: 1024, DiskMaxBytes: 4096}
@@ -376,8 +376,8 @@ func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cache status: %v", err)
 	}
-	if status.MemoryMaxEntries != 8 || status.MemoryMaxBytes != 1024 {
-		t.Fatalf("tenant config should not rewrite shared runtime cache limits: %#v", status)
+	if status.MemoryMaxEntries != 3 || status.MemoryMaxBytes != 256 {
+		t.Fatalf("Hub prompt cache config should apply globally regardless of tenant context: %#v", status)
 	}
 
 	globalReq := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil)
@@ -390,8 +390,8 @@ func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
 	if err := json.Unmarshal(globalRR.Body.Bytes(), &gotGlobal); err != nil {
 		t.Fatalf("decode global: %v", err)
 	}
-	if gotGlobal.TTLSeconds != 1800 || gotGlobal.MemoryMaxEntries != 8 || !gotGlobal.Enabled {
-		t.Fatalf("global config leaked tenant update: %#v", gotGlobal)
+	if gotGlobal.Enabled || gotGlobal.TTLSeconds != 60 || gotGlobal.MemoryMaxEntries != 3 {
+		t.Fatalf("global config did not receive update: %#v", gotGlobal)
 	}
 
 	tenantGet := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil)
@@ -406,11 +406,11 @@ func TestHubLLMPromptCacheConfigHandlersScopeTenantAdmin(t *testing.T) {
 		t.Fatalf("decode tenant: %v", err)
 	}
 	if gotTenant.Enabled || gotTenant.TTLSeconds != 60 || gotTenant.MemoryMaxEntries != 3 {
-		t.Fatalf("unexpected tenant config: %#v", gotTenant)
+		t.Fatalf("tenant context should read global config: %#v", gotTenant)
 	}
 }
 
-func TestHubLLMConfigHandlersScopeTenantAdmin(t *testing.T) {
+func TestHubLLMConfigHandlersIgnoreTenantAdminScope(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	globalCfg := im.HubLLMConfig{Enabled: true, APIURL: "https://global.example/v1", APIKey: "global-key", Model: "global-model"}
 	data, _ := json.Marshal(globalCfg)
@@ -435,8 +435,8 @@ func TestHubLLMConfigHandlersScopeTenantAdmin(t *testing.T) {
 	if err := json.Unmarshal(globalRR.Body.Bytes(), &gotGlobal); err != nil {
 		t.Fatalf("decode global: %v", err)
 	}
-	if gotGlobal["api_url"] != "https://global.example/v1" || gotGlobal["model"] != "global-model" {
-		t.Fatalf("global llm config leaked tenant update: %#v", gotGlobal)
+	if gotGlobal["api_url"] != "https://tenant-a.example/v1" || gotGlobal["model"] != "tenant-model" {
+		t.Fatalf("Hub LLM config should be global regardless of tenant context: %#v", gotGlobal)
 	}
 
 	tenantGet := httptest.NewRequest(http.MethodGet, "/api/admin/hub_llm_config", nil)
@@ -451,7 +451,7 @@ func TestHubLLMConfigHandlersScopeTenantAdmin(t *testing.T) {
 		t.Fatalf("decode tenant: %v", err)
 	}
 	if gotTenant["api_url"] != "https://tenant-a.example/v1" || gotTenant["model"] != "tenant-model" || gotTenant["has_api_key"] != true {
-		t.Fatalf("unexpected tenant llm config: %#v", gotTenant)
+		t.Fatalf("tenant context should read global Hub LLM config: %#v", gotTenant)
 	}
 }
 

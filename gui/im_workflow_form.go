@@ -8,6 +8,12 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
+const (
+	workflowFormPhaseField      = "_workflow_phase"
+	workflowFormUserIDField     = "_workflow_user_id"
+	workflowFormWorkflowIDField = "_workflow_id"
+)
+
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
 // and emits it to the frontend via the standard AG UI lifecycle protocol.
 // The form appears in the right-side task panel (AgentTaskPanel).
@@ -15,8 +21,9 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 	if h == nil || h.app == nil || schema == nil || len(schema.Fields) == 0 {
 		return
 	}
+	schema = localizeWorkflowPhaseInputSchema(schema, h.getWorkflowLang())
 
-	fields := make([]map[string]interface{}, 0, len(schema.Fields)+1)
+	fields := make([]map[string]interface{}, 0, len(schema.Fields)+3)
 	for _, f := range schema.Fields {
 		field := map[string]interface{}{
 			"name":  f.Name,
@@ -60,11 +67,32 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 		fields = append(fields, field)
 	}
 
-	// Hidden field carrying the phase ID for submit routing.
+	var ws *workflow.WorkflowState
+	if engine := h.getWorkflowEngine(); engine != nil {
+		ws = engine.GetActiveWorkflow(userID)
+	}
+	workflowID := ""
+	if ws != nil {
+		workflowID = ws.ID
+	}
+
+	// Hidden fields carrying stable workflow routing. The agent loop clears
+	// lastUserID after it finishes, so form submit must not depend on that
+	// transient field.
 	fields = append(fields, map[string]interface{}{
-		"name":  "_workflow_phase",
+		"name":  workflowFormPhaseField,
 		"type":  "hidden",
 		"value": phaseID,
+	})
+	fields = append(fields, map[string]interface{}{
+		"name":  workflowFormUserIDField,
+		"type":  "hidden",
+		"value": userID,
+	})
+	fields = append(fields, map[string]interface{}{
+		"name":  workflowFormWorkflowIDField,
+		"type":  "hidden",
+		"value": workflowID,
 	})
 
 	viewID := "workflow:form:" + phaseID
@@ -91,7 +119,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return &IMAgentResponse{
-			Text:           "AI assistant not initialized.",
+			Text:           avTr("AI assistant not initialized.", "AI 助手尚未初始化。"),
 			Error:          "missing hub client",
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -100,24 +128,31 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 	engine := handler.getWorkflowEngine()
 	if engine == nil {
 		return &IMAgentResponse{
-			Text:           "Workflow engine is not available.",
+			Text:           avTr("Workflow engine is not available.", "工作流引擎不可用。"),
 			Error:          "no workflow engine",
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
 
-	userID := handler.lastUserID
+	userID := resolveWorkflowFormUserID(handler, engine, phaseID, data)
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil {
 		return &IMAgentResponse{
-			Text:           "No active workflow is available.",
+			Text:           avTr("No active workflow is available.", "当前没有可用的活动工作流。"),
 			Error:          "no active workflow",
+			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+	if submittedWorkflowID := workflowFormStringField(data, workflowFormWorkflowIDField); submittedWorkflowID != "" && ws.ID != submittedWorkflowID {
+		return &IMAgentResponse{
+			Text:           avTr("The workflow form is no longer current. Please reopen the current workflow form.", "该工作流表单已不是当前版本，请重新打开当前工作流表单。"),
+			Error:          fmt.Sprintf("workflow mismatch: expected %s, got %s", ws.ID, submittedWorkflowID),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
 	if ws.CurrentPhase != phaseID {
 		return &IMAgentResponse{
-			Text:           "The workflow phase has changed. Please refresh and submit the current form.",
+			Text:           avTr("The workflow phase has changed. Please refresh and submit the current form.", "工作流阶段已变化，请刷新后提交当前表单。"),
 			Error:          fmt.Sprintf("phase mismatch: expected %s, got %s", ws.CurrentPhase, phaseID),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -134,7 +169,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 	resp, err := engine.SubmitPhaseForm(userID, cleanData)
 	if err != nil {
 		return &IMAgentResponse{
-			Text:           "Form submission failed.",
+			Text:           avTr("Form submission failed.", "表单提交失败。"),
 			Error:          err.Error(),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -150,12 +185,13 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		handler.workflowAgentLoopMarker.Store(userID, true)
 
 		summaryText := buildFormSubmissionSummary(cleanData)
+		projectPath := projectPathFromUserID(userID)
 		go func() {
-			_, _ = a.SendAIAssistantMessage(AIAssistantSendRequest{Text: summaryText})
+			_, _ = a.SendAIAssistantMessage(AIAssistantSendRequest{Text: summaryText, ProjectPath: projectPath})
 		}()
 
 		return &IMAgentResponse{
-			Text:           "Information submitted. Generating the workflow output now...",
+			Text:           avTr("Information submitted. Generating the workflow output now...", "信息已提交，正在生成工作流输出..."),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
@@ -167,9 +203,60 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		}
 	}
 	return &IMAgentResponse{
-		Text:           "Form submitted.",
+		Text:           avTr("Form submitted.", "表单已提交。"),
 		ResponseSource: imResponseSourceAgentViewSubmit.String(),
 	}
+}
+
+func resolveWorkflowFormUserID(handler *IMMessageHandler, engine *workflow.WorkflowEngine, phaseID string, data map[string]interface{}) string {
+	if userID := workflowFormStringField(data, workflowFormUserIDField); userID != "" {
+		return userID
+	}
+	if handler != nil {
+		if userID := strings.TrimSpace(handler.lastUserID); userID != "" {
+			if engine == nil {
+				return userID
+			}
+			if ws := engine.GetActiveWorkflow(userID); ws != nil && ws.CurrentPhase == phaseID {
+				return userID
+			}
+		}
+	}
+	if engine != nil {
+		if userID, ok := engine.ActiveWorkflowUserIDForPhase(phaseID); ok {
+			return userID
+		}
+	}
+	return ""
+}
+
+func workflowFormStringField(data map[string]interface{}, key string) string {
+	if data == nil {
+		return ""
+	}
+	value, ok := data[key]
+	if !ok || value == nil {
+		return ""
+	}
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "<nil>" {
+		return ""
+	}
+	return text
+}
+
+func workflowFormMatchesActiveWorkflow(engine *workflow.WorkflowEngine, userID, phaseID string, data map[string]interface{}) bool {
+	if engine == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(phaseID) == "" {
+		return false
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != strings.TrimSpace(phaseID) {
+		return false
+	}
+	if submittedWorkflowID := workflowFormStringField(data, workflowFormWorkflowIDField); submittedWorkflowID != "" && ws.ID != submittedWorkflowID {
+		return false
+	}
+	return true
 }
 
 // buildIMFormGuidanceText generates a structured text prompt for IM channels
@@ -184,7 +271,7 @@ func buildIMFormGuidanceText(schema *workflow.PhaseInputSchema) string {
 	if schema.Description != "" {
 		sb.WriteString(schema.Description + "\n\n")
 	}
-	sb.WriteString("Please provide the following information in order. Fields marked with * are required.\n\n")
+	sb.WriteString(avTr("Please provide the following information in order. Fields marked with * are required.\n\n", "请按顺序提供以下信息。带 * 的字段为必填。\n\n"))
 	for i, f := range schema.Fields {
 		prefix := " "
 		if f.Required {
@@ -196,14 +283,14 @@ func buildIMFormGuidanceText(schema *workflow.PhaseInputSchema) string {
 			for _, o := range f.Options {
 				labels = append(labels, o.Label)
 			}
-			sb.WriteString(" (choose: " + strings.Join(labels, " / ") + ")")
+			sb.WriteString(avTr(" (choose: ", "（可选：") + strings.Join(labels, " / ") + avTr(")", "）"))
 		}
 		if f.Placeholder != "" {
-			sb.WriteString(" - " + f.Placeholder)
+			sb.WriteString(avTr(" - ", " - ") + f.Placeholder)
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\nReply by number, for example:\n1. My project\n2. Go\n3. Windows\n...")
+	sb.WriteString(avTr("\nReply by number, for example:\n1. My project\n2. Go\n3. Windows\n...", "\n请按编号回复，例如：\n1. 我的项目\n2. Go\n3. Windows\n..."))
 	return sb.String()
 }
 

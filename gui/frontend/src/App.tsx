@@ -95,6 +95,18 @@ type SensitivePermissionRequest = {
     timeout_seconds?: number;
 };
 
+function virtualEmployeeIdForMachine(machineId: string): string {
+    const cleaned = String(machineId || '').trim().replace(/[\\/ ]/g, '_');
+    return cleaned ? `ve_${cleaned}` : '';
+}
+
+function isOwnVirtualEmployeeId(id: string, machineId?: string): boolean {
+    const normalizedId = String(id || '').trim().toLowerCase();
+    const normalizedMachineId = String(machineId || '').trim().toLowerCase();
+    if (!normalizedId || !normalizedMachineId) return false;
+    return normalizedId === normalizedMachineId || normalizedId === virtualEmployeeIdForMachine(normalizedMachineId).toLowerCase();
+}
+
 function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
@@ -140,7 +152,7 @@ function App() {
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; preview?: string; last_activity?: string; pinned?: boolean }>>([]);
+    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; preview?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
     const recentProjectsRef = useRef(recentProjects);
     recentProjectsRef.current = recentProjects;
     const [status, setStatus] = useState("");
@@ -307,11 +319,13 @@ function App() {
     }, [veAuthorized]);
     // Resolve favorite IDs to display slots
     const favoriteEmployeeSlots = useMemo(() => {
-        return favoriteEmployeeIds.map(id => {
+        return favoriteEmployeeIds.flatMap(id => {
+            if (isOwnVirtualEmployeeId(id, config?.remote_machine_id)) return [];
             const ve = veList.find(v => v.id === id);
+            if (ve && (isOwnVirtualEmployeeId(ve.id, config?.remote_machine_id) || isOwnVirtualEmployeeId(ve.machine_id || '', config?.remote_machine_id))) return [];
             return { veId: id, name: ve?.name || id.slice(0, 6), online: ve?.online_status === 'online', skillDescription: ve?.skill_description || '' };
         });
-    }, [favoriteEmployeeIds, veList]);
+    }, [favoriteEmployeeIds, veList, config?.remote_machine_id]);
 
     const updateFavoriteEmployees = useCallback(async (newList: string[]) => {
         const normalized = normalizeFavoriteEmployeeIds(newList);
@@ -369,17 +383,6 @@ function App() {
             setPendingVEOpen({ id: veId, name: veId.slice(0, 8), skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' });
         }
     }, [veList]);
-
-    const imAuditBtnStyle: React.CSSProperties = {
-        fontSize: '0.68rem',
-        padding: '2px 10px',
-        borderRadius: '4px',
-        border: '1px solid var(--theme-primary)',
-        background: 'transparent',
-        color: 'var(--theme-primary)',
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-    };
 
     // Brand info from backend
     const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
@@ -631,7 +634,7 @@ function App() {
     }, [navTab, thanksContent]);
 
     const handleDeleteSkill = async (name: string) => {
-        if (name === "Claude Official Documentation Skill Package" || name === "瓒呰兘鍔涙妧鑳藉寘") {
+        if (name === "Claude Official Documentation Skill Package" || name === "\u8d85\u80fd\u529b\u6280\u80fd\u5305") {
             showToastMessage(t("cannotDeleteSystemSkill"));
             return;
         }
@@ -715,7 +718,7 @@ function App() {
             e.stopPropagation();
         }
         // If the AI panel is in fullscreen mode, WindowToggleMaximise won't
-        // work — must exit fullscreen first.  Use the tracked React state
+        // Windows quirk: drag-to-maximize can break if we are already fullscreen.
         // (aiPanelMaximized) to avoid an async round-trip on every click.
         if (aiPanelMaximized) {
             WindowUnfullscreen();
@@ -947,7 +950,7 @@ function App() {
                     if (idx !== -1) setActiveTab(idx);
 
                     // NOTE: removed auto-popup of provider config when no API key is set.
-                    // Users can open it manually via the "鏈嶅姟鍟嗛厤缃? button.
+                    // Users can open it manually via the provider config button.
                 }
             }
         }).catch(err => {
@@ -965,7 +968,7 @@ function App() {
                 }).catch(err2 => {
                     console.error("Retry load config also failed:", err2);
                     // Last resort: set a minimal default config so the UI is not stuck
-                    // on "加载配置中 forever. User can still use the app and reconfigure.
+                    // Avoid leaving the UI stuck on loading config forever.
                     setConfig(new main.AppConfig({}));
                 });
             }, 1500);
@@ -1033,23 +1036,23 @@ function App() {
 
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `检查 ${toolName}...` : `Checking ${toolName}...`);
+            setBackgroundInstallStatus(`Checking ${toolName}...`);
             setBackgroundInstallingTool("");  // Clear previous tool's installing state
         });
 
         EventsOn("tool-installing", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `安装 ${toolName}...` : `Installing ${toolName}...`);
+            setBackgroundInstallStatus(`Installing ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
         EventsOn("tool-updating", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `更新 ${toolName}...` : `Updating ${toolName}...`);
+            setBackgroundInstallStatus(`Updating ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
         EventsOn("tool-installed", (toolName: string) => {
             console.log("Tool installed in background:", toolName);
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `✅ ${toolName} 安装完成` : `✅ ${toolName} installed`);
+            setBackgroundInstallStatus(`${toolName} installed`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
@@ -1060,7 +1063,7 @@ function App() {
 
         EventsOn("tool-updated", (toolName: string) => {
             console.log("Tool updated in background:", toolName);
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `${toolName} 已更新` : `${toolName} updated`);
+            setBackgroundInstallStatus(`${toolName} updated`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
@@ -1242,7 +1245,7 @@ function App() {
         e.preventDefault();
         e.stopPropagation();
 
-        if (skillName === "Claude Official Documentation Skill Package" || skillName === "瓒呰兘鍔涙妧鑳藉寘") {
+        if (skillName === "Claude Official Documentation Skill Package" || skillName === "\u8d85\u80fd\u529b\u6280\u80fd\u5305") {
              return;
         }
 
@@ -1804,6 +1807,7 @@ function App() {
 
     const handleApiKeyChange = (newKey: string) => {
         if (!config) return;
+        setFetchedModelList([]);
 
         // Deep clone the entire config
         const configCopy = JSON.parse(JSON.stringify(config));
@@ -1870,6 +1874,7 @@ function App() {
 
     const handleModelUrlChange = (newUrl: string) => {
         if (!config) return;
+        setFetchedModelList([]);
         const toolCfg = JSON.parse(JSON.stringify((config as any)[activeTool]));
         toolCfg.models[activeTab].model_url = newUrl;
         const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
@@ -1941,7 +1946,7 @@ function App() {
 
         if (isDuplicate) {
             // Show warning and don't update
-            setStatus(lang === 'zh-Hans' ? `名称 "${name}" 已存在，请使用其他名称` : `Name "${name}" already exists, please use a different name`);
+            setStatus(`Name "${name}" already exists, please use a different name`);
             return;
         }
 
@@ -1990,7 +1995,7 @@ function App() {
             if (p.includes("aicodemirror")) return "Haiku";
             if (p.includes("coderelay")) return "claude-3-5-sonnet-20241022";
             if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
@@ -2007,9 +2012,23 @@ function App() {
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
             if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
         }
         return "";
+    };
+
+    const getKnownModelOptions = (tool: string, provider: string): { id: string; name?: string }[] => {
+        const names = [provider, getProviderPrefix(provider)].filter(Boolean);
+        const recommended = names.flatMap(name => recommendedModels[name] || []);
+        const options = recommended.map(model => ({
+            id: model.id,
+            name: model.note ? `${model.id} (${model.note})` : model.id,
+        }));
+        const defaultId = getDefaultModelId(tool, provider);
+        if (defaultId && !options.some(model => model.id === defaultId)) {
+            options.unshift({ id: defaultId, name: defaultId });
+        }
+        return options;
     };
 
     const handleModelSwitch = (modelName: string) => {
@@ -2165,7 +2184,7 @@ function App() {
         }
         setShowRemoteActivationModal(false);
         if (pendingRemoteLaunchTool) {
-            setStatus(lang === 'zh-Hans' ? '正在远程启动...' : lang === 'zh-Hant' ? '正在遠程啟動...' : 'Starting remotely...');
+            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杩滅▼鍚姩...' : lang === 'zh-Hant' ? '姝ｅ湪閬犵▼鍟熷嫊...' : 'Starting remotely...');
             setLaunchingTool(pendingRemoteLaunchTool);
             await quickStartRemoteSession(pendingRemoteLaunchTool as any);
             setPendingRemoteLaunchTool("");
@@ -2262,9 +2281,9 @@ function App() {
 
             // Prepare mailto body
             const instruction = lang === 'zh-Hans'
-                ? `请将刚才打开的文件夹中的压缩包（aicoder_log_....zip）作为附件添加到此邮件中发送。\n\n`
+                ? `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`
                 : lang === 'zh-Hant'
-                    ? `請將剛才打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n`
+                    ? `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`
                     : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
             const body = `Product: ${brandInfo?.displayName || 'MaClaw'}
@@ -2288,55 +2307,11 @@ ${instruction}`;
 
     if (isLoading) {
         return (
-            <div data-ai-theme={aiThemeMode} style={{
-                height: '100vh',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'center',
-                alignItems: 'center',
-                backgroundColor: 'var(--theme-page-bg)',
-                color: 'var(--theme-text-primary)',
-                padding: '20px',
-                textAlign: 'center',
-                boxSizing: 'border-box',
-                borderRadius: '12px',
-                border: '1px solid var(--theme-border)',
-                overflow: 'hidden',
-                ...(aiThemeMode === 'dark' ? {
-                    '--theme-page-bg': '#0b1220',
-                    '--theme-surface': '#111827',
-                    '--theme-surface-muted': '#0f172a',
-                    '--theme-text-primary': '#e5e7eb',
-                    '--theme-text-secondary': '#cbd5e1',
-                    '--theme-text-muted': '#94a3b8',
-                    '--theme-border': '#334155'
-                } : {})
-            } as any}>
-                <div style={{
-                    height: '30px',
-                    width: '100%',
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    zIndex: 999,
-                    '--wails-draggable': 'drag'
-                } as any}></div>
-                <h2 style={{
-                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    marginBottom: '20px',
-                    display: 'inline-block',
-                    fontWeight: 'bold'
-                }}>{t("envCheckTitle")}</h2>
-                <div style={{ width: '100%', height: '4px', backgroundColor: 'var(--theme-surface-muted)', borderRadius: '2px', overflow: 'hidden', marginBottom: '15px', border: '1px solid var(--theme-border)' }}>
-                    <div style={{
-                        width: '50%',
-                        height: '100%',
-                        backgroundColor: '#6366f1',
-                        borderRadius: '2px',
-                        animation: 'indeterminate 1.5s infinite linear'
-                    }}></div>
+            <div data-ai-theme={aiThemeMode} className="app-loading-shell">
+                <div className="app-loading-drag-zone" />
+                <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
+                <div className="app-loading-progress" aria-hidden="true">
+                    <div className="app-loading-progress__bar" />
                 </div>
 
                 {showLogs ? (
@@ -2344,38 +2319,18 @@ ${instruction}`;
                         ref={logEndRef}
                         readOnly
                         value={envLogs.join('\n')}
-                        style={{
-                            width: '100%',
-                            height: '240px',
-                            padding: '10px',
-                            fontSize: '0.85rem',
-                            fontFamily: 'monospace',
-                            color: 'var(--theme-text-primary)',
-                            backgroundColor: 'var(--theme-surface)',
-                            border: '1px solid var(--theme-border)',
-                            borderRadius: '8px',
-                            resize: 'none',
-                            outline: 'none',
-                            marginBottom: '10px'
-                        }}
+                        className="app-loading-log"
                     />
                 ) : (
-                    <div style={{ fontSize: '0.9rem', color: 'var(--theme-text-secondary)', marginBottom: '15px', height: '20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div className="app-loading-status">
                         {envLogs.length > 0 ? envLogs[envLogs.length - 1] : t("initializing")}
                     </div>
                 )}
 
-                <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
+                <div className="app-loading-actions">
                     <button
                         onClick={() => setShowLogs(!showLogs)}
-                        style={{
-                            background: 'none',
-                            border: 'none',
-                            color: '#6366f1',
-                            fontSize: '0.8rem',
-                            cursor: 'pointer',
-                            textDecoration: 'underline'
-                        }}
+                        className="app-loading-link"
                     >
                         {showLogs ? (lang === 'zh-Hans' ? '\u9690\u85cf\u8be6\u60c5' : lang === 'zh-Hant' ? '\u96b1\u85cf\u8a73\u60c5' : 'Hide Details') : (lang === 'zh-Hans' ? '\u67e5\u770b\u8be6\u60c5' : lang === 'zh-Hant' ? '\u67e5\u770b\u8a73\u60c5' : 'Show Details')}
                     </button>
@@ -2385,28 +2340,22 @@ ${instruction}`;
                             <button onClick={() => {
                                 setIsLoading(false);
                                 setIsManualCheck(false);
-                            }} className="btn-hide" style={{ borderColor: '#6366f1', color: '#6366f1', padding: '4px 12px' }}>
+                            }} className="btn-hide app-loading-action app-loading-action--primary">
                                 {lang === 'zh-Hans' ? '\u6536\u8d77' : lang === 'zh-Hant' ? '\u6536\u8d77' : 'Hide'}
                             </button>
                         ) : (
-                            <button onClick={Quit} className="btn-hide" style={{ borderColor: '#ef4444', color: '#ef4444', padding: '4px 12px' }}>
+                            <button onClick={Quit} className="btn-hide app-loading-action app-loading-action--danger">
                                 {lang === 'zh-Hans' ? '\u9000\u51fa\u7a0b\u5e8f' : lang === 'zh-Hant' ? '\u9000\u51fa\u7a0b\u5f0f' : 'Quit'}
                             </button>
                         )
                     )}
                 </div>
 
-                <style>{`
-                    @keyframes indeterminate {
-                        0% { transform: translateX(-100%); }
-                        100% { transform: translateX(200%); }
-                    }
-                `}</style>
             </div>
         );
     }
 
-    if (!config) return <div className="main-content" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>{t("loadingConfig")}</div>;
+    if (!config) return <div className="main-content app-config-loading">{t("loadingConfig")}</div>;
 
     const toolCfg = isToolTab(navTab)
         ? (config as any)[navTab]
@@ -2459,7 +2408,7 @@ ${instruction}`;
                 setRenameValue={setRenameValue}
                 resumeRecentProject={resumeRecentProject}
                 assistantReady={aiAssistant.ready}
-                onRecentTaskSwitchBlocked={() => showToastMessage(lang === 'zh-Hans' || lang === 'zh' ? '系统正在预热中，请稍后切换' : lang === 'zh-Hant' ? '系統正在預熱中，請稍後切換' : 'System is warming up. Please switch later.')}
+                onRecentTaskSwitchBlocked={() => showToastMessage('System is warming up. Please switch later.')}
                 createRecentTask={createRecentTask}
                 refreshRecentProjects={refreshRecentProjects}
                 taskContextMenu={taskContextMenu}
@@ -2498,7 +2447,7 @@ ${instruction}`;
             <div className="main-container" data-ai-theme={aiThemeMode}>
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
-                    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
+                    <div className="ai-main-panel-shell">
                         <AIAssistantPanel
                             onClose={() => { switchTool('settings'); }}
                             lang={lang}
@@ -2552,7 +2501,7 @@ ${instruction}`;
                     windowMaximized={windowMaximized}
                 />
 
-                <div className="main-content elegant-scrollbar" style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
+                <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab}>
                     {navTab === 'tutorial' && (
                         <TutorialPage
                             lang={lang}
@@ -2629,13 +2578,13 @@ ${instruction}`;
                     )}
 
                     {navTab === 'settings' && (
-                        <div className="settings-shell" style={{ padding: '10px' }}>
+                        <div className="settings-shell settings-shell--padded">
                             <SettingsTabsRail
                                 tabs={settingsTabOptions}
                                 activeTab={settingsTab}
                                 onChange={setSettingsTab}
                             />
-                            <div style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
+                            <div className="settings-content" hidden={settingsTab !== 'general'}>
                                 <GeneralSettingsPanel
                                     config={config}
                                     setConfig={setConfig}
@@ -2645,7 +2594,7 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'remote' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'remote'}>
                                 <RemoteSettingsPanel
                                     config={config}
                                     saveRemoteConfigField={saveRemoteConfigField}
@@ -2661,11 +2610,11 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'searchEngine' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'searchEngine'}>
                                 <WebSearchConfigPanel lang={lang} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'pet' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'pet'}>
                                 <PetSettingsPanel
                                     config={config}
                                     lang={lang}
@@ -2674,7 +2623,7 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div style={{ display: settingsTab === 'proxy' ? 'block' : 'none' }}>
+                            <div className="settings-content" hidden={settingsTab !== 'proxy'}>
                                 <ProxySettingsPanel
                                     config={config}
                                     setConfig={setConfig}
@@ -2684,26 +2633,26 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'llm' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'llm'}>
                                 <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'redeem' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'redeem'}>
                                 <HubServiceRedeemPanel lang={lang} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'memory' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'memory'}>
                                 <MemoryManagementPanel lang={lang} traceFocus={memoryTraceFocus} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'knowledge' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'knowledge'}>
                                 <KnowledgeSettingsPanel lang={lang} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'misData' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'misData'}>
                                 <MISDataSettingsPanel lang={lang} />
                             </div>
-                            <div className="settings-panel" style={{ display: settingsTab === 'embedding' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'embedding'}>
                                 <EmbeddingConfigPanel lang={lang} />
                                 <ASRConfigPanel lang={lang} />
                                 <TTSConfigPanel lang={lang} />
@@ -2719,7 +2668,6 @@ ${instruction}`;
                                 setImSubTab={setImSubTab}
                                 imAuditPlatform={imAuditPlatform}
                                 setIMAuditPlatform={setIMAuditPlatform}
-                                imAuditBtnStyle={imAuditBtnStyle}
                                 saveRemoteConfigField={saveRemoteConfigField}
                                 showToastMessage={showToastMessage}
                                 qqBotStatus={qqBotStatus}
@@ -2753,12 +2701,12 @@ ${instruction}`;
                                 setWeixinQRError={setWeixinQRError}
                             />
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'security'}>
                                 <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
                             {veNavigationAvailable && (
-                                <div className="settings-panel" style={{ display: settingsTab === 'virtualEmployee' ? 'block' : 'none' }}>
-                                    <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+                                <div className="settings-content settings-panel" hidden={settingsTab !== 'virtualEmployee'}>
+                                    <div className="settings-ve-section">
                                         <FavoriteEmployeeSettingsPanel
                                             favoriteEmployeeIds={favoriteEmployeeIds}
                                             veList={veList}
@@ -2769,14 +2717,14 @@ ${instruction}`;
                                         />
                                     </div>
                                     {veSettingsAuthorized && (
-                                        <div style={{ maxWidth: '600px', margin: '24px auto 0', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
+                                        <div className="settings-ve-section settings-ve-section--divided">
                                             <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
                                         </div>
                                     )}
                                 </div>
                             )}
 
-                            <div style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>
+                            <div className="settings-content" hidden={settingsTab !== 'system'}>
                                 <SystemSettingsPanel
                                     config={config}
                                     setConfig={setConfig}
@@ -2787,7 +2735,7 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div style={{ display: settingsTab === 'ui' ? 'block' : 'none' }}>
+                            <div className="settings-content" hidden={settingsTab !== 'ui'}>
                                 <UISettingsPanel
                                     config={config}
                                     lang={lang}
@@ -2799,7 +2747,7 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
+                            <div className="settings-content" hidden={settingsTab !== 'display'}>
                                 <ProgrammingToolsSettingsPanel
                                     config={config}
                                     setConfig={setConfig}
@@ -2809,7 +2757,7 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
+                            <div className="settings-content" hidden={settingsTab !== 'general'}>
                                 <GeneralAdvancedSettingsPanel
                                     config={config}
                                     setConfig={setConfig}
@@ -2842,10 +2790,10 @@ ${instruction}`;
                                     setStatus("");
                                 }).catch((err: any) => {
                                     console.error("CheckUpdate error:", err);
-                                    setStatus("检查更新失败:  " + err);
+                                    setStatus("妫€鏌ユ洿鏂板け璐?  " + err);
                                     setUpdateResult({
                                         has_update: false,
-                                        latest_version: "获取失败",
+                                        latest_version: "鑾峰彇澶辫触",
                                         release_url: ""
                                     });
                                     setIsStartupUpdateCheck(false);
@@ -2861,15 +2809,14 @@ ${instruction}`;
 
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
-                    <div className="global-action-bar" data-ai-theme={aiThemeMode} style={{ '--wails-draggable': 'no-drag' } as any}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '100%', padding: '2px 0', '--wails-draggable': 'no-drag' } as any}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '20px', justifyContent: 'flex-start' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div className="global-action-bar" data-ai-theme={aiThemeMode}>
+                        <div className="coding-launch-panel wails-no-drag">
+                            <div className="coding-launch-meta-row">
+                                <div className="coding-launch-summary">
                                     {/* runnerStatus label removed */}
-                                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary-color)', textTransform: 'capitalize' }}>{activeTool}</span>
-                                    <span style={{ color: '#d1d5db' }}>|</span>
+                                    <span className="coding-launch-tool-name">{activeTool}</span>
                                     <span
-                                        style={{ fontSize: '0.85rem', fontWeight: 600, color: '#374151' }}
+                                        className="coding-launch-provider-name"
                                         title={(config as any)[activeTool].current_model === "Original" ? t("original") : (config as any)[activeTool].current_model}
                                     >
                                         {(() => {
@@ -2878,9 +2825,9 @@ ${instruction}`;
                                         })()}
                                     </span>
                                 </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                <div className="coding-launch-options">
                                 {activeTool !== 'kilo' && (
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                    <label className="coding-launch-check">
                                         <input
                                             type="checkbox"
                                             checked={resolvedLaunchProject?.yolo_mode || false}
@@ -2896,22 +2843,14 @@ ${instruction}`;
                                         />
                                         <span>{t("yoloModeLabel")}</span>
                                         {resolvedLaunchProject?.yolo_mode && (
-                                            <span style={{
-                                                marginLeft: '2px',
-                                                backgroundColor: '#fee2e2',
-                                                color: '#ef4444',
-                                                padding: '0 4px',
-                                                borderRadius: '3px',
-                                                fontSize: '0.6rem',
-                                                fontWeight: 'bold'
-                                            }}>
+                                            <span className="coding-launch-danger-badge">
                                                 {t("danger")}
                                             </span>
                                         )}
                                     </label>
                                 )}
                                 {activeTool === 'claude' && (
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                    <label className="coding-launch-check">
                                         <input
                                             type="checkbox"
                                             checked={resolvedLaunchProject?.team_mode || false}
@@ -2921,7 +2860,7 @@ ${instruction}`;
                                     </label>
                                 )}
                                 {!isWindows && (
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                    <label className="coding-launch-check">
                                         <input
                                             type="checkbox"
                                             checked={resolvedLaunchProject?.use_proxy || false}
@@ -2935,19 +2874,28 @@ ${instruction}`;
                                         />
                                         <span>{t("proxyMode")}</span>
                                         <span
+                                            className="coding-launch-inline-action"
+                                            role="button"
+                                            tabIndex={0}
                                             onClick={(e) => {
                                                 e.preventDefault();
                                                 e.stopPropagation();
                                                 setShowProxySettings(true);
                                             }}
-                                            style={{ marginLeft: '4px', cursor: 'pointer', opacity: 0.7 }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    setShowProxySettings(true);
+                                                }
+                                            }}
                                             title={t("proxySettings")}
                                         >
-                                            鈿欙笍
+                                            {lang === 'zh-Hans' ? '璁剧疆' : lang === 'zh-Hant' ? '瑷畾' : 'Edit'}
                                         </span>
                                     </label>
                                 )}
-                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                <label className="coding-launch-check">
                                     <input
                                         type="checkbox"
                                         checked={resolvedLaunchProject?.admin_mode || false}
@@ -2960,15 +2908,14 @@ ${instruction}`;
                                                 return updated;
                                             });
                                         }}
-                                        style={{ marginRight: '6px' }}
                                     />
                                     <span>{isWindows ? t("adminModeLabel") : t("rootModeLabel")}</span>
                                 </label>
                             </div>
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '15px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid #e0e7ff', background: '#eef2ff' }}>
+                            <div className="coding-launch-mode-row">
+                                <div className="coding-launch-mode-group">
+                                    <div className="coding-launch-segmented">
                                         <button
                                             type="button"
                                             onClick={() => {
@@ -2976,16 +2923,7 @@ ${instruction}`;
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
                                             }}
-                                            style={{
-                                                border: 'none',
-                                                borderRadius: '999px',
-                                                padding: '5px 12px',
-                                                background: !launchRemoteEnabled ? '#6366f1' : 'transparent',
-                                                color: !launchRemoteEnabled ? '#ffffff' : '#475569',
-                                                fontSize: '0.78rem',
-                                                fontWeight: 700,
-                                                cursor: 'pointer'
-                                            }}
+                                            className={!launchRemoteEnabled ? 'is-active' : ''}
                                         >
                                             {t("localModeLabel")}
                                         </button>
@@ -2997,18 +2935,8 @@ ${instruction}`;
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
                                             }}
-                                            style={{
-                                                border: 'none',
-                                                borderRadius: '999px',
-                                                padding: '5px 12px',
-                                                background: launchRemoteEnabled ? '#6366f1' : 'transparent',
-                                                color: launchRemoteEnabled ? '#ffffff' : '#475569',
-                                                fontSize: '0.78rem',
-                                                fontWeight: 700,
-                                                cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
-                                                opacity: isRemoteCapableActiveTool ? 1 : 0.4
-                                            }}
-                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : (lang === 'zh-Hans' ? '当前工具暂不支持远程' : lang === 'zh-Hant' ? '目前工具暫不支援遠程' : 'This tool does not support remote mode')}
+                                            className={launchRemoteEnabled ? 'is-active' : ''}
+                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : "This tool does not support remote mode"}
                                         >
                                             {t("remoteModeLabel")}
                                         </button>
@@ -3016,7 +2944,7 @@ ${instruction}`;
                                 </div>
                                 {launchRemoteEnabled && (
                                     <div
-                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: remoteActivationStatus?.activated ? '#f0fdf4' : '#fffbeb', border: `1px solid ${remoteActivationStatus?.activated ? '#bbf7d0' : '#fde68a'}`, borderRadius: '999px', cursor: remoteActivationStatus?.activated ? 'default' : 'pointer' }}
+                                        className={`coding-launch-status-pill ${remoteActivationStatus?.activated ? 'is-active' : 'needs-action'}`}
                                         onClick={() => {
                                             if (!remoteActivationStatus?.activated) {
                                                 openRemoteActivationModal(activeTool);
@@ -3024,36 +2952,26 @@ ${instruction}`;
                                         }}
                                         title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '鐐瑰嚮娉ㄥ唽' : lang === 'zh-Hant' ? '榛炴搳瑷诲唺' : 'Click to register')}
                                     >
-                                        <span style={{ fontSize: '0.75rem', color: remoteActivationStatus?.activated ? '#16a34a' : '#d97706', whiteSpace: 'nowrap' }}>
+                                        <span>
                                             {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
                                         </span>
                                     </div>
                                 )}
-                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                <label className="coding-launch-check">
                                     <input
                                         type="checkbox"
                                         checked={resolvedLaunchProject?.python_project || false}
                                         onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_project: e.target.checked }))}
-                                        style={{ marginRight: '6px' }}
                                     />
                                     <span>{t("pythonProjectLabel")}</span>
                                 </label>
                                 {resolvedLaunchProject?.python_project && (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{t("pythonEnvLabel")}:</span>
+                                    <div className="coding-launch-python-env">
+                                        <span className="coding-launch-python-label">{t("pythonEnvLabel")}:</span>
                                         <select
                                             value={resolvedLaunchProject?.python_env || ""}
                                             onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_env: e.target.value }))}
-                                            style={{
-                                                padding: '5px 8px',
-                                                borderRadius: '4px',
-                                                border: '1px solid #d1d5db',
-                                                backgroundColor: '#ffffff',
-                                                fontSize: '0.85rem',
-                                                color: '#374151',
-                                                cursor: 'pointer',
-                                                maxWidth: '200px'
-                                            }}
+                                            className="coding-launch-python-select"
                                         >
                                             {pythonEnvironments.map((env: any, index: number) => (
                                                 <option key={index} value={env.name}>
@@ -3064,35 +2982,23 @@ ${instruction}`;
                                     </div>
                                 )}
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '10px', flexWrap: 'nowrap' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1 1 auto', minWidth: 0 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: '1 1 auto', minWidth: 0 }}>
-                                        <span style={{ fontSize: '0.8rem', color: '#6b7280', whiteSpace: 'nowrap', lineHeight: 1 }}>{t("project")}:</span>
+                            <div className="coding-launch-project-row">
+                                <div className="coding-launch-project-main">
+                                    <div className="coding-launch-project-picker">
+                                        <span className="coding-launch-project-label">{t("project")}</span>
                                         <input
                                             type="text"
-                                            className="form-input"
+                                            className="form-input coding-launch-project-search"
                                             value={launchProjectKeyword}
                                             onChange={(e) => setLaunchProjectKeyword(e.target.value)}
                                             placeholder={t("projectSearchPlaceholder")}
-                                            style={{ height: '28px', width: '90px', minWidth: '70px', fontSize: '0.76rem', padding: '2px 8px', flexShrink: 1 }}
                                             spellCheck={false}
                                             autoComplete="off"
                                         />
                                         <select
                                             value={resolvedLaunchProject?.id || ""}
                                             onChange={(e) => setSelectedProjectForLaunch(e.target.value)}
-                                            style={{
-                                                padding: '5px 8px',
-                                                borderRadius: '4px',
-                                                border: '1px solid #d1d5db',
-                                                backgroundColor: '#ffffff',
-                                                fontSize: '0.85rem',
-                                                color: '#374151',
-                                                cursor: 'pointer',
-                                                minWidth: '80px',
-                                                maxWidth: '160px',
-                                                flexShrink: 1
-                                            }}
+                                            className="coding-launch-select"
                                         >
                                             {launchProjectSelectOptions.length > 0 ? launchProjectSelectOptions.map((proj: any) => (
                                                 <option key={proj.id} value={proj.id}>
@@ -3104,73 +3010,24 @@ ${instruction}`;
                                         </select>
                                         <button
                                             onClick={() => switchTool('projects')}
-                                            style={{
-                                                padding: '0',
-                                                height: '20px',
-                                                borderRadius: '6px',
-                                                border: '1px solid #d1d5db',
-                                                backgroundColor: '#f3f4f6',
-                                                color: '#6b7280',
-                                                fontSize: '0.85rem',
-                                                fontWeight: '500',
-                                                cursor: 'pointer',
-                                                transition: 'all 0.2s',
-                                                whiteSpace: 'nowrap',
-                                                textAlign: 'center',
-                                                width: '32px',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                flexShrink: 0
-                                            }}
-                                            onMouseEnter={(e) => {
-                                                e.currentTarget.style.backgroundColor = '#e5e7eb';
-                                                e.currentTarget.style.color = '#4b5563';
-                                            }}
-                                            onMouseLeave={(e) => {
-                                                e.currentTarget.style.backgroundColor = '#f3f4f6';
-                                                e.currentTarget.style.color = '#6b7280';
-                                            }}
+                                            className="coding-launch-manage"
                                         >
                                             ...
                                         </button>
                                     </div>
                                 </div>
-                                {/* Handoff: local →remote icon button */}
+                                {/* Handoff: local 鈫抮emote icon button */}
                                 {!launchRemoteEnabled && isRemoteCapableActiveTool && (
                                     <button
                                         type="button"
-                                        title={lang === 'zh-Hans' ? '转为远程' : lang === 'zh-Hant' ? '轉為遠程' : 'Switch to Remote'}
-                                        style={{
-                                            width: '36px',
-                                            height: '36px',
-                                            borderRadius: '50%',
-                                            border: '1px solid #c4b5fd',
-                                            background: 'linear-gradient(135deg, #ede9fe, #f5f3ff)',
-                                            color: '#7c3aed',
-                                            fontSize: '1rem',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            cursor: 'pointer',
-                                            flexShrink: 0,
-                                            transition: 'all 0.2s',
-                                            padding: 0,
-                                        }}
-                                        onMouseEnter={(e) => {
-                                            e.currentTarget.style.background = 'linear-gradient(135deg, #ddd6fe, #ede9fe)';
-                                            e.currentTarget.style.borderColor = '#a78bfa';
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            e.currentTarget.style.background = 'linear-gradient(135deg, #ede9fe, #f5f3ff)';
-                                            e.currentTarget.style.borderColor = '#c4b5fd';
-                                        }}
+                                        title={lang === 'zh-Hans' ? '杞负杩滅▼' : lang === 'zh-Hant' ? '杞夌偤閬犵▼' : 'Switch to Remote'}
+                                        className="coding-launch-handoff"
                                         onClick={async () => {
                                             if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                 openRemoteActivationModal(activeTool);
                                                 return;
                                             }
-                                            setStatus(lang === 'zh-Hans' ? '正在转为远程...' : lang === 'zh-Hant' ? '正在轉為遠程...' : 'Switching to remote...');
+                                            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杞负杩滅▼...' : lang === 'zh-Hant' ? '姝ｅ湪杞夌偤閬犵▼...' : 'Switching to remote...');
                                             setLaunchingTool(activeTool);
                                             try {
                                                 const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true });
@@ -3184,18 +3041,18 @@ ${instruction}`;
                                             }
                                         }}
                                     >
-                                        ☁                                    </button>
+                                        鈫?
+                                    </button>
                                 )}
                                 <button
-                                    className="btn-launch"
-                                    style={{ padding: '8px 20px', textAlign: 'center', '--wails-draggable': 'no-drag', pointerEvents: 'auto', flexShrink: 0 } as any}
+                                    className="btn-launch coding-launch-button"
                                     disabled={onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool || launchingTool === activeTool}
                                     onClick={async () => {
                                         console.log("Launch button clicked. activeTool:", activeTool);
                                         if (launchRemoteEnabled && hasActiveRemoteSessionForTool && activeRemoteSessionForTool?.id) {
                                             setLaunchingTool(activeTool);
                                             await killRemoteSession(activeRemoteSessionForTool.id);
-                                            setStatus(lang === 'zh-Hans' ? '远程已停止' : lang === 'zh-Hant' ? '遠端已停止' : 'Remote stopped');
+                                            setStatus('Remote stopped');
                                             setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                             return;
                                         }
@@ -3203,14 +3060,14 @@ ${instruction}`;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
                                             if (launchRemoteEnabled) {
                                                 if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
-                                                    setStatus(lang === 'zh-Hans' ? '当前工具暂不支持远程启动' : lang === 'zh-Hant' ? '目前工具暫不支援遠程啟動' : 'This tool does not support remote launch');
+                                                    setStatus("This tool does not support remote launch");
                                                     return;
                                                 }
                                                 if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                     openRemoteActivationModal(activeTool);
                                                     return;
                                                 }
-                                                setStatus(lang === 'zh-Hans' ? '正在远程启动...' : lang === 'zh-Hant' ? '正在遠程啟動...' : 'Starting remotely...');
+                                                setStatus("Starting remotely...");
                                                 setLaunchingTool(activeTool);
                                                 try {
                                                     await quickStartRemoteSession(activeTool as any);
@@ -3228,18 +3085,18 @@ ${instruction}`;
                                                 const isBeingInstalled = await IsToolBeingInstalled(activeTool);
                                                 if (isBeingInstalled) {
                                                     // Tool is being installed in background, just wait
-                                                    setStatus(lang === 'zh-Hans' ? `${activeTool} 正在后台安装中，请稍候...` : `${activeTool} is being installed in background, please wait...`);
+                                                    setStatus(`${activeTool} is being installed in background, please wait...`);
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {
                                                         await InstallToolOnDemand(activeTool);
                                                         // Refresh tool statuses
                                                         const updatedStatuses = await CheckToolsStatus();
                                                         setToolStatuses(updatedStatuses);
-                                                        setStatus(lang === 'zh-Hans' ? `${activeTool} 安装完成` : `${activeTool} installed`);
+                                                        setStatus(`${activeTool} installed`);
                                                         setOnDemandInstallingTool("");
                                                         // Auto launch
                                                         setTimeout(async () => {
-                                                            setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
+                                                            setStatus("Launching...");
                                                             setLaunchingTool(activeTool);
                                                             try {
                                                                 await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
@@ -3271,7 +3128,7 @@ ${instruction}`;
                                                         setToolRepairStatus(prev => ({...prev, show: false}));
                                                         setOnDemandInstallingTool("");
                                                         // Launch the tool
-                                                        setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
+                                                        setStatus("Launching...");
                                                         setLaunchingTool(activeTool);
                                                         try {
                                                             await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
@@ -3293,7 +3150,7 @@ ${instruction}`;
                                             }
 
                                             console.log("Launching tool with project:", selectedProj.name, "path:", selectedProj.path);
-                                            setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
+                                            setStatus("Launching...");
                                             setLaunchingTool(activeTool);
                                             LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false)
                                                 .then(() => {
@@ -3315,7 +3172,7 @@ ${instruction}`;
                                         }
                                     }}
                                 >
-                                    <span style={{ marginRight: '6px' }}>{launchRemoteEnabled ? 'on' : 'off'}</span>
+                                    <span className="coding-launch-state-dot" aria-hidden="true" />
                                     {launchRemoteEnabled
                                         ? (hasActiveRemoteSessionForTool ? t("remoteStopTool") : t("remoteStartTool"))
                                         : t("launch")}
@@ -3330,9 +3187,9 @@ ${instruction}`;
                         <div className="codex-config-progress-panel">
                             <div className="codex-config-progress-title">
                                 {lang === 'zh-Hans' || lang === 'zh'
-                                    ? '正在更新 Codex 配置'
+                                    ? "Updating Codex configuration"
                                     : lang === 'zh-Hant'
-                                        ? '正在更新 Codex 配置'
+                                        ? "Updating Codex configuration"
                                         : 'Updating Codex configuration'}
                             </div>
                             <div className="codex-config-progress-track" aria-hidden="true">
@@ -3440,13 +3297,13 @@ ${instruction}`;
 
             {showModelSettings && config && (
                 <div className="modal-overlay">
-                    <div className="modal-content" style={{ width: '529px', textAlign: 'left' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h3 style={{ margin: 0, color: '#6366f1' }}>{t("modelSettings")}</h3>
+                    <div className="modal-content provider-config-modal">
+                        <div className="provider-config-header">
+                            <h3>{t("modelSettings")}</h3>
                             <button className="modal-close" onClick={() => setShowModelSettings(false)}>&times;</button>
                         </div>
 
-                        <div style={{ marginBottom: '16px' }}>
+                        <div className="provider-config-model-tabs-wrap">
                             {(() => {
                                 const allModels = (config as any)[activeTool].models;
                                 // Filter: show only non-Original models
@@ -3458,65 +3315,50 @@ ${instruction}`;
                                 const showArrows = configurableModels.length >= 5;
 
                                 return (
-                                    <div className="tabs" style={{ alignItems: 'center', minHeight: '40px' }}>
+                                    <div className="tabs provider-config-tabs">
                                         {showArrows && (
-                                            <div style={{ width: '30px', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+                                            <div className="provider-config-arrow-slot">
                                                 {tabStartIndex > 0 && (
                                                     <button
+                                                        className="provider-config-arrow-button"
                                                         onClick={() => setTabStartIndex(Math.max(0, tabStartIndex - 1))}
-                                                        style={{
-                                                            border: 'none', background: 'transparent', cursor: 'pointer',
-                                                            padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
-                                                        }}
+                                                        aria-label="Previous providers"
                                                     >
-                                                        鈼€
+                                                        {'<'}
                                                     </button>
                                                 )}
                                             </div>
                                         )}
 
-                                        <div style={{ flex: 1, display: 'flex', gap: '2px', overflow: 'hidden' }}>
+                                        <div className="provider-config-tab-strip">
                                             {(showArrows ? configurableModels.slice(tabStartIndex, tabStartIndex + 4) : configurableModels).map((model: any, index: number) => {
                                                 const globalIndex = allModels.findIndex((m: any) => m.model_name === model.model_name);
                                                 const name = model.model_name.toLowerCase();
-                                                let badge = null;
+                                                let badge: { tone: 'accent' | 'warning' | 'neutral' | 'success'; label: string } | null = null;
 
                                                 if (model.has_subscription) {
-                                                    badge = { bg: '#ec4899', label: t("subscription") };
+                                                    badge = { tone: 'accent', label: t("subscription") };
                                                 } else if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax")) {
-                                                    badge = { bg: '#ec4899', label: t("monthly") };
+                                                    badge = { tone: 'accent', label: t("monthly") };
                                                 } else if (name.includes("deepseek")) {
-                                                    badge = { bg: '#f59e0b', label: t("premium") };
+                                                    badge = { tone: 'warning', label: t("premium") };
                                                 } else if (name.includes("xiaomi")) {
-                                                    badge = { bg: '#f59e0b', label: t("bigSpender") };
+                                                    badge = { tone: 'warning', label: t("bigSpender") };
                                                 } else if (model.is_custom) {
-                                                    badge = { bg: '#9ca3af', label: t("customized") };
+                                                    badge = { tone: 'neutral', label: t("customized") };
                                                 } else if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p))) {
-                                                    badge = { bg: '#14b8a6', label: t("forward") };
+                                                    badge = { tone: 'success', label: t("forward") };
                                                 }
 
                                                 return (
                                                     <button
                                                         key={globalIndex}
-                                                        className={`tab-button ${activeTab === globalIndex ? 'active' : ''}`}
+                                                        className={`tab-button provider-config-tab-button ${activeTab === globalIndex ? 'active' : ''}`}
                                                         onClick={() => setActiveTab(globalIndex)}
-                                                        style={{ overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 0, position: 'relative' }}
                                                     >
                                                         {getModelDisplayName(model.model_name, lang)}
                                                         {badge && (
-                                                            <span style={{
-                                                                position: 'absolute',
-                                                                top: '-6px',
-                                                                right: '-6px',
-                                                                backgroundColor: badge.bg,
-                                                                color: '#fff',
-                                                                padding: '2px 6px',
-                                                                borderRadius: '4px',
-                                                                fontSize: '0.6rem',
-                                                                fontWeight: 'bold',
-                                                                boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
-                                                                whiteSpace: 'nowrap'
-                                                            }}>
+                                                            <span className="provider-config-tab-badge" data-tone={badge.tone}>
                                                                 {badge.label}
                                                             </span>
                                                         )}
@@ -3526,16 +3368,15 @@ ${instruction}`;
                                         </div>
 
                                         {showArrows && (
-                                            <div style={{ width: '30px', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+                                            <div className="provider-config-arrow-slot">
                                                 {tabStartIndex + 4 < configurableModels.length && (
                                                     <button
+                                                        className="provider-config-arrow-button"
                                                         onClick={() => setTabStartIndex(Math.min(configurableModels.length - 4, tabStartIndex + 1))}
-                                                        style={{
-                                                            border: 'none', background: 'transparent', cursor: 'pointer',
-                                                            padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
-                                                        }}
+                                                        aria-label="Next providers"
                                                     >
-                                                        鈻?                                                    </button>
+                                                        {'>'}
+                                                    </button>
                                                 )}
                                             </div>
                                         )}
@@ -3544,9 +3385,9 @@ ${instruction}`;
                             })()}
                         </div>
 
-                        <div style={{ display: 'flex', gap: '16px' }}>
+                        <div className="provider-config-form-row">
                             {(config as any)[activeTool].models[activeTab].is_custom && (
-                                <div className="form-group" style={{ flex: 1 }}>
+                                <div className="form-group provider-config-form-group">
                                     <label className="form-label">{t("providerName")}</label>
                                     <input
                                         type="text"
@@ -3562,56 +3403,57 @@ ${instruction}`;
                             )}
 
                             {(config as any)[activeTool].models[activeTab].model_name !== "Original" && (
-                                <div className="form-group" style={{ flex: 1 }}>
+                                <div className="form-group provider-config-form-group">
                                     <label className="form-label">
                                         {t("modelName")}
-                                        {activeTool === 'codebuddy' && <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: '5px' }}>(Supports multiple, separated by comma)</span>}
+                                        {activeTool === 'codebuddy' && <span className="provider-config-model-label-hint">(Supports multiple, separated by comma)</span>}
                                     </label>
-                                    <div style={{ position: 'relative' }}>
-                                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                                            {fetchedModelList.length > 0 ? (
-                                                <select
-                                                    className="form-input"
-                                                    data-field="model-id"
-                                                    style={{ flex: 1 }}
-                                                    value={(config as any)[activeTool].models[activeTab].model_id}
-                                                    onChange={(e) => handleModelIdChange(e.target.value)}
-                                                >
-                                                    {!(config as any)[activeTool].models[activeTab].model_id && (
-                                                        <option value="">{lang === 'zh-Hans' || lang === 'zh' ? '请选择模型' : 'Select a model'}</option>
-                                                    )}
-                                                    {(config as any)[activeTool].models[activeTab].model_id && !fetchedModelList.some(m => m.id === (config as any)[activeTool].models[activeTab].model_id) && (
-                                                        <option value={(config as any)[activeTool].models[activeTab].model_id}>{(config as any)[activeTool].models[activeTab].model_id}</option>
-                                                    )}
-                                                    {fetchedModelList.map((m, i) => (
-                                                        <option key={`${m.id}-${i}`} value={m.id}>
-                                                            {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
+                                    <div className="provider-config-model-select-shell">
+                                        <div className="provider-config-model-select-row">
+                                            {(() => {
+                                                const currentModel = (config as any)[activeTool].models[activeTab];
+                                                const modelOptions = fetchedModelList.length > 0
+                                                    ? fetchedModelList
+                                                    : getKnownModelOptions(activeTool, currentModel.model_name);
+                                                return (
+                                                    <select
+                                                        className="form-input provider-config-model-select"
+                                                        data-field="model-id"
+                                                        value={currentModel.model_id || ''}
+                                                        onChange={(e) => handleModelIdChange(e.target.value)}
+                                                        disabled={fetchingModelList || modelOptions.length === 0}
+                                                    >
+                                                        <option value="">
+                                                            {fetchingModelList
+                                                                ? "Loading..."
+                                                                : modelOptions.length === 0
+                                                                    ? 'Click Models to fetch first'
+                                                                    : "Select a model"}
                                                         </option>
-                                                    ))}
-                                                </select>
-                                            ) : (
-                                                <input
-                                                    type="text"
-                                                    className="form-input"
-                                                    data-field="model-id"
-                                                    style={{ flex: 1 }}
-                                                    value={(config as any)[activeTool].models[activeTab].model_id}
-                                                    onChange={(e) => handleModelIdChange(e.target.value)}
-                                                    placeholder={fetchingModelList ? (lang === 'zh-Hans' || lang === 'zh' ? '加载中...' : 'Loading...') : (activeTool === 'codebuddy' ? "e.g. gpt-4,gpt-3.5-turbo" : (getDefaultModelId(activeTool, (config as any)[activeTool].models[activeTab].model_name) || "e.g. gpt-4"))}
-                                                    spellCheck={false}
-                                                    autoComplete="off"
-                                                />
-                                            )}
+                                                        {currentModel.model_id && !modelOptions.some(m => m.id === currentModel.model_id) && (
+                                                            <option value={currentModel.model_id}>
+                                                                {'Current: '}{currentModel.model_id}
+                                                            </option>
+                                                        )}
+                                                        {modelOptions.map((m, i) => (
+                                                            <option key={`${m.id}-${i}`} value={m.id}>
+                                                                {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                );
+                                            })()}
                                             <button
-                                                className="btn-link"
+                                                className="btn-link provider-config-fetch-button"
                                                 disabled={fetchingModelList}
+                                                data-loading={fetchingModelList ? 'true' : 'false'}
                                                 onClick={async () => {
                                                     const currentModel = (config as any)[activeTool]?.models?.[activeTab];
                                                     if (!currentModel) return;
                                                     const url = currentModel.model_url;
                                                     const key = currentModel.api_key;
                                                     if (!url || !key) {
-                                                        setStatus(lang === 'zh-Hans' || lang === 'zh' ? '请先填写 API 地址和 API Key' : 'Please fill in API URL and API Key first');
+                                                        setStatus("Please fill in API URL and API Key first");
                                                         return;
                                                     }
                                                     const protocol = activeTool === 'claude' ? 'anthropic' : 'openai';
@@ -3622,7 +3464,7 @@ ${instruction}`;
                                                         if (models && models.length > 0) {
                                                             setFetchedModelList(models.map((m: any) => ({ id: m.id || '', name: m.name || '' })));
                                                         } else {
-                                                            setStatus(lang === 'zh-Hans' || lang === 'zh' ? '服务商返回了空的模型列表' : 'Provider returned empty model list');
+                                                            setStatus("Provider returned empty model list");
                                                         }
                                                     } catch (e) {
                                                         setStatus(String(e));
@@ -3630,12 +3472,11 @@ ${instruction}`;
                                                         setFetchingModelList(false);
                                                     }
                                                 }}
-                                                title={lang === 'zh-Hans' || lang === 'zh' ? '从服务商获取可用模型列表' : 'Fetch available models from provider'}
-                                                style={{ padding: '6px 10px', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0, opacity: fetchingModelList ? 0.6 : 1, cursor: fetchingModelList ? 'wait' : 'pointer' }}
+                                                title="Fetch available models from provider"
                                             >
                                                 {fetchingModelList
-                                                    ? (lang === 'zh-Hans' || lang === 'zh' ? '加载中...' : 'Loading...')
-                                                    : (lang === 'zh-Hans' || lang === 'zh' ? '模型列表' : 'Models')}
+                                                    ? "Loading..."
+                                                    : "Models"}
                                             </button>
                                         </div>
                                     </div>
@@ -3643,7 +3484,7 @@ ${instruction}`;
                             )}
 
                             {activeTool === "codex" && (
-                                <div className="form-group" style={{ flex: 0, minWidth: '140px' }}>
+                                <div className="form-group provider-config-form-group--wire">
                                     <label className="form-label">Wire API</label>
                     <input
                         type="text"
@@ -3662,12 +3503,11 @@ ${instruction}`;
                             <>
 
                                 <div className="form-group">
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                                        <label className="form-label" style={{ margin: 0 }}>{t("apiKey")}</label>
+                                    <div className="provider-config-field-head">
+                                        <label className="form-label provider-config-field-label">{t("apiKey")}</label>
                                         {!(config as any)[activeTool].models[activeTab].is_custom && (
                                                 <button
-                                                    className="btn-link"
-                                                    style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                                                    className="btn-link provider-config-link-small"
                                                     onClick={() => handleOpenSubscribe((config as any)[activeTool].models[activeTab].model_name)}
                                                 >
                                                     {t("getKey")}
@@ -3688,12 +3528,11 @@ ${instruction}`;
                                 </div>
 
                                 <div className="form-group">
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                                            <label className="form-label" style={{ margin: 0 }}>{t("apiEndpoint")}</label>
+                                        <div className="provider-config-field-head">
+                                            <label className="form-label provider-config-field-label">{t("apiEndpoint")}</label>
                                             {(config as any)[activeTool].models[activeTab].is_custom && (
                                                 <button
-                                                    className="btn-link"
-                                                    style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                                                    className="btn-link provider-config-link-small"
                                                     onClick={() => {
                                                         setProviderFilter('all');
                                                         setSelectedProviderForUrl(null);
@@ -3714,18 +3553,17 @@ ${instruction}`;
                                             spellCheck={false}
                                             autoComplete="off"
                                             readOnly={!(config as any)[activeTool].models[activeTab].is_custom}
-                                            style={!(config as any)[activeTool].models[activeTab].is_custom ? { backgroundColor: '#f3f4f6', cursor: 'not-allowed', color: '#9ca3af' } : {}}
+                                            data-readonly={!(config as any)[activeTool].models[activeTab].is_custom ? 'true' : 'false'}
                                         />
                                     </div>
                             </>
                         )}
 
-                        <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
-                            <button className="btn-primary" style={{ flex: 1 }} onClick={save}>{t("saveChanges")}</button>
+                        <div className="provider-config-actions">
+                            <button className="btn-primary provider-config-action-primary" onClick={save}>{t("saveChanges")}</button>
                             {(config as any)[activeTool].models[activeTab].is_custom && (
                                 <button
-                                    className="btn-hide"
-                                    style={{ flex: 0.5, backgroundColor: '#fca5a5', color: '#991b1b', border: '1px solid #fca5a5' }}
+                                    className="btn-hide provider-config-action-danger"
                                     onClick={() => {
                                         const allModels = (config as any)[activeTool].models;
                                         const customModels = allModels.filter((m: any) => m.is_custom);
@@ -3757,8 +3595,7 @@ ${instruction}`;
                                 const canAddMore = customModels.length < 6;
                                 return canAddMore && (
                                     <button
-                                        className="btn-hide"
-                                        style={{ flex: 0.5, backgroundColor: '#93c5fd', color: '#4338ca', border: '1px solid #93c5fd' }}
+                                        className="btn-hide provider-config-action-info"
                                         onClick={() => {
                                             const customCount = customModels.length;
                                             if (customCount >= 6) {
@@ -3792,7 +3629,7 @@ ${instruction}`;
                                     </button>
                                 );
                             })()}
-                            <button className="btn-hide" style={{ flex: 1 }} onClick={() => setShowModelSettings(false)}>{t("close")}</button>
+                            <button className="btn-hide provider-config-action-secondary" onClick={() => setShowModelSettings(false)}>{t("close")}</button>
                         </div>
                     </div>
                 </div>
@@ -3866,19 +3703,19 @@ ${instruction}`;
 
             {sensitivePermissionRequest && (
                 <div className="modal-overlay" data-testid="sensitive-permission-dialog">
-                    <div className="modal-content" style={{ width: '460px', textAlign: 'left' }}>
+                    <div className="modal-content sensitive-permission-modal">
                         <h3>{localizeText('Sensitive Information Request', '\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u786e\u8ba4', '\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u78ba\u8a8d')}</h3>
-                        <p style={{ color: 'var(--theme-text-muted)', lineHeight: 1.6 }}>
+                        <p className="sensitive-permission-modal__copy">
                             {localizeText('A digital employee is requesting permission to answer a password or sensitive information query.', '\u6570\u5b57\u5458\u5de5\u6b63\u5728\u8bf7\u6c42\u8bb8\u53ef\uff0c\u4ee5\u56de\u590d\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u3002', '\u6578\u5b57\u54e1\u5de5\u6b63\u5728\u8acb\u6c42\u8a31\u53ef\uff0c\u4ee5\u56de\u8986\u5bc6\u78bc\u6216\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u3002')}
                         </p>
-                        <div style={{ marginTop: '12px', padding: '10px', border: '1px solid var(--theme-border)', borderRadius: '8px', background: 'var(--theme-surface-subtle)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        <div className="sensitive-permission-modal__query">
                             {sensitivePermissionRequest.query}
                         </div>
-                        <p style={{ color: 'var(--theme-text-muted)', fontSize: '12px', marginTop: '10px' }}>
+                        <p className="sensitive-permission-modal__note">
                             {localizeText('No response within 1 minute will be treated as denied.', '1 \u5206\u949f\u5185\u672a\u54cd\u5e94\u5c06\u9ed8\u8ba4\u62d2\u7edd\u3002', '1 \u5206\u9418\u5167\u672a\u56de\u61c9\u5c07\u9810\u8a2d\u62d2\u7d55\u3002')}
                             {sensitivePermissionQueue.length > 0 ? ' ' + localizeText('{count} pending request(s).', '\u8fd8\u6709 {count} \u4e2a\u5f85\u786e\u8ba4\u8bf7\u6c42\u3002', '\u9084\u6709 {count} \u500b\u5f85\u78ba\u8a8d\u8acb\u6c42\u3002').replace('{count}', String(sensitivePermissionQueue.length)) : ''}
                         </p>
-                        <div className="modal-actions" style={{ justifyContent: 'flex-end' }}>
+                        <div className="modal-actions sensitive-permission-modal__actions">
                             <button className="btn-secondary" onClick={() => respondSensitivePermission('deny')}>{localizeText('Deny', '\u62d2\u7edd', '\u62d2\u7d55')}</button>
                             <button className="btn-primary" onClick={() => respondSensitivePermission('allow')}>{localizeText('Allow', '\u5141\u8bb8', '\u5141\u8a31')}</button>
                         </div>

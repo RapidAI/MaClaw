@@ -51,11 +51,12 @@ export const ToolConfiguration = ({
     return (
         <div style={{
             backgroundColor: 'var(--theme-surface)',
-            padding: '9px 12px',
-            borderRadius: '12px',
+            padding: '12px 14px',
+            borderRadius: '14px',
             border: '1px solid var(--theme-border)',
             marginBottom: '10px',
-            color: 'var(--theme-text-primary)'
+            color: 'var(--theme-text-primary)',
+            boxShadow: '0 10px 26px rgba(15, 23, 42, 0.06)'
         }}>
             <div className="model-switcher" style={{
                 display: 'grid',
@@ -75,9 +76,10 @@ export const ToolConfiguration = ({
                             onClick={() => handleModelSwitch(model.model_name)}
                             style={{
                                 width: '100%',
-                                padding: '5px 4px',
-                                fontSize: '1.125rem',
-                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--theme-border)',
+                                padding: '8px 8px',
+                                minHeight: 44,
+                                fontSize: '0.86rem',
+                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '2px solid var(--primary-color)' : '1px solid var(--theme-border)',
                                 position: 'relative',
                                 overflow: 'visible',
                                 color: 'var(--theme-text-primary)'

@@ -124,6 +124,10 @@ func (a *App) ListVirtualEmployees() ([]VirtualEmployeeEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg, cfgErr := a.LoadConfig()
+	if cfgErr != nil {
+		return nil, fmt.Errorf("load config: %w", cfgErr)
+	}
 
 	data, err := a.getHubJSON(hubURL, token, "/api/ve/discoverable")
 	if err != nil {
@@ -137,7 +141,7 @@ func (a *App) ListVirtualEmployees() ([]VirtualEmployeeEntry, error) {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("decode digital employee list: %w", err)
 	}
-	return resp.Employees, nil
+	return filterOwnVirtualEmployees(resp.Employees, groupDiscussionAgentID(cfg)), nil
 }
 
 // InitiateVEConversation starts or resumes a conversation with a digital employee.
@@ -155,11 +159,11 @@ func (a *App) InitiateVEConversation(veID string) (*VESessionInfo, error) {
 	}
 
 	// Try to find an existing active session with this VE first.
-	if info := a.findActiveVESession(hubURL, token, veID); info != nil {
+	if info := a.findActiveVESession(veID); info != nil {
 		return info, nil
 	}
 
-	// No active session found — create a new one.
+	// No active session found; create a new one.
 	data, err := a.postHubJSON(hubURL, token, "/api/ve/"+veID+"/initiate", nil)
 	if err != nil {
 		return nil, err
@@ -199,17 +203,12 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 		return a.InitiateVEConversation(normalized[0])
 	}
 
-	hubURL, token, err := a.getHubCredentials()
-	if err != nil {
-		return nil, err
-	}
-
 	// Try to find an existing active group session with this participant set.
-	if info := a.findActiveGroupSession(hubURL, token, normalized); info != nil {
+	if info := a.findActiveGroupSession(normalized); info != nil {
 		return info, nil
 	}
 
-	// No active session — create via group consultation.
+	// No active session; create via group consultation.
 	cfg, cfgErr := a.LoadConfig()
 	if cfgErr != nil {
 		return nil, fmt.Errorf("load config: %w", cfgErr)
@@ -221,16 +220,27 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 		Question:  "Group conversation",
 		CreatedAt: time.Now(),
 	}
-	resp, err := a.GroupDiscussionCreateConsultation(req)
+	client, _, err := a.veA2AHubClient()
+	if err != nil {
+		return nil, fmt.Errorf("create group session: %w", err)
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	resp, err := client.CreateConsultation(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("create group session: %w", err)
 	}
 
 	sessionID := resp.Discussion.ID
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("create group session: missing session id")
+	}
 
 	// Invite all VEs to the group.
 	for _, veID := range normalized {
-		_ = a.AddVEToGroup(sessionID, veID)
+		if err := a.AddVEToGroup(sessionID, veID); err != nil {
+			return nil, fmt.Errorf("invite digital employee %q: %w", veID, err)
+		}
 	}
 
 	// Cache the group session.
@@ -283,7 +293,7 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 		if a.tryLocalExecutorDispatch(sessionID, msg) {
 			return nil
 		}
-		return a.GroupDiscussionSendMessage(sessionID, msg)
+		return a.sendVEA2AMessage(sessionID, msg)
 	}
 
 	if targets.Local {
@@ -300,7 +310,7 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 
 	if len(targets.RemoteToIDs) > 0 {
 		msg.ToIDs = targets.RemoteToIDs
-		return a.GroupDiscussionSendMessage(sessionID, msg)
+		return a.sendVEA2AMessage(sessionID, msg)
 	}
 
 	return fmt.Errorf("no valid mention target found")
@@ -402,7 +412,7 @@ func isASCIIGroupMentionContinuation(ch byte) bool {
 
 func (a *App) groupDiscussionParticipantIDs(sessionID, localID string) map[string]string {
 	ids := map[string]string{}
-	client, cfg, err := a.groupDiscussionClient()
+	client, cfg, err := a.veA2AHubClient()
 	if err != nil {
 		return ids
 	}
@@ -510,9 +520,31 @@ func (a *App) syncLocalDispatchInputToHub(sessionID string, msg a2a.GroupDiscuss
 	if !ok {
 		return
 	}
-	if err := a.GroupDiscussionSendMessage(sessionID, msg); err != nil {
+	if err := a.sendVEA2AMessage(sessionID, msg); err != nil {
 		log.Printf("[ve-group] failed to sync local dispatch input for session %s: %v", sessionID, err)
 	}
+}
+
+func (a *App) sendVEA2AMessage(sessionID string, msg a2a.GroupDiscussionMessage) error {
+	client, cfg, err := a.veA2AHubClient()
+	if err != nil {
+		return err
+	}
+	if msg.FromID == "" {
+		msg.FromID = groupDiscussionAgentID(cfg)
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := client.SendDiscussionMessage(ctx, sessionID, msg); err != nil {
+		return err
+	}
+	if detail, err := client.GetConsultationDetailForAgent(ctx, sessionID, groupDiscussionAgentID(cfg)); err == nil {
+		if store, storeErr := a.openGroupDiscussionHistoryStore(); storeErr == nil {
+			_ = store.CacheDetail(ctx, detail, a.groupDiscussionAttachmentRoot)
+			_ = store.Close()
+		}
+	}
+	return nil
 }
 
 // tryLocalExecutorDispatch checks if local AI is enabled for this session
@@ -553,13 +585,13 @@ func (a *App) CloseVESession(sessionID string) error {
 		return true
 	})
 
-	// Cancel the A2A session via Hub
-	hubURL, token, err := a.getHubCredentials()
+	client, _, err := a.veA2AHubClient()
 	if err != nil {
 		return err
 	}
-	_, err = a.postHubJSON(hubURL, token, "/api/a2a/consultations/"+sessionID+"/cancel", nil)
-	return err
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	return client.SetConsultationState(ctx, sessionID, "cancel")
 }
 
 // AddVEToGroup adds a digital employee to an existing group chat.
@@ -578,17 +610,18 @@ func (a *App) AddVEToGroup(sessionID, veID string) error {
 		return err
 	}
 
-	cfg, cfgErr := a.LoadConfig()
-	if cfgErr != nil {
-		return fmt.Errorf("load config: %w", cfgErr)
+	client, cfg, err := a.veA2AHubClient()
+	if err != nil {
+		return err
 	}
 	inviteeID := a.resolveVEInviteMachineID(hubURL, token, veID)
-	body := map[string]any{
-		"from_id": strings.TrimSpace(groupDiscussionAgentID(cfg)),
-		"to_id":   inviteeID,
-		"role":    "speak",
-	}
-	_, err = a.postHubJSON(hubURL, token, "/api/a2a/consultations/"+sessionID+"/invites", body)
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	_, err = client.SendInvitation(ctx, sessionID, a2a.GroupInvitation{
+		FromID: strings.TrimSpace(groupDiscussionAgentID(cfg)),
+		ToID:   inviteeID,
+		Role:   a2a.GroupRoleSpeak,
+	})
 	return err
 }
 
@@ -603,13 +636,9 @@ func (a *App) RegisterLocalExecutorInGroup(sessionID string) (*LocalGroupExecuto
 
 	// Register with Hub first so local responses can be synced back into
 	// discussion history, then register the in-process dispatcher.
-	hubURL, token, err := a.getHubCredentials()
+	client, cfg, err := a.veA2AHubClient()
 	if err != nil {
 		return nil, err
-	}
-	cfg, cfgErr := a.LoadConfig()
-	if cfgErr != nil {
-		return nil, fmt.Errorf("load config: %w", cfgErr)
 	}
 	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
 	if localID == "" {
@@ -621,33 +650,21 @@ func (a *App) RegisterLocalExecutorInGroup(sessionID string) (*LocalGroupExecuto
 		return localGroupExecutorRegistration(sessionID, localID), nil
 	}
 
-	body := map[string]any{
-		"from_id": localID,
-		"to_id":   localID,
-		"role":    string(a2a.GroupRoleSpeak),
-	}
-	data, err := a.postHubJSON(hubURL, token, "/api/a2a/consultations/"+sessionID+"/invites", body)
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	inviteID, err := client.SendInvitation(ctx, sessionID, a2a.GroupInvitation{
+		FromID: localID,
+		ToID:   localID,
+		Role:   a2a.GroupRoleSpeak,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("register local AI with Hub: %w", err)
 	}
-	var inviteResp struct {
-		InviteID string `json:"invite_id"`
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return nil, fmt.Errorf("register local AI with Hub: missing invite id")
-	}
-	if err := json.Unmarshal(data, &inviteResp); err != nil {
-		return nil, fmt.Errorf("parse local AI invite response: %w", err)
-	}
-	inviteID := strings.TrimSpace(inviteResp.InviteID)
+	inviteID = strings.TrimSpace(inviteID)
 	if inviteID == "" {
 		return nil, fmt.Errorf("register local AI with Hub: missing invite id")
 	}
-	acceptBody := map[string]any{
-		"from_id": localID,
-		"reason":  "local AI ready",
-	}
-	if _, err := a.postHubJSON(hubURL, token, "/api/a2a/invites/"+inviteID+"/accept", acceptBody); err != nil {
+	if err := client.AcceptInvite(ctx, inviteID, a2a.GroupInvitationResponse{FromID: localID, Reason: "local AI ready"}); err != nil {
 		return nil, fmt.Errorf("accept local AI invite: %w", err)
 	}
 
@@ -714,13 +731,43 @@ func (a *App) loadDiscoverableVEEntries(hubURL, token string) ([]VirtualEmployee
 	if err != nil {
 		return nil, err
 	}
+	cfg, cfgErr := a.LoadConfig()
+	if cfgErr != nil {
+		return nil, cfgErr
+	}
 	var resp struct {
 		Employees []VirtualEmployeeEntry `json:"employees"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}
-	return resp.Employees, nil
+	return filterOwnVirtualEmployees(resp.Employees, groupDiscussionAgentID(cfg)), nil
+}
+
+func filterOwnVirtualEmployees(employees []VirtualEmployeeEntry, localMachineID string) []VirtualEmployeeEntry {
+	localMachineID = strings.TrimSpace(localMachineID)
+	if localMachineID == "" || len(employees) == 0 {
+		return employees
+	}
+	localVEID := virtualEmployeeIDForMachine(localMachineID)
+	filtered := employees[:0]
+	for _, employee := range employees {
+		id := strings.TrimSpace(employee.ID)
+		machineID := strings.TrimSpace(employee.MachineID)
+		if strings.EqualFold(machineID, localMachineID) || strings.EqualFold(id, localMachineID) || strings.EqualFold(id, localVEID) {
+			continue
+		}
+		filtered = append(filtered, employee)
+	}
+	return filtered
+}
+
+func virtualEmployeeIDForMachine(machineID string) string {
+	cleaned := strings.NewReplacer("/", "_", "\\", "_", " ", "_").Replace(strings.TrimSpace(machineID))
+	if cleaned == "" {
+		return ""
+	}
+	return "ve_" + cleaned
 }
 
 func resolveVEInviteMachineID(employees []VirtualEmployeeEntry, value string) string {
@@ -993,7 +1040,7 @@ func (a *App) ArchiveGroupSession(veIDs []string) {
 
 // findActiveVESession checks the local cache and validates the session is still
 // active on the Hub. Returns nil if no active session exists.
-func (a *App) findActiveVESession(hubURL, token, veID string) *VESessionInfo {
+func (a *App) findActiveVESession(veID string) *VESessionInfo {
 	veID = strings.TrimSpace(veID)
 	val, ok := a.veSessionCache.Load(veID)
 	if !ok {
@@ -1005,7 +1052,7 @@ func (a *App) findActiveVESession(hubURL, token, veID string) *VESessionInfo {
 	}
 
 	// Validate the session is still active on the Hub.
-	if !a.isSessionActive(hubURL, token, sessionID) {
+	if !a.isSessionActive(sessionID) {
 		a.veSessionCache.Delete(veID)
 		return nil
 	}
@@ -1017,7 +1064,7 @@ func (a *App) findActiveVESession(hubURL, token, veID string) *VESessionInfo {
 }
 
 // findActiveGroupSession checks the local cache for a group session.
-func (a *App) findActiveGroupSession(hubURL, token string, veIDs []string) *VESessionInfo {
+func (a *App) findActiveGroupSession(veIDs []string) *VESessionInfo {
 	key := veGroupKey(veIDs)
 	val, ok := a.groupSessionCache.Load(key)
 	if !ok {
@@ -1028,7 +1075,7 @@ func (a *App) findActiveGroupSession(hubURL, token string, veIDs []string) *VESe
 		return nil
 	}
 
-	if !a.isSessionActive(hubURL, token, sessionID) {
+	if !a.isSessionActive(sessionID) {
 		a.groupSessionCache.Delete(key)
 		return nil
 	}
@@ -1041,12 +1088,18 @@ func (a *App) findActiveGroupSession(hubURL, token string, veIDs []string) *VESe
 }
 
 // isSessionActive checks if a session is still active (not archived/cancelled) on the Hub.
-func (a *App) isSessionActive(hubURL, token, sessionID string) bool {
-	data, err := a.getHubJSON(hubURL, token, "/api/a2a/consultations/"+sessionID)
+func (a *App) isSessionActive(sessionID string) bool {
+	client, _, err := a.veA2AHubClient()
 	if err != nil {
 		return false
 	}
-	return isVEConsultationActiveJSON(data)
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	discussion, err := client.GetConsultation(ctx, sessionID)
+	if err != nil {
+		return false
+	}
+	return normalizeGroupDiscussionSessionStatus(discussion.Status).IsOpen()
 }
 
 func isVEConsultationActiveJSON(data []byte) bool {

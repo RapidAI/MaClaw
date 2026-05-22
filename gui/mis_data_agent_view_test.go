@@ -196,6 +196,17 @@ func TestHandleAgentViewControlMessageAcceptsNonMISSubmit(t *testing.T) {
 	}
 }
 
+func TestHandleAgentViewControlMessageRejectsInvalidDismissJSON(t *testing.T) {
+	app := &App{}
+	resp, handled, err := app.handleAgentViewControlMessage(`__agent_view_dismiss__ {`)
+	if err != nil {
+		t.Fatalf("handleAgentViewControlMessage: %v", err)
+	}
+	if !handled || resp == nil || resp.ResponseSource != "agent_view_dismiss" || resp.Error == "" {
+		t.Fatalf("expected localized dismiss parse error, handled=%v resp=%#v", handled, resp)
+	}
+}
+
 func TestBuildMISIntentAgentViewOffersResumeForMatchingTransaction(t *testing.T) {
 	resetMISTransactionStoreForAgentViewTest(t)
 

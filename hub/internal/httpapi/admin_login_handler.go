@@ -69,6 +69,9 @@ func requestedTenantLoginAllowed(ctx context.Context, tenantID string, tenantRep
 	if tenantID == "" || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
 		return true
 	}
+	if isReservedTenantID(tenantID) {
+		return false
+	}
 	return tenantLoginScopeActive(ctx, tenantID, tenantRepos...)
 }
 
@@ -80,7 +83,7 @@ func adminTenantLoginAllowed(ctx context.Context, admin *store.AdminUser, tenant
 		return true
 	}
 	tenantID := strings.TrimSpace(admin.TenantID)
-	if tenantID == "" {
+	if tenantID == "" || isReservedTenantID(tenantID) {
 		return false
 	}
 	return tenantLoginScopeActive(ctx, tenantID, tenantRepos...)
@@ -110,7 +113,7 @@ func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if req.CurrentPassword == "" || req.NewPassword == "" {
+		if strings.TrimSpace(req.CurrentPassword) == "" || strings.TrimSpace(req.NewPassword) == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Current password and new password are required")
 			return
 		}
@@ -119,6 +122,10 @@ func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
 		if err != nil {
 			if err == auth.ErrInvalidAdminPassword {
 				writeError(w, http.StatusUnauthorized, "INVALID_PASSWORD", "Current password is incorrect")
+				return
+			}
+			if isAdminValidationError(err) {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "CHANGE_PASSWORD_FAILED", err.Error())
@@ -153,6 +160,10 @@ func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
 
 		token, updatedAdmin, err := admins.UpdateEmailScoped(r.Context(), admin.Username, req.Email, admin.Scope, admin.TenantID)
 		if err != nil {
+			if isAdminValidationError(err) {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "UPDATE_PROFILE_FAILED", err.Error())
 			return
 		}
@@ -163,4 +174,12 @@ func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
 			"admin":        adminDTO(updatedAdmin),
 		})
 	}
+}
+
+func isAdminValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "required") || strings.Contains(msg, "valid admin email")
 }

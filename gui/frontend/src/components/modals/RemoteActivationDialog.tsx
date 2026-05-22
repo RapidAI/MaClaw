@@ -31,16 +31,16 @@ export const RemoteActivationDialog = ({
     onClose,
 }: RemoteActivationDialogProps) => (
     <div className="modal-overlay" onClick={onClose}>
-        <div className="modal-content" style={{ width: '640px', maxWidth: '94vw', maxHeight: '82vh', textAlign: 'left', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-content remote-activation-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
                 <h3>{t("remoteActivationDialogTitle")}</h3>
                 <button className="btn-close" onClick={onClose}>&times;</button>
             </div>
-            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', paddingBottom: '10px' }}>
-                <div style={{ fontSize: '0.82rem', color: '#64748b', lineHeight: 1.5 }}>
+            <div className="modal-body remote-activation-modal__body elegant-scrollbar">
+                <div className="remote-activation-modal__desc">
                     {t("remoteActivationDialogDesc")}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '10px' }}>
+                <div className="remote-activation-modal__grid">
                     <div>
                         <label className="form-label">{t("remoteHubCenterUrl")}</label>
                         <input
@@ -62,15 +62,14 @@ export const RemoteActivationDialog = ({
                         />
                     </div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '10px', alignItems: 'end' }}>
+                <div className="remote-activation-modal__grid remote-activation-modal__grid--end">
                     <div>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '6px' }}>
-                            <label className="form-label" style={{ marginBottom: 0 }}>{t("remoteSelectRegisteredHub")}</label>
+                        <div className="remote-activation-modal__field-head">
+                            <label className="form-label remote-activation-modal__field-label">{t("remoteSelectRegisteredHub")}</label>
                             <button
-                                className="btn-secondary"
+                                className="btn-secondary remote-activation-modal__load-button"
                                 onClick={onLoadRemoteHubs}
                                 disabled={loadingRemoteCenterHubs}
-                                style={{ minWidth: '112px', height: '30px', padding: '4px 10px', fontSize: '0.78rem', flexShrink: 0 }}
                             >
                                 {loadingRemoteCenterHubs ? t("remoteLoadingRegisteredHubs") : t("remoteLoadRegisteredHubs")}
                             </button>
@@ -101,11 +100,11 @@ export const RemoteActivationDialog = ({
                         />
                     </div>
                 </div>
-                <div style={{ fontSize: '0.79rem', color: '#64748b', lineHeight: 1.5 }}>
+                <div className="remote-activation-modal__hint">
                     {t("remoteHubManualOrSelect")}
                 </div>
             </div>
-            <div className="modal-footer" style={{ marginTop: '0', flexShrink: 0 }}>
+            <div className="modal-footer remote-activation-modal__footer">
                 <button className="btn-secondary" onClick={onClose}>{t("cancel")}</button>
                 <button className="btn-primary" onClick={onActivate} disabled={remoteBusy === 'activate'}>
                     {remoteBusy === 'activate' ? t("remoteActivating") : t("remoteActivateAndLaunch")}

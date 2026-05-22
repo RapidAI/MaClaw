@@ -1,10 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import {
-    GetMISDataConfig,
-    SaveMISDataConfig,
-    TestMISDataConnection,
-} from '../../../wailsjs/go/main/App';
-import { colors, radius } from '../remote/styles';
+﻿import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { GetMISDataConfig, SaveMISDataConfig, TestMISDataConnection } from '../../../wailsjs/go/main/App';
 
 type Props = {
     lang: string;
@@ -80,113 +76,93 @@ export function MISDataSettingsPanel({ lang }: Props) {
 
     const save = () => run('save', async () => {
         await SaveMISDataConfig(config as any);
-        setMessage(t('Saved', '已保存', '已儲存'));
+        setMessage(t('Saved', '\u5df2\u4fdd\u5b58', '\u5df2\u5132\u5b58'));
     });
 
     const test = () => run('test', async () => {
         const result = await TestMISDataConnection(config as any) as ConnectionStatus;
         setStatus(result || null);
         if (result?.ok && result?.auth_ok) {
-            setMessage(t('Connection verified', '连接已验证', '連線已驗證'));
+            setMessage(t('Connection verified', '\u8fde\u63a5\u5df2\u9a8c\u8bc1', '\u9023\u7dda\u5df2\u9a57\u8b49'));
         }
     });
 
     const canAct = !busy;
 
     return (
-        <div style={{ display: 'grid', gap: 12 }}>
-            <div style={headerStyle}>
+        <div className="mis-data-settings-panel">
+            <div className="mis-data-settings-header">
                 <div>
-                    <h2 style={titleStyle}>MIS数据</h2>
-                    <p style={subtleStyle}>{t('Configure MaClawDataSrv for enterprise sales, HR, and finance data.', '配置 MaClawDataSrv，用于公司销售、人力、财务等结构化数据。', '配置 MaClawDataSrv，用於公司銷售、人力、財務等結構化資料。')}</p>
+                    <h2>{t('MIS Data', 'MIS \u6570\u636e', 'MIS \u8cc7\u6599')}</h2>
+                    <p>{t('Configure MaClawDataSrv for enterprise sales, HR, and finance data.', '\u914d\u7f6e MaClawDataSrv\uff0c\u7528\u4e8e\u516c\u53f8\u9500\u552e\u3001\u4eba\u529b\u3001\u8d22\u52a1\u7b49\u7ed3\u6784\u5316\u6570\u636e\u3002', '\u914d\u7f6e MaClawDataSrv\uff0c\u7528\u65bc\u516c\u53f8\u92b7\u552e\u3001\u4eba\u529b\u3001\u8ca1\u52d9\u7b49\u7d50\u69cb\u5316\u8cc7\u6599\u3002')}</p>
                 </div>
-                <span style={badgeStyle(config.enabled ? 'on' : 'off')}>{config.enabled ? t('Enabled', '已启用', '已啟用') : t('Disabled', '未启用', '未啟用')}</span>
+                <span className="mis-data-settings-badge" data-enabled={config.enabled ? 'true' : 'false'}>
+                    {config.enabled ? t('Enabled', '\u5df2\u542f\u7528', '\u5df2\u555f\u7528') : t('Disabled', '\u672a\u542f\u7528', '\u672a\u555f\u7528')}
+                </span>
             </div>
 
-            {error && <div role="alert" style={errorStyle}>{error}</div>}
-            {message && <div role="status" style={successStyle}>{message}</div>}
+            {error && <div role="alert" className="mis-data-settings-alert mis-data-settings-alert--error">{error}</div>}
+            {message && <div role="status" className="mis-data-settings-alert mis-data-settings-alert--success">{message}</div>}
 
-            <section style={cardStyle}>
-                <div style={sectionTitleStyle}>{t('Service Connection', '服务连接', '服務連線')}</div>
-                <label style={checkRowStyle}>
-                    <input type="checkbox" checked={!!config.enabled} onChange={e => update({ enabled: e.target.checked })} />
-                    <span>{t('Enable MIS data tools for MaClaw agents', '启用 MaClaw agent 的 MIS 数据工具', '啟用 MaClaw agent 的 MIS 資料工具')}</span>
+            <section className="mis-data-settings-card">
+                <div className="mis-data-settings-card-title">{t('Service Connection', '\u670d\u52a1\u8fde\u63a5', '\u670d\u52d9\u9023\u7dda')}</div>
+                <label className="mis-data-settings-toggle">
+                    <input type="checkbox" aria-label={t('Enable MIS data tools for MaClaw agents', '\u542f\u7528 MaClaw agent \u7684 MIS \u6570\u636e\u5de5\u5177', '\u555f\u7528 MaClaw agent \u7684 MIS \u8cc7\u6599\u5de5\u5177')} checked={!!config.enabled} onChange={e => update({ enabled: e.target.checked })} />
+                    <span>{t('Enable MIS data tools for MaClaw agents', '\u542f\u7528 MaClaw agent \u7684 MIS \u6570\u636e\u5de5\u5177', '\u555f\u7528 MaClaw agent \u7684 MIS \u8cc7\u6599\u5de5\u5177')}</span>
                 </label>
-                <div style={gridStyle}>
-                    <Field label={t('Service URL', '服务地址', '服務位址')}>
-                        <input value={config.endpoint || ''} onChange={e => update({ endpoint: e.target.value })} placeholder="http://127.0.0.1:18180" style={inputStyle} />
+                <div className="mis-data-settings-grid">
+                    <Field label={t('Service URL', '\u670d\u52a1\u5730\u5740', '\u670d\u52d9\u4f4d\u5740')}>
+                        <input value={config.endpoint || ''} onChange={e => update({ endpoint: e.target.value })} placeholder="http://127.0.0.1:18180" />
                     </Field>
                     <Field label="Tenant ID">
-                        <input value={config.tenant_id || ''} onChange={e => update({ tenant_id: e.target.value })} placeholder="default" style={inputStyle} />
+                        <input value={config.tenant_id || ''} onChange={e => update({ tenant_id: e.target.value })} placeholder="default" />
                     </Field>
                     <Field label="User ID">
-                        <input value={config.user_id || ''} onChange={e => update({ user_id: e.target.value })} placeholder="maclaw" style={inputStyle} />
+                        <input value={config.user_id || ''} onChange={e => update({ user_id: e.target.value })} placeholder="maclaw" />
                     </Field>
                     <Field label="Role">
-                        <select value={config.role || 'data_user'} onChange={e => update({ role: e.target.value })} style={inputStyle}>
+                        <select value={config.role || 'data_user'} onChange={e => update({ role: e.target.value })}>
                             <option value="data_user">data_user</option>
                             <option value="data_admin">data_admin</option>
                             <option value="data_auditor">data_auditor</option>
                         </select>
                     </Field>
                     <Field label="Token">
-                        <input value={config.token || ''} onChange={e => update({ token: e.target.value })} type="password" placeholder="mcd_xxx" style={inputStyle} />
+                        <input value={config.token || ''} onChange={e => update({ token: e.target.value })} type="password" placeholder="mcd_xxx" autoComplete="off" />
                     </Field>
                 </div>
-                <div style={actionsStyle}>
-                    <button type="button" onClick={save} disabled={!canAct} style={primaryButtonStyle}>{busy === 'save' ? t('Saving...', '保存中...', '儲存中...') : t('Save', '保存', '儲存')}</button>
-                    <button type="button" onClick={test} disabled={!canAct} style={buttonStyle}>{busy === 'test' ? t('Testing...', '测试中...', '測試中...') : t('Test Connection', '测试连接', '測試連線')}</button>
+                <div className="mis-data-settings-actions">
+                    <button type="button" onClick={save} disabled={!canAct} className="mis-data-settings-primary">{busy === 'save' ? t('Saving...', '\u4fdd\u5b58\u4e2d...', '\u5132\u5b58\u4e2d...') : t('Save', '\u4fdd\u5b58', '\u5132\u5b58')}</button>
+                    <button type="button" onClick={test} disabled={!canAct}>{busy === 'test' ? t('Testing...', '\u6d4b\u8bd5\u4e2d...', '\u6e2c\u8a66\u4e2d...') : t('Test Connection', '\u6d4b\u8bd5\u8fde\u63a5', '\u6e2c\u8a66\u9023\u7dda')}</button>
                 </div>
             </section>
 
-            <section style={cardStyle}>
-                <div style={sectionTitleStyle}>{t('Connection Status', '连接状态', '連線狀態')}</div>
+            <section className="mis-data-settings-card">
+                <div className="mis-data-settings-card-title">{t('Connection Status', '\u8fde\u63a5\u72b6\u6001', '\u9023\u7dda\u72c0\u614b')}</div>
                 {!status ? (
-                    <div style={emptyStyle}>{t('No connection test yet.', '尚未测试连接。', '尚未測試連線。')}</div>
+                    <div className="mis-data-settings-empty">{t('No connection test yet.', '\u5c1a\u672a\u6d4b\u8bd5\u8fde\u63a5\u3002', '\u5c1a\u672a\u6e2c\u8a66\u9023\u7dda\u3002')}</div>
                 ) : (
-                    <div style={statusGridStyle}>
-                        <Metric label={t('Service', '服务', '服務')} value={status.ok ? t('Ready', '就绪', '就緒') : t('Unavailable', '不可用', '不可用')} tone={status.ok ? 'good' : 'bad'} />
-                        <Metric label={t('Auth', '认证', '認證')} value={status.auth_ok ? t('Passed', '通过', '通過') : t('Failed', '失败', '失敗')} tone={status.auth_ok ? 'good' : 'bad'} />
-                        <Metric label={t('Engine', '引擎', '引擎')} value={status.engine || '-'} />
-                        <Metric label={t('Schema', 'Schema', 'Schema')} value={status.schema_version ? String(status.schema_version) : '-'} />
+                    <div className="mis-data-settings-status-grid">
+                        <Metric label={t('Service', '\u670d\u52a1', '\u670d\u52d9')} value={status.ok ? t('Ready', '\u5c31\u7eea', '\u5c31\u7dd2') : t('Unavailable', '\u4e0d\u53ef\u7528', '\u4e0d\u53ef\u7528')} tone={status.ok ? 'good' : 'bad'} />
+                        <Metric label={t('Auth', '\u8ba4\u8bc1', '\u8a8d\u8b49')} value={status.auth_ok ? t('Passed', '\u901a\u8fc7', '\u901a\u904e') : t('Failed', '\u5931\u8d25', '\u5931\u6557')} tone={status.auth_ok ? 'good' : 'bad'} />
+                        <Metric label={t('Engine', '\u5f15\u64ce', '\u5f15\u64ce')} value={status.engine || '-'} />
+                        <Metric label="Schema" value={status.schema_version ? String(status.schema_version) : '-'} />
                     </div>
                 )}
-                {status?.error && <div style={{ ...errorStyle, marginTop: 10 }}>{status.error}</div>}
+                {status?.error && <div className="mis-data-settings-alert mis-data-settings-alert--error">{status.error}</div>}
             </section>
         </div>
     );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-    return <label style={{ display: 'grid', gap: 4 }}><span style={labelStyle}>{label}</span>{children}</label>;
+function Field({ label, children }: { label: string; children: ReactNode }) {
+    return <label className="mis-data-settings-field"><span>{label}</span>{children}</label>;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: 'good' | 'bad' }) {
-    const color = tone === 'good' ? colors.success : tone === 'bad' ? colors.danger : colors.text;
-    return <div style={metricStyle}><div style={metricLabelStyle}>{label}</div><div style={{ ...metricValueStyle, color }}>{value}</div></div>;
+    return <div className="mis-data-settings-metric" data-tone={tone || 'neutral'}><div>{label}</div><strong>{value}</strong></div>;
 }
 
 function makeTranslator(lang: string) {
     return (en: string, zhHans: string, zhHant: string = zhHans) => lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en;
 }
-
-const headerStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: '12px 14px', background: colors.surface };
-const titleStyle: React.CSSProperties = { margin: 0, fontSize: '1rem', color: colors.text };
-const subtleStyle: React.CSSProperties = { margin: '4px 0 0', fontSize: '0.76rem', color: colors.textSecondary, lineHeight: 1.5 };
-const cardStyle: React.CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: 12, background: colors.surface };
-const sectionTitleStyle: React.CSSProperties = { fontSize: '0.82rem', fontWeight: 700, color: colors.text, marginBottom: 10 };
-const gridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 };
-const inputStyle: React.CSSProperties = { width: '100%', boxSizing: 'border-box', border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.bg, color: colors.text, padding: '7px 9px', fontSize: '0.8rem' };
-const labelStyle: React.CSSProperties = { fontSize: '0.72rem', color: colors.textSecondary, fontWeight: 600 };
-const checkRowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: '0.78rem', color: colors.text };
-const actionsStyle: React.CSSProperties = { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12, flexWrap: 'wrap' };
-const buttonStyle: React.CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surfaceMuted, color: colors.text, padding: '6px 12px', fontSize: '0.76rem', fontWeight: 700, cursor: 'pointer' };
-const primaryButtonStyle: React.CSSProperties = { ...buttonStyle, border: `1px solid ${colors.primary}`, background: colors.primaryLight, color: colors.primaryDark };
-const errorStyle: React.CSSProperties = { border: `1px solid ${colors.danger}`, borderRadius: radius.md, background: colors.dangerBg, color: colors.danger, padding: '7px 10px', fontSize: '0.76rem' };
-const successStyle: React.CSSProperties = { border: `1px solid ${colors.success}`, borderRadius: radius.md, background: colors.successBg, color: colors.success, padding: '7px 10px', fontSize: '0.76rem' };
-const emptyStyle: React.CSSProperties = { color: colors.textMuted, fontSize: '0.78rem', padding: '6px 0' };
-const statusGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 };
-const metricStyle: React.CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.bg, padding: '8px 10px' };
-const metricLabelStyle: React.CSSProperties = { fontSize: '0.68rem', color: colors.textMuted, marginBottom: 4 };
-const metricValueStyle: React.CSSProperties = { fontSize: '0.9rem', fontWeight: 700 };
-const badgeStyle = (tone: 'on' | 'off'): React.CSSProperties => ({ border: `1px solid ${tone === 'on' ? colors.success : colors.border}`, borderRadius: radius.pill, background: tone === 'on' ? colors.successBg : colors.surfaceMuted, color: tone === 'on' ? colors.success : colors.textMuted, padding: '3px 10px', fontSize: '0.7rem', fontWeight: 700, whiteSpace: 'nowrap' });

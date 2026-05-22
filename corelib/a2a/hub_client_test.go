@@ -48,6 +48,9 @@ func TestHubClientCreateConsultation(t *testing.T) {
 		if r.URL.Path != "/api/a2a/consultations" || r.Method != http.MethodPost {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
+		if r.Header.Get("X-Tenant-ID") != "" || r.Header.Get("X-Hub-Tenant-ID") != "" {
+			t.Fatalf("A2A client must not send tenant headers: X-Tenant-ID=%q X-Hub-Tenant-ID=%q", r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Hub-Tenant-ID"))
+		}
 		var req GroupConsultationRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode body: %v", err)

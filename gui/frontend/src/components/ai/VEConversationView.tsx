@@ -41,6 +41,7 @@ type QueuedVEMessage = {
     id: string;
     content: string;
     filePaths?: string[];
+    attachmentNames?: string[];
 };
 
 export interface VEConversationState {
@@ -280,6 +281,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
     const [sending, setSending] = useState(false);
     const [pendingAttachments, setPendingAttachments] = useState<PendingVEAttachment[]>([]);
+    const [visibleQueue, setVisibleQueue] = useState<QueuedVEMessage[]>([]);
     // Track VE online status — input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
 
@@ -411,6 +413,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     useEffect(() => {
         if (!readOnly) return;
         queuedMessagesRef.current = [];
+        setVisibleQueue([]);
         sendingRef.current = false;
         awaitingReplyRef.current = false;
         queueDrainRunningRef.current = false;
@@ -592,7 +595,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const clearConversation = useCallback(async () => {
         if (readOnly) return;
         const oldSessionId = sessionIdRef.current;
-        queuedMessagesRef.current = [];
+            queuedMessagesRef.current = [];
+            setVisibleQueue([]);
         if (reconnectTimerRef.current) {
             clearTimeout(reconnectTimerRef.current);
             reconnectTimerRef.current = null;
@@ -799,7 +803,11 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 } else {
                     const mod = await import("../../../wailsjs/go/main/App");
                     if (filePaths && filePaths.length > 0) {
-                        await (mod as any).SendVEMessageWithAttachments(sid, content, filePaths);
+                        if (participants?.length && typeof (mod as any).SendVEGroupMessageWithAttachments === "function") {
+                            await (mod as any).SendVEGroupMessageWithAttachments(sid, content, mentionedParticipantIds(content, participants), filePaths);
+                        } else {
+                            await (mod as any).SendVEMessageWithAttachments(sid, content, filePaths);
+                        }
                     } else if (participants?.length && typeof (mod as any).SendVEGroupMessage === "function") {
                         await (mod as any).SendVEGroupMessage(sid, content, mentionedParticipantIds(content, participants));
                     } else {
@@ -838,6 +846,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         if (queueDrainRunningRef.current || awaitingReplyRef.current || !sessionIdRef.current || queuedMessagesRef.current.length === 0) return;
         const msg = queuedMessagesRef.current.shift();
         if (!msg) return;
+        setVisibleQueue((prev) => prev.filter((item) => item.id !== msg.id));
         queueDrainRunningRef.current = true;
         awaitingReplyRef.current = true;
         const sent = await doSendMessage(msg.content, msg.filePaths, msg.id);
@@ -887,7 +896,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         // assistant turn to finish streaming, queue the backend send but still
         // show the user's message immediately in the thread.
         if (state.connectionState !== "connected" || !state.sessionId || state.streaming || awaitingReplyRef.current) {
-            queuedMessagesRef.current.push({ id: userMsg.id, content, filePaths });
+            const queued = { id: userMsg.id, content, filePaths, attachmentNames: pendingAttachments.map((f) => f.name) };
+            queuedMessagesRef.current.push(queued);
+            setVisibleQueue((prev) => [...prev, queued]);
             setState((prev) => ({
                 ...prev,
                 messages: [...prev.messages, userMsg],
@@ -1119,6 +1130,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 </div>
             )}
 
+            {visibleQueue.length > 0 && (
+                <QueuedMessagePanel queue={visibleQueue} theme={theme} isZh={isZh} />
+            )}
+
             {/* Input Area */}
             <div
                 data-testid="ve-input-area"
@@ -1237,6 +1252,51 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 });
 
 // --- Sub-components ---
+
+interface QueuedMessagePanelProps {
+    queue: QueuedVEMessage[];
+    theme: Theme;
+    isZh: boolean;
+}
+
+function QueuedMessagePanel({ queue, theme, isZh }: QueuedMessagePanelProps) {
+    if (queue.length === 0) return null;
+    return (
+        <div
+            data-testid="ve-queued-message-panel"
+            style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                padding: "6px 12px",
+                borderTop: `1px solid ${theme.divider}`,
+                background: theme.inputBarBg,
+                color: theme.textMuted,
+                fontSize: 11,
+            }}
+        >
+            <div data-testid="ve-queued-message-header" style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: theme.headingColor }}>
+                <span>{isZh ? `${queue.length} 条预输入队列` : `${queue.length} queued`}</span>
+                <span style={{ fontWeight: 400, color: theme.textMuted }}>{isZh ? "回复结束后自动发射" : "Auto-sends after current reply"}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 66, overflowY: "auto" }}>
+                {queue.map((item, index) => (
+                    <div key={item.id} data-testid={`ve-queued-message-${index}`} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                        <span style={{ color: theme.textMuted, flexShrink: 0 }}>#{index + 1}</span>
+                        <span style={{ color: theme.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {item.content || (isZh ? "仅附件" : "Attachments only")}
+                        </span>
+                        {!!item.attachmentNames?.length && (
+                            <span style={{ flexShrink: 0, color: theme.pathColor }}>
+                                {isZh ? `附件 ${item.attachmentNames.length}` : `${item.attachmentNames.length} files`}
+                            </span>
+                        )}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
 
 interface MessageBubbleProps {
     message: VEMessage;

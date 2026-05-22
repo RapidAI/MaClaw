@@ -39,7 +39,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"initial_command": map[string]string{"type": "string", "description": "连接后立即执行的命令（可选）"},
 				"session_id":      map[string]string{"type": "string", "description": "SSH 会话 ID（exec/exec_background/upload/download/close 时必填）"},
 				"command":         map[string]string{"type": "string", "description": "要执行的命令（exec/exec_background 时必填）"},
-				"wait_seconds":    map[string]string{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 5，最大 600）"},
+				"wait_seconds":    map[string]string{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 15，最大 600。命令完成后会立即返回不需等满；cp/docker pull 等耗时命令建议设 30-60）"},
 				"task_id":         map[string]string{"type": "string", "description": "后台任务 ID（check_task/kill_task 时必填）"},
 				"tail_lines":      map[string]string{"type": "integer", "description": "查看日志尾部行数（check_task 时可选，默认 50）"},
 				"local_path":      map[string]string{"type": "string", "description": "本地文件/目录路径（upload/download 时必填）"},

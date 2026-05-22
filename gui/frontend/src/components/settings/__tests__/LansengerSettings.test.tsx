@@ -22,7 +22,6 @@ const baseProps = () => ({
     } as any,
     setConfig: vi.fn(),
     lang: 'zh-Hans',
-    imAuditBtnStyle: {},
     saveRemoteConfigField: vi.fn(),
     lansengerStatus: 'connected',
     setLansengerStatus: vi.fn(),

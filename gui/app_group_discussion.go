@@ -30,6 +30,18 @@ func (a *App) groupDiscussionClient() (*a2a.HubClient, corelib.AppConfig, error)
 	return client, cfg, nil
 }
 
+func (a *App) veA2AHubClient() (*a2a.HubClient, corelib.AppConfig, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, corelib.AppConfig{}, err
+	}
+	client, err := a2a.NewHubClientFromConfig(cfg)
+	if err != nil {
+		return nil, cfg, err
+	}
+	return client, cfg, nil
+}
+
 func groupDiscussionContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), groupDiscussionHubTimeout)
 }

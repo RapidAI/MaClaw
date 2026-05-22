@@ -1,6 +1,4 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { CSSProperties } from 'react';
-import { colors, radius } from '../remote/styles';
 import { EventsOn, EventsOff } from '../../../wailsjs/runtime';
 import { KnowledgeDeepCrawlCancel } from '../../../wailsjs/go/main/App';
 
@@ -303,14 +301,14 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
     const previewStatus = previewResult ? previewStatusText(lang, previewResult) : '';
 
     return (
-        <div style={panelStyle}>
-            <h4 style={titleStyle}>{t(lang, 'Deep Crawl', '深度检索')}</h4>
+        <div className="deep-crawl-panel">
+            <h4 className="deep-crawl-panel__title">{t(lang, 'Deep Crawl', '深度检索')}</h4>
 
             {/* Seed URL */}
-            <div style={fieldGroupStyle}>
-                <label style={labelStyle}>{t(lang, 'Seed URL', '种子 URL')}</label>
+            <div className="deep-crawl-field">
+                <label className="deep-crawl-label">{t(lang, 'Seed URL', '种子 URL')}</label>
                 <input
-                    style={{ ...inputStyle, ...(showURLError ? errorInputStyle : {}) }}
+                    className={`deep-crawl-input${showURLError ? ' deep-crawl-input--error' : ''}`}
                     type="url"
                     value={seedURL}
                     onChange={e => setSeedURL(e.target.value)}
@@ -318,18 +316,18 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                     placeholder="https://example.com/docs"
                 />
                 {showURLError && (
-                    <span style={errorTextStyle}>
+                    <span className="deep-crawl-error-text">
                         {t(lang, 'URL must start with http:// or https://', 'URL 必须以 http:// 或 https:// 开头')}
                     </span>
                 )}
             </div>
 
             {/* Depth + Same-domain row */}
-            <div style={rowStyle}>
-                <div style={fieldGroupStyle}>
-                    <label style={labelStyle}>{t(lang, 'Max Depth', '最大深度')}</label>
+            <div className="deep-crawl-row">
+                <div className="deep-crawl-field">
+                    <label className="deep-crawl-label">{t(lang, 'Max Depth', '最大深度')}</label>
                     <select
-                        style={inputStyle}
+                        className="deep-crawl-input"
                         value={maxDepth}
                         onChange={e => setMaxDepth(Number(e.target.value))}
                     >
@@ -338,8 +336,8 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                         ))}
                     </select>
                 </div>
-                <div style={{ ...fieldGroupStyle, justifyContent: 'flex-end' }}>
-                    <label style={checkboxLabelStyle}>
+                <div className="deep-crawl-field deep-crawl-field--end">
+                    <label className="deep-crawl-checkbox">
                         <input
                             type="checkbox"
                             checked={sameDomainOnly}
@@ -351,11 +349,11 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
             </div>
 
             {/* Metadata fields */}
-            <div style={metadataGridStyle}>
-                <div style={fieldGroupStyle}>
-                    <label style={labelStyle}>{t(lang, 'Save Scope', '保存范围')}</label>
+            <div className="deep-crawl-metadata-grid">
+                <div className="deep-crawl-field">
+                    <label className="deep-crawl-label">{t(lang, 'Save Scope', '保存范围')}</label>
                     <select
-                        style={inputStyle}
+                        className="deep-crawl-input"
                         value={saveScope}
                         onChange={e => setSaveScope(e.target.value)}
                     >
@@ -365,19 +363,19 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                         <option value="local_only">{t(lang, 'Local only', '仅本地')}</option>
                     </select>
                 </div>
-                <div style={fieldGroupStyle}>
-                    <label style={labelStyle}>{t(lang, 'Topic Hint', '主题提示')}</label>
+                <div className="deep-crawl-field">
+                    <label className="deep-crawl-label">{t(lang, 'Topic Hint', '主题提示')}</label>
                     <input
-                        style={inputStyle}
+                        className="deep-crawl-input"
                         value={topicHint}
                         onChange={e => setTopicHint(e.target.value)}
                         placeholder={t(lang, 'e.g. machine learning', '例如 机器学习')}
                     />
                 </div>
-                <div style={fieldGroupStyle}>
-                    <label style={labelStyle}>{t(lang, 'Labels', '标签')}</label>
+                <div className="deep-crawl-field">
+                    <label className="deep-crawl-label">{t(lang, 'Labels', '标签')}</label>
                     <input
-                        style={inputStyle}
+                        className="deep-crawl-input"
                         value={labelsText}
                         onChange={e => setLabelsText(e.target.value)}
                         placeholder={t(lang, 'Comma-separated labels', '逗号分隔的标签')}
@@ -386,10 +384,10 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
             </div>
 
             {/* Action buttons */}
-            <div style={actionsStyle}>
+            <div className="deep-crawl-actions">
                 <button
                     type="button"
-                    style={buttonStyle}
+                    className="deep-crawl-button"
                     disabled={!urlValid || !!busy || isCrawling}
                     onClick={handlePreview}
                 >
@@ -397,7 +395,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                 </button>
                 <button
                     type="button"
-                    style={primaryButtonStyle}
+                    className="deep-crawl-button deep-crawl-button--primary"
                     disabled={!urlValid || !!busy || isCrawling}
                     onClick={handleStartCrawl}
                 >
@@ -407,15 +405,15 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
 
             {/* ── Progress Display (Task 6.2, Req 3.1, 3.2, 3.3, 3.5) ── */}
             {showProgress && progress && (
-                <div style={progressSectionStyle}>
+                <div className="deep-crawl-progress">
                     {/* Progress bar (Req 3.2) */}
-                    <div style={progressBarContainerStyle}>
-                        <div style={{ ...progressBarFillStyle, width: `${progressPercent}%` }} />
+                    <div className="deep-crawl-progress__track">
+                        <div className="deep-crawl-progress__fill" style={{ width: `${progressPercent}%` }} />
                     </div>
-                    <div style={progressPercentStyle}>{progressPercent}%</div>
+                    <div className="deep-crawl-progress__percent">{progressPercent}%</div>
 
                     {/* Status text (Req 3.1) */}
-                    <div style={progressStatusStyle}>
+                    <div className="deep-crawl-progress__status">
                         {t(lang, 'Status', '状态')}: {progress.status}
                         {' | '}
                         {t(lang, 'Depth', '深度')} {progress.current_depth}/{progress.max_depth}
@@ -429,7 +427,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
 
                     {/* Current URL being processed */}
                     {progress.current_url && (
-                        <div style={currentURLStyle} title={progress.current_url}>
+                        <div className="deep-crawl-progress__url" title={progress.current_url}>
                             {truncateURL(progress.current_url)}
                         </div>
                     )}
@@ -438,7 +436,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                     {isCrawling && (
                         <button
                             type="button"
-                            style={cancelButtonStyle}
+                            className="deep-crawl-button deep-crawl-button--danger"
                             onClick={handleCancel}
                         >
                             {t(lang, 'Cancel', '取消')}
@@ -449,30 +447,30 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
 
             {/* ── Preview Results Display (Task 6.3, Req 4.2, 4.3, 4.4, 4.5) ── */}
             {showPreview && previewResult && (
-                <div style={previewSectionStyle}>
+                <div className="deep-crawl-preview">
                     {/* Total count header (Req 4.3) */}
-                    <div style={previewHeaderStyle}>
+                    <div className="deep-crawl-preview__header">
                         {t(lang,
                             `Found ${previewTotal} URLs across ${previewResult.by_depth.length} levels`,
                             `发现 ${previewTotal} 个 URL，共 ${previewResult.by_depth.length} 层`
                         )}
                         {previewStatus && (
-                            <span style={previewStatusStyle}>
+                            <span className="deep-crawl-preview__status">
                                 {previewStatus}
                             </span>
                         )}
                     </div>
 
                     {/* Grouped list by depth (Req 4.2) */}
-                    <div style={depthListStyle}>
+                    <div className="deep-crawl-depth-list">
                         {previewResult.by_depth.map(level => (
-                            <div key={level.depth} style={depthGroupStyle}>
+                            <div key={level.depth} className="deep-crawl-depth-group">
                                 <div
-                                    style={depthHeaderStyle}
+                                    className="deep-crawl-depth-header"
                                     onClick={() => toggleDepth(level.depth)}
                                 >
-                                    <span style={depthToggleStyle}>
-                                        {expandedDepths.has(level.depth) ? '▼' : '▶'}
+                                    <span className="deep-crawl-depth-toggle">
+                                        {expandedDepths.has(level.depth) ? '-' : '+'}
                                     </span>
                                     {t(lang,
                                         `Depth ${level.depth} (${level.total} URLs)`,
@@ -480,9 +478,9 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                                     )}
                                 </div>
                                 {expandedDepths.has(level.depth) && (
-                                    <div style={urlListStyle}>
+                                    <div className="deep-crawl-url-list">
                                         {level.urls.map((url, idx) => (
-                                            <div key={idx} style={urlItemStyle} title={url}>
+                                            <div key={idx} className="deep-crawl-url-item" title={url}>
                                                 {truncateURL(url, 70)}
                                             </div>
                                         ))}
@@ -493,10 +491,10 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                     </div>
 
                     {/* Confirm / Discard buttons (Req 4.4, 4.5) */}
-                    <div style={previewActionsStyle}>
+                    <div className="deep-crawl-preview__actions">
                         <button
                             type="button"
-                            style={primaryButtonStyle}
+                            className="deep-crawl-button deep-crawl-button--primary"
                             onClick={handleConfirmPreview}
                             disabled={!!busy}
                         >
@@ -504,7 +502,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                         </button>
                         <button
                             type="button"
-                            style={cancelButtonStyle}
+                            className="deep-crawl-button deep-crawl-button--danger"
                             onClick={handleDiscardPreview}
                         >
                             {t(lang, 'Discard', '放弃')}
@@ -518,231 +516,3 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
 
 export default DeepCrawlPanel;
 
-/* ── Styles (matching KnowledgeSettingsPanel patterns) ── */
-
-const panelStyle: CSSProperties = {
-    border: `1px solid ${colors.borderLight}`,
-    borderRadius: radius.sm,
-    padding: 12,
-    background: colors.surface,
-    display: 'grid',
-    gap: 12,
-};
-
-const titleStyle: CSSProperties = {
-    margin: 0,
-    fontSize: 13,
-    fontWeight: 800,
-    color: colors.text,
-};
-
-const fieldGroupStyle: CSSProperties = {
-    display: 'grid',
-    gap: 4,
-};
-
-const labelStyle: CSSProperties = {
-    fontSize: 12,
-    fontWeight: 600,
-    color: colors.textSecondary,
-};
-
-const inputStyle: CSSProperties = {
-    width: '100%',
-    boxSizing: 'border-box',
-    border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm,
-    padding: '7px 9px',
-    background: colors.surface,
-    color: colors.text,
-    fontSize: 13,
-};
-
-const errorInputStyle: CSSProperties = {
-    borderColor: colors.danger,
-};
-
-const errorTextStyle: CSSProperties = {
-    fontSize: 11,
-    color: colors.danger,
-};
-
-const rowStyle: CSSProperties = {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: 12,
-    alignItems: 'end',
-};
-
-const checkboxLabelStyle: CSSProperties = {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    color: colors.textMuted,
-    fontSize: 13,
-    cursor: 'pointer',
-};
-
-const metadataGridStyle: CSSProperties = {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: 8,
-};
-
-const actionsStyle: CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    flexWrap: 'wrap',
-};
-
-const buttonStyle: CSSProperties = {
-    border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm,
-    padding: '7px 10px',
-    background: colors.surface,
-    color: colors.text,
-    cursor: 'pointer',
-    fontSize: 13,
-    fontWeight: 600,
-};
-
-const primaryButtonStyle: CSSProperties = {
-    ...buttonStyle,
-    border: `1px solid ${colors.primary}`,
-    background: colors.primaryLight,
-    color: colors.primaryDark,
-    fontWeight: 700,
-};
-
-/* ── Progress section styles (Task 6.2) ── */
-
-const progressSectionStyle: CSSProperties = {
-    display: 'grid',
-    gap: 6,
-    padding: 10,
-    border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm,
-    background: colors.surfaceMuted,
-};
-
-const progressBarContainerStyle: CSSProperties = {
-    width: '100%',
-    height: 6,
-    borderRadius: radius.pill,
-    background: colors.border,
-    overflow: 'hidden',
-};
-
-const progressBarFillStyle: CSSProperties = {
-    height: '100%',
-    borderRadius: radius.pill,
-    background: colors.primary,
-    transition: 'width 0.3s ease',
-};
-
-const progressPercentStyle: CSSProperties = {
-    fontSize: 12,
-    fontWeight: 700,
-    color: colors.text,
-    textAlign: 'right',
-};
-
-const progressStatusStyle: CSSProperties = {
-    fontSize: 11,
-    color: colors.textSecondary,
-};
-
-const currentURLStyle: CSSProperties = {
-    fontSize: 11,
-    color: colors.textMuted,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-};
-
-const cancelButtonStyle: CSSProperties = {
-    ...buttonStyle,
-    border: `1px solid ${colors.danger}`,
-    color: colors.danger,
-    background: colors.dangerBg,
-    padding: '5px 10px',
-    fontSize: 12,
-};
-
-/* ── Preview results styles (Task 6.3) ── */
-
-const previewSectionStyle: CSSProperties = {
-    display: 'grid',
-    gap: 8,
-    padding: 10,
-    border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm,
-    background: colors.surfaceMuted,
-};
-
-const previewHeaderStyle: CSSProperties = {
-    fontSize: 12,
-    fontWeight: 700,
-    color: colors.text,
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 8,
-    alignItems: 'center',
-};
-
-const previewStatusStyle: CSSProperties = {
-    fontSize: 12,
-    fontWeight: 500,
-    color: colors.textSecondary,
-};
-
-const depthListStyle: CSSProperties = {
-    display: 'grid',
-    gap: 4,
-    maxHeight: 240,
-    overflowY: 'auto',
-};
-
-const depthGroupStyle: CSSProperties = {
-    border: `1px solid ${colors.borderLight}`,
-    borderRadius: radius.sm,
-    background: colors.surface,
-};
-
-const depthHeaderStyle: CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '6px 8px',
-    fontSize: 12,
-    fontWeight: 600,
-    color: colors.textSecondary,
-    cursor: 'pointer',
-    userSelect: 'none',
-};
-
-const depthToggleStyle: CSSProperties = {
-    fontSize: 10,
-    color: colors.textMuted,
-};
-
-const urlListStyle: CSSProperties = {
-    padding: '0 8px 6px 22px',
-    display: 'grid',
-    gap: 2,
-};
-
-const urlItemStyle: CSSProperties = {
-    fontSize: 11,
-    color: colors.textMuted,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-};
-
-const previewActionsStyle: CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-};

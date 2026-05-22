@@ -56,6 +56,31 @@ describe("AgentTaskPanel", () => {
         expect(onSubmit).toHaveBeenCalledWith("format-test", { email: "ops@example.com" });
     });
 
+    it("passes hidden form routing data when dismissed", () => {
+        const onDismiss = vi.fn();
+        const view: AgentView = {
+            type: "form",
+            id: "workflow:form:requirements",
+            title: "Workflow",
+            fields: [
+                { name: "goal", label: "Goal", type: "text", value: "build app" },
+                { name: "_workflow_user_id", label: "_workflow_user_id", type: "hidden", value: "desktop-user:C:/work" },
+                { name: "_workflow_id", label: "_workflow_id", type: "hidden", value: "wf-1" },
+            ],
+            submitLabel: "Save",
+        };
+
+        render(<AgentTaskPanel view={view} onDismiss={onDismiss} theme={lightTheme} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+        expect(onDismiss).toHaveBeenCalledWith("workflow:form:requirements", {
+            goal: "build app",
+            _workflow_user_id: "desktop-user:C:/work",
+            _workflow_id: "wf-1",
+        });
+    });
+
     it("locks form submission while submit is in flight", async () => {
         let resolveSubmit: (() => void) | undefined;
         const onSubmit = vi.fn(() => new Promise<void>((resolve) => {

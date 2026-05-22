@@ -27,6 +27,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListRemoteSessions: vi.fn(async () => []),
     FetchNews: vi.fn(async () => []),
     SelectAIAssistantFiles: vi.fn(async () => []),
+    InjectAIAssistantSupplementary: vi.fn(async () => false),
+    InjectAIAssistantGuideReference: vi.fn(async () => true),
+    InjectAIAssistantGuideReferenceForSession: vi.fn(async () => true),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -39,7 +42,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
@@ -106,6 +109,10 @@ function resetAppMocks() {
     (FetchNews as any).mockImplementation(async () => []);
     (SelectAIAssistantFiles as any).mockReset();
     (SelectAIAssistantFiles as any).mockImplementation(async () => []);
+    (InjectAIAssistantGuideReference as any).mockReset();
+    (InjectAIAssistantGuideReference as any).mockImplementation(async () => true);
+    (InjectAIAssistantGuideReferenceForSession as any).mockReset();
+    (InjectAIAssistantGuideReferenceForSession as any).mockImplementation(async () => true);
 }
 
 function assistantMessages(messages: Array<{ role: string; content: string; fields?: unknown; actions?: unknown; confirmation?: { status?: string } }>) {
@@ -182,6 +189,45 @@ describe('useAIAssistant property tests', () => {
         await waitFor(() => {
             expect(result.current.trialReflectEnabled).toBe(true);
         });
+    });
+
+    it('shows localized guide reference echo for the local desktop session', async () => {
+        const { result } = renderAssistantHook();
+
+        let accepted = false;
+        await act(async () => {
+            accepted = await result.current.guideLaunchReference('下一轮参考这个');
+        });
+
+        expect(accepted).toBe(true);
+        expect(InjectAIAssistantGuideReference).toHaveBeenCalledWith('下一轮参考这个');
+        expect(messageContents(result.current.messages)).toContain('引导已注入下一轮：\n下一轮参考这个');
+    });
+
+    it('does not echo project guide references into the local desktop history', async () => {
+        const { result } = renderAssistantHook();
+
+        let accepted = false;
+        await act(async () => {
+            accepted = await result.current.guideLaunchReference('项目参考', 'desktop-user:D:/tasks/demo');
+        });
+
+        expect(accepted).toBe(true);
+        expect(InjectAIAssistantGuideReferenceForSession).toHaveBeenCalledWith('项目参考', 'desktop-user:D:/tasks/demo');
+        expect(messageContents(result.current.messages)).not.toContain('引导已注入下一轮：\n项目参考');
+    });
+
+    it('does not show guide reference echo when the active loop rejects it', async () => {
+        (InjectAIAssistantGuideReference as any).mockResolvedValueOnce(false);
+        const { result } = renderAssistantHook();
+
+        let accepted = true;
+        await act(async () => {
+            accepted = await result.current.guideLaunchReference('没有运行中的 loop');
+        });
+
+        expect(accepted).toBe(false);
+        expect(messageContents(result.current.messages)).not.toContain('引导已注入下一轮：\n没有运行中的 loop');
     });
 
     it('background launch stores visible session, job, and run identifiers in a system message', async () => {

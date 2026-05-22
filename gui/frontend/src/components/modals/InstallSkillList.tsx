@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { main } from '../../../wailsjs/go/models';
 
+// Skill item surfaces use var(--theme-surface) in App.css.
+
 type InstallSkillListProps = {
     filteredSkills: main.Skill[];
     selectedSkillsToInstall: string[];
@@ -14,25 +16,20 @@ export const InstallSkillList = ({
     setSelectedSkillsToInstall,
     t,
 }: InstallSkillListProps) => (
-    <div className="modal-body" style={{ maxHeight: '300px', overflowY: 'auto', padding: '10px 0' }}>
+    <div className="modal-body install-skill-list elegant-scrollbar">
         {filteredSkills.length === 0 ? (
-            <div style={{ textAlign: 'center', color: 'var(--theme-text-muted)', padding: '20px' }}>
+            <div className="install-skill-list__empty">
                 {t("noSkills")}
             </div>
         ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="install-skill-list__items">
                 {filteredSkills.map((skill, idx) => (
-                    <label key={idx} style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        padding: '8px 12px',
-                        border: '1px solid var(--theme-border)',
-                        borderRadius: '6px',
-                        cursor: skill.installed ? 'not-allowed' : 'pointer',
-                        backgroundColor: selectedSkillsToInstall.includes(skill.name) ? 'color-mix(in srgb, var(--theme-success) 13%, var(--theme-surface))' : 'var(--theme-surface)',
-                        opacity: skill.installed ? 0.5 : 1,
-                        position: 'relative'
-                    }}>
+                    <label
+                        key={idx}
+                        className="install-skill-list__item"
+                        data-selected={selectedSkillsToInstall.includes(skill.name) ? 'true' : 'false'}
+                        data-installed={skill.installed ? 'true' : 'false'}
+                    >
                         <input
                             type="checkbox"
                             checked={selectedSkillsToInstall.includes(skill.name)}
@@ -44,21 +41,12 @@ export const InstallSkillList = ({
                                     setSelectedSkillsToInstall(selectedSkillsToInstall.filter(n => n !== skill.name));
                                 }
                             }}
-                            style={{ marginRight: '10px' }}
                         />
-                        <div style={{ flex: 1 }} title={skill.description}>
-                            <div style={{ fontWeight: 'bold', fontSize: '0.9rem', color: 'var(--theme-text-primary)' }}>
+                        <div className="install-skill-list__meta" title={skill.description}>
+                            <div className="install-skill-list__name">
                                 {skill.name}
                                 {skill.installed && (
-                                    <span style={{
-                                        marginLeft: '8px',
-                                        fontSize: '0.75rem',
-                                        color: 'var(--theme-success)',
-                                        backgroundColor: 'var(--theme-success-bg)',
-                                        padding: '2px 6px',
-                                        borderRadius: '4px',
-                                        fontWeight: 'normal'
-                                    }}>
+                                    <span className="install-skill-list__badge">
                                         {t("installed")}
                                     </span>
                                 )}

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type ReactNode } from "react";
 import {
   GetVEApprovalConfig,
   SaveVEApprovalConfig,
@@ -27,6 +27,7 @@ interface VEApprovalConfig {
 
 type Props = {
   lang?: string;
+  footerSlot?: ReactNode;
 };
 
 const textForLang = (
@@ -58,7 +59,7 @@ function defaultConfig(): VEApprovalConfig {
   };
 }
 
-export function VEApprovalCapabilitySection({ lang }: Props) {
+export function VEApprovalCapabilitySection({ lang, footerSlot }: Props) {
   const [config, setConfig] = useState<VEApprovalConfig>(defaultConfig());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -414,47 +415,33 @@ export function VEApprovalCapabilitySection({ lang }: Props) {
             onChange={handleRulesChange}
             lang={lang}
           />
-
-          {/* Save Button */}
-          <div className="ve-form-actions">
-            {saveError && (
-              <span data-testid="ve-approval-save-error" className="ve-form-error" role="alert">
-                {saveError}
-              </span>
-            )}
-            {saveSuccess && (
-              <span data-testid="ve-approval-save-success" className="ve-notice ve-notice--success" role="status">
-                {textForLang(lang, "Saved successfully", "保存成功", "儲存成功")}
-              </span>
-            )}
-            <button
-              className="ve-btn ve-btn--primary"
-              onClick={handleSave}
-              disabled={saving}
-              data-testid="ve-approval-save-btn"
-            >
-              {saving
-                ? "..."
-                : textForLang(lang, "Save Approval Settings", "保存审批设置", "儲存審批設定")}
-            </button>
-          </div>
         </>
       )}
 
-      {!config.enabled && (
-        <div className="ve-form-actions">
-          <button
-            className="ve-btn ve-btn--primary"
-            onClick={handleSave}
-            disabled={saving}
-            data-testid="ve-approval-save-btn"
-          >
-            {saving
-              ? "..."
-              : textForLang(lang, "Save Approval Settings", "保存审批设置", "儲存審批設定")}
-          </button>
-        </div>
-      )}
+      {footerSlot}
+
+      <div className="ve-form-actions ve-approval-save-actions">
+        {saveError && (
+          <span data-testid="ve-approval-save-error" className="ve-form-error" role="alert">
+            {saveError}
+          </span>
+        )}
+        {saveSuccess && (
+          <span data-testid="ve-approval-save-success" className="ve-notice ve-notice--success" role="status">
+            {textForLang(lang, "Saved successfully", "保存成功", "儲存成功")}
+          </span>
+        )}
+        <button
+          className="ve-btn ve-btn--primary"
+          onClick={handleSave}
+          disabled={saving}
+          data-testid="ve-approval-save-btn"
+        >
+          {saving
+            ? "..."
+            : textForLang(lang, "Save Approval Settings", "保存审批设置", "儲存審批設定")}
+        </button>
+      </div>
     </div>
   );
 }

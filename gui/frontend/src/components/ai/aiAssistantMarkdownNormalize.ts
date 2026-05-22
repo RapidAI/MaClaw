@@ -4,6 +4,7 @@ const digitalEmployeeCapabilityIconScanPattern = new RegExp(digitalEmployeeCapab
 const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])\\s*(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])\\s+(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
 const windowsPathEscapeProtectPattern = /[A-Za-z]:\\[^\n\r\s*?"<>|]+/g;
+const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
 
 function hasMultipleCapabilityIcons(text: string): boolean {
     const matches = text.match(digitalEmployeeCapabilityIconScanPattern);
@@ -22,6 +23,20 @@ function withWindowsPathsProtected(text: string, transform: (value: string) => s
         const index = Number(indexText);
         return paths[index] ?? _token;
     });
+}
+
+function normalizeCompactPipeTables(text: string): string {
+    if (!text.includes("|") || !text.includes("---")) return text;
+    return text
+        .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
+        .replace(/([^\n])\s*(\|[^\n|]+\|[^\n]*?)(\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g, (_match, prefix, header, separator) => `${prefix}\n${header.trim()}\n${separator.trim()}`)
+        .replace(compactPipeTableSeparatorPattern, (separator, _inner, offset, fullText) => {
+            const before = offset > 0 && fullText[offset - 1] !== "\n" ? "\n" : "";
+            const afterIndex = offset + separator.length;
+            const after = afterIndex < fullText.length && fullText[afterIndex] !== "\n" ? "\n" : "";
+            return `${before}${separator.trim()}${after}`;
+        })
+        .replace(/([^\n])\s+(\|[^\n|]+\|[^\n]+)/g, "$1\n$2");
 }
 
 /**
@@ -43,6 +58,7 @@ export function normalizeInlineListMarkers(content: string): string {
         }
         let normalized = withWindowsPathsProtected(parts[i], (segment) => segment
             .replace(escapedNewlinePattern, "\n")
+            .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
             .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,4}\s+)/g, "$1\n$2")
             .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,4})(?=[^#\s])/g, "$1\n$2 ")
             .replace(/([^#\n\s])\s*(#{2,4})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
@@ -51,6 +67,7 @@ export function normalizeInlineListMarkers(content: string): string {
             .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
             .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")
             .replace(capabilityIconAfterPunctuationPattern, "$1\n$2"));
+        normalized = normalizeCompactPipeTables(normalized);
         if (hasMultipleCapabilityIcons(normalized)) {
             normalized = normalized.replace(capabilityIconMidSentencePattern, "$1\n$2");
         }

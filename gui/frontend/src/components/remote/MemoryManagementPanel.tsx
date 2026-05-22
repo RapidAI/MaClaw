@@ -99,12 +99,6 @@ const inputStyle: React.CSSProperties = {
 const labelStyle: React.CSSProperties = {
     fontSize: "0.76rem", color: colors.textSecondary, marginBottom: 4, display: "block",
 };
-const tabBtnStyle = (active: boolean): React.CSSProperties => ({
-    padding: "5px 16px", fontSize: "0.76rem", fontWeight: 600, cursor: "pointer",
-    border: "none", borderBottom: active ? `2px solid ${colors.primary}` : "2px solid transparent",
-    background: "none", color: active ? colors.primary : colors.textSecondary,
-});
-
 /** Shared date formatter. */
 function fmtDate(s: string, lang: string): string {
     if (!s) return "-";
@@ -186,38 +180,51 @@ export function MemoryManagementPanel({ lang, traceFocus }: Props) {
         setTab("status");
     }, [traceFocus?.seq]);
     const createRef = useRef<(() => void) | null>(null);
+    const memoryTabs = [
+        { id: "edit" as const, label: t("Memory Edit", "记忆编辑"), desc: t("Create, filter, and edit entries", "新建、筛选与编辑条目") },
+        { id: "status" as const, label: t("Memory Status", "记忆状态"), desc: t("Capacity, categories, and learning", "容量、分类与学习状态") },
+        { id: "history" as const, label: t("Session History", "会话历史"), desc: t("Browse remembered sessions", "查看已沉淀会话") },
+        { id: "timemachine" as const, label: t("Time Machine", "时光机"), desc: t("Backups and compression", "备份与压缩") },
+    ];
 
     return (
-        <div style={{ padding: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${colors.border}`, marginBottom: 10 }} role="tablist">
-                <button role="tab" aria-selected={tab === "edit"} style={tabBtnStyle(tab === "edit")} onClick={() => setTab("edit")}>
-                    📝 {t("Memory Edit", "记忆编辑")}
-                </button>
-                <button role="tab" aria-selected={tab === "status"} style={tabBtnStyle(tab === "status")} onClick={() => setTab("status")}>
-                    📊 {t("Memory Status", "记忆状态")}
-                </button>
-                <button role="tab" aria-selected={tab === "history"} style={tabBtnStyle(tab === "history")} onClick={() => setTab("history")}>
-                    💬 {t("Session History", "会话历史")}
-                </button>
-                <button role="tab" aria-selected={tab === "timemachine"} style={tabBtnStyle(tab === "timemachine")} onClick={() => setTab("timemachine")}>
-                    ⏳ {t("Time Machine", "时光机")}
-                </button>
+        <div className="memory-management-panel">
+            <div className="settings-subtab-row">
+                <div className="settings-subtab-bar settings-subtab-bar--memory" role="tablist" aria-label={t("Memory sections", "记忆管理分区")}>
+                    {memoryTabs.map(item => (
+                        <button
+                            key={item.id}
+                            id={`memory-tab-${item.id}`}
+                            className="settings-subtab-button"
+                            data-active={tab === item.id ? "true" : undefined}
+                            type="button"
+                            role="tab"
+                            aria-selected={tab === item.id}
+                            aria-controls={`memory-panel-${item.id}`}
+                            aria-label={item.label}
+                            onClick={() => setTab(item.id)}
+                        >
+                            <span className="settings-subtab-button__label">{item.label}</span>
+                            <span className="settings-subtab-button__desc">{item.desc}</span>
+                        </button>
+                    ))}
+                </div>
                 {tab === "edit" && (
-                    <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>{entryCount} {t("entries", "条记忆")}</span>
-                        <button onClick={() => createRef.current?.()} style={{ ...primaryBtnStyle, padding: "3px 12px", fontSize: "0.72rem" }}>
+                    <div className="settings-subtab-actions">
+                        <span className="settings-subtab-count">{entryCount} {t("entries", "条记忆")}</span>
+                        <button className="settings-subtab-primary" onClick={() => createRef.current?.()}>
                             + {t("New", "新建")}
                         </button>
                     </div>
                 )}
             </div>
             {tab === "edit"
-                ? <MemoryEditTab t={t} lang={lang} revision={revision} onCountChange={setEntryCount} createRef={createRef} />
+                ? <div role="tabpanel" id="memory-panel-edit" aria-labelledby="memory-tab-edit"><MemoryEditTab t={t} lang={lang} revision={revision} onCountChange={setEntryCount} createRef={createRef} /></div>
                 : tab === "status"
-                ? <MemoryStatusTab t={t} lang={lang} traceFocus={activeTraceFocus} />
+                ? <div role="tabpanel" id="memory-panel-status" aria-labelledby="memory-tab-status"><MemoryStatusTab t={t} lang={lang} traceFocus={activeTraceFocus} /></div>
                 : tab === "history"
-                ? <SessionHistoryTab t={t} lang={lang} onOpenTrace={openLocalTraceFocus} />
-                : <TimeMachineTab t={t} lang={lang} onDataChanged={bumpRevision} />}
+                ? <div role="tabpanel" id="memory-panel-history" aria-labelledby="memory-tab-history"><SessionHistoryTab t={t} lang={lang} onOpenTrace={openLocalTraceFocus} /></div>
+                : <div role="tabpanel" id="memory-panel-timemachine" aria-labelledby="memory-tab-timemachine"><TimeMachineTab t={t} lang={lang} onDataChanged={bumpRevision} /></div>}
         </div>
     );
 }
@@ -264,7 +271,8 @@ const PIE_COLORS = [
 function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: string, zhHant?: string) => string; lang: string; traceFocus?: TraceFocus }) {
     const [data, setData] = useState<MemoryStatusData | null>(null);
     const [loading, setLoading] = useState(true);
-    const [learning, setLearning] = useState<any>(null), [learningError, setLearningError] = useState("");
+    const [learning, setLearning] = useState<any>(null);
+    const [learningError, setLearningError] = useState("");
 
     const fetchData = useCallback(async () => {
         setLoading(true);
@@ -281,7 +289,8 @@ function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: stri
                 }
                 setLearningError("");
             } catch (learningErr) {
-                setLearning(null); setLearningError(String(learningErr));
+                setLearning(null);
+                setLearningError(String(learningErr));
             }
         } catch (e) {
             console.error("GetMemoryStatus failed:", e);
@@ -293,147 +302,120 @@ function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: stri
     useEffect(() => { fetchData(); }, [fetchData]);
 
     if (loading || !data) {
-        return <div style={{ textAlign: "center", padding: 30, color: colors.textMuted, fontSize: "0.78rem" }}>
-            {t("Loading…", "加载中…")}
-        </div>;
+        return <div className="memory-status-loading">{t("Loading...", "加载中...")}</div>;
     }
 
-    const cats = data.categories || [];
-    const totalEntries = data.total_entries || 0;
+    const cats = (data.categories || []).map((item) => ({
+        ...item,
+        count: Number.isFinite(item.count) ? Math.max(0, item.count) : 0,
+        percent: Number.isFinite(item.percent) ? Math.max(0, item.percent) : 0,
+        label: String(item.label || "").trim() || catLabel(item.category, lang) || item.category || t("Uncategorized", "未分类"),
+    }));
+    const totalEntries = Math.max(0, data.total_entries || 0);
     const maxCap = data.max_capacity || 2000;
-    const capPct = data.capacity_percent || 0;
+    const capPct = Math.max(0, data.capacity_percent || 0);
+    const boundedEntries = Math.max(0, Math.min(totalEntries, maxCap));
+    const boundedCapPct = Math.min(capPct, 100);
 
     return (
-        <div style={{ padding: "0 4px" }}>
-            {/* ── Capacity gauge ── */}
-            <div style={{
-                border: `1px solid ${colors.border}`, borderRadius: radius.lg,
-                padding: "14px 16px", marginBottom: 14, background: colors.surface,
-            }}>
-                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 8 }}>
-                    {t("Capacity", "容量使用")}
+        <div className="memory-status-tab">
+            <section className="memory-status-card memory-status-card--capacity" aria-labelledby="memory-capacity-title">
+                <div className="memory-status-card__header">
+                    <h3 id="memory-capacity-title" className="memory-status-card__title">{t("Capacity", "容量使用")}</h3>
+                    <span className="memory-capacity-count">{totalEntries} / {maxCap}</span>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div style={{ flex: 1 }}>
-                        <div style={{
-                            height: 10, borderRadius: 5, background: colors.surfaceMuted,
-                            overflow: "hidden", border: `1px solid ${colors.borderLight}`,
-                        }}>
-                            <div style={{
-                                height: "100%", borderRadius: 5,
-                                width: `${Math.min(capPct, 100)}%`,
-                                background: capPct >= 90 ? "var(--theme-danger)" : capPct >= 70 ? "var(--theme-warning)" : "var(--theme-success)",
-                                transition: "width 0.3s ease",
-                            }} />
-                        </div>
-                    </div>
-                    <span style={{ fontSize: "0.82rem", fontWeight: 700, color: colors.text, minWidth: 90, textAlign: "right" }}>
-                        {totalEntries} / {maxCap}
-                    </span>
+                <div
+                    className="memory-capacity-track"
+                    role="meter"
+                    aria-valuemin={0}
+                    aria-valuemax={maxCap}
+                    aria-valuenow={boundedEntries}
+                    aria-valuetext={`${totalEntries} / ${maxCap}`}
+                >
+                    <div
+                        className="memory-capacity-fill"
+                        style={{
+                            width: `${boundedCapPct}%`,
+                            background: capPct >= 90 ? "var(--theme-danger)" : capPct >= 70 ? "var(--theme-warning)" : "var(--theme-success)",
+                        }}
+                    />
                 </div>
-                <div style={{ fontSize: "0.7rem", color: colors.textMuted, marginTop: 4 }}>
+                <p className="memory-status-hint">
                     {capPct >= 90
-                        ? t("⚠️ Capacity nearly full. Old memories will be evicted.", "⚠️ 容量接近上限，旧记忆将被自动淘汰。")
+                        ? t("Capacity is nearly full. Older memories may be evicted.", "容量接近上限，旧记忆可能会被淘汰。")
                         : capPct >= 70
                         ? t("Capacity usage is moderate.", "容量使用适中。")
                         : t("Capacity usage is healthy.", "容量充足。")}
-                </div>
-            </div>
+                </p>
+            </section>
 
-            {/* ── Pie chart + legend ── */}
-            <div style={{
-                border: `1px solid ${colors.border}`, borderRadius: radius.lg,
-                padding: "14px 16px", marginBottom: 14, background: colors.surface,
-            }}>
-                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 12 }}>
-                    {t("Category Distribution", "分类占比")}
+            <section className="memory-status-card" aria-labelledby="memory-category-title">
+                <div className="memory-status-card__header">
+                    <h3 id="memory-category-title" className="memory-status-card__title">{t("Category Distribution", "分类占比")}</h3>
+                    <span className="memory-status-card__meta">{cats.length} {t("categories", "类")}</span>
                 </div>
                 {cats.length === 0 ? (
-                    <div style={{ textAlign: "center", padding: 20, color: colors.textMuted, fontSize: "0.76rem" }}>
-                        {t("No memory entries yet.", "暂无记忆数据。")}
-                    </div>
+                    <div className="memory-status-empty">{t("No memory entries yet.", "暂无记忆数据。")}</div>
                 ) : (
-                    <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-                        {/* SVG Pie Chart */}
-                        <PieChart data={cats} size={160} />
-                        {/* Legend */}
-                        <div style={{ flex: 1, minWidth: 160 }}>
+                    <div className="memory-category-layout">
+                        <div className="memory-category-chart-wrap">
+                            <PieChart
+                                data={cats}
+                                size={172}
+                                centerLabel={t("entries", "条记忆")}
+                                ariaLabel={t("Memory category distribution", "记忆分类占比")}
+                            />
+                        </div>
+                        <div className="memory-category-legend" aria-label={t("Category legend", "分类图例")}>
                             {cats.map((c, i) => (
-                                <div key={c.category} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-                                    <span style={{
-                                        display: "inline-block", width: 10, height: 10, borderRadius: 2,
-                                        background: PIE_COLORS[i % PIE_COLORS.length], flexShrink: 0,
-                                    }} />
-                                    <span style={{ fontSize: "0.74rem", color: colors.text, flex: 1 }}>
-                                        {c.label}
-                                    </span>
-                                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary, fontVariantNumeric: "tabular-nums" }}>
-                                        {c.count}{t(" entries", "条")} ({c.percent.toFixed(1)}%)
-                                    </span>
+                                <div key={c.category || i} className="memory-category-legend__item">
+                                    <span className="memory-category-legend__swatch" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                                    <span className="memory-category-legend__label" title={c.label}>{c.label}</span>
+                                    <span className="memory-category-legend__value">{c.count}{t(" entries", "条")} ({c.percent.toFixed(1)}%)</span>
                                 </div>
                             ))}
                         </div>
                     </div>
                 )}
-            </div>
+            </section>
 
-            {/* ── Detail stats ── */}
-            <div style={{
-                display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-                gap: 8, marginBottom: 14,
-            }}>
-                <StatCard label={t("Archived", "已归档")} value={data.archived_entries} icon="📦" />
-                <StatCard label={t("Stale", "过期")} value={data.stale_entries} icon="🕸️" />
-                <StatCard label={t("Pinned", "固定")} value={data.pinned_entries} icon="📌" />
-                <StatCard label={t("Embedder", "向量化")} value={data.embedder_active ? "✅" : "❌"} icon="🔢" />
+            <div className="memory-status-stat-grid">
+                <MemoryStatusStatCard label={t("Archived", "已归档")} value={data.archived_entries} />
+                <MemoryStatusStatCard label={t("Stale", "过期")} value={data.stale_entries} />
+                <MemoryStatusStatCard label={t("Pinned", "固定")} value={data.pinned_entries} />
+                <MemoryStatusStatCard label={t("Embedder", "向量化")} value={data.embedder_active ? t("Active", "已启用") : t("Off", "未启用")} />
             </div>
 
             <ExperienceLearningPanel t={t} learning={learning} error={learningError} focusTrace={traceFocus} onReviewed={fetchData} />
 
-            {/* ── Time range ── */}
             {(data.oldest_entry || data.newest_entry) && (
-                <div style={{
-                    border: `1px solid ${colors.border}`, borderRadius: radius.lg,
-                    padding: "10px 16px", background: colors.surface,
-                    fontSize: "0.72rem", color: colors.textSecondary,
-                    display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8,
-                }}>
-                    {data.oldest_entry && <span>📅 {t("Oldest", "最早")}: {fmtDate(data.oldest_entry, lang)}</span>}
-                    {data.newest_entry && <span>📅 {t("Newest", "最新")}: {fmtDate(data.newest_entry, lang)}</span>}
-                </div>
+                <section className="memory-status-card memory-status-range" aria-label={t("Memory time range", "记忆时间范围")}>
+                    {data.oldest_entry && <span>{t("Oldest", "最早")}: {fmtDate(data.oldest_entry, lang)}</span>}
+                    {data.newest_entry && <span>{t("Newest", "最新")}: {fmtDate(data.newest_entry, lang)}</span>}
+                </section>
             )}
 
-            {/* ── Refresh button ── */}
-            <div style={{ textAlign: "center", marginTop: 12 }}>
-                <button onClick={fetchData} style={{
-                    padding: "4px 16px", fontSize: "0.72rem", fontWeight: 600,
-                    background: "transparent", color: colors.primary,
-                    border: `1px solid ${colors.primary}`, borderRadius: radius.md, cursor: "pointer",
-                }}>
-                    🔄 {t("Refresh", "刷新")}
+            <div className="memory-status-refresh-row">
+                <button type="button" onClick={fetchData} className="memory-status-refresh-btn">
+                    {t("Refresh", "刷新")}
                 </button>
             </div>
         </div>
     );
 }
 
-/** Small stat card for the detail grid. */
-function StatCard({ label, value, icon }: { label: string; value: number | string; icon: string }) {
+function MemoryStatusStatCard({ label, value }: { label: string; value: number | string }) {
     return (
-        <div style={{
-            border: `1px solid ${colors.border}`, borderRadius: radius.md,
-            padding: "10px 12px", background: colors.surface, textAlign: "center",
-        }}>
-            <div style={{ fontSize: "1.1rem", marginBottom: 2 }}>{icon}</div>
-            <div style={{ fontSize: "0.9rem", fontWeight: 700, color: colors.text }}>{value}</div>
-            <div style={{ fontSize: "0.68rem", color: colors.textMuted }}>{label}</div>
+        <div className="memory-status-stat-card">
+            <div className="memory-status-stat-card__value">{value}</div>
+            <div className="memory-status-stat-card__label">{label}</div>
         </div>
     );
 }
 
 
 /** Pure SVG donut/pie chart — no external dependencies. */
-function PieChart({ data, size = 160 }: { data: Array<{ category: string; label: string; count: number; percent: number }>; size?: number }) {
+function PieChart({ data, size = 160, centerLabel, ariaLabel }: { data: Array<{ category: string; label: string; count: number; percent: number }>; size?: number; centerLabel: string; ariaLabel: string }) {
     const cx = size / 2;
     const cy = size / 2;
     const outerR = size / 2 - 4;
@@ -477,7 +459,7 @@ function PieChart({ data, size = 160 }: { data: Array<{ category: string; label:
     const total = data.reduce((s, d) => s + d.count, 0);
 
     return (
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Memory category pie chart">
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={ariaLabel}>
             {arcs.map((a, i) => (
                 <path key={i} d={a.path} fill={a.color} stroke={colors.surface} strokeWidth={1.5}>
                     <title>{a.label}: {a.pct.toFixed(1)}%</title>
@@ -488,7 +470,7 @@ function PieChart({ data, size = 160 }: { data: Array<{ category: string; label:
                 {total}
             </text>
             <text x={cx} y={cy + 10} textAnchor="middle" fill="currentColor" fontSize={size * 0.075} opacity={0.6}>
-                条记忆
+                {centerLabel}
             </text>
         </svg>
     );

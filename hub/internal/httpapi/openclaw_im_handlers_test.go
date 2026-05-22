@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,6 +34,36 @@ func makeSignature(body []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestOpenclawIMWebhookTestIncludesTenantHint(t *testing.T) {
+	var gotTenantHeader string
+	var gotPayload struct {
+		TenantID string `json:"tenant_id"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTenantHeader = r.Header.Get("X-Tenant-ID")
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotPayload)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	cfg := OpenclawIMConfigState{Enabled: true, WebhookURL: server.URL, Secret: "tenant-secret"}
+	cfgJSON, _ := json.Marshal(cfg)
+	sys := &stubSystemSettings{data: map[string]string{"tenant:tenant_a:" + openclawIMConfigKey: string(cfgJSON)}}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/settings/openclaw_im/test", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "tenant-admin", Scope: "tenant", TenantID: "tenant_a"}))
+	rec := httptest.NewRecorder()
+
+	TestOpenclawIMWebhookHandler(sys)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("test webhook status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotTenantHeader != "tenant_a" || gotPayload.TenantID != "tenant_a" {
+		t.Fatalf("tenant hint header/body = %q/%q", gotTenantHeader, gotPayload.TenantID)
+	}
 }
 
 func TestOpenclawIMWebhookHandler_Success(t *testing.T) {

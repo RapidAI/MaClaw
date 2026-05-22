@@ -58,9 +58,9 @@ func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
 	return true
 }
 
-const guideLaunchReferenceMarker = "[Guide launch reference]"
+const guideLaunchReferenceMarker = "[\u5f15\u5bfc\u53d1\u5c04\u53c2\u8003]"
 
-const guideLaunchReferenceInstruction = "The following text was fired from the input buffer by the user using the Enter icon/button. Use it as background reference context in the next agent loop iteration to influence reasoning and decisions. Do not treat it as a new user turn, and do not end the current session or produce a final answer solely because of it."
+const guideLaunchReferenceInstruction = "\u4ee5\u4e0b\u6587\u672c\u7531\u7528\u6237\u4ece\u9884\u8f93\u5165\u7f13\u51b2\u533a\u901a\u8fc7\u56de\u8f66\u56fe\u6807/\u6309\u94ae\u53d1\u5c04\u3002\u8bf7\u628a\u5b83\u4f5c\u4e3a\u4e0b\u4e00\u8f6e agent loop \u7684\u80cc\u666f\u53c2\u8003\uff0c\u7528\u6765\u5f71\u54cd\u63a8\u7406\u548c\u51b3\u7b56\u3002\u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\uff0c\u4e5f\u4e0d\u8981\u4ec5\u56e0\u4e3a\u8fd9\u6bb5\u53c2\u8003\u5c31\u7ed3\u675f\u5f53\u524d\u4f1a\u8bdd\u6216\u8f93\u51fa\u6700\u7ec8\u7b54\u6848\u3002"
 
 func buildGuideLaunchInjection(text string) string {
 	text = strings.TrimSpace(text)
@@ -76,11 +76,17 @@ func isGuideLaunchReferenceInjection(text string) bool {
 	}
 	lines := strings.Split(text, "\n")
 	for i := 0; i+1 < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == guideLaunchReferenceMarker && strings.TrimSpace(lines[i+1]) == guideLaunchReferenceInstruction {
+		if isGuideLaunchReferenceHeader(lines, i) {
 			return true
 		}
 	}
 	return false
+}
+
+func isGuideLaunchReferenceHeader(lines []string, i int) bool {
+	return i+1 < len(lines) &&
+		strings.TrimSpace(lines[i]) == guideLaunchReferenceMarker &&
+		strings.TrimSpace(lines[i+1]) == guideLaunchReferenceInstruction
 }
 
 func (h *IMMessageHandler) hasPendingGuideReferenceInjection(userID string) bool {
@@ -100,7 +106,7 @@ func (h *IMMessageHandler) hasPendingGuideReferenceInjection(userID string) bool
 // exists (from a prior injection in the same iteration window), the new
 // text is appended with a newline separator.
 //
-// This is the single write path for pendingInjection 鈥?all callers
+// This is the single write path for pendingInjection; all callers
 // (InjectSupplementary, interrupt handler Merge, HandleCorrection Merge)
 // must use this method instead of calling pendingInjection.Store directly.
 func (h *IMMessageHandler) accumulateInjection(userID, prefixedText string) {

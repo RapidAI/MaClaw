@@ -189,7 +189,10 @@ func (h *IMMessageHandler) handleAgentLoopNoToolPath(opts agentLoopNoToolPathOpt
 		result.ContinueLoop = true
 		return result
 	}
-
+	if h.shouldContinueForPendingGuideReference(opts.UserID) {
+		result.ContinueLoop = true
+		return result
+	}
 	noToolFinalize := h.finalizeAgentLoopNoToolBranch(agentLoopNoToolFinalizeOptions{
 		UserID:                 opts.UserID,
 		UserText:               opts.UserText,
@@ -293,6 +296,10 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 		result.ContinueLoop = true
 		return result
 	}
+	if h.shouldContinueForPendingGuideReference(opts.UserID) {
+		result.ContinueLoop = true
+		return result
+	}
 
 	needsConfirmResult := h.applyAgentLoopNeedsConfirmGate(opts.Context, opts.UserID, opts.Iteration, opts.Platform, opts.GateConfig, result.MessageContent, opts.LengthContinuationBuffer.String(), phase, opts.SteeringDetector, opts.History, opts.StreamDone, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
 	result.MessageContent = needsConfirmResult.MsgContent
@@ -341,6 +348,14 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 
 	result.ReadyToFinalize = true
 	return result
+}
+
+func (h *IMMessageHandler) shouldContinueForPendingGuideReference(userID string) bool {
+	if !h.hasPendingGuideReferenceInjection(userID) {
+		return false
+	}
+	log.Printf("[inject-guide-reference] user=%s pending guide reference detected before no-tool finalization; continuing loop", userID)
+	return true
 }
 
 func handleAgentLoopToolAvailabilityHallucination(iteration int, msgContent string, tools []map[string]interface{}, phase *agentLoopPhase, conversation []interface{}) agentLoopNoToolRecoverResult {

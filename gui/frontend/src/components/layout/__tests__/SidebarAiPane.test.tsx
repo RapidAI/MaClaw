@@ -110,4 +110,16 @@ describe('SidebarAiPane digital employee tabs', () => {
         fireEvent.click(screen.getByText('History'));
         expect(screen.getByTestId('history-sessions')).toBeTruthy();
     });
+
+    it('keeps tab content in a flexible slot above system status', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('History'));
+
+        const contentSlot = screen.getByTestId('sidebar-ai-content-slot');
+        expect(contentSlot.contains(screen.getByTestId('history-sessions'))).toBe(true);
+        expect(contentSlot.contains(screen.getByTestId('system-status'))).toBe(false);
+        expect(contentSlot.style.flex).toBe('1 1 0%');
+        expect(contentSlot.style.minHeight).toBe('0px');
+    });
 });

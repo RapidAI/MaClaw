@@ -71,3 +71,58 @@ func TestRunMigrationsPreservesLegacyUsersWhenAddingFailureLogs(t *testing.T) {
 		t.Fatalf("expected failure_event_logs table to accept inserts, count=%d", count)
 	}
 }
+
+func TestRunMigrationsUpgradesLegacyFailureEventLogsWithoutTenantID(t *testing.T) {
+	provider, err := NewProvider(Config{
+		DSN:               filepath.Join(t.TempDir(), "hub-legacy-failure-logs.db"),
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  4,
+		MaxReadIdleConns:  2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	defer provider.Close()
+
+	db := provider.Write
+	now := time.Date(2026, 5, 21, 14, 1, 44, 0, time.UTC).Format(time.RFC3339)
+	legacySchema := []string{
+		`CREATE TABLE failure_event_logs (
+			id TEXT PRIMARY KEY,
+			category TEXT NOT NULL,
+			event_code TEXT NOT NULL,
+			message TEXT NOT NULL,
+			entity_id TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL DEFAULT '',
+			client_ip TEXT NOT NULL DEFAULT '',
+			details_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL
+		);`,
+		`INSERT INTO failure_event_logs (id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
+		 VALUES ('log_legacy', 'registration', 'legacy', 'old row', '', 'legacy@example.com', '', '{}', '` + now + `');`,
+	}
+	for _, stmt := range legacySchema {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("create legacy failure_event_logs schema: %v", err)
+		}
+	}
+
+	if err := RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+
+	var tenantID string
+	if err := db.QueryRow(`SELECT tenant_id FROM failure_event_logs WHERE id = 'log_legacy'`).Scan(&tenantID); err != nil {
+		t.Fatalf("query migrated tenant_id: %v", err)
+	}
+	if tenantID != "tenant_default" {
+		t.Fatalf("tenant_id = %q, want tenant_default", tenantID)
+	}
+
+	if _, err := db.Exec(`INSERT INTO failure_event_logs (id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at) VALUES ('log_new', 'tenant_default', 'registration', 'new', 'ok', '', 'new@example.com', '', '{}', ?)`, now); err != nil {
+		t.Fatalf("insert failure log after migration: %v", err)
+	}
+}

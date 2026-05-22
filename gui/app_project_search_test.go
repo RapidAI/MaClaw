@@ -112,6 +112,9 @@ func TestCreateRecentTaskAddsSearchableRecentTask(t *testing.T) {
 	if created.EntryCount != 1 {
 		t.Fatalf("EntryCount = %d, want 1", created.EntryCount)
 	}
+	if !created.HasOutput {
+		t.Fatalf("HasOutput = false, want true for manual recent task")
+	}
 	taskFile := filepath.Join(created.ProjectPath, "task.md")
 	content, err := os.ReadFile(taskFile)
 	if err != nil {
@@ -133,15 +136,64 @@ func TestCreateRecentTaskAddsSearchableRecentTask(t *testing.T) {
 	}
 }
 
+func TestSearchProjectsFiltersNonOutputRecords(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	now := time.Now()
+
+	if err := app.memoryStore.Save(memory.Entry{
+		Title:      "Small Talk Continue",
+		Content:    "Task: continue\nResult: ok",
+		Category:   memory.CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", filepath.Join(app.GetDataDir(), "tasks", "small-talk")},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("Save non-output: %v", err)
+	}
+	if err := app.memoryStore.Save(memory.Entry{
+		Title:      "Improve Recent Tasks Filtering",
+		Content:    "Task: recent tasks\nResult: Added has_output filtering",
+		Category:   memory.CategoryProjectKnowledge,
+		SourceType: "task_sediment",
+		Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", filepath.Join(app.GetDataDir(), "tasks", "output-task")},
+		CreatedAt:  now,
+		UpdatedAt:  now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("Save output: %v", err)
+	}
+
+	results := app.SearchProjects("", 10)
+	if len(results) != 1 {
+		t.Fatalf("SearchProjects returned %d records, want 1: %+v", len(results), results)
+	}
+	if results[0].Name != "Improve Recent Tasks Filtering" || !results[0].HasOutput {
+		t.Fatalf("result = %+v, want output-backed task", results[0])
+	}
+}
+
 func TestCreateRecentTaskUsesTaskNamePreview(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
-	created := app.CreateRecentTask("Review/Fix/Optimize")
-	if created.Name != "Review/Fix/Optimize" {
+	created := app.CreateRecentTask("Draft recent task filtering implementation")
+	if created.Name != "Draft recent task filtering implementation" {
 		t.Fatalf("Name = %q, want task name", created.Name)
 	}
 	if created.Preview == "Manual task placeholder." {
 		t.Fatalf("Preview = %q, want a user-facing task preview", created.Preview)
+	}
+}
+
+func TestCreateRecentTaskRejectsGenericCommandName(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	created := app.CreateRecentTask("Review/Fix/Optimize")
+	if created.ID != "" || created.Name != "" || created.ProjectPath != "" || created.HasOutput {
+		t.Fatalf("generic CreateRecentTask = %#v, want zero result", created)
+	}
+	if got := app.SearchProjects("", 10); len(got) != 0 {
+		t.Fatalf("SearchProjects returned %d records for generic task", len(got))
 	}
 }
 

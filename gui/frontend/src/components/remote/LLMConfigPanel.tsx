@@ -434,18 +434,18 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgSaving(false);
     };
 
-    if (loading) return <div style={{ padding: 16, color: colors.textMuted }}>{t("Loading...", "加载中...")}</div>;
+    if (loading) return <div className="llm-config-loading">{t("Loading...", "加载中...")}</div>;
 
     return (
-        <div style={{ padding: "0 4px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                <p style={{ fontSize: "0.72rem", color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
+        <div className="llm-config-panel">
+            <div className="llm-config-panel__intro">
+                <p>
                     {t(
                         "Select LLM provider (OpenAI / Anthropic supported)",
                         "选择 LLM 服务商（支持 OpenAI / Anthropic 协议）"
                     )}
                 </p>
-                <button onClick={openDialog} style={{
+                <button className="llm-config-primary-action" onClick={openDialog} style={{
                     fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
                     background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4, flexShrink: 0, marginLeft: 12,
                 }}>
@@ -454,15 +454,15 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             </div>
 
             {/* Current provider summary */}
-            <div style={{
+            <div className="llm-config-summary" style={{
                 marginBottom: 16, padding: "10px 16px", borderRadius: 6,
                 border: `1px solid ${colors.border}`, background: colors.surface,
                 display: "flex", justifyContent: "space-between", alignItems: "center",
             }}>
-                <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
+                <span className="llm-config-summary__label" style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
                     {t("Provider", "当前服务商")}
                 </span>
-                <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.warning : colors.danger) : colors.text }}>
+                <span className="llm-config-summary__value" style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.warning : colors.danger) : colors.text }}>
                     {isNone
                         ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
                         : currentName}
@@ -484,7 +484,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             )}
 
             {/* Max iterations — inline editable */}
-            <div style={{
+            <div className="llm-config-card" style={{
                 marginBottom: 16, padding: "12px 16px", borderRadius: 6,
                 border: `1px solid ${colors.border}`, background: colors.surface,
             }}>
@@ -510,7 +510,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             </div>
 
             {isNone && !hasHubEntitlement && (
-                <div style={{
+                <div className="llm-config-alert llm-config-alert--danger" style={{
                     padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
                     background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
                 }}>
@@ -520,34 +520,34 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
             {/* ── Config Dialog ── */}
             {dlgOpen && (
-                <div style={{
+                <div className="llm-config-dialog-overlay" style={{
                     position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
                     background: "rgba(0,0,0,0.4)", display: "flex",
                     alignItems: "center", justifyContent: "center", zIndex: 9999,
                 }} onMouseDown={closeDialog}>
-                    <div style={{
+                    <div className="llm-config-dialog" style={{
                         background: colors.surface, borderRadius: 12, padding: "24px 28px",
                         maxWidth: 520, width: "92%", maxHeight: "85vh", overflowY: "auto",
                         boxShadow: "0 16px 48px rgba(0,0,0,0.22)",
                     }} onMouseDown={e => e.stopPropagation()}>
 
                         {/* Header */}
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-                            <span style={{ fontSize: "0.92rem", fontWeight: 700, color: colors.text }}>
+                        <div className="llm-config-dialog__header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+                            <span className="llm-config-dialog__title" style={{ fontSize: "0.92rem", fontWeight: 700, color: colors.text }}>
                                 {t("MaClaw LLM Configuration", "MaClaw LLM 配置")}
                             </span>
-                            <button onClick={closeDialog} style={{
+                            <button className="llm-config-dialog__close" onClick={closeDialog} aria-label={t("Close", "关闭")} style={{
                                 border: "none", background: "transparent", cursor: "pointer",
                                 fontSize: "1.1rem", color: colors.textSecondary, padding: "0 4px",
                             }}>✕</button>
                         </div>
 
                         {/* Provider selection */}
-                        <div style={{ marginBottom: 16 }}>
+                        <div className="llm-config-provider-section" style={{ marginBottom: 16 }}>
                             <label style={labelStyle}>{t("Select Provider", "选择服务商")}</label>
-                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            <div className="llm-config-provider-grid" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {hasHubEntitlement && !hasHubProviderInDialog && (
-                                    <button onClick={dlgSelectHubService} style={{
+                                    <button className="llm-config-provider-chip" onClick={dlgSelectHubService} style={{
                                         fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                         background: dlgHubSelected ? colors.primaryLight : colors.surface,
                                         color: dlgHubSelected ? colors.primaryDark : colors.text,
@@ -566,10 +566,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 {dlgProviders.map((p, i) => {
                                     const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
                                     const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = { "OpenAI": "\u5bcc\u5bb6\u5c0f\u5b50", "\u667a\u8c31\u9f99\u867e": "\u806a\u660e\u4f36\u4fd0", "\u667a\u8c31\u7f16\u7a0b": "\u5199\u7801\u98de\u5feb", "MiniMax": "\u61a8\u539a\u8001\u5b9e", "\u8baf\u98de\u661f\u8fb0": "\u661f\u8fb0\u5927\u6d77" };
+                                    const badge: Record<string, string> = {};
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
                                     return (
-                                        <button key={i} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
+                                        <button className="llm-config-provider-chip" key={i} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                             background: active ? colors.primaryLight : colors.surface,
                                             color: active ? colors.primaryDark : colors.text,
@@ -592,7 +592,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     );
                                 })}
                                 {/* "None" button */}
-                                <button onClick={() => dlgSelectProvider(null)} style={{
+                                <button className="llm-config-provider-chip" onClick={() => dlgSelectProvider(null)} style={{
                                     fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                     background: dlgIsNone ? colors.primaryLight : colors.surface,
                                     color: dlgIsNone ? colors.primaryDark : colors.text,
@@ -606,12 +606,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
                         {/* None warning */}
                         {dlgIsNone && (
-                            <div style={{
+                            <div className="llm-config-alert llm-config-alert--danger" style={{
                                 padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
                                 background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
                                 marginBottom: 16,
                             }}>
-                                ⚠️ {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
+                                {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
                             </div>
                         )}
 
@@ -681,11 +681,11 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
                         {/* Provider config fields */}
                         {!dlgIsNone && dlgProvider && (
-                            <div style={{
+                            <div className="llm-config-form-card" style={{
                                 marginBottom: 16, padding: "14px", borderRadius: 6,
                                 border: `1px solid ${colors.border}`, background: colors.bg,
                             }}>
-                                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 12 }}>
+                                <div className="llm-config-form-card__title" style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 12 }}>
                                     {dlgProvider.is_custom
                                         ? t("Custom Provider Configuration", "自定义服务商配置")
                                         : `${dlgProvider.name} ${t("Configuration", "配置")}`}
@@ -804,19 +804,19 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         ) : dlgProvider.auth_type === "oauth" ? (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {providerModels.length > 0
-                                                    ? t("(select or edit)", "（可选择或手动修改）")
-                                                    : t("(editable, click List to browse)", "（可修改，可点击 List 浏览）")}
+                                                    ? t("(select model)", "（选择模型）")
+                                                    : t("(click List to browse)", "（可点击 List 浏览）")}
                                             </span>
                                         ) : dlgProvider.is_custom ? (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {providerModels.length > 0
-                                                    ? t("(select or edit)", "（可选择或手动修改）")
+                                                    ? t("(select model)", "（选择模型）")
                                                     : t("(click List to browse)", "（可点击 List 浏览）")}
                                             </span>
                                         ) : (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {providerModels.length > 0
-                                                    ? t("(select or edit)", "（可选择或手动修改）")
+                                                    ? t("(select model)", "（选择模型）")
                                                     : t("(preset, click List to browse)", "（预设，可点击 List 浏览可用模型）")}
                                             </span>
                                         )}
@@ -840,25 +840,29 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
                                         )
                                     ) : (
-                                        /* All other providers: input + List button + dropdown */
+                                        /* All other providers: fetch models, then choose from the dropdown. */
                                         <div style={{ position: "relative" }}>
                                             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                                                {providerModels.length > 0 ? (
-                                                    <select style={{ ...inputStyle, flex: 1 }} value={dlgProvider.model}
-                                                        onChange={e => dlgUpdateField("model", e.target.value)}>
-                                                        {!providerModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
-                                                            <option value={dlgProvider.model}>{dlgProvider.model}</option>
-                                                        )}
-                                                        {providerModels.map(m => (
-                                                            <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
-                                                        ))}
-                                                    </select>
-                                                ) : (
-                                                    <input style={{ ...inputStyle, flex: 1 }} value={dlgProvider.model}
-                                                        onChange={e => dlgUpdateField("model", e.target.value)}
-                                                        placeholder={providerModelsFetching ? t("Loading...", "加载中...") : "gpt-5.4"}
-                                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
-                                                )}
+                                                <select
+                                                    style={{ ...inputStyle, flex: 1 }}
+                                                    value={dlgProvider.model || ""}
+                                                    onChange={e => dlgUpdateField("model", e.target.value)}
+                                                    disabled={providerModelsFetching || providerModels.length === 0}
+                                                >
+                                                    <option value="">
+                                                        {providerModelsFetching
+                                                            ? t("Loading...", "加载中...")
+                                                            : providerModels.length === 0
+                                                                ? t("Click List to fetch models first", "请先点击 List 获取模型")
+                                                                : t("Select a model", "请选择模型")}
+                                                    </option>
+                                                    {!providerModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
+                                                        <option value={dlgProvider.model}>{t("Current", "当前配置")}：{dlgProvider.model}</option>
+                                                    )}
+                                                    {providerModels.map(m => (
+                                                        <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                                    ))}
+                                                </select>
                                                 {/* List button — visible when URL and Key are available */}
                                                 {dlgProvider.url && dlgProvider.key && (
                                                     <button

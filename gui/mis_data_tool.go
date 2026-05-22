@@ -55,7 +55,8 @@ type AgentViewSubmitPayload struct {
 }
 
 type AgentViewDismissPayload struct {
-	ViewID string `json:"view_id"`
+	ViewID string                 `json:"view_id"`
+	Data   map[string]interface{} `json:"data,omitempty"`
 }
 
 func (a *App) SubmitAgentView(payload AgentViewSubmitPayload) (*IMAgentResponse, error) {
@@ -69,19 +70,24 @@ func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentRespons
 
 	// When a workflow form is dismissed, mark the form as skipped so the
 	// engine doesn't re-show it on the next HandleInput call.
-	if strings.HasPrefix(strings.TrimSpace(payload.ViewID), "workflow:form:") {
+	if phaseID, ok := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "workflow:form:"); ok {
 		hubClient := a.ensureHubClient()
 		if hubClient != nil {
 			handler := hubClient.ensureIMHandler()
 			if engine := handler.getWorkflowEngine(); engine != nil {
-				if err := engine.SkipPhaseForm(handler.lastUserID); err != nil {
-					return nil, fmt.Errorf("skip workflow form: %w", err)
+				userID := resolveWorkflowFormUserID(handler, engine, strings.TrimSpace(phaseID), payload.Data)
+				if workflowFormMatchesActiveWorkflow(engine, userID, strings.TrimSpace(phaseID), payload.Data) {
+					if err := engine.SkipPhaseForm(userID); err != nil {
+						return nil, fmt.Errorf("skip workflow form: %w", err)
+					}
 				}
+				// Closing a stale or ambiguous workflow form should not block panel dismissal.
+				// Submit still validates workflow identity; dismiss can safely be best-effort.
 			}
 		}
 	}
 
-	resp := &IMAgentResponse{Text: "Task panel closed.", ResponseSource: imResponseSourceAgentViewDismiss.String()}
+	resp := &IMAgentResponse{Text: avTr("Task panel closed.", "任务面板已关闭。"), ResponseSource: imResponseSourceAgentViewDismiss.String()}
 	normalizeArtifactResponseSource(resp)
 	return resp, nil
 }
@@ -90,7 +96,9 @@ func (a *App) handleAgentViewControlMessage(text string) (*IMAgentResponse, bool
 	control := classifyAgentViewControlMessage(text)
 	if control.Kind == agentViewControlMessageDismiss {
 		var payload AgentViewDismissPayload
-		_ = json.Unmarshal([]byte(control.Raw), &payload)
+		if err := json.Unmarshal([]byte(control.Raw), &payload); err != nil {
+			return &IMAgentResponse{Text: avTr("Invalid task panel dismissal.", "任务面板关闭请求无效。"), Error: err.Error(), ResponseSource: imResponseSourceAgentViewDismiss.String()}, true, nil
+		}
 		resp, err := a.DismissAgentView(payload)
 		return resp, true, err
 	}
@@ -99,7 +107,7 @@ func (a *App) handleAgentViewControlMessage(text string) (*IMAgentResponse, bool
 	}
 	var payload AgentViewSubmitPayload
 	if err := json.Unmarshal([]byte(control.Raw), &payload); err != nil {
-		return &IMAgentResponse{Text: "Invalid task panel submission.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}, true, nil
+		return &IMAgentResponse{Text: avTr("Invalid task panel submission.", "任务面板提交无效。"), Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}, true, nil
 	}
 	return a.handleAgentViewSubmitPayload(payload), true, nil
 }
@@ -112,7 +120,7 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 	startSeq := a.agentViewSeq()
 	defer func() {
 		if resp == nil {
-			resp = &IMAgentResponse{Text: "Task panel submission failed.", Error: "empty agent view response", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+			resp = &IMAgentResponse{Text: avTr("Task panel submission failed.", "任务面板提交失败。"), Error: "empty agent view response", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		if a.agentViewSeq() != startSeq {
 			return
@@ -137,19 +145,19 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 	case misAgentViewIDToolApproval:
 		hubClient := a.ensureHubClient()
 		if hubClient == nil {
-			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+			return &IMAgentResponse{Text: avTr("AI assistant is not initialized.", "AI 助手尚未初始化。"), Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		return hubClient.ensureIMHandler().handleRegisteredToolApprovalAgentViewSubmit(payload.Data)
 	case misAgentViewIDToolRun:
 		hubClient := a.ensureHubClient()
 		if hubClient == nil {
-			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+			return &IMAgentResponse{Text: avTr("AI assistant is not initialized.", "AI 助手尚未初始化。"), Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		return hubClient.ensureIMHandler().handleRegisteredToolAgentViewSubmit(viewID.Arg, payload.Data)
 	case misAgentViewIDMCPCall:
 		hubClient := a.ensureHubClient()
 		if hubClient == nil {
-			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+			return &IMAgentResponse{Text: avTr("AI assistant is not initialized.", "AI 助手尚未初始化。"), Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		return hubClient.ensureIMHandler().handleMCPToolAgentViewSubmit(payload.Data)
 	case misAgentViewIDChooseIntent:
@@ -163,7 +171,7 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 	case misAgentViewIDWorkflowForm:
 		return a.handleWorkflowFormAgentViewSubmit(viewID.Arg, payload.Data)
 	default:
-		return &IMAgentResponse{Text: "Task panel submission received.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+		return &IMAgentResponse{Text: avTr("Task panel submission received.", "任务面板提交已收到。"), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 }
 
@@ -172,7 +180,7 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 func (a *App) handleMISIntentAgentViewSubmit(actionID string, data map[string]interface{}) *IMAgentResponse {
 	actionID = strings.TrimSpace(actionID)
 	if actionID == "" {
-		return &IMAgentResponse{Text: "Task panel submission received.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+		return &IMAgentResponse{Text: avTr("Task panel submission received.", "任务面板提交已收到。"), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	submittedData := sanitizeMISAgentViewSubmittedData(data)
 	transactionID := ensureMISBusinessTransaction(extractMISAgentViewTransactionID(data), actionID, "", "", "", "", submittedData, imResponseSourceAgentViewSubmit.String())

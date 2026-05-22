@@ -17,6 +17,7 @@ interface ProjectSearchItem {
     entry_count?: number;
     pinned?: boolean;
     archived?: boolean;
+    has_output?: boolean;
     source_urls?: string[];
     recent_artifacts?: ProjectSearchArtifact[];
 }
@@ -53,7 +54,7 @@ export function useProjectSearch(lang: string) {
     const doSearch = useCallback((q: string) => {
         setLoading(true);
         SearchProjects(q, 10)
-            .then(r => setResults((r || []) as ProjectSearchItem[]))
+            .then(r => setResults(((r || []) as ProjectSearchItem[]).filter(item => item.has_output !== false)))
             .catch(() => setResults([]))
             .finally(() => setLoading(false));
     }, []);
@@ -108,6 +109,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
     const [archivedLoading, setArchivedLoading] = useState(false);
     const [sceneDetail, setSceneDetail] = useState<ProjectSceneDetail | null>(null);
     const [sceneLoadingPath, setSceneLoadingPath] = useState<string | null>(null);
+    const visibleResults = search.results.filter(item => item.has_output !== false);
 
     useEffect(() => { if (search.open) inputRef.current?.focus(); }, [search.open]);
     useEffect(() => {
@@ -190,8 +192,8 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
             </div>
             <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
                 {search.loading && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
-                {!search.loading && search.results.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "\u672a\u627e\u5230\u4efb\u52a1") : localizeText(lang, "No recent tasks", "\u6682\u65e0\u6700\u8fd1\u4efb\u52a1")}</div>}
-                {!search.loading && search.results.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
+                {!search.loading && visibleResults.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "\u672a\u627e\u5230\u4efb\u52a1") : localizeText(lang, "No recent tasks", "\u6682\u65e0\u6700\u8fd1\u4efb\u52a1")}</div>}
+                {!search.loading && visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
             </div>
             {(sceneLoadingPath || sceneDetail) && <ProjectSceneDetailPanel detail={sceneDetail} loading={!!sceneLoadingPath} lang={lang} theme={t} formatTime={search.formatTime} onClose={() => setSceneDetail(null)} />}
             {ctxMenu && <ProjectSearchContextMenu ctxMenu={ctxMenu} lang={lang} theme={t} refreshResults={refreshResults} setCtxMenu={setCtxMenu} setRenamingPath={setRenamingPath} setRenameVal={setRenameVal} />}

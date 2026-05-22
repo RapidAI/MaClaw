@@ -5,7 +5,6 @@ import {
     GetMaclawLLMProviders,
 } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
-import { colors } from "./styles";
 
 interface TokenUsageStat {
     input_tokens?: number;
@@ -27,10 +26,10 @@ interface TokenUsageStat {
 }
 
 const providerAliases: Record<string, string[]> = {
-    "智谱龙虾": ["智谱", "GLM(智谱)", "GLM (智谱)"],
-    "智谱": ["智谱龙虾", "GLM(智谱)", "GLM (智谱)"],
-    "GLM(智谱)": ["智谱", "智谱龙虾", "GLM (智谱)"],
-    "GLM (智谱)": ["智谱", "智谱龙虾", "GLM(智谱)"],
+    "智谱龙芯": ["智谱", "GLM(智谱)", "GLM (智谱)"],
+    "智谱": ["智谱龙芯", "GLM(智谱)", "GLM (智谱)"],
+    "GLM(智谱)": ["智谱", "智谱龙芯", "GLM (智谱)"],
+    "GLM (智谱)": ["智谱", "智谱龙芯", "GLM(智谱)"],
 };
 
 type Props = { lang: string };
@@ -90,7 +89,7 @@ const getPreferredProvider = (providerNames: string[], currentProviderName: stri
 
 export function TokenUsagePanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
-        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+        lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en, [lang]);
 
     const [providers, setProviders] = useState<string[]>([]);
     const [currentProvider, setCurrentProvider] = useState("");
@@ -113,11 +112,7 @@ export function TokenUsagePanel({ lang }: Props) {
             setProviders(nextProviders);
             setCurrentProvider(nextCurrent);
             setSelectedProvider((prev) => {
-                const preferredProvider = getPreferredProvider(
-                    nextProviders,
-                    nextCurrent || prev,
-                    normalizedUsageMap,
-                );
+                const preferredProvider = getPreferredProvider(nextProviders, nextCurrent || prev, normalizedUsageMap);
                 if (prev && nextProviders.includes(prev) && (hasUsage(normalizedUsageMap, prev) || !preferredProvider)) {
                     return prev;
                 }
@@ -174,112 +169,78 @@ export function TokenUsagePanel({ lang }: Props) {
         return n.toFixed(n >= 100 ? 2 : 4).replace(/0+$/, "").replace(/\.$/, "") || "0";
     };
 
-    const statRowStyle: React.CSSProperties = {
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "4px 0", fontSize: "0.76rem",
-    };
-
     return (
-        <div style={{
-            padding: "10px 14px", borderRadius: 8,
-            border: `1px solid ${colors.border}`, background: colors.surface,
-            marginTop: 12,
-        }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text }}>
-                    {t("Token Usage Stats", "Token 用量统计")}
+        <div className="token-usage-panel">
+            <div className="token-usage-panel__header">
+                <span className="token-usage-panel__title">
+                    {t("Token Usage Stats", "Token 用量统计", "Token 用量統計")}
                 </span>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button onClick={() => void loadData()} disabled={loading} style={{
-                        fontSize: "0.7rem", padding: "2px 8px", borderRadius: 4,
-                        background: colors.bg, color: colors.textSecondary,
-                        border: `1px solid ${colors.border}`, cursor: loading ? "default" : "pointer",
-                    }}>
-                        {loading ? "..." : t("Refresh", "刷新")}
+                <div className="token-usage-panel__header-actions">
+                    <button onClick={() => void loadData()} disabled={loading} className="token-usage-panel__secondary-button">
+                        {loading ? "..." : t("Refresh", "刷新", "重新整理")}
                     </button>
                 </div>
             </div>
 
-            <div style={{ marginBottom: 8 }}>
+            <div className="token-usage-panel__select-wrap">
                 <select
                     value={selectedProvider}
                     onChange={e => setSelectedProvider(e.target.value)}
-                    style={{
-                        width: "100%", padding: "5px 8px", fontSize: "0.76rem",
-                        border: `1px solid ${colors.border}`, borderRadius: 4,
-                        background: colors.bg, color: colors.text,
-                    }}
+                    className="token-usage-panel__select"
                 >
                     {providers.map(name => (
                         <option key={name} value={name}>
-                            {name}{name === currentProvider ? t(" (current)", " (当前)") : ""}
+                            {name}{name === currentProvider ? t(" (current)", " (当前)", " (目前)") : ""}
                         </option>
                     ))}
                 </select>
             </div>
 
             {usage && (
-                <div>
-                    <div style={statRowStyle}>
-                        <span style={{ color: colors.textSecondary }}>Input Tokens</span>
-                        <span style={{ fontWeight: 600, color: "var(--theme-primary)" }}>{formatTokens(usage.input_tokens)}</span>
+                <div className="token-usage-panel__stats">
+                    <div className="token-usage-panel__stat-row">
+                        <span>Input Tokens</span>
+                        <strong className="is-primary">{formatTokens(usage.input_tokens)}</strong>
                     </div>
-                    <div style={statRowStyle}>
-                        <span style={{ color: colors.textSecondary }}>Output Tokens</span>
-                        <span style={{ fontWeight: 600, color: "var(--theme-primary-strong)" }}>{formatTokens(usage.output_tokens)}</span>
+                    <div className="token-usage-panel__stat-row">
+                        <span>Output Tokens</span>
+                        <strong className="is-primary-strong">{formatTokens(usage.output_tokens)}</strong>
                     </div>
                     {(usage.cached_input_tokens > 0 || usage.cache_write_tokens > 0) && (
                         <>
-                            <div style={statRowStyle}>
-                                <span style={{ color: colors.textSecondary }}>{t("Cache Read", "缓存读取")}</span>
-                                <span style={{ fontWeight: 600, color: colors.success }}>{formatTokens(usage.cached_input_tokens)}</span>
+                            <div className="token-usage-panel__stat-row">
+                                <span>{t("Cache Read", "缓存读取", "快取讀取")}</span>
+                                <strong className="is-success">{formatTokens(usage.cached_input_tokens)}</strong>
                             </div>
-                            <div style={statRowStyle}>
-                                <span style={{ color: colors.textSecondary }}>{t("Cache Write", "缓存写入")}</span>
-                                <span style={{ fontWeight: 600, color: colors.textSecondary }}>{formatTokens(usage.cache_write_tokens)}</span>
+                            <div className="token-usage-panel__stat-row">
+                                <span>{t("Cache Write", "缓存写入", "快取寫入")}</span>
+                                <strong>{formatTokens(usage.cache_write_tokens)}</strong>
                             </div>
                         </>
                     )}
                     {usage.requests > 0 && (
-                        <div style={statRowStyle}>
-                            <span style={{ color: colors.textSecondary }}>{t("Cache Hit Rate", "缓存命中率")}</span>
-                            <span style={{ fontWeight: 600, color: colors.text }}>
-                                {Math.round((usage.cached_requests / usage.requests) * 100)}%
-                            </span>
+                        <div className="token-usage-panel__stat-row">
+                            <span>{t("Cache Hit Rate", "缓存命中率", "快取命中率")}</span>
+                            <strong>{Math.round((usage.cached_requests / usage.requests) * 100)}%</strong>
                         </div>
                     )}
-                    <div style={{
-                        ...statRowStyle,
-                        borderTop: `1px solid ${colors.border}`, paddingTop: 6, marginTop: 2,
-                    }}>
-                        <span style={{ color: colors.textSecondary, fontWeight: 600 }}>{t("Total", "总计")}</span>
-                        <span style={{ fontWeight: 700, fontSize: "0.82rem", color: colors.text }}>
-                            {formatTokens(usage.total_tokens)}
-                        </span>
+                    <div className="token-usage-panel__stat-row token-usage-panel__stat-row--total">
+                        <span>{t("Total", "总计", "總計")}</span>
+                        <strong>{formatTokens(usage.total_tokens)}</strong>
                     </div>
-                    <div style={statRowStyle}>
-                        <span style={{ color: colors.textSecondary, fontWeight: 600 }}>{t("Cost (RMB)", "费用（元）")}</span>
-                        <span style={{ fontWeight: 700, fontSize: "0.82rem", color: colors.text }}>
-                            ¥{formatRMB(usage.total_cost_rmb)}
-                        </span>
+                    <div className="token-usage-panel__stat-row token-usage-panel__stat-row--total-text">
+                        <span>{t("Cost (RMB)", "费用（元）", "費用（元）")}</span>
+                        <strong>{"\u00a5"}{formatRMB(usage.total_cost_rmb)}</strong>
                     </div>
                 </div>
             )}
 
-            <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
-                <button onClick={() => handleReset(selectedProvider)} style={{
-                    fontSize: "0.7rem", padding: "3px 10px", borderRadius: 4,
-                    background: "transparent", color: colors.danger,
-                    border: `1px solid ${colors.danger}`, cursor: "pointer",
-                }}>
-                    {t("Reset Current", "重置当前")}
+            <div className="token-usage-panel__actions">
+                <button onClick={() => handleReset(selectedProvider)} className="token-usage-panel__danger-button">
+                    {t("Reset Current", "重置当前", "重置目前")}
                 </button>
-                <button onClick={() => handleReset("")} style={{
-                    fontSize: "0.7rem", padding: "3px 10px", borderRadius: 4,
-                    background: "transparent", color: colors.danger,
-                    border: `1px solid ${colors.danger}`, cursor: "pointer",
-                }}>
-                    {t("Reset All", "重置全部")}
+                <button onClick={() => handleReset("")} className="token-usage-panel__danger-button">
+                    {t("Reset All", "重置全部", "重置全部")}
                 </button>
             </div>
         </div>

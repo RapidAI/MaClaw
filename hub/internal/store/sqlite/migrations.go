@@ -6,6 +6,25 @@ import (
 	"strings"
 )
 
+func isIgnorableMigrationError(err error) bool {
+	if err == nil {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column name") ||
+		strings.Contains(msg, "already exists")
+}
+
+func isDeferredLegacyColumnMigrationError(stmt string, err error) bool {
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no such column") {
+		return false
+	}
+	stmt = strings.TrimSpace(strings.ToLower(stmt))
+	return strings.HasPrefix(stmt, "create index") ||
+		strings.HasPrefix(stmt, "create unique index") ||
+		strings.HasPrefix(stmt, "delete from mcp_secret_requirements")
+}
+
 func RunMigrations(db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS tenants (
@@ -669,7 +688,7 @@ func RunMigrations(db *sql.DB) error {
 	}
 
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.Exec(stmt); err != nil && !isDeferredLegacyColumnMigrationError(stmt, err) {
 			return fmt.Errorf("run migration: %w", err)
 		}
 	}
@@ -733,7 +752,7 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_workflow_states_tenant_user ON workflow_states(tenant_id, user_id)`)
 
 	for _, stmt := range alterStmts {
-		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
+		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {
 			return fmt.Errorf("run alter migration: %w", err)
 		}
 	}

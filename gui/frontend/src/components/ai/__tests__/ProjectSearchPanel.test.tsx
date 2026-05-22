@@ -107,6 +107,27 @@ describe("ProjectSearchPanel", () => {
         expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("D:/refs/decision.md");
     });
 
+    it("hides search results without tangible output", () => {
+        const search = makeSearch([
+            { id: "chat", name: "Chat only", project_path: "D:/p/chat", has_output: false },
+            { id: "out", name: "Saved output", project_path: "D:/p/output", has_output: true },
+        ]);
+
+        renderPanel(search);
+
+        expect(screen.queryByText("Chat only")).toBeNull();
+        expect(screen.getByText("Saved output")).toBeTruthy();
+    });
+
+    it("shows an empty search state when only non-output records remain", () => {
+        const search = makeSearch([{ id: "chat", name: "Chat only", project_path: "D:/p/chat", has_output: false }]);
+
+        renderPanel(search);
+
+        expect(screen.getByText("No recent tasks")).toBeTruthy();
+        expect(screen.queryByText("Chat only")).toBeNull();
+    });
+
     it("falls back to ResumeProject when project tabs are unavailable", async () => {
         const search = makeSearch([{ id: "p2", name: "Fallback task", project_path: "D:/p/fallback" }]);
         const onProjectSwitch = vi.fn();

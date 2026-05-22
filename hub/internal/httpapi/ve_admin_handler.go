@@ -265,7 +265,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 		registry := loadVERegistry(r.Context(), system)
 		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
 		for _, entry := range registry.Employees {
-			if entry.Status != veStatusActive || entry.MachineID == principal.MachineID {
+			if entry.Status != veStatusActive || strings.EqualFold(strings.TrimSpace(entry.MachineID), strings.TrimSpace(principal.MachineID)) {
 				continue
 			}
 			if !veAccessAllowed(entry, principal.UserID) {
@@ -328,7 +328,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 		if topic == "" {
 			topic = "Digital employee conversation"
 		}
-		session, err := groupSvc.CreateSession(requestGroupDiscussionTenantID(r), CreateSessionRequest{
+		session, err := groupSvc.CreateSession(store.NormalizeTenantID(principal.TenantID), CreateSessionRequest{
 			Topic: "数字员工会话：" + topic,
 			Goal:  "Direct discussion with " + topic,
 			Participants: []coreliba2a.Participant{
@@ -353,7 +353,9 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 }
 func VEAdminActionHandler(system store.SystemSettingsRepository, action string, senders ...veMachineEventSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForRequest(r, system)
+		tenantID := RequestTenantID(r)
 		veID := strings.TrimSpace(r.PathValue("id"))
 		if veID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
@@ -404,7 +406,53 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 			return
 		}
 		emitVEAdminActionEvent(firstVEMachineEventSender(senders...), action, entry)
+		postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, action, entry)
 		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+	}
+}
+
+func postPlatformEmployeeActionCallback(ctx context.Context, system store.SystemSettingsRepository, tenantID, action string, entry digitalEmployeeEntry) {
+	if system == nil || strings.TrimSpace(entry.PlatformID) == "" || strings.TrimSpace(entry.PlatformEmployeeID) == "" {
+		return
+	}
+	reg := loadPlatformProviderRegistry(ctx, system)
+	idx := reg.find(entry.PlatformID)
+	if idx < 0 {
+		return
+	}
+	provider := reg.Providers[idx]
+	if strings.TrimSpace(provider.CallbackBaseURL) == "" || strings.TrimSpace(provider.CallbackSecret) == "" || strings.TrimSpace(provider.RegistrationStatus) != "active" {
+		return
+	}
+	payload := map[string]any{
+		"employee_id":     strings.TrimSpace(entry.PlatformEmployeeID),
+		"hub_tenant_id":   strings.TrimSpace(tenantID),
+		"hub_employee_id": firstNonEmpty(entry.ID, entry.MachineID),
+		"hub_account_id":  strings.TrimSpace(entry.OwnerUserID),
+		"hub_status":      platformEmployeeCallbackHubStatus(action, entry.Status),
+		"message":         "digital employee " + strings.TrimSpace(action) + " in Hub",
+	}
+	go postPlatformCallback(provider, "/api/hub/callback/employee", payload)
+}
+
+func platformEmployeeCallbackHubStatus(action, status string) string {
+	switch strings.TrimSpace(action) {
+	case "approve":
+		return "published"
+	case "reject":
+		return "failed"
+	case "disable":
+		return "disabled"
+	}
+	switch strings.TrimSpace(status) {
+	case veStatusActive:
+		return "published"
+	case veStatusDisabled:
+		return "disabled"
+	case veStatusRejected:
+		return "failed"
+	default:
+		return ""
 	}
 }
 

@@ -357,11 +357,23 @@ func (m *SSHSessionManager) RecordExecFailure(sessionID string) int {
 	return count
 }
 
-// WaitForOutput 智能等待命令输出完成。
-// 不再盲等固定秒数，而是检测输出是否稳定（连续 stableRounds 次轮询无新输出即认为完成）。
-// 对于长时间运行的命令（如 du、find），使用更宽松的稳定阈值避免误判。
-// maxWait 是最大等待时间上限。
-// 超时后自动发送 Ctrl+C 中断可能挂起的命令，防止 shell 被锁住。
+// WaitForOutput 等待命令输出完成。
+//
+// 完成检测机制（Prompt-Driven Completion Detection）：
+//
+// 核心原理：命令执行完毕后，shell 会打印新的 prompt（如 root@server:~# ）。
+// 这是命令完成的唯一确定性信号。"沉默时间"只是辅助 fallback。
+//
+// 检测优先级：
+//   1. 会话退出（SessionExited/SessionError）→ 立即返回
+//   2. Shell prompt 出现在新输出的最后一行 → 立即返回（主信号，零延迟）
+//   3. 稳定性 fallback：连续无新输出超过阈值 → 返回（辅助信号）
+//
+// 两阶段稳定阈值：
+//   - 阶段 1（等待首行实际输出）：命令回显后，等待实际输出出现。阈值较高（~4s）。
+//   - 阶段 2（等待输出结束）：已有实际输出，等待输出停止。阈值较低（~2.4s）。
+//
+// maxWait 是最大等待时间上限。超时后发送 Ctrl+C 防止 shell 被锁住。
 func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWait time.Duration) ([]string, SessionStatus) {
 	s, ok := m.Get(sessionID)
 	if !ok {
@@ -373,14 +385,24 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 	}
 
 	const pollInterval = 300 * time.Millisecond
-	// 提高稳定阈值：连续 8 次（约 2.4s）无新输出才判定完成，
-	// 避免 du/find 等命令在扫描大目录时短暂停顿被误判。
-	const stableThreshold = 8
+
+	// 阶段 1 稳定阈值：等待首行实际输出出现。
+	// 13 次 × 300ms ≈ 3.9s — 覆盖 cp/docker/apt 等命令的启动延迟。
+	const phase1StableThreshold = 13
+
+	// 阶段 2 稳定阈值：已有实际输出，等待输出停止。
+	// 8 次 × 300ms ≈ 2.4s — 命令已在输出，短暂停顿后判定完成。
+	const phase2StableThreshold = 8
+
+	// 从阶段 1 进入阶段 2 的条件：收到超过 1 行新输出（排除命令回显本身）。
+	// PTY 回显通常是 1-2 行（命令文本 + 可能的换行），实际输出从第 3 行开始。
+	const phase2TriggerLines = 3
 
 	deadline := time.Now().Add(maxWait)
 	stableCount := 0
 	lastLineCount := afterLine
 	exitedByBreak := false
+	totalNewLines := 0
 
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
@@ -397,19 +419,35 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 		}
 
 		if currentCount > lastLineCount {
-			// 有新输出，重置稳定计数
+			// 有新输出
+			totalNewLines += currentCount - lastLineCount
 			stableCount = 0
 			lastLineCount = currentCount
+
+			// 主信号：每次有新输出时检查最后一行是否是 shell prompt。
+			// 如果是，说明命令已完成，shell 在等待下一条命令。立即返回。
+			// 只在收到至少 2 行后才检查（第 1 行通常是命令回显）。
+			if totalNewLines >= 2 && looksLikeShellPrompt(s.PreviewTail(1)) {
+				exitedByBreak = true
+				break
+			}
 		} else {
 			stableCount++
-			if stableCount >= stableThreshold {
-				// 额外检查：如果最后一行看起来像 shell prompt，说明命令确实结束了
+
+			// 辅助信号：稳定性 fallback
+			threshold := phase1StableThreshold
+			if totalNewLines >= phase2TriggerLines {
+				threshold = phase2StableThreshold
+			}
+
+			if stableCount >= threshold {
+				// 再次检查 prompt（可能在之前的轮询间隙中出现）
 				if looksLikeShellPrompt(s.PreviewTail(1)) {
 					exitedByBreak = true
 					break
 				}
-				// 不像 prompt，可能命令还在跑但暂时没输出，再多等几轮
-				if stableCount >= stableThreshold+4 {
+				// 不像 prompt，再多等几轮
+				if stableCount >= threshold+4 {
 					exitedByBreak = true
 					break
 				}
@@ -417,14 +455,11 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 		}
 	}
 
-	// 超时检测：如果循环因 deadline 到期退出（非 break），
-	// 且最后一行不像 shell prompt，说明命令可能挂起了
-	// （如 sqlite3 锁、交互式程序等）。
-	// 发送 Ctrl+C 尝试中断，防止 shell 被锁住影响后续命令。
+	// 超时处理：deadline 到期且非 break 退出。
+	// 如果最后一行不是 prompt，命令可能挂起了。发送 Ctrl+C 中断。
 	timedOut := !exitedByBreak && !looksLikeShellPrompt(s.PreviewTail(1))
 	if timedOut && s.Handle != nil {
 		_ = s.Handle.Interrupt()
-		// 等待 Ctrl+C 生效并收集中断输出
 		time.Sleep(500 * time.Millisecond)
 	}
 
@@ -435,18 +470,94 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 	return lines, status
 }
 
-// looksLikeShellPrompt 简单判断最后一行是否像 shell prompt。
-// 常见 prompt 模式：以 $ # > % 结尾。
+// looksLikeShellPrompt 判断最后一行是否像 shell prompt。
+// 常见 prompt 模式：以 $ # > % 结尾（可能跟随空格）。
+// 处理 ANSI 转义序列：PTY 输出的 prompt 通常包含颜色/标题设置等转义码，
+// 需要剥离后再检查末尾字符。
+//
+// 为避免误判（如 `echo "price is 100$"` 的输出以 $ 结尾），
+// 增加结构性验证：真正的 prompt 通常包含 user@host:path 格式的前缀。
 func looksLikeShellPrompt(lines []string) bool {
 	if len(lines) == 0 {
 		return false
 	}
-	last := strings.TrimRight(lines[len(lines)-1], " \t")
+	last := lines[len(lines)-1]
+	// 剥离 ANSI 转义序列（CSI 和 OSC）
+	last = stripANSIForPromptCheck(last)
+	last = strings.TrimRight(last, " \t\r\n")
 	if last == "" {
 		return false
 	}
 	lastChar := last[len(last)-1]
-	return lastChar == '$' || lastChar == '#' || lastChar == '>' || lastChar == '%'
+	if lastChar != '$' && lastChar != '#' && lastChar != '>' && lastChar != '%' {
+		return false
+	}
+
+	// 结构性验证：真正的 shell prompt 通常包含以下特征之一：
+	//   - user@host 格式（含 @）
+	//   - 路径分隔符（含 : 或 ~）
+	//   - 纯 $ 或 # 或 > 或 %（单字符 prompt，如 sh 的默认 prompt）
+	if len(last) == 1 {
+		return true // 纯单字符 prompt（sh 默认）
+	}
+	// 检查 prompt 前缀是否有结构性特征
+	prefix := last[:len(last)-1]
+	return strings.ContainsAny(prefix, "@:~")
+}
+
+// stripANSIForPromptCheck 剥离 ANSI 转义序列用于 prompt 检测。
+// 支持 CSI (\x1b[...X) 和 OSC (\x1b]...BEL/ST) 两种常见格式。
+func stripANSIForPromptCheck(s string) string {
+	var result []byte
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			i++
+			if i >= len(s) {
+				break
+			}
+			if s[i] == '[' {
+				// CSI sequence: \x1b[ ... (终止于 0x40-0x7E)
+				i++
+				for i < len(s) && (s[i] < 0x40 || s[i] > 0x7E) {
+					i++
+				}
+				if i < len(s) {
+					i++ // 跳过终止字符
+				}
+			} else if s[i] == ']' {
+				// OSC sequence: \x1b] ... (终止于 BEL=0x07 或 ST=\x1b\\)
+				i++
+				for i < len(s) {
+					if s[i] == 0x07 {
+						i++
+						break
+					}
+					if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+			} else {
+				// 其他转义序列：
+				// - \x1b(X / \x1b)X：字符集选择（2 字符参数）
+				// - \x1bX：其他单字符转义
+				if i < len(s) && (s[i] == '(' || s[i] == ')') {
+					i++ // 跳过 ( 或 )
+					if i < len(s) {
+						i++ // 跳过字符集标识符（如 B）
+					}
+				} else if i < len(s) {
+					i++ // 跳过单字符
+				}
+			}
+		} else {
+			result = append(result, s[i])
+			i++
+		}
+	}
+	return string(result)
 }
 
 // Interrupt 向 SSH 会话发送 Ctrl+C。

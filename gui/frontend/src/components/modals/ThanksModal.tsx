@@ -11,21 +11,9 @@ type ThanksModalProps = {
 
 export const ThanksModal = ({ content, t, onClose }: ThanksModalProps) => (
     <div className="modal-overlay">
-        <div className="modal-content elegant-scrollbar" style={{ maxWidth: '600px', maxHeight: '80vh', overflowY: 'auto' }}>
-            <h3 style={{ marginTop: 0, marginBottom: '15px', color: '#6366f1' }}>{t("thanks")}</h3>
-            <div className="markdown-content" style={{
-                backgroundColor: '#fff',
-                padding: '10px',
-                borderRadius: '4px',
-                border: '1px solid var(--border-color)',
-                fontFamily: 'inherit',
-                fontSize: '0.8rem',
-                lineHeight: '1.6',
-                color: '#374151',
-                textAlign: 'left',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word'
-            }}>
+        <div className="modal-content elegant-scrollbar thanks-modal">
+            <h3>{t("thanks")}</h3>
+            <div className="markdown-content thanks-modal__content">
                 <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     // @ts-ignore
@@ -35,7 +23,7 @@ export const ThanksModal = ({ content, t, onClose }: ThanksModalProps) => (
                     {content}
                 </ReactMarkdown>
             </div>
-            <button onClick={onClose} className="btn-secondary" style={{ marginTop: '20px' }}>
+            <button onClick={onClose} className="btn-secondary thanks-modal__close">
                 {t("close")}
             </button>
         </div>

@@ -55,6 +55,21 @@ func (r *tenantRepo) DeleteByID(ctx context.Context, id string) error {
 	return execWrite(ctx, r.batch, r.db, `DELETE FROM tenants WHERE id = ?`, id)
 }
 
+func (r *tenantRepo) SoftDeleteByID(ctx context.Context, id string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return execWrite(ctx, r.batch, r.db, `UPDATE tenants SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, now, now, id)
+}
+
+func (r *tenantRepo) UpdateStatus(ctx context.Context, id string, status string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return execWrite(ctx, r.batch, r.db, `UPDATE tenants SET status = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, status, now, id)
+}
+
+func (r *tenantRepo) UpdateDomains(ctx context.Context, id string, primaryDomain string, settingsJSON string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return execWrite(ctx, r.batch, r.db, `UPDATE tenants SET primary_domain = ?, settings_json = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, primaryDomain, settingsJSON, now, id)
+}
+
 func (r *tenantRepo) EnsureDefault(ctx context.Context) (*store.Tenant, error) {
 	if existing, err := r.GetByID(ctx, store.DefaultTenantID); err != nil || existing != nil {
 		return existing, err

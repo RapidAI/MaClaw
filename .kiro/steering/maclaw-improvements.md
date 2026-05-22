@@ -5564,3 +5564,70 @@ Guards 防止误杀合法 session 交互：
 - LLM 收到错误后能从上下文补全参数并重试
 - 用户在技能面板手动点击"运行" → 仍显示 AgentView 表单（行为不变）
 - GUI 编译通过
+
+
+### 98. SSH exec 输出丢失——WaitForOutput 从"沉默猜测"升级为"Prompt-Driven Completion Detection"
+
+**来源**：用户让 maclaw 升级 api.maclaw.top 上的 OmniRoute 到 3.8。SSH exec 执行 `cp -r ... ; ls -la ...` 等命令时，返回结果只有命令回显（PTY echo），没有实际命令输出。LLM 说"SSH 输出好像被截断了"、"SSH 输出一直不返回"，反复切换方法（exec → bash → 重连），浪费大量迭代。
+
+**根因（机制性分析）**：
+
+`WaitForOutput` 使用"沉默时间"（连续 N 次轮询无新输出）来**猜测**命令是否完成。这是启发式猜测，不是确定性信号。
+
+问题链路：
+1. LLM 调用 `ssh(exec, command="cp -r /opt/data /opt/backup; ls -la /opt/backup")`
+2. PTY 回显命令文本（1-2 行）→ `WaitForOutput` 开始计时
+3. `cp -r` 开始执行，复制大目录需要 5-10 秒，期间无输出
+4. 旧稳定阈值 8 × 300ms = 2.4s 后，`WaitForOutput` 判定"输出稳定"并返回
+5. 返回结果只有命令回显，`ls -la` 的输出永远不会被捕获
+6. LLM 看到只有回显没有结果，认为"SSH 有问题"，开始切换方法
+
+**核心矛盾**：用"沉默时间"猜测命令完成是不可靠的。`cp -r` 可能沉默 30 秒，`echo hello` 只沉默 10ms。固定阈值无法同时满足两者。
+
+**机制性修复：Prompt-Driven Completion Detection**
+
+命令完成的**唯一确定性信号**是 shell prompt 重新出现。当命令执行完毕后，shell 打印新的 prompt（如 `root@server:~# `），等待下一条命令。
+
+修复后的 `WaitForOutput` 使用三层检测：
+
+1. **主信号（prompt 检测）**：每次有新输出时检查最后一行是否是 shell prompt。如果是，立即返回。快速命令（`echo hello`）在 prompt 出现时立即返回（~300ms），不需要等稳定阈值。
+
+2. **辅助信号（两阶段稳定性 fallback）**：
+   - 阶段 1（等待首行实际输出）：命令回显后等待 ~4s（13 × 300ms）。覆盖 cp/docker 等命令的启动延迟。
+   - 阶段 2（等待输出结束）：已有实际输出后等待 ~2.4s（8 × 300ms）。
+
+3. **超时保护**：`maxWait` 到期后发送 Ctrl+C 防止 shell 被锁住。
+
+**关键改进**：
+- `looksLikeShellPrompt` 增强：正确剥离 ANSI 转义序列（CSI `\x1b[...X` 和 OSC `\x1b]...BEL`），支持带颜色/标题设置的 prompt
+- 默认 `wait_seconds` 从 5 提升到 15：有了 prompt 检测后，快速命令不受影响（prompt 出现即返回），慢命令有足够时间完成
+- `phase2TriggerLines` 从 2 提升到 3：PTY 回显可能是 1-2 行（命令文本 + 换行），实际输出从第 3 行开始
+
+**效果对比**：
+
+| 命令 | 修复前 | 修复后 |
+|------|--------|--------|
+| `echo hello` | 等 2.4s 稳定阈值 | prompt 出现即返回（~300ms）|
+| `cp -r big_dir/ backup/; ls -la backup/` | 2.4s 后返回空结果 | 等 cp 完成 → ls 输出 → prompt 出现 → 返回完整结果 |
+| `docker pull image:tag` | 2.4s 后返回空结果 | 等 pull 完成 → prompt 出现 → 返回完整结果 |
+| 挂起的命令（sqlite3 锁）| 等 maxWait 后 Ctrl+C | 等 maxWait 后 Ctrl+C（行为不变）|
+
+**修改文件**：
+- `corelib/remote/ssh_manager.go`：
+  - `WaitForOutput()` 重写为 Prompt-Driven 机制
+  - `looksLikeShellPrompt()` 增强 ANSI 转义码剥离
+  - 新增 `stripANSIForPromptCheck()` 函数
+- `gui/im_ssh_tools.go`：默认 `waitSec` 从 5 提升到 15
+- `gui/im_tool_definitions.go`：`wait_seconds` 描述更新
+
+**测试**：
+- `corelib/remote/ssh_prompt_detect_test.go`：新增 17 个测试
+  - `TestLooksLikeShellPrompt`：11 个用例覆盖各种 prompt 格式（含 ANSI 转义码）
+  - `TestStripANSIForPromptCheck`：6 个用例覆盖 CSI/OSC/组合转义码
+
+**验收标准**：
+- `cp -r big_dir/ backup/; ls -la backup/` → 等 cp 完成后返回 ls 输出（不再只返回命令回显）
+- `echo hello` → prompt 出现即返回（~300ms，不等 4s 稳定阈值）
+- 带 ANSI 颜色/标题的 prompt → 正确识别为 prompt
+- 所有 remote 包测试通过
+- corelib/remote 编译通过

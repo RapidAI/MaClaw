@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
@@ -169,7 +170,7 @@ func TestWorkflowConfirmation_ApproveStartsWorkflow(t *testing.T) {
 	msg := &IMUserMessage{UserID: userID, Platform: "desktop", Text: buildConfirmationActionCommand("confirm", item.ID), UIAction: true}
 	trimmed := strings.TrimSpace(msg.Text)
 	result := handler.handlePendingExecutionConfirmation(msg, &trimmed)
-	if !result.Handled || result.Response == nil || !strings.Contains(result.Response.Text, "right-side panel") {
+	if !result.Handled || result.Response == nil || (!strings.Contains(result.Response.Text, "right-side panel") && !strings.Contains(result.Response.Text, "右侧面板")) {
 		t.Fatalf("confirmed workflow should show the structured phase form, got %#v", result)
 	}
 	if result.WorkflowAgentLoop {
@@ -764,7 +765,7 @@ func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
 	}
 
 	resp, handled := handler.submitWorkflowInputIfWaiting(engine, userID, "source text", nil, "")
-	if !handled || resp == nil || !strings.Contains(resp.Text, "right-side panel") {
+	if !handled || resp == nil || (!strings.Contains(resp.Text, "right-side panel") && !strings.Contains(resp.Text, "右侧面板")) {
 		t.Fatalf("input should return form guidance instead of starting loop, handled=%v resp=%#v", handled, resp)
 	}
 	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
@@ -808,6 +809,231 @@ func TestSubmitWorkflowInputIfWaitingIMUsesTextFormGate(t *testing.T) {
 	}
 	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
 		t.Fatal("IM form-gated input must not set workflow agent loop marker")
+	}
+}
+
+func TestResolveWorkflowFormUserIDUsesHiddenUserAfterLoopClearsLastUserID(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "desktop-user:C:/Users/ma139"
+	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	handler.lastUserID = ""
+
+	got := resolveWorkflowFormUserID(handler, engine, state.CurrentPhase, map[string]interface{}{
+		workflowFormUserIDField: userID,
+	})
+	if got != userID {
+		t.Fatalf("expected hidden userID %q, got %q", userID, got)
+	}
+}
+
+func TestResolveWorkflowFormUserIDFallsBackToSingleActivePhase(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "desktop-user:C:/Users/ma139"
+	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	handler.lastUserID = ""
+
+	got := resolveWorkflowFormUserID(handler, engine, state.CurrentPhase, nil)
+	if got != userID {
+		t.Fatalf("expected phase fallback userID %q, got %q", userID, got)
+	}
+}
+
+func TestWorkflowFormMatchesActiveWorkflowRejectsStaleDismiss(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "desktop-user:C:/Users/ma139"
+	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	if workflowFormMatchesActiveWorkflow(engine, userID, state.CurrentPhase, map[string]interface{}{
+		workflowFormWorkflowIDField: "stale-workflow-id",
+	}) {
+		t.Fatal("stale workflow form dismiss should not match active workflow")
+	}
+	if !workflowFormMatchesActiveWorkflow(engine, userID, state.CurrentPhase, map[string]interface{}{
+		workflowFormWorkflowIDField: state.ID,
+	}) {
+		t.Fatal("current workflow form dismiss should match active workflow")
+	}
+}
+
+func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
+	schema := &workflow.PhaseInputSchema{
+		Title:     "Business plan brief",
+		TitleI18N: map[string]string{"zh": "商业计划简报"},
+		Fields: []workflow.PhaseInputField{
+			{Name: "project_name", Label: "Project or company name", LabelI18N: map[string]string{"zh": "项目或公司名称"}, Type: "text", Required: true, Placeholder: "Example: AI customer support SaaS platform"},
+			{Name: "target_audience", Label: "Target reader", Type: "select", Required: true, Options: []workflow.PhaseInputOption{{Label: "Investors (angel/VC/PE)", Value: "investor", LabelI18N: map[string]string{"zh": "投资人（天使/VC/PE）"}}}},
+			{Name: "core_description", Label: "Project summary", Type: "textarea", Required: true, Placeholder: "In 2-3 sentences, explain what it does, what problem it solves, and who it serves.", PlaceholderI18N: map[string]string{"zh": "用 2-3 句话说明它做什么、解决什么问题、服务谁。"}},
+		},
+	}
+	localized := localizeWorkflowPhaseInputSchema(schema, "zh-Hans")
+	if localized.Title != "商业计划简报" {
+		t.Fatalf("expected localized title, got %q", localized.Title)
+	}
+	fields := map[string]workflow.PhaseInputField{}
+	for _, field := range localized.Fields {
+		fields[field.Name] = field
+	}
+	if got := fields["project_name"].Label; got != "项目或公司名称" {
+		t.Fatalf("project_name label = %q", got)
+	}
+	if got := fields["core_description"].Placeholder; got != "用 2-3 句话说明它做什么、解决什么问题、服务谁。" {
+		t.Fatalf("core_description placeholder = %q", got)
+	}
+	if got := fields["target_audience"].Options[0].Label; got != "投资人（天使/VC/PE）" {
+		t.Fatalf("target_audience option = %q", got)
+	}
+	if schema.Title != "Business plan brief" {
+		t.Fatalf("localization mutated original schema title: %q", schema.Title)
+	}
+}
+
+func TestWorkflowFormSchemaLocalizesWithExplicitMetadataBeforeFallback(t *testing.T) {
+	schema := &workflow.PhaseInputSchema{
+		Title:     "Unknown English title",
+		TitleI18N: map[string]string{"zh": "显式标题"},
+		Fields: []workflow.PhaseInputField{{
+			Name:            "custom",
+			Label:           "Unknown English label",
+			LabelI18N:       map[string]string{"zh": "显式字段"},
+			Type:            "text",
+			Description:     "Unknown English description",
+			DescriptionI18N: map[string]string{"zh": "显式说明"},
+			Placeholder:     "Unknown English placeholder",
+			PlaceholderI18N: map[string]string{"zh": "显式占位"},
+			Options:         []workflow.PhaseInputOption{{Label: "Unknown English option", Value: "x", LabelI18N: map[string]string{"zh": "显式选项"}}},
+		}},
+	}
+
+	localized := localizeWorkflowPhaseInputSchema(schema, "zh-CN")
+	if localized.Title != "显式标题" || localized.Fields[0].Label != "显式字段" || localized.Fields[0].Description != "显式说明" || localized.Fields[0].Placeholder != "显式占位" || localized.Fields[0].Options[0].Label != "显式选项" {
+		t.Fatalf("explicit i18n metadata not applied: %#v", localized)
+	}
+	if schema.Fields[0].Label != "Unknown English label" || schema.Fields[0].Options[0].Label != "Unknown English option" {
+		t.Fatalf("localization mutated original schema: %#v", schema.Fields[0])
+	}
+}
+
+func TestWorkflowFormSchemaAppliesExplicitEnglishMetadata(t *testing.T) {
+	schema := &workflow.PhaseInputSchema{
+		Title:     "Default title",
+		TitleI18N: map[string]string{"en": "English title", "en-US": "US title"},
+		Fields: []workflow.PhaseInputField{{
+			Name:            "custom",
+			Label:           "Default label",
+			LabelI18N:       map[string]string{"en": "English label"},
+			Type:            "select",
+			Description:     "Default description",
+			DescriptionI18N: map[string]string{"en": "English description"},
+			Placeholder:     "Default placeholder",
+			PlaceholderI18N: map[string]string{"en": "English placeholder"},
+			Options:         []workflow.PhaseInputOption{{Label: "Default option", Value: "x", LabelI18N: map[string]string{"en": "English option"}}},
+		}},
+	}
+
+	localized := localizeWorkflowPhaseInputSchema(schema, "en-US")
+	if localized.Title != "US title" || localized.Fields[0].Label != "English label" || localized.Fields[0].Description != "English description" || localized.Fields[0].Placeholder != "English placeholder" || localized.Fields[0].Options[0].Label != "English option" {
+		t.Fatalf("explicit English i18n metadata not applied: %#v", localized)
+	}
+}
+
+func TestWorkflowFormSchemaEmptyLangDefaultsChineseFallback(t *testing.T) {
+	schema := &workflow.PhaseInputSchema{Title: "Business plan brief"}
+	localized := localizeWorkflowPhaseInputSchema(schema, "")
+	if localized.Title != "商业计划简报" {
+		t.Fatalf("empty lang should use Chinese fallback, got %q", localized.Title)
+	}
+}
+
+func TestWorkflowInterceptionKeepsPendingWorkflowAgentLoopAgainstUICBypass(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-form-submit-loop"
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := engine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.unifiedClassifier = testIntentClassifier(string(intent.LabelNonCoding))
+	handler.workflowAgentLoopMarker.Store(userID, true)
+	handler.stashedPhasePrompt.Store(userID, "phase prompt")
+
+	resp := handler.handleWorkflowInterception(userID, "The user submitted workflow form data: goal: build app", "desktop")
+	if resp != nil {
+		t.Fatalf("pending workflow agent loop should not return immediate response: %#v", resp)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+		t.Fatal("pending workflow agent loop marker was cleared by UIC bypass")
+	}
+	if _, ok := handler.stashedPhasePrompt.Load(userID); !ok {
+		t.Fatal("stashed phase prompt was cleared by UIC bypass")
+	}
+}
+
+func TestWorkflowFormGateShortNonWorkflowBypassesFormLoop(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-form-short-nonworkflow"
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp := handler.handleWorkflowInterception(userID, "服务器信息", "desktop")
+	if resp != nil {
+		t.Fatalf("short non-workflow input should bypass workflow form, got %#v", resp)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.PhaseFormSubmitted || ws.PhaseFormSkipped {
+		t.Fatalf("bypass should leave workflow form gate untouched, got %#v", ws)
+	}
+}
+
+func TestWorkflowFormGateDirectRunSkipsFormAndStartsLoop(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-form-direct-run"
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp := handler.handleWorkflowInterception(userID, "直接写", "desktop")
+	if resp != nil {
+		t.Fatalf("direct-run form skip should start workflow loop without immediate response, got %#v", resp)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+		t.Fatal("direct-run form skip should mark workflow agent loop")
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || !ws.PhaseFormSkipped {
+		t.Fatalf("direct-run form skip should persist skipped form gate, got %#v", ws)
+	}
+}
+
+func TestWorkflowFormGateCancelCancelsWorkflow(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-form-cancel"
+	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp := handler.handleWorkflowInterception(userID, "取消", "desktop")
+	if resp == nil || resp.Text == "" || resp.RunID != "" {
+		t.Fatalf("cancel should return workflow cancellation text, got %#v", resp)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws != nil {
+		t.Fatalf("cancel should clear active workflow, got %#v", ws)
 	}
 }
 

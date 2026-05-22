@@ -7,6 +7,7 @@ const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
 const GetMaclawAgentMaxIterationsMock = vi.fn();
 const GetHubLLMServiceStatusMock = vi.fn();
+const FetchProviderModelsMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
 
@@ -22,7 +23,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
     FetchCodeGenModels: vi.fn(),
-    FetchProviderModels: vi.fn(),
+    FetchProviderModels: (...args: unknown[]) => FetchProviderModelsMock(...args),
     SaveCodeGenModelChoice: vi.fn(),
 }));
 
@@ -56,6 +57,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
         GetMaclawAgentMaxIterationsMock.mockResolvedValue(12);
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false });
+        FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
         LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token' });
     });
 
@@ -74,8 +76,14 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
 
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
-        fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'gpt-test' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'List' }));
+
+        await waitFor(() => {
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://api.example.com/v1', 'secret', 'openai');
+        });
+
+        fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
 
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
@@ -306,8 +314,14 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
 
         fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
-        fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'gpt-test' } });
         fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'List' }));
+
+        await waitFor(() => {
+            expect(FetchProviderModelsMock).toHaveBeenCalledWith('https://api.example.com/v1', 'secret', 'openai');
+        });
+
+        fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'gpt-test' } });
 
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 

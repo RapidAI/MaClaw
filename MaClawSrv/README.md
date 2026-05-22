@@ -157,6 +157,12 @@ sc.exe stop MaClawSrv
 
 - `GET /api/v1/admin/system/readiness` returns admin-only detailed readiness checks, including writable state-path diagnostics.
 
+### Admin Login
+
+- Account login uses the owner/operator admin username and password created during first-run bootstrap.
+- Admin Secret login uses `MACLAW_ADMIN_SECRET` from service startup. It is a root Admin API secret for automation or emergency administration, not an admin user's password.
+- `MACLAW_ADMIN_SETUP_TOKEN` is only for first-run owner creation and is not used as the Admin Secret.
+
 
 
 

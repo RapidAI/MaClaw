@@ -16,6 +16,7 @@ type RecentProject = {
     preview?: string;
     last_activity?: string;
     pinned?: boolean;
+    has_output?: boolean;
 };
 
 type TaskContextMenu = { x: number; y: number; projectPath: string; name: string; pinned: boolean } | null;

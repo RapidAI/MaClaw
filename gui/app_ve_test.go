@@ -46,11 +46,85 @@ func TestVirtualEmployeeEntryDecodesAccessLists(t *testing.T) {
 	}
 }
 
+func TestFilterOwnVirtualEmployeesRemovesLocalMachineCaseInsensitive(t *testing.T) {
+	employees := []VirtualEmployeeEntry{
+		{ID: "ve-local", MachineID: "Machine-Local", Name: "Local"},
+		{ID: "machine-local", Name: "Legacy Local"},
+		{ID: "ve_machine-local", Name: "Generated ID Local"},
+		{ID: "ve-remote", MachineID: "machine-remote", Name: "Remote"},
+	}
+	got := filterOwnVirtualEmployees(employees, "machine-local")
+	if len(got) != 1 || got[0].ID != "ve-remote" {
+		t.Fatalf("filtered employees = %#v, want only ve-remote", got)
+	}
+}
+
 func TestVEGroupKeyNormalizesParticipantSet(t *testing.T) {
 	left := veGroupKey([]string{" ve-b ", "ve-a", "ve-b", ""})
 	right := veGroupKey([]string{"ve-a", "ve-b"})
 	if left != right || left != "ve-a|ve-b" {
 		t.Fatalf("group key = %q, want %q", left, "ve-a|ve-b")
+	}
+}
+
+func TestInitiateGroupConversationErrorsOnMissingSessionID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.InitiateGroupConversation([]string{"ve-a", "ve-b"}); err == nil {
+		t.Fatal("InitiateGroupConversation succeeded with missing session id")
+	}
+}
+
+func TestInitiateGroupConversationReturnsInviteFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1", "status": "open"}})
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{{"id": "ve-a", "machine_id": "machine-a"}, {"id": "ve-b", "machine_id": "machine-b"}}})
+		case "/api/a2a/consultations/session-1/invites":
+			http.Error(w, "invite failed", http.StatusBadGateway)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.InitiateGroupConversation([]string{"ve-a", "ve-b"}); err == nil {
+		t.Fatal("InitiateGroupConversation succeeded after invite failure")
+	}
+	if _, ok := app.groupSessionCache.Load(veGroupKey([]string{"ve-a", "ve-b"})); ok {
+		t.Fatal("failed group session should not be cached")
 	}
 }
 
@@ -308,6 +382,46 @@ func TestSendVEGroupMessageRemoteMentionTargetsRemoteParticipant(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for remote-targeted Hub send")
+	}
+}
+
+func TestSendVEGroupMessageWorksWhenGroupDiscussionDisabled(t *testing.T) {
+	gotMessage := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/messages":
+			if got := r.Header.Get("X-Machine-ID"); got != "machine-1" {
+				t.Errorf("X-Machine-ID = %q, want machine-1", got)
+			}
+			gotMessage <- struct{}{}
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SendVEGroupMessage("session-1", "hello", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case <-gotMessage:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub send")
 	}
 }
 

@@ -267,7 +267,7 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 		}
 		return
 	}
-	client, cfg, err := d.app.groupDiscussionClient()
+	client, cfg, err := d.app.veA2AHubClient()
 	if err != nil {
 		log.Printf("[group-dispatcher] group discussion client unavailable for session %s: %v", sessionID, err)
 		for range messages {
@@ -292,7 +292,7 @@ func (d *GroupChatDispatcher) sendToGroup(sessionID string, msg a2a.GroupDiscuss
 	if d.app == nil {
 		return
 	}
-	if err := d.app.GroupDiscussionSendMessage(sessionID, msg); err != nil {
+	if err := d.app.sendVEA2AMessage(sessionID, msg); err != nil {
 		log.Printf("[group-dispatcher] failed to send message to session %s: %v", sessionID, err)
 	}
 }
