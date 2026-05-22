@@ -18,6 +18,7 @@ func (h *IMMessageHandler) toolUninstallSkill(args map[string]interface{}) strin
 	if err := exec.Delete(name); err != nil {
 		return fmt.Sprintf("卸载失败: %v", err)
 	}
+	h.refreshSkillIndexesAfterMutation(name)
 
 	return fmt.Sprintf("✅ Skill '%s' 已卸载（配置和目录已清理）", name)
 }

@@ -468,20 +468,4 @@
   }
 
   applyGovernanceI18n();
-
-
-  function governanceTenantScopedRefresh() {
-    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
-    return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
-  }
-
-  const previousRefreshAll = global.refreshAll;
-  global.refreshAll = async function refreshAll() {
-    if (typeof previousRefreshAll === 'function') {
-      await previousRefreshAll();
-    }
-    if (token() && governanceTenantScopedRefresh()) {
-      await global.loadInvites();
-    }
-  };
 })(window);

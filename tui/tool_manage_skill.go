@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -61,6 +62,10 @@ func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string
 			return skillPatch(app, args)
 		case "history":
 			return skillPatchHistory(app, args)
+		case "maintenance_plan":
+			return skillMaintenancePlan(app, args)
+		case "execute_maintenance_plan":
+			return skillExecuteMaintenancePlan(app, args)
 		default:
 			return skill.ManageSkillUnknownActionError(action)
 		}
@@ -102,9 +107,323 @@ func skillList(app *TUIApp) string {
 			rate := float64(s.SuccessCount) / float64(s.UsageCount) * 100
 			line += fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, rate)
 		}
+		if labels := tuiSkillHealthLabels(s); len(labels) > 0 {
+			line += " " + strings.Join(labels, " ")
+		}
 		b.WriteString(line + "\n")
 	}
 	return b.String()
+}
+
+func tuiSkillHealthLabels(s corelib.NLSkillEntry) []string {
+	labels := make([]string, 0, 3)
+	if s.UsageCount >= 3 && s.SuccessCount == 0 {
+		labels = append(labels, "[needs_review]")
+	} else if s.UsageCount >= 5 && float64(s.SuccessCount)/float64(s.UsageCount) >= 0.8 && strings.TrimSpace(s.LastError) == "" {
+		labels = append(labels, "[healthy]")
+	}
+	if tuiSkillHasIncompleteContract(s) {
+		labels = append(labels, "[missing_contract]")
+	}
+	return labels
+}
+
+func tuiSkillHasIncompleteContract(s corelib.NLSkillEntry) bool {
+	return skill.HasIncompleteSkillContract(s.Type, s.Steps, s.Params, s.RequiredArgs)
+}
+
+func skillMaintenancePlan(app *TUIApp, args map[string]interface{}) string {
+	skills := tuiCollectMaintenanceSkills(app)
+	plan := skill.BuildSkillMaintenancePlan(skills, skill.SkillMaintenancePlanOptions{
+		Now:                 time.Now(),
+		StaleAfterDays:      tuiIntArg(args, "stale_after_days"),
+		MinFailureRuns:      tuiIntArg(args, "min_failure_runs"),
+		MaxActions:          tuiIntArg(args, "max_actions"),
+		DuplicateSimilarity: tuiFloatArg(args, "duplicate_similarity"),
+	})
+	payload := map[string]interface{}{
+		"ok":                      true,
+		"non_executing":           true,
+		"boundary":                "read-only skill maintenance plan; no skill was modified, archived, merged, deleted, installed, or executed",
+		"maintenance_plan_status": "local_skill_maintenance_plan_no_llm",
+		"plan":                    plan,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("生成 Skill 维护计划失败: %v", err)
+	}
+	return string(data)
+}
+
+func skillExecuteMaintenancePlan(app *TUIApp, args map[string]interface{}) string {
+	dryRun := tuiBoolArg(args, "dry_run", true)
+	if !dryRun && !tuiBoolArg(args, "confirm", false) {
+		return `{"ok":false,"dry_run":true,"error":"confirm=true is required when dry_run=false"}`
+	}
+	approvedActions := tuiStringListArg(args, "approved_actions")
+	if !dryRun && len(approvedActions) == 0 {
+		return `{"ok":false,"dry_run":true,"error":"approved_actions is required when dry_run=false"}`
+	}
+	skills := tuiCollectMaintenanceSkills(app)
+	plan := skill.BuildSkillMaintenancePlan(skills, skill.SkillMaintenancePlanOptions{
+		Now:                 time.Now(),
+		StaleAfterDays:      tuiIntArg(args, "stale_after_days"),
+		MinFailureRuns:      tuiIntArg(args, "min_failure_runs"),
+		MaxActions:          tuiIntArg(args, "max_actions"),
+		DuplicateSimilarity: tuiFloatArg(args, "duplicate_similarity"),
+	})
+	updated, result := skill.ExecuteSkillMaintenancePlan(skills, plan, skill.SkillMaintenanceExecutionOptions{
+		Now:                  time.Now(),
+		DryRun:               dryRun,
+		ApprovedActions:      approvedActions,
+		AllowDuplicateRetire: tuiBoolArg(args, "allow_duplicate_retire", false),
+	})
+	repairTargets := tuiMaintenanceRepairTargets(updated, result)
+	triggeredRepairs := 0
+	if !dryRun && result.OK {
+		app.appConfig.NLSkills = tuiPersistableMaintenanceSkills(updated)
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		if err := store.SaveConfig(app.appConfig); err != nil {
+			return fmt.Sprintf("Skill maintenance execution failed: %v", err)
+		}
+		for _, target := range repairTargets {
+			cp := target
+			if commands.MaybeRepairSkillTUI(&cp, app.appConfig, store) {
+				triggeredRepairs++
+			}
+		}
+	}
+	payload := map[string]interface{}{
+		"ok":                           result.OK,
+		"dry_run":                      result.DryRun,
+		"boundary":                     result.Boundary,
+		"error":                        result.Error,
+		"plan_summary":                 plan.Summary,
+		"self_repair_triggers_started": triggeredRepairs,
+		"result":                       result,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("Skill maintenance execution failed: %v", err)
+	}
+	return string(data)
+}
+
+func tuiMaintenanceRepairTargets(skills []corelib.NLSkillEntry, result skill.SkillMaintenanceExecutionResult) []corelib.NLSkillEntry {
+	wanted := make(map[string]bool)
+	for _, action := range result.Actions {
+		if action.Action == skill.MaintenanceActionAttemptRepair && action.Status == skill.MaintenanceExecutionStatusQueued {
+			wanted[action.Skill] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	targets := make([]corelib.NLSkillEntry, 0, len(wanted))
+	for _, entry := range skills {
+		for name := range wanted {
+			if entry.MatchesName(name) || entry.Name == name {
+				targets = append(targets, entry)
+				delete(wanted, name)
+				break
+			}
+		}
+	}
+	return targets
+}
+
+func tuiCollectMaintenanceSkills(app *TUIApp) []corelib.NLSkillEntry {
+	known := make(map[string]bool)
+	fileOverlays := make(map[string]corelib.NLSkillEntry)
+	var skills []corelib.NLSkillEntry
+	for _, s := range app.appConfig.NLSkills {
+		key := tuiMaintenanceSkillKey(s)
+		if strings.EqualFold(strings.TrimSpace(s.Source), "file") {
+			fileOverlays[key] = s
+			continue
+		}
+		skills = append(skills, s)
+		known[key] = true
+	}
+	for _, s := range skill.ScanAllSkillDirsWithExternal(app.appConfig.ExternalSkillDirs) {
+		key := tuiMaintenanceSkillKey(s)
+		if overlay, ok := fileOverlays[key]; ok {
+			s = tuiApplyFileSkillRuntimeOverlay(s, overlay)
+			delete(fileOverlays, key)
+		}
+		if !known[key] {
+			skills = append(skills, s)
+			known[key] = true
+		}
+	}
+	for key, overlay := range fileOverlays {
+		if !known[key] {
+			skills = append(skills, overlay)
+		}
+	}
+	return skills
+}
+
+func tuiApplyFileSkillRuntimeOverlay(base, overlay corelib.NLSkillEntry) corelib.NLSkillEntry {
+	base.Status = overlay.Status
+	base.UsageCount = overlay.UsageCount
+	base.SuccessCount = overlay.SuccessCount
+	base.FailureCount = overlay.FailureCount
+	base.WorkaroundCount = overlay.WorkaroundCount
+	base.LastUsedAt = overlay.LastUsedAt
+	base.LastError = overlay.LastError
+	base.RepairAttemptCount = overlay.RepairAttemptCount
+	base.LastRepairAt = overlay.LastRepairAt
+	base.RepairHistory = append([]corelib.SkillRepairRecord(nil), overlay.RepairHistory...)
+	return base
+}
+
+func tuiMaintenanceSkillKey(s corelib.NLSkillEntry) string {
+	if strings.TrimSpace(s.SkillDir) != "" {
+		return "dir:" + tuiMaintenanceSkillDirKey(s.SkillDir)
+	}
+	if strings.TrimSpace(s.Name) != "" {
+		return "name:" + tuiMaintenanceSkillNameKey(s.Name)
+	}
+	return "dir_name:" + tuiMaintenanceSkillNameKey(s.DirName)
+}
+
+func tuiMaintenanceSkillDirKey(dir string) string {
+	key := filepath.Clean(strings.TrimSpace(dir))
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	return key
+}
+
+func tuiMaintenanceSkillNameKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func tuiPersistableMaintenanceSkills(skills []corelib.NLSkillEntry) []corelib.NLSkillEntry {
+	filtered := make([]corelib.NLSkillEntry, 0, len(skills))
+	for _, s := range skills {
+		if strings.EqualFold(strings.TrimSpace(s.Source), "file") {
+			if tuiFileSkillHasRuntimeOverlay(s) {
+				filtered = append(filtered, corelib.NLSkillEntry{
+					Name:               s.Name,
+					Source:             "file",
+					SkillDir:           s.SkillDir,
+					Status:             tuiFileSkillOverlayStatus(s.Status),
+					UsageCount:         s.UsageCount,
+					SuccessCount:       s.SuccessCount,
+					FailureCount:       s.FailureCount,
+					WorkaroundCount:    s.WorkaroundCount,
+					LastUsedAt:         s.LastUsedAt,
+					LastError:          s.LastError,
+					RepairAttemptCount: s.RepairAttemptCount,
+					LastRepairAt:       s.LastRepairAt,
+					RepairHistory:      append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
+				})
+			}
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered
+}
+
+func tuiFileSkillOverlayStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" || strings.EqualFold(status, "active") {
+		return ""
+	}
+	return status
+}
+
+func tuiFileSkillHasRuntimeOverlay(s corelib.NLSkillEntry) bool {
+	return s.UsageCount > 0 ||
+		s.SuccessCount > 0 ||
+		s.FailureCount > 0 ||
+		s.WorkaroundCount > 0 ||
+		strings.TrimSpace(s.LastUsedAt) != "" ||
+		strings.TrimSpace(s.LastError) != "" ||
+		tuiFileSkillOverlayStatus(s.Status) != "" ||
+		s.RepairAttemptCount > 0 ||
+		strings.TrimSpace(s.LastRepairAt) != "" ||
+		len(s.RepairHistory) > 0
+}
+
+func tuiIntArg(args map[string]interface{}, key string) int {
+	switch v := args[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+func tuiFloatArg(args map[string]interface{}, key string) float64 {
+	switch v := args[key].(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case json.Number:
+		if n, err := v.Float64(); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func tuiBoolArg(args map[string]interface{}, key string, fallback bool) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes":
+			return true
+		case "false", "0", "no":
+			return false
+		}
+	}
+	return fallback
+}
+
+func tuiStringListArg(args map[string]interface{}, key string) []string {
+	switch v := args[key].(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		return []string{strings.TrimSpace(v)}
+	}
+	return nil
 }
 
 // --- search ---
@@ -791,16 +1110,63 @@ func persistStats(name string, e *corelib.NLSkillEntry) {
 	if err != nil {
 		return
 	}
+	found := false
 	for j := range cfg.NLSkills {
 		if cfg.NLSkills[j].MatchesName(name) {
 			cfg.NLSkills[j].UsageCount = e.UsageCount
 			cfg.NLSkills[j].SuccessCount = e.SuccessCount
 			cfg.NLSkills[j].FailureCount = e.FailureCount
 			cfg.NLSkills[j].LastUsedAt = e.LastUsedAt
+			cfg.NLSkills[j].LastError = e.LastError
+			found = true
 			break
 		}
 	}
+	if !found && strings.EqualFold(strings.TrimSpace(e.Source), "file") && strings.TrimSpace(e.SkillDir) != "" {
+		cfg.NLSkills = append(cfg.NLSkills, tuiPersistableMaintenanceSkills([]corelib.NLSkillEntry{*e})...)
+	}
 	_ = store.SaveConfig(cfg)
+	recordTUISkillUsageExperience(e, okFromSkillLastError(e))
+}
+
+func okFromSkillLastError(e *corelib.NLSkillEntry) bool {
+	return e != nil && strings.TrimSpace(e.LastError) == ""
+}
+
+func recordTUISkillUsageExperience(entry *corelib.NLSkillEntry, success bool) {
+	if entry == nil {
+		return
+	}
+	trackerPath := coretool.DefaultUsageTrackerPath()
+	if trackerPath == "" {
+		return
+	}
+	tracker, err := coretool.NewUsageTracker(trackerPath)
+	if err != nil {
+		log.Printf("[skill-run-tui] usage tracker unavailable: %v", err)
+		return
+	}
+	tokens := bm25.Tokenize(strings.TrimSpace(entry.Name + " " + entry.Description + " " + strings.Join(entry.Triggers, " ")))
+	if len(tokens) > 5 {
+		tokens = tokens[:5]
+	}
+	finalOutcome := "completed"
+	followUp := "continue"
+	errorClass := ""
+	if !success {
+		finalOutcome = "failed"
+		followUp = "abandon"
+		errorClass = skill.ExtractErrorClass(entry.LastError)
+	}
+	tracker.RecordExperience(coretool.ToolExperience{
+		ToolName:     "skill:" + entry.Name,
+		QueryTokens:  tokens,
+		Success:      success,
+		FollowUp:     followUp,
+		TaskType:     "skill_execution",
+		ErrorClass:   errorClass,
+		FinalOutcome: finalOutcome,
+	})
 }
 
 // --- upload ---

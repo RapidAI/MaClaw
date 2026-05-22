@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -112,6 +113,35 @@ func TestCoreKnowledgeImportToolsAreRegistered(t *testing.T) {
 	if _, ok := filesEntry.Properties["file_paths"]; !ok {
 		t.Fatalf("knowledge_import_files missing file_paths property")
 	}
+}
+
+func TestCoreManageSkillToolExposesMaintenancePlanSchema(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	reg.mu.RLock()
+	entry := reg.tools["manage_skill"]
+	reg.mu.RUnlock()
+	if entry == nil {
+		t.Fatal("manage_skill is not registered")
+	}
+	if !containsAllSubstrings(entry.Description, []string{"maintenance_plan", "execute_maintenance_plan", "read-only"}) {
+		t.Fatalf("manage_skill description should mention maintenance actions: %q", entry.Description)
+	}
+	for _, prop := range []string{"max_actions", "stale_after_days", "min_failure_runs", "duplicate_similarity", "dry_run", "confirm", "approved_actions", "allow_duplicate_retire"} {
+		if _, ok := entry.Properties[prop]; !ok {
+			t.Fatalf("manage_skill missing maintenance property %q", prop)
+		}
+	}
+}
+
+func containsAllSubstrings(value string, needles []string) bool {
+	for _, needle := range needles {
+		if !strings.Contains(value, needle) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestCoreWorkflowDocumentToolsExposeMetadata(t *testing.T) {

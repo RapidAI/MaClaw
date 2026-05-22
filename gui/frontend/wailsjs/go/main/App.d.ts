@@ -979,6 +979,8 @@ export function SendVEMessage(arg1:string,arg2:string):Promise<void>;
 
 export function SendVEGroupMessage(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
 
+export function SendVEGroupMessageWithAttachments(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>):Promise<void>;
+
 export function SendVEMessageWithAttachments(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
 
 export function CloseVESession(arg1:string):Promise<void>;

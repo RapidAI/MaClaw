@@ -615,6 +615,7 @@ func (h *IMMessageHandler) toolPatchSkillText(skillName string, args map[string]
 	}); auditErr != nil {
 		log.Printf("[skill-patch] warning: failed to write audit trail: %v", auditErr)
 	}
+	h.refreshSkillIndexesAfterMutation(target.Name)
 
 	return fmt.Sprintf("skill %q patched successfully", skillName)
 }
@@ -740,6 +741,7 @@ func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[s
 	}); auditErr != nil {
 		log.Printf("[skill-patch-step] warning: failed to write audit trail: %v", auditErr)
 	}
+	h.refreshSkillIndexesAfterMutation(target.Name)
 
 	return fmt.Sprintf("skill %q step %d field %s updated to %q", skillName, stepIdx, field, value)
 }
@@ -983,6 +985,7 @@ func (h *IMMessageHandler) toolValidateSkill(args map[string]interface{}) string
 	b.WriteString(cskill.FormatPortabilityChanges(changes))
 	b.WriteByte('\n')
 	b.WriteString(cskill.FormatPortabilityReport(finalReport))
+	h.refreshSkillIndexesAfterMutation(name)
 	return b.String()
 }
 

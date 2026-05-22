@@ -5,20 +5,21 @@ import "strings"
 type imMessagePlatformKind string
 
 const (
-	imMessagePlatformUnknown        imMessagePlatformKind = ""
-	imMessagePlatformDesktop        imMessagePlatformKind = "desktop"
-	imMessagePlatformTUI            imMessagePlatformKind = "tui"
-	imMessagePlatformFeishu         imMessagePlatformKind = "feishu"
-	imMessagePlatformWecom          imMessagePlatformKind = "wecom"
-	imMessagePlatformQQBot          imMessagePlatformKind = "qqbot"
-	imMessagePlatformQQBotLocal     imMessagePlatformKind = "qqbot_local"
-	imMessagePlatformDingTalk       imMessagePlatformKind = "dingtalk"
-	imMessagePlatformTelegram       imMessagePlatformKind = "telegram"
-	imMessagePlatformTelegramLocal  imMessagePlatformKind = "telegram_local"
-	imMessagePlatformWeixin         imMessagePlatformKind = "weixin"
-	imMessagePlatformWeixinLocal    imMessagePlatformKind = "weixin_local"
-	imMessagePlatformLansenger      imMessagePlatformKind = "lansenger"
-	imMessagePlatformLansengerLocal imMessagePlatformKind = "lansenger_local"
+	imMessagePlatformUnknown         imMessagePlatformKind = ""
+	imMessagePlatformDesktop         imMessagePlatformKind = "desktop"
+	imMessagePlatformTUI             imMessagePlatformKind = "tui"
+	imMessagePlatformFeishu          imMessagePlatformKind = "feishu"
+	imMessagePlatformWecom           imMessagePlatformKind = "wecom"
+	imMessagePlatformQQBot           imMessagePlatformKind = "qqbot"
+	imMessagePlatformQQBotLocal      imMessagePlatformKind = "qqbot_local"
+	imMessagePlatformDingTalk        imMessagePlatformKind = "dingtalk"
+	imMessagePlatformTelegram        imMessagePlatformKind = "telegram"
+	imMessagePlatformTelegramLocal   imMessagePlatformKind = "telegram_local"
+	imMessagePlatformWeixin          imMessagePlatformKind = "weixin"
+	imMessagePlatformWeixinLocal     imMessagePlatformKind = "weixin_local"
+	imMessagePlatformLansenger       imMessagePlatformKind = "lansenger"
+	imMessagePlatformLansengerLocal  imMessagePlatformKind = "lansenger_local"
+	imMessagePlatformVEGroupExecutor imMessagePlatformKind = "ve_group_executor"
 )
 
 func normalizeIMMessagePlatformKind(value string) imMessagePlatformKind {
@@ -49,6 +50,8 @@ func normalizeIMMessagePlatformKind(value string) imMessagePlatformKind {
 		return imMessagePlatformLansenger
 	case imMessagePlatformLansengerLocal:
 		return imMessagePlatformLansengerLocal
+	case imMessagePlatformVEGroupExecutor:
+		return imMessagePlatformVEGroupExecutor
 	default:
 		return imMessagePlatformUnknown
 	}
@@ -59,7 +62,7 @@ func (kind imMessagePlatformKind) String() string {
 }
 
 func (kind imMessagePlatformKind) IsDesktop() bool {
-	return kind == imMessagePlatformDesktop
+	return kind == imMessagePlatformDesktop || kind == imMessagePlatformVEGroupExecutor
 }
 
 func (kind imMessagePlatformKind) IsKnown() bool {

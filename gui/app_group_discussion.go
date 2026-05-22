@@ -1689,11 +1689,8 @@ func (a *App) GroupDiscussionSendMessage(consultationID string, msg a2a.GroupDis
 	if err := client.SendDiscussionMessage(ctx, consultationID, msg); err != nil {
 		return err
 	}
-	if detail, err := client.GetConsultationDetailForAgent(ctx, consultationID, groupDiscussionAgentID(cfg)); err == nil {
-		if store, storeErr := a.openGroupDiscussionHistoryStore(); storeErr == nil {
-			_ = store.CacheDetail(ctx, detail, a.groupDiscussionAttachmentRoot)
-			_ = store.Close()
-		}
+	if shouldRefreshVEA2ADetailAfterSend(msg) {
+		a.cacheVEA2ADetailAsync(client, consultationID, groupDiscussionAgentID(cfg))
 	}
 	return nil
 }

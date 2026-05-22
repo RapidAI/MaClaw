@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,6 +274,141 @@ func TestTenantCreateRejectsPartialInitialAdmin(t *testing.T) {
 	}
 	if _, ok := repo.items["tenant_partial-admin-corp"]; ok {
 		t.Fatal("tenant should not be created when initial admin fields are partial")
+	}
+}
+
+func TestTenantCreateAcceptsMultipleEmailDomains(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
+	rec := httptest.NewRecorder()
+
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":           "Multi Domain Corp",
+		"primary_domain": "Acme.com",
+		"domains":        []string{"acme.com", "subsidiary.example"},
+	}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("multi domain tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	tenant := repo.items["tenant_multi-domain-corp"]
+	if tenant == nil || tenant.PrimaryDomain != "acme.com" || !strings.Contains(tenant.SettingsJSON, "subsidiary.example") {
+		t.Fatalf("unexpected tenant domains: %#v", tenant)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"domains":["acme.com","subsidiary.example"]`)) {
+		t.Fatalf("response missing domains: %s", rec.Body.String())
+	}
+}
+
+func TestTenantDomainsUpdateAllowsTenantAdminForOwnTenant(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{
+		"domains": []string{"Tenant-A.EXAMPLE.com", "team.example.com", "tenant-a.example.com"},
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant domains update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	tenant := repo.items["tenant_a"]
+	if tenant.PrimaryDomain != "tenant-a.example.com" || !strings.Contains(tenant.SettingsJSON, "team.example.com") {
+		t.Fatalf("unexpected updated domains: %#v", tenant)
+	}
+}
+
+func TestTenantDomainsUpdateRejectsInvalidDomain(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{
+		"domains": []string{"https://tenant-a.example.com"},
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid tenant domains update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.items["tenant_a"].PrimaryDomain != "" {
+		t.Fatalf("invalid domain should not update tenant: %#v", repo.items["tenant_a"])
+	}
+}
+
+func TestTenantDomainsUpdateRejectsDomainConflict(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{
+		"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "a.example.com", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		"tenant_b": {ID: "tenant_b", Slug: "tenant-b", Name: "Tenant B", Status: "active", PrimaryDomain: "b.example.com", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}}
+	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{
+		"domains": []string{"b.example.com"},
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("conflicting tenant domains update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.items["tenant_a"].PrimaryDomain != "a.example.com" {
+		t.Fatalf("conflict should not update tenant: %#v", repo.items["tenant_a"])
+	}
+}
+
+func TestTenantCreateRejectsDomainConflict(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "a.example.com", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	rec := httptest.NewRecorder()
+
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":    "Tenant B",
+		"domains": []string{"a.example.com"},
+	}))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("conflicting tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := repo.items["tenant_tenant-b"]; ok {
+		t.Fatal("conflicting tenant should not be created")
+	}
+}
+
+func TestTenantCreateRejectsDomainConflictFromLegacySettingsDomains(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", SettingsJSON: `{"email_domains":[],"domains":["legacy.example.com"]}`, CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	rec := httptest.NewRecorder()
+
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":    "Tenant B",
+		"domains": []string{"legacy.example.com"},
+	}))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("legacy conflicting tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTenantDomainsUpdatePostsPlatformCallback(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	settings := &testSystemSettingsRepo{}
+	seen := make(chan map[string]any, 1)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode callback body: %v", err)
+		}
+		seen <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer callback.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: callback.URL, CallbackSecret: "secret-1", RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	AdminTenantDomainsUpdateWithPlatformCallbackHandler(settings, repo, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{"domains": []string{"tenant-a.example.com", "team.example.com"}}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant domains update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case body := <-seen:
+		rawDomains, _ := body["domains"].([]any)
+		if body["hub_tenant_id"] != "tenant_a" || body["primary_domain"] != "tenant-a.example.com" || len(rawDomains) != 2 || rawDomains[1] != "team.example.com" {
+			t.Fatalf("unexpected callback body: %#v", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tenant domain callback was not posted")
 	}
 }
 

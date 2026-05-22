@@ -1937,6 +1937,10 @@ export function SendVEGroupMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendVEGroupMessage'](arg1, arg2, arg3);
 }
 
+export function SendVEGroupMessageWithAttachments(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SendVEGroupMessageWithAttachments'](arg1, arg2, arg3, arg4);
+}
+
 export function SendVEMessageWithAttachments(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendVEMessageWithAttachments'](arg1, arg2, arg3);
 }

@@ -60,6 +60,11 @@ func (b *DynamicToolBuilder) SetSkillProvider(provider tool.SkillProvider) {
 	b.inner.SetSkillProvider(provider)
 }
 
+// RefreshSkillIndex forces a rebuild of the inner skill routing index.
+func (b *DynamicToolBuilder) RefreshSkillIndex() {
+	b.inner.RefreshSkillIndex()
+}
+
 // syncRegistry refreshes the inner corelib registry from the gui registry.
 // The corelib builder's BM25 index is preserved; only the registry is swapped.
 func (b *DynamicToolBuilder) syncRegistry() {

@@ -30,6 +30,10 @@ type AdminService struct {
 	audit    store.AdminAuditRepository
 }
 
+type tenantAdminLister interface {
+	ListByScopeTenant(ctx context.Context, scope, tenantID string) ([]*store.AdminUser, error)
+}
+
 func NewAdminService(
 	admins store.AdminUserRepository,
 	settings store.SystemSettingsRepository,
@@ -170,6 +174,14 @@ func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username
 	return admin, nil
 }
 
+func (s *AdminService) ListTenantAdmins(ctx context.Context, tenantID string) ([]*store.AdminUser, error) {
+	lister, ok := s.admins.(tenantAdminLister)
+	if !ok {
+		return nil, fmt.Errorf("tenant admin listing is not supported")
+	}
+	return lister.ListByScopeTenant(ctx, "tenant", normalizeTenantIDValue(tenantID))
+}
+
 func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, password string) error {
 	username = strings.TrimSpace(username)
 	if username == "" || strings.TrimSpace(password) == "" {
@@ -225,40 +237,10 @@ func (s *AdminService) Login(ctx context.Context, username, password string) (st
 }
 
 func (s *AdminService) LoginScoped(ctx context.Context, username, password, tenantID string) (string, *store.AdminUser, error) {
-	username = strings.TrimSpace(username)
-	tenantID = strings.TrimSpace(tenantID)
-	var (
-		admin *store.AdminUser
-		err   error
-	)
-	if strings.EqualFold(tenantID, ExplicitGlobalAdminTenantScope) {
-		admin, err = s.admins.GetByUsernameScoped(ctx, username, "global", "")
-		tenantID = ""
-	} else if tenantID != "" {
-		tenantID = normalizeTenantIDValue(tenantID)
-		if strings.EqualFold(tenantID, store.DefaultTenantID) {
-			return "", nil, ErrInvalidAdminCredentials
-		}
-		admin, err = s.admins.GetByUsernameScoped(ctx, username, "tenant", tenantID)
-	} else {
-		return "", nil, ErrInvalidAdminCredentials
-	}
+	admin, err := s.VerifyScopedCredentials(ctx, username, password, tenantID)
 	if err != nil {
 		return "", nil, err
 	}
-	if admin == nil || admin.Status != "active" {
-		return "", nil, ErrInvalidAdminCredentials
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(password)); err != nil {
-		return "", nil, ErrInvalidAdminCredentials
-	}
-	if tenantID == "" && normalizedAdminScope(admin) == "tenant" {
-		return "", nil, ErrInvalidAdminCredentials
-	}
-	if tenantID != "" && (normalizedAdminScope(admin) != "tenant" || normalizeTenantIDValue(admin.TenantID) != tenantID) {
-		return "", nil, ErrInvalidAdminCredentials
-	}
-
 	token, err := s.issueToken(ctx, admin)
 	if err != nil {
 		return "", nil, err
@@ -276,6 +258,43 @@ func (s *AdminService) LoginScoped(ctx context.Context, username, password, tena
 	}
 
 	return token, admin, nil
+}
+
+func (s *AdminService) VerifyScopedCredentials(ctx context.Context, username, password, tenantID string) (*store.AdminUser, error) {
+	username = strings.TrimSpace(username)
+	tenantID = strings.TrimSpace(tenantID)
+	var (
+		admin *store.AdminUser
+		err   error
+	)
+	if strings.EqualFold(tenantID, ExplicitGlobalAdminTenantScope) {
+		admin, err = s.admins.GetByUsernameScoped(ctx, username, "global", "")
+		tenantID = ""
+	} else if tenantID != "" {
+		tenantID = normalizeTenantIDValue(tenantID)
+		if strings.EqualFold(tenantID, store.DefaultTenantID) {
+			return nil, ErrInvalidAdminCredentials
+		}
+		admin, err = s.admins.GetByUsernameScoped(ctx, username, "tenant", tenantID)
+	} else {
+		return nil, ErrInvalidAdminCredentials
+	}
+	if err != nil {
+		return nil, err
+	}
+	if admin == nil || admin.Status != "active" {
+		return nil, ErrInvalidAdminCredentials
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(password)); err != nil {
+		return nil, ErrInvalidAdminCredentials
+	}
+	if tenantID == "" && normalizedAdminScope(admin) == "tenant" {
+		return nil, ErrInvalidAdminCredentials
+	}
+	if tenantID != "" && (normalizedAdminScope(admin) != "tenant" || normalizeTenantIDValue(admin.TenantID) != tenantID) {
+		return nil, ErrInvalidAdminCredentials
+	}
+	return admin, nil
 }
 
 func (s *AdminService) Authenticate(ctx context.Context, token string) (*store.AdminUser, error) {

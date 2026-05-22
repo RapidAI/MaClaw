@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -1615,6 +1616,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	if shouldEmit && r.executor.app != nil {
 		r.executor.app.emitEvent("skill:usage_updated")
 	}
+	r.recordSkillUsageExperience(skill, execErr)
 
 	// A successful verified run is runtime proof for previously blocked uploads.
 	if successfulSkillName != "" && r.executor.app != nil {
@@ -1639,6 +1641,35 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 		}
 		go r.maybeRepairSkill(updatedEntry)
 	}
+}
+
+func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, execErr error) {
+	if r == nil || r.executor == nil || r.executor.app == nil || r.executor.app.usageTracker == nil || skill == nil {
+		return
+	}
+	text := strings.TrimSpace(skill.Name + " " + skill.Description + " " + strings.Join(skill.Triggers, " "))
+	tokens := bm25.Tokenize(text)
+	if len(tokens) > 5 {
+		tokens = tokens[:5]
+	}
+	success := execErr == nil
+	finalOutcome := "completed"
+	errorClass := ""
+	followUp := "continue"
+	if !success {
+		finalOutcome = "failed"
+		followUp = "abandon"
+		errorClass = cskill.ExtractErrorClass(formatExecErrorForStorage(execErr))
+	}
+	r.executor.app.usageTracker.RecordExperience(coretool.ToolExperience{
+		ToolName:     "skill:" + skill.Name,
+		QueryTokens:  tokens,
+		Success:      success,
+		FollowUp:     followUp,
+		TaskType:     "skill_execution",
+		ErrorClass:   errorClass,
+		FinalOutcome: finalOutcome,
+	})
 }
 
 // markSelfRepairPending sets SelfRepairPending=true on the most recent run
@@ -1734,6 +1765,7 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 		log.Printf("[skill-repair-gui] repaired skill %q persisted but scan cache write failed: %v", entry.Name, err)
 		return
 	}
+	r.refreshSkillIndexesAfterMutation(entry.Name)
 	log.Printf("[skill-repair-gui] repaired skill %q: %s", entry.Name, result.Explanation)
 
 	// Store repair notification for LLM context injection.
@@ -1751,6 +1783,19 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 				log.Printf("[skill-repair-gui] blocked upload reevaluation failed for %s: %v", skillName, err)
 			}
 		}(entry.Name)
+	}
+}
+
+func (r *SkillRunner) refreshSkillIndexesAfterMutation(skillName string) {
+	if r == nil || r.executor == nil {
+		return
+	}
+	r.executor.invalidateSkillCache()
+	if r.executor.app != nil {
+		if r.executor.app.toolRouter != nil {
+			r.executor.app.toolRouter.RefreshSkillIndex()
+		}
+		r.executor.app.emitEvent("skill:index_refreshed", map[string]string{"skill": skillName})
 	}
 }
 

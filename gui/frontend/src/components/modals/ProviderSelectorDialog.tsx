@@ -13,10 +13,27 @@ type ProviderSelectorDialogProps = {
     setSelectedProvider: Dispatch<SetStateAction<ProviderEndpoint | null>>;
     hoveredProvider: HoveredProvider;
     setHoveredProvider: Dispatch<SetStateAction<HoveredProvider>>;
-    lang: string;
     t: (key: string) => string;
-    onConfirm: () => void;
+    localizeText: (en: string, zhHans: string, zhHant: string) => string;
+    onConfirm: (provider?: ProviderEndpoint) => void;
     onClose: () => void;
+};
+
+const localizeProviderDescription = (
+    description: string | undefined,
+    localizeText: (en: string, zhHans: string, zhHant: string) => string,
+) => {
+    if (!description) return '';
+    const descriptions: Record<string, [string, string]> = {
+        'Official Claude API': ['Claude 官方 API', 'Claude 官方 API'],
+        'Tencent Cloud Claude-compatible endpoint': ['腾讯云 Claude 兼容端点', '騰訊雲 Claude 相容端點'],
+        'Official Google Gemini API': ['Google Gemini 官方 API', 'Google Gemini 官方 API'],
+        'Official OpenAI API': ['OpenAI 官方 API', 'OpenAI 官方 API'],
+        'xAI Grok API': ['xAI Grok API', 'xAI Grok API'],
+        'Tencent Cloud OpenAI-compatible endpoint': ['腾讯云 OpenAI 兼容端点', '騰訊雲 OpenAI 相容端點'],
+    };
+    const localized = descriptions[description];
+    return localized ? localizeText(description, localized[0], localized[1]) : description;
 };
 
 export const ProviderSelectorDialog = ({
@@ -27,8 +44,8 @@ export const ProviderSelectorDialog = ({
     setSelectedProvider,
     hoveredProvider,
     setHoveredProvider,
-    lang,
     t,
+    localizeText,
     onConfirm,
     onClose,
 }: ProviderSelectorDialogProps) => (
@@ -40,7 +57,11 @@ export const ProviderSelectorDialog = ({
                 {(['all', 'china', 'global'] as const).map(f => (
                     <button
                         key={f}
-                        onClick={() => setProviderFilter(f)}
+                        onClick={() => {
+                            setProviderFilter(f);
+                            setSelectedProvider(null);
+                            setHoveredProvider(null);
+                        }}
                         className="provider-selector-filter"
                         data-active={providerFilter === f ? 'true' : 'false'}
                         role="tab"
@@ -53,13 +74,18 @@ export const ProviderSelectorDialog = ({
 
             <div className="provider-selector-scroll elegant-scrollbar">
                 <div className="provider-selector-grid">
+                    {providers.length === 0 && (
+                        <div className="provider-selector-empty">
+                            {localizeText('No providers available for this filter', '当前筛选条件下没有可用服务商', '目前篩選條件下沒有可用服務商')}
+                        </div>
+                    )}
                     {providers.map((provider, index) => {
                         const isSelected = selectedProvider?.name === provider.name && selectedProvider?.url === provider.url;
                         return (
                             <button
                                 key={index}
                                 onClick={() => setSelectedProvider(provider)}
-                                onDoubleClick={() => { setSelectedProvider(provider); onConfirm(); }}
+                                onDoubleClick={() => { setSelectedProvider(provider); onConfirm(provider); }}
                                 onMouseEnter={(e) => {
                                     const rect = e.currentTarget.getBoundingClientRect();
                                     setHoveredProvider({ provider, x: rect.left + rect.width / 2, y: rect.top - 4 });
@@ -70,7 +96,7 @@ export const ProviderSelectorDialog = ({
                                 type="button"
                             >
                                 <div className="provider-selector-card-title">
-                                    <span className="provider-selector-region" title={provider.region === 'china' ? (lang === 'en' ? 'China' : 'China') : (lang === 'en' ? 'Global' : 'Global')}>{provider.region === 'china' ? 'CN' : 'GL'}</span>
+                                    <span className="provider-selector-region" title={provider.region === 'china' ? t("chinaProviders") : t("globalProviders")}>{provider.region === 'china' ? 'CN' : 'GL'}</span>
                                     <span className="provider-selector-name">{provider.name}</span>
                                 </div>
                             </button>
@@ -80,7 +106,7 @@ export const ProviderSelectorDialog = ({
             </div>
 
             <div className="provider-selector-actions">
-                <button className="btn-primary provider-selector-action" onClick={onConfirm} disabled={!selectedProvider}>{t("confirm")}</button>
+                <button className="btn-primary provider-selector-action" onClick={() => onConfirm()} disabled={!selectedProvider}>{t("confirm")}</button>
                 <button className="btn-hide provider-selector-action" onClick={onClose}>{t("cancel")}</button>
             </div>
         </div>
@@ -95,7 +121,9 @@ export const ProviderSelectorDialog = ({
             >
                 {hoveredProvider.provider.url}
                 {hoveredProvider.provider.description && (
-                    <div className="provider-selector-tooltip-desc">{hoveredProvider.provider.description}</div>
+                    <div className="provider-selector-tooltip-desc">
+                        {localizeProviderDescription(hoveredProvider.provider.description, localizeText)}
+                    </div>
                 )}
             </div>
         )}

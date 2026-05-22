@@ -44,6 +44,8 @@ type HistoryGroupDiscussionTabProps = {
     lang?: string;
 };
 
+const historyDetailReloadDebounceMs = 120;
+
 const textForLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans) => (
     lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
 );
@@ -149,12 +151,14 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     const [sending, setSending] = useState(false);
     const [downloadingKey, setDownloadingKey] = useState("");
     const [downloadedPaths, setDownloadedPaths] = useState<Record<string, string>>({});
+    const [optimisticMessages, setOptimisticMessages] = useState<NonNullable<HistoryDiscussionDetail["messages"]>>([]);
     const [mentionOpen, setMentionOpen] = useState(false);
     const [mentionQuery, setMentionQuery] = useState("");
     const [mentionStart, setMentionStart] = useState(-1);
     const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadSeqRef = useRef(0);
     const mentionParticipantsRef = useRef<MentionParticipant[]>([]);
 
@@ -176,14 +180,27 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
 
     useEffect(() => { void load(); }, [load]);
 
+    useEffect(() => {
+        setOptimisticMessages([]);
+    }, [discussionId]);
+
+    const scheduleSilentLoad = useCallback(() => {
+        if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = setTimeout(() => {
+            reloadTimerRef.current = null;
+            void load({ silent: true });
+        }, historyDetailReloadDebounceMs);
+    }, [load]);
+
     useEffect(() => () => {
         if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+        if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
     }, []);
 
     useEffect(() => {
         if (!discussionId) return;
         const maybeReload = (event: any) => {
-            if (eventDiscussionId(event) === discussionId) void load({ silent: true });
+            if (eventDiscussionId(event) === discussionId) scheduleSilentLoad();
         };
         const maybeReloadNonStream = (event: any) => {
             const kind = eventDiscussionKind(event);
@@ -193,12 +210,16 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         const offDiscussion = EventsOn("ve-event", maybeReloadNonStream);
         const offStreamEnd = EventsOn("ve:stream_end", maybeReload);
         return () => {
+            if (reloadTimerRef.current) {
+                clearTimeout(reloadTimerRef.current);
+                reloadTimerRef.current = null;
+            }
             if (typeof offDiscussion === "function") offDiscussion();
             else EventsOff("ve-event");
             if (typeof offStreamEnd === "function") offStreamEnd();
             else EventsOff("ve:stream_end");
         };
-    }, [discussionId, load]);
+    }, [discussionId, scheduleSilentLoad]);
 
     const detailStatus = String(detail?.discussion?.status || "").trim().toLowerCase();
     const detailRelation = String(detail?.discussion?.local_relation || detail?.discussion?.role || "").trim();
@@ -222,11 +243,20 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         if (!content || effectiveReadOnly || sending) return;
         setSending(true);
         setError("");
+        const createdAt = new Date().toISOString();
         try {
             const toIDs = mentionedHistoryParticipantIds(content, mentionParticipantsRef.current);
-            await GroupDiscussionSendHistoryMessage(discussionId, { kind: "statement", content, to_ids: toIDs.length ? toIDs : undefined, created_at: new Date().toISOString() });
+            await GroupDiscussionSendHistoryMessage(discussionId, { kind: "statement", content, to_ids: toIDs.length ? toIDs : undefined, created_at: createdAt });
             setInput("");
-            await load();
+            setOptimisticMessages((prev) => [...prev, {
+                id: `local-${Date.now()}`,
+                from_id: "me",
+                from_name: textForLang(lang, "Me", "我", "我"),
+                kind: "statement",
+                content,
+                created_at: createdAt,
+            }]);
+            void load({ silent: true });
             return true;
         } catch (e) {
             setError(String(e));
@@ -234,7 +264,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         } finally {
             setSending(false);
         }
-    }, [discussionId, effectiveReadOnly, input, load, sending]);
+    }, [discussionId, effectiveReadOnly, input, lang, load, sending]);
 
     const insertMention = useCallback((participant: GroupParticipant) => {
         if (effectiveReadOnly) return;
@@ -413,7 +443,12 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         let lastStreamFrom = "";
         let lastStreamIndex = -1;
 
-        (detail?.messages || []).forEach((m, idx) => {
+        const detailMessages = detail?.messages || [];
+        const pendingOptimisticMessages = optimisticMessages.filter((pending) =>
+            !detailMessages.some((m) => String(m.content || "") === String(pending.content || "") && String(m.created_at || "") === String(pending.created_at || ""))
+        );
+
+        [...detailMessages, ...pendingOptimisticMessages].forEach((m, idx) => {
             const kind = String(m.kind || "").trim().toLowerCase();
             if (kind === "stream_end") {
                 lastStreamFrom = "";
@@ -457,7 +492,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         });
 
         return merged;
-    }, [buildMessageAttachments, detail?.messages, lang, localHistoryUserIds, participants]);
+    }, [buildMessageAttachments, detail?.messages, lang, localHistoryUserIds, optimisticMessages, participants]);
 
     const downloadAttachment = useCallback(async (attachment: NonNullable<GroupMessage["attachments"]>[number], message: GroupMessage) => {
         if (attachment.localPath) {

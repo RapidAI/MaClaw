@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -241,6 +242,31 @@ type pipeCallbacks struct {
 	app      *TUIApp
 	cancelCh chan struct{}
 	stopped  bool
+	quiet    bool
+}
+
+func silencePipeModeDiagnostics() func() {
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	originalStderr := os.Stderr
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return func() {
+			log.SetOutput(originalWriter)
+			log.SetFlags(originalFlags)
+			os.Stderr = originalStderr
+		}
+	}
+	log.SetOutput(devNull)
+	log.SetFlags(0)
+	os.Stderr = devNull
+	return func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+		os.Stderr = originalStderr
+		_ = devNull.Close()
+	}
 }
 
 func (c *pipeCallbacks) Cancel() {
@@ -274,7 +300,9 @@ func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("tool arg parse failed: %v", err)
 	}
-	fmt.Fprintf(os.Stderr, "⚙ %s\n", name)
+	if !c.quiet {
+		fmt.Fprintf(os.Stderr, "⚙ %s\n", name)
+	}
 	return c.app.toolRegistry.Execute(name, args)
 }
 
@@ -284,6 +312,9 @@ func (c *pipeCallbacks) OnToken(delta string) {
 }
 
 func (c *pipeCallbacks) OnProgress(text string) {
+	if c.quiet {
+		return
+	}
 	fmt.Fprintf(os.Stderr, "%s\n", text)
 }
 

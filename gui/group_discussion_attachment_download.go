@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -83,7 +84,7 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 	if err != nil {
 		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("create local attachment: %w", err)
 	}
-	size, copyErr := io.Copy(out, resp.Body)
+	size, copyErr := io.Copy(out, io.LimitReader(resp.Body, veFileAttachmentMaxSize+1))
 	closeErr := out.Close()
 	if copyErr != nil {
 		_ = os.Remove(localPath)
@@ -92,6 +93,10 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 	if closeErr != nil {
 		_ = os.Remove(localPath)
 		return GroupDiscussionAttachmentDownloadResult{}, closeErr
+	}
+	if size > veFileAttachmentMaxSize {
+		_ = os.Remove(localPath)
+		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("attachment is too large: %d bytes; VE mode limit is 50 MB", size)
 	}
 
 	result := GroupDiscussionAttachmentDownloadResult{DiscussionID: discussionID, AttachmentID: attachmentID, Filename: filename, LocalPath: localPath, SizeBytes: size}
@@ -124,8 +129,11 @@ func (a *App) cachedGroupDiscussionDownloadedAttachment(ctx context.Context, dis
 		if err != nil || info.IsDir() {
 			continue
 		}
+		if info.Size() > veFileAttachmentMaxSize {
+			continue
+		}
 		size := record.SizeBytes
-		if size <= 0 {
+		if size <= 0 || size > veFileAttachmentMaxSize {
 			size = info.Size()
 		}
 		return GroupDiscussionAttachmentDownloadResult{
@@ -180,7 +188,7 @@ func groupDiscussionAttachmentDownloadURL(hubURL, rawURL, discussionID, particip
 	}
 	u.Path = "/api/ve/files/download/" + attachmentID
 	u.RawPath = ""
-	q := u.Query()
+	q := url.Values{}
 	q.Set("session_id", discussionID)
 	if participantID != "" {
 		q.Set("participant_id", participantID)
@@ -251,8 +259,9 @@ func pathBaseNoQuery(path string) string {
 }
 
 func safeGroupDiscussionFilename(value string) string {
-	value = strings.TrimSpace(filepath.Base(value))
-	if value == "." || value == string(filepath.Separator) {
+	value = strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	value = strings.TrimSpace(pathpkg.Base(value))
+	if value == "." || value == "/" || value == string(filepath.Separator) {
 		value = ""
 	}
 	if value == "" {

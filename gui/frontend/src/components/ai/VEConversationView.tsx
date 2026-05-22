@@ -6,6 +6,17 @@ import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./M
 import { getParticipantColor } from "./VEGroupChat";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 
+type WailsAppModule = typeof import("../../../wailsjs/go/main/App");
+
+let wailsAppModulePromise: Promise<WailsAppModule> | null = null;
+
+function getWailsAppModule(): Promise<WailsAppModule> {
+    if (!wailsAppModulePromise) {
+        wailsAppModulePromise = import("../../../wailsjs/go/main/App");
+    }
+    return wailsAppModulePromise;
+}
+
 // --- Types ---
 
 export interface VEMessage {
@@ -27,6 +38,8 @@ export interface VEMessageAttachment {
     mimeType?: string;
     /** For images: URL to display */
     fileUrl?: string;
+    /** Downloaded local path, when available */
+    localPath?: string;
     /** For files: size in bytes */
     sizeBytes?: number;
 }
@@ -40,6 +53,7 @@ type PendingVEAttachment = {
 type QueuedVEMessage = {
     id: string;
     content: string;
+    message: VEMessage;
     filePaths?: string[];
     attachmentNames?: string[];
 };
@@ -51,6 +65,7 @@ export interface VEConversationState {
     streamContent: string;
     streamFromId: string;
     streamFromName: string;
+    streamAttachments: VEMessageAttachment[];
     error: VEConversationError | null;
     connectionState: "connected" | "disconnected" | "reconnecting";
     reconnectAttempt: number;
@@ -86,6 +101,7 @@ export interface VEConversationViewProps {
     sendMessage?: (sessionId: string, content: string) => Promise<void>;
     sendGroupMessage?: (sessionId: string, content: string, mentionedIds: string[]) => Promise<void>;
     sendMessageWithAttachments?: (sessionId: string, content: string, filePaths: string[]) => Promise<void>;
+    sendGroupMessageWithAttachments?: (sessionId: string, content: string, mentionedIds: string[], filePaths: string[]) => Promise<void>;
     closeSession?: (sessionId: string) => Promise<void>;
     /** Group chat participants for @mention (empty array = no mention support) */
     participants?: MentionParticipant[];
@@ -200,6 +216,8 @@ function mentionLabelsForParticipant(participant: MentionParticipant): string[] 
         labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANT);
         labels.add("本机 AI");
         labels.add("本機 AI");
+        labels.add("本地AI");
+        labels.add("本地 AI");
     }
     return [...labels];
 }
@@ -257,6 +275,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     sendMessage,
     sendGroupMessage,
     sendMessageWithAttachments,
+    sendGroupMessageWithAttachments,
     closeSession,
     participants,
     externalMentionInsert,
@@ -270,6 +289,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         streamContent: "",
         streamFromId: "",
         streamFromName: "",
+        streamAttachments: [],
         error: null,
         connectionState: existingSessionId ? "connected" : "connected",
         reconnectAttempt: 0,
@@ -282,7 +302,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [sending, setSending] = useState(false);
     const [pendingAttachments, setPendingAttachments] = useState<PendingVEAttachment[]>([]);
     const [visibleQueue, setVisibleQueue] = useState<QueuedVEMessage[]>([]);
-    // Track VE online status — input is disabled when offline.
+    // Track VE online status; input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
 
     // Refs for imperative state access (avoids stale closure in useImperativeHandle)
@@ -291,7 +311,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const inputTextRef = useRef(inputText);
     inputTextRef.current = inputText;
 
-    // Expose getState() to parent via ref — parent calls this before unmount to snapshot state
+    // Expose getState() to parent via ref; parent calls this before unmount to snapshot state
     useImperativeHandle(ref, () => ({
         getState: () => ({
             messages: stateRef.current.messages,
@@ -485,7 +505,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (initiateConversation) {
                 return initiateConversation(veId);
             }
-            const mod = await import("../../../wailsjs/go/main/App");
+            const mod = await getWailsAppModule();
             if (participants?.length && typeof (mod as any).InitiateGroupConversation === "function") {
                 return (mod as any).InitiateGroupConversation(veIds);
             }
@@ -504,7 +524,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     if (registerLocalExecutorInGroup) {
                         await registerLocalExecutorInGroup(sessionId);
                     } else {
-                        const mod = await import("../../../wailsjs/go/main/App");
+                        const mod = await getWailsAppModule();
                         if (typeof (mod as any).RegisterLocalExecutorInGroup === "function") {
                             await (mod as any).RegisterLocalExecutorInGroup(sessionId);
                         }
@@ -580,7 +600,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     }, []);
 
     // When VE comes online and we don't have a session yet, initiate one automatically.
-    // Skip the initial render — mount effect handles the online-at-mount case.
+    // Skip the initial render; mount effect handles the online-at-mount case.
     const didMountForAutoConnect = useRef(false);
     useEffect(() => {
         if (!didMountForAutoConnect.current) {
@@ -619,6 +639,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             streamContent: "",
             streamFromId: "",
             streamFromName: "",
+            streamAttachments: [],
             error: null,
             connectionState: "connected",
             reconnectAttempt: 0,
@@ -629,7 +650,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (closeSession) {
                     await closeSession(oldSessionId);
                 } else {
-                    const mod = await import("../../../wailsjs/go/main/App");
+                    const mod = await getWailsAppModule();
                     if (typeof (mod as any).CloseVESession === "function") {
                         await (mod as any).CloseVESession(oldSessionId);
                     }
@@ -699,8 +720,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (!mountedRef.current) return;
             const senderId = String(data?.from_id || data?.fromId || data?.sender_id || data?.senderId || "");
             const senderName = String(data?.from_name || data?.fromName || data?.sender_name || data?.senderName || "");
+            const attachments = normalizeVEMessageAttachments(data?.attachments);
             setState((prev) => {
-                if (prev.streaming && prev.streamContent && senderId && prev.streamFromId && senderId !== prev.streamFromId) {
+                const hasPendingStream = !!prev.streamContent || prev.streamAttachments.length > 0;
+                if (prev.streaming && hasPendingStream && senderId && prev.streamFromId && senderId !== prev.streamFromId) {
                     const completedMsg: VEMessage = {
                         id: generateMsgId(),
                         role: "assistant",
@@ -708,6 +731,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         timestamp: Date.now(),
                         fromId: prev.streamFromId,
                         fromName: prev.streamFromName || undefined,
+                        attachments: prev.streamAttachments.length ? prev.streamAttachments : undefined,
                     };
                     return {
                         ...prev,
@@ -715,6 +739,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         streamContent: content,
                         streamFromId: senderId,
                         streamFromName: senderName,
+                        streamAttachments: attachments,
                         messages: [...prev.messages, completedMsg],
                     };
                 }
@@ -724,6 +749,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     streamContent: prev.streamContent + content,
                     streamFromId: senderId || prev.streamFromId,
                     streamFromName: senderName || prev.streamFromName,
+                    streamAttachments: attachments.length ? mergeVEMessageAttachments(prev.streamAttachments, attachments) : prev.streamAttachments,
                 };
             });
         };
@@ -734,7 +760,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (!mountedRef.current) return;
             setState((prev) => {
                 const finalContent = prev.streamContent;
-                if (!finalContent) return { ...prev, streaming: false, streamContent: "", streamFromId: "", streamFromName: "" };
+                const endAttachments = normalizeVEMessageAttachments(data?.attachments);
+                const attachments = endAttachments.length ? mergeVEMessageAttachments(prev.streamAttachments, endAttachments) : prev.streamAttachments;
+                if (!finalContent && attachments.length === 0) return { ...prev, streaming: false, streamContent: "", streamFromId: "", streamFromName: "", streamAttachments: [] };
                 const newMsg: VEMessage = {
                     id: generateMsgId(),
                     role: "assistant",
@@ -742,6 +770,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     timestamp: Date.now(),
                     fromId: prev.streamFromId || undefined,
                     fromName: prev.streamFromName || undefined,
+                    attachments: attachments.length ? attachments : undefined,
                 };
                 return {
                     ...prev,
@@ -749,6 +778,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     streamContent: "",
                     streamFromId: "",
                     streamFromName: "",
+                    streamAttachments: [],
                     messages: [...prev.messages, newMsg],
                 };
             });
@@ -767,6 +797,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 streamContent: "",
                 streamFromId: "",
                 streamFromName: "",
+                streamAttachments: [],
                 connectionState: "disconnected",
             }));
             attemptReconnect();
@@ -794,14 +825,16 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (!sid) return false;
 
             try {
-                if (filePaths && filePaths.length > 0 && sendMessageWithAttachments) {
+                if (filePaths && filePaths.length > 0 && participants?.length && sendGroupMessageWithAttachments) {
+                    await sendGroupMessageWithAttachments(sid, content, mentionedParticipantIds(content, participants), filePaths);
+                } else if (filePaths && filePaths.length > 0 && sendMessageWithAttachments) {
                     await sendMessageWithAttachments(sid, content, filePaths);
                 } else if (sendGroupMessage && participants?.length) {
                     await sendGroupMessage(sid, content, mentionedParticipantIds(content, participants));
                 } else if (sendMessage) {
                     await sendMessage(sid, content);
                 } else {
-                    const mod = await import("../../../wailsjs/go/main/App");
+                    const mod = await getWailsAppModule();
                     if (filePaths && filePaths.length > 0) {
                         if (participants?.length && typeof (mod as any).SendVEGroupMessageWithAttachments === "function") {
                             await (mod as any).SendVEGroupMessageWithAttachments(sid, content, mentionedParticipantIds(content, participants), filePaths);
@@ -839,7 +872,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 return false;
             }
         },
-        [participants, sendGroupMessage, sendMessage, sendMessageWithAttachments]
+        [participants, sendGroupMessage, sendGroupMessageWithAttachments, sendMessage, sendMessageWithAttachments]
     );
 
     const drainQueuedMessages = useCallback(async () => {
@@ -849,6 +882,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         setVisibleQueue((prev) => prev.filter((item) => item.id !== msg.id));
         queueDrainRunningRef.current = true;
         awaitingReplyRef.current = true;
+        setState((prev) => ({
+            ...prev,
+            messages: prev.messages.some((item) => item.id === msg.message.id)
+                ? prev.messages
+                : [...prev.messages, msg.message],
+            error: null,
+        }));
         const sent = await doSendMessage(msg.content, msg.filePaths, msg.id);
         queueDrainRunningRef.current = false;
         if (sent && awaitingReplyRef.current) {
@@ -888,22 +928,18 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             attachments: pendingAttachments.map((f) => ({
                 type: classifyAttachmentType(f.name),
                 filename: f.name,
+                localPath: f.path,
                 sizeBytes: f.size,
             })),
         };
 
         // If disconnected, still creating the session, or waiting for the prior
-        // assistant turn to finish streaming, queue the backend send but still
-        // show the user's message immediately in the thread.
+        // assistant turn to finish streaming, keep the draft in the visible
+        // pre-input queue. It enters the transcript only when it is really sent.
         if (state.connectionState !== "connected" || !state.sessionId || state.streaming || awaitingReplyRef.current) {
-            const queued = { id: userMsg.id, content, filePaths, attachmentNames: pendingAttachments.map((f) => f.name) };
+            const queued = { id: userMsg.id, content, message: userMsg, filePaths, attachmentNames: pendingAttachments.map((f) => f.name) };
             queuedMessagesRef.current.push(queued);
             setVisibleQueue((prev) => [...prev, queued]);
-            setState((prev) => ({
-                ...prev,
-                messages: [...prev.messages, userMsg],
-                error: null,
-            }));
             setInputText("");
             setPendingAttachments([]);
             window.setTimeout(() => { sendingRef.current = false; }, 0);
@@ -951,7 +987,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const handleAttachmentSelect = useCallback(async () => {
         if (readOnly) return;
         try {
-            const mod = await import("../../../wailsjs/go/main/App");
+            const mod = await getWailsAppModule();
             const selected = await (mod as any).SelectAIAssistantFiles?.();
             if (Array.isArray(selected) && selected.length > 0) {
                 setPendingAttachments((prev) => [
@@ -1041,6 +1077,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     <MessageBubble
                         key={msg.id}
                         message={msg}
+                        sessionId={state.sessionId || ""}
                         theme={theme}
                         isZh={isZh}
                         assistantName={readableSpeakerName(msg.fromName, msg.fromId, participants, assistantDisplayName)}
@@ -1069,7 +1106,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                 {readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}
                             </div>
                             <MessageContentRenderer content={state.streamContent} theme={theme} />
-                            <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>▊</span>
+                            <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>▍</span>
                         </div>
                     </div>
                 )}
@@ -1277,7 +1314,7 @@ function QueuedMessagePanel({ queue, theme, isZh }: QueuedMessagePanelProps) {
         >
             <div data-testid="ve-queued-message-header" style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: theme.headingColor }}>
                 <span>{isZh ? `${queue.length} 条预输入队列` : `${queue.length} queued`}</span>
-                <span style={{ fontWeight: 400, color: theme.textMuted }}>{isZh ? "回复结束后自动发射" : "Auto-sends after current reply"}</span>
+                <span style={{ fontWeight: 400, color: theme.textMuted }}>{isZh ? "回复结束后自动发送" : "Auto-sends after current reply"}</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 66, overflowY: "auto" }}>
                 {queue.map((item, index) => (
@@ -1300,13 +1337,14 @@ function QueuedMessagePanel({ queue, theme, isZh }: QueuedMessagePanelProps) {
 
 interface MessageBubbleProps {
     message: VEMessage;
+    sessionId: string;
     theme: Theme;
     isZh: boolean;
     assistantName: string;
     userName: string;
 }
 
-function MessageBubble({ message, theme, isZh, assistantName, userName }: MessageBubbleProps) {
+function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName }: MessageBubbleProps) {
     const isUser = message.role === "user";
     const speakerName = isUser ? userName : assistantName;
 
@@ -1364,7 +1402,7 @@ function MessageBubble({ message, theme, isZh, assistantName, userName }: Messag
             {message.attachments && message.attachments.length > 0 && (
                 <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: "80%" }}>
                     {message.attachments.map((att, idx) => (
-                        <AttachmentDisplay key={idx} attachment={att} theme={theme} />
+                        <AttachmentDisplay key={`${att.type}-${att.filename}-${att.fileUrl || att.localPath || idx}`} attachment={att} sessionId={sessionId} theme={theme} />
                     ))}
                 </div>
             )}
@@ -1374,49 +1412,56 @@ function MessageBubble({ message, theme, isZh, assistantName, userName }: Messag
 
 interface AttachmentDisplayProps {
     attachment: VEMessageAttachment;
+    sessionId: string;
     theme: Theme;
 }
 
-function AttachmentDisplay({ attachment, theme }: AttachmentDisplayProps) {
-    if (attachment.type === "image" && attachment.fileUrl) {
-        // Sanitize URL to prevent javascript: protocol XSS
-        const safeUrl = attachment.fileUrl.startsWith("http://") || attachment.fileUrl.startsWith("https://") || attachment.fileUrl.startsWith("/")
-            ? attachment.fileUrl
-            : "";
-        if (!safeUrl) return null;
-        return (
-            <div data-testid={`ve-att-image-${attachment.filename}`} style={{ marginTop: 4 }}>
-                <img
-                    src={safeUrl}
-                    alt={attachment.filename}
-                    style={{
-                        maxWidth: 300,
-                        maxHeight: 200,
-                        borderRadius: 6,
-                        border: `1px solid ${theme.divider}`,
-                        cursor: "pointer",
-                    }}
-                    onClick={() => window.open(safeUrl, "_blank", "noopener,noreferrer")}
-                />
-            </div>
-        );
-    }
+function AttachmentDisplay({ attachment, sessionId, theme }: AttachmentDisplayProps) {
+    const [localPath, setLocalPath] = useState(attachment.localPath || "");
+    const [opening, setOpening] = useState(false);
+    const canOpen = !!localPath || (!!sessionId && !!attachment.fileUrl);
 
-    // Text/Document chip
-    const handleClick = () => {
-        if (attachment.fileUrl) {
+    useEffect(() => {
+        if (attachment.localPath) {
+            setLocalPath(attachment.localPath);
+        }
+    }, [attachment.localPath]);
+
+    const openAttachment = async () => {
+        if (!canOpen || opening) return;
+        setOpening(true);
+        try {
+            if (localPath) {
+                const mod = await getWailsAppModule();
+                await (mod as any).OpenFileOrShowInFolder?.(localPath);
+                return;
+            }
+            if (!sessionId || !attachment.fileUrl) return;
             const safeUrl = attachment.fileUrl.startsWith("http://") || attachment.fileUrl.startsWith("https://") || attachment.fileUrl.startsWith("/")
                 ? attachment.fileUrl
                 : "";
-            if (safeUrl) {
-                window.open(safeUrl, "_blank", "noopener,noreferrer");
+            if (!safeUrl) return;
+            const mod = await getWailsAppModule();
+            const result = await (mod as any).GroupDiscussionDownloadAttachment?.(sessionId, safeUrl, attachment.filename);
+            const downloadedPath = result?.local_path || result?.LocalPath || result?.localPath || "";
+            if (downloadedPath) {
+                setLocalPath(downloadedPath);
+                await (mod as any).OpenFileOrShowInFolder?.(downloadedPath);
             }
+        } catch (err) {
+            console.warn("Failed to open VE attachment", err);
+        } finally {
+            setOpening(false);
         }
     };
 
     return (
-        <div
+        <button
+            type="button"
             data-testid={`ve-att-chip-${attachment.filename}`}
+            title={localPath || attachment.fileUrl || attachment.filename}
+            aria-label={attachment.filename}
+            disabled={!canOpen || opening}
             style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -1426,9 +1471,14 @@ function AttachmentDisplay({ attachment, theme }: AttachmentDisplayProps) {
                 background: theme.fieldBg,
                 border: `1px solid ${theme.divider}`,
                 fontSize: 11,
-                cursor: attachment.fileUrl ? "pointer" : "default",
+                color: theme.text,
+                font: "inherit",
+                maxWidth: "100%",
+                minWidth: 0,
+                opacity: opening ? 0.65 : 1,
+                cursor: canOpen && !opening ? "pointer" : "default",
             }}
-            onClick={handleClick}
+            onClick={openAttachment}
         >
             <span>{attachment.type === "image" ? "IMG" : attachment.type === "text" ? "TXT" : "FILE"}</span>
             <span style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1439,7 +1489,8 @@ function AttachmentDisplay({ attachment, theme }: AttachmentDisplayProps) {
                     ({formatFileSize(attachment.sizeBytes ?? 0)})
                 </span>
             )}
-        </div>
+            {opening && <span style={{ color: theme.textMuted }}>...</span>}
+        </button>
     );
 }
 
@@ -1467,6 +1518,63 @@ function classifyAttachmentType(filename: string): "text" | "image" | "file" {
     if (imageExts.includes(ext)) return "image";
     if (textExts.includes(ext)) return "text";
     return "file";
+}
+
+function normalizeVEMessageAttachments(raw: unknown): VEMessageAttachment[] {
+    if (!Array.isArray(raw)) return [];
+    const out: VEMessageAttachment[] = [];
+    for (const item of raw) {
+        if (!item || typeof item !== "object") continue;
+        const rec = item as Record<string, unknown>;
+        const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.name) || "attachment";
+        const rawType = attachmentStringField(rec.type) || classifyAttachmentType(filename);
+        const type = rawType === "image" || rawType === "text" ? rawType : "file";
+        const sizeRaw = rec.sizeBytes ?? rec.size_bytes;
+        const sizeBytes = typeof sizeRaw === "number" ? sizeRaw : Number(sizeRaw || 0);
+        out.push({
+            type,
+            filename,
+            mimeType: attachmentStringField(rec.mimeType) || attachmentStringField(rec.mime_type) || undefined,
+            fileUrl: attachmentStringField(rec.fileUrl) || attachmentStringField(rec.file_url) || undefined,
+            localPath: attachmentStringField(rec.localPath) || attachmentStringField(rec.local_path) || undefined,
+            sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : undefined,
+        });
+    }
+    return out;
+}
+
+function attachmentStringField(value: unknown): string {
+    if (typeof value !== "string") return "";
+    return value.trim();
+}
+
+function mergeVEMessageAttachments(existing: VEMessageAttachment[], incoming: VEMessageAttachment[]): VEMessageAttachment[] {
+    const out = [...existing];
+    for (const att of incoming) {
+        const existingIndex = out.findIndex((item) => sameVEMessageAttachment(item, att));
+        if (existingIndex >= 0) {
+            out[existingIndex] = {
+                ...out[existingIndex],
+                ...att,
+                fileUrl: att.fileUrl || out[existingIndex].fileUrl,
+                localPath: att.localPath || out[existingIndex].localPath,
+                mimeType: att.mimeType || out[existingIndex].mimeType,
+                sizeBytes: att.sizeBytes || out[existingIndex].sizeBytes,
+            };
+            continue;
+        }
+        out.push(att);
+    }
+    return out;
+}
+
+function sameVEMessageAttachment(a: VEMessageAttachment, b: VEMessageAttachment): boolean {
+    if (a.type !== b.type || a.filename !== b.filename) return false;
+    if ((a.sizeBytes || 0) > 0 && (b.sizeBytes || 0) > 0 && a.sizeBytes !== b.sizeBytes) return false;
+    if (a.fileUrl && b.fileUrl) return a.fileUrl === b.fileUrl;
+    if (a.localPath && b.localPath) return a.localPath === b.localPath;
+    if (a.fileUrl || b.fileUrl || a.localPath || b.localPath) return true;
+    return (a.sizeBytes || 0) > 0 && a.sizeBytes === b.sizeBytes;
 }
 
 function getAttachmentIcon(filename: string): string {

@@ -18,6 +18,12 @@ func userFacingToolProgressText(toolName string) string {
 // (e.g. skill name from run_skill args). This provides dynamic feedback so
 // users see exactly which tool/skill is being executed.
 func userFacingToolProgressTextWithArgs(toolName, argsJSON string) string {
+	if toolName == "bash" {
+		return "🖥️ 正在执行命令处理文件，请稍候..."
+	}
+	if toolName == "send_file" {
+		return "📤 正在整理并发送生成的文件..."
+	}
 	switch toolName {
 	case "craft_tool":
 		return "🛠️ 正在生成并执行脚本，准备继续完成交付..."

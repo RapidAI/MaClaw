@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -198,9 +199,93 @@ func PlatformTenantsListHandler(system store.SystemSettingsRepository, tenants s
 				continue
 			}
 			virtualDomain := platformVirtualMailDomainForTenant(entry, t)
-			out = append(out, map[string]any{"hub_tenant_id": t.ID, "id": t.ID, "code": t.Slug, "slug": t.Slug, "name": t.Name, "status": t.Status, "primary_domain": t.PrimaryDomain, "virtual_mail_domain": virtualDomain, "ve_enabled": strings.EqualFold(strings.TrimSpace(t.Status), "active") && virtualDomain != "", "updated_at": t.UpdatedAt.Format(time.RFC3339)})
+			out = append(out, map[string]any{"hub_tenant_id": t.ID, "id": t.ID, "code": t.Slug, "slug": t.Slug, "name": t.Name, "status": t.Status, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "virtual_mail_domain": virtualDomain, "ve_enabled": strings.EqualFold(strings.TrimSpace(t.Status), "active") && virtualDomain != "", "updated_at": t.UpdatedAt.Format(time.RFC3339)})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"tenants": out})
+	}
+}
+
+func PlatformTenantAdminsListHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, admins *auth.AdminService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, _, ok := authenticatePlatformRequest(w, r, system)
+		if !ok {
+			return
+		}
+		if tenants == nil || admins == nil {
+			writeError(w, http.StatusServiceUnavailable, "TENANT_ADMIN_REPOSITORY_UNAVAILABLE", "tenant admin repository is unavailable")
+			return
+		}
+		items, err := tenants.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "TENANTS_LIST_FAILED", err.Error())
+			return
+		}
+		out := []map[string]any{}
+		tenantIDs := []string{}
+		tenantOut := []map[string]any{}
+		for _, t := range items {
+			if !isPlatformTenantActive(t) {
+				continue
+			}
+			tenantIDs = append(tenantIDs, t.ID)
+			tenantOut = append(tenantOut, map[string]any{"hub_tenant_id": t.ID, "id": t.ID, "tenant_id": t.ID, "slug": t.Slug, "name": t.Name, "status": t.Status})
+			tenantAdmins, err := admins.ListTenantAdmins(r.Context(), t.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "TENANT_ADMINS_LIST_FAILED", err.Error())
+				return
+			}
+			for _, admin := range tenantAdmins {
+				if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Status), "active") {
+					continue
+				}
+				out = append(out, map[string]any{"hub_admin_id": admin.ID, "id": admin.ID, "hub_tenant_id": t.ID, "tenant_id": t.ID, "tenant_code": t.Slug, "tenant_name": t.Name, "username": admin.Username, "email": admin.Email, "display_name": admin.DisplayName, "role": admin.Role, "status": admin.Status, "updated_at": admin.UpdatedAt.Format(time.RFC3339)})
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tenant_ids": tenantIDs, "tenants": tenantOut, "admins": out})
+	}
+}
+
+func PlatformTenantAdminAuthenticateHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, admins *auth.AdminService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, body, ok := authenticatePlatformRequest(w, r, system)
+		if !ok {
+			return
+		}
+		if tenants == nil || admins == nil {
+			writeError(w, http.StatusServiceUnavailable, "TENANT_ADMIN_AUTH_UNAVAILABLE", "tenant admin authentication is unavailable")
+			return
+		}
+		var req struct {
+			HubTenantID string `json:"hub_tenant_id"`
+			TenantID    string `json:"tenant_id"`
+			Username    string `json:"username"`
+			Password    string `json:"password"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		tenantID := strings.TrimSpace(req.HubTenantID)
+		if tenantID == "" {
+			tenantID = strings.TrimSpace(req.TenantID)
+		}
+		if tenantID == "" || strings.TrimSpace(req.Username) == "" || req.Password == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_TENANT_ADMIN_AUTH", "hub_tenant_id, username, and password are required")
+			return
+		}
+		if t, err := tenants.GetByID(r.Context(), tenantID); err != nil {
+			writeError(w, http.StatusInternalServerError, "TENANT_LOAD_FAILED", err.Error())
+			return
+		} else if !isPlatformTenantActive(t) {
+			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Hub tenant not found")
+			return
+		}
+		admin, err := admins.VerifyScopedCredentials(r.Context(), req.Username, req.Password, tenantID)
+		if err != nil || admin == nil {
+			writeError(w, http.StatusUnauthorized, "TENANT_ADMIN_AUTH_FAILED", "invalid username or password")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "admin": map[string]any{"hub_admin_id": admin.ID, "id": admin.ID, "hub_tenant_id": tenantID, "tenant_id": tenantID, "username": admin.Username, "email": admin.Email, "display_name": admin.DisplayName, "role": admin.Role, "status": admin.Status}})
 	}
 }
 

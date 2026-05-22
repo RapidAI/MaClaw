@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func (h *IMMessageHandler) toolListSkills() string {
@@ -90,6 +92,9 @@ func (h *IMMessageHandler) toolListSkills() string {
 				if s.LastError != "" {
 					line += fmt.Sprintf(" (最近错误: %s)", s.LastError)
 				}
+				if labels := skillHealthLabels(s); len(labels) > 0 {
+					line += " " + strings.Join(labels, " ")
+				}
 				b.WriteString(line + "\n")
 			}
 		}
@@ -112,4 +117,21 @@ func (h *IMMessageHandler) toolListSkills() string {
 	}
 
 	return b.String()
+}
+
+func skillHealthLabels(s NLSkillDefinition) []string {
+	labels := make([]string, 0, 3)
+	if s.UsageCount >= 3 && s.SuccessCount == 0 {
+		labels = append(labels, "[needs_review]")
+	} else if s.UsageCount >= 5 && s.SuccessRate >= 0.8 && strings.TrimSpace(s.LastError) == "" {
+		labels = append(labels, "[healthy]")
+	}
+	if skillDefinitionHasIncompleteContract(s) {
+		labels = append(labels, "[missing_contract]")
+	}
+	return labels
+}
+
+func skillDefinitionHasIncompleteContract(s NLSkillDefinition) bool {
+	return cskill.HasIncompleteSkillContract(s.Type, s.Steps, s.Params, s.RequiredArgs)
 }

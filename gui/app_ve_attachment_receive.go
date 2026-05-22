@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
+
+const veAttachmentContextMaxBytes = 20 * 1024 * 1024
 
 // ProcessMessageAttachments extracts attachment content from a GroupDiscussionMessage
 // and returns a formatted context string to be appended to the AI Agent input.
@@ -18,6 +21,10 @@ import (
 // - ImageAttachment/FileAttachment: download via file_url → extract text or pass as vision input
 // On download failure, logs error and continues processing the text message.
 func (h *VEMessageHandler) ProcessMessageAttachments(msg a2a.GroupDiscussionMessage) string {
+	return h.ProcessMessageAttachmentsForSession("", msg)
+}
+
+func (h *VEMessageHandler) ProcessMessageAttachmentsForSession(sessionID string, msg a2a.GroupDiscussionMessage) string {
 	var contextParts []string
 
 	// Process text attachments (inline base64)
@@ -30,11 +37,11 @@ func (h *VEMessageHandler) ProcessMessageAttachments(msg a2a.GroupDiscussionMess
 		contextParts = append(contextParts, formatTextAttachmentContext(att.Filename, content))
 	}
 
-	// Process image attachments (download from file_url)
+	// Process image attachments (prefer local_path for direct local dispatch)
 	for _, att := range msg.ImageAttachments {
-		content, err := h.downloadAttachmentContent(att.FileURL)
+		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath)
 		if err != nil {
-			log.Printf("[ve-attachment] failed to download image %s from %s: %v", att.Filename, att.FileURL, err)
+			log.Printf("[ve-attachment] failed to read image %s: %v", att.Filename, err)
 			continue
 		}
 		// For images, we provide a description placeholder
@@ -42,11 +49,11 @@ func (h *VEMessageHandler) ProcessMessageAttachments(msg a2a.GroupDiscussionMess
 		contextParts = append(contextParts, formatImageAttachmentContext(att.Filename, att.MimeType, len(content)))
 	}
 
-	// Process file/document attachments (download from file_url)
+	// Process file/document attachments (prefer local_path for direct local dispatch)
 	for _, att := range msg.FileAttachments {
-		content, err := h.downloadAttachmentContent(att.FileURL)
+		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath)
 		if err != nil {
-			log.Printf("[ve-attachment] failed to download file %s from %s: %v", att.Filename, att.FileURL, err)
+			log.Printf("[ve-attachment] failed to read file %s: %v", att.Filename, err)
 			continue
 		}
 		// For documents, extract text content if possible
@@ -63,10 +70,38 @@ func (h *VEMessageHandler) ProcessMessageAttachments(msg a2a.GroupDiscussionMess
 	return "\n\n---\n[附件内容]\n" + strings.Join(contextParts, "\n\n")
 }
 
+func (h *VEMessageHandler) attachmentContent(sessionID, fileURL, localPath string) ([]byte, error) {
+	localPath = strings.TrimSpace(localPath)
+	if localPath != "" {
+		f, err := os.Open(localPath)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return readVEAttachmentContextContent(f)
+	}
+	return h.downloadAttachmentContent(sessionID, fileURL)
+}
+
+func readVEAttachmentContextContent(r io.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	n, err := io.Copy(&buf, io.LimitReader(r, veAttachmentContextMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if n > veAttachmentContextMaxBytes {
+		return nil, fmt.Errorf("attachment content exceeds context limit: %d bytes; limit is 20 MB", n)
+	}
+	return buf.Bytes(), nil
+}
+
 // decodeTextAttachment decodes a base64-encoded text attachment.
 func decodeTextAttachment(att a2a.TextAttachment) (string, error) {
 	if att.Content == "" {
 		return "", fmt.Errorf("empty content")
+	}
+	if len(att.Content) > base64.StdEncoding.EncodedLen(veAttachmentContextMaxBytes) {
+		return "", fmt.Errorf("text attachment exceeds context limit")
 	}
 	decoded, err := base64.StdEncoding.DecodeString(att.Content)
 	if err != nil {
@@ -76,35 +111,43 @@ func decodeTextAttachment(att a2a.TextAttachment) (string, error) {
 			return "", fmt.Errorf("base64 decode failed: %w", err)
 		}
 	}
+	if len(decoded) > veAttachmentContextMaxBytes {
+		return "", fmt.Errorf("text attachment exceeds context limit")
+	}
 	return string(decoded), nil
 }
 
 // downloadAttachmentContent downloads file content from a Hub file relay URL.
-func (h *VEMessageHandler) downloadAttachmentContent(fileURL string) ([]byte, error) {
+func (h *VEMessageHandler) downloadAttachmentContent(sessionID, fileURL string) ([]byte, error) {
 	if fileURL == "" {
 		return nil, fmt.Errorf("empty file URL")
 	}
+	if h.app == nil {
+		return nil, fmt.Errorf("app unavailable")
+	}
+	hubURL, token, err := h.app.getHubCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("Hub credentials unavailable: %w", err)
+	}
+	cfg, _ := h.app.LoadConfig()
+	participantID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	downloadURL, _, err := groupDiscussionAttachmentDownloadURL(hubURL, fileURL, sessionID, participantID)
+	if err != nil {
+		return nil, err
+	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
+	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-
-	// Add auth headers if available
-	if h.app != nil {
-		cfg, _ := h.app.LoadConfig()
-		token := strings.TrimSpace(cfg.RemoteMachineToken)
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		if cfg.RemoteMachineID != "" {
-			req.Header.Set("X-Machine-ID", cfg.RemoteMachineID)
-		}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if participantID != "" {
+		req.Header.Set("X-Machine-ID", participantID)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := veFileRelayHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download request failed: %w", err)
 	}
@@ -114,8 +157,7 @@ func (h *VEMessageHandler) downloadAttachmentContent(fileURL string) ([]byte, er
 		return nil, fmt.Errorf("download failed (HTTP %d)", resp.StatusCode)
 	}
 
-	// Limit read to 20MB to prevent memory issues
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
+	data, err := readVEAttachmentContextContent(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}

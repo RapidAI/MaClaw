@@ -3,6 +3,8 @@
  * ASCII only.
  */
 (function(global) {
+  var IM_SUBS = { feishu: true, openclaw: true, qqbot: true, wecom: true, dingtalk: true, contentaudit: true };
+  var IM_SUB_ORDER = ['feishu', 'openclaw', 'qqbot', 'wecom', 'dingtalk', 'contentaudit'];
   function imState() {
     if (!global.__imAdminState) global.__imAdminState = { bridgeChannelsCache: [] };
     return global.__imAdminState;
@@ -39,10 +41,14 @@
   function imHasProfile() { return !!imAdminProfile(); }
   function imAllowedSub(sub) {
     const value = String(sub || '').toLowerCase();
-    if (!imHasProfile()) return true;
-    return value !== 'hubllm';
+    return !!IM_SUBS[value];
   }
-  function firstAllowedImSub() { return 'feishu'; }
+  function firstAllowedImSub() {
+    for (var i = 0; i < IM_SUB_ORDER.length; i++) {
+      if (imAllowedSub(IM_SUB_ORDER[i])) return IM_SUB_ORDER[i];
+    }
+    return 'feishu';
+  }
   global.applyImScopeUI = function applyImScopeUI() {
     const allowed = firstAllowedImSub();
     document.querySelectorAll('.im-sidebar button[data-imsub]').forEach(function(btn) {

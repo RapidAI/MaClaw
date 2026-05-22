@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func assertExperienceLearningToolTopLevelHandoff(t *testing.T, raw, expectedAction string) {
@@ -349,6 +351,56 @@ func TestBuildExperienceSkillDraftFromApprovedSkillNudge(t *testing.T) {
 	}
 	if !strings.Contains(draft.DraftMarkdown, "Skill Draft: browser_flow") || !strings.Contains(draft.DraftMarkdown, "does not create files, install or update skills") {
 		t.Fatalf("unexpected skill draft markdown:\n%s", draft.DraftMarkdown)
+	}
+}
+
+func TestExperienceLearningToolBuildsSkillDraftFromUsageNudgeWithoutTrace(t *testing.T) {
+	tracker, err := coretool.NewUsageTracker("")
+	if err != nil {
+		t.Fatalf("NewUsageTracker: %v", err)
+	}
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		tracker.RecordExperience(coretool.ToolExperience{
+			ToolName:     "browser_verify",
+			QueryTokens:  []string{"browser", "checkout"},
+			TaskType:     "browser_automation",
+			ToolSequence: []string{"browser_observe", "browser_click", "browser_verify"},
+			Success:      true,
+			FinalOutcome: "completed",
+			Timestamp:    now,
+		})
+	}
+
+	handler := &IMMessageHandler{app: &App{usageTracker: tracker}}
+	raw := handler.toolExperienceLearning(map[string]interface{}{
+		"action": "build_skill_draft",
+		"query":  "browser",
+		"limit":  5,
+	})
+
+	var payload struct {
+		OK                   bool                 `json:"ok"`
+		SkillDraft           ExperienceSkillDraft `json:"skill_draft"`
+		NonExecutingBoundary string               `json:"non_executing_boundary"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal build_skill_draft result: %v\n%s", err, raw)
+	}
+	if !payload.OK {
+		t.Fatalf("expected ok result: %s", raw)
+	}
+	if payload.SkillDraft.TraceID != "" || payload.SkillDraft.Kind != experienceDraftKindSkill {
+		t.Fatalf("expected usage-sourced skill draft without trace id: %#v", payload.SkillDraft)
+	}
+	if payload.SkillDraft.TaskType != "browser_automation" || len(payload.SkillDraft.ToolSequence) != 3 || payload.SkillDraft.ToolSequence[0] != "browser_observe" {
+		t.Fatalf("unexpected usage skill draft metadata: %#v", payload.SkillDraft)
+	}
+	if !strings.Contains(payload.SkillDraft.DraftMarkdown, "UsageTracker.DistillSkillNudgeCandidates") || !strings.Contains(payload.SkillDraft.NonExecutingBoundary, "read-only usage-sequence skill draft only") {
+		t.Fatalf("expected read-only usage draft evidence and boundary: %#v", payload.SkillDraft)
+	}
+	if !strings.Contains(payload.NonExecutingBoundary, "no file write") {
+		t.Fatalf("expected top-level non-executing boundary, got %q", payload.NonExecutingBoundary)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,7 @@ var (
 	ErrInvalidInvitationCode  = errors.New("invalid or used invitation code")
 	ErrInvitationExpired      = errors.New("invitation code has expired")
 	identitySNCounter         atomic.Uint64
+	tenantEmailDomainPattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 )
 
 // InvitationCodeValidator abstracts the invitation code service to avoid circular imports.
@@ -141,6 +143,7 @@ type IdentityService struct {
 	machines        store.MachineRepository
 	viewerTok       store.ViewerTokenRepository
 	loginTok        store.LoginTokenRepository
+	tenants         store.TenantRepository
 	settings        SystemSettingsRepository
 	invitationSvc   InvitationCodeValidator
 	enrollmentMode  string
@@ -200,6 +203,13 @@ func NewIdentityService(
 		mailer:          mailer,
 		publicBaseURL:   strings.TrimRight(publicBaseURL, "/"),
 	}
+}
+
+func (s *IdentityService) SetTenantRepository(tenants store.TenantRepository) {
+	if s == nil {
+		return
+	}
+	s.tenants = tenants
 }
 
 // SetLoginNotifier wires the cross-IM login link broadcaster.
@@ -672,6 +682,41 @@ func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string
 		seen[id] = struct{}{}
 	}
 	if len(seen) == 0 {
+		return s.resolveTenantByConfiguredDomain(ctx, email)
+	}
+	if len(seen) > 1 {
+		return "", true, true, nil
+	}
+	for id := range seen {
+		return id, true, false, nil
+	}
+	return "", false, false, nil
+}
+
+func (s *IdentityService) resolveTenantByConfiguredDomain(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error) {
+	if s == nil || s.tenants == nil {
+		return "", false, false, nil
+	}
+	domain := emailDomain(email)
+	if domain == "" {
+		return "", false, false, nil
+	}
+	items, err := s.tenants.List(ctx)
+	if err != nil {
+		return "", false, false, err
+	}
+	seen := map[string]struct{}{}
+	for _, tenant := range items {
+		if tenant == nil || tenant.DeletedAt != nil || !strings.EqualFold(strings.TrimSpace(tenant.Status), "active") {
+			continue
+		}
+		for _, candidate := range tenantConfiguredEmailDomains(tenant) {
+			if strings.EqualFold(candidate, domain) {
+				seen[normalizeTenantIDValue(tenant.ID)] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
 		return "", false, false, nil
 	}
 	if len(seen) > 1 {
@@ -681,6 +726,53 @@ func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string
 		return id, true, false, nil
 	}
 	return "", false, false, nil
+}
+
+func tenantConfiguredEmailDomains(tenant *store.Tenant) []string {
+	if tenant == nil {
+		return nil
+	}
+	var raw []string
+	if strings.TrimSpace(tenant.PrimaryDomain) != "" {
+		raw = append(raw, tenant.PrimaryDomain)
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(tenant.SettingsJSON)), &settings); err == nil {
+		for _, key := range []string{"email_domains", "domains"} {
+			if values, ok := settings[key].([]any); ok {
+				for _, item := range values {
+					if value, ok := item.(string); ok {
+						raw = append(raw, value)
+					}
+				}
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		for _, part := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' ' }) {
+			domain := strings.ToLower(strings.Trim(strings.TrimSpace(part), "."))
+			if domain == "" || !tenantEmailDomainPattern.MatchString(domain) {
+				continue
+			}
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			out = append(out, domain)
+		}
+	}
+	return out
+}
+
+func emailDomain(email string) string {
+	email = normalizeEmail(email)
+	at := strings.LastIndex(email, "@")
+	if at < 0 || at == len(email)-1 {
+		return ""
+	}
+	return strings.ToLower(strings.Trim(strings.TrimSpace(email[at+1:]), "."))
 }
 
 // LookupUserByMobile finds a user by mobile number. It first looks up the

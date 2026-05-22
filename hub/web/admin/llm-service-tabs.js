@@ -793,6 +793,10 @@ function llmServiceGlobalScoped() {
   var profile = typeof adminProfile === 'function' ? adminProfile() : null;
   return !profile || String(profile.scope || '').toLowerCase() !== 'tenant';
 }
+function llmServiceTenantScoped() {
+  var profile = typeof adminProfile === 'function' ? adminProfile() : null;
+  return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
+}
 function llmServiceModelRuntimeRoots() {
   var globalScoped = llmServiceGlobalScoped();
   var roots = ['llmServiceModelRuntimeCard', 'llmProviderModelRuntimeCard'].map(function(id) { return document.getElementById(id); }).filter(Boolean);
@@ -2174,7 +2178,16 @@ async function issueLLMServiceCard() {
 ensureLLMServiceAdminUI();
 
 function ensureLLMServiceSystemUI() {
-  if (document.getElementById('llmServiceSystemRoot')) return;
+  if (!llmServiceTenantScoped()) {
+    var existing = document.getElementById('llmServiceSystemRoot');
+    if (existing) existing.classList.add('hidden');
+    return;
+  }
+  var existingTenantRoot = document.getElementById('llmServiceSystemRoot');
+  if (existingTenantRoot) {
+    existingTenantRoot.classList.remove('hidden');
+    return;
+  }
   const tab = document.getElementById('tab-system');
   if (!tab) return;
   const host = document.createElement('div');
@@ -2191,6 +2204,7 @@ function ensureLLMServiceSystemUI() {
   applyLLMServiceSystemI18n();
 }
 function applyLLMServiceSystemI18n() {
+  if (!llmServiceTenantScoped()) return;
   _s('llmServiceSystemTitle', 'textContent', lsx('systemDefaults'));
   _s('llmServiceSystemDesc', 'textContent', lsx('systemDesc'));
   _s('llmServiceSystemGroupsLabel', 'textContent', lsx('newUserGroups'));
@@ -2200,6 +2214,7 @@ function applyLLMServiceSystemI18n() {
   _s('llmServiceSystemHint', 'textContent', lsx('systemHint'));
 }
 function renderLLMServiceSystemSettings() {
+  if (!llmServiceTenantScoped()) return;
   applyLLMServiceSystemI18n();
   if (!llmServiceAdminCache) {
     ensureLLMServiceSystemSettingsLoaded();
@@ -2215,6 +2230,7 @@ function renderLLMServiceSystemSettings() {
   refreshLLMServiceGroupSelectors();
 }
 function ensureLLMServiceSystemSettingsLoaded() {
+  if (!llmServiceTenantScoped()) return;
   ensureLLMServiceSystemUI();
   if (llmServiceAdminCache || llmServiceSystemSettingsLoading) return;
   if (typeof token === 'function' && !token()) return;
@@ -2224,6 +2240,7 @@ function ensureLLMServiceSystemSettingsLoaded() {
   });
 }
 async function saveLLMServiceSystemSettings() {
+  if (!llmServiceTenantScoped()) return;
   ensureLLMServiceSystemUI();
   if (!llmServiceAdminCache) await loadLLMServiceAdmin();
   var selectedSystemGroups = Array.prototype.slice.call(document.getElementById('llmServiceSystemGroups').options || []).filter(function(option) { return option.selected && option.value; }).map(function(option) { return option.value; });
@@ -2316,7 +2333,7 @@ function registerLLMServiceTabs() {
   });
   window.AdminTabRegistry.registerTab({
     id: 'system',
-    onOpen: function() { ensureLLMServiceSystemUI(); applyLLMServiceSystemI18n(); ensureLLMServiceSystemSettingsLoaded(); }
+    onOpen: function() { ensureLLMServiceSystemUI(); if (llmServiceTenantScoped()) { applyLLMServiceSystemI18n(); ensureLLMServiceSystemSettingsLoaded(); } }
   });
   window.AdminTabRegistry.registerTab({
     id: 'llmproviders',

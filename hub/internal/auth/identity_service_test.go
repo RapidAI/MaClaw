@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
@@ -120,6 +122,105 @@ func TestManualBindForTenantAllowsSameEmailAcrossTenants(t *testing.T) {
 		t.Fatalf("unexpected tenant ids: A=%+v B=%+v", userA, userB)
 	}
 }
+
+func TestResolveTenantByEmailUsesConfiguredTenantDomains(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{ID: "tenant_acme", Slug: "tenant-acme", Name: "Acme", Status: "active", PrimaryDomain: "acme.com", SettingsJSON: `{"email_domains":["acme.com","team.acme.com"]}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	tenantID, found, ambiguous, err := svc.ResolveTenantByEmail(context.Background(), "new-user@team.acme.com")
+	if err != nil {
+		t.Fatalf("ResolveTenantByEmail: %v", err)
+	}
+	if tenantID != "tenant_acme" || !found || ambiguous {
+		t.Fatalf("unexpected tenant route tenant=%q found=%v ambiguous=%v", tenantID, found, ambiguous)
+	}
+}
+
+func TestResolveTenantByEmailIgnoresInvalidConfiguredTenantDomains(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{ID: "tenant_bad", Slug: "tenant-bad", Name: "Bad", Status: "active", PrimaryDomain: "https://bad.example.com", SettingsJSON: `{"email_domains":["https://bad.example.com","bad..example.com"]}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	tenantID, found, ambiguous, err := svc.ResolveTenantByEmail(context.Background(), "new-user@bad.example.com")
+	if err != nil {
+		t.Fatalf("ResolveTenantByEmail: %v", err)
+	}
+	if tenantID != "" || found || ambiguous {
+		t.Fatalf("expected invalid configured domains to be ignored, tenant=%q found=%v ambiguous=%v", tenantID, found, ambiguous)
+	}
+}
+
+func TestResolveTenantByEmailConfiguredDomainAmbiguous(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	for _, tenant := range []*store.Tenant{
+		{ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "shared.com", SettingsJSON: `{}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now},
+		{ID: "tenant_b", Slug: "tenant-b", Name: "Tenant B", Status: "active", PrimaryDomain: "shared.com", SettingsJSON: `{}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := deps.store.Tenants.Create(context.Background(), tenant); err != nil {
+			t.Fatalf("create tenant %s: %v", tenant.ID, err)
+		}
+	}
+
+	_, found, ambiguous, err := svc.ResolveTenantByEmail(context.Background(), "new-user@shared.com")
+	if err != nil {
+		t.Fatalf("ResolveTenantByEmail: %v", err)
+	}
+	if !found || !ambiguous {
+		t.Fatalf("expected ambiguous domain route, found=%v ambiguous=%v", found, ambiguous)
+	}
+}
+
 func TestIdentityServiceEnrollmentAndEmailLoginCreatesDefaultLLMServiceGrant(t *testing.T) {
 	deps := newTestStore(t)
 	svc := NewIdentityService(

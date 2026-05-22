@@ -38,7 +38,7 @@ func TestIsVEToolBlocked_AllowedTools(t *testing.T) {
 
 func TestIsVEToolActionBlocked_ManageSkillReadOnly(t *testing.T) {
 	// Read-only actions should be allowed
-	readOnly := []string{"list", "search", "status"}
+	readOnly := []string{"list", "search", "status", "maintenance_plan"}
 	for _, action := range readOnly {
 		if isVEToolActionBlocked("manage_skill", action) {
 			t.Errorf("manage_skill action %q should be allowed in VE mode", action)

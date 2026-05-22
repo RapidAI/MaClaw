@@ -62,6 +62,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	invitationService := invitation.NewService(st.InvitationCodes, st.System)
 
 	identityService := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, invitationService, cfg.Identity.EnrollmentMode, cfg.Identity.AllowSelfEnroll, mailer, cfg.Server.PublicBaseURL)
+	identityService.SetTenantRepository(st.Tenants)
 	centerService := center.NewService(cfg, st.System)
 	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
 	centerService.SetFailureEventRecorder(failureRecorder)
@@ -73,6 +74,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	deviceRuntime := device.NewRuntime()
 	deviceService := device.NewService(st.Machines, deviceRuntime)
 	centerService.SetStatsProviders(identityService, deviceService)
+	centerService.SetTenantRepository(st.Tenants)
 	deviceService.ResetStaleOnlineStatus(context.Background())
 	sessionCache := session.NewCache()
 	sessionService := session.NewService(sessionCache, st.Sessions)

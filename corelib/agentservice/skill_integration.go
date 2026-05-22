@@ -26,6 +26,10 @@ type SkillToolProvider interface {
 	SearchSkills(ctx context.Context, p Principal, query string) ([]SkillSearchResult, error)
 }
 
+type skillMaintenancePlanner interface {
+	BuildSkillMaintenancePlan(ctx context.Context, p Principal, opts skill.SkillMaintenancePlanOptions) (skill.SkillMaintenancePlan, error)
+}
+
 // SkillToolEntry represents a single installed skill available for the agent.
 type SkillToolEntry struct {
 	Name        string
@@ -63,6 +67,20 @@ func (b *SkillToolBridge) ListSkills(ctx context.Context, p Principal) []SkillTo
 		})
 	}
 	return entries
+}
+
+// BuildSkillMaintenancePlan returns a read-only local curator plan for the
+// principal's installed skills. It does not mutate, execute, archive, or merge
+// any skill.
+func (b *SkillToolBridge) BuildSkillMaintenancePlan(ctx context.Context, p Principal, opts skill.SkillMaintenancePlanOptions) (skill.SkillMaintenancePlan, error) {
+	items, err := b.svc.ListSkills(ctx, p)
+	if err != nil {
+		return skill.SkillMaintenancePlan{}, err
+	}
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	return skill.BuildSkillMaintenancePlan(items, opts), nil
 }
 
 // RunSkill executes a skill by name. It finds the skill, validates it,
@@ -191,9 +209,13 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 		return c.skillSearch(args)
 	case "run":
 		return c.skillRun(args)
+	case "maintenance_plan":
+		return c.skillMaintenancePlan(args)
+	case "execute_maintenance_plan":
+		return agent.ToolExecutionResult{Result: "Error: execute_maintenance_plan is not supported by this provider", Outcome: agent.ToolExecutionOutcomeError}
 	default:
 		return agent.ToolExecutionResult{
-			Result:  fmt.Sprintf("Error: unsupported manage_skill action %q. Supported: list, search, run", action),
+			Result:  skill.ManageSkillUnknownActionError(action),
 			Outcome: agent.ToolExecutionOutcomeError,
 		}
 	}
@@ -255,19 +277,74 @@ func (c *coreAgentCallbacks) skillRun(args map[string]interface{}) agent.ToolExe
 	return agent.ToolExecutionResult{Result: result, Outcome: agent.ToolExecutionOutcomeOK}
 }
 
+func (c *coreAgentCallbacks) skillMaintenancePlan(args map[string]interface{}) agent.ToolExecutionResult {
+	planner, ok := c.skillProvider.(skillMaintenancePlanner)
+	if !ok {
+		return agent.ToolExecutionResult{Result: "Error: skill maintenance planning is not supported by this provider", Outcome: agent.ToolExecutionOutcomeError}
+	}
+	plan, err := planner.BuildSkillMaintenancePlan(c.ctx, c.principal, skill.SkillMaintenancePlanOptions{
+		Now:                 time.Now(),
+		StaleAfterDays:      intArg(args, "stale_after_days", 0),
+		MinFailureRuns:      intArg(args, "min_failure_runs", 0),
+		MaxActions:          intArg(args, "max_actions", 0),
+		DuplicateSimilarity: skillFloatArg(args, "duplicate_similarity"),
+	})
+	if err != nil {
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: maintenance plan failed: %v", err), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	payload := map[string]interface{}{
+		"ok":                      true,
+		"non_executing":           true,
+		"boundary":                "read-only skill maintenance plan; no skill was modified, archived, merged, deleted, installed, or executed",
+		"maintenance_plan_status": "local_skill_maintenance_plan_no_llm",
+		"plan":                    plan,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: marshal maintenance plan failed: %v", err), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	return agent.ToolExecutionResult{Result: string(data), Outcome: agent.ToolExecutionOutcomeOK}
+}
+
+func skillFloatArg(args map[string]interface{}, key string) float64 {
+	if v, ok := args[key]; ok {
+		switch n := v.(type) {
+		case float64:
+			return n
+		case float32:
+			return float64(n)
+		case int:
+			return float64(n)
+		case json.Number:
+			if f, err := n.Float64(); err == nil {
+				return f
+			}
+		}
+	}
+	return 0
+}
+
 // manageSkillToolDef returns the manage_skill tool definition for BuildTools.
 func (c *coreAgentCallbacks) manageSkillToolDef() map[string]interface{} {
 	return functionToolDefinition("manage_skill",
-		"Manage and execute installed Skills. Actions: list (show installed skills), search (find skills by keyword), run (execute a skill by name with arguments).",
+		"Manage and execute installed Skills. Actions: "+skill.ManageSkillActionSlash()+". maintenance_plan is read-only and never modifies, archives, merges, installs, or executes skills.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"action": map[string]interface{}{"type": "string", "description": "Action: list, search, run"},
-				"query":  map[string]interface{}{"type": "string", "description": "Search keyword (required for search)"},
-				"name":   map[string]interface{}{"type": "string", "description": "Skill name (required for run)"},
-				"args":   map[string]interface{}{"type": "object", "description": "Skill arguments (for run). Template variables like {{key}} in skill commands are replaced with values from this object."},
-				"input":  map[string]interface{}{"type": "string", "description": "Input parameter (for run, shorthand for args.input)"},
-				"output": map[string]interface{}{"type": "string", "description": "Output parameter (for run, shorthand for args.output)"},
+				"action":                 map[string]interface{}{"type": "string", "description": "Action: " + skill.ManageSkillActionSlash()},
+				"query":                  map[string]interface{}{"type": "string", "description": "Search keyword (required for search)"},
+				"name":                   map[string]interface{}{"type": "string", "description": "Skill name (required for run)"},
+				"args":                   map[string]interface{}{"type": "object", "description": "Skill arguments (for run). Template variables like {{key}} in skill commands are replaced with values from this object."},
+				"input":                  map[string]interface{}{"type": "string", "description": "Input parameter (for run, shorthand for args.input)"},
+				"output":                 map[string]interface{}{"type": "string", "description": "Output parameter (for run, shorthand for args.output)"},
+				"max_actions":            map[string]interface{}{"type": "integer", "description": "Maximum number of maintenance actions returned by maintenance_plan"},
+				"stale_after_days":       map[string]interface{}{"type": "integer", "description": "Days before an unused learned skill is considered stale for maintenance_plan"},
+				"min_failure_runs":       map[string]interface{}{"type": "integer", "description": "Minimum failed runs before maintenance_plan recommends review or repair"},
+				"duplicate_similarity":   map[string]interface{}{"type": "number", "description": "Name/description similarity threshold for duplicate skill recommendations"},
+				"dry_run":                map[string]interface{}{"type": "boolean", "description": "execute_maintenance_plan preview mode; defaults true"},
+				"confirm":                map[string]interface{}{"type": "boolean", "description": "Required true when execute_maintenance_plan uses dry_run=false"},
+				"approved_actions":       map[string]interface{}{"type": "array", "description": "Approved maintenance action names for execute_maintenance_plan"},
+				"allow_duplicate_retire": map[string]interface{}{"type": "boolean", "description": "Allow execute_maintenance_plan to disable the recommended duplicate skill after merge draft review"},
 			},
 			"required": []string{"action"},
 		})

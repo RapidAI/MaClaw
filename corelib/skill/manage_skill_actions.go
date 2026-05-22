@@ -31,6 +31,8 @@ var ManageSkillActions = []ManageSkillAction{
 	{"validate", "检查 Skill 的跨平台可移植性并可选自动修复"},
 	{"patch", "对 Skill 定义执行修补（mode=text: find-and-replace；mode=step: 结构化修改步骤字段）"},
 	{"history", "查看 Skill 的修补历史记录"},
+	{"maintenance_plan", "生成只读 Skill 维护计划（不修改、不归档、不合并、不执行 Skill）"},
+	{"execute_maintenance_plan", "执行已批准的 Skill 维护动作，默认 dry_run 预演"},
 }
 
 // ManageSkillActionNames returns the ordered list of action name strings.

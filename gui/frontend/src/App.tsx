@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -607,7 +607,7 @@ function App() {
         try {
             await RespondDigitalEmployeeSensitiveRequest(request.request_id, decision);
         } catch (err: any) {
-            showToastMessage(err?.message || String(err || 'Failed to respond'));
+            showToastMessage(err?.message || String(err || localizeText('Failed to respond', '响应失败', '回應失敗')));
         }
     }, [sensitivePermissionRequest]);
 
@@ -955,7 +955,7 @@ function App() {
             }
         }).catch(err => {
             console.error("Failed to load config on startup:", err);
-            setStatus("Error loading config: " + err);
+            setStatus(localizeText("Error loading config: ", "加载配置失败：", "載入設定失敗：") + err);
             // Fallback: retry once after a short delay. If the config file was
             // being written by a concurrent SaveConfig, it should be ready now.
             setTimeout(() => {
@@ -1901,13 +1901,13 @@ function App() {
             filtered = filtered.filter(p => p.region === providerFilter);
         }
 
-        // Exclude providers whose name already exists as a non-custom model
+        // Exclude providers already used by another model to avoid duplicate custom tabs.
         if (config) {
             const toolCfg = (config as any)[activeTool];
             if (toolCfg?.models) {
                 const existingNames = new Set(
                     toolCfg.models
-                        .filter((m: any) => !m.is_custom)
+                        .filter((_: any, idx: number) => idx !== activeTab)
                         .map((m: any) => (m.model_name || '').toLowerCase().trim())
                 );
                 filtered = filtered.filter(p => !existingNames.has(p.name.toLowerCase().trim()));
@@ -1917,17 +1917,52 @@ function App() {
         return filtered;
     };
 
-    // Handle provider selection
-    const handleProviderSelect = (provider: ProviderEndpoint) => {
-        setSelectedProviderForUrl(provider);
-    };
-
     // Confirm provider selection and fill URL
-    const confirmProviderSelection = () => {
-        if (selectedProviderForUrl) {
-            handleModelUrlChange(selectedProviderForUrl.url);
+    const confirmProviderSelection = (provider?: ProviderEndpoint) => {
+        const selectedProvider = provider || selectedProviderForUrl;
+        if (selectedProvider) {
+            if (config) {
+                setFetchedModelList([]);
+                const toolCfg = JSON.parse(JSON.stringify((config as any)[activeTool]));
+                const currentModel = toolCfg.models?.[activeTab];
+                if (currentModel) {
+                    const oldName = currentModel.model_name;
+                    currentModel.model_url = selectedProvider.url;
+                    if (currentModel.is_custom) {
+                        const otherNames = new Set(
+                            toolCfg.models
+                                .filter((_: any, idx: number) => idx !== activeTab)
+                                .map((m: any) => (m.model_name || '').toLowerCase().trim())
+                        );
+                        const shouldUseProviderName = !oldName || /^Custom\d*$/i.test(oldName.trim());
+                        if (shouldUseProviderName) {
+                            let nextName = selectedProvider.name;
+                            let suffix = 2;
+                            while (otherNames.has(nextName.toLowerCase().trim())) {
+                                nextName = `${selectedProvider.name} ${suffix}`;
+                                suffix += 1;
+                            }
+                            currentModel.model_name = nextName;
+                            if (toolCfg.current_model === oldName) {
+                                toolCfg.current_model = nextName;
+                            }
+                        }
+                    }
+                    if (!currentModel.model_id) {
+                        currentModel.model_id = getDefaultModelId(activeTool, selectedProvider.name);
+                    }
+                    if (activeTool === 'codex' && !currentModel.wire_api) {
+                        currentModel.wire_api = 'responses';
+                    }
+                    const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+                    setConfig(newConfig);
+                }
+            } else {
+                handleModelUrlChange(selectedProvider.url);
+            }
             setShowProviderSelector(false);
             setSelectedProviderForUrl(null);
+            setHoveredProvider(null);
         }
     };
 
@@ -1946,7 +1981,11 @@ function App() {
 
         if (isDuplicate) {
             // Show warning and don't update
-            setStatus(`Name "${name}" already exists, please use a different name`);
+            setStatus(localizeText(
+                `Name "${name}" already exists, please use a different name`,
+                `名称“${name}”已存在，请使用其他名称`,
+                `名稱「${name}」已存在，請使用其他名稱`,
+            ));
             return;
         }
 
@@ -1994,8 +2033,8 @@ function App() {
             if (p.includes("aigocode")) return "claude-3-5-sonnet-20241022";
             if (p.includes("aicodemirror")) return "Haiku";
             if (p.includes("coderelay")) return "claude-3-5-sonnet-20241022";
-            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
+            if (p.includes("摩尔线程")) return "GLM-4.7";
+            if (p.includes("快手")) return "kat-coder-pro-v1";
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
@@ -2011,8 +2050,8 @@ function App() {
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
-            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
+            if (p.includes("摩尔线程")) return "GLM-4.7";
+            if (p.includes("快手")) return "kat-coder-pro-v1";
         }
         return "";
     };
@@ -2038,7 +2077,7 @@ function App() {
         if (!toolCfg || toolCfg.current_model === modelName) return;
         const targetModel = toolCfg.models.find((m: any) => m.model_name === modelName);
         if (modelName !== "Original" && (!targetModel || !targetModel.api_key || targetModel.api_key.trim() === "")) {
-            setStatus("Please configure API Key first!");
+            setStatus(localizeText("Please configure API Key first!", "请先配置 API Key！", "請先配置 API Key！"));
             const idx = toolCfg.models.findIndex((m: any) => m.model_name === modelName);
             if (idx !== -1) setActiveTab(idx);
 
@@ -2059,7 +2098,7 @@ function App() {
             setStatus(t("switched"));
             setTimeout(() => setStatus(""), 1500);
         }).catch(err => {
-            setStatus("Error syncing: " + err);
+            setStatus(localizeText("Error syncing: ", "同步失败：", "同步失敗：") + err);
         }).finally(() => {
             if (isCodexProviderSwitch) {
                 setCodexConfigUpdateCount((count) => Math.max(0, count - 1));
@@ -2184,7 +2223,7 @@ function App() {
         }
         setShowRemoteActivationModal(false);
         if (pendingRemoteLaunchTool) {
-            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杩滅▼鍚姩...' : lang === 'zh-Hant' ? '姝ｅ湪閬犵▼鍟熷嫊...' : 'Starting remotely...');
+            setStatus(lang === 'zh-Hans' ? '正在启动远程...' : lang === 'zh-Hant' ? '正在啟動遠端...' : 'Starting remotely...');
             setLaunchingTool(pendingRemoteLaunchTool);
             await quickStartRemoteSession(pendingRemoteLaunchTool as any);
             setPendingRemoteLaunchTool("");
@@ -2254,7 +2293,7 @@ function App() {
                 setShowModelSettings(false);
             }, 1000);
         }).catch(err => {
-            setStatus("Error saving: " + err);
+            setStatus(localizeText("Error saving: ", "保存失败：", "儲存失敗：") + err);
         });
     };
 
@@ -2368,6 +2407,28 @@ ${instruction}`;
     );
     const launchMode = config?.default_launch_mode === 'remote' ? 'remote' : 'local';
     const launchRemoteEnabled = launchMode === 'remote';
+    const setLaunchMode = async (mode: 'local' | 'remote') => {
+        if (!config) return;
+        const newConfig = new main.AppConfig({
+            ...config,
+            default_launch_mode: mode,
+            remote_enabled: mode === 'remote',
+        });
+        setConfig(newConfig);
+        try {
+            await SetDefaultLaunchMode(mode);
+            const freshConfig = await LoadConfig();
+            setConfig(freshConfig);
+        } catch (err) {
+            setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
+            try {
+                const freshConfig = await LoadConfig();
+                setConfig(freshConfig);
+            } catch {
+                // Keep the optimistic UI state if recovery load fails.
+            }
+        }
+    };
     const codexConfigUpdating = codexConfigUpdateCount > 0;
     return (
         <div
@@ -2408,7 +2469,7 @@ ${instruction}`;
                 setRenameValue={setRenameValue}
                 resumeRecentProject={resumeRecentProject}
                 assistantReady={aiAssistant.ready}
-                onRecentTaskSwitchBlocked={() => showToastMessage('System is warming up. Please switch later.')}
+                onRecentTaskSwitchBlocked={() => showToastMessage(localizeText('System is warming up. Please switch later.', '系统正在预热，请稍后切换。', '系統正在預熱，請稍後切換。'))}
                 createRecentTask={createRecentTask}
                 refreshRecentProjects={refreshRecentProjects}
                 taskContextMenu={taskContextMenu}
@@ -2790,10 +2851,10 @@ ${instruction}`;
                                     setStatus("");
                                 }).catch((err: any) => {
                                     console.error("CheckUpdate error:", err);
-                                    setStatus("妫€鏌ユ洿鏂板け璐?  " + err);
+                                    setStatus((lang === 'zh-Hans' ? '检查更新失败：' : lang === 'zh-Hant' ? '檢查更新失敗：' : 'Update check failed: ') + err);
                                     setUpdateResult({
                                         has_update: false,
-                                        latest_version: "鑾峰彇澶辫触",
+                                        latest_version: lang === 'zh-Hans' ? "获取失败" : lang === 'zh-Hant' ? "取得失敗" : "Fetch failed",
                                         release_url: ""
                                     });
                                     setIsStartupUpdateCheck(false);
@@ -2891,7 +2952,7 @@ ${instruction}`;
                                             }}
                                             title={t("proxySettings")}
                                         >
-                                            {lang === 'zh-Hans' ? '璁剧疆' : lang === 'zh-Hant' ? '瑷畾' : 'Edit'}
+                                            {lang === 'zh-Hans' ? '设置' : lang === 'zh-Hant' ? '設定' : 'Edit'}
                                         </span>
                                     </label>
                                 )}
@@ -2918,11 +2979,7 @@ ${instruction}`;
                                     <div className="coding-launch-segmented">
                                         <button
                                             type="button"
-                                            onClick={() => {
-                                                const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'local', remote_enabled: false });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
-                                            }}
+                                            onClick={() => { void setLaunchMode('local'); }}
                                             className={!launchRemoteEnabled ? 'is-active' : ''}
                                         >
                                             {t("localModeLabel")}
@@ -2931,12 +2988,10 @@ ${instruction}`;
                                             type="button"
                                             onClick={() => {
                                                 if (!isRemoteCapableActiveTool) return;
-                                                const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
+                                                void setLaunchMode('remote');
                                             }}
                                             className={launchRemoteEnabled ? 'is-active' : ''}
-                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : "This tool does not support remote mode"}
+                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : localizeText("This tool does not support remote mode", "此工具不支持远程模式", "此工具不支援遠端模式")}
                                         >
                                             {t("remoteModeLabel")}
                                         </button>
@@ -2950,7 +3005,7 @@ ${instruction}`;
                                                 openRemoteActivationModal(activeTool);
                                             }
                                         }}
-                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '鐐瑰嚮娉ㄥ唽' : lang === 'zh-Hant' ? '榛炴搳瑷诲唺' : 'Click to register')}
+                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '点击注册' : lang === 'zh-Hant' ? '點擊註冊' : 'Click to register')}
                                     >
                                         <span>
                                             {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
@@ -3016,32 +3071,30 @@ ${instruction}`;
                                         </button>
                                     </div>
                                 </div>
-                                {/* Handoff: local 鈫抮emote icon button */}
+                                {/* Handoff: local to remote icon button */}
                                 {!launchRemoteEnabled && isRemoteCapableActiveTool && (
                                     <button
                                         type="button"
-                                        title={lang === 'zh-Hans' ? '杞负杩滅▼' : lang === 'zh-Hant' ? '杞夌偤閬犵▼' : 'Switch to Remote'}
+                                        title={lang === 'zh-Hans' ? '切换到远程' : lang === 'zh-Hant' ? '切換到遠端' : 'Switch to Remote'}
                                         className="coding-launch-handoff"
                                         onClick={async () => {
                                             if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                 openRemoteActivationModal(activeTool);
                                                 return;
                                             }
-                                            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杞负杩滅▼...' : lang === 'zh-Hant' ? '姝ｅ湪杞夌偤閬犵▼...' : 'Switching to remote...');
+                                            setStatus(lang === 'zh-Hans' ? '正在切换到远程...' : lang === 'zh-Hant' ? '正在切換到遠端...' : 'Switching to remote...');
                                             setLaunchingTool(activeTool);
                                             try {
-                                                const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true });
-                                                setConfig(newConfig);
-                                                await SaveConfig(newConfig);
+                                                await setLaunchMode('remote');
                                                 await quickStartRemoteSession(activeTool as any, "handoff");
                                                 setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                             } catch (err) {
-                                                setStatus("Error: " + err);
+                                                setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
                                                 setLaunchingTool("");
                                             }
                                         }}
                                     >
-                                        鈫?
+                                        ↗
                                     </button>
                                 )}
                                 <button
@@ -3052,7 +3105,7 @@ ${instruction}`;
                                         if (launchRemoteEnabled && hasActiveRemoteSessionForTool && activeRemoteSessionForTool?.id) {
                                             setLaunchingTool(activeTool);
                                             await killRemoteSession(activeRemoteSessionForTool.id);
-                                            setStatus('Remote stopped');
+                                            setStatus(localizeText('Remote stopped', '远程已停止', '遠端已停止'));
                                             setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                             return;
                                         }
@@ -3060,20 +3113,20 @@ ${instruction}`;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
                                             if (launchRemoteEnabled) {
                                                 if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
-                                                    setStatus("This tool does not support remote launch");
+                                                    setStatus(localizeText("This tool does not support remote launch", "此工具不支持远程启动", "此工具不支援遠端啟動"));
                                                     return;
                                                 }
                                                 if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                     openRemoteActivationModal(activeTool);
                                                     return;
                                                 }
-                                                setStatus("Starting remotely...");
+                                                setStatus(localizeText("Starting remotely...", "正在启动远程...", "正在啟動遠端..."));
                                                 setLaunchingTool(activeTool);
                                                 try {
                                                     await quickStartRemoteSession(activeTool as any);
                                                     setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                                 } catch (err) {
-                                                    setStatus("Error: " + err);
+                                                    setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
                                                     setLaunchingTool("");
                                                 }
                                                 return;
@@ -3085,29 +3138,33 @@ ${instruction}`;
                                                 const isBeingInstalled = await IsToolBeingInstalled(activeTool);
                                                 if (isBeingInstalled) {
                                                     // Tool is being installed in background, just wait
-                                                    setStatus(`${activeTool} is being installed in background, please wait...`);
+                                                    setStatus(localizeText(
+                                                        `${activeTool} is being installed in background, please wait...`,
+                                                        `${activeTool} 正在后台安装，请稍候...`,
+                                                        `${activeTool} 正在背景安裝，請稍候...`,
+                                                    ));
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {
                                                         await InstallToolOnDemand(activeTool);
                                                         // Refresh tool statuses
                                                         const updatedStatuses = await CheckToolsStatus();
                                                         setToolStatuses(updatedStatuses);
-                                                        setStatus(`${activeTool} installed`);
+                                                        setStatus(localizeText(`${activeTool} installed`, `${activeTool} 已安装`, `${activeTool} 已安裝`));
                                                         setOnDemandInstallingTool("");
                                                         // Auto launch
                                                         setTimeout(async () => {
-                                                            setStatus("Launching...");
+                                                            setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
                                                             setLaunchingTool(activeTool);
                                                             try {
                                                                 await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
                                                                 setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                                             } catch (err) {
-                                                                setStatus("Error: " + err);
+                                                                setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
                                                                 setLaunchingTool("");
                                                             }
                                                         }, 500);
                                                     } catch (err) {
-                                                        setStatus("Error: " + err);
+                                                        setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
                                                         setOnDemandInstallingTool("");
                                                     }
                                                     return;
@@ -3128,7 +3185,7 @@ ${instruction}`;
                                                         setToolRepairStatus(prev => ({...prev, show: false}));
                                                         setOnDemandInstallingTool("");
                                                         // Launch the tool
-                                                        setStatus("Launching...");
+                                                        setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
                                                         setLaunchingTool(activeTool);
                                                         try {
                                                             await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
@@ -3136,7 +3193,7 @@ ${instruction}`;
                                                             setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                                         } catch (err) {
                                                             console.error("LaunchTool call failed after install:", err);
-                                                            setStatus("Error: " + err);
+                                                            setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
                                                             setLaunchingTool("");
                                                         }
                                                     }, 1500);
@@ -3150,7 +3207,7 @@ ${instruction}`;
                                             }
 
                                             console.log("Launching tool with project:", selectedProj.name, "path:", selectedProj.path);
-                                            setStatus("Launching...");
+                                            setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
                                             setLaunchingTool(activeTool);
                                             LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false)
                                                 .then(() => {
@@ -3159,7 +3216,7 @@ ${instruction}`;
                                                 })
                                                 .catch(err => {
                                                     console.error("LaunchTool call failed:", err);
-                                                    setStatus("Error: " + err);
+                                                    setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
                                                     setLaunchingTool("");
                                                 });
                                             // Update current project if different
@@ -3322,7 +3379,7 @@ ${instruction}`;
                                                     <button
                                                         className="provider-config-arrow-button"
                                                         onClick={() => setTabStartIndex(Math.max(0, tabStartIndex - 1))}
-                                                        aria-label="Previous providers"
+                                                        aria-label={localizeText("Previous providers", "上一页服务商", "上一頁服務商")}
                                                     >
                                                         {'<'}
                                                     </button>
@@ -3373,7 +3430,7 @@ ${instruction}`;
                                                     <button
                                                         className="provider-config-arrow-button"
                                                         onClick={() => setTabStartIndex(Math.min(configurableModels.length - 4, tabStartIndex + 1))}
-                                                        aria-label="Next providers"
+                                                        aria-label={localizeText("Next providers", "下一页服务商", "下一頁服務商")}
                                                     >
                                                         {'>'}
                                                     </button>
@@ -3406,7 +3463,7 @@ ${instruction}`;
                                 <div className="form-group provider-config-form-group">
                                     <label className="form-label">
                                         {t("modelName")}
-                                        {activeTool === 'codebuddy' && <span className="provider-config-model-label-hint">(Supports multiple, separated by comma)</span>}
+                                        {activeTool === 'codebuddy' && <span className="provider-config-model-label-hint">{localizeText("(Supports multiple, separated by comma)", "（支持多个，用逗号分隔）", "（支援多個，用逗號分隔）")}</span>}
                                     </label>
                                     <div className="provider-config-model-select-shell">
                                         <div className="provider-config-model-select-row">
@@ -3425,14 +3482,14 @@ ${instruction}`;
                                                     >
                                                         <option value="">
                                                             {fetchingModelList
-                                                                ? "Loading..."
+                                                                ? localizeText("Loading...", "加载中...", "載入中...")
                                                                 : modelOptions.length === 0
-                                                                    ? 'Click Models to fetch first'
-                                                                    : "Select a model"}
+                                                                    ? localizeText("Click Models to fetch first", "请先点击“模型”获取列表", "請先點擊「模型」取得列表")
+                                                                    : localizeText("Select a model", "选择模型", "選擇模型")}
                                                         </option>
                                                         {currentModel.model_id && !modelOptions.some(m => m.id === currentModel.model_id) && (
                                                             <option value={currentModel.model_id}>
-                                                                {'Current: '}{currentModel.model_id}
+                                                                {localizeText("Current: ", "当前：", "目前：")}{currentModel.model_id}
                                                             </option>
                                                         )}
                                                         {modelOptions.map((m, i) => (
@@ -3453,7 +3510,7 @@ ${instruction}`;
                                                     const url = currentModel.model_url;
                                                     const key = currentModel.api_key;
                                                     if (!url || !key) {
-                                                        setStatus("Please fill in API URL and API Key first");
+                                                        setStatus(localizeText("Please fill in API URL and API Key first", "请先填写 API URL 和 API Key", "請先填寫 API URL 和 API Key"));
                                                         return;
                                                     }
                                                     const protocol = activeTool === 'claude' ? 'anthropic' : 'openai';
@@ -3464,19 +3521,19 @@ ${instruction}`;
                                                         if (models && models.length > 0) {
                                                             setFetchedModelList(models.map((m: any) => ({ id: m.id || '', name: m.name || '' })));
                                                         } else {
-                                                            setStatus("Provider returned empty model list");
+                                                            setStatus(localizeText("Provider returned empty model list", "服务商返回的模型列表为空", "服務商返回的模型列表為空"));
                                                         }
                                                     } catch (e) {
-                                                        setStatus(String(e));
+                                                        setStatus(localizeText("Fetch models failed: ", "获取模型列表失败：", "取得模型列表失敗：") + e);
                                                     } finally {
                                                         setFetchingModelList(false);
                                                     }
                                                 }}
-                                                title="Fetch available models from provider"
+                                                title={localizeText("Fetch available models from provider", "从服务商获取可用模型", "從服務商取得可用模型")}
                                             >
                                                 {fetchingModelList
-                                                    ? "Loading..."
-                                                    : "Models"}
+                                                    ? localizeText("Loading...", "加载中...", "載入中...")
+                                                    : localizeText("Models", "模型", "模型")}
                                             </button>
                                         </div>
                                     </div>
@@ -3485,7 +3542,7 @@ ${instruction}`;
 
                             {activeTool === "codex" && (
                                 <div className="form-group provider-config-form-group--wire">
-                                    <label className="form-label">Wire API</label>
+                                    <label className="form-label">{localizeText("Wire API", "Wire API", "Wire API")}</label>
                     <input
                         type="text"
                         className="form-input"
@@ -3568,7 +3625,7 @@ ${instruction}`;
                                         const allModels = (config as any)[activeTool].models;
                                         const customModels = allModels.filter((m: any) => m.is_custom);
                                         if (customModels.length <= 1) {
-                                            showToastMessage(t("cannotRemoveLastCustom") || "Cannot remove the last custom provider");
+                                            showToastMessage(t("cannotRemoveLastCustom"));
                                             return;
                                         }
                                         setConfirmDialog({
@@ -3644,8 +3701,8 @@ ${instruction}`;
                     setSelectedProvider={setSelectedProviderForUrl}
                     hoveredProvider={hoveredProvider}
                     setHoveredProvider={setHoveredProvider}
-                    lang={lang}
                     t={t}
+                    localizeText={localizeText}
                     onConfirm={confirmProviderSelection}
                     onClose={() => { setShowProviderSelector(false); setSelectedProviderForUrl(null); setHoveredProvider(null); }}
                 />
@@ -3761,7 +3818,7 @@ ${instruction}`;
                     selectedProjectForLaunch={selectedProjectForLaunch}
                     setConfig={setConfig}
                     t={t}
-                    saveLabel={localizeText("Save", "??", "??")}
+                    saveLabel={localizeText("Save", "保存", "儲存")}
                     onClose={() => setShowProxySettings(false)}
                 />
             )}

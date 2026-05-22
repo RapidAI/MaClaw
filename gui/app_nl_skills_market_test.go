@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -747,6 +748,34 @@ func TestSkillExecutorLoadSkillsHydratesEmptyHubSkillFromFileSkill(t *testing.T)
 	}
 }
 
+func TestSkillDirIdentityKeyNormalizesWindowsDirCase(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows path identity is case-insensitive")
+	}
+	left := skillDirIdentityKey(`C:\Users\Me\Skills\Demo`)
+	right := skillDirIdentityKey(`c:\users\me\skills\demo`)
+	if left != right {
+		t.Fatalf("keys differ: %q != %q", left, right)
+	}
+}
+
+func TestSkillLoadCacheKeyNormalizesExternalDirs(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows path identity is case-insensitive")
+	}
+	left := skillLoadCacheKey(nil, []string{`C:\Users\Me\Skills\Demo`, " "})
+	right := skillLoadCacheKey(nil, []string{`c:\users\me\skills\demo`})
+	if left != right {
+		t.Fatalf("cache keys differ: %q != %q", left, right)
+	}
+}
+
+func TestSkillNameIdentityKeyNormalizesCaseAndSpace(t *testing.T) {
+	if skillNameIdentityKey(" File-Skill ") != skillNameIdentityKey("file-skill") {
+		t.Fatalf("skill name identity should ignore case and surrounding space")
+	}
+}
+
 func TestSkillExecutorLoadSkillsPrefersPrimaryFileSkillOverHubSnapshot(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -802,6 +831,56 @@ func TestSkillExecutorLoadSkillsPrefersPrimaryFileSkillOverHubSnapshot(t *testin
 	}
 	if got := found.Steps[0].Params["command"]; got == "echo stale" {
 		t.Fatalf("expected primary file skill to override stale hub snapshot")
+	}
+}
+
+func TestSkillExecutorLoadSkillsRefreshesFileBackedRequiredArgsOverlay(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	skillDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "contract-demo")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "name: contract-demo\ndescription: contract demo\nrequired_args:\n  - input\nparams:\n  - name: input\n    required: true\nsteps:\n  - action: bash\n    params:\n      command: echo {{input}}\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:     "contract-demo",
+		Source:   "file",
+		SkillDir: skillDir,
+		Status:   "active",
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	executor := NewSkillExecutor(app, nil, nil)
+	skills := executor.loadSkills()
+	var found *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].Name == "contract-demo" {
+			found = &skills[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected hydrated skill, skills = %#v", skills)
+	}
+	if len(found.RequiredArgs) != 1 || found.RequiredArgs[0] != "input" {
+		t.Fatalf("RequiredArgs = %#v, want file-backed required_args", found.RequiredArgs)
+	}
+	if len(found.Params) != 1 || found.Params[0].Name != "input" || !found.Params[0].Required {
+		t.Fatalf("Params = %#v, want file-backed params", found.Params)
 	}
 }
 

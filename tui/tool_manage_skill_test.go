@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/tui/commands"
 )
 
 // TestManageSkillHandler_AllCanonicalActionsHandled verifies that the TUI
@@ -27,6 +29,313 @@ func TestManageSkillHandler_AllCanonicalActionsHandled(t *testing.T) {
 		if strings.Contains(got, "鏈煡 manage_skill action") {
 			t.Errorf("TUI dispatcher has no handler for canonical action %q", action)
 		}
+	}
+}
+
+func TestManageSkillHandlerMaintenancePlanReturnsReadOnlyPlan(t *testing.T) {
+	app := &TUIApp{appConfig: corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name:         "fragile-skill",
+		UsageCount:   3,
+		FailureCount: 3,
+		SuccessCount: 0,
+	}}}}
+	handler := newManageSkillHandler(app)
+	raw := handler(map[string]interface{}{"action": "maintenance_plan", "min_failure_runs": 3})
+
+	var payload struct {
+		OK                    bool `json:"ok"`
+		NonExecuting          bool `json:"non_executing"`
+		Boundary              string
+		MaintenancePlanStatus string `json:"maintenance_plan_status"`
+		Plan                  struct {
+			Actions []skill.SkillMaintenanceAction `json:"actions"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal maintenance_plan result: %v\n%s", err, raw)
+	}
+	if !payload.OK || !payload.NonExecuting || payload.MaintenancePlanStatus != "local_skill_maintenance_plan_no_llm" || !strings.Contains(payload.Boundary, "read-only skill maintenance plan") {
+		t.Fatalf("expected read-only maintenance plan payload: %#v", payload)
+	}
+	found := false
+	for _, action := range payload.Plan.Actions {
+		if action.Action == skill.MaintenanceActionMarkNeedsReview && action.Skill == "fragile-skill" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected fragile skill review action: %#v", payload.Plan.Actions)
+	}
+}
+
+func TestManageSkillHandlerExecuteMaintenancePlanDryRun(t *testing.T) {
+	app := &TUIApp{appConfig: corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name:         "fragile-skill",
+		Status:       "active",
+		UsageCount:   3,
+		FailureCount: 3,
+		SuccessCount: 0,
+	}}}}
+	handler := newManageSkillHandler(app)
+	raw := handler(map[string]interface{}{
+		"action":           "execute_maintenance_plan",
+		"min_failure_runs": 3,
+		"approved_actions": []interface{}{skill.MaintenanceActionMarkNeedsReview},
+	})
+
+	var payload struct {
+		OK     bool `json:"ok"`
+		DryRun bool `json:"dry_run"`
+		Result struct {
+			ExecutedCount int `json:"executed_count"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal execute result: %v\n%s", err, raw)
+	}
+	if !payload.OK || !payload.DryRun || payload.Result.ExecutedCount != 1 {
+		t.Fatalf("unexpected execute payload: %#v", payload)
+	}
+	if app.appConfig.NLSkills[0].Status != "active" {
+		t.Fatalf("dry run mutated status to %q", app.appConfig.NLSkills[0].Status)
+	}
+}
+
+func TestManageSkillHandlerExecuteMaintenancePlanRealRunRequiresApprovedActions(t *testing.T) {
+	app := &TUIApp{appConfig: corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name:         "fragile-skill",
+		Status:       "active",
+		UsageCount:   3,
+		FailureCount: 3,
+		SuccessCount: 0,
+	}}}}
+	handler := newManageSkillHandler(app)
+	raw := handler(map[string]interface{}{
+		"action":  "execute_maintenance_plan",
+		"dry_run": false,
+		"confirm": true,
+	})
+	if !strings.Contains(raw, "approved_actions is required") {
+		t.Fatalf("expected approved action guard, got %s", raw)
+	}
+	if app.appConfig.NLSkills[0].Status != "active" {
+		t.Fatalf("guard mutated status to %q", app.appConfig.NLSkills[0].Status)
+	}
+}
+
+func TestTUIStringListArgTrimsApprovedActions(t *testing.T) {
+	got := tuiStringListArg(map[string]interface{}{"approved_actions": []interface{}{" mark_needs_review ", "", "\tarchive_stale\t"}}, "approved_actions")
+	if len(got) != 2 || got[0] != skill.MaintenanceActionMarkNeedsReview || got[1] != skill.MaintenanceActionArchiveStale {
+		t.Fatalf("approved actions = %#v, want trimmed non-empty actions", got)
+	}
+}
+
+func TestTUISkillHealthLabelsFlagPartialContract(t *testing.T) {
+	labels := tuiSkillHealthLabels(corelib.NLSkillEntry{
+		Name:   "partial-contract",
+		Params: []corelib.NLSkillParam{{Name: "input"}},
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{
+			"command": "convert {{input}} {{output}}",
+		}}},
+	})
+	found := false
+	for _, label := range labels {
+		if label == "[missing_contract]" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("labels = %#v, want missing contract", labels)
+	}
+}
+
+func TestTUISkillHealthLabelsFlagLegacyRequiredArgsContract(t *testing.T) {
+	labels := tuiSkillHealthLabels(corelib.NLSkillEntry{
+		Name:         "legacy-required-contract",
+		RequiredArgs: []string{"input"},
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{
+			"command": "cat {{input}}",
+		}}},
+	})
+	found := false
+	for _, label := range labels {
+		if label == "[missing_contract]" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("labels = %#v, want missing contract", labels)
+	}
+}
+
+func TestTUIPersistableMaintenanceSkillsKeepsFileSkillsOverlayOnly(t *testing.T) {
+	filtered := tuiPersistableMaintenanceSkills([]corelib.NLSkillEntry{{
+		Name:         "file-skill",
+		Source:       "file",
+		SkillDir:     t.TempDir(),
+		Status:       "needs_review",
+		Description:  "loaded from yaml",
+		Steps:        []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo hi"}}},
+		UsageCount:   3,
+		FailureCount: 3,
+		LastError:    "review",
+	}})
+	if len(filtered) != 1 {
+		t.Fatalf("filtered skills = %#v, want one overlay", filtered)
+	}
+	if filtered[0].Status != "needs_review" || filtered[0].LastError != "review" || filtered[0].UsageCount != 3 {
+		t.Fatalf("overlay metadata = %#v", filtered[0])
+	}
+	if filtered[0].Description != "" || len(filtered[0].Steps) != 0 {
+		t.Fatalf("file definition leaked into config overlay: %#v", filtered[0])
+	}
+}
+
+func TestPersistStatsCreatesOverlayForScannedFileSkill(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	entry := &corelib.NLSkillEntry{
+		Name:         "file-only",
+		Source:       "file",
+		SkillDir:     t.TempDir(),
+		Description:  "loaded from yaml",
+		Steps:        []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo ok"}}},
+		UsageCount:   1,
+		SuccessCount: 1,
+		LastUsedAt:   "2026-05-22T12:00:00Z",
+	}
+
+	persistStats("file-only", entry)
+
+	cfg, err := commands.NewFileConfigStore(dataDir).LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 {
+		t.Fatalf("NLSkills = %#v, want one file overlay", cfg.NLSkills)
+	}
+	got := cfg.NLSkills[0]
+	if got.Name != "file-only" || got.Source != "file" || got.UsageCount != 1 || got.SuccessCount != 1 {
+		t.Fatalf("overlay metadata = %#v", got)
+	}
+	if got.Description != "" || len(got.Steps) != 0 {
+		t.Fatalf("file definition leaked into config overlay: %#v", got)
+	}
+}
+
+func TestTUICollectMaintenanceSkillsHydratesFileOverlayFromExternalDir(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "file-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := strings.Join([]string{
+		"name: file-skill",
+		"description: loaded from yaml",
+		"steps:",
+		"  - action: bash",
+		"    params:",
+		"      command: echo {{input}}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &TUIApp{appConfig: corelib.AppConfig{
+		ExternalSkillDirs: []string{root},
+		NLSkills: []corelib.NLSkillEntry{{
+			Name:         "file-skill",
+			Source:       "file",
+			SkillDir:     skillDir,
+			Status:       "needs_review",
+			UsageCount:   3,
+			FailureCount: 3,
+			LastError:    "review",
+		}},
+	}}
+	skills := tuiCollectMaintenanceSkills(app)
+	var got *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].Name == "file-skill" {
+			got = &skills[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("skills = %#v, want merged file skill", skills)
+	}
+	if got.Description != "loaded from yaml" || len(got.Steps) != 1 {
+		t.Fatalf("file definition was not hydrated: %#v", got)
+	}
+	if got.Status != "needs_review" || got.LastError != "review" || got.UsageCount != 3 {
+		t.Fatalf("runtime overlay was not applied: %#v", got)
+	}
+}
+
+func TestTUICollectMaintenanceSkillsMatchesFileOverlayBySkillDir(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "renamed-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := strings.Join([]string{
+		"name: renamed-from-yaml",
+		"description: loaded from yaml",
+		"steps:",
+		"  - action: bash",
+		"    params:",
+		"      command: echo ok",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &TUIApp{appConfig: corelib.AppConfig{
+		ExternalSkillDirs: []string{root},
+		NLSkills: []corelib.NLSkillEntry{{
+			Name:       "old-overlay-name",
+			Source:     "file",
+			SkillDir:   skillDir,
+			Status:     "needs_review",
+			LastError:  "review",
+			UsageCount: 1,
+		}},
+	}}
+	skills := tuiCollectMaintenanceSkills(app)
+	var got *corelib.NLSkillEntry
+	for i := range skills {
+		if skills[i].SkillDir == skillDir {
+			got = &skills[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("skills = %#v, want file skill matched by dir", skills)
+	}
+	if got.Name != "renamed-from-yaml" || got.Status != "needs_review" || got.LastError != "review" {
+		t.Fatalf("file overlay not matched by dir: %#v", got)
+	}
+}
+
+func TestTUIMaintenanceSkillKeyNormalizesWindowsDirCase(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows path identity is case-insensitive")
+	}
+	left := tuiMaintenanceSkillKey(corelib.NLSkillEntry{SkillDir: `C:\Users\Me\Skills\Demo`})
+	right := tuiMaintenanceSkillKey(corelib.NLSkillEntry{SkillDir: `c:\users\me\skills\demo`})
+	if left != right {
+		t.Fatalf("keys differ: %q != %q", left, right)
+	}
+}
+
+func TestTUIMaintenanceSkillKeyNormalizesNameCase(t *testing.T) {
+	left := tuiMaintenanceSkillKey(corelib.NLSkillEntry{Name: "File-Skill"})
+	right := tuiMaintenanceSkillKey(corelib.NLSkillEntry{Name: " file-skill "})
+	if left != right {
+		t.Fatalf("keys differ: %q != %q", left, right)
 	}
 }
 

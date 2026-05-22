@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +162,92 @@ func TestBuildVEDiscussionStreamEventPayloadFallsBackToEnvelopeSender(t *testing
 	}
 }
 
+func TestShouldEmitVEDiscussionAttachmentMessageToFrontend(t *testing.T) {
+	msg := a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, FileAttachments: []a2a.FileAttachment{{FileURL: "/api/ve/files/file-1", Filename: "report.pdf"}}}
+	if !shouldEmitVEDiscussionMessageToFrontend("speak", msg) {
+		t.Fatal("attachment-bearing participant messages should be visible in the frontend")
+	}
+	if shouldEmitVEDiscussionMessageToFrontend("executor", msg) {
+		t.Fatal("executor-targeted attachment messages should still route to the local executor")
+	}
+	if !shouldEmitVEDiscussionMessageToFrontend("initiator", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
+		t.Fatal("initiator messages should be visible in the frontend")
+	}
+}
+
+func TestLocalizeVEDiscussionAttachmentPathsDownloadsFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/files/download/file-1" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("session_id"); got != "disc-1" {
+			t.Fatalf("session_id = %q, want disc-1", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte("remote attachment body"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.configCache = corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}
+	app.configCacheValid = true
+	client := &RemoteHubClient{app: app}
+	msg := &a2a.GroupDiscussionMessage{FileAttachments: []a2a.FileAttachment{{FileURL: "/api/ve/files/file-1", Filename: "remote.txt"}}}
+
+	client.localizeVEDiscussionAttachmentPaths("disc-1", msg)
+
+	if got := msg.FileAttachments[0].LocalPath; got == "" {
+		t.Fatal("LocalPath should be populated")
+	} else if data, err := os.ReadFile(got); err != nil || string(data) != "remote attachment body" {
+		t.Fatalf("downloaded file data = %q err=%v", string(data), err)
+	}
+	if msg.FileAttachments[0].SizeBytes != int64(len("remote attachment body")) {
+		t.Fatalf("SizeBytes = %d", msg.FileAttachments[0].SizeBytes)
+	}
+}
+
+func TestLocalizeVEDiscussionAttachmentPathsDoesNotTrustRemoteLocalPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/files/download/file-unsafe" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("safe body"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.configCache = corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineToken: "token-1"}
+	app.configCacheValid = true
+	client := &RemoteHubClient{app: app}
+	msg := &a2a.GroupDiscussionMessage{
+		TextAttachments:  []a2a.TextAttachment{{Filename: "note.txt", LocalPath: `C:\secret\note.txt`, Content: "bm90ZQ=="}},
+		ImageAttachments: []a2a.ImageAttachment{{Filename: "no-url.png", LocalPath: `C:\secret\image.png`}},
+		FileAttachments:  []a2a.FileAttachment{{FileURL: "/api/ve/files/file-unsafe", Filename: "remote.txt", LocalPath: `C:\secret\remote.txt`}},
+	}
+
+	client.localizeVEDiscussionAttachmentPaths("disc-unsafe", msg)
+
+	if msg.TextAttachments[0].LocalPath != "" {
+		t.Fatalf("trusted remote text LocalPath: %q", msg.TextAttachments[0].LocalPath)
+	}
+	if msg.ImageAttachments[0].LocalPath != "" {
+		t.Fatalf("trusted remote image LocalPath without file URL: %q", msg.ImageAttachments[0].LocalPath)
+	}
+	if got := msg.FileAttachments[0].LocalPath; got == "" || got == `C:\secret\remote.txt` {
+		t.Fatalf("file LocalPath = %q, want downloaded local cache path", got)
+	}
+}
+
 func TestCachePushedVEDiscussionSnapshotFallsBackToRemoteClientID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("participant_id"); got != "client-1" {
@@ -260,6 +349,75 @@ func TestCachePushedVEDiscussionSnapshotCachesHubDetail(t *testing.T) {
 	}
 	if !cached.Discussion.Readonly || cached.Discussion.LocalRelation != "owned_ve_invited" {
 		t.Fatalf("cached discussion relation/readonly = %+v", cached.Discussion)
+	}
+}
+
+func TestCachePushedVEDiscussionMessageCoalescesConcurrentRefreshWithFollowup(t *testing.T) {
+	firstDetailStarted := make(chan struct{})
+	releaseFirstDetail := make(chan struct{})
+	var releaseOnce sync.Once
+	var detailCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/consultations/disc-push/detail" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		call := atomic.AddInt32(&detailCalls, 1)
+		if call == 1 {
+			close(firstDetailStarted)
+			<-releaseFirstDetail
+		}
+		_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+			Discussion: a2a.HubDiscussionSummary{ID: "disc-push", Status: string(a2a.SessionOpen)},
+		})
+	}))
+	defer server.Close()
+	defer releaseOnce.Do(func() { close(releaseFirstDetail) })
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.configCache = corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}
+	app.configCacheValid = true
+	client := &RemoteHubClient{app: app}
+	envelope := a2a.GroupEnvelope{SessionID: "disc-push", Message: &a2a.GroupDiscussionMessage{SessionID: "disc-push", Kind: a2a.MessageAnswer}}
+
+	client.cachePushedVEDiscussionMessage(envelope)
+	select {
+	case <-firstDetailStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first detail refresh")
+	}
+	client.cachePushedVEDiscussionMessage(envelope)
+	client.cachePushedVEDiscussionMessage(envelope)
+	time.Sleep(100 * time.Millisecond)
+	if got := atomic.LoadInt32(&detailCalls); got != 1 {
+		t.Fatalf("detail calls while refresh in flight = %d, want 1", got)
+	}
+	releaseOnce.Do(func() { close(releaseFirstDetail) })
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&detailCalls) < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for coalesced follow-up refresh")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if got := atomic.LoadInt32(&detailCalls); got != 2 {
+		t.Fatalf("detail calls after follow-up = %d, want 2", got)
+	}
+	cleanupDeadline := time.After(2 * time.Second)
+	for {
+		if _, ok := client.veDetailRefresh.Load("disc-push"); !ok {
+			break
+		}
+		select {
+		case <-cleanupDeadline:
+			t.Fatal("timed out waiting for detail refresh cleanup")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

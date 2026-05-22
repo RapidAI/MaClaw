@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -104,6 +105,8 @@ var veFileRelayHTTPClient = &http.Client{
 	},
 }
 
+const veFileAttachmentMaxSize = 50 * 1024 * 1024 // 50 MB
+
 // uploadToFileRelay uploads a file to the Hub file relay endpoint via multipart/form-data.
 // Returns the file_url on success.
 func (a *App) uploadToFileRelay(hubURL, token, filePath, sessionID string) (string, error) {
@@ -179,11 +182,16 @@ func (a *App) uploadToFileRelay(hubURL, token, filePath, sessionID string) (stri
 		return "", fmt.Errorf("upload response missing file_url")
 	}
 
-	// Return the full URL (Hub base + relative path).
+	// Return the full URL (Hub base + relative path). Validate the relay URL so
+	// a malformed Hub response cannot smuggle an external attachment URL onward.
+	fullURL := result.FileURL
 	if strings.HasPrefix(result.FileURL, "/") {
-		return hubURL + result.FileURL, nil
+		fullURL = hubURL + result.FileURL
 	}
-	return result.FileURL, nil
+	if _, _, err := groupDiscussionAttachmentDownloadURL(hubURL, fullURL, sessionID, participantID); err != nil {
+		return "", fmt.Errorf("upload response returned invalid file_url: %w", err)
+	}
+	return fullURL, nil
 }
 
 // mimeTypeForFile returns a MIME type string based on file extension.
@@ -233,6 +241,89 @@ func mimeTypeForFile(path string) string {
 	}
 }
 
+func (a *App) buildVEFileAttachmentMessage(sessionID, filePath, displayName, content string) (a2a.GroupDiscussionMessage, error) {
+	filePath = strings.TrimSpace(filePath)
+	msg, info, err := buildLocalVEFileAttachmentMessage(filePath, displayName, content)
+	if err != nil {
+		return a2a.GroupDiscussionMessage{}, err
+	}
+
+	hubURL, token, err := a.getHubCredentials()
+	if err != nil {
+		return a2a.GroupDiscussionMessage{}, fmt.Errorf("Hub credentials unavailable: %w", err)
+	}
+	fileURL, err := a.uploadToFileRelay(hubURL, token, filePath, sessionID)
+	if err != nil {
+		return a2a.GroupDiscussionMessage{}, err
+	}
+
+	if len(msg.ImageAttachments) > 0 {
+		msg.ImageAttachments[0].FileURL = fileURL
+		msg.ImageAttachments[0].LocalPath = ""
+	}
+	if len(msg.FileAttachments) > 0 {
+		msg.FileAttachments[0].FileURL = fileURL
+		msg.FileAttachments[0].LocalPath = ""
+		msg.FileAttachments[0].SizeBytes = info.Size()
+	}
+	return msg, nil
+}
+
+func buildLocalVEFileAttachmentMessage(filePath, displayName, content string) (a2a.GroupDiscussionMessage, os.FileInfo, error) {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return a2a.GroupDiscussionMessage{}, nil, fmt.Errorf("file path is required")
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return a2a.GroupDiscussionMessage{}, nil, fmt.Errorf("cannot access file: %w", err)
+	}
+	if info.IsDir() {
+		return a2a.GroupDiscussionMessage{}, nil, fmt.Errorf("%s is a directory", filePath)
+	}
+	if info.Size() > veFileAttachmentMaxSize {
+		return a2a.GroupDiscussionMessage{}, nil, fmt.Errorf("file is too large: %d bytes; VE mode limit is 50 MB", info.Size())
+	}
+
+	filename := cleanVEAttachmentDisplayName(displayName)
+	if filename == "" {
+		filename = filepath.Base(filePath)
+	}
+	mimeType := mimeTypeForFile(filePath)
+	msg := a2a.GroupDiscussionMessage{
+		Kind:      a2a.MessageStatement,
+		Content:   strings.TrimSpace(content),
+		CreatedAt: time.Now(),
+	}
+	if imageExtensions[strings.ToLower(filepath.Ext(filePath))] {
+		msg.ImageAttachments = []a2a.ImageAttachment{{LocalPath: filePath, Filename: filename, MimeType: mimeType}}
+	} else {
+		msg.FileAttachments = []a2a.FileAttachment{{LocalPath: filePath, Filename: filename, MimeType: mimeType, SizeBytes: info.Size()}}
+	}
+	return msg, info, nil
+}
+
+func cleanVEAttachmentDisplayName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = strings.TrimSpace(pathpkg.Base(name))
+	if name == "." || name == "/" || name == string(filepath.Separator) {
+		return ""
+	}
+	return name
+}
+
+func (a *App) sendVEFileAttachmentMessage(sessionID, filePath, displayName, content string) error {
+	msg, err := a.buildVEFileAttachmentMessage(sessionID, filePath, displayName, content)
+	if err != nil {
+		return err
+	}
+	return a.sendVEA2AMessage(sessionID, msg)
+}
+
 // SendVEMessageWithAttachments sends a message with file attachments in a VE conversation.
 // For each file in filePaths:
 //   - Text files (<=500KB): read content, base64 encode, inline TextAttachment
@@ -241,12 +332,12 @@ func mimeTypeForFile(path string) string {
 //
 // On upload failure, returns a specific error; the message text is preserved for retry.
 func (a *App) SendVEMessageWithAttachments(sessionID string, content string, filePaths []string) error {
- return a.sendVEAttachmentMessage(sessionID, content, filePaths, nil)
+	return a.sendVEAttachmentMessage(sessionID, content, filePaths, nil)
 }
 
 // SendVEGroupMessageWithAttachments sends a VE group message with file attachments and @mention routing.
 func (a *App) SendVEGroupMessageWithAttachments(sessionID string, content string, mentionedIds []string, filePaths []string) error {
- return a.sendVEAttachmentMessage(sessionID, content, filePaths, mentionedIds)
+	return a.sendVEAttachmentMessage(sessionID, content, filePaths, mentionedIds)
 }
 
 func (a *App) sendVEAttachmentMessage(sessionID string, content string, filePaths []string, mentionedIds []string) error {
@@ -260,93 +351,16 @@ func (a *App) sendVEAttachmentMessage(sessionID string, content string, filePath
 		return fmt.Errorf("too many attachments (max 10)")
 	}
 
-	// Get Hub credentials for file uploads.
-	hubURL, token, err := a.getHubCredentials()
-	if err != nil {
-		return fmt.Errorf("Hub credentials unavailable: %w", err)
-	}
-
-	var textAttachments []a2a.TextAttachment
-	var imageAttachments []a2a.ImageAttachment
-	var fileAttachments []a2a.FileAttachment
-
-	for _, fp := range filePaths {
-		// Classify file type by extension.
-		category := classifyFileType(fp)
-		if category == "" {
-			return fmt.Errorf("unsupported file type: %s", filepath.Ext(fp))
-		}
-
-		// Validate file size.
-		if err := validateFileSize(fp, category); err != nil {
-			return err
-		}
-
-		filename := filepath.Base(fp)
-		mimeType := mimeTypeForFile(fp)
-
-		switch category {
-		case "text":
-			// Read and base64 encode for inline attachment.
-			encoded, err := base64EncodeFile(fp)
-			if err != nil {
-				return fmt.Errorf("failed to encode text file %s: %w", filename, err)
-			}
-			textAttachments = append(textAttachments, a2a.TextAttachment{
-				Content:  encoded,
-				Filename: filename,
-				MimeType: mimeType,
-			})
-
-		case "image":
-			// Upload to Hub file relay.
-			fileURL, err := a.uploadToFileRelay(hubURL, token, fp, sessionID)
-			if err != nil {
-				return fmt.Errorf("failed to upload image %s: %w", filename, err)
-			}
-			imageAttachments = append(imageAttachments, a2a.ImageAttachment{
-				FileURL:  fileURL,
-				Filename: filename,
-				MimeType: mimeType,
-			})
-
-		case "document":
-			// Upload to Hub file relay.
-			fileURL, err := a.uploadToFileRelay(hubURL, token, fp, sessionID)
-			if err != nil {
-				return fmt.Errorf("failed to upload document %s: %w", filename, err)
-			}
-			// Get file size for metadata.
-			info, _ := os.Stat(fp)
-			var sizeBytes int64
-			if info != nil {
-				sizeBytes = info.Size()
-			}
-			fileAttachments = append(fileAttachments, a2a.FileAttachment{
-				FileURL:   fileURL,
-				Filename:  filename,
-				MimeType:  mimeType,
-				SizeBytes: sizeBytes,
-			})
-		}
-	}
-
-	// Construct and send the message with attachments.
-	msg := a2a.GroupDiscussionMessage{
-		Kind:             a2a.MessageStatement,
-		Content:          content,
-		TextAttachments:  textAttachments,
-		ImageAttachments: imageAttachments,
-		FileAttachments:  fileAttachments,
-		CreatedAt:        time.Now(),
-	}
-
 	targets, err := a.resolveVEGroupMentionTargets(sessionID, content, mentionedIds)
 	if err != nil {
 		return err
 	}
 
 	if targets.Explicit && targets.Local && len(targets.RemoteToIDs) == 0 {
+		msg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, false)
+		if err != nil {
+			return err
+		}
 		if !a.tryLocalExecutorDispatch(sessionID, msg) {
 			if _, err := a.RegisterLocalExecutorInGroup(sessionID); err != nil {
 				return fmt.Errorf("local AI is not ready in this group: %w", err)
@@ -358,16 +372,132 @@ func (a *App) sendVEAttachmentMessage(sessionID string, content string, filePath
 		return nil
 	}
 
+	if targets.Explicit && targets.Local && len(targets.RemoteToIDs) > 0 {
+		localMsg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, false)
+		if err != nil {
+			return err
+		}
+		remoteMsg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, true)
+		if err != nil {
+			return err
+		}
+		remoteMsg.ToIDs = targets.RemoteToIDs
+
+		if !a.tryLocalExecutorDispatch(sessionID, localMsg) {
+			if _, err := a.RegisterLocalExecutorInGroup(sessionID); err != nil {
+				return fmt.Errorf("local AI is not ready in this group: %w", err)
+			}
+			if !a.tryLocalExecutorDispatch(sessionID, localMsg) {
+				return fmt.Errorf("local AI is not ready in this group; please add it again")
+			}
+		}
+		return a.sendVEA2AMessage(sessionID, remoteMsg)
+	}
+
 	if targets.Explicit && len(targets.RemoteToIDs) > 0 && !targets.Local {
+		msg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, true)
+		if err != nil {
+			return err
+		}
 		msg.ToIDs = targets.RemoteToIDs
 		return a.sendVEA2AMessage(sessionID, msg)
 	}
 
 	// Local dispatch shortcut: when local AI is enabled for this session,
 	// dispatch directly to the local agent without waiting for Hub round-trip.
+	if a.localGroupDispatcherRegistered(sessionID) {
+		msg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, false)
+		if err != nil {
+			return err
+		}
+		if a.tryLocalExecutorDispatch(sessionID, msg) {
+			return nil
+		}
+	}
+
+	msg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, true)
+	if err != nil {
+		return err
+	}
 	if a.tryLocalExecutorDispatch(sessionID, msg) {
 		return nil
 	}
 
 	return a.sendVEA2AMessage(sessionID, msg)
+}
+
+func (a *App) prepareVEAttachmentMessage(sessionID, content string, filePaths []string, uploadRemoteFiles bool) (a2a.GroupDiscussionMessage, error) {
+	var hubURL, token string
+	if uploadRemoteFiles {
+		var err error
+		hubURL, token, err = a.getHubCredentials()
+		if err != nil {
+			return a2a.GroupDiscussionMessage{}, fmt.Errorf("Hub credentials unavailable: %w", err)
+		}
+	}
+
+	var textAttachments []a2a.TextAttachment
+	var imageAttachments []a2a.ImageAttachment
+	var fileAttachments []a2a.FileAttachment
+	for _, fp := range filePaths {
+		category := classifyFileType(fp)
+		if category == "" {
+			return a2a.GroupDiscussionMessage{}, fmt.Errorf("unsupported file type: %s", filepath.Ext(fp))
+		}
+		if err := validateFileSize(fp, category); err != nil {
+			return a2a.GroupDiscussionMessage{}, err
+		}
+		filename := filepath.Base(fp)
+		mimeType := mimeTypeForFile(fp)
+		switch category {
+		case "text":
+			encoded, err := base64EncodeFile(fp)
+			if err != nil {
+				return a2a.GroupDiscussionMessage{}, fmt.Errorf("failed to encode text file %s: %w", filename, err)
+			}
+			att := a2a.TextAttachment{Content: encoded, Filename: filename, MimeType: mimeType}
+			if !uploadRemoteFiles {
+				att.LocalPath = fp
+			}
+			textAttachments = append(textAttachments, att)
+		case "image":
+			att := a2a.ImageAttachment{Filename: filename, MimeType: mimeType}
+			if uploadRemoteFiles {
+				fileURL, err := a.uploadToFileRelay(hubURL, token, fp, sessionID)
+				if err != nil {
+					return a2a.GroupDiscussionMessage{}, fmt.Errorf("failed to upload image %s: %w", filename, err)
+				}
+				att.FileURL = fileURL
+			} else {
+				att.LocalPath = fp
+			}
+			imageAttachments = append(imageAttachments, att)
+		case "document":
+			info, _ := os.Stat(fp)
+			var sizeBytes int64
+			if info != nil {
+				sizeBytes = info.Size()
+			}
+			att := a2a.FileAttachment{Filename: filename, MimeType: mimeType, SizeBytes: sizeBytes}
+			if uploadRemoteFiles {
+				fileURL, err := a.uploadToFileRelay(hubURL, token, fp, sessionID)
+				if err != nil {
+					return a2a.GroupDiscussionMessage{}, fmt.Errorf("failed to upload document %s: %w", filename, err)
+				}
+				att.FileURL = fileURL
+			} else {
+				att.LocalPath = fp
+			}
+			fileAttachments = append(fileAttachments, att)
+		}
+	}
+
+	return a2a.GroupDiscussionMessage{
+		Kind:             a2a.MessageStatement,
+		Content:          content,
+		TextAttachments:  textAttachments,
+		ImageAttachments: imageAttachments,
+		FileAttachments:  fileAttachments,
+		CreatedAt:        time.Now(),
+	}, nil
 }

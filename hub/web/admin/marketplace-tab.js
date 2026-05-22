@@ -133,14 +133,8 @@
   global.useCapabilityForMCP = function(id) { var item = state.capabilities.find(function(cap) { return cap.id === id; }); if (!item) return; el('marketplaceMCPId').value = item.capability_id || item.id || ''; el('marketplaceMCPName').value = item.display_name || item.capability_id || ''; el('marketplaceMCPVersion').value = item.current_version_key || '1.0.0'; var mcp = item.mcp || item.metadata && item.metadata.mcp || null; if (mcp && mcp.transport === 'stdio') { el('marketplaceMCPTypeSelect').value = 'local'; global.switchMCPEditorType('local'); el('marketplaceMCPCommand').value = mcp.command || ''; el('marketplaceMCPArgs').value = Array.isArray(mcp.args) ? JSON.stringify(mcp.args) : '[]'; el('marketplaceMCPEnv').value = mcp.env && typeof mcp.env === 'object' ? JSON.stringify(mcp.env, null, 2) : '{}'; } else { el('marketplaceMCPTypeSelect').value = 'remote'; global.switchMCPEditorType('remote'); if (mcp) el('marketplaceMCPJson').value = JSON.stringify(mcp, null, 2); } global.openMCPEditorDialog(); };
   global.loadMarketplaceBilling = async function() { try { const account = await api('/api/admin/billing/customer-account'); const licensesData = await api('/api/admin/billing/licenses'); state.billing = { account: account, licenses: Array.isArray(licensesData.items) ? licensesData.items : (Array.isArray(licensesData.licenses) ? licensesData.licenses : []) }; renderBilling(); } catch (err) { const msg = mp('marketplaceLoadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
 
-  function marketplaceTenantScopedRefresh() {
-    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
-    return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
-  }
-
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.registerTab === 'function') global.AdminTabRegistry.registerTab({ id: 'marketplace', title: function() { return mp('marketplaceTabTitle'); }, subtitle: function() { return mp('marketplaceTabSubtitle'); }, onOpen: function() { global.loadMarketplace(); } });
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.onLanguageChange === 'function') global.AdminTabRegistry.onLanguageChange(function() { rerenderMarketplace(); });
-  if (typeof global.refreshAll === 'function') { const baseRefreshAll = global.refreshAll; global.refreshAll = async function() { if (marketplaceTenantScopedRefresh()) await Promise.all([baseRefreshAll(), global.loadMarketplace()]); else await baseRefreshAll(); }; }
   global.addEventListener('keydown', function(event) { if (event.key === 'Enter' && event.target && event.target.id === 'marketplaceSearchQuery') global.searchMarketplaceExternal(); });
   // Sub-tab switching
   global.switchMarketplaceSubtab = function(tab) {

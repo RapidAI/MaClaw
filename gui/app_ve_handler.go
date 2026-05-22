@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -215,7 +216,7 @@ func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.Group
 
 	// Process attachments and append context to message content
 	if HasAttachments(msg) {
-		attachmentContext := h.ProcessMessageAttachments(msg)
+		attachmentContext := h.ProcessMessageAttachmentsForSession(sessionID, msg)
 		if attachmentContext != "" {
 			msg.Content = msg.Content + attachmentContext
 		}
@@ -539,6 +540,7 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	if len(allowedDirs) > 0 {
 		sb.WriteString("\n## 文件发送能力 / File Sending\n")
 		sb.WriteString("- You may use send_file to send files from allowed directories.\n")
+		sb.WriteString("- When the user asks you to send, give, attach, or share a file, call send_file; do not paste the file contents as plain text unless the user explicitly asks to view/read the contents.\n")
 		sb.WriteString("- Allowed directories:\n")
 		for _, dir := range allowedDirs {
 			sb.WriteString(fmt.Sprintf("  - %s\n", dir))
@@ -790,24 +792,22 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		}
 		// Step 5: File size check (50 MB limit for VE mode)
 		// Uses info from ValidateVEFilePathWithInfo; no redundant os.Stat call.
-		const veMaxFileSize = 50 * 1024 * 1024 // 50 MB
-		if info.Size() > veMaxFileSize {
+		if info.Size() > veFileAttachmentMaxSize {
 			return fmt.Sprintf("[error] file is too large: %d bytes; VE mode limit is 50 MB", info.Size())
 		}
-		// Step 6: Delegate to registry handler for actual send
-		if c.app != nil {
-			handler := c.app.ensureLocalIMHandler()
-			if handler != nil && handler.registry != nil {
-				tool, ok := handler.registry.Get(name)
-				if ok && tool.Handler != nil {
-					return tool.Handler(args)
-				}
-				if ok && tool.HandlerProg != nil {
-					return tool.HandlerProg(args, nil)
-				}
-			}
+		// Step 6: Upload to Hub relay and emit a real A2A attachment message.
+		if c.app == nil || strings.TrimSpace(c.sessionID) == "" {
+			return "[error] send_file handler unavailable"
 		}
-		return "[error] send_file handler unavailable"
+		displayName, _ := args["file_name"].(string)
+		message, _ := args["message"].(string)
+		if strings.TrimSpace(message) == "" {
+			message = fmt.Sprintf("已发送文件：%s", firstNonEmptyGroupString(displayName, filepath.Base(canonicalPath)))
+		}
+		if err := c.app.sendVEFileAttachmentMessage(c.sessionID, canonicalPath, displayName, message); err != nil {
+			return fmt.Sprintf("[error] send_file failed: %v", err)
+		}
+		return fmt.Sprintf("File %s has been sent to the user.", filepath.Base(canonicalPath))
 
 	case "read_file":
 		// When allowedDirs is configured, enforce directory containment.

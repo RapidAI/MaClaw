@@ -7,6 +7,7 @@
   var loginTenantOptionsCache = [];
   var tenantCreateBusy = false;
   var tenantAdminCreateBusy = false;
+  var tenantDomainSaveBusy = {};
   var TENANT_I18N = {
     nav: { zh: '\u79df\u6237\u7ba1\u7406', en: 'Tenants' },
     navDesc: { zh: '\u521b\u5efa\u79df\u6237\u548c\u79df\u6237\u7ba1\u7406\u5458', en: 'Create tenants and tenant admins' },
@@ -52,6 +53,8 @@
     forbidden: { zh: '\u9700\u8981\u5168\u5c40\u7ba1\u7406\u5458\u6743\u9650\u624d\u80fd\u67e5\u770b\u548c\u521b\u5efa\u79df\u6237\u3002', en: 'Global admin authorization is required to view and create tenants.' },
     required: { zh: '\u8bf7\u586b\u5199\u79df\u6237\u540d\u79f0\u3002', en: 'Fill tenant name.' },
     partialAdminRequired: { zh: '\u521d\u59cb\u7ba1\u7406\u5458\u5982\u679c\u586b\u5199\uff0c\u9700\u540c\u65f6\u586b\u5199\u7528\u6237\u540d\u3001\u5bc6\u7801\u548c\u90ae\u7bb1\u3002', en: 'If creating an initial admin, fill username, password, and email together.' },
+    invalidDomain: { zh: '\u90ae\u7bb1\u57df\u540d\u65e0\u6548: {domain}', en: 'Invalid email domain: {domain}' },
+    domainConflict: { zh: '\u90ae\u7bb1\u57df\u540d {domain} \u5df2\u88ab\u79df\u6237 {tenant} \u4f7f\u7528\u3002', en: 'Email domain {domain} is already used by tenant {tenant}.' },
     adminRequired: { zh: '\u8bf7\u9009\u62e9\u79df\u6237\u5e76\u586b\u5199\u7ba1\u7406\u5458\u7528\u6237\u540d\u3001\u5bc6\u7801\u548c\u90ae\u7bb1\u3002', en: 'Choose a tenant and fill admin username, password, and email.' },
     invalidAdminEmail: { zh: '\u8bf7\u8f93\u5165\u6709\u6548\u7684\u7ba1\u7406\u5458\u90ae\u7bb1\u3002', en: 'Enter a valid admin email address.' },
     loadFailed: { zh: '\u52a0\u8f7d\u79df\u6237\u5931\u8d25: {error}', en: 'Load tenants failed: {error}' },
@@ -121,11 +124,32 @@
     });
     return out;
   }
+  function invalidDomain(domains) {
+    var re = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+    for (var i = 0; i < domains.length; i++) {
+      if (!re.test(domains[i])) return domains[i];
+    }
+    return '';
+  }
   function tenantDomains(item) {
     if (!item) return [];
     var domains = Array.isArray(item.domains) ? item.domains.slice() : [];
     if (item.primary_domain) domains.unshift(item.primary_domain);
     return splitDomains(domains.join('\n'));
+  }
+  function tenantDomainConflict(domains, currentTenantID) {
+    var wanted = {};
+    (domains || []).forEach(function(domain) { if (domain) wanted[domain] = true; });
+    if (!Object.keys(wanted).length) return null;
+    for (var i = 0; i < tenantCache.length; i++) {
+      var item = tenantCache[i];
+      if (!item || !item.id || item.id === currentTenantID || tenantStatus(item) === 'deleted') continue;
+      var existing = tenantDomains(item);
+      for (var j = 0; j < existing.length; j++) {
+        if (wanted[existing[j]]) return { domain: existing[j], tenant: tenantLabel(item) || item.id };
+      }
+    }
+    return null;
   }
   function tenantStatus(item) {
     if (!item) return 'active';
@@ -237,12 +261,11 @@
       return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:center">'
         + '<div style="min-width:0"><div class="item-title" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(tenantLabel(item)) + '</div><div class="item-meta mono" style="font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.id || '') + '</div></div>'
-        + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">' + esc(tt('slug')) + '</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.slug || '-') + '</div></div>'
         + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">' + esc(tt('domain')) + '</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(domain) + '</div></div>'
         + '<div style="display:flex;justify-content:flex-start"><span class="badge ' + esc(tenantBadgeClass(item)) + '" title="' + esc(statusTitle) + '">' + esc(tenantStatusText(item)) + '</span></div>'
         + tenantAdminActions(item)
         + '</div>'
-        + (canEditDomains ? '<div style="display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:8px;align-items:end;margin-top:8px"><div><label style="margin:0 0 4px;font-size:10px">' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" style="min-height:54px;font-size:12px;line-height:1.4;resize:vertical" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><button class="btn-secondary" style="height:32px;font-size:11px;padding:0 10px" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveDomains')) + '</button></div>' : '')
+        + (canEditDomains ? '<div style="display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:8px;align-items:end;margin-top:8px"><div><label style="margin:0 0 4px;font-size:10px">' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" style="min-height:54px;font-size:12px;line-height:1.4;resize:vertical" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><button class="btn-secondary" id="tenantDomainsSave_' + index + '" style="height:32px;font-size:11px;padding:0 10px" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveDomains')) + '</button></div>' : '')
         + '</div>';
     }).join('') + '</div>';
   }
@@ -304,6 +327,16 @@
       setTenantOutput(tt('required'), 'info');
       return;
     }
+    var badDomain = invalidDomain(createDomains);
+    if (badDomain) {
+      setTenantOutput(tt('invalidDomain', { domain: badDomain }), 'info');
+      return;
+    }
+    var domainConflict = tenantDomainConflict(createDomains, '');
+    if (domainConflict) {
+      setTenantOutput(tt('domainConflict', domainConflict), 'info');
+      return;
+    }
     var adminRequested = !!(payload.initial_admin_username || payload.initial_admin_password || payload.initial_admin_email || payload.initial_admin_name);
     if (adminRequested && (!payload.initial_admin_username || !payload.initial_admin_password || !payload.initial_admin_email)) {
       setTenantOutput(tt('partialAdminRequired'), 'info');
@@ -333,7 +366,21 @@
   async function saveTenantDomains(index) {
     var item = tenantCache[index];
     if (!item || !item.id) return;
+    if (tenantDomainSaveBusy[item.id]) return;
     var domains = splitDomains(val('tenantDomainsEdit_' + index));
+    var badDomain = invalidDomain(domains);
+    if (badDomain) {
+      setTenantOutput(tt('invalidDomain', { domain: badDomain }), 'info');
+      return;
+    }
+    var domainConflict = tenantDomainConflict(domains, item.id);
+    if (domainConflict) {
+      setTenantOutput(tt('domainConflict', domainConflict), 'info');
+      return;
+    }
+    var btn = byID('tenantDomainsSave_' + index);
+    tenantDomainSaveBusy[item.id] = true;
+    if (btn) btn.disabled = true;
     try {
       var data = await global.api('/api/admin/tenants/' + encodeURIComponent(item.id) + '/domains', { method: 'PATCH', body: JSON.stringify({ primary_domain: domains[0] || '', domains: domains }) });
       if (data && data.tenant) tenantCache[index] = data.tenant;
@@ -342,6 +389,9 @@
       setTenantOutput(tt('domainsSaved'), 'success');
     } catch (err) {
       setTenantOutput(tt('domainsSaveFailed', { error: err.message || err }), 'error');
+    } finally {
+      delete tenantDomainSaveBusy[item.id];
+      if (btn) btn.disabled = false;
     }
   }
 

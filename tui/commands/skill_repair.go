@@ -3,6 +3,7 @@ package commands
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -43,8 +44,18 @@ type ConfigStore interface {
 // maybeRepairSkillTUI checks if a skill is eligible for self-repair and
 // attempts an LLM-driven repair. Runs in the background to avoid blocking.
 func maybeRepairSkillTUI(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, store ConfigStore) {
+	MaybeRepairSkillTUI(entry, cfg, store)
+}
+
+// MaybeRepairSkillTUI checks if a skill is eligible for self-repair and
+// attempts an LLM-driven repair in the background.
+func MaybeRepairSkillTUI(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, store ConfigStore) bool {
 	if !skill.ShouldAttemptRepair(entry) {
-		return
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(entry.Source), "file") && strings.TrimSpace(entry.SkillDir) != "" {
+		log.Printf("[skill-repair-tui] skipped file-backed skill %q; repair requires reviewed patch flow", entry.Name)
+		return false
 	}
 
 	// Find the LLM config from the app config.
@@ -60,7 +71,7 @@ func maybeRepairSkillTUI(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, sto
 
 	repairer := &tuiSkillRepairer{cfg: llmCfg}
 	if !repairer.IsConfigured() {
-		return
+		return false
 	}
 
 	go func() {
@@ -89,4 +100,5 @@ func maybeRepairSkillTUI(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, sto
 			log.Printf("[skill-repair-tui] repaired skill %q", entry.Name)
 		}
 	}()
+	return true
 }

@@ -529,6 +529,56 @@ describe("HistoryGroupDiscussionTab", () => {
         expect((input as HTMLTextAreaElement).value).toBe("");
     });
 
+    it("does not wait for the post-send reload before clearing history input", async () => {
+        let releaseReload: (() => void) | undefined;
+        getDetailMock
+            .mockResolvedValueOnce(detail({
+                discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            }))
+            .mockImplementationOnce(() => new Promise((resolve) => {
+                releaseReload = () => resolve(detail({
+                    discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+                    messages: [
+                        { id: "m1", from_id: "me", from_name: "Me", content: "hello", created_at: "2026-01-01T00:00:00Z" },
+                        { id: "m2", from_id: "me", from_name: "Me", content: "fast follow up", created_at: "2026-01-01T00:00:01Z" },
+                    ],
+                }));
+            }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "fast follow up" } });
+        fireEvent.click(screen.getByText("Send"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(input.value).toBe(""));
+        expect(screen.getByText("fast follow up")).toBeTruthy();
+        expect(getDetailMock).toHaveBeenCalledTimes(2);
+        await act(async () => {
+            releaseReload?.();
+            await Promise.resolve();
+        });
+    });
+
+    it("keeps optimistic history messages when the immediate reload is stale", async () => {
+        const writableDetail = detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },
+            messages: [
+                { id: "m1", from_id: "me", from_name: "Me", content: "hello", created_at: "2026-01-01T00:00:00Z" },
+            ],
+        });
+        getDetailMock.mockResolvedValue(writableDetail);
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "still pending on hub" } });
+        fireEvent.click(screen.getByText("Send"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(getDetailMock).toHaveBeenCalledTimes(2));
+        expect(screen.getByText("still pending on hub")).toBeTruthy();
+    });
+
     it("opens a downloaded remote attachment locally on the next click", async () => {
         getDetailMock.mockResolvedValue(detail({
             messages: [{
@@ -608,6 +658,7 @@ describe("HistoryGroupDiscussionTab", () => {
             eventHandlers.get("ve-event")?.({ payload: { session_id: "disc-1", message: { session_id: "disc-1", kind: "answer" } } });
         });
 
+        await waitFor(() => expect(getDetailMock).toHaveBeenCalledTimes(2));
         act(() => { resolveSecond(detail({ messages: [{ id: "new", from_id: "ve-a", content: "new detail", created_at: "2026-01-01T00:00:01Z" }] })); });
         expect(await screen.findByText("new detail")).toBeTruthy();
         expect((screen.getByText("Refresh") as HTMLButtonElement).disabled).toBe(false);
@@ -650,6 +701,28 @@ describe("HistoryGroupDiscussionTab", () => {
 
         await waitFor(() => expect(getDetailMock).toHaveBeenCalledTimes(2));
         expect(await screen.findByText("updated")).toBeTruthy();
+    });
+
+    it("coalesces bursty pushed discussion events into one history reload", async () => {
+        getDetailMock
+            .mockResolvedValueOnce(detail())
+            .mockResolvedValue(detail({ messages: [
+                { id: "m1", from_id: "me", from_name: "Me", content: "hello", created_at: "2026-01-01T00:00:00Z" },
+                { id: "m2", from_id: "ve-a", from_name: "VE", content: "burst update", created_at: "2026-01-01T00:00:01Z" },
+            ] }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Live history" readOnly={true} theme={theme} lang="en" />);
+
+        expect(await screen.findByText("hello")).toBeTruthy();
+        act(() => {
+            eventHandlers.get("ve-event")?.({ payload: { session_id: "disc-1", message: { session_id: "disc-1" } } });
+            eventHandlers.get("ve-event")?.({ payload: { session_id: "disc-1", message: { session_id: "disc-1" } } });
+            eventHandlers.get("ve:stream_end")?.({ session_id: "disc-1" });
+        });
+
+        await waitFor(() => expect(getDetailMock).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText("burst update")).toBeTruthy();
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        expect(getDetailMock).toHaveBeenCalledTimes(2);
     });
 
     it("reloads when pushed events use discussion_id instead of session_id", async () => {

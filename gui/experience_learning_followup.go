@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const (
@@ -193,6 +194,18 @@ func (a *App) BuildExperienceSkillDraft(traceID string) (ExperienceSkillDraft, e
 		return ExperienceSkillDraft{}, fmt.Errorf("experience trace %q must be approved and queued for manual skill drafting", traceID)
 	}
 	return finalizeExperienceSkillDraft(buildExperienceSkillDraft(detail)), nil
+}
+
+func (a *App) BuildExperienceSkillDraftFromUsageNudge(req ExperienceRoutingSignalQuery) ExperienceSkillDraft {
+	result := ExperienceRoutingSignalResult{Query: normalizeExperienceRoutingSignalQuery(req)}
+	if a != nil {
+		result = a.QueryExperienceRoutingSignals(req)
+	}
+	var candidate *coretool.ToolSkillNudgeCandidate
+	if len(result.SkillNudgeCandidates) > 0 {
+		candidate = &result.SkillNudgeCandidates[0]
+	}
+	return finalizeExperienceSkillDraft(buildExperienceSkillDraftFromUsageNudge(result.Query, candidate))
 }
 
 func (a *App) BuildExperienceRollbackWorkflowDraft(traceID string) (ExperienceRollbackWorkflowDraft, error) {
@@ -769,6 +782,88 @@ func buildExperienceSkillDraft(detail ExperienceTraceDetail) ExperienceSkillDraf
 		Checks:                  checks,
 		NonExecutingBoundary:    boundary,
 	})
+}
+
+func buildExperienceSkillDraftFromUsageNudge(query ExperienceRoutingSignalQuery, candidate *coretool.ToolSkillNudgeCandidate) ExperienceSkillDraft {
+	name := normalizeExperienceSkillDraftName("usage_sequence_skill")
+	var tokens []string
+	var sequence []string
+	taskType := firstNonEmptyExperienceString(query.TaskType, "skill_execution")
+	evidence := "no approved repeated tool sequence matched the query yet"
+	description := "Manual skill candidate distilled from repeated successful tool usage."
+	if candidate != nil {
+		name = normalizeExperienceSkillDraftName(firstNonEmptyExperienceString(candidate.SuggestedName, strings.Join(candidate.QueryTokens, "-"), "usage_sequence_skill"))
+		tokens = append([]string(nil), candidate.QueryTokens...)
+		sequence = append([]string(nil), candidate.ToolSequence...)
+		taskType = firstNonEmptyExperienceString(query.TaskType, candidate.TaskType, taskType)
+		evidence = fmt.Sprintf("evidence %d, success %.0f%%, confidence %.2f", candidate.Evidence, candidate.SuccessRate*100, candidate.Confidence)
+		description = firstNonEmptyExperienceString(candidate.Description, description)
+	}
+	checks := []string{
+		"Confirm this is reusable beyond the observed query tokens before creating files.",
+		"Turn the observed tool sequence into explicit skill params instead of hard-coded paths or secrets.",
+		"Add verification steps and failure handling before installing or publishing the skill.",
+		"Record a manual draft review outcome before any write or install action.",
+	}
+	boundary := "read-only usage-sequence skill draft only; no file write, skill install, routing change, tool execution, or policy change was performed"
+
+	var b strings.Builder
+	b.WriteString("# Skill Draft: ")
+	b.WriteString(name)
+	b.WriteString("\n\n")
+	b.WriteString("## Purpose\n\n")
+	b.WriteString(description)
+	b.WriteString("\n\n## Evidence\n\n")
+	writeExperienceDraftLine(&b, "Source", "UsageTracker.DistillSkillNudgeCandidates")
+	writeExperienceDraftLine(&b, "Task type", taskType)
+	writeExperienceDraftLine(&b, "Query", query.Query)
+	writeExperienceDraftLine(&b, "Tokens", strings.Join(tokens, ", "))
+	writeExperienceDraftLine(&b, "Sequence", strings.Join(sequence, " -> "))
+	writeExperienceDraftLine(&b, "Evidence", evidence)
+	b.WriteString("\n## Suggested Skill Shape\n\n")
+	b.WriteString("- Name: ")
+	b.WriteString(name)
+	b.WriteString("\n")
+	if len(sequence) > 0 {
+		b.WriteString("- Core tool flow: ")
+		b.WriteString(strings.Join(sequence, " -> "))
+		b.WriteString("\n")
+	}
+	b.WriteString("- Inputs to define: task goal, workspace/project scope, input files, credentials, and output target.\n")
+	b.WriteString("- Outputs to define: artifact paths, evidence summary, and fallback message.\n")
+	b.WriteString("\n## Draft Checklist\n\n")
+	for _, check := range checks {
+		b.WriteString("- [ ] ")
+		b.WriteString(check)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Safety Boundary\n\n")
+	b.WriteString("This draft is non-executing. It does not create files, install or update skills, change routing scores, execute tools, or change project policy automatically.\n")
+
+	focusReason := "usage-sequence skill draft candidate"
+	if candidate == nil {
+		focusReason = "no matching skill nudge candidate; collect more evidence"
+	}
+	return ExperienceSkillDraft{
+		Kind:                    experienceDraftKindSkill,
+		Title:                   name,
+		RecommendedFocusContext: map[string]interface{}{"reason": focusReason, "query": query.Query, "task_type": taskType},
+		RecommendedToolCall: map[string]interface{}{
+			"tool":                   "experience_learning",
+			"args":                   map[string]interface{}{"action": "record_draft_review", "draft_kind": experienceDraftKindSkill, "query": query.Query},
+			"non_executing":          true,
+			"non_executing_boundary": boundary,
+		},
+		SuggestedName:        name,
+		TaskType:             taskType,
+		QueryTokens:          tokens,
+		ToolSequence:         sequence,
+		Evidence:             evidence,
+		Description:          description,
+		DraftMarkdown:        strings.TrimSpace(b.String()),
+		Checks:               checks,
+		NonExecutingBoundary: boundary,
+	}
 }
 
 func experienceRollbackTriggers(content string) []string {

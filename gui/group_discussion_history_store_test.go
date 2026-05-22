@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -648,9 +649,53 @@ func TestGroupDiscussionSendHistoryMessageUsesParticipantScopedDetail(t *testing
 	if err := app.GroupDiscussionSendHistoryMessage("disc-1", a2a.GroupDiscussionMessage{FromID: "spoofed-sender", SessionID: "wrong-session", Content: "continue"}); err != nil {
 		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
 	}
-	if detailHits != 2 || messageHits != 1 {
+	if detailHits < 1 || detailHits > 2 || messageHits != 1 {
 		t.Fatalf("hits detail=%d messages=%d", detailHits, messageHits)
 	}
+}
+
+func TestGroupDiscussionSendHistoryMessageReturnsBeforePostSendDetailRefresh(t *testing.T) {
+	detailHits := 0
+	postSendDetailStarted := make(chan struct{}, 1)
+	releasePostSendDetail := make(chan struct{})
+	var releaseOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-fast/detail":
+			detailHits++
+			if detailHits > 1 {
+				postSendDetailStarted <- struct{}{}
+				<-releasePostSendDetail
+			}
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{Discussion: a2a.HubDiscussionSummary{ID: "disc-fast", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-fast/messages":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+	defer releaseOnce.Do(func() { close(releasePostSendDetail) })
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	returned := make(chan error, 1)
+	go func() {
+		returned <- app.GroupDiscussionSendHistoryMessage("disc-fast", a2a.GroupDiscussionMessage{Content: "continue"})
+	}()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("GroupDiscussionSendHistoryMessage waited for post-send detail refresh")
+	}
+	select {
+	case <-postSendDetailStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async post-send detail refresh")
+	}
+	releaseOnce.Do(func() { close(releasePostSendDetail) })
 }
 
 func TestGroupDiscussionSendHistoryMessageNormalizesLocalMaclawTarget(t *testing.T) {

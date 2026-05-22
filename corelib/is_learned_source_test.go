@@ -10,6 +10,8 @@ func TestIsLearnedSource(t *testing.T) {
 		// Learned sources — should return true
 		{"learned", true},
 		{"crafted", true},
+		{" Learned ", true},
+		{"CRAFTED", true},
 
 		// Non-learned sources — should return false
 		{"manual", false},

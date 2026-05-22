@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -118,9 +119,11 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	knownByName := make(map[string]int, len(skills))
 	for i, s := range skills {
 		if s.SkillDir != "" {
-			knownByDir[filepath.Clean(s.SkillDir)] = i
+			knownByDir[skillDirIdentityKey(s.SkillDir)] = i
 		}
-		knownByName[s.Name] = i
+		if nameKey := skillNameIdentityKey(s.Name); nameKey != "" {
+			knownByName[nameKey] = i
+		}
 	}
 
 	fileSkills := e.scanFileSkills(cfg.ExternalSkillDirs)
@@ -129,12 +132,12 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		// Fallback: match by Name (backward compat for config entries without SkillDir).
 		idx := -1
 		if fs.SkillDir != "" {
-			if i, ok := knownByDir[filepath.Clean(fs.SkillDir)]; ok {
+			if i, ok := knownByDir[skillDirIdentityKey(fs.SkillDir)]; ok {
 				idx = i
 			}
 		}
 		if idx < 0 {
-			if i, ok := knownByName[fs.Name]; ok {
+			if i, ok := knownByName[skillNameIdentityKey(fs.Name)]; ok {
 				idx = i
 			}
 		}
@@ -146,6 +149,7 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 				configSkill.Steps = fs.Steps
 				configSkill.SkillDir = fs.SkillDir
 				configSkill.Params = fs.Params
+				configSkill.RequiredArgs = fs.RequiredArgs
 				if len(configSkill.Triggers) == 0 {
 					configSkill.Triggers = fs.Triggers
 				}
@@ -165,9 +169,11 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		// Update both indexes for dedup of subsequent file skills.
 		newIdx := len(skills) - 1
 		if fs.SkillDir != "" {
-			knownByDir[filepath.Clean(fs.SkillDir)] = newIdx
+			knownByDir[skillDirIdentityKey(fs.SkillDir)] = newIdx
 		}
-		knownByName[fs.Name] = newIdx
+		if nameKey := skillNameIdentityKey(fs.Name); nameKey != "" {
+			knownByName[nameKey] = newIdx
+		}
 	}
 
 	e.skillCacheMu.Lock()
@@ -177,6 +183,18 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	e.skillCacheMu.Unlock()
 
 	return cloneSkillEntries(skills)
+}
+
+func skillDirIdentityKey(dir string) string {
+	key := filepath.Clean(strings.TrimSpace(dir))
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	return key
+}
+
+func skillNameIdentityKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func (e *SkillExecutor) invalidateSkillCache() {
@@ -214,13 +232,24 @@ func skillLoadCacheKey(skills []corelib.NLSkillEntry, externalDirs []string) str
 		ExternalDirs []string               `json:"external_dirs"`
 	}{
 		Skills:       skills,
-		ExternalDirs: externalDirs,
+		ExternalDirs: skillDirIdentityKeys(externalDirs),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Sprintf("skills=%d external=%s", len(skills), strings.Join(externalDirs, string(os.PathListSeparator)))
 	}
 	return string(data)
+}
+
+func skillDirIdentityKeys(dirs []string) []string {
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		out = append(out, skillDirIdentityKey(dir))
+	}
+	return out
 }
 
 func cloneSkillEntries(in []corelib.NLSkillEntry) []corelib.NLSkillEntry {
@@ -467,7 +496,7 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 		}
 		if normalizeSkillEntrySource(entry.Source) == skillEntrySourceHub && normalizeSkillEntrySource(s.Source) == skillEntrySourceFile && primaryErr == nil {
 			extractedDir := filepath.Join(primaryDir, name)
-			if filepath.Clean(s.SkillDir) == filepath.Clean(extractedDir) {
+			if skillDirIdentityKey(s.SkillDir) == skillDirIdentityKey(extractedDir) {
 				continue
 			}
 		}

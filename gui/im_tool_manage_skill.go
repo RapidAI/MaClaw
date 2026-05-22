@@ -10,17 +10,19 @@ import (
 type manageSkillAction string
 
 const (
-	manageSkillActionUnknown  manageSkillAction = ""
-	manageSkillActionList      manageSkillAction = "list"
-	manageSkillActionSearch    manageSkillAction = "search"
-	manageSkillActionInstall   manageSkillAction = "install"
-	manageSkillActionUninstall manageSkillAction = "uninstall"
-	manageSkillActionRun       manageSkillAction = "run"
-	manageSkillActionStatus    manageSkillAction = "status"
-	manageSkillActionUpload    manageSkillAction = "upload"
-	manageSkillActionValidate  manageSkillAction = "validate"
-	manageSkillActionPatch     manageSkillAction = "patch"
-	manageSkillActionHistory   manageSkillAction = "history"
+	manageSkillActionUnknown                manageSkillAction = ""
+	manageSkillActionList                   manageSkillAction = "list"
+	manageSkillActionSearch                 manageSkillAction = "search"
+	manageSkillActionInstall                manageSkillAction = "install"
+	manageSkillActionUninstall              manageSkillAction = "uninstall"
+	manageSkillActionRun                    manageSkillAction = "run"
+	manageSkillActionStatus                 manageSkillAction = "status"
+	manageSkillActionUpload                 manageSkillAction = "upload"
+	manageSkillActionValidate               manageSkillAction = "validate"
+	manageSkillActionPatch                  manageSkillAction = "patch"
+	manageSkillActionHistory                manageSkillAction = "history"
+	manageSkillActionMaintenancePlan        manageSkillAction = "maintenance_plan"
+	manageSkillActionExecuteMaintenancePlan manageSkillAction = "execute_maintenance_plan"
 )
 
 func classifyManageSkillAction(action string) manageSkillAction {
@@ -45,6 +47,10 @@ func classifyManageSkillAction(action string) manageSkillAction {
 		return manageSkillActionPatch
 	case manageSkillActionHistory:
 		return manageSkillActionHistory
+	case manageSkillActionMaintenancePlan:
+		return manageSkillActionMaintenancePlan
+	case manageSkillActionExecuteMaintenancePlan:
+		return manageSkillActionExecuteMaintenancePlan
 	default:
 		return manageSkillAction(strings.TrimSpace(action))
 	}
@@ -74,6 +80,10 @@ func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgre
 		return h.toolPatchSkill(args)
 	case manageSkillActionHistory:
 		return h.toolSkillPatchHistory(args)
+	case manageSkillActionMaintenancePlan:
+		return h.toolSkillMaintenancePlan(args)
+	case manageSkillActionExecuteMaintenancePlan:
+		return h.toolExecuteSkillMaintenancePlan(args)
 	default:
 		return cskill.ManageSkillUnknownActionError(action)
 	}

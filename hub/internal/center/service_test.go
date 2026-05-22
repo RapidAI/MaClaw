@@ -37,6 +37,14 @@ func (f fakeCenterMachines) ListAllMachines(context.Context) ([]device.MachineRu
 	return f.items, nil
 }
 
+type fakeCenterTenants struct {
+	items []*store.Tenant
+}
+
+func (f fakeCenterTenants) List(context.Context) ([]*store.Tenant, error) {
+	return f.items, nil
+}
+
 func newFakeSettingsRepo() *fakeSettingsRepo {
 	return &fakeSettingsRepo{values: map[string]string{}}
 }
@@ -121,6 +129,11 @@ func TestRegistrationCapabilitiesIncludesTenantCounts(t *testing.T) {
 		{MachineID: "machine-a2", TenantID: "tenant_a"},
 		{MachineID: "machine-b1", TenantID: "tenant_b"},
 	}}
+	svc.tenants = fakeCenterTenants{items: []*store.Tenant{
+		{ID: "tenant_a", Name: "开发部", Status: "active", PrimaryDomain: "configured.example", SettingsJSON: `{"email_domains":["configured.example","team.configured.example","https://bad.example.com","bad..example.com"]}`},
+		{ID: "tenant_inactive", Status: "inactive", PrimaryDomain: "inactive.example"},
+		{ID: "tenant_deleted", Status: "deleted", PrimaryDomain: "deleted.example", DeletedAt: ptrTime(time.Now())},
+	}}
 
 	caps := svc.registrationCapabilities(context.Background())
 	tenantUserCounts, ok := caps["tenant_user_counts"].(map[string]int)
@@ -132,10 +145,25 @@ func TestRegistrationCapabilitiesIncludesTenantCounts(t *testing.T) {
 		t.Fatalf("tenant_machine_counts = %#v", caps["tenant_machine_counts"])
 	}
 	tenantDomains, ok := caps["tenant_domains"].(map[string][]string)
-	if !ok || len(tenantDomains["tenant_a"]) != 1 || tenantDomains["tenant_a"][0] != "acme.example" || tenantDomains["tenant_b"][0] != "beta.example" {
+	if !ok || !containsString(tenantDomains["tenant_a"], "acme.example") || !containsString(tenantDomains["tenant_a"], "configured.example") || !containsString(tenantDomains["tenant_a"], "team.configured.example") || tenantDomains["tenant_b"][0] != "beta.example" || containsString(tenantDomains["tenant_deleted"], "deleted.example") || containsString(tenantDomains["tenant_inactive"], "inactive.example") || containsString(tenantDomains["tenant_a"], "https://bad.example.com") || containsString(tenantDomains["tenant_a"], "bad..example.com") {
 		t.Fatalf("tenant_domains = %#v", caps["tenant_domains"])
 	}
+	tenantNames, ok := caps["tenant_names"].(map[string]string)
+	if !ok || tenantNames["tenant_a"] != "开发部" || tenantNames["tenant_inactive"] != "" || tenantNames["tenant_deleted"] != "" {
+		t.Fatalf("tenant_names = %#v", caps["tenant_names"])
+	}
 }
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func ptrTime(v time.Time) *time.Time { return &v }
 
 func TestAdvertisedEndpointPrefersConfiguredPublicBaseURL(t *testing.T) {
 	cfg := config.Default()

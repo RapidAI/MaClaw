@@ -605,6 +605,43 @@ type llmStreamMetrics struct {
 	MaxTokenGapNanos      int64
 }
 
+type transactionalTokenBuffer struct {
+	onToken llm.TokenCallback
+	deltas  []string
+}
+
+func newTransactionalTokenBuffer(onToken llm.TokenCallback) *transactionalTokenBuffer {
+	if onToken == nil {
+		onToken = func(string) {}
+	}
+	return &transactionalTokenBuffer{onToken: onToken}
+}
+
+func (b *transactionalTokenBuffer) Write(delta string) {
+	if delta == "" {
+		return
+	}
+	b.deltas = append(b.deltas, delta)
+}
+
+func (b *transactionalTokenBuffer) Flush() {
+	for _, delta := range b.deltas {
+		b.onToken(delta)
+	}
+	b.deltas = nil
+}
+
+func (b *transactionalTokenBuffer) Discard() {
+	b.deltas = nil
+}
+
+func responseHasToolCalls(resp *llm.Response) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return false
+	}
+	return len(resp.Choices[0].Message.ToolCalls) > 0
+}
+
 func withFirstTokenMetrics(onToken llm.TokenCallback, metrics *llmStreamMetrics) llm.TokenCallback {
 	if onToken == nil {
 		onToken = func(string) {}
@@ -644,19 +681,25 @@ func (h *IMMessageHandler) doLLMRequestStream(
 	// which blocks until the entire SSE stream finishes — causing multi-minute
 	// delays when the API returns SSE despite stream:false. A noop callback
 	// lets us stream incrementally and discard tokens we don't need to display.
-	if onToken == nil {
-		onToken = func(string) {}
-	}
+	tokenBuffer := newTransactionalTokenBuffer(onToken)
+	meteredOnToken := withFirstTokenMetrics(tokenBuffer.Write, metrics)
+	var resp *llm.Response
+	var err error
 	if cfg.IsResponsesWebSocket() {
-		return h.doResponsesWSLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
+		resp, err = h.doResponsesWSLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	} else if cfg.IsResponsesAPI() {
+		resp, err = h.doResponsesAPILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	} else if cfg.Protocol == "anthropic" {
+		resp, err = h.doAnthropicLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	} else {
+		resp, err = h.doOpenAILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
 	}
-	if cfg.IsResponsesAPI() {
-		return h.doResponsesAPILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
+	if err != nil || responseHasToolCalls(resp) {
+		tokenBuffer.Discard()
+	} else {
+		tokenBuffer.Flush()
 	}
-	if cfg.Protocol == "anthropic" {
-		return h.doAnthropicLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
-	}
-	return h.doOpenAILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
+	return resp, err
 }
 
 // ---------------------------------------------------------------------------

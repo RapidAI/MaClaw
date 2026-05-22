@@ -359,7 +359,11 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     const hasSeparator = tableLines.some(isSeparatorRow);
     const allRowsUseOuterPipes = tableLines.every(line => line.trim().startsWith("|"));
     if (!hasSeparator && !allRowsUseOuterPipes) return null;
-    const headerCells = parseTableCells(dataRows[0]);
+    let headerCells = parseTableCells(dataRows[0]);
+    const separatorCells = parseTableCells(tableLines.find(isSeparatorRow) || "");
+    if (headerCells.length === 1 && separatorCells.length >= 2) {
+        headerCells = [headerCells[0], ""];
+    }
     if (headerCells.length < 2) return null;
     const bodyRows = dataRows.slice(1);
     const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, padding: "5px 10px", textAlign: "left", fontSize: "0.9em", lineHeight: 1.5 };
@@ -424,6 +428,9 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     };
 
     for (const line of lines) {
+        if (!inCodeBlock && /^\|+$/.test(line.trim())) {
+            continue;
+        }
         if (/^```/.test(line.trimStart())) {
             flushTable();
             if (inCodeBlock) {

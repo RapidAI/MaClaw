@@ -263,6 +263,19 @@ func TestTenantAdminsCanShareUsernameAcrossTenantScopes(t *testing.T) {
 	if tenantAdmin.Scope != "tenant" || tenantAdmin.TenantID != "tenant_a" {
 		t.Fatalf("expected tenant_a admin, got %#v", tenantAdmin)
 	}
+	verified, err := svc.VerifyScopedCredentials(ctx, "shared", "tenantpass123", "tenant_a")
+	if err != nil {
+		t.Fatalf("tenant credential verification: %v", err)
+	}
+	if verified.ID != tenantAdmin.ID {
+		t.Fatalf("verified admin mismatch: got %s want %s", verified.ID, tenantAdmin.ID)
+	}
+	if _, err := svc.VerifyScopedCredentials(ctx, "shared", "tenantpass123", "tenant_b"); err != nil {
+		t.Fatalf("tenant_b credential verification should work: %v", err)
+	}
+	if _, err := svc.VerifyScopedCredentials(ctx, "shared", "globalpass123", "tenant_a"); !errors.Is(err, ErrInvalidAdminCredentials) {
+		t.Fatalf("global password should not verify as tenant_a credentials, got %v", err)
+	}
 
 	if _, _, err := svc.ChangePasswordScoped(ctx, "shared", "tenantpass123", "tenantnew123", "tenant", "tenant_a"); err != nil {
 		t.Fatalf("tenant change password: %v", err)

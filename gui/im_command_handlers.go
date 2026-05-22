@@ -45,6 +45,10 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		}
 	}
 
+	if resp, handled := h.handleImmediateKnowledgeSaveText(msg, trimmed); handled {
+		return resp, true
+	}
+
 	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser {
 		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}, true
 	}

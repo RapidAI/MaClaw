@@ -217,6 +217,27 @@ func (r *adminRepo) GetByUsernameScoped(ctx context.Context, username, scope, te
 	return &admin, nil
 }
 
+func (r *adminRepo) ListByScopeTenant(ctx context.Context, scope, tenantID string) ([]*store.AdminUser, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, username, password_hash, email, scope, role, tenant_id, display_name, status, created_at, updated_at
+		 FROM admin_users WHERE scope = ? AND tenant_id = ? ORDER BY created_at DESC`, normalizeAdminScope(scope), strings.TrimSpace(tenantID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*store.AdminUser
+	for rows.Next() {
+		var admin store.AdminUser
+		var createdAt, updatedAt string
+		if err := rows.Scan(&admin.ID, &admin.Username, &admin.PasswordHash, &admin.Email, &admin.Scope, &admin.Role, &admin.TenantID, &admin.DisplayName, &admin.Status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		admin.CreatedAt = mustParseTime(createdAt)
+		admin.UpdatedAt = mustParseTime(updatedAt)
+		out = append(out, &admin)
+	}
+	return out, rows.Err()
+}
+
 func (r *adminRepo) Count(ctx context.Context) (int, error) {
 	row := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users`)
 	var count int

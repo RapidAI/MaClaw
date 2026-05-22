@@ -207,8 +207,11 @@ type App struct {
 
 	// Sticky VE session caches: (veID -> sessionID) and (sorted participant key -> sessionID).
 	// Ensures conversations with the same VE/group always reuse the same session unless archived.
-	veSessionCache    sync.Map // string -> string
-	groupSessionCache sync.Map // string -> string
+	veSessionCache       sync.Map // string -> string
+	groupSessionCache    sync.Map // string -> string
+	veSessionActiveCache sync.Map // string -> time.Time
+	veDetailRefreshCache sync.Map // sessionID -> *veDetailRefreshState
+	veDiscoverableCache  sync.Map // hubURL/token/localID -> veDiscoverableCacheEntry
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.

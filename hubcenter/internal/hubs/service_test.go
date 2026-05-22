@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -378,7 +379,9 @@ func TestUserRegistrationReportIncludesTenantVirtualHubRows(t *testing.T) {
 	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 	now := time.Now()
-	hub := &store.HubInstance{ID: "hub_tenant_report", OwnerEmail: "owner@example.com", Name: "Tenant Report Hub", BaseURL: "https://hub.example.com", Status: "online", CreatedAt: now, UpdatedAt: now}
+	hub := &store.HubInstance{ID: "hub_tenant_report", OwnerEmail: "owner@example.com", Name: "Tenant Report Hub", BaseURL: "https://hub.example.com", Status: "online", CapabilitiesJSON: mustJSON(map[string]any{
+		"tenant_names": map[string]any{"tenant_a": "开发部", "tenant_b": "市场部", "tenant_c": "测试部"},
+	}), CreatedAt: now, UpdatedAt: now}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
 		t.Fatalf("create hub: %v", err)
 	}
@@ -408,7 +411,7 @@ func TestUserRegistrationReportIncludesTenantVirtualHubRows(t *testing.T) {
 	if byTenant[""].TotalUsers != 3 {
 		t.Fatalf("physical hub total = %+v", byTenant[""])
 	}
-	if byTenant["tenant_a"].TotalUsers != 2 || byTenant["tenant_b"].TotalUsers != 1 {
+	if byTenant["tenant_a"].TotalUsers != 2 || byTenant["tenant_a"].TenantName != "开发部" || byTenant["tenant_b"].TotalUsers != 1 || byTenant["tenant_b"].TenantName != "市场部" || byTenant["tenant_c"].TotalUsers != 0 || byTenant["tenant_c"].TenantName != "测试部" {
 		t.Fatalf("tenant report rows = %+v", byTenant)
 	}
 }
@@ -434,6 +437,7 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 			"tenant_user_counts":    map[string]any{"tenant_a": 2, "tenant_b": 1},
 			"tenant_machine_counts": map[string]any{"tenant_a": 3, "tenant_b": 1},
 			"tenant_domains":        map[string]any{"tenant_a": []any{"acme.example"}, "tenant_b": []any{"beta.example"}},
+			"tenant_names":          map[string]any{"tenant_a": "开发部", "tenant_b": "市场部"},
 		}),
 	}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
@@ -451,11 +455,45 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 	if byTenant[""].UserCount != 3 || byTenant[""].MachineCount != 4 {
 		t.Fatalf("unexpected physical hub dashboard row: %+v", byTenant[""])
 	}
-	if byTenant["tenant_a"].UserCount != 2 || byTenant["tenant_a"].MachineCount != 3 || byTenant["tenant_a"].CorporateEmailDomain != "acme.example" {
+	if byTenant["tenant_a"].UserCount != 2 || byTenant["tenant_a"].MachineCount != 3 || byTenant["tenant_a"].CorporateEmailDomain != "acme.example" || byTenant["tenant_a"].TenantName != "开发部" {
 		t.Fatalf("unexpected tenant_a dashboard row: %+v", byTenant["tenant_a"])
 	}
-	if byTenant["tenant_b"].UserCount != 1 || byTenant["tenant_b"].MachineCount != 1 || byTenant["tenant_b"].CorporateEmailDomain != "beta.example" {
+	if byTenant["tenant_b"].UserCount != 1 || byTenant["tenant_b"].MachineCount != 1 || byTenant["tenant_b"].CorporateEmailDomain != "beta.example" || byTenant["tenant_b"].TenantName != "市场部" {
 		t.Fatalf("unexpected tenant_b dashboard row: %+v", byTenant["tenant_b"])
+	}
+}
+
+func TestDashboardTenantCapabilitiesAcceptTypedMaps(t *testing.T) {
+	caps := map[string]any{
+		"tenant_user_emails":    map[string][]any{"": []any{"default@example.com"}, "tenant_a": []any{"alice@example.com", "bob@example.com"}},
+		"tenant_user_counts":    map[string]int64{"tenant_b": 3},
+		"tenant_machine_counts": map[string]float32{"tenant_c": 2},
+		"tenant_domains":        map[string][]any{"tenant_d": []any{"dev.example", "qa.example"}},
+		"tenant_names":          map[string]string{"tenant_e": "QA"},
+	}
+
+	ids := dashboardTenantIDs(caps, nil)
+	wantIDs := []string{"tenant_a", "tenant_b", "tenant_c", "tenant_d", "tenant_e"}
+	if !reflect.DeepEqual(ids, wantIDs) {
+		t.Fatalf("tenant ids = %#v, want %#v", ids, wantIDs)
+	}
+	if got := tenantUserCountFromCapabilities(caps, "tenant_a", 0); got != 2 {
+		t.Fatalf("tenant_a user count = %d", got)
+	}
+	if got := tenantUserEmailCapabilityMap(caps)[""]; !reflect.DeepEqual(got, []string{"default@example.com"}) {
+		t.Fatalf("default tenant emails = %#v", got)
+	}
+	if got := tenantUserCountFromCapabilities(caps, "tenant_b", 0); got != 3 {
+		t.Fatalf("tenant_b user count = %d", got)
+	}
+	if got := tenantMachineCountFromCapabilities(caps, "tenant_c"); got != 2 {
+		t.Fatalf("tenant_c machine count = %d", got)
+	}
+	if got := tenantDashboardDomains(caps, "tenant_d"); !reflect.DeepEqual(got, []string{"dev.example", "qa.example"}) {
+		t.Fatalf("tenant_d domains = %#v", got)
+	}
+	if got := tenantDashboardName(caps, "tenant_e"); got != "QA" {
+		t.Fatalf("tenant_e name = %q", got)
 	}
 }
 

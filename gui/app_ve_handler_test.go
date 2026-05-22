@@ -42,6 +42,41 @@ func TestGroupDiscussionMessage_StreamChunk_Construction(t *testing.T) {
 	}
 }
 
+func TestGroupDispatcherRespondsToAttachmentOnlyStatement(t *testing.T) {
+	msg := a2a.GroupDiscussionMessage{
+		Kind: a2a.MessageStatement,
+		FileAttachments: []a2a.FileAttachment{{
+			FileURL:  "https://hub.local/api/ve/files/download/file-1",
+			Filename: "evidence.pdf",
+		}},
+	}
+	if !shouldExecutorRespond(msg) {
+		t.Fatal("attachment-only statement should route to local executor")
+	}
+}
+
+func TestBuildVEFileAttachmentMessageRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "too-large.bin")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(veFileAttachmentMaxSize, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = (&App{}).buildVEFileAttachmentMessage("session-1", path, "", "")
+	if err == nil || !strings.Contains(err.Error(), "50 MB") {
+		t.Fatalf("expected 50 MB limit error, got %v", err)
+	}
+}
+
 func TestGroupDiscussionMessage_StreamEnd_Construction(t *testing.T) {
 	msg := a2a.GroupDiscussionMessage{
 		ID:        "msg-002",
@@ -482,7 +517,6 @@ func TestVEMessageHandler_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-
 // ===========================================================================
 // Feature: ve-file-sharing-directories, Property 5: Execution-layer path validation for all VE file operations
 //
@@ -700,7 +734,6 @@ func TestProperty5_ExecutionLayerRejectsAllToolsConsistently(t *testing.T) {
 	})
 }
 
-
 // ---------------------------------------------------------------------------
 // Property-Based Test: System prompt capability declaration
 // Feature: ve-file-sharing-directories, Property 8: System prompt capability declaration
@@ -784,6 +817,9 @@ func TestProperty8_SystemPromptCapabilityDeclaration(t *testing.T) {
 		// Property 2: Prompt MUST contain send_file tool mention
 		if !strings.Contains(prompt, "send_file") {
 			t.Fatalf("system prompt must mention 'send_file' tool when dirs are non-empty.\ndirs=%v", dirs)
+		}
+		if !strings.Contains(prompt, "do not paste the file contents as plain text") {
+			t.Fatalf("system prompt must require send_file instead of pasted content for file-send requests.\ndirs=%v\nprompt=%s", dirs, prompt)
 		}
 
 		// Property 3: Prompt MUST list each configured directory path

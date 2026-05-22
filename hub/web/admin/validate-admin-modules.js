@@ -175,7 +175,7 @@ function assertTenantAdminUIHooks() {
     }
   });
   const im = read('im-tab.js');
-  ['applyImScopeUI', 'openDefaultImSub', "value !== 'hubllm'", 'tenantRuntimeReloadMessage', 'runtime_reload_error'].forEach(function(marker) {
+  ['applyImScopeUI', 'openDefaultImSub', 'IM_SUBS', 'contentaudit: true', 'tenantRuntimeReloadMessage', 'runtime_reload_error'].forEach(function(marker) {
     if (!im.includes(marker)) {
       fail('im-tab.js is missing scoped IM marker: ' + marker);
     }
@@ -313,16 +313,27 @@ function assertDataI18nKeysHaveTranslations() {
 }
 
 function assertScopedRefreshHooks() {
-  [
-    ['governance-tab.js', 'governanceTenantScopedRefresh'],
-    ['marketplace-tab.js', 'marketplaceTenantScopedRefresh'],
-    ['failure-logs-tab.js', 'failureLogsTenantScopedRefresh'],
-    ['llm-provider-tab.js', 'llmProviderTenantScopedRefresh'],
-    ['usage-stats-tab.js', 'usageStatsTenantScoped']
-  ].forEach(function(entry) {
+  [['llm-provider-tab.js', 'llmProviderTenantScopedRefresh'], ['usage-stats-tab.js', 'usageStatsTenantScoped']].forEach(function(entry) {
     const content = read(entry[0]);
     if (!content.includes(entry[1])) {
       fail(entry[0] + ' is missing scoped refresh marker: ' + entry[1]);
+    }
+  });
+  [
+    ['governance-tab.js', 'loadInvites'],
+    ['marketplace-tab.js', 'loadMarketplace'],
+    ['failure-logs-tab.js', 'loadFailureLogs'],
+    ['llm-provider-tab.js', 'loadLlmProviders']
+  ].forEach(function(entry) {
+    const content = read(entry[0]);
+    if (/refreshAll\s*=\s*async/.test(content)) {
+      fail(entry[0] + ' must not wrap refreshAll; admin-bootstrap owns scoped refresh for ' + entry[1] + '.');
+    }
+  });
+  const llmService = read('llm-service-tabs.js');
+  ['llmServiceTenantScoped', 'if (llmServiceTenantScoped()) { applyLLMServiceSystemI18n(); ensureLLMServiceSystemSettingsLoaded(); }'].forEach(function(marker) {
+    if (!llmService.includes(marker)) {
+      fail('llm-service-tabs.js is missing tenant-scoped system settings marker: ' + marker);
     }
   });
   const pwa = read('pwa-tab.js');

@@ -11,7 +11,7 @@ import {
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
-import { SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
+import { GroupDiscussionDownloadAttachment, OpenFileOrShowInFolder, SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -25,6 +25,8 @@ vi.mock("../../../../wailsjs/runtime", () => ({
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     SelectAIAssistantFiles: vi.fn(async () => []),
+    GroupDiscussionDownloadAttachment: vi.fn(async () => ({ local_path: "C:\\tmp\\report.pdf" })),
+    OpenFileOrShowInFolder: vi.fn(async () => undefined),
 }));
 
 const mockTheme: Theme = {
@@ -107,6 +109,10 @@ describe("VEConversationView", () => {
     afterEach(() => {
         (SelectAIAssistantFiles as any).mockReset();
         (SelectAIAssistantFiles as any).mockImplementation(async () => []);
+        (GroupDiscussionDownloadAttachment as any).mockReset();
+        (GroupDiscussionDownloadAttachment as any).mockImplementation(async () => ({ local_path: "C:\\tmp\\report.pdf" }));
+        (OpenFileOrShowInFolder as any).mockReset();
+        (OpenFileOrShowInFolder as any).mockImplementation(async () => undefined);
         vi.useRealTimers();
     });
 
@@ -365,7 +371,7 @@ describe("VEConversationView", () => {
             await act(async () => { await Promise.resolve(); });
 
             expect(send).toHaveBeenCalledTimes(1);
-            expect(screen.getByText("Second turn")).toBeTruthy();
+            expect(screen.getAllByText("Second turn").length).toBeGreaterThan(0);
 
             act(() => {
                 eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
@@ -374,6 +380,107 @@ describe("VEConversationView", () => {
 
             expect(send).toHaveBeenCalledTimes(2);
             expect(send).toHaveBeenLastCalledWith("test-session-1", "Second turn");
+        });
+
+        it("shows a visible pre-input queue while waiting for the current reply", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.change(textarea, { target: { value: "Second turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second turn");
+
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(screen.queryByTestId("ve-queued-message-panel")).toBeNull();
+        });
+
+        it("keeps queued input below the previous assistant reply in the transcript", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.change(textarea, { target: { value: "Second turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            const messageListBeforeEnd = screen.getByTestId("ve-message-list");
+            expect(messageListBeforeEnd.textContent).toContain("First turn");
+            expect(messageListBeforeEnd.textContent).not.toContain("Second turn");
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second turn");
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "Reply one" });
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            const transcript = screen.getByTestId("ve-message-list").textContent || "";
+            expect(transcript.indexOf("First turn")).toBeLessThan(transcript.indexOf("Reply one"));
+            expect(transcript.indexOf("Reply one")).toBeLessThan(transcript.indexOf("Second turn"));
+        });
+
+        it("drains multiple queued inputs one reply boundary at a time", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "First turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.change(textarea, { target: { value: "Second turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            fireEvent.change(textarea, { target: { value: "Third turn" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-message-list").textContent).not.toContain("Second turn");
+            expect(screen.getByTestId("ve-message-list").textContent).not.toContain("Third turn");
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Second turn");
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Third turn");
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "Reply one" });
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(send).toHaveBeenCalledTimes(2);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Second turn");
+            expect(screen.getByTestId("ve-message-list").textContent).toContain("Second turn");
+            expect(screen.getByTestId("ve-message-list").textContent).not.toContain("Third turn");
+            expect(screen.getByTestId("ve-queued-message-panel").textContent).toContain("Third turn");
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "Reply two" });
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            const transcript = screen.getByTestId("ve-message-list").textContent || "";
+            expect(send).toHaveBeenCalledTimes(3);
+            expect(send).toHaveBeenLastCalledWith("test-session-1", "Third turn");
+            expect(transcript.indexOf("Reply one")).toBeLessThan(transcript.indexOf("Second turn"));
+            expect(transcript.indexOf("Reply two")).toBeLessThan(transcript.indexOf("Third turn"));
+            expect(screen.queryByTestId("ve-queued-message-panel")).toBeNull();
         });
 
         it("does not re-arm the response gate when stream end arrives before send resolves", async () => {
@@ -604,6 +711,25 @@ describe("VEConversationView", () => {
             expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "@本机 AI 请处理", ["local-maclaw"]);
         });
 
+        it("routes local AI mentions typed as 本地AI", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "ve-a", name: "Agent A", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@本地AI 快速回答" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "@本地AI 快速回答", ["local-maclaw"]);
+        });
+
         it("routes group messages with mentioned participant ids", async () => {
             const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
             const { send } = renderConversation({
@@ -735,6 +861,54 @@ describe("VEConversationView", () => {
             expect(sendWithAttachments).toHaveBeenCalledWith("test-session-1", "See attachment", ["D:\\cases\\evidence.pdf"]);
         });
 
+        it("preserves group mention routing when sending attachments", async () => {
+            (SelectAIAssistantFiles as any).mockResolvedValueOnce(["D:\\cases\\evidence.pdf"]);
+            const sendGroupMessageWithAttachments = vi.fn().mockResolvedValue(undefined);
+            const sendWithAttachments = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                existingSessionId: "test-session-1",
+                sendMessageWithAttachments: sendWithAttachments,
+                sendGroupMessageWithAttachments,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "本机 AI", online: true },
+                ],
+            });
+
+            fireEvent.click(screen.getByTestId("ve-attach-button"));
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@Agent A see attachment" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(sendGroupMessageWithAttachments).toHaveBeenCalledWith("test-session-1", "@Agent A see attachment", ["ve-a"], ["D:\\cases\\evidence.pdf"]);
+            expect(sendWithAttachments).not.toHaveBeenCalled();
+        });
+
+        it("opens the local path for the user's own sent attachment", async () => {
+            (SelectAIAssistantFiles as any).mockResolvedValueOnce(["D:\\cases\\evidence.pdf"]);
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.click(screen.getByTestId("ve-attach-button"));
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "See attachment" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("ve-att-chip-evidence.pdf"));
+                await Promise.resolve();
+            });
+
+            expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("D:\\cases\\evidence.pdf");
+            expect(GroupDiscussionDownloadAttachment).not.toHaveBeenCalled();
+        });
+
 
         it("drops queued messages when the chat becomes read-only before session init finishes", async () => {
             let resolveInit: (value: { session_id: string; ve_id: string; ve_name: string }) => void = () => {};
@@ -746,7 +920,7 @@ describe("VEConversationView", () => {
             const textarea = screen.getByTestId("ve-input-textarea");
             fireEvent.change(textarea, { target: { value: "Queued then locked" } });
             fireEvent.keyDown(textarea, { key: "Enter" });
-            expect(screen.getByText("Queued then locked")).toBeTruthy();
+            expect(screen.getAllByText("Queued then locked").length).toBeGreaterThan(0);
 
             rerender(
                 <VEConversationView
@@ -817,7 +991,7 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
 
             expect(send).not.toHaveBeenCalled();
-            expect(screen.getByText("Queued before session")).toBeTruthy();
+            expect(screen.getAllByText("Queued before session").length).toBeGreaterThan(0);
             await act(async () => {
                 resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
                 await vi.runOnlyPendingTimersAsync();
@@ -841,8 +1015,8 @@ describe("VEConversationView", () => {
             fireEvent.change(textarea, { target: { value: "second queued" } });
             fireEvent.keyDown(textarea, { key: "Enter" });
 
-            expect(screen.getByText("first queued")).toBeTruthy();
-            expect(screen.getByText("second queued")).toBeTruthy();
+            expect(screen.getAllByText("first queued").length).toBeGreaterThan(0);
+            expect(screen.getAllByText("second queued").length).toBeGreaterThan(0);
 
             await act(async () => {
                 resolveInit({ session_id: "test-session-1", ve_id: "ve-1", ve_name: "Test VE" });
@@ -1026,6 +1200,179 @@ describe("VEConversationView", () => {
             // Message should be in the list
             const msgList = screen.getByTestId("ve-message-list");
             expect(msgList.textContent).toContain("Complete response");
+        });
+
+        it("renders attachment-only stream messages", async () => {
+            renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    content: "",
+                    attachments: [{ type: "file", filename: "report.pdf", file_url: "/api/ve/files/download/file-1", size_bytes: 4096 }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
+            expect(screen.getByTestId("ve-message-list").textContent).toContain("report.pdf");
+            expect(screen.getByTestId("ve-att-chip-report.pdf")).toBeTruthy();
+        });
+
+        it("merges multiple streamed attachment chunks into one final message", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    content: "Files ready",
+                    attachments: [{ type: "file", filename: "one.pdf", file_url: "/api/ve/files/download/file-1" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    content: "",
+                    attachments: [{ type: "file", filename: "two.pdf", file_url: "/api/ve/files/download/file-2" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            expect(screen.getByTestId("ve-message-list").textContent).toContain("Files ready");
+            expect(screen.getByTestId("ve-att-chip-one.pdf")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-two.pdf")).toBeTruthy();
+        });
+
+        it("downloads streamed attachments through the authenticated Wails bridge before opening", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", file_url: "/api/ve/files/download/file-1" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("ve-att-chip-report.pdf"));
+                await Promise.resolve();
+            });
+
+            expect(GroupDiscussionDownloadAttachment).toHaveBeenCalledWith("test-session-1", "/api/ve/files/download/file-1", "report.pdf");
+            expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("C:\\tmp\\report.pdf");
+        });
+
+        it("preserves downloaded local paths when stream end enriches an existing attachment", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", file_url: "/api/ve/files/download/file-1", size_bytes: 4096 }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", file_url: "/api/ve/files/download/file-1", local_path: "D:\\cache\\report.pdf", size_bytes: 4096 }],
+                });
+            });
+
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("ve-att-chip-report.pdf"));
+                await Promise.resolve();
+            });
+
+            expect(GroupDiscussionDownloadAttachment).not.toHaveBeenCalled();
+            expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("D:\\cache\\report.pdf");
+        });
+
+        it("merges a local-path-only attachment enrichment without duplicating the chip", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", file_url: "/api/ve/files/download/file-1" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", local_path: "D:\\cache\\report.pdf" }],
+                });
+            });
+
+            expect(screen.getAllByTestId("ve-att-chip-report.pdf")).toHaveLength(1);
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("ve-att-chip-report.pdf"));
+                await Promise.resolve();
+            });
+
+            expect(GroupDiscussionDownloadAttachment).not.toHaveBeenCalled();
+            expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("D:\\cache\\report.pdf");
+        });
+
+        it("does not merge same-named streamed attachments when their sizes conflict", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", file_url: "/api/ve/files/download/file-1", size_bytes: 100 }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", local_path: "D:\\cache\\report.pdf", size_bytes: 200 }],
+                });
+            });
+
+            expect(screen.getAllByTestId("ve-att-chip-report.pdf")).toHaveLength(2);
+        });
+
+        it("normalizes malformed attachment metadata without leaking object strings", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: { bad: true }, filename: { bad: true }, file_url: { bad: true }, local_path: { bad: true } }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            const msgList = screen.getByTestId("ve-message-list");
+            expect(msgList.textContent).toContain("attachment");
+            expect(msgList.textContent).not.toContain("[object Object]");
+        });
+
+        it("ignores numeric local paths in streamed attachment metadata", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", local_path: 12345 }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            const chip = screen.getByTestId("ve-att-chip-report.pdf") as HTMLButtonElement;
+            expect(chip.disabled).toBe(true);
         });
 
         it("splits live stream output when the responding speaker changes", async () => {

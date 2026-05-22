@@ -259,7 +259,19 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 	case experienceLearningToolActionBuildSkillDraft:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
-			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
+			query := ExperienceRoutingSignalQuery{
+				TaskType: strings.TrimSpace(stringVal(args, "task_type")),
+				Tool:     strings.TrimSpace(stringVal(args, "tool")),
+				Query:    firstNonEmptyExperienceString(stringVal(args, "query"), stringVal(args, "q")),
+				Limit:    intArg(args, "limit", 5),
+			}
+			draft := h.app.BuildExperienceSkillDraftFromUsageNudge(query)
+			return experienceLearningToolResult(map[string]interface{}{
+				"skill_draft":               draft,
+				"recommended_focus_context": draft.RecommendedFocusContext,
+				"recommended_tool_call":     draft.RecommendedToolCall,
+				"non_executing_boundary":    draft.NonExecutingBoundary,
+			}, nil)
 		}
 		draft, err := h.app.BuildExperienceSkillDraft(traceID)
 		return experienceLearningToolResult(map[string]interface{}{

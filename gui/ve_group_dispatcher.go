@@ -6,9 +6,15 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+const (
+	groupHubSyncChunkFlushInterval = 80 * time.Millisecond
+	groupHubSyncChunkMaxBytes      = 2048
 )
 
 // GroupChatDispatcher routes group chat messages to the local AI agent
@@ -173,10 +179,15 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		senderContext = fmt.Sprintf("[来自群聊参与者 %s 的消息]\n", msg.FromID)
 	}
 
+	content := msg.Content
+	if HasAttachments(msg) {
+		content += NewVEMessageHandler(d.app).ProcessMessageAttachmentsForSession(sess.SessionID, msg)
+	}
+
 	imMsg := IMUserMessage{
 		UserID:   fmt.Sprintf("ve-group-executor:%s", sess.SessionID),
 		Platform: "ve_group_executor",
-		Text:     senderContext + msg.Content,
+		Text:     senderContext + content,
 		Lang:     "zh",
 	}
 
@@ -213,6 +224,7 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 
 	// Send stream end
 	if resp != nil {
+		d.forwardAgentResponseFiles(sess.SessionID, resp, localDispatch)
 		if localDispatch {
 			d.emitStreamToFrontend(sess.SessionID, "")
 			// Always preserve stream_end so Hub history can collapse streamed chunks reliably.
@@ -228,6 +240,79 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		// No response — still need to close the sync channel
 		finishHubSync()
 	}
+}
+
+func (d *GroupChatDispatcher) forwardAgentResponseFiles(sessionID string, resp *IMAgentResponse, localDispatch bool) {
+	if d == nil || d.app == nil || resp == nil {
+		return
+	}
+	paths := append([]string{}, resp.LocalFilePaths...)
+	if strings.TrimSpace(resp.LocalFilePath) != "" {
+		paths = append([]string{resp.LocalFilePath}, paths...)
+	}
+	for _, path := range uniqueVEFilePaths(paths) {
+		if localDispatch {
+			localMsg, _, localErr := buildLocalVEFileAttachmentMessage(path, "", "")
+			if localErr == nil {
+				d.emitAttachmentToFrontend(sessionID, localMsg)
+			} else {
+				log.Printf("[group-dispatcher] failed to prepare local response file %s for session %s: %v", path, sessionID, localErr)
+			}
+			go d.syncAgentResponseFileToHub(sessionID, path)
+			continue
+		}
+		d.syncAgentResponseFileToHub(sessionID, path)
+	}
+}
+
+func uniqueVEFilePaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	unique := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		key := strings.ToLower(path)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, path)
+	}
+	return unique
+}
+
+func (d *GroupChatDispatcher) syncAgentResponseFileToHub(sessionID, path string) {
+	if d == nil || d.app == nil {
+		return
+	}
+	msg, err := d.app.buildVEFileAttachmentMessage(sessionID, path, "", "")
+	if err != nil {
+		log.Printf("[group-dispatcher] failed to prepare response file %s for session %s: %v", path, sessionID, err)
+		return
+	}
+	d.sendToGroup(sessionID, msg)
+}
+
+func (d *GroupChatDispatcher) emitAttachmentToFrontend(sessionID string, msg a2a.GroupDiscussionMessage) {
+	if d == nil || d.app == nil || d.app.ctx == nil {
+		return
+	}
+	senderID := d.getLocalMachineID()
+	if senderID == "" {
+		senderID = "local-maclaw"
+	}
+	payload := map[string]any{
+		"session_id":  sessionID,
+		"content":     msg.Content,
+		"chunk":       msg.Content,
+		"sender_name": "本机AI",
+		"sender_id":   senderID,
+		"from_id":     senderID,
+		"attachments": groupDiscussionMessageAttachmentsPayload(msg),
+	}
+	runtime.EventsEmit(d.app.ctx, "ve:stream_chunk", payload)
 }
 
 // emitStreamToFrontend sends stream events directly to the frontend via Wails runtime,
@@ -275,7 +360,7 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 		return
 	}
 	fromID := strings.TrimSpace(groupDiscussionAgentID(cfg))
-	for msg := range messages {
+	send := func(msg a2a.GroupDiscussionMessage) {
 		if strings.TrimSpace(msg.FromID) == "" {
 			msg.FromID = fromID
 		}
@@ -284,6 +369,77 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 		cancel()
 		if err != nil {
 			log.Printf("[group-dispatcher] failed to sync queued message to session %s: %v", sessionID, err)
+		}
+	}
+
+	var pendingChunk a2a.GroupDiscussionMessage
+	var pendingContent strings.Builder
+	flushPendingChunk := func() {
+		if pendingContent.Len() == 0 {
+			return
+		}
+		msg := pendingChunk
+		msg.Kind = a2a.MessageStreamChunk
+		msg.Content = pendingContent.String()
+		send(msg)
+		pendingChunk = a2a.GroupDiscussionMessage{}
+		pendingContent.Reset()
+	}
+	timer := time.NewTimer(groupHubSyncChunkFlushInterval)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	timerActive := false
+	stopTimer := func() {
+		if !timerActive {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timerActive = false
+	}
+	resetTimer := func() {
+		if !timer.Stop() && timerActive {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(groupHubSyncChunkFlushInterval)
+		timerActive = true
+	}
+	defer stopTimer()
+
+	for {
+		select {
+		case msg, ok := <-messages:
+			if !ok {
+				stopTimer()
+				flushPendingChunk()
+				return
+			}
+			if msg.Kind == a2a.MessageStreamChunk {
+				if pendingContent.Len() == 0 {
+					pendingChunk = msg
+					resetTimer()
+				}
+				pendingContent.WriteString(msg.Content)
+				if pendingContent.Len() >= groupHubSyncChunkMaxBytes {
+					stopTimer()
+					flushPendingChunk()
+				}
+				continue
+			}
+			stopTimer()
+			flushPendingChunk()
+			send(msg)
+		case <-timer.C:
+			timerActive = false
+			flushPendingChunk()
 		}
 	}
 }
@@ -302,7 +458,7 @@ func (d *GroupChatDispatcher) sendToGroup(sessionID string, msg a2a.GroupDiscuss
 func shouldExecutorRespond(msg a2a.GroupDiscussionMessage) bool {
 	switch msg.Kind {
 	case a2a.MessageQuestion, a2a.MessageStatement, "":
-		return strings.TrimSpace(msg.Content) != ""
+		return strings.TrimSpace(msg.Content) != "" || HasAttachments(msg)
 	default:
 		return false
 	}

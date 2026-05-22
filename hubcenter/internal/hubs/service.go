@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -184,6 +185,7 @@ type RefreshUserInventoryResult struct {
 type HubUserDashboardItem struct {
 	HubID                 string     `json:"hub_id"`
 	TenantID              string     `json:"tenant_id,omitempty"`
+	TenantName            string     `json:"tenant_name,omitempty"`
 	HubName               string     `json:"hub_name"`
 	BaseURL               string     `json:"base_url"`
 	Status                string     `json:"status"`
@@ -205,6 +207,7 @@ type UserRegistrationBucket struct {
 type UserRegistrationHubReport struct {
 	HubID        string                   `json:"hub_id"`
 	TenantID     string                   `json:"tenant_id,omitempty"`
+	TenantName   string                   `json:"tenant_name,omitempty"`
 	HubName      string                   `json:"hub_name"`
 	BaseURL      string                   `json:"base_url"`
 	TotalUsers   int                      `json:"total_users"`
@@ -654,6 +657,7 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 			if tenantID == "" {
 				continue
 			}
+			tenantName := tenantDashboardName(caps, tenantID)
 			tenantDomains := tenantDashboardDomains(caps, tenantID)
 			tenantSignupMode := "restricted"
 			if len(tenantDomains) > 0 {
@@ -664,6 +668,7 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 			out = append(out, HubUserDashboardItem{
 				HubID:                 hub.ID,
 				TenantID:              tenantID,
+				TenantName:            tenantName,
 				HubName:               hub.Name,
 				BaseURL:               hub.BaseURL,
 				Status:                hub.Status,
@@ -799,14 +804,20 @@ func buildUserRegistrationHubReports(hubs []*store.HubInstance, hubFirstSeen map
 }
 
 func buildTenantUserRegistrationHubReports(hub *store.HubInstance, tenants map[string]map[string]time.Time, now time.Time) []UserRegistrationHubReport {
-	if len(tenants) == 0 {
-		return nil
-	}
-	tenantIDs := make([]string, 0, len(tenants))
+	seen := map[string]struct{}{}
 	for tenantID := range tenants {
-		if strings.TrimSpace(tenantID) != "" {
-			tenantIDs = append(tenantIDs, tenantID)
+		if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
+			seen[tenantID] = struct{}{}
 		}
+	}
+	for _, tenantID := range dashboardTenantIDs(hubCapabilities(hub), nil) {
+		if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
+			seen[tenantID] = struct{}{}
+		}
+	}
+	tenantIDs := make([]string, 0, len(seen))
+	for tenantID := range seen {
+		tenantIDs = append(tenantIDs, tenantID)
 	}
 	sort.Strings(tenantIDs)
 	out := make([]UserRegistrationHubReport, 0, len(tenantIDs))
@@ -821,6 +832,7 @@ func buildUserRegistrationHubReport(hub *store.HubInstance, tenantID string, fir
 	if hub != nil {
 		report.HubID = hub.ID
 		report.TenantID = strings.TrimSpace(tenantID)
+		report.TenantName = tenantDashboardName(hubCapabilities(hub), report.TenantID)
 		report.HubName = hub.Name
 		report.BaseURL = hub.BaseURL
 	}
@@ -2057,35 +2069,43 @@ func (s *Service) syncHubTenantUserEmailInventory(ctx context.Context, hubID str
 }
 
 func tenantUserEmailCapabilityMap(caps map[string]any) map[string][]string {
-	byTenant := map[string][]string{}
 	if caps != nil {
-		if raw, ok := caps["tenant_user_emails"].(map[string]any); ok {
-			for tenantID, value := range raw {
-				if emails := capabilityStringList(value); len(emails) > 0 {
-					byTenant[strings.TrimSpace(tenantID)] = emails
-				}
-			}
+		byTenant := tenantStringListCapabilityMap(caps["tenant_user_emails"], nil, true)
+		if len(byTenant) > 0 {
+			return byTenant
 		}
 	}
-	if len(byTenant) == 0 {
-		if caps != nil {
-			byTenant[""] = capabilityStringList(caps["user_emails"])
-		}
+	byTenant := map[string][]string{}
+	if caps != nil {
+		byTenant[""] = capabilityStringList(caps["user_emails"])
 	}
 	return byTenant
 }
 
 func tenantDomainCapabilityMap(caps map[string]any) map[string][]string {
-	byTenant := map[string][]string{}
 	if caps == nil {
+		return map[string][]string{}
+	}
+	return tenantStringListCapabilityMap(caps["tenant_domains"], normalizeCorporateEmailDomains, false)
+}
+
+func tenantStringListCapabilityMap(value any, normalize func([]string) []string, includeEmptyTenant bool) map[string][]string {
+	byTenant := map[string][]string{}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
 		return byTenant
 	}
-	if raw, ok := caps["tenant_domains"].(map[string]any); ok {
-		for tenantID, value := range raw {
-			domains := normalizeCorporateEmailDomains(capabilityStringList(value))
-			if len(domains) > 0 {
-				byTenant[strings.TrimSpace(tenantID)] = domains
-			}
+	for _, key := range rv.MapKeys() {
+		tenantID := strings.TrimSpace(key.String())
+		if tenantID == "" && !includeEmptyTenant {
+			continue
+		}
+		items := capabilityStringList(rv.MapIndex(key).Interface())
+		if normalize != nil {
+			items = normalize(items)
+		}
+		if len(items) > 0 {
+			byTenant[tenantID] = items
 		}
 	}
 	return byTenant
@@ -2109,6 +2129,8 @@ func dashboardTenantIDs(caps map[string]any, fallback map[string]struct{}) []str
 	}
 	collectTenantIDsFromNumericMap(seen, caps["tenant_user_counts"])
 	collectTenantIDsFromNumericMap(seen, caps["tenant_machine_counts"])
+	collectTenantIDsFromMapKeys(seen, caps["tenant_domains"])
+	collectTenantIDsFromMapKeys(seen, caps["tenant_names"])
 	for key := range fallback {
 		tenantID, _ := splitTenantEmailCountKey(key)
 		if tenantID != "" {
@@ -2124,11 +2146,16 @@ func dashboardTenantIDs(caps map[string]any, fallback map[string]struct{}) []str
 }
 
 func collectTenantIDsFromNumericMap(seen map[string]struct{}, value any) {
-	raw, ok := value.(map[string]any)
-	if !ok {
+	collectTenantIDsFromMapKeys(seen, value)
+}
+
+func collectTenantIDsFromMapKeys(seen map[string]struct{}, value any) {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
 		return
 	}
-	for tenantID := range raw {
+	for _, key := range rv.MapKeys() {
+		tenantID := key.String()
 		if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
 			seen[tenantID] = struct{}{}
 		}
@@ -2138,6 +2165,19 @@ func collectTenantIDsFromNumericMap(seen map[string]struct{}, value any) {
 func tenantDashboardDomains(caps map[string]any, tenantID string) []string {
 	items := tenantDomainCapabilityMap(caps)[strings.TrimSpace(tenantID)]
 	return normalizeCorporateEmailDomains(items)
+}
+
+func tenantDashboardName(caps map[string]any, tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	switch raw := caps["tenant_names"].(type) {
+	case map[string]any:
+		name, _ := raw[tenantID].(string)
+		return strings.TrimSpace(name)
+	case map[string]string:
+		return strings.TrimSpace(raw[tenantID])
+	default:
+		return ""
+	}
 }
 
 func tenantUserCountFromCapabilities(caps map[string]any, tenantID string, fallback int) int {
@@ -2158,11 +2198,16 @@ func tenantMachineCountFromCapabilities(caps map[string]any, tenantID string) in
 }
 
 func tenantCountFromCapability(value any, tenantID string) (int, bool) {
-	raw, ok := value.(map[string]any)
-	if !ok {
+	tenantID = strings.TrimSpace(tenantID)
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
 		return 0, false
 	}
-	return numericCapability(raw[strings.TrimSpace(tenantID)])
+	item := rv.MapIndex(reflect.ValueOf(tenantID))
+	if !item.IsValid() {
+		return 0, false
+	}
+	return numericCapability(item.Interface())
 }
 
 func hubUserCountFallback(counts map[string]map[string]struct{}, hubID, tenantID string) int {
@@ -2597,6 +2642,21 @@ func numericCapability(value any) (int, bool) {
 		var n int
 		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d", &n); err == nil && n >= 0 {
 			return n, true
+		}
+	}
+	rv := reflect.ValueOf(value)
+	if rv.IsValid() {
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			if n := rv.Int(); n >= 0 {
+				return int(n), true
+			}
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return int(rv.Uint()), true
+		case reflect.Float32:
+			if n := rv.Float(); n >= 0 {
+				return int(n), true
+			}
 		}
 	}
 	return 0, false

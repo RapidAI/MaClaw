@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
@@ -1151,5 +1152,64 @@ func TestCoreAgentBashRespectsScopedPrincipal(t *testing.T) {
 	cb.principal = Principal{TenantID: "tenant_a", UserID: "user_b"}
 	if cb.canUseLocalBash() {
 		t.Fatalf("expected scoped local bash to reject non-matching user")
+	}
+}
+
+type maintenancePlanSkillProvider struct{}
+
+func (maintenancePlanSkillProvider) ListSkills(context.Context, Principal) []SkillToolEntry {
+	return nil
+}
+
+func (maintenancePlanSkillProvider) RunSkill(context.Context, Principal, string, map[string]interface{}) (string, error) {
+	return "", nil
+}
+
+func (maintenancePlanSkillProvider) SearchSkills(context.Context, Principal, string) ([]SkillSearchResult, error) {
+	return nil, nil
+}
+
+func (maintenancePlanSkillProvider) BuildSkillMaintenancePlan(context.Context, Principal, skill.SkillMaintenancePlanOptions) (skill.SkillMaintenancePlan, error) {
+	return skill.BuildSkillMaintenancePlan([]corelib.NLSkillEntry{{
+		Name:         "fragile-skill",
+		UsageCount:   3,
+		FailureCount: 3,
+		SuccessCount: 0,
+	}}, skill.SkillMaintenancePlanOptions{MinFailureRuns: 3, MaxActions: 5}), nil
+}
+
+func TestCoreAgentManageSkillMaintenancePlanIsReadOnly(t *testing.T) {
+	cb := &coreAgentCallbacks{ctx: context.Background(), skillProvider: maintenancePlanSkillProvider{}}
+	out := cb.executeManageSkill(map[string]interface{}{"action": "maintenance_plan", "max_actions": float64(5)})
+	if out.Outcome != agent.ToolExecutionOutcomeOK {
+		t.Fatalf("Outcome = %q, result = %s", out.Outcome, out.Result)
+	}
+	var payload struct {
+		OK                    bool `json:"ok"`
+		NonExecuting          bool `json:"non_executing"`
+		Boundary              string
+		MaintenancePlanStatus string                     `json:"maintenance_plan_status"`
+		Plan                  skill.SkillMaintenancePlan `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(out.Result), &payload); err != nil {
+		t.Fatalf("unmarshal maintenance plan: %v\n%s", err, out.Result)
+	}
+	if !payload.OK || !payload.NonExecuting || payload.MaintenancePlanStatus != "local_skill_maintenance_plan_no_llm" || !strings.Contains(payload.Boundary, "read-only skill maintenance plan") {
+		t.Fatalf("expected read-only maintenance payload: %#v", payload)
+	}
+	if len(payload.Plan.Actions) == 0 || payload.Plan.Actions[0].Action != skill.MaintenanceActionMarkNeedsReview {
+		t.Fatalf("expected review action: %#v", payload.Plan.Actions)
+	}
+}
+
+func TestCoreAgentManageSkillToolDefIncludesMaintenancePlan(t *testing.T) {
+	cb := &coreAgentCallbacks{skillProvider: maintenancePlanSkillProvider{}}
+	def := cb.manageSkillToolDef()
+	raw, _ := json.Marshal(def)
+	text := string(raw)
+	for _, want := range []string{"maintenance_plan", "execute_maintenance_plan", "max_actions", "stale_after_days", "min_failure_runs", "duplicate_similarity", "dry_run", "confirm", "approved_actions", "allow_duplicate_retire"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("manage_skill tool definition missing %q: %s", want, text)
+		}
 	}
 }

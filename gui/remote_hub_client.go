@@ -72,9 +72,15 @@ type RemoteHubClient struct {
 	veHandlerMu     sync.Mutex
 	veHandler       *VEMessageHandler
 	groupDispatcher *GroupChatDispatcher
+	veDetailRefresh sync.Map // sessionID -> *veDetailRefreshState
 
 	// IO relay for multi-device session roaming cleanup on disconnect.
 	ioRelay *SessionIORelay
+}
+
+type veDetailRefreshState struct {
+	mu    sync.Mutex
+	dirty bool
 }
 
 // pendingPreviewDelta accumulates preview lines for a session between flushes.

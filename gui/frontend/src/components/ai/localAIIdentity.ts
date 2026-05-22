@@ -17,6 +17,7 @@ export function normalizeParticipantId(value: string | null | undefined): string
 }
 
 const LOCAL_HUMAN_PARTICIPANT_IDS = new Set(["me", "user", "local", "local-user", "operator", "desktop-user", "initiator"]);
+const LOCAL_AI_NAME_ALIASES = new Set(["localai", "local-ai", "本机ai", "本機ai", "本地ai", "本地"]);
 
 export function isLocalHumanParticipantId(value: string | null | undefined): boolean {
     const normalized = normalizeParticipantId(value);
@@ -34,8 +35,7 @@ export function looksLikeRawParticipantId(value: string): boolean {
 export function isLocalAIName(value: string | null | undefined): boolean {
     const name = String(value || "").trim();
     if (!name) return false;
-    const compact = compactLocalAIName(name);
-    return compact === "localai" || compact === "local-ai" || compact === "本机ai" || compact === "本機ai" || compact === "本地ai" || compact === "本地";
+    return LOCAL_AI_NAME_ALIASES.has(compactLocalAIName(name));
 }
 
 export function isLocalParticipantId(value: string | null | undefined, localParticipantIds?: string[]): boolean {

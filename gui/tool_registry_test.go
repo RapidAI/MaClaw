@@ -154,6 +154,25 @@ func TestRegisterBuiltinToolsExposeWorkflowDocMetadata(t *testing.T) {
 	}
 }
 
+func TestRegisterBuiltinToolsManageSkillMaintenancePlanSchema(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+
+	tool, ok := r.Get("manage_skill")
+	if !ok {
+		t.Fatal("manage_skill tool is not registered")
+	}
+	action, ok := tool.InputSchema["action"].(map[string]string)
+	if !ok || !strings.Contains(action["description"], "maintenance_plan") {
+		t.Fatalf("manage_skill action schema should mention maintenance_plan: %#v", tool.InputSchema["action"])
+	}
+	for _, prop := range []string{"max_actions", "stale_after_days", "min_failure_runs", "duplicate_similarity", "dry_run", "confirm", "approved_actions", "allow_duplicate_retire"} {
+		if _, ok := tool.InputSchema[prop]; !ok {
+			t.Fatalf("manage_skill schema missing maintenance property %q", prop)
+		}
+	}
+}
+
 func TestRegisterBuiltinToolsWorkflowDocMetadataDescriptions(t *testing.T) {
 	r := NewToolRegistry()
 	registerBuiltinTools(r, &IMMessageHandler{})

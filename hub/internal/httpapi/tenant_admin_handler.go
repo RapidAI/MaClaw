@@ -14,15 +14,15 @@ import (
 )
 
 type tenantCreateRequest struct {
-	ID                   string `json:"id"`
-	Slug                 string `json:"slug"`
-	Name                 string `json:"name"`
-	PrimaryDomain        string `json:"primary_domain"`
+	ID                   string   `json:"id"`
+	Slug                 string   `json:"slug"`
+	Name                 string   `json:"name"`
+	PrimaryDomain        string   `json:"primary_domain"`
 	Domains              []string `json:"domains"`
-	InitialAdminUsername string `json:"initial_admin_username"`
-	InitialAdminPassword string `json:"initial_admin_password"`
-	InitialAdminEmail    string `json:"initial_admin_email"`
-	InitialAdminName     string `json:"initial_admin_name"`
+	InitialAdminUsername string   `json:"initial_admin_username"`
+	InitialAdminPassword string   `json:"initial_admin_password"`
+	InitialAdminEmail    string   `json:"initial_admin_email"`
+	InitialAdminName     string   `json:"initial_admin_name"`
 }
 
 type tenantDomainsUpdateRequest struct {
@@ -31,6 +31,7 @@ type tenantDomainsUpdateRequest struct {
 }
 
 var tenantIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,63}$`)
+var tenantDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type tenantAdminCreateRequest struct {
 	Username    string `json:"username"`
@@ -141,7 +142,18 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 			writeError(w, http.StatusBadRequest, "INVALID_TENANT_ID", "Tenant id must start with a letter and contain only lowercase letters, numbers, underscores, or hyphens")
 			return
 		}
-		domains := normalizeTenantDomains(append([]string{req.PrimaryDomain}, req.Domains...))
+		domains, invalidDomain := normalizeTenantDomainsForInput(append([]string{req.PrimaryDomain}, req.Domains...))
+		if invalidDomain != "" {
+			writeError(w, http.StatusBadRequest, "INVALID_TENANT_DOMAIN", "Tenant email domain is invalid: "+invalidDomain)
+			return
+		}
+		if conflictDomain, conflictTenantID, err := conflictingTenantDomain(r.Context(), tenants, tenantID, domains); err != nil {
+			writeError(w, http.StatusInternalServerError, "TENANT_DOMAIN_CHECK_FAILED", err.Error())
+			return
+		} else if conflictDomain != "" {
+			writeError(w, http.StatusConflict, "TENANT_DOMAIN_CONFLICT", "Tenant email domain "+conflictDomain+" is already used by "+conflictTenantID)
+			return
+		}
 		primaryDomain := ""
 		if len(domains) > 0 {
 			primaryDomain = domains[0]
@@ -207,6 +219,14 @@ func AdminTenantDetailHandler(tenants store.TenantRepository) http.HandlerFunc {
 }
 
 func AdminTenantDomainsUpdateHandler(tenants store.TenantRepository, audit store.AdminAuditRepository) http.HandlerFunc {
+	return adminTenantDomainsUpdateHandler(nil, tenants, audit)
+}
+
+func AdminTenantDomainsUpdateWithPlatformCallbackHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, audit store.AdminAuditRepository) http.HandlerFunc {
+	return adminTenantDomainsUpdateHandler(system, tenants, audit)
+}
+
+func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
 		updater, ok := tenants.(tenantDomainsUpdater)
@@ -237,7 +257,18 @@ func AdminTenantDomainsUpdateHandler(tenants store.TenantRepository, audit store
 			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Tenant not found")
 			return
 		}
-		domains := normalizeTenantDomains(append([]string{req.PrimaryDomain}, req.Domains...))
+		domains, invalidDomain := normalizeTenantDomainsForInput(append([]string{req.PrimaryDomain}, req.Domains...))
+		if invalidDomain != "" {
+			writeError(w, http.StatusBadRequest, "INVALID_TENANT_DOMAIN", "Tenant email domain is invalid: "+invalidDomain)
+			return
+		}
+		if conflictDomain, conflictTenantID, err := conflictingTenantDomain(r.Context(), tenants, tenantID, domains); err != nil {
+			writeError(w, http.StatusInternalServerError, "TENANT_DOMAIN_CHECK_FAILED", err.Error())
+			return
+		} else if conflictDomain != "" {
+			writeError(w, http.StatusConflict, "TENANT_DOMAIN_CONFLICT", "Tenant email domain "+conflictDomain+" is already used by "+conflictTenantID)
+			return
+		}
 		primaryDomain := ""
 		if len(domains) > 0 {
 			primaryDomain = domains[0]
@@ -249,6 +280,7 @@ func AdminTenantDomainsUpdateHandler(tenants store.TenantRepository, audit store
 		}
 		updated, _ := tenants.GetByID(r.Context(), tenantID)
 		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.domains_updated", map[string]any{"tenant_id": tenantID, "domains": domains})
+		postPlatformTenantCallbacks(r.Context(), system, updated, "")
 		writeJSON(w, http.StatusOK, map[string]any{"tenant": tenantDTO(updated)})
 	}
 }
@@ -514,7 +546,7 @@ func normalizeTenantDomains(values []string) []string {
 	for _, raw := range values {
 		for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' ' }) {
 			domain := normalizeDomain(part)
-			if domain == "" {
+			if domain == "" || !tenantDomainPattern.MatchString(domain) {
 				continue
 			}
 			if _, ok := seen[domain]; ok {
@@ -527,22 +559,71 @@ func normalizeTenantDomains(values []string) []string {
 	return out
 }
 
+func normalizeTenantDomainsForInput(values []string) ([]string, string) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' ' }) {
+			domain := normalizeDomain(part)
+			if domain == "" {
+				continue
+			}
+			if !tenantDomainPattern.MatchString(domain) {
+				return nil, domain
+			}
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			out = append(out, domain)
+		}
+	}
+	return out, ""
+}
+
+func conflictingTenantDomain(ctx context.Context, tenants store.TenantRepository, currentTenantID string, domains []string) (string, string, error) {
+	if tenants == nil || len(domains) == 0 {
+		return "", "", nil
+	}
+	wanted := map[string]struct{}{}
+	for _, domain := range domains {
+		if domain != "" {
+			wanted[domain] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return "", "", nil
+	}
+	items, err := tenants.List(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	currentTenantID = strings.TrimSpace(currentTenantID)
+	for _, tenant := range items {
+		if tenant == nil || tenant.DeletedAt != nil || strings.EqualFold(strings.TrimSpace(tenant.ID), currentTenantID) {
+			continue
+		}
+		for _, domain := range tenantEmailDomains(tenant) {
+			if _, ok := wanted[domain]; ok {
+				return domain, tenant.ID, nil
+			}
+		}
+	}
+	return "", "", nil
+}
+
 func tenantEmailDomains(t *store.Tenant) []string {
 	if t == nil {
 		return nil
 	}
 	settings := tenantSettingsMap(t.SettingsJSON)
 	var values []string
-	if raw, ok := settings["email_domains"].([]any); ok {
-		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				values = append(values, s)
-			}
-		}
-	} else if raw, ok := settings["domains"].([]any); ok {
-		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				values = append(values, s)
+	for _, key := range []string{"email_domains", "domains"} {
+		if raw, ok := settings[key].([]any); ok {
+			for _, item := range raw {
+				if s, ok := item.(string); ok {
+					values = append(values, s)
+				}
 			}
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
@@ -30,6 +31,57 @@ func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
 		t.Fatalf("loadSkillDocContent() = %q", got)
 	}
 }
+
+func TestSkillRunnerRecordSkillUsageExperienceSuccess(t *testing.T) {
+	tracker, err := coretool.NewUsageTracker("")
+	if err != nil {
+		t.Fatalf("NewUsageTracker: %v", err)
+	}
+	runner := NewSkillRunner(&SkillExecutor{app: &App{usageTracker: tracker}})
+
+	runner.recordSkillUsageExperience(&corelib.NLSkillEntry{
+		Name:        "pdf-helper",
+		Description: "convert pdf files",
+		Triggers:    []string{"pdf", "convert"},
+	}, nil)
+
+	if score := tracker.OutcomeScore("skill:pdf-helper"); score != 1 {
+		t.Fatalf("OutcomeScore(skill:pdf-helper) = %.2f, want 1", score)
+	}
+	if score := tracker.ContextOutcomeScore("skill:pdf-helper", []string{"pdf"}); score != 1 {
+		t.Fatalf("ContextOutcomeScore(skill:pdf-helper,pdf) = %.2f, want 1", score)
+	}
+}
+
+func TestSkillRunnerRecordSkillUsageExperienceFailure(t *testing.T) {
+	tracker, err := coretool.NewUsageTracker("")
+	if err != nil {
+		t.Fatalf("NewUsageTracker: %v", err)
+	}
+	runner := NewSkillRunner(&SkillExecutor{app: &App{usageTracker: tracker}})
+	skill := &corelib.NLSkillEntry{
+		Name:        "missing-env-skill",
+		Description: "uses api key",
+		Triggers:    []string{"api", "key"},
+	}
+
+	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"))
+	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"))
+	runner.recordSkillUsageExperience(skill, assertErrorString("Error: API_KEY environment variable not set"))
+
+	if score := tracker.OutcomeScore("skill:missing-env-skill"); score != 0 {
+		t.Fatalf("OutcomeScore(skill:missing-env-skill) = %.2f, want 0", score)
+	}
+	stats := tracker.ContextFailureStats([]string{"api"}, 3)
+	if len(stats) != 1 || stats[0].ToolName != "skill:missing-env-skill" || stats[0].Failures != 3 || stats[0].FailureRate != 1 {
+		t.Fatalf("ContextFailureStats(api) = %#v, want failed skill stats", stats)
+	}
+}
+
+type assertErrorString string
+
+func (e assertErrorString) Error() string { return string(e) }
+
 func TestSkillDocHelpersAcceptMixedCaseReadme(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Readme.md"), []byte("# mixed docs\n"), 0o644); err != nil {

@@ -102,6 +102,9 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	targetRole = strings.TrimSpace(targetRole)
 	sessionID := firstNonEmptyGroupString(envelope.SessionID, envelope.Message.SessionID, msg.SessionID)
 	content := envelope.Message.Content
+	if HasAttachments(*envelope.Message) {
+		c.localizeVEDiscussionAttachmentPaths(sessionID, envelope.Message)
+	}
 	eventPayload := buildVEDiscussionStreamEventPayload(envelope, sessionID, content)
 
 	// Dedup: if this session has a local executor that emits stream events directly
@@ -129,7 +132,7 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 		c.cachePushedVEDiscussionMessage(envelope)
 	default:
 		c.cachePushedVEDiscussionMessage(envelope)
-		if strings.EqualFold(targetRole, "initiator") {
+		if shouldEmitVEDiscussionMessageToFrontend(targetRole, *envelope.Message) {
 			// For initiator-targeted messages: skip if it's our own message echoed back
 			// (user already sees it via optimistic update in frontend)
 			if !isOwnMessage {
@@ -147,6 +150,52 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	runtime.EventsEmit(c.app.ctx, "ve-event", map[string]any{"type": msg.Type, "ts": msg.TS, "payload": envelope})
 }
 
+func shouldEmitVEDiscussionMessageToFrontend(targetRole string, msg a2a.GroupDiscussionMessage) bool {
+	role := strings.ToLower(strings.TrimSpace(targetRole))
+	if role == "initiator" {
+		return true
+	}
+	return HasAttachments(msg) && role != "executor"
+}
+
+func (c *RemoteHubClient) localizeVEDiscussionAttachmentPaths(sessionID string, msg *a2a.GroupDiscussionMessage) {
+	if c == nil || c.app == nil || msg == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	for i := range msg.TextAttachments {
+		msg.TextAttachments[i].LocalPath = ""
+	}
+	for i := range msg.ImageAttachments {
+		att := &msg.ImageAttachments[i]
+		att.LocalPath = ""
+		if strings.TrimSpace(att.FileURL) == "" {
+			continue
+		}
+		result, err := c.app.GroupDiscussionDownloadAttachment(sessionID, att.FileURL, att.Filename)
+		if err != nil {
+			log.Printf("[hub-client] download VE image attachment %s failed: %v", att.Filename, err)
+			continue
+		}
+		att.LocalPath = result.LocalPath
+	}
+	for i := range msg.FileAttachments {
+		att := &msg.FileAttachments[i]
+		att.LocalPath = ""
+		if strings.TrimSpace(att.FileURL) == "" {
+			continue
+		}
+		result, err := c.app.GroupDiscussionDownloadAttachment(sessionID, att.FileURL, att.Filename)
+		if err != nil {
+			log.Printf("[hub-client] download VE file attachment %s failed: %v", att.Filename, err)
+			continue
+		}
+		att.LocalPath = result.LocalPath
+		if att.SizeBytes <= 0 {
+			att.SizeBytes = result.SizeBytes
+		}
+	}
+}
+
 func shouldRouteVEDiscussionToLocalDispatcher(targetRole string, msg a2a.GroupDiscussionMessage) bool {
 	if !shouldExecutorRespond(msg) {
 		return false
@@ -162,12 +211,32 @@ func buildVEDiscussionStreamEventPayload(envelope a2a.GroupEnvelope, sessionID s
 	if envelope.Message == nil {
 		return payload
 	}
+	if attachments := groupDiscussionMessageAttachmentsPayload(*envelope.Message); len(attachments) > 0 {
+		payload["attachments"] = attachments
+	}
 	fromID := strings.TrimSpace(firstNonEmptyGroupString(envelope.Message.FromID, envelope.FromID))
 	if fromID != "" {
 		payload["from_id"] = fromID
 		payload["sender_id"] = fromID
 	}
 	return payload
+}
+
+func groupDiscussionMessageAttachmentsPayload(msg a2a.GroupDiscussionMessage) []map[string]any {
+	attachments := make([]map[string]any, 0, len(msg.TextAttachments)+len(msg.ImageAttachments)+len(msg.FileAttachments))
+	for _, att := range msg.TextAttachments {
+		item := map[string]any{"type": "text", "filename": att.Filename, "mime_type": att.MimeType, "local_path": att.LocalPath}
+		attachments = append(attachments, item)
+	}
+	for _, att := range msg.ImageAttachments {
+		item := map[string]any{"type": "image", "filename": att.Filename, "mime_type": att.MimeType, "file_url": att.FileURL, "local_path": att.LocalPath}
+		attachments = append(attachments, item)
+	}
+	for _, att := range msg.FileAttachments {
+		item := map[string]any{"type": "file", "filename": att.Filename, "mime_type": att.MimeType, "file_url": att.FileURL, "local_path": att.LocalPath, "size_bytes": att.SizeBytes}
+		attachments = append(attachments, item)
+	}
+	return attachments
 }
 
 func (c *RemoteHubClient) cachePushedVEDiscussionMessage(envelope a2a.GroupEnvelope) {
@@ -178,7 +247,28 @@ func (c *RemoteHubClient) cachePushedVEDiscussionMessage(envelope a2a.GroupEnvel
 	if strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	go c.cachePushedVEDiscussionSnapshot(envelope)
+	state := &veDetailRefreshState{}
+	if existing, loaded := c.veDetailRefresh.LoadOrStore(sessionID, state); loaded {
+		if refreshState, ok := existing.(*veDetailRefreshState); ok && refreshState != nil {
+			refreshState.mu.Lock()
+			refreshState.dirty = true
+			refreshState.mu.Unlock()
+		}
+		return
+	}
+	go func() {
+		defer c.veDetailRefresh.Delete(sessionID)
+		for {
+			c.cachePushedVEDiscussionSnapshot(envelope)
+			state.mu.Lock()
+			if !state.dirty {
+				state.mu.Unlock()
+				return
+			}
+			state.dirty = false
+			state.mu.Unlock()
+		}
+	}()
 }
 
 func (c *RemoteHubClient) cachePushedVEDiscussionSnapshot(envelope a2a.GroupEnvelope) {

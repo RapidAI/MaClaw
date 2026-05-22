@@ -20,11 +20,31 @@ import (
 	"time"
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
 type fakePlatformTenantRepo struct {
 	items []*store.Tenant
+}
+
+type platformHubTestDeps struct {
+	store    *store.Store
+	provider *sqlite.Provider
+}
+
+func newPlatformHubTestDeps(t *testing.T) *platformHubTestDeps {
+	t.Helper()
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: t.TempDir() + `\hub-platform-test.db`, WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 4, MaxReadIdleConns: 2, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	return &platformHubTestDeps{store: sqlite.NewStore(provider), provider: provider}
 }
 
 func (f fakePlatformTenantRepo) Create(ctx context.Context, tenant *store.Tenant) error {
@@ -936,7 +956,7 @@ func TestPlatformTenantsListIncludesVirtualEmployeeImportFields(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "tenant-a.example.com", UpdatedAt: time.Now().UTC()}, {ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active", PrimaryDomain: "tenant-b.example.com", UpdatedAt: time.Now().UTC()}}}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "tenant-a.example.com", SettingsJSON: `{"email_domains":["tenant-a.example.com","team-a.example.com"]}`, UpdatedAt: time.Now().UTC()}, {ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active", PrimaryDomain: "tenant-b.example.com", UpdatedAt: time.Now().UTC()}}}
 
 	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/tenants/list", "platform-1", privateKey, map[string]any{})
 	rec := httptest.NewRecorder()
@@ -946,9 +966,10 @@ func TestPlatformTenantsListIncludesVirtualEmployeeImportFields(t *testing.T) {
 	}
 	var resp struct {
 		Tenants []struct {
-			HubTenantID       string `json:"hub_tenant_id"`
-			VirtualMailDomain string `json:"virtual_mail_domain"`
-			VEEnabled         bool   `json:"ve_enabled"`
+			HubTenantID       string   `json:"hub_tenant_id"`
+			Domains           []string `json:"domains"`
+			VirtualMailDomain string   `json:"virtual_mail_domain"`
+			VEEnabled         bool     `json:"ve_enabled"`
 		} `json:"tenants"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -960,8 +981,153 @@ func TestPlatformTenantsListIncludesVirtualEmployeeImportFields(t *testing.T) {
 	if resp.Tenants[0].HubTenantID != "tenant-a" || resp.Tenants[0].VirtualMailDomain != "tenant-a.ve.example.com" || !resp.Tenants[0].VEEnabled {
 		t.Fatalf("tenant-a missing import fields: %#v", resp.Tenants[0])
 	}
+	if len(resp.Tenants[0].Domains) != 2 || resp.Tenants[0].Domains[1] != "team-a.example.com" {
+		t.Fatalf("tenant-a missing email domains: %#v", resp.Tenants[0])
+	}
 	if resp.Tenants[1].HubTenantID != "tenant-b" || resp.Tenants[1].VirtualMailDomain != "custom-b.ve.example.com" || !resp.Tenants[1].VEEnabled {
 		t.Fatalf("tenant-b missing custom import fields: %#v", resp.Tenants[1])
+	}
+}
+
+func TestPlatformTenantAdminsListAndAuthenticateAreTenantScoped(t *testing.T) {
+	deps := newPlatformHubTestDeps(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, tenant := range []*store.Tenant{
+		{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "tenant-a.example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active", PrimaryDomain: "tenant-b.example.com", CreatedAt: now, UpdatedAt: now},
+		{ID: "tenant-disabled", Slug: "tenant-disabled", Name: "Tenant Disabled", Status: "disabled", PrimaryDomain: "disabled.example.com", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := deps.store.Tenants.Create(ctx, tenant); err != nil {
+			t.Fatalf("create tenant %s: %v", tenant.ID, err)
+		}
+	}
+	adminSvc := auth.NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	if _, err := adminSvc.CreateTenantAdmin(ctx, "tenant-a", "shared", "pass-a-123", "shared-a@example.com", "Tenant A Admin", "tenant_admin"); err != nil {
+		t.Fatalf("create tenant-a admin: %v", err)
+	}
+	if _, err := adminSvc.CreateTenantAdmin(ctx, "tenant-b", "shared", "pass-b-123", "shared-b@example.com", "Tenant B Admin", "tenant_admin"); err != nil {
+		t.Fatalf("create tenant-b admin: %v", err)
+	}
+	if _, err := adminSvc.CreateTenantAdmin(ctx, "tenant-disabled", "disabled-admin", "disabled-123", "disabled@example.com", "Disabled Admin", "tenant_admin"); err != nil {
+		t.Fatalf("create disabled tenant admin: %v", err)
+	}
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(ctx, deps.store.System, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	listReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/tenant-admins/list", "platform-1", privateKey, map[string]any{})
+	listRec := httptest.NewRecorder()
+	PlatformTenantAdminsListHandler(deps.store.System, deps.store.Tenants, adminSvc).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("tenant admin list status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listResp struct {
+		TenantIDs []string `json:"tenant_ids"`
+		Admins    []struct {
+			HubTenantID string `json:"hub_tenant_id"`
+			Username    string `json:"username"`
+			Email       string `json:"email"`
+		} `json:"admins"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("decode tenant admin list: %v", err)
+	}
+	if len(listResp.TenantIDs) != 2 || len(listResp.Admins) != 2 {
+		t.Fatalf("unexpected tenant admin list response: %#v", listResp)
+	}
+	for _, admin := range listResp.Admins {
+		if admin.HubTenantID == "tenant-disabled" {
+			t.Fatalf("disabled tenant admin leaked into platform list: %#v", listResp)
+		}
+	}
+
+	authReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/tenant-admins/authenticate", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-b", "username": "shared", "password": "pass-b-123"})
+	authRec := httptest.NewRecorder()
+	PlatformTenantAdminAuthenticateHandler(deps.store.System, deps.store.Tenants, adminSvc).ServeHTTP(authRec, authReq)
+	if authRec.Code != http.StatusOK {
+		t.Fatalf("tenant admin auth status=%d body=%s", authRec.Code, authRec.Body.String())
+	}
+	var authResp struct {
+		OK    bool `json:"ok"`
+		Admin struct {
+			HubTenantID string `json:"hub_tenant_id"`
+			Email       string `json:"email"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(authRec.Body.Bytes(), &authResp); err != nil {
+		t.Fatalf("decode tenant admin auth: %v", err)
+	}
+	if !authResp.OK || authResp.Admin.HubTenantID != "tenant-b" || authResp.Admin.Email != "shared-b@example.com" {
+		t.Fatalf("tenant admin auth did not use tenant-b scope: %#v", authResp)
+	}
+
+	badReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/tenant-admins/authenticate", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-b", "username": "shared", "password": "pass-a-123"})
+	badRec := httptest.NewRecorder()
+	PlatformTenantAdminAuthenticateHandler(deps.store.System, deps.store.Tenants, adminSvc).ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected tenant-a password to fail in tenant-b scope, status=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+
+	disabledReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/tenant-admins/authenticate", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-disabled", "username": "disabled-admin", "password": "disabled-123"})
+	disabledRec := httptest.NewRecorder()
+	PlatformTenantAdminAuthenticateHandler(deps.store.System, deps.store.Tenants, adminSvc).ServeHTTP(disabledRec, disabledReq)
+	if disabledRec.Code != http.StatusNotFound {
+		t.Fatalf("expected disabled tenant auth to be hidden, status=%d body=%s", disabledRec.Code, disabledRec.Body.String())
+	}
+}
+
+func TestPlatformProviderRegisterStoresSignedProvider(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	publicKey := testPlatformPublicKeyPEM(t, privateKey)
+	payload := map[string]any{
+		"platform_id":             "platform-1",
+		"platform_name":           "VE Test",
+		"callback_base_url":       "https://ve.example.com/",
+		"public_key":              publicKey,
+		"public_key_fingerprint":  "SHA256:test",
+		"virtual_mail_domain":     "VE.EXAMPLE.COM",
+		"callback_secret":         "secret-1",
+		"requested_features":      []string{"employees", "tenants"},
+		"registration_request_id": "hreq_1",
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/providers/register", "platform-1", privateKey, payload)
+	rec := httptest.NewRecorder()
+
+	PlatformProviderRegisterHandler(settings)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		OK                 bool   `json:"ok"`
+		RegistrationStatus string `json:"registration_status"`
+		PlatformID         string `json:"platform_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.OK || resp.RegistrationStatus != "active" || resp.PlatformID != "platform-1" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	registry := loadPlatformProviderRegistry(context.Background(), settings)
+	idx := registry.find("platform-1")
+	if idx < 0 {
+		t.Fatal("provider was not stored")
+	}
+	stored := registry.Providers[idx]
+	if stored.PlatformName != "VE Test" || stored.CallbackBaseURL != "https://ve.example.com" || stored.VirtualMailDomain != "ve.example.com" || stored.RegistrationStatus != "active" {
+		t.Fatalf("unexpected stored provider: %#v", stored)
 	}
 }
 

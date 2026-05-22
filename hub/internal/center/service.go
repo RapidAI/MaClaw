@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +42,8 @@ const (
 	systemKeyPublicBaseURL            = "server_public_base_url"
 	systemKeyInvitationCodeRequired   = "invitation_code_required"
 )
+
+var tenantEmailDomainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type SystemSettingsRepository interface {
 	Set(ctx context.Context, key, valueJSON string) error
@@ -137,12 +140,17 @@ type MachineCounter interface {
 	ListAllMachines(ctx context.Context) ([]device.MachineRuntimeInfo, error)
 }
 
+type TenantLister interface {
+	List(ctx context.Context) ([]*store.Tenant, error)
+}
+
 type Service struct {
 	cfg      *config.Config
 	settings SystemSettingsRepository
 	client   *http.Client
 	users    UserCounter
 	machines MachineCounter
+	tenants  TenantLister
 
 	mu               sync.Mutex
 	heartbeatStarted bool
@@ -178,6 +186,10 @@ func (s *Service) VerifyHubSecretHash(ctx context.Context, secretHash string) bo
 func (s *Service) SetStatsProviders(users UserCounter, machines MachineCounter) {
 	s.users = users
 	s.machines = machines
+}
+
+func (s *Service) SetTenantRepository(tenants TenantLister) {
+	s.tenants = tenants
 }
 
 func (s *Service) recordFailure(ctx context.Context, category, eventCode, message, entityID, email string, details map[string]any) {
@@ -1230,6 +1242,36 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 			caps["tenant_domains"] = tenantDomains
 		}
 	}
+	if s != nil && s.tenants != nil {
+		if tenants, err := s.tenants.List(ctx); err == nil {
+			tenantDomains := tenantDomainsCapability(caps)
+			tenantNames := map[string]string{}
+			for _, tenant := range tenants {
+				if tenant == nil || tenant.DeletedAt != nil || !strings.EqualFold(strings.TrimSpace(tenant.Status), "active") {
+					continue
+				}
+				tenantID := strings.TrimSpace(tenant.ID)
+				if tenantID == "" {
+					tenantID = store.DefaultTenantID
+				}
+				if name := strings.TrimSpace(tenant.Name); name != "" {
+					tenantNames[tenantID] = name
+				}
+				for _, domain := range configuredTenantDomains(tenant) {
+					if domain == "" {
+						continue
+					}
+					tenantDomains[tenantID] = appendUniqueSorted(tenantDomains[tenantID], domain)
+				}
+			}
+			if len(tenantDomains) > 0 {
+				caps["tenant_domains"] = tenantDomains
+			}
+			if len(tenantNames) > 0 {
+				caps["tenant_names"] = tenantNames
+			}
+		}
+	}
 	if s != nil && s.machines != nil {
 		if machines, err := s.machines.ListAllMachines(ctx); err == nil {
 			tenantMachineCounts := map[string]int{}
@@ -1508,7 +1550,7 @@ func normalizeCorporateEmailDomains(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		normalized := normalizeCorporateEmailDomain(value)
-		if normalized == "" {
+		if normalized == "" || !tenantEmailDomainPattern.MatchString(normalized) {
 			continue
 		}
 		if _, ok := seen[normalized]; ok {
@@ -1518,6 +1560,51 @@ func normalizeCorporateEmailDomains(values []string) []string {
 		out = append(out, normalized)
 	}
 	return out
+}
+
+func configuredTenantDomains(tenant *store.Tenant) []string {
+	if tenant == nil {
+		return nil
+	}
+	values := []string{tenant.PrimaryDomain}
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(tenant.SettingsJSON)), &settings); err == nil {
+		for _, key := range []string{"email_domains", "domains"} {
+			if raw, ok := settings[key].([]any); ok {
+				for _, item := range raw {
+					if value, ok := item.(string); ok {
+						values = append(values, value)
+					}
+				}
+			}
+		}
+	}
+	return normalizeCorporateEmailDomains(values)
+}
+
+func tenantDomainsCapability(caps map[string]any) map[string][]string {
+	if caps == nil {
+		return map[string][]string{}
+	}
+	if existing, ok := caps["tenant_domains"].(map[string][]string); ok && existing != nil {
+		return existing
+	}
+	return map[string][]string{}
+}
+
+func appendUniqueSorted(values []string, value string) []string {
+	value = normalizeCorporateEmailDomain(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	values = append(values, value)
+	sort.Strings(values)
+	return values
 }
 
 func isPublicSignupVisibility(v string) bool {
