@@ -122,6 +122,10 @@ type adminChangePasswordRequest struct {
 	NewPassword string `json:"new_password"`
 }
 
+type adminRevealSecretRequest struct {
+	Password string `json:"password"`
+}
+
 func (s *HTTPServer) handleAdminBootstrapStatus(w http.ResponseWriter, r *http.Request) {
 	initialized := adminBootstrapInitialized(s.svc.DataRoot())
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -335,6 +339,34 @@ func (s *HTTPServer) handleAdminAuthChangePassword(w http.ResponseWriter, r *htt
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.password_changed", "admin_user", user.ID, map[string]string{"username": user.Username, "revoked_sessions": strconv.Itoa(revoked), "password_changed": strconv.FormatBool(passwordChanged), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "admin": publicAdminUser(*user), "revoked_sessions": revoked})
+}
+
+func (s *HTTPServer) handleAdminAuthRevealAdminSecret(w http.ResponseWriter, r *http.Request) {
+	token := r.Header.Get("X-MaClaw-Admin-Secret")
+	session, user, err := getAdminSessionUser(s.svc.DataRoot(), token, time.Now().UTC())
+	if err != nil || session == nil || user == nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin account session is required"})
+		return
+	}
+	if user.Role != "owner" || user.Status != "active" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin owner is required"})
+		return
+	}
+	var in adminRevealSecretRequest
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)) != nil {
+		_ = s.recordAdminAudit(r.Context(), "admin.secret_reveal_failed", "admin_user", user.ID, map[string]string{"username": user.Username, "reason": "invalid_password", "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin password"})
+		return
+	}
+	if strings.TrimSpace(s.adminSecret) == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "admin secret is not configured"})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.secret_revealed", "admin_secret", "MACLAW_ADMIN_SECRET", map[string]string{"username": user.Username, "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"secret": s.adminSecret, "env_key": "MACLAW_ADMIN_SECRET"})
 }
 
 func (s *HTTPServer) adminSecretAuthorized(provided string) bool {

@@ -32,6 +32,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPost, Path: "/api/v1/admin/auth/logout", Summary: "Admin logout", Description: "Revokes the current Admin Web session token.", Tag: "admin-auth", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/auth/me", Summary: "Current admin", Description: "Returns the current Admin Web session account when authenticated with an admin session token.", Tag: "admin-auth", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/admin/auth/change-password", Summary: "Change admin password", Description: "Changes the current Admin Web account password. Requires an admin session token and revokes other sessions for the account.", Tag: "admin-auth", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/auth/reveal-admin-secret", Summary: "Reveal root admin secret", Description: "Returns MACLAW_ADMIN_SECRET for external platform configuration after an active owner account session re-enters its password. Root admin-secret authentication is not accepted for this endpoint, and the reveal is audited.", Tag: "admin-auth", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/auth/users", Summary: "List admin users", Description: "Lists Admin Web operator accounts for owner-level administration.", Tag: "admin-auth", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/admin/auth/users", Summary: "Create admin user", Description: "Creates an Admin Web owner or operator account. Requires an active owner or root admin secret.", Tag: "admin-auth", Security: adminSecurity()},
 	{Method: http.MethodPatch, Path: "/api/v1/admin/auth/users/{adminUserId}", Summary: "Update admin user", Description: "Updates an Admin Web operator account status, display name, locale, or password. Suspending the last active owner requires confirm_unsafe=true; password resets revoke active sessions for that account.", Tag: "admin-auth", Security: adminSecurity()},
@@ -243,6 +244,7 @@ func appendOpenAPIAdminRoleDescription(description, role string) string {
 func isOwnerOpenAPIRoute(method, path string) bool {
 	switch method + " " + path {
 	case
+		http.MethodPost + " /api/v1/admin/auth/reveal-admin-secret",
 		http.MethodGet + " /api/v1/admin/auth/users",
 		http.MethodPost + " /api/v1/admin/auth/users",
 		http.MethodPatch + " /api/v1/admin/auth/users/{adminUserId}",

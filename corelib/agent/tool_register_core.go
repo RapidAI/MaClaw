@@ -441,9 +441,14 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "knowledge_import_directory",
-		Description: "Scan or import a local directory of documents into the local knowledge base. Only use after the user explicitly provides or approves the directory path.",
+		Description: "Scan or import a local directory/folder of documents into the local knowledge base. Only use after the user explicitly provides or approves the directory path.",
 		Properties: map[string]interface{}{
 			"root_path":    map[string]string{"type": "string", "description": "Directory containing documents"},
+			"path":         map[string]string{"type": "string", "description": "Alias for root_path."},
+			"dir":          map[string]string{"type": "string", "description": "Alias for root_path."},
+			"directory":    map[string]string{"type": "string", "description": "Alias for root_path."},
+			"folder":       map[string]string{"type": "string", "description": "Alias for root_path."},
+			"root":         map[string]string{"type": "string", "description": "Alias for root_path."},
 			"action":       map[string]string{"type": "string", "description": "scan | import. Default import."},
 			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
 			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
@@ -452,23 +457,26 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
 			"start_async":  map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
 		},
-		Required: []string{"root_path"},
-		Handler:  extraHandler(deps, "knowledge_import_directory", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
+		Handler: extraHandler(deps, "knowledge_import_directory", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
 	})
 
 	r.Register(ToolEntry{
 		Name:        "knowledge_import_files",
-		Description: "Scan or import explicitly provided local document file paths into the local knowledge base. Only use after the user explicitly provides or approves the file paths.",
+		Description: "Scan or import explicitly provided local document file paths into the local knowledge base. Use for importing files/documents/PDFs into the knowledge base / external brain. Only use after the user explicitly provides or approves the file paths.",
 		Properties: map[string]interface{}{
 			"file_paths":   map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
+			"paths":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
+			"files":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
+			"file_path":    map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
+			"path":         map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
 			"action":       map[string]string{"type": "string", "description": "scan | import. Default import."},
 			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
 			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
 			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx, .md"},
 			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
+			"start_async":  map[string]string{"type": "boolean", "description": "For import action, start async job when the host handler supports it. Default true."},
 		},
-		Required: []string{"file_paths"},
-		Handler:  extraHandler(deps, "knowledge_import_files", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
+		Handler: extraHandler(deps, "knowledge_import_files", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
 	})
 
 	r.Register(ToolEntry{
@@ -488,10 +496,13 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Description: "Fetch a public URL and save its content into the local knowledge base. Only use when the user explicitly asks to save, archive, or add a web page to the knowledge base.",
 		Properties: map[string]interface{}{
 			"url":        map[string]string{"type": "string", "description": "Public HTTP(S) URL to save"},
+			"link":       map[string]string{"type": "string", "description": "Alias for url."},
+			"href":       map[string]string{"type": "string", "description": "Alias for url."},
+			"uri":        map[string]string{"type": "string", "description": "Alias for url."},
+			"target":     map[string]string{"type": "string", "description": "Alias for url."},
 			"topic_hint": map[string]string{"type": "string", "description": "Optional topic hint to improve write-time structure"},
 		},
-		Required: []string{"url"},
-		Handler:  extraHandler(deps, "knowledge_save_url", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
+		Handler: extraHandler(deps, "knowledge_save_url", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
 	})
 }
 

@@ -106,12 +106,43 @@ func TestCoreKnowledgeImportToolsAreRegistered(t *testing.T) {
 	reg.mu.RLock()
 	dirEntry := reg.tools["knowledge_import_directory"]
 	filesEntry := reg.tools["knowledge_import_files"]
+	urlEntry := reg.tools["knowledge_save_url"]
 	reg.mu.RUnlock()
 	if _, ok := dirEntry.Properties["root_path"]; !ok {
 		t.Fatalf("knowledge_import_directory missing root_path property")
 	}
+	for _, prop := range []string{"path", "dir", "directory", "folder", "root"} {
+		if _, ok := dirEntry.Properties[prop]; !ok {
+			t.Fatalf("knowledge_import_directory missing %s property", prop)
+		}
+	}
+	for _, required := range dirEntry.Required {
+		if required == "root_path" {
+			t.Fatalf("knowledge_import_directory should not require root_path when aliases are accepted")
+		}
+	}
 	if _, ok := filesEntry.Properties["file_paths"]; !ok {
 		t.Fatalf("knowledge_import_files missing file_paths property")
+	}
+	for _, prop := range []string{"paths", "files", "file_path", "path", "start_async"} {
+		if _, ok := filesEntry.Properties[prop]; !ok {
+			t.Fatalf("knowledge_import_files missing %s property", prop)
+		}
+	}
+	for _, required := range filesEntry.Required {
+		if required == "file_paths" {
+			t.Fatalf("knowledge_import_files should not require file_paths when aliases are accepted")
+		}
+	}
+	for _, prop := range []string{"url", "link", "href", "uri", "target"} {
+		if _, ok := urlEntry.Properties[prop]; !ok {
+			t.Fatalf("knowledge_save_url missing %s property", prop)
+		}
+	}
+	for _, required := range urlEntry.Required {
+		if required == "url" {
+			t.Fatalf("knowledge_save_url should not require url when aliases are accepted")
+		}
 	}
 }
 

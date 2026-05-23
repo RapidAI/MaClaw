@@ -412,9 +412,12 @@ func TestKnowledgeAlternativeInputSchemasDoNotRequirePrimaryOnlyFields(t *testin
 	registerKnowledgeTools(registry, app)
 
 	cases := map[string][]string{
-		"knowledge_save_urls":                {"urls", "text", "url_list", "html"},
-		"knowledge_discover_urls":            {"text", "html", "url_list"},
+		"knowledge_save_url":                 {"url", "link", "href", "uri", "target"},
+		"knowledge_save_urls":                {"urls", "links", "hrefs", "text", "url_list", "link_list", "html"},
+		"knowledge_discover_urls":            {"text", "html", "url_list", "link_list"},
 		"knowledge_entity_profile":           {"entity", "query"},
+		"knowledge_import_directory":         {"root_path", "path", "dir", "directory", "folder", "root", "start_async"},
+		"knowledge_import_files":             {"file_paths", "paths", "files", "file_path", "path", "start_async"},
 		"knowledge_import_status":            {"job_id", "id"},
 		"knowledge_import_snapshot":          {"input_path", "path"},
 		"knowledge_suppress_duplicate_cards": {"key", "claim"},
@@ -434,7 +437,7 @@ func TestKnowledgeAlternativeInputSchemasDoNotRequirePrimaryOnlyFields(t *testin
 		params := fn["parameters"].(map[string]interface{})
 		if required, ok := params["required"].([]string); ok {
 			for _, key := range required {
-				for _, primary := range []string{"urls", "text", "entity", "job_id", "input_path", "key"} {
+				for _, primary := range []string{"url", "urls", "text", "entity", "root_path", "file_paths", "job_id", "input_path", "key"} {
 					if key == primary {
 						t.Fatalf("%s function schema should allow alternative input without requiring %s", name, primary)
 					}
@@ -594,6 +597,61 @@ func TestKnowledgeToolFilePathSlicePreservesPunctuationFileNames(t *testing.T) {
 	}
 }
 
+func TestKnowledgeImportFilesAcceptsPathAliases(t *testing.T) {
+	root := t.TempDir()
+	app := &App{testHomeDir: root}
+	filePath := filepath.Join(root, "alias-import.md")
+	if err := os.WriteFile(filePath, []byte("Alias import anchor"), 0o644); err != nil {
+		t.Fatalf("write alias file: %v", err)
+	}
+	for _, tc := range []struct {
+		key   string
+		value interface{}
+	}{
+		{key: "paths", value: []interface{}{filePath}},
+		{key: "files", value: []interface{}{filePath}},
+		{key: "file_path", value: filePath},
+		{key: "path", value: filePath},
+	} {
+		out := app.toolKnowledgeImportFiles(map[string]interface{}{
+			tc.key:         tc.value,
+			"action":       "scan",
+			"include_exts": []interface{}{".md"},
+		})
+		if !strings.Contains(out, "\"ok\": true") || !strings.Contains(out, "queued_files") {
+			t.Fatalf("%s alias should scan successfully, got %s", tc.key, out)
+		}
+	}
+}
+
+func TestDiscoverToolFindsKnowledgeImportFilesForChineseNeed(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{testHomeDir: t.TempDir()}
+	registerKnowledgeTools(registry, app)
+	h := &IMMessageHandler{registry: registry}
+	out := h.toolDiscoverTool(map[string]interface{}{"need": "知识库导入文件，将PDF文件导入到知识库/外脑中"})
+	if !strings.Contains(out, "knowledge_import_files") {
+		t.Fatalf("discover_tool should find knowledge_import_files for Chinese import need, got %s", out)
+	}
+}
+
+func TestDiscoverToolFindsKnowledgeDirectoryAndURLWritersForChineseNeed(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{testHomeDir: t.TempDir()}
+	registerKnowledgeTools(registry, app)
+	h := &IMMessageHandler{registry: registry}
+
+	dirOut := h.toolDiscoverTool(map[string]interface{}{"need": "把本地目录导入知识库外脑"})
+	if !strings.Contains(dirOut, "knowledge_import_directory") {
+		t.Fatalf("discover_tool should find knowledge_import_directory for Chinese directory import need, got %s", dirOut)
+	}
+
+	urlOut := h.toolDiscoverTool(map[string]interface{}{"need": "保存网页链接到知识库外脑"})
+	if !strings.Contains(urlOut, "knowledge_save_url") && !strings.Contains(urlOut, "knowledge_save_urls") {
+		t.Fatalf("discover_tool should find URL knowledge save tools for Chinese URL save need, got %s", urlOut)
+	}
+}
+
 func TestKnowledgeToolURLListSplitsAndDedupesBatchText(t *testing.T) {
 	got := knowledgeToolURLList("https://a.example.com, https://b.example.com；https://a.example.com\nhttps://c.example.com、https://b.example.com")
 	want := []string{"https://a.example.com", "https://b.example.com", "https://c.example.com"}
@@ -653,6 +711,18 @@ func TestKnowledgeToolUniqueStringsDedupesMergedURLInputs(t *testing.T) {
 	want := []string{"https://a.example.com", "https://b.example.com", "https://c.example.com"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("knowledgeToolUniqueStrings = %#v, want %#v", got, want)
+	}
+}
+
+func TestKnowledgeSaveURLsAcceptsLinkAliases(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	out := app.toolKnowledgeSaveURLs(map[string]interface{}{
+		"links":     []interface{}{"notaurl"},
+		"hrefs":     []interface{}{"http://127.0.0.1/private"},
+		"link_list": "https://example.com/a",
+	})
+	if !strings.Contains(out, "\"ok\": true") || !strings.Contains(out, "\"requested\": 3") {
+		t.Fatalf("link aliases should feed batch URL save, got %s", out)
 	}
 }
 
@@ -1167,13 +1237,30 @@ func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {
 		t.Fatalf("write direct note: %v", err)
 	}
 	scanOut := app.toolKnowledgeImportFiles(map[string]interface{}{
-		"file_paths":   []interface{}{directPath},
+		"paths":        []interface{}{directPath},
 		"action":       "scan",
 		"save_scope":   "personal",
 		"include_exts": []interface{}{".md"},
 	})
 	if !strings.Contains(scanOut, "\"ok\": true") || !strings.Contains(scanOut, "queued_files") {
 		t.Fatalf("unexpected direct file scan output: %s", scanOut)
+	}
+	asyncOut := app.toolKnowledgeImportFiles(map[string]interface{}{
+		"paths":        []interface{}{directPath},
+		"save_scope":   "personal",
+		"include_exts": []interface{}{".md"},
+	})
+	if !strings.Contains(asyncOut, "\"ok\": true") || !strings.Contains(asyncOut, "\"job\"") || !strings.Contains(asyncOut, "\"status\": \"running\"") {
+		t.Fatalf("default file import should start async job: %s", asyncOut)
+	}
+	dirAliasScanOut := app.toolKnowledgeImportDirectory(map[string]interface{}{
+		"folder":       root,
+		"action":       "scan",
+		"save_scope":   "personal",
+		"include_exts": []interface{}{".md"},
+	})
+	if !strings.Contains(dirAliasScanOut, "\"ok\": true") || !strings.Contains(dirAliasScanOut, "queued_files") {
+		t.Fatalf("unexpected directory alias scan output: %s", dirAliasScanOut)
 	}
 	punctuatedPath := filepath.Join(root, "direct,a;b.md")
 	if err := os.WriteFile(punctuatedPath, []byte("Punctuated file path should survive tool parsing."), 0o644); err != nil {
@@ -1192,6 +1279,7 @@ func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {
 		"file_paths":   []interface{}{directPath},
 		"save_scope":   "personal",
 		"include_exts": []interface{}{".md"},
+		"start_async":  false,
 	})
 	if !strings.Contains(importOut, "\"ok\": true") || !strings.Contains(importOut, "imported_files") {
 		t.Fatalf("unexpected direct file tool output: %s", importOut)
@@ -1211,6 +1299,7 @@ func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {
 		"file_paths":   []interface{}{csvPath},
 		"save_scope":   "personal",
 		"include_exts": []interface{}{".csv"},
+		"start_async":  false,
 	})
 	if !strings.Contains(csvImportOut, "\"ok\": true") || !strings.Contains(csvImportOut, "imported_files") {
 		t.Fatalf("unexpected csv import output: %s", csvImportOut)

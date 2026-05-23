@@ -292,12 +292,15 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Name:        "knowledge_save_url",
 		Description: "Save a public HTTP(S) URL into MaClaw knowledge base. Only use when the user explicitly asks to save, remember, archive, or add a web page to the knowledge base. Fetching has public-network safety checks; write-time LLM distillation may be used if configured, but querying later does not require LLM.",
 		Category:    ToolCategoryBuiltin,
-		Tags:        []string{"knowledge", "url", "save", "archive", "brain"},
+		Tags:        []string{"knowledge", "url", "link", "web", "save", "archive", "brain", "知识库", "保存", "网址", "链接", "网页", "外脑"},
 		Priority:    5,
 		Status:      RegToolAvailable,
-		Required:    []string{"url"},
 		InputSchema: map[string]interface{}{
 			"url":        map[string]string{"type": "string", "description": "Public HTTP(S) URL to save"},
+			"link":       map[string]string{"type": "string", "description": "Alias for url."},
+			"href":       map[string]string{"type": "string", "description": "Alias for url."},
+			"uri":        map[string]string{"type": "string", "description": "Alias for url."},
+			"target":     map[string]string{"type": "string", "description": "Alias for url."},
 			"save_scope": map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
 			"topic_hint": map[string]string{"type": "string", "description": "Optional topic hint to improve write-time structure"},
 			"distill_mode": map[string]string{
@@ -319,13 +322,16 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Name:        "knowledge_save_urls",
 		Description: "Save multiple public HTTP(S) URLs into MaClaw knowledge base. Only use when the user explicitly asks to save, remember, archive, or add a list of web pages to the knowledge base. Each URL is fetched with public-network safety checks; failures are returned per URL and do not stop the whole batch.",
 		Category:    ToolCategoryBuiltin,
-		Tags:        []string{"knowledge", "url", "bulk", "save", "archive", "brain"},
+		Tags:        []string{"knowledge", "url", "link", "bulk", "save", "archive", "brain", "知识库", "保存", "网址", "链接", "网页", "批量", "外脑"},
 		Priority:    5,
 		Status:      RegToolAvailable,
 		InputSchema: map[string]interface{}{
 			"urls":             map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Public HTTP(S) URLs to save"},
+			"links":            map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for urls."},
+			"hrefs":            map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for urls."},
 			"text":             map[string]string{"type": "string", "description": "Optional newline/comma separated URL list, or messy text/HTML when discover_urls is true"},
 			"url_list":         map[string]string{"type": "string", "description": "Alias for text when passing a pasted URL list."},
+			"link_list":        map[string]string{"type": "string", "description": "Alias for text when passing a pasted URL list."},
 			"html":             map[string]string{"type": "string", "description": "Optional HTML or sitemap XML when discover_urls is true."},
 			"discover_urls":    map[string]string{"type": "boolean", "description": "When true, locally discover URL candidates from text/html/sitemap XML before saving."},
 			"base_url":         map[string]string{"type": "string", "description": "Optional public base URL for resolving relative links when discover_urls is true."},
@@ -351,13 +357,14 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Name:        "knowledge_discover_urls",
 		Description: "Discover public HTTP(S) URL candidates from pasted text, HTML, sitemap XML, or mixed notes without fetching pages or writing the knowledge base. Use before knowledge_save_urls when the user provides a messy page/list and wants to save web information.",
 		Category:    ToolCategoryBuiltin,
-		Tags:        []string{"knowledge", "url", "discover", "sitemap", "bulk", "web"},
+		Tags:        []string{"knowledge", "url", "link", "discover", "sitemap", "bulk", "web", "知识库", "发现", "网址", "链接", "网页"},
 		Priority:    5,
 		Status:      RegToolAvailable,
 		InputSchema: map[string]interface{}{
 			"text":             map[string]string{"type": "string", "description": "Pasted text, HTML, sitemap XML, or mixed URL list to parse locally"},
 			"html":             map[string]string{"type": "string", "description": "Alias for text when passing HTML or sitemap XML."},
 			"url_list":         map[string]string{"type": "string", "description": "Alias for text when passing a pasted URL list."},
+			"link_list":        map[string]string{"type": "string", "description": "Alias for text when passing a pasted URL list."},
 			"base_url":         map[string]string{"type": "string", "description": "Optional public base URL for resolving relative links"},
 			"same_domain_only": map[string]string{"type": "boolean", "description": "When true, keep only base domain and subdomain URLs. Default false."},
 			"limit":            map[string]string{"type": "integer", "description": "Max candidate URLs, default 100, max 1000"},
@@ -400,12 +407,16 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Name:        "knowledge_import_directory",
 		Description: "Scan or import a local directory of documents into MaClaw knowledge base or saved local corpus. Only use after the user explicitly provides or approves the directory. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are supported when local LibreOffice/soffice conversion is available. Action scan is dry-run; action import starts an async import by default.",
 		Category:    ToolCategoryBuiltin,
-		Tags:        []string{"knowledge", "document", "import", "directory", "brain"},
+		Tags:        []string{"knowledge", "document", "import", "directory", "folder", "brain", "知识库", "导入", "目录", "文件夹", "文档", "外脑"},
 		Priority:    10,
 		Status:      RegToolAvailable,
-		Required:    []string{"root_path"},
 		InputSchema: map[string]interface{}{
 			"root_path":     map[string]string{"type": "string", "description": "Directory containing documents"},
+			"path":          map[string]string{"type": "string", "description": "Alias for root_path."},
+			"dir":           map[string]string{"type": "string", "description": "Alias for root_path."},
+			"directory":     map[string]string{"type": "string", "description": "Alias for root_path."},
+			"folder":        map[string]string{"type": "string", "description": "Alias for root_path."},
+			"root":          map[string]string{"type": "string", "description": "Alias for root_path."},
 			"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
 			"save_scope":    map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
 			"topic_hint":    map[string]string{"type": "string", "description": "Optional topic hint"},
@@ -425,14 +436,17 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_import_files",
-		Description: "Scan or import explicitly provided local document file paths into MaClaw knowledge base or saved local corpus. Only use after the user explicitly provides or approves the file paths. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are parsed through local LibreOffice/soffice conversion when available and otherwise surfaced in diagnostics.",
+		Description: "Scan or import explicitly provided local document file paths into MaClaw knowledge base or saved local corpus. Use for importing files/documents/PDFs into the knowledge base / external brain. Only use after the user explicitly provides or approves the file paths. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are parsed through local LibreOffice/soffice conversion when available and otherwise surfaced in diagnostics.",
 		Category:    ToolCategoryBuiltin,
-		Tags:        []string{"knowledge", "document", "import", "file", "brain"},
+		Tags:        []string{"knowledge", "document", "import", "file", "files", "pdf", "brain", "知识库", "导入", "文件", "文档", "外脑"},
 		Priority:    10,
 		Status:      RegToolAvailable,
-		Required:    []string{"file_paths"},
 		InputSchema: map[string]interface{}{
 			"file_paths":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
+			"paths":         map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
+			"files":         map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
+			"file_path":     map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
+			"path":          map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
 			"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
 			"save_scope":    map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
 			"topic_hint":    map[string]string{"type": "string", "description": "Optional topic hint"},
@@ -442,6 +456,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 			"include_exts":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .pdf, .docx"},
 			"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Glob patterns to exclude, e.g. vendor/** or *.tmp"},
 			"max_file_mb":   map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
+			"start_async":   map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
 		},
 		Source: "builtin:knowledge",
 		Handler: func(args map[string]interface{}) string {
@@ -450,13 +465,13 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_import_status",
-		Description: "Check status for a knowledge_import_directory async job.",
+		Description: "Check status for a knowledge_import_directory or knowledge_import_files async job.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "import", "status", "job"},
 		Priority:    4,
 		Status:      RegToolAvailable,
 		InputSchema: map[string]interface{}{
-			"job_id": map[string]string{"type": "string", "description": "Job ID returned by knowledge_import_directory"},
+			"job_id": map[string]string{"type": "string", "description": "Job ID returned by knowledge_import_directory or knowledge_import_files"},
 			"id":     knowledgeStringAliasSchema("Alias for job_id."),
 		},
 		Source: "builtin:knowledge",
@@ -1934,9 +1949,9 @@ func (a *App) toolKnowledgeSuggest(args map[string]interface{}) string {
 }
 
 func (a *App) toolKnowledgeSaveURL(args map[string]interface{}) string {
-	rawURL := knowledgeToolFirstString(args, "url")
+	rawURL := knowledgeToolFirstString(args, "url", "link", "href", "uri", "target")
 	if rawURL == "" {
-		return knowledgeToolJSON(nil, fmt.Errorf("missing url argument"))
+		return knowledgeToolJSON(nil, fmt.Errorf("missing url argument (aliases: link, href, uri, target)"))
 	}
 	source, err := a.KnowledgeSaveURL(rawURL, knowledgeToolStringArg(args, "save_scope"), knowledgeToolStringArg(args, "topic_hint"), knowledgeToolStringArg(args, "distill_mode"), knowledgeToolStringSlice(args["labels"]), knowledgeToolBoolArg(args, "auto_labels", true))
 	return knowledgeToolJSON(map[string]interface{}{"source": source}, err)
@@ -1944,13 +1959,16 @@ func (a *App) toolKnowledgeSaveURL(args map[string]interface{}) string {
 
 func (a *App) toolKnowledgeSaveURLs(args map[string]interface{}) string {
 	urls := knowledgeToolURLList(args["urls"])
+	urls = append(urls, knowledgeToolURLList(args["links"])...)
+	urls = append(urls, knowledgeToolURLList(args["hrefs"])...)
 	urls = append(urls, knowledgeToolURLList(args["text"])...)
 	urls = append(urls, knowledgeToolURLList(args["url_list"])...)
+	urls = append(urls, knowledgeToolURLList(args["link_list"])...)
 	var discovery knowledge.URLDiscoveryResult
 	var discoveryErr error
 	if knowledgeToolBoolArg(args, "discover_urls", false) {
 		discovery, discoveryErr = a.KnowledgeDiscoverURLs(knowledge.URLDiscoveryRequest{
-			Text:           knowledgeToolFirstString(args, "text", "html", "url_list"),
+			Text:           knowledgeToolFirstString(args, "text", "html", "url_list", "link_list"),
 			BaseURL:        knowledgeToolFirstString(args, "base_url"),
 			SameDomainOnly: knowledgeToolBoolArg(args, "same_domain_only", false),
 			Limit:          knowledgeToolIntArg(args, "limit", 100),
@@ -1969,7 +1987,7 @@ func (a *App) toolKnowledgeSaveURLs(args map[string]interface{}) string {
 }
 
 func (a *App) toolKnowledgeDiscoverURLs(args map[string]interface{}) string {
-	text := knowledgeToolFirstString(args, "text", "html", "url_list")
+	text := knowledgeToolFirstString(args, "text", "html", "url_list", "link_list")
 	if text == "" {
 		return knowledgeToolJSON(nil, fmt.Errorf("missing text argument"))
 	}
@@ -2001,9 +2019,9 @@ func (a *App) toolKnowledgeSaveText(args map[string]interface{}) string {
 }
 
 func (a *App) toolKnowledgeImportDirectory(args map[string]interface{}) string {
-	rootPath := knowledgeToolFirstString(args, "root_path")
+	rootPath := knowledgeToolFirstString(args, "root_path", "path", "dir", "directory", "folder", "root")
 	if rootPath == "" {
-		return knowledgeToolJSON(nil, fmt.Errorf("missing root_path argument"))
+		return knowledgeToolJSON(nil, fmt.Errorf("missing root_path argument (aliases: path, dir, directory, folder, root)"))
 	}
 	maxFileMB := knowledgeToolIntArg(args, "max_file_mb", 100)
 	if maxFileMB <= 0 {
@@ -2038,7 +2056,19 @@ func (a *App) toolKnowledgeImportDirectory(args map[string]interface{}) string {
 func (a *App) toolKnowledgeImportFiles(args map[string]interface{}) string {
 	filePaths := knowledgeToolFilePathSlice(args["file_paths"])
 	if len(filePaths) == 0 {
-		return knowledgeToolJSON(nil, fmt.Errorf("missing file_paths argument"))
+		filePaths = knowledgeToolFilePathSlice(args["paths"])
+	}
+	if len(filePaths) == 0 {
+		filePaths = knowledgeToolFilePathSlice(args["files"])
+	}
+	if len(filePaths) == 0 {
+		filePaths = knowledgeToolFilePathSlice(args["file_path"])
+	}
+	if len(filePaths) == 0 {
+		filePaths = knowledgeToolFilePathSlice(args["path"])
+	}
+	if len(filePaths) == 0 {
+		return knowledgeToolJSON(nil, fmt.Errorf("missing file_paths argument (aliases: paths, files, file_path, path)"))
 	}
 	maxFileMB := knowledgeToolIntArg(args, "max_file_mb", 100)
 	if maxFileMB <= 0 {
@@ -2059,6 +2089,10 @@ func (a *App) toolKnowledgeImportFiles(args map[string]interface{}) string {
 		result, err := a.KnowledgeScanFiles(req, filePaths)
 		return knowledgeToolJSON(map[string]interface{}{"scan": result}, err)
 	default:
+		if knowledgeToolBoolArg(args, "start_async", true) {
+			job, err := a.KnowledgeStartImportFiles(req, filePaths)
+			return knowledgeToolJSON(map[string]interface{}{"job": job}, err)
+		}
 		result, err := a.KnowledgeImportFiles(req, filePaths)
 		return knowledgeToolJSON(map[string]interface{}{"import": result}, err)
 	}

@@ -667,7 +667,7 @@ func TestCoreAgentKnowledgeImportToolsAcceptStructuredStringSlices(t *testing.T)
 		"include_exts": []string{".md,.txt"},
 		"labels":       []interface{}{"alpha; beta"},
 		"max_file_mb":  2,
-	}, "tenant_a", "user_a")
+	}, "tenant_a", "user_a", "root_path")
 	if len(req.IncludeExts) != 2 || req.IncludeExts[0] != ".md" || req.IncludeExts[1] != ".txt" {
 		t.Fatalf("unexpected include_exts: %#v", req.IncludeExts)
 	}
@@ -681,6 +681,23 @@ func TestCoreAgentKnowledgeImportToolsAcceptStructuredStringSlices(t *testing.T)
 	paths := toStringSlice([]string{fileA + "\n" + fileB})
 	if len(paths) != 2 || paths[0] != fileA || paths[1] != fileB {
 		t.Fatalf("unexpected file paths: %#v", paths)
+	}
+}
+
+func TestCoreAgentKnowledgeImportFilesPathAliasDoesNotBecomeRootPath(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "note.md")
+	req := buildDirectoryImportRequest(map[string]interface{}{
+		"path": filePath,
+	}, "tenant_a", "user_a", "root_path", "dir", "directory", "folder", "root")
+	if req.RootPath != "" {
+		t.Fatalf("file path alias must not also become RootPath, got %q", req.RootPath)
+	}
+
+	dirReq := buildDirectoryImportRequest(map[string]interface{}{
+		"path": filepath.Dir(filePath),
+	}, "tenant_a", "user_a", "root_path", "path", "dir", "directory", "folder", "root")
+	if dirReq.RootPath == "" {
+		t.Fatalf("directory import should still accept path as root_path alias")
 	}
 }
 
@@ -712,18 +729,40 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 		t.Fatalf("expected knowledge import tools in %#v", seen)
 	}
 
+	importDirProps := map[string]interface{}{}
 	importFilesProps := map[string]interface{}{}
+	saveURLProps := map[string]interface{}{}
 	for _, tool := range tools {
-		if tooldef.Name(tool) != "knowledge_import_files" {
+		switch tooldef.Name(tool) {
+		case "knowledge_import_directory":
+			fn, _ := tool["function"].(map[string]interface{})
+			params, _ := fn["parameters"].(map[string]interface{})
+			importDirProps, _ = params["properties"].(map[string]interface{})
+		case "knowledge_import_files":
+			fn, _ := tool["function"].(map[string]interface{})
+			params, _ := fn["parameters"].(map[string]interface{})
+			importFilesProps, _ = params["properties"].(map[string]interface{})
+		case "knowledge_save_url":
+			fn, _ := tool["function"].(map[string]interface{})
+			params, _ := fn["parameters"].(map[string]interface{})
+			saveURLProps, _ = params["properties"].(map[string]interface{})
+		default:
 			continue
 		}
-		fn, _ := tool["function"].(map[string]interface{})
-		params, _ := fn["parameters"].(map[string]interface{})
-		importFilesProps, _ = params["properties"].(map[string]interface{})
 	}
-	for _, prop := range []string{"root_path", "labels", "exclude_globs", "distill_mode", "auto_labels"} {
+	for _, prop := range []string{"root_path", "path", "dir", "directory", "folder", "root"} {
+		if _, ok := importDirProps[prop]; !ok {
+			t.Fatalf("knowledge_import_directory schema missing %s in %#v", prop, importDirProps)
+		}
+	}
+	for _, prop := range []string{"root_path", "paths", "files", "file_path", "path", "labels", "exclude_globs", "distill_mode", "auto_labels"} {
 		if _, ok := importFilesProps[prop]; !ok {
 			t.Fatalf("knowledge_import_files schema missing %s in %#v", prop, importFilesProps)
+		}
+	}
+	for _, prop := range []string{"url", "link", "href", "uri", "target"} {
+		if _, ok := saveURLProps[prop]; !ok {
+			t.Fatalf("knowledge_save_url schema missing %s in %#v", prop, saveURLProps)
 		}
 	}
 
@@ -740,10 +779,32 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 	if scan.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(scan.Result, "scanned") {
 		t.Fatalf("unexpected scan result: outcome=%s result=%s", scan.Outcome, scan.Result)
 	}
+	for _, tc := range []struct {
+		key   string
+		value interface{}
+	}{
+		{key: "paths", value: []string{filePath}},
+		{key: "files", value: []string{filePath}},
+		{key: "file_path", value: filePath},
+		{key: "path", value: filePath},
+	} {
+		aliasArgs, err := json.Marshal(map[string]interface{}{
+			"action":      "scan",
+			tc.key:        tc.value,
+			"max_file_mb": 1,
+		})
+		if err != nil {
+			t.Fatalf("marshal %s alias args: %v", tc.key, err)
+		}
+		aliasScan := cb.ExecuteToolStructured("knowledge_import_files", string(aliasArgs))
+		if aliasScan.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(aliasScan.Result, "scanned") {
+			t.Fatalf("unexpected %s alias scan result: outcome=%s result=%s", tc.key, aliasScan.Outcome, aliasScan.Result)
+		}
+	}
 
 	importArgs, err := json.Marshal(map[string]interface{}{
 		"action":       "import",
-		"root_path":    root,
+		"folder":       root,
 		"include_exts": []string{".md"},
 		"max_file_mb":  1,
 	})
@@ -753,6 +814,24 @@ func TestCoreAgentKnowledgeImportToolsExecuteAgainstStore(t *testing.T) {
 	imported := cb.ExecuteToolStructured("knowledge_import_directory", string(importArgs))
 	if imported.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(imported.Result, "imported=1") {
 		t.Fatalf("unexpected import result: outcome=%s result=%s", imported.Outcome, imported.Result)
+	}
+}
+
+func TestCoreAgentKnowledgeSaveURLAcceptsAliases(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		ctx:            context.Background(),
+		knowledgeStore: noOpKnowledgeStore{},
+		principal:      Principal{TenantID: "tenant_a", UserID: "user_a"},
+	}
+	args, err := json.Marshal(map[string]interface{}{
+		"link": "https://example.com/research",
+	})
+	if err != nil {
+		t.Fatalf("marshal url alias args: %v", err)
+	}
+	out := cb.ExecuteToolStructured("knowledge_save_url", string(args))
+	if out.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(out.Result, "URL saved") {
+		t.Fatalf("unexpected url alias save result: outcome=%s result=%s", out.Outcome, out.Result)
 	}
 }
 

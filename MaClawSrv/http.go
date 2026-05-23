@@ -213,6 +213,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/admin/auth/logout", s.withAdmin(s.handleAdminAuthLogout))
 	s.mux.HandleFunc("GET /api/v1/admin/auth/me", s.withAdmin(s.handleAdminAuthMe))
 	s.mux.HandleFunc("POST /api/v1/admin/auth/change-password", s.withAdmin(s.handleAdminAuthChangePassword))
+	s.mux.HandleFunc("POST /api/v1/admin/auth/reveal-admin-secret", s.withAdmin(s.handleAdminAuthRevealAdminSecret))
 	s.mux.HandleFunc("GET /api/v1/admin/auth/users", s.withAdmin(s.handleAdminAuthUsers))
 	s.mux.HandleFunc("POST /api/v1/admin/auth/users", s.withAdmin(s.handleAdminAuthCreateUser))
 	s.mux.HandleFunc("PATCH /api/v1/admin/auth/users/{adminUserId}", s.withAdmin(s.handleAdminAuthUpdateUser))

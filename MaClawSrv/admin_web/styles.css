@@ -882,6 +882,221 @@ pre:focus {
 .w-narrow { max-width: 132px; }
 .riskCountChips button { min-height: 34px; padding: 7px 11px; border-radius: 999px; }
 
+/* MaClawSrv admin refresh: dense operational UI with clearer hierarchy. */
+.app-shell {
+  grid-template-columns: 248px minmax(0, 1fr);
+}
+
+.sidebar {
+  padding: 16px 12px;
+  gap: 14px;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, .05);
+}
+
+.brand {
+  padding: 2px 6px 12px;
+}
+
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+}
+
+.nav {
+  gap: 4px;
+}
+
+.nav button {
+  min-height: 40px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  font-weight: 700;
+}
+
+.nav button.active {
+  background: rgba(45, 212, 191, .13);
+  border-color: rgba(45, 212, 191, .24);
+}
+
+.main {
+  padding: 22px 24px 34px;
+}
+
+.topbar {
+  align-items: center;
+  margin: -4px auto 16px;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid rgba(184, 200, 210, .55);
+}
+
+.topbar h1 {
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.topbar p {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.content {
+  gap: 14px;
+}
+
+.panel,
+.card {
+  padding: 16px;
+}
+
+.card h2,
+.panel h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  margin-bottom: 10px;
+}
+
+.card h2::before,
+.panel h2::before {
+  flex: 0 0 auto;
+  margin-right: 0;
+}
+
+.split {
+  grid-template-columns: minmax(330px, 460px) minmax(0, 1fr);
+}
+
+.grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.metric {
+  min-height: 92px;
+  padding: 15px;
+}
+
+.metric b {
+  font-size: 22px;
+}
+
+.form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.field label {
+  font-size: 13px;
+}
+
+.helper-text {
+  font-size: 12px;
+}
+
+.card > .row:first-child,
+.stack > .row:first-child {
+  border-style: solid;
+  gap: 8px;
+}
+
+.row button,
+.row select,
+.row input {
+  min-height: 40px;
+}
+
+button {
+  min-height: 40px;
+  padding: 8px 13px;
+}
+
+button.secondary,
+.segmented button {
+  font-weight: 750;
+}
+
+select,
+input,
+textarea {
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+table {
+  min-width: 720px;
+}
+
+th,
+td {
+  padding: 9px 11px;
+}
+
+th {
+  color: #435663;
+  text-transform: none;
+}
+
+.table-actions button {
+  min-height: 32px;
+}
+
+.badge,
+.state-pill {
+  border-radius: 7px;
+}
+
+.badge {
+  min-height: 30px;
+  padding: 5px 10px;
+}
+
+.main > .panel:not(.hidden) {
+  width: min(100%, 1180px);
+}
+
+#bootstrapPanel,
+#loginPanel {
+  box-shadow: var(--shadow);
+}
+
+#bootstrapPanel .form-grid,
+#loginPanel .form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.error-panel:not(.hidden) {
+  margin-bottom: 12px;
+  padding: 11px 12px;
+  border-radius: 8px;
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.config-card {
+  max-width: 1480px;
+}
+
+.config-tabs {
+  position: sticky;
+  top: 72px;
+  z-index: 15;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.config-tab-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.config-tab-panel .table-wrap {
+  max-height: calc(100dvh - 210px);
+  overflow: auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
   body.is-fetching::after { animation: none; transform: none; }

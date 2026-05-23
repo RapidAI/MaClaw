@@ -464,7 +464,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_import_directory",
-			Description: "Scan or import a local directory of documents into the knowledge base. Only use after the user explicitly provides or approves the directory path.",
+			Description: "Scan or import a local directory/folder of documents into the knowledge base. Only use after the user explicitly provides or approves the directory path.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -476,6 +476,11 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"root_path":     map[string]interface{}{"type": "string", "description": "Directory containing documents"},
+					"path":          map[string]interface{}{"type": "string", "description": "Alias for root_path."},
+					"dir":           map[string]interface{}{"type": "string", "description": "Alias for root_path."},
+					"directory":     map[string]interface{}{"type": "string", "description": "Alias for root_path."},
+					"folder":        map[string]interface{}{"type": "string", "description": "Alias for root_path."},
+					"root":          map[string]interface{}{"type": "string", "description": "Alias for root_path."},
 					"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
 					"save_scope":    map[string]interface{}{"type": "string", "description": "project | personal | local_only. Default project."},
 					"topic_hint":    map[string]interface{}{"type": "string", "description": "Optional topic hint"},
@@ -487,12 +492,11 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
 					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
 				},
-				"required": []string{"root_path"},
 			},
 		},
 		{
 			Name:        "knowledge_import_files",
-			Description: "Scan or import explicitly provided local document file paths into the knowledge base. Only use after the user explicitly provides or approves the file paths.",
+			Description: "Scan or import explicitly provided local document file paths into the knowledge base. Use for importing files/documents/PDFs into the knowledge base / external brain. Only use after the user explicitly provides or approves the file paths.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -504,6 +508,10 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"file_paths":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
+					"paths":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Alias for file_paths."},
+					"files":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Alias for file_paths."},
+					"file_path":     map[string]interface{}{"type": "string", "description": "Alias for a single file_paths item."},
+					"path":          map[string]interface{}{"type": "string", "description": "Alias for a single file_paths item."},
 					"root_path":     map[string]interface{}{"type": "string", "description": "Optional import root; file_paths must stay under this directory and the workspace"},
 					"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
 					"save_scope":    map[string]interface{}{"type": "string", "description": "project | personal | local_only. Default project."},
@@ -515,7 +523,6 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
 					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
 				},
-				"required": []string{"file_paths"},
 			},
 		},
 
@@ -533,10 +540,13 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"url":        map[string]interface{}{"type": "string", "description": "URL to save"},
+					"link":       map[string]interface{}{"type": "string", "description": "Alias for url."},
+					"href":       map[string]interface{}{"type": "string", "description": "Alias for url."},
+					"uri":        map[string]interface{}{"type": "string", "description": "Alias for url."},
+					"target":     map[string]interface{}{"type": "string", "description": "Alias for url."},
 					"title":      map[string]interface{}{"type": "string", "description": "Optional title override"},
 					"topic_hint": map[string]interface{}{"type": "string", "description": "Optional topic hint for better indexing"},
 				},
-				"required": []string{"url"},
 			},
 		},
 		{

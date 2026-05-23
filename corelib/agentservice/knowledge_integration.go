@@ -209,9 +209,9 @@ func (c *coreAgentCallbacks) executeKnowledgeSaveURL(args map[string]interface{}
 	if c.knowledgeStore == nil {
 		return "Error: knowledge base is not configured"
 	}
-	url := stringArg(args, "url")
+	url := firstStringArg(args, "url", "link", "href", "uri", "target")
 	if url == "" {
-		return "Error: url parameter is required"
+		return "Error: url parameter is required (aliases: link, href, uri, target)"
 	}
 	title := stringArg(args, "title")
 	topicHint := stringArg(args, "topic_hint")
@@ -277,9 +277,9 @@ func (c *coreAgentCallbacks) executeKnowledgeImportDirectory(args map[string]int
 	if c.knowledgeStore == nil {
 		return "Error: knowledge base is not configured"
 	}
-	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID)
+	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID, "root_path", "path", "dir", "directory", "folder", "root")
 	if req.RootPath == "" {
-		return "Error: root_path parameter is required"
+		return "Error: root_path parameter is required (aliases: path, dir, directory, folder, root)"
 	}
 	action, err := knowledgeImportAction(args)
 	if err != nil {
@@ -315,9 +315,18 @@ func (c *coreAgentCallbacks) executeKnowledgeImportFiles(args map[string]interfa
 		filePaths = toFilePathSlice(args["paths"])
 	}
 	if len(filePaths) == 0 {
-		return "Error: file_paths parameter is required"
+		filePaths = toFilePathSlice(args["files"])
 	}
-	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID)
+	if len(filePaths) == 0 {
+		filePaths = toFilePathSlice(args["file_path"])
+	}
+	if len(filePaths) == 0 {
+		filePaths = toFilePathSlice(args["path"])
+	}
+	if len(filePaths) == 0 {
+		return "Error: file_paths parameter is required (aliases: paths, files, file_path, path)"
+	}
+	req := buildDirectoryImportRequest(args, c.principal.TenantID, c.principal.UserID, "root_path", "dir", "directory", "folder", "root")
 	action, err := knowledgeImportAction(args)
 	if err != nil {
 		return fmt.Sprintf("Error: %v", err)
@@ -451,7 +460,7 @@ func toFilePathSlice(v interface{}) []string {
 	}
 }
 
-func buildDirectoryImportRequest(args map[string]interface{}, tenantID, userID string) knowledge.DirectoryImportRequest {
+func buildDirectoryImportRequest(args map[string]interface{}, tenantID, userID string, rootKeys ...string) knowledge.DirectoryImportRequest {
 	maxFileBytes := int64(intArg(args, "max_file_bytes", 0))
 	if maxFileBytes == 0 {
 		if maxMB := intArg(args, "max_file_mb", 0); maxMB > 0 {
@@ -459,7 +468,7 @@ func buildDirectoryImportRequest(args map[string]interface{}, tenantID, userID s
 		}
 	}
 	req := knowledge.DirectoryImportRequest{
-		RootPath:     stringArg(args, "root_path"),
+		RootPath:     firstStringArg(args, rootKeys...),
 		OwnerID:      userID,
 		TenantID:     tenantID,
 		ProjectPath:  stringArg(args, "project_path"),
@@ -560,6 +569,15 @@ func stringArg(args map[string]interface{}, key string) string {
 	if v, ok := args[key]; ok {
 		if s, ok2 := v.(string); ok2 {
 			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func firstStringArg(args map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if s := stringArg(args, key); s != "" {
+			return s
 		}
 	}
 	return ""
