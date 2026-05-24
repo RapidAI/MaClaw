@@ -48,3 +48,16 @@ type StorageBackend interface {
 	// Called when Store.Stop() is invoked.
 	Close() error
 }
+
+// BatchStorageBackend is an optional extension for backends that can persist
+// several existing entries atomically. Store falls back to its in-memory JSON
+// path when this extension is unavailable.
+type BatchStorageBackend interface {
+	UpdateEntries(entries []*Entry) error
+}
+
+// BatchMutationStorageBackend is an optional extension for backends that can
+// persist entry updates and soft deletes in one transaction.
+type BatchMutationStorageBackend interface {
+	UpdateEntriesAndDeleteIDs(entries []*Entry, deleteIDs []string) error
+}

@@ -1380,6 +1380,27 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByText('Fix stale edit guard')).toBeTruthy();
     });
 
+    it('compacts multiple coding agent progress messages to the latest row', () => {
+        const { getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'fix these tasks' })],
+                progressMessages: [
+                    makeMsg({ role: 'progress', content: 'preflight checks done' }),
+                    makeMsg({ role: 'progress', content: 'Coding Agent: running T1 - First task' }),
+                    makeMsg({ role: 'progress', content: 'Coding Agent: running T2 - Second task' }),
+                ],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(getByText('preflight checks done')).toBeTruthy();
+        expect(queryByText('First task')).toBeNull();
+        expect(getByText('Second task')).toBeTruthy();
+    });
+
     it('hides completed coding agent progress once idle', () => {
         const { queryByTestId } = renderPanel({
             lang: 'zh-Hans',

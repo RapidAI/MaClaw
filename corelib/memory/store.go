@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
@@ -43,6 +44,7 @@ type Store struct {
 	lastSemanticHits map[string]SemanticSearchHit // debug: last semantic recall explanation by entry ID
 	lastDerivedFacts []DerivedFact                // debug: last inference engine results
 	lastRecallTrace  RecallTrace                  // debug: last RecallDynamic retrieval signals
+	eventSink        lifecycle.EventSink          // shared experience lifecycle sink
 
 	// --- Project index ---
 	projIndex     *ProjectIndex  // aggregated project metadata for search
@@ -73,6 +75,18 @@ type Store struct {
 	queryEmbMu     sync.Mutex
 	queryEmbCache  map[string]queryEmbeddingCacheEntry
 	queryEmbFlight map[string]*queryEmbeddingFlight
+}
+
+// SetExperienceEventSink connects memory recall to the shared experience
+// lifecycle. Recall remains fully functional without a sink; wiring one lets
+// tools, memory, and workflow attribution share the same event stream.
+func (s *Store) SetExperienceEventSink(sink lifecycle.EventSink) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.eventSink = sink
+	s.mu.Unlock()
 }
 
 type queryEmbeddingCacheEntry struct {
@@ -132,6 +146,11 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("memory_store: init archive: %w", err)
 	}
 	s.archive = archive
+	if removed, err := s.ReconcileArchiveDuplicates(); err != nil {
+		log.Printf("[memory_store] WARNING: reconcile archive duplicates: %v", err)
+	} else if removed > 0 {
+		log.Printf("[memory_store] reconciled %d active/archive duplicate entries", removed)
+	}
 
 	go s.persistLoop()
 	return s, nil
@@ -212,13 +231,11 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	now := time.Now()
 
 	// Idempotent: check by content hash first (O(n) but fast string compare).
 	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
+	s.mu.RLock()
 	for i := range s.entries {
 		if s.entries[i].ContentHash == hash || s.entries[i].Content == entry.Content {
 			// Multi-tenant isolation: skip entries from different users.
@@ -227,31 +244,22 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 			if entry.OwnerID != "" && existingOwner != "" && existingOwner != entry.OwnerID {
 				continue
 			}
-			s.entries[i].UpdatedAt = now
-			s.entries[i].AccessCount++
-			s.entries[i].Tags = mergeTags(s.entries[i].Tags, entry.Tags)
-			s.entries[i].Entities = mergeStringSlice(s.entries[i].Entities, entry.Entities)
-			if s.entries[i].ContentHash == "" {
-				s.entries[i].ContentHash = hash
+			updated := s.entries[i]
+			updated.UpdatedAt = now
+			updated.AccessCount++
+			updated.Tags = mergeTags(updated.Tags, entry.Tags)
+			updated.Entities = mergeStringSlice(updated.Entities, entry.Entities)
+			if updated.ContentHash == "" {
+				updated.ContentHash = hash
 			}
-			s.bm25.updateEntry(s.entries[i])
-			if s.entityIndex != nil {
-				s.entityIndex.IndexEntry(&s.entries[i])
-			}
-			// Tags may change project membership; rebuild because ProjectIndex is an aggregate.
-			if s.projIndex != nil {
-				s.projIndex.Rebuild(s.entries)
-			}
-			if s.semanticGraph != nil {
-				s.semanticGraph.IndexEntry(&s.entries[i])
-			}
-			s.rebuildThemeLayerLocked()
-			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
+			s.mu.RUnlock()
+			if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
 				return fmt.Errorf("memory_store: persist updated entry: %w", err)
 			}
 			return nil
 		}
 	}
+	s.mu.RUnlock()
 
 	// Substring dedup: check if the new content is a substring of (or contains)
 	// a recent existing entry. This catches semantically duplicate entries that
@@ -260,50 +268,41 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	// write latency. When a match is found, merge tags into the existing entry
 	// instead of creating a duplicate.
 	// Multi-tenant isolation: only dedup within the same owner (or shared entries).
+	s.mu.RLock()
 	if substringDupIdx := s.findSubstringDuplicateForEntry(entry); substringDupIdx >= 0 {
-		s.entries[substringDupIdx].UpdatedAt = now
-		s.entries[substringDupIdx].AccessCount++
-		s.entries[substringDupIdx].Tags = mergeTags(s.entries[substringDupIdx].Tags, entry.Tags)
-		s.entries[substringDupIdx].Entities = mergeStringSlice(s.entries[substringDupIdx].Entities, entry.Entities)
+		updated := s.entries[substringDupIdx]
+		updated.UpdatedAt = now
+		updated.AccessCount++
+		updated.Tags = mergeTags(updated.Tags, entry.Tags)
+		updated.Entities = mergeStringSlice(updated.Entities, entry.Entities)
 		// If the new content is a superset (contains the existing content),
 		// update to the longer version to preserve more information.
-		existingLen := len([]rune(s.entries[substringDupIdx].Content))
+		existingLen := len([]rune(updated.Content))
 		newLen := len([]rune(entry.Content))
 		if newLen > existingLen {
-			s.entries[substringDupIdx].Content = entry.Content
-			s.entries[substringDupIdx].CompactForm = ""
-			s.entries[substringDupIdx].ContentHash = hash
+			updated.Content = entry.Content
+			updated.CompactForm = ""
+			updated.ContentHash = hash
 			if len(entry.Embedding) > 0 {
-				s.entries[substringDupIdx].Embedding = append([]float32(nil), entry.Embedding...)
+				updated.Embedding = append([]float32(nil), entry.Embedding...)
 			}
 		}
-		s.bm25.updateEntry(s.entries[substringDupIdx])
-		if len(s.entries[substringDupIdx].Embedding) > 0 {
-			s.vecIndex.add(s.entries[substringDupIdx].ID, s.entries[substringDupIdx].Embedding)
-		}
-		if s.entityIndex != nil {
-			s.entityIndex.IndexEntry(&s.entries[substringDupIdx])
-		}
-		// Tags/content may change project membership; rebuild the aggregate index.
-		if s.projIndex != nil {
-			s.projIndex.Rebuild(s.entries)
-		}
-		if s.semanticGraph != nil {
-			s.semanticGraph.IndexEntry(&s.entries[substringDupIdx])
-		}
-		s.rebuildThemeLayerLocked()
-		if err := s.persistUpdatedEntryLocked(&s.entries[substringDupIdx]); err != nil {
+		s.mu.RUnlock()
+		if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
 			return fmt.Errorf("memory_store: persist merged duplicate: %w", err)
 		}
-		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", s.entries[substringDupIdx].ID, newLen > existingLen)
+		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", updated.ID, newLen > existingLen)
 		return nil
 	}
+	s.mu.RUnlock()
 
 	// Assign ID early so it's available for pending dedup tracking.
 	if entry.ID == "" {
 		entry.ID = generateID()
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.insertPreparedEntryLocked(entry, hash, now, true)
 }
 
@@ -317,84 +316,306 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 		return fmt.Errorf("memory_store: rejected: %w", err)
 	}
 
+	s.mu.RLock()
+	duplicateID := ""
+	var updated Entry
+	found := false
+	for _, e := range s.entries {
+		if e.ID != id && e.Content == content {
+			duplicateID = e.ID
+			break
+		}
+	}
+
+	if duplicateID == "" {
+		for _, e := range s.entries {
+			if e.ID == id {
+				updated = e
+				found = true
+				break
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if duplicateID != "" {
+		return fmt.Errorf("memory_store: duplicate content (matches entry %q)", duplicateID)
+	}
+	if !found {
+		return fmt.Errorf("memory_store: entry %q not found", id)
+	}
+	updated.Content = content
+	updated.Category = category
+	updated.Tags = append([]string(nil), tags...)
+	updated.CompactForm = "" // invalidate: content changed
+	updated.ContentHash = computeContentHash(content)
+	updated.Stale = false // content just updated, clear stale flag
+	if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
+		return fmt.Errorf("memory_store: persist updated entry: %w", err)
+	}
+	return nil
+}
+
+// UpdateEntriesByID updates several existing entries as one store-level batch.
+// Validation is completed before any in-memory entry is changed. Backends that
+// implement BatchStorageBackend persist the batch in one transaction.
+func (s *Store) UpdateEntriesByID(entries []Entry) error {
+	return s.upsertEntriesByID(entries, true, false)
+}
+
+// UpsertEntriesByID creates or updates several ID-addressed entries as one
+// store-level batch. It is intended for governed state transitions where a new
+// audit entry and existing source entries must persist together.
+func (s *Store) UpsertEntriesByID(entries []Entry) error {
+	return s.upsertEntriesByID(entries, false, false)
+}
+
+func (s *Store) updateMetadataEntriesByID(entries []Entry) error {
+	return s.upsertEntriesByID(entries, true, true)
+}
+
+// UpdateEntriesAndDeleteIDs updates entries and removes other entries as one
+// store-level mutation. SQLite backends persist the whole mutation in one
+// transaction, which is required for merge flows that keep one memory and retire
+// another.
+func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) error {
+	if s == nil || (len(entries) == 0 && len(deleteIDs) == 0) {
+		return nil
+	}
+	if len(deleteIDs) == 0 {
+		return s.UpdateEntriesByID(entries)
+	}
+	now := time.Now()
+	desiredByID := make(map[string]Entry, len(entries))
+	orderedIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+		entry.Content = strings.TrimSpace(entry.Content)
+		if entry.ID == "" {
+			return fmt.Errorf("memory_store: entry id must not be empty")
+		}
+		if entry.Content == "" {
+			return fmt.Errorf("memory_store: content must not be empty")
+		}
+		if err := ScanForInjection(entry.Content); err != nil {
+			return fmt.Errorf("memory_store: rejected: %w", err)
+		}
+		entry.Content = redactSecretsInMemory(entry.Content)
+		if _, exists := desiredByID[entry.ID]; !exists {
+			orderedIDs = append(orderedIDs, entry.ID)
+		}
+		desiredByID[entry.ID] = entry
+	}
+	deleteSet := make(map[string]struct{}, len(deleteIDs))
+	orderedDeletes := make([]string, 0, len(deleteIDs))
+	for _, id := range deleteIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := desiredByID[id]; exists {
+			return fmt.Errorf("memory_store: entry %q cannot be updated and deleted in the same batch", id)
+		}
+		if _, exists := deleteSet[id]; !exists {
+			deleteSet[id] = struct{}{}
+			orderedDeletes = append(orderedDeletes, id)
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, e := range s.entries {
-		if e.ID != id && e.Content == content {
-			return fmt.Errorf("memory_store: duplicate content (matches entry %q)", e.ID)
+	indices := make([]int, 0, len(desiredByID))
+	updated := make([]Entry, 0, len(desiredByID))
+	updatedByID := make(map[string]int, len(desiredByID))
+	for _, id := range orderedIDs {
+		desired := desiredByID[id]
+		idx := s.findEntryIndexByIDLocked(id)
+		if idx < 0 {
+			return fmt.Errorf("memory_store: entry %q not found", id)
 		}
+		current := s.entries[idx]
+		if current.Content != desired.Content {
+			snap := VersionSnapshot{Content: current.Content, Timestamp: current.UpdatedAt}
+			versions := append([]VersionSnapshot(nil), current.Versions...)
+			if len(versions) > 2 {
+				versions = versions[len(versions)-2:]
+			}
+			current.Versions = append(versions, snap)
+		}
+		applyEntryMutationFields(&current, desired, now)
+		current, _ = stripDeletedRelations(current, deleteSet)
+		updatedByID[current.ID] = len(updated)
+		indices = append(indices, idx)
+		updated = append(updated, current)
+	}
+	for _, id := range orderedDeletes {
+		if s.findEntryIndexByIDLocked(id) < 0 {
+			return fmt.Errorf("memory_store: entry %q not found", id)
+		}
+	}
+	for idx, current := range s.entries {
+		if _, deleting := deleteSet[current.ID]; deleting {
+			continue
+		}
+		if _, alreadyUpdated := updatedByID[current.ID]; alreadyUpdated {
+			continue
+		}
+		cleaned, changed := stripDeletedRelations(current, deleteSet)
+		if !changed {
+			continue
+		}
+		updatedByID[cleaned.ID] = len(updated)
+		indices = append(indices, idx)
+		updated = append(updated, cleaned)
 	}
 
-	for i, e := range s.entries {
-		if e.ID == id {
-			// Save version snapshot (keep last 3).
-			if e.Content != content {
-				snap := VersionSnapshot{Content: e.Content, Timestamp: e.UpdatedAt}
-				prev := s.entries[i].Versions
-				versions := make([]VersionSnapshot, 0, 3)
-				// Keep at most the last 2 existing + the new one = 3 total.
-				start := 0
-				if len(prev) > 2 {
-					start = len(prev) - 2
-				}
-				versions = append(versions, prev[start:]...)
-				versions = append(versions, snap)
-				s.entries[i].Versions = versions
+	if batchBackend, ok := s.backend.(BatchMutationStorageBackend); ok {
+		ptrs := make([]*Entry, len(updated))
+		for i := range updated {
+			ptrs[i] = &updated[i]
+		}
+		if err := batchBackend.UpdateEntriesAndDeleteIDs(ptrs, orderedDeletes); err != nil {
+			return fmt.Errorf("memory_store: persist entry mutation batch: %w", err)
+		}
+	} else if s.backend != nil {
+		return fmt.Errorf("memory_store: backend does not support atomic update/delete batch")
+	}
+
+	for i, idx := range indices {
+		s.entries[idx] = updated[i]
+	}
+	if len(deleteSet) > 0 {
+		kept := s.entries[:0]
+		for _, entry := range s.entries {
+			if _, deleting := deleteSet[entry.ID]; deleting {
+				continue
 			}
-			s.entries[i].Content = content
-			s.entries[i].Category = category
-			s.entries[i].Tags = tags
-			s.entries[i].CompactForm = "" // invalidate: content changed
-			s.entries[i].ContentHash = computeContentHash(content)
-			s.entries[i].UpdatedAt = time.Now()
-			s.entries[i].Stale = false // content just updated, clear stale flag
-			s.bm25.updateEntry(s.entries[i])
-			if s.entityIndex != nil {
-				s.entityIndex.IndexEntry(&s.entries[i])
+			kept = append(kept, entry)
+		}
+		s.entries = kept
+	}
+	s.rebuildDerivedIndexesLocked(false)
+	if s.backend == nil {
+		s.markDirtyLocked()
+	}
+	return nil
+}
+
+func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserveContent bool) error {
+	if s == nil || len(entries) == 0 {
+		return nil
+	}
+	now := time.Now()
+	desiredByID := make(map[string]Entry, len(entries))
+	orderedIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+		if !preserveContent {
+			entry.Content = strings.TrimSpace(entry.Content)
+		}
+		if entry.ID == "" {
+			return fmt.Errorf("memory_store: entry id must not be empty")
+		}
+		if !preserveContent && entry.Content == "" {
+			return fmt.Errorf("memory_store: content must not be empty")
+		}
+		if !preserveContent {
+			if err := ScanForInjection(entry.Content); err != nil {
+				return fmt.Errorf("memory_store: rejected: %w", err)
 			}
-			if s.projIndex != nil {
-				s.projIndex.Rebuild(s.entries)
+			entry.Content = redactSecretsInMemory(entry.Content)
+		}
+		if _, exists := desiredByID[entry.ID]; !exists {
+			orderedIDs = append(orderedIDs, entry.ID)
+		}
+		desiredByID[entry.ID] = entry
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	indices := make([]int, 0, len(desiredByID))
+	updated := make([]Entry, 0, len(desiredByID))
+	for _, id := range orderedIDs {
+		desired := desiredByID[id]
+		idx := -1
+		for i := range s.entries {
+			if s.entries[i].ID == id {
+				idx = i
+				break
 			}
-			if s.semanticGraph != nil {
-				s.semanticGraph.IndexEntry(&s.entries[i])
+		}
+		if idx < 0 {
+			if requireExisting {
+				return fmt.Errorf("memory_store: entry %q not found", id)
 			}
-			s.rebuildThemeLayerLocked()
-			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
-				return fmt.Errorf("memory_store: persist updated entry: %w", err)
+			if desired.Category == "" {
+				desired.Category = CategoryProjectKnowledge
 			}
-			return nil
+			if desired.Scope == "" {
+				desired.Scope = InferScope(desired.Category)
+			}
+			if desired.CreatedAt.IsZero() {
+				desired.CreatedAt = now
+			}
+			desired.UpdatedAt = now
+			desired.ContentHash = computeContentHash(desired.Content)
+			if desired.AccessCount == 0 {
+				desired.AccessCount = 1
+			}
+			if desired.Strength == 0 {
+				desired.Strength = 1
+			}
+			indices = append(indices, -1)
+			updated = append(updated, desired)
+			continue
+		}
+		current := s.entries[idx]
+		if current.Content != desired.Content {
+			snap := VersionSnapshot{Content: current.Content, Timestamp: current.UpdatedAt}
+			versions := append([]VersionSnapshot(nil), current.Versions...)
+			if len(versions) > 2 {
+				versions = versions[len(versions)-2:]
+			}
+			current.Versions = append(versions, snap)
+		}
+		applyEntryMutationFields(&current, desired, now)
+		indices = append(indices, idx)
+		updated = append(updated, current)
+	}
+
+	if batchBackend, ok := s.backend.(BatchStorageBackend); ok {
+		ptrs := make([]*Entry, len(updated))
+		for i := range updated {
+			ptrs[i] = &updated[i]
+		}
+		if err := batchBackend.UpdateEntries(ptrs); err != nil {
+			return fmt.Errorf("memory_store: persist updated entry batch: %w", err)
+		}
+	} else if s.backend != nil {
+		return fmt.Errorf("memory_store: backend does not support atomic batch update")
+	}
+
+	for i, idx := range indices {
+		if idx < 0 {
+			s.entries = append(s.entries, updated[i])
+		} else {
+			s.entries[idx] = updated[i]
 		}
 	}
-	return fmt.Errorf("memory_store: entry %q not found", id)
+	s.rebuildDerivedIndexesLocked(false)
+	if s.backend == nil {
+		s.markDirtyLocked()
+	}
+	return nil
 }
 
 // Delete removes the entry with the given ID.
 func (s *Store) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for i, e := range s.entries {
-		if e.ID == id {
-			if err := s.persistDeletedEntryLocked(id); err != nil {
-				return fmt.Errorf("memory_store: delete backend entry: %w", err)
-			}
-			s.entries = append(s.entries[:i], s.entries[i+1:]...)
-			s.bm25.removeEntry(id)
-			s.vecIndex.remove(id)
-			s.graph.remove(id)
-			s.syncGraphLinksLocked()
-			if s.entityIndex != nil {
-				s.entityIndex.RemoveEntry(id)
-			}
-			if s.semanticGraph != nil {
-				s.semanticGraph.RemoveEntry(id)
-			}
-			s.rebuildThemeLayerLocked()
-			return nil
-		}
+	if err := s.UpdateEntriesAndDeleteIDs(nil, []string{id}); err != nil {
+		return fmt.Errorf("memory_store: delete entry: %w", err)
 	}
-	return fmt.Errorf("memory_store: entry %q not found", id)
+	return nil
 }
 
 // ProjectIndex returns the project index for search and listing.
@@ -812,24 +1033,23 @@ func (s *Store) TouchAccess(ids []string) {
 
 	now := time.Now()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	touched := false
+	s.mu.RLock()
+	updates := make([]Entry, 0, len(idSet))
 	for i := range s.entries {
 		if _, ok := idSet[s.entries[i].ID]; ok {
-			s.entries[i].AccessCount++
+			updated := s.entries[i]
+			updated.AccessCount++
 			// Boost forgetting curve strength so recalled memories don't decay.
-			boostStrength(&s.entries[i], now)
-			touched = true
+			boostStrength(&updated, now)
+			updates = append(updates, updated)
 		}
 	}
+	s.mu.RUnlock()
 
-	if touched {
-		// Access touches can happen after every recall, so keep them batched even
-		// in SQLite mode. The backend-aware flush path writes the updated entries
-		// after the normal debounce or on Stop().
-		s.markDirtyLocked()
+	if len(updates) > 0 {
+		if err := s.updateMetadataEntriesByID(updates); err != nil {
+			log.Printf("[memory_store] persist access touches: %v", err)
+		}
 	}
 }
 
@@ -1286,8 +1506,11 @@ func (s *Store) graphExpand(candidates []recallScored, seedCount int) []recallSc
 	return candidates
 }
 
-// syncGraphLinksLocked mirrors the in-memory graph onto each entry's persisted
-// relationship fields. Caller MUST hold s.mu write lock.
+// syncGraphLinksLocked is an internal reconstruction helper: it mirrors the
+// in-memory graph onto each entry's persisted relationship fields after a graph
+// rebuild. Public write paths should stage relationship changes through
+// UpdateEntriesByID or UpdateEntriesAndDeleteIDs so persistence remains atomic.
+// Caller MUST hold s.mu write lock.
 func (s *Store) syncGraphLinksLocked(ids ...string) bool {
 	if s.graph == nil {
 		return false
@@ -1340,6 +1563,36 @@ func sameRelatedEdges(a, b []RelatedEdge) bool {
 	return true
 }
 
+func stripDeletedRelations(entry Entry, deleteSet map[string]struct{}) (Entry, bool) {
+	if len(deleteSet) == 0 || (len(entry.RelatedIDs) == 0 && len(entry.RelatedEdges) == 0) {
+		return entry, false
+	}
+	changed := false
+	if len(entry.RelatedIDs) > 0 {
+		kept := make([]string, 0, len(entry.RelatedIDs))
+		for _, id := range entry.RelatedIDs {
+			if _, deleting := deleteSet[id]; deleting {
+				changed = true
+				continue
+			}
+			kept = append(kept, id)
+		}
+		entry.RelatedIDs = kept
+	}
+	if len(entry.RelatedEdges) > 0 {
+		kept := make([]RelatedEdge, 0, len(entry.RelatedEdges))
+		for _, edge := range entry.RelatedEdges {
+			if _, deleting := deleteSet[edge.ID]; deleting {
+				changed = true
+				continue
+			}
+			kept = append(kept, edge)
+		}
+		entry.RelatedEdges = kept
+	}
+	return entry, changed
+}
+
 // rebuildDerivedIndexesLocked rebuilds every index derived from s.entries.
 // Caller MUST hold s.mu write lock, or be in Store construction before sharing.
 func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
@@ -1388,54 +1641,61 @@ func firstOwnerID(ownerID ...string) string {
 	return ownerID[0]
 }
 
-// supersedeEntryLocked invalidates a fact at the memory lifecycle level and
-// synchronizes every derived index that can expose active facts. Caller MUST
-// hold s.mu write lock.
-func (s *Store) supersedeEntryLocked(id string, invalidAt time.Time) bool {
-	for i := range s.entries {
-		if s.entries[i].ID != id {
+// SupersedeEntryByID invalidates a fact while preserving history. It stages the
+// lifecycle transition through the store batch updater so persistence and all
+// derived indexes follow the same path as other governed mutations.
+func (s *Store) SupersedeEntryByID(id string, invalidAt time.Time) (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("memory_store: not initialized")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, fmt.Errorf("memory_store: missing entry id")
+	}
+
+	s.mu.RLock()
+	var updated Entry
+	found := false
+	for _, entry := range s.entries {
+		if entry.ID != id {
 			continue
 		}
-		changed := false
-		if s.entries[i].Status != StatusSuperseded {
-			s.entries[i].Status = StatusSuperseded
-			changed = true
-		}
-		if !s.entries[i].Stale {
-			s.entries[i].Stale = true
-			changed = true
-		}
-		if s.entries[i].InvalidAt == nil {
-			t := invalidAt
-			if !s.entries[i].CreatedAt.IsZero() && !t.After(s.entries[i].CreatedAt) {
-				t = s.entries[i].CreatedAt.Add(time.Nanosecond)
-			}
-			s.entries[i].InvalidAt = &t
-			changed = true
-		}
-		if !changed {
-			return false
-		}
-		s.bm25.updateEntry(s.entries[i])
-		s.vecIndex.remove(id)
-		if s.graph != nil {
-			s.graph.remove(id)
-			s.syncGraphLinksLocked()
-		}
-		if s.entityIndex != nil {
-			s.entityIndex.RemoveEntry(id)
-		}
-		if s.semanticGraph != nil {
-			s.semanticGraph.IndexEntry(&s.entries[i])
-		}
-		if s.projIndex != nil {
-			s.projIndex.Rebuild(s.entries)
-		}
-		s.rebuildThemeLayerLocked()
-		s.dirty = true
-		return true
+		updated = entry
+		found = true
+		break
 	}
-	return false
+	s.mu.RUnlock()
+	if !found {
+		return false, fmt.Errorf("memory_store: entry %q not found", id)
+	}
+
+	changed := false
+	if updated.Status != StatusSuperseded {
+		updated.Status = StatusSuperseded
+		changed = true
+	}
+	if !updated.Stale {
+		updated.Stale = true
+		changed = true
+	}
+	if updated.InvalidAt == nil {
+		t := invalidAt
+		if t.IsZero() {
+			t = time.Now()
+		}
+		if !updated.CreatedAt.IsZero() && !t.After(updated.CreatedAt) {
+			t = updated.CreatedAt.Add(time.Nanosecond)
+		}
+		updated.InvalidAt = &t
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // RecallDynamic is the default flat recall engine for simple/direct queries.
@@ -1452,7 +1712,13 @@ func (s *Store) supersedeEntryLocked(id string, invalidAt time.Time) bool {
 // OwnerID or empty OwnerID (shared) are returned, and Boundary.OwnerID is also
 // enforced. In GUI/TUI single-user mode, omit ownerID or pass empty string.
 func (s *Store) RecallDynamic(query string, category Category, projectPath string, ownerID ...string) []Entry {
-	return s.recallDynamicCore(query, category, projectPath, false, ownerID...)
+	return s.recallDynamicWithEventContext(query, category, projectPath, lifecycle.EventContext{}, ownerID...)
+}
+
+func (s *Store) recallDynamicWithEventContext(query string, category Category, projectPath string, eventContext lifecycle.EventContext, ownerID ...string) []Entry {
+	results := s.recallDynamicCore(query, category, projectPath, false, ownerID...)
+	s.recordRecallExperienceEvent("dynamic", query, results, eventContext)
+	return results
 }
 
 // recallDynamicCore is the shared implementation for RecallDynamic and RecallDynamicStrict.
@@ -1655,12 +1921,18 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 // results after strict filtering 闁?the second pass uses a broader query to
 // backfill the budget.
 func (s *Store) RecallDynamicStrict(query string, category Category, projectPath string, ownerID ...string) []Entry {
+	return s.recallDynamicStrictWithEventContext(query, category, projectPath, lifecycle.EventContext{}, ownerID...)
+}
+
+func (s *Store) recallDynamicStrictWithEventContext(query string, category Category, projectPath string, eventContext lifecycle.EventContext, ownerID ...string) []Entry {
 	results := s.recallDynamicCore(query, category, projectPath, true, ownerID...)
 	if projectPath == "" {
+		s.recordRecallExperienceEvent("dynamic_strict", query, results, eventContext)
 		return results
 	}
 	projectLower := semanticNormalizeProjectPath(projectPath)
 	if projectLower == "" {
+		s.recordRecallExperienceEvent("dynamic_strict", query, results, eventContext)
 		return results
 	}
 	// If strict filtering (now applied during candidate selection in recallDynamicCore)
@@ -1688,7 +1960,98 @@ func (s *Store) RecallDynamicStrict(query string, category Category, projectPath
 			}
 		}
 	}
+	s.recordRecallExperienceEvent("dynamic_strict", query, results, eventContext)
 	return results
+}
+
+func (s *Store) recordRecallExperienceEvent(mode string, query string, entries []Entry, eventContext ...lifecycle.EventContext) {
+	s.recordMemoryExperienceEvent(lifecycle.EventExperienceRetrieved, mode, query, entries, 0, firstEventContext(eventContext))
+}
+
+func (s *Store) recordInjectedExperienceEvent(mode string, query string, entries []Entry, tokenCost int, eventContext ...lifecycle.EventContext) {
+	s.recordMemoryExperienceEvent(lifecycle.EventExperienceInjected, mode, query, entries, tokenCost, firstEventContext(eventContext))
+}
+
+func (s *Store) recordCandidateExperienceEvent(eventType lifecycle.EventType, mode string, query string, candidates []lifecycle.Candidate, tokenCost int, eventContext lifecycle.EventContext) {
+	if s == nil {
+		return
+	}
+	s.mu.RLock()
+	sink := s.eventSink
+	s.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Entry.ID != "" {
+			ids = append(ids, candidate.Entry.ID)
+		}
+	}
+	sink.RecordExperienceEvent(eventContext.Apply(lifecycle.Event{
+		EventType: eventType,
+		EntryIDs:  ids,
+		Query:     query,
+		Reason:    mode,
+		TokenCost: tokenCost,
+		Outcome:   fmt.Sprintf("entries:%d", len(candidates)),
+	}))
+}
+
+func (s *Store) recordRetrievalDecisionEvent(decision lifecycle.RetrievalDecision, eventContext lifecycle.EventContext) {
+	if s == nil {
+		return
+	}
+	s.mu.RLock()
+	sink := s.eventSink
+	s.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+	outcome := "skip"
+	if decision.ShouldRetrieve {
+		outcome = "retrieve"
+	}
+	sink.RecordExperienceEvent(eventContext.Apply(lifecycle.Event{
+		EventType: lifecycle.EventRetrievalDecided,
+		Query:     decision.Query,
+		Reason:    decision.Reason,
+		TokenCost: decision.Budget.MaxTokens,
+		Outcome:   outcome,
+	}))
+}
+
+func firstEventContext(values []lifecycle.EventContext) lifecycle.EventContext {
+	if len(values) == 0 {
+		return lifecycle.EventContext{}
+	}
+	return values[0]
+}
+
+func (s *Store) recordMemoryExperienceEvent(eventType lifecycle.EventType, mode string, query string, entries []Entry, tokenCost int, eventContext lifecycle.EventContext) {
+	if s == nil {
+		return
+	}
+	s.mu.RLock()
+	sink := s.eventSink
+	s.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ID != "" {
+			ids = append(ids, entry.ID)
+		}
+	}
+	sink.RecordExperienceEvent(eventContext.Apply(lifecycle.Event{
+		EventType: eventType,
+		EntryIDs:  ids,
+		Query:     query,
+		Reason:    mode,
+		TokenCost: tokenCost,
+		Outcome:   fmt.Sprintf("entries:%d", len(entries)),
+	}))
 }
 
 // recallStrictProjectEntryAllowed implements the strict project filtering rule:
@@ -1967,15 +2330,15 @@ func (s *Store) SearchKeywordForProject(query string, category Category, project
 // overlapping tags exists. Returns the number of entries newly marked stale.
 // Caller should hold NO lock; this method acquires its own.
 func (s *Store) DetectStale() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
 
-	staleCount := 0
 	n := len(s.entries)
 	if n < 2 {
+		s.mu.RUnlock()
 		return 0
 	}
 
+	updates := make([]Entry, 0)
 	for i := range s.entries {
 		if !s.entries[i].IsActive() || s.entries[i].Pinned || s.entries[i].Category.IsProtected() {
 			continue
@@ -1996,36 +2359,43 @@ func (s *Store) DetectStale() int {
 			}
 			// Newer entry with same category and overlapping tags exists.
 			if !s.entries[i].Stale {
-				s.entries[i].Stale = true
-				staleCount++
+				updated := s.entries[i]
+				updated.Stale = true
+				updates = append(updates, updated)
 			}
 			break
 		}
 	}
+	s.mu.RUnlock()
 
-	if staleCount > 0 {
-		s.dirty = true
-		s.signalSave()
+	if len(updates) > 0 {
+		if err := s.UpdateEntriesByID(updates); err != nil {
+			log.Printf("[memory_dream] persist stale flags: %v", err)
+			return 0
+		}
 	}
-	return staleCount
+	return len(updates)
 }
 
 // ClearStale removes the stale flag from all entries. Returns count cleared.
 func (s *Store) ClearStale() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cleared := 0
+	s.mu.RLock()
+	updates := make([]Entry, 0)
 	for i := range s.entries {
 		if s.entries[i].Stale {
-			s.entries[i].Stale = false
-			cleared++
+			updated := s.entries[i]
+			updated.Stale = false
+			updates = append(updates, updated)
 		}
 	}
-	if cleared > 0 {
-		s.dirty = true
-		s.signalSave()
+	s.mu.RUnlock()
+	if len(updates) > 0 {
+		if err := s.UpdateEntriesByID(updates); err != nil {
+			log.Printf("[memory_dream] persist cleared stale flags: %v", err)
+			return 0
+		}
 	}
-	return cleared
+	return len(updates)
 }
 
 func hasOverlappingTags(a, b []string) bool {
@@ -2165,31 +2535,43 @@ func (s *Store) discoverMissingLinks() int {
 	if created > 0 {
 		// Update persisted graph links on affected entries.
 		s.mu.Lock()
-		s.syncGraphLinksLocked()
-		s.dirty = true
+		var updates []Entry
+		if s.syncGraphLinksLocked() {
+			for _, entry := range s.entries {
+				if len(entry.RelatedIDs) > 0 || len(entry.RelatedEdges) > 0 {
+					updates = append(updates, entry)
+				}
+			}
+		}
 		s.mu.Unlock()
-		s.signalSave()
+		if len(updates) > 0 {
+			if err := s.UpdateEntriesByID(updates); err != nil {
+				log.Printf("[memory_dream] persist discovered graph links: %v", err)
+			}
+		}
 	}
 	return created
 }
 
 // backfillContentHashes computes SHA-256 hashes for entries missing them.
 func (s *Store) backfillContentHashes() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	count := 0
+	s.mu.RLock()
+	updates := make([]Entry, 0)
 	for i := range s.entries {
 		if s.entries[i].ContentHash == "" && s.entries[i].Content != "" {
-			s.entries[i].ContentHash = computeContentHash(s.entries[i].Content)
-			count++
+			updated := s.entries[i]
+			updated.ContentHash = computeContentHash(updated.Content)
+			updates = append(updates, updated)
 		}
 	}
-	if count > 0 {
-		s.dirty = true
-		s.signalSave()
+	s.mu.RUnlock()
+	if len(updates) > 0 {
+		if err := s.UpdateEntriesByID(updates); err != nil {
+			log.Printf("[memory_dream] persist content hash backfill: %v", err)
+			return 0
+		}
 	}
-	return count
+	return len(updates)
 }
 
 // backfillTags enriches entries that have poor tags (empty or only generic
@@ -2272,31 +2654,24 @@ func (s *Store) backfillTags() int {
 		enrichByID[e.id] = e.newTags
 	}
 
-	// Apply enrichments under write lock, matching by ID.
-	s.mu.Lock()
-	count := 0
+	// Stage enrichments from current entries, matching by ID.
+	s.mu.RLock()
+	updates := make([]Entry, 0, len(enrichByID))
 	for i := range s.entries {
 		if newTags, ok := enrichByID[s.entries[i].ID]; ok {
-			s.entries[i].Tags = mergeTags(s.entries[i].Tags, newTags)
-			s.bm25.updateEntry(s.entries[i])
-			if s.semanticGraph != nil {
-				s.semanticGraph.IndexEntry(&s.entries[i])
-			}
-			count++
+			updated := s.entries[i]
+			updated.Tags = mergeTags(updated.Tags, newTags)
+			updates = append(updates, updated)
 		}
 	}
-	if count > 0 && s.projIndex != nil {
-		s.projIndex.Rebuild(s.entries)
+	s.mu.RUnlock()
+	if len(updates) > 0 {
+		if err := s.UpdateEntriesByID(updates); err != nil {
+			log.Printf("[memory_dream] persist tag backfill: %v", err)
+			return 0
+		}
 	}
-	if count > 0 {
-		s.dirty = true
-	}
-	s.mu.Unlock()
-
-	if count > 0 {
-		s.signalSave()
-	}
-	return count
+	return len(updates)
 }
 
 // Stop gracefully shuts down the persistence loop and the archive store.
@@ -2354,42 +2729,129 @@ func (s *Store) ListArchive(category Category, keyword string) []Entry {
 	return s.archive.List(category, keyword)
 }
 
+// ReconcileArchiveDuplicates removes cold archive copies for IDs that are live
+// in active memory. Archive transitions are intentionally archive-first; this
+// repair step closes any duplicate left by a crash or backend failure.
+func (s *Store) ReconcileArchiveDuplicates() (int, error) {
+	if s == nil || s.archive == nil {
+		return 0, nil
+	}
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.entries))
+	seen := make(map[string]struct{}, len(s.entries))
+	for _, entry := range s.entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	s.mu.RUnlock()
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	removed, err := s.archive.RemoveIDsDurable(ids)
+	if err != nil {
+		return 0, err
+	}
+	return len(removed), nil
+}
+
+// ArchiveActiveEntries moves active entries to cold storage and tombstones them
+// from the active backend in one store-level mutation. The active tombstones are
+// emitted through the same sync stream as other deletes.
+func (s *Store) ArchiveActiveEntries(entries []Entry) error {
+	if s == nil || len(entries) == 0 {
+		return nil
+	}
+	if s.archive == nil {
+		return fmt.Errorf("memory_store: archive not initialized")
+	}
+	ids := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			return fmt.Errorf("memory_store: archived entry id must not be empty")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if err := s.archive.AddDurable(entries...); err != nil {
+		return fmt.Errorf("memory_store: archive active entries: %w", err)
+	}
+	if err := s.UpdateEntriesAndDeleteIDs(nil, ids); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ReviveArchivedEntries removes entries from cold storage and restores them to
+// active memory through the normal ID-addressed batch path.
+func (s *Store) ReviveArchivedEntries(ids []string) ([]Entry, error) {
+	if s == nil || len(ids) == 0 {
+		return nil, nil
+	}
+	if s.archive == nil {
+		return nil, fmt.Errorf("memory_store: archive not initialized")
+	}
+	now := time.Now()
+	seen := make(map[string]struct{}, len(ids))
+	removeIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		removeIDs = append(removeIDs, id)
+	}
+	revived := s.archive.EntriesByIDs(removeIDs)
+	for i := range revived {
+		revived[i].UpdatedAt = now
+		normalizeEntryTimestamp(&revived[i], now)
+		revived[i].AccessCount = 1
+	}
+	if len(revived) == 0 {
+		return nil, nil
+	}
+	if err := s.upsertEntriesByID(revived, false, true); err != nil {
+		return nil, err
+	}
+	removed, err := s.archive.RemoveIDsDurable(removeIDs)
+	if err != nil {
+		return revived, fmt.Errorf("memory_store: remove revived archive entries: %w", err)
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	return revived, nil
+}
+
 // RestoreFromArchive removes an entry from the archive and adds it back to
 // active memory with UpdatedAt=now and AccessCount=1. If active memory is
 // full, evictLRU runs first (which archives the lowest priority entry).
 func (s *Store) RestoreFromArchive(id string) error {
-	if s.archive == nil {
-		return fmt.Errorf("memory_store: archive not initialized")
-	}
-
-	entry, err := s.archive.Remove(id)
+	revived, err := s.ReviveArchivedEntries([]string{id})
 	if err != nil {
 		return fmt.Errorf("memory_store: %w", err)
 	}
-
-	now := time.Now()
-	entry.UpdatedAt = now
-	normalizeEntryTimestamp(entry, now)
-	entry.AccessCount = 1
-
+	if len(revived) == 0 {
+		return fmt.Errorf("memory_store: archive_store: entry %q not found", id)
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.entries = append(s.entries, *entry)
-	s.bm25.addEntry(*entry)
-	s.vecIndex.add(entry.ID, entry.Embedding)
-	if s.projIndex != nil {
-		s.projIndex.Rebuild(s.entries)
-	}
-	if s.entityIndex != nil {
-		s.entityIndex.IndexEntry(entry)
-	}
-	if s.semanticGraph != nil {
-		s.semanticGraph.IndexEntry(entry)
-	}
 	s.evictLRU()
-	s.dirty = true
-	s.signalSave()
+	s.mu.Unlock()
 	return nil
 }
 
@@ -2417,8 +2879,99 @@ func (s *Store) Entries() []Entry { return s.entries }
 // SetEntries replaces the internal entries slice. Caller MUST hold the write lock.
 func (s *Store) SetEntries(entries []Entry) {
 	normalizeEntryTimestamps(entries)
+	s.replaceEntriesAndRebuildLocked(entries, false)
+}
+
+// RestoreEntriesSnapshot replaces active memory with an explicit backup
+// snapshot. For sync-capable backends, restored rows and tombstones for rows
+// absent from the snapshot are committed in one backend mutation before the
+// in-memory view changes.
+func (s *Store) RestoreEntriesSnapshot(entries []Entry) error {
+	if s == nil {
+		return fmt.Errorf("memory_store: not initialized")
+	}
+	restored := normalizeRestoredSnapshot(entries)
+	if s.backend != nil && s.backend.SupportsSync() {
+		batchBackend, ok := s.backend.(BatchMutationStorageBackend)
+		if !ok {
+			return fmt.Errorf("memory_store: backend does not support atomic snapshot restore")
+		}
+		s.mu.RLock()
+		deleteIDs := restoreSnapshotDeleteIDsLocked(s.entries, restored)
+		s.mu.RUnlock()
+		ptrs := make([]*Entry, len(restored))
+		for i := range restored {
+			ptrs[i] = &restored[i]
+		}
+		if err := batchBackend.UpdateEntriesAndDeleteIDs(ptrs, deleteIDs); err != nil {
+			return fmt.Errorf("memory_store: persist restored snapshot: %w", err)
+		}
+		s.mu.Lock()
+		s.replaceEntriesAndRebuildLocked(restored, false)
+		s.dirty = false
+		if s.sync != nil {
+			if maxV, err := s.backend.MaxVersion(); err == nil {
+				s.sync.lastVersion = maxV
+			}
+		}
+		s.mu.Unlock()
+		return nil
+	}
+
+	s.mu.Lock()
+	previous := append([]Entry(nil), s.entries...)
+	s.replaceEntriesAndRebuildLocked(restored, false)
+	s.markDirtyLocked()
+	s.mu.Unlock()
+	if err := s.flush(); err != nil {
+		s.mu.Lock()
+		s.replaceEntriesAndRebuildLocked(previous, false)
+		s.markDirtyLocked()
+		s.mu.Unlock()
+		return fmt.Errorf("memory_store: flush restored snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) replaceEntriesAndRebuildLocked(entries []Entry, syncGraphLinks bool) {
 	s.entries = entries
-	s.rebuildDerivedIndexesLocked(false)
+	s.rebuildDerivedIndexesLocked(syncGraphLinks)
+}
+
+func normalizeRestoredSnapshot(entries []Entry) []Entry {
+	restored := make([]Entry, 0, len(entries))
+	seen := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			entry.ID = generateID()
+		}
+		if idx, ok := seen[entry.ID]; ok {
+			restored[idx] = entry
+			continue
+		}
+		seen[entry.ID] = len(restored)
+		restored = append(restored, entry)
+	}
+	normalizeEntryTimestamps(restored)
+	return restored
+}
+
+func restoreSnapshotDeleteIDsLocked(current []Entry, restored []Entry) []string {
+	restoredIDs := make(map[string]struct{}, len(restored))
+	for _, entry := range restored {
+		restoredIDs[entry.ID] = struct{}{}
+	}
+	deleteIDs := make([]string, 0)
+	for _, entry := range current {
+		if entry.ID == "" {
+			continue
+		}
+		if _, ok := restoredIDs[entry.ID]; ok {
+			continue
+		}
+		deleteIDs = append(deleteIDs, entry.ID)
+	}
+	return deleteIDs
 }
 
 func normalizeEntryTimestamps(entries []Entry) {
@@ -2481,14 +3034,16 @@ func (s *Store) insertPreparedEntryLocked(entry Entry, hash string, now time.Tim
 	s.autoLink(entry)
 	s.evictLRU()
 	s.markDirtyLocked()
-	if s.projIndex != nil {
-		s.projIndex.IndexEntry(&entry)
-	}
-	if s.entityIndex != nil {
-		s.entityIndex.IndexEntry(&entry)
-	}
-	if s.semanticGraph != nil {
-		s.semanticGraph.IndexEntry(&entry)
+	if s.findEntryIndexByIDLocked(entry.ID) >= 0 {
+		if s.projIndex != nil {
+			s.projIndex.IndexEntry(&entry)
+		}
+		if s.entityIndex != nil {
+			s.entityIndex.IndexEntry(&entry)
+		}
+		if s.semanticGraph != nil {
+			s.semanticGraph.IndexEntry(&entry)
+		}
 	}
 	s.rebuildThemeLayerLocked()
 	return nil
@@ -2503,22 +3058,6 @@ func (s *Store) persistInsertedEntryLocked(entry *Entry) error {
 	if s.backend != nil {
 		return s.backend.SaveEntry(entry)
 	}
-	return nil
-}
-
-func (s *Store) persistUpdatedEntryLocked(entry *Entry) error {
-	if s.backend != nil {
-		return s.backend.UpdateEntry(entry)
-	}
-	s.markDirtyLocked()
-	return nil
-}
-
-func (s *Store) persistDeletedEntryLocked(id string) error {
-	if s.backend != nil {
-		return s.backend.DeleteEntry(id)
-	}
-	s.markDirtyLocked()
 	return nil
 }
 
@@ -2873,7 +3412,7 @@ func (s *Store) backfillEmbeddings(emb embedding.Embedder, gen uint64) {
 		return
 	}
 
-	updated := 0
+	updates := make([]Entry, 0, len(todo))
 	for _, p := range todo {
 		// Check if store is shutting down.
 		select {
@@ -2887,29 +3426,26 @@ func (s *Store) backfillEmbeddings(emb embedding.Embedder, gen uint64) {
 			continue
 		}
 
-		s.mu.Lock()
+		s.mu.RLock()
 		if s.embedderGen != gen {
-			s.mu.Unlock()
+			s.mu.RUnlock()
 			return
 		}
 		for i := range s.entries {
 			if s.entries[i].ID == p.id && len(s.entries[i].Embedding) == 0 {
-				s.entries[i].Embedding = embVec
-				if s.entries[i].IsActive() {
-					s.vecIndex.add(p.id, embVec)
-				}
-				updated++
+				updated := s.entries[i]
+				updated.Embedding = append([]float32(nil), embVec...)
+				updates = append(updates, updated)
 				break
 			}
 		}
-		s.mu.Unlock()
+		s.mu.RUnlock()
 	}
 
-	if updated > 0 {
-		s.mu.Lock()
-		s.dirty = true
-		s.mu.Unlock()
-		s.signalSave()
+	if len(updates) > 0 {
+		if err := s.UpdateEntriesByID(updates); err != nil {
+			log.Printf("[memory_embed] persist embedding backfill: %v", err)
+		}
 	}
 }
 
@@ -3147,50 +3683,41 @@ func (s *Store) GraphNeighbors(id string) map[string]float64 {
 
 // PinEntry sets Pinned=true for the entry with the given ID.
 func (s *Store) PinEntry(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for i, e := range s.entries {
-		if e.ID == id {
-			s.entries[i].Pinned = true
-			s.entries[i].UpdatedAt = time.Now()
-			if s.semanticGraph != nil {
-				s.semanticGraph.IndexEntry(&s.entries[i])
-			}
-			if s.projIndex != nil {
-				s.projIndex.Rebuild(s.entries)
-			}
-			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
-				return fmt.Errorf("memory_store: persist updated entry: %w", err)
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("entry %q not found", id)
+	return s.setPinnedByID(id, true)
 }
 
 // UnpinEntry sets Pinned=false for the entry with the given ID.
 func (s *Store) UnpinEntry(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.setPinnedByID(id, false)
+}
 
-	for i, e := range s.entries {
-		if e.ID == id {
-			s.entries[i].Pinned = false
-			s.entries[i].UpdatedAt = time.Now()
-			if s.semanticGraph != nil {
-				s.semanticGraph.IndexEntry(&s.entries[i])
-			}
-			if s.projIndex != nil {
-				s.projIndex.Rebuild(s.entries)
-			}
-			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
-				return fmt.Errorf("memory_store: persist updated entry: %w", err)
-			}
-			return nil
+func (s *Store) setPinnedByID(id string, pinned bool) error {
+	if s == nil {
+		return fmt.Errorf("memory_store: not initialized")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("memory_store: missing entry id")
+	}
+	s.mu.RLock()
+	var updated Entry
+	found := false
+	for _, entry := range s.entries {
+		if entry.ID == id {
+			updated = entry
+			found = true
+			break
 		}
 	}
-	return fmt.Errorf("entry %q not found", id)
+	s.mu.RUnlock()
+	if !found {
+		return fmt.Errorf("entry %q not found", id)
+	}
+	if updated.Pinned == pinned {
+		return nil
+	}
+	updated.Pinned = pinned
+	return s.updateMetadataEntriesByID([]Entry{updated})
 }
 
 // ActiveCount returns the number of active entries in the store.
@@ -3354,21 +3881,35 @@ func (s *Store) evictLRU() {
 			kept = append(kept, e)
 		}
 	}
-	s.entries = kept
-	s.rebuildDerivedIndexesLocked(false)
 
-	if s.backend != nil && len(evicted) > 0 {
-		for _, e := range evicted {
-			if err := s.backend.DeleteEntry(e.ID); err != nil {
-				log.Printf("[memory_store] WARNING: failed to delete evicted entry %s from backend: %v", e.ID, err)
-			}
+	if len(evicted) == 0 {
+		return
+	}
+	if s.archive != nil {
+		if err := s.archive.AddDurable(evicted...); err != nil {
+			log.Printf("[memory_store] WARNING: failed to durably archive evicted entries: %v", err)
+			return
 		}
 	}
-
-	// Archive evicted entries instead of discarding them.
-	if s.archive != nil && len(evicted) > 0 {
-		_ = s.archive.Add(evicted...)
+	deleteIDs := make([]string, 0, len(evicted))
+	for _, entry := range evicted {
+		deleteIDs = append(deleteIDs, entry.ID)
 	}
+	if batchBackend, ok := s.backend.(BatchMutationStorageBackend); ok {
+		if err := batchBackend.UpdateEntriesAndDeleteIDs(nil, deleteIDs); err != nil {
+			log.Printf("[memory_store] WARNING: failed to tombstone evicted entries: %v", err)
+			return
+		}
+	} else if s.backend != nil {
+		log.Printf("[memory_store] WARNING: backend does not support batch eviction tombstones")
+		return
+	}
+
+	s.replaceEntriesAndRebuildLocked(kept, false)
+	if s.backend == nil {
+		s.markDirtyLocked()
+	}
+
 }
 
 func (s *Store) persistLoop() {
@@ -3402,7 +3943,7 @@ func (s *Store) load() error {
 	// Try loading from partition files first.
 	if s.partMgr != nil {
 		if entries, ok := s.partMgr.loadPartitions(); ok {
-			s.entries = entries
+			s.replaceEntriesAndRebuildLocked(entries, false)
 			s.partMgr.enable()
 			log.Printf("[memory_store] loaded %d entries from partition files", len(entries))
 			return nil
@@ -3430,10 +3971,10 @@ func (s *Store) load() error {
 		backupPath := s.path + ".corrupt." + time.Now().Format("20060102_150405")
 		_ = os.WriteFile(backupPath, data, 0o644)
 		fmt.Printf("[memory_store] WARNING: corrupted memory file backed up to %s, starting with empty memory\n", backupPath)
-		s.entries = make([]Entry, 0)
+		s.replaceEntriesAndRebuildLocked(make([]Entry, 0), false)
 		return nil
 	}
-	s.entries = entries
+	s.replaceEntriesAndRebuildLocked(entries, false)
 
 	// Migrate legacy file to partitions when the store is large enough.
 	// Small stores (<100 entries) stay as single files; no overhead.

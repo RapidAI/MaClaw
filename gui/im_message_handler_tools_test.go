@@ -1589,6 +1589,12 @@ func TestBuildToolDefinitions_IncludesSSH(t *testing.T) {
 		if _, ok := props["action"]; !ok {
 			t.Fatal("ssh tool missing action parameter")
 		}
+		if _, ok := props["timeout"]; !ok {
+			t.Fatal("ssh tool missing wait_task timeout parameter")
+		}
+		if !strings.Contains(fmt.Sprint(props["action"]), "wait_task") {
+			t.Fatalf("ssh action description missing wait_task: %#v", props["action"])
+		}
 		return
 	}
 	t.Fatal("ssh tool not found in buildToolDefinitions")

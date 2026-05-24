@@ -11,6 +11,7 @@ const (
 	agentRecoverNoToolStall           agentRecoverReason = "no_tool_stall"
 	agentRecoverEmptyFinalResponse    agentRecoverReason = "empty_final_response"
 	agentRecoverDeliverablePending    agentRecoverReason = "deliverable_pending"
+	agentRecoverBackgroundTaskPending agentRecoverReason = "background_task_pending"
 )
 
 func (r agentRecoverReason) String() string {

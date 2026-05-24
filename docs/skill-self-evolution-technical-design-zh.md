@@ -2,7 +2,7 @@
 
 ## 背景
 
-参考 Hermes 的技能进化闭环，MacLaw 已具备技能执行、使用统计、失败分类、自修复、临时脚本持久化、能力记忆注入等基础能力。当前缺口不是“有没有技能系统”，而是缺少一条稳定闭环：执行结果如何反向影响技能选择、技能修复、技能沉淀和定期治理。
+参考 Hermes 的技能进化闭环，MacLaw 已具备技能执行、使用统计、失败分类、自修复、临时脚本持久化、能力记忆注入等基础能力。当前缺口不是“有没有技能系统”，而是缺少稳定闭环：执行结果如何反向影响技能选择、技能修复、技能沉淀和定期治理。
 
 目标：形成低风险、可审计、可逐步自动化的技能进化系统。
 
@@ -38,7 +38,7 @@ Skill execution
   -> UsageTracker.RecordExperience
   -> ContextOutcomeScore / DistillRoutingHints
   -> SkillMemory prompt injection
-  -> SelfRepair on failure
+  -> SelfRepair on non-file-backed repairable failure
   -> Curator maintenance plan
   -> human-approved execution later
 ```
@@ -47,8 +47,8 @@ Skill execution
 
 `BuildSkillMaintenancePlan` 读取当前技能列表，输出只读 `SkillMaintenancePlan`。
 
-- `mark_needs_review`：连续失败或成功率为 0 的技能。
-- `attempt_repair`：最近失败可归类为可修复错误，且自修复次数未耗尽。
+- `mark_needs_review`：连续失败或成功率为 0 的技能。文件型技能的可修复失败也进入此治理流，避免后台改写磁盘定义。
+- `attempt_repair`：非文件型技能最近失败可归类为可修复错误，且自修复次数未耗尽。
 - `merge_duplicate`：名称/描述高度相似的 learned/crafted 技能。
 - `archive_stale`：长期未使用、非 Hub 核心、低质量 learned/crafted 技能。
 - `refresh_lifecycle`：修复后已有成功证据，建议清理修复计数。
@@ -100,7 +100,7 @@ Skill execution
 - `confirm=true`
 - `approved_actions` 非空
 
-执行器只处理低风险元数据动作：标记待审、清理生命周期、刷新索引、learned/crafted 软归档、显式允许时软退休重复项。文件改写、目录移动、真实合并仍只返回草案。
+执行器只处理低风险元数据动作：标记待审、清理生命周期、刷新索引、learned/crafted 软归档、显式允许时软退休重复项。文件改写、目录移动、真实合并仍只返回草案或交给专用流程。
 
 ### 3. 技能列表健康标签
 
@@ -126,13 +126,14 @@ GUI runner 与 TUI `manage_skill run` 在更新技能统计后，会把 `skill:<
 
 ### 5. SelfRepair 与 Curator 协调
 
-Curator 会优先建议 `attempt_repair`，只有缺少可修复证据、修复次数耗尽或错误不可修复时，才进入待审/降权治理。
+Curator 会优先为非文件型可修复失败建议 `attempt_repair`。缺少可修复证据、修复次数耗尽、错误不可修复，或技能为 file-backed 时，进入待审/降权/patch 治理。
 
 ```text
-可修复错误 + 未超过修复次数 -> SelfRepair
+非文件型 + 可修复错误 + 未超过修复次数 -> SelfRepair
+文件型 + 可修复错误 -> review/patch flow，不排后台 repair
 SelfRepair 成功 -> repair_history，后续成功后 verified
 SelfRepair 不适用/失败 -> Curator 建议 mark_needs_review
-外部错误（rate_limit/network） -> 不修 skill，只记录 retryable warning
+外部错误(rate_limit/network) -> 不修 skill，只记录 retryable warning
 ```
 
 ### 6. Patch Draft 与 Merge Draft
@@ -168,9 +169,7 @@ SelfRepair 不适用/失败 -> Curator 建议 mark_needs_review
 
 ## 后续优化
 
-1. 把 GUI/TUI 健康标签逻辑继续收敛到 core helper，降低漂移。
-2. 为 patch draft 增加更完整的 YAML round-trip 测试，确保保留已有参数描述、别名、默认值、CLI flag。
-3. 给真实 mutating 动作补审计事件和回滚路径。
-4. 将 `maintenance_plan` 的高价值建议写入 experience learning，供下一轮对话主动提示。
-5. 在 UI 层增加 review queue，把 `patch_draft` / `merge_draft` 做成人审卡片。
-
+1. 给 mutating 动作补审计事件和回滚路径。
+2. 将 `maintenance_plan` 的高价值建议写入 experience learning，供下一轮对话主动提示。
+3. 在 UI 层增加 review queue，把 `patch_draft` / `merge_draft` 做成人审卡片。
+4. 为 file-backed 失败补独立 repair patch draft，让可修复错误也能进入人审修复卡片。

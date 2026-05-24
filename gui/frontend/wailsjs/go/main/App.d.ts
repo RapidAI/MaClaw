@@ -417,6 +417,10 @@ export function GetMaclawAgentMaxIterations():Promise<number>;
 
 export function SetMaclawAgentMaxIterations(arg1:number):Promise<void>;
 
+export function GetSubAgentConcurrency():Promise<number>;
+
+export function SetSubAgentConcurrency(arg1:number):Promise<void>;
+
 export function GetLLMTrajectoryLogging():Promise<boolean>;
 
 export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
@@ -502,6 +506,8 @@ export function BuildExperienceRoutingAdjustmentDraft(arg1:any):Promise<any>;
 
 export function BuildExperienceSkillDraft(arg1:string):Promise<any>;
 
+export function BuildExperienceBlockedSkillDraft(arg1:string):Promise<any>;
+
 export function BuildExperienceRollbackWorkflowDraft(arg1:string):Promise<any>;
 
 export function BuildExperienceEscalationBrief(arg1:string):Promise<any>;
@@ -511,6 +517,10 @@ export function BuildExperienceConflictReconciliationDraft(arg1:string):Promise<
 export function RecordExperienceTraceFollowUp(arg1:string, arg2:any):Promise<any>;
 
 export function RecordExperienceDraftReview(arg1:any):Promise<any>;
+
+export function RecordBlockedSkillDraftReview(arg1:string, arg2:string, arg3:string, arg4:string, arg5:string):Promise<any>;
+
+export function ConfirmPreviewedSkillDraftReview(arg1:string):Promise<any>;
 
 export function ListArchiveMemories(arg1:string, arg2:string):Promise<Array<any>>;
 

@@ -137,6 +137,10 @@ interface AgentViewLifecyclePayload {
     action: AgentViewLifecycleAction;
     view?: AgentView;
     view_id?: string;
+    seq?: number;
+    workflow_id?: string;
+    workflow_phase?: string;
+    workflow_user_id?: string;
     error?: string;
 }
 
@@ -275,7 +279,7 @@ export interface ChatMessage {
     imageKey?: string;
     requestId?: string;
     timestamp: number;
-    /** Workflow document link — phase ID for opening doc preview. */
+    /** Workflow document link - phase ID for opening doc preview. */
     workflowPhaseID?: string;
     /** Workflow document link label. */
     workflowDocLabel?: string;
@@ -296,7 +300,7 @@ const RESPONSE_EVENT = "ai-assistant-response";
 
 // Module-level active session key. Updated by AIAssistantPanel when the active
 // tab changes. The useAIAssistant hook reads this to filter events by session.
-// This avoids prop-drilling through App.tsx → AIAssistantPanel → useAIAssistant.
+// This avoids prop-drilling through App.tsx -> AIAssistantPanel -> useAIAssistant.
 let _activeSessionKey = '';
 export function setActiveSessionKey(key: string) { _activeSessionKey = key; }
 export function getActiveSessionKey(): string { return _activeSessionKey; }
@@ -314,7 +318,7 @@ const MAX_CONTEXT_MESSAGES_TO_SEND = 80;
 const MAX_PERSISTED_PROMPTS = 100;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
-const MAX_LIVE_PROGRESS_MESSAGES = 100;
+const MAX_LIVE_PROGRESS_MESSAGES = 30;
 const HIDDEN_PROGRESS_PATTERNS = [
     /^__heartbeat__$/,
 ];
@@ -337,6 +341,9 @@ function appendProgressText(messages: ChatMessage[], progressText: string): Chat
     if (lastMessage?.content === progressText) {
         return messages;
     }
+    if (lastMessage && progressSemanticKey(lastMessage.content) === progressSemanticKey(progressText)) {
+        return messages;
+    }
     const next = [...messages, {
         id: nextId(),
         role: 'progress' as const,
@@ -345,6 +352,35 @@ function appendProgressText(messages: ChatMessage[], progressText: string): Chat
     }];
     if (next.length <= MAX_LIVE_PROGRESS_MESSAGES) return next;
     return next.slice(-MAX_LIVE_PROGRESS_MESSAGES);
+}
+
+function progressSemanticKey(progressText: string): string {
+    const trimmed = progressText.trim();
+    const prefix = "Coding Agent Event:";
+    if (!trimmed.startsWith(prefix)) return trimmed;
+    try {
+        const raw = JSON.parse(trimmed.slice(prefix.length).trim()) as Record<string, unknown>;
+        if (raw.agent !== "coding") return trimmed;
+        const stable = {
+            agent: raw.agent,
+            count: raw.count,
+            detail: raw.detail,
+            duration_ms: raw.duration_ms,
+            event: raw.event,
+            files: raw.files,
+            outcome: raw.outcome,
+            phase: raw.phase,
+            run_id: raw.run_id,
+            summary: raw.summary,
+            task_id: raw.task_id,
+            title: raw.title,
+            turn_id: raw.turn_id,
+            version: raw.version,
+        };
+        return `${prefix} ${JSON.stringify(stable)}`;
+    } catch {
+        return trimmed;
+    }
 }
 
 function normalizeLocalFilePaths(localFilePath: unknown, localFilePaths: unknown): string[] | undefined {
@@ -403,8 +439,8 @@ export function buildOutgoingMessage(text: string, selectedFilePath: string): st
     const trimmedPath = selectedFilePath.trim();
     if (!trimmedPath) return trimmedText;
     const pathInstructions = isImageFilePath(trimmedPath)
-        ? "这是用户已经提供的本地图片文件。不要调用 screenshot 或重新截图；请直接使用这些路径，并优先用 read_file 或 open 查看图片内容后回答。"
-        : "请直接使用这些路径；如需查看内容可调用 read_file、open 等工具。";
+        ? "User provided this local image file. Do not call screenshot or re-capture it; use the path directly and prefer read_file or open to inspect it before answering."
+        : "Use this path directly; if content inspection is needed, use read_file, open, or related tools.";
     const fileBlock = [
         FILE_PATH_PROMPT_PREFIX,
         trimmedPath,
@@ -420,8 +456,8 @@ export function buildOutgoingMessageMulti(text: string, filePaths: string[]): st
 
     const hasImages = validPaths.some(isImageFilePath);
     const pathInstructions = hasImages
-        ? "这是用户已经提供的本地文件。图片文件不要调用 screenshot 或重新截图；请直接使用这些路径。"
-        : "请直接使用这些路径；如需查看内容可调用 read_file、open 等工具。";
+        ? "User provided these local files. For image files, do not call screenshot or re-capture them; use the paths directly."
+        : "Use these paths directly; if content inspection is needed, use read_file, open, or related tools.";
 
     const fileBlock = [
         FILE_PATH_PROMPT_PREFIX,
@@ -485,7 +521,7 @@ function persistContextBoundaryMessageID(messageID: string | null) {
             localStorage.removeItem(AI_ASSISTANT_CONTEXT_BOUNDARY_STORAGE_KEY);
         }
     } catch {
-        // localStorage full or unavailable — silently ignore
+        // localStorage full or unavailable - silently ignore
     }
 }
 
@@ -578,7 +614,7 @@ function persistMessages(msgs: ChatMessage[]) {
         }
         localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, serialized);
     } catch {
-        // localStorage full or unavailable — silently ignore
+        // localStorage full or unavailable - silently ignore
     }
 }
 
@@ -601,7 +637,7 @@ function persistPrompts(prompts: string[]) {
         }
         localStorage.setItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(normalized));
     } catch {
-        // localStorage full or unavailable — silently ignore
+        // localStorage full or unavailable - silently ignore
     }
 }
 
@@ -620,6 +656,14 @@ interface StreamTokenBuffer {
     text: string;
     flushTimer: ReturnType<typeof setTimeout> | null;
     hasRenderedFirstToken: boolean;
+}
+
+interface ResponseTimeoutController {
+    generation: number;
+    requestId: string;
+    assistantMessageId: string;
+    reset: () => void;
+    stop: () => void;
 }
 
 const STREAM_TOKEN_FLUSH_MS = 33;
@@ -1097,10 +1141,10 @@ function buildTraceDetailAction(response: any, showTraceEntry: boolean): ChatAct
     return [{ label: 'View trace', command: buildTraceDetailCommand(runID), style: 'default' }];
 }
 
-const shortChitChatEdgePunctuationPattern = /^[\s"'“”‘’`()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+|[\s"'“”‘’`()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+$/g;
-const shortChitChatChineseIdlePattern = /^(没事|没事了|没有)(啊|呀|啦|呢|吧|哦|喔|哈|哇|嘛|的)?$/;
-const shortChitChatChineseThanksPattern = /^(谢谢)(啊|呀|啦|呢|吧|哦|喔|哈)?$/;
-const shortChitChatChineseGreetingPattern = /^(你好|你好呀|你好啊|嗨|哈喽)(啊|呀|啦|呢|吧|哦|喔|哈)?$/;
+const shortChitChatEdgePunctuationPattern = /^[\s"'`()[\]{}<>.,!?;:，。！？；：、-]+|[\s"'`()[\]{}<>.,!?;:，。！？；：、-]+$/g;
+const shortChitChatChineseIdlePattern = /^(没事|没有|不用|无)$/;
+const shortChitChatChineseThanksPattern = /^(谢谢|谢了|多谢)$/;
+const shortChitChatChineseGreetingPattern = /^(你好|您好|hello|hi)$/;
 
 function normalizeShortChitChatToken(text: string): string {
     let cleaned = text.trim().toLowerCase();
@@ -1158,12 +1202,12 @@ function isVisibleEmptyResultSummary(summary: string): boolean {
         'user:',
         'assistant:',
         'task:',
-        '任务：',
+        '任务',
         '请帮我',
         '帮我',
         '请实现',
         '请修复',
-        '请重建',
+        '请重构',
         'you are',
     ];
     if (promptLikeMarkers.some(marker => normalized.includes(marker))) {
@@ -1378,7 +1422,7 @@ function logRolePrefixDiagnostic(stage: string, before: string, after?: string, 
 
 /**
  * Strip hallucinated role prefixes from LLM output text.
- * Frontend safety net — catches anything the backend streaming filter missed.
+ * Frontend safety net - catches anything the backend streaming filter missed.
  *
  * Case 1: Prefix at the start of text -> strip prefix, keep content after it.
  * Case 2: Prefix in the middle -> truncate at the role-prefixed tail.
@@ -1426,7 +1470,7 @@ function stripRolePrefixFrontend(text: string): string {
                 const prefixEnd = matchAbsStart + match[0].length;
                 const before = text.slice(0, matchAbsStart).trimEnd();
                 if (!before) {
-                    // Case 1: prefix at start — strip it, keep everything after.
+                    // Case 1: prefix at start - strip it, keep everything after.
                     return text.slice(prefixEnd).trimStart();
                 }
                 // Case 2: prefix in middle. Match backend behavior and drop
@@ -1469,14 +1513,14 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     }
 
     // --- Layer 2: Length comparison ---
-    // When streamed content is significantly longer than finalText (>= 2×),
+    // When streamed content is significantly longer than finalText (>= 2x),
     // the response text is just the last iteration's fragment from a
     // multi-round agent loop. Preserve the complete accumulated output.
     const finalTextLen = finalText.trim().length;
     if (streamedContent && finalText && finalTextLen > 0
         && streamedContent.length >= finalTextLen * 2
         && (!responseSource || responseSource === 'agent_loop')) {
-        // Apply role prefix stripping — streamedContent bypasses backend
+        // Apply role prefix stripping - streamedContent bypasses backend
         // post-processing (stripRolePrefixHallucination) because it comes
         // from the streaming token path, not from resp.Text.
         return stripRolePrefixFrontend(streamedContent);
@@ -1484,7 +1528,7 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
 
     // --- Layer 3: endsWith fallback ---
     // Original improvement #19: if streamed content ends with the response
-    // text, the response text is the final iteration's tail — keep the full
+    // text, the response text is the final iteration's tail - keep the full
     // streamed content.
     if (streamedContent && finalText && streamedContent.length > finalText.length) {
         if (streamedContent.endsWith(finalText)) {
@@ -1662,9 +1706,19 @@ function matchesActiveRequest(round: ActiveRound, event: AIAssistantStreamEvent)
     return !event.request_id || event.request_id === round.requestId;
 }
 
+function matchesActiveResponseRequest(round: ActiveRound, requestId: string): boolean {
+    if (!round.requestId || round.generation === 0 || round.phase === 'idle') return false;
+    return !!requestId && requestId === round.requestId;
+}
+
 function matchesActiveProgressRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
     if (!round.requestId || round.generation === 0 || round.phase === 'idle') return false;
     return !!event.request_id && event.request_id === round.requestId;
+}
+
+function isMatchingSessionOrActiveRequest(event: AIAssistantStreamEvent, round: ActiveRound, activeSessionKey: string): boolean {
+    if (matchesActiveProgressRequest(round, event)) return true;
+    return isMatchingSessionEvent(event, activeSessionKey);
 }
 
 function normalizeAgentView(raw: unknown): AgentView | null {
@@ -1690,8 +1744,51 @@ function normalizeAgentViewLifecycle(raw: unknown): AgentViewLifecyclePayload | 
         action: action as AgentViewLifecycleAction,
         view: normalizeAgentView(data) || undefined,
         view_id: typeof data.view_id === 'string' ? data.view_id : undefined,
+        seq: typeof data.seq === 'number' ? data.seq : (typeof data.sequence === 'number' ? data.sequence : undefined),
+        workflow_id: typeof data.workflow_id === 'string' ? data.workflow_id : undefined,
+        workflow_phase: typeof data.workflow_phase === 'string' ? data.workflow_phase : undefined,
+        workflow_user_id: typeof data.workflow_user_id === 'string' ? data.workflow_user_id : undefined,
         error: typeof data.error === 'string' ? data.error : undefined,
     };
+}
+
+function agentViewFieldValue(view: AgentView | null | undefined, fieldName: string): string {
+    if (!view || !('fields' in view) || !Array.isArray((view as any).fields)) return '';
+    const field = (view as any).fields.find((item: any) => item && item.name === fieldName);
+    const value = field?.value;
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function agentViewMatchesLifecycle(current: AgentView | null, event: AgentViewLifecyclePayload): boolean {
+    if (!current) return true;
+    if (event.view_id && current.id !== event.view_id) return false;
+    const currentWorkflowID = agentViewFieldValue(current, '_workflow_id');
+    const currentWorkflowPhase = agentViewFieldValue(current, '_workflow_phase');
+    const currentWorkflowUserID = agentViewFieldValue(current, '_workflow_user_id');
+    const currentViewID = current.id || '';
+    const currentIsWorkflowForm = currentViewID.startsWith('workflow:form:') || !!currentWorkflowID || !!currentWorkflowPhase || !!currentWorkflowUserID;
+    const workflowID = event.workflow_id?.trim() || '';
+    if (currentIsWorkflowForm && currentWorkflowID && !workflowID) return false;
+    if (workflowID) {
+        if (currentWorkflowID && currentWorkflowID !== workflowID) return false;
+    }
+    const workflowPhase = event.workflow_phase?.trim() || '';
+    if (currentIsWorkflowForm && currentWorkflowPhase && !workflowPhase) return false;
+    if (workflowPhase) {
+        if (currentWorkflowPhase && currentWorkflowPhase !== workflowPhase) return false;
+    }
+    const workflowUserID = event.workflow_user_id?.trim() || '';
+    if (currentIsWorkflowForm && currentWorkflowUserID && !workflowUserID) return false;
+    if (workflowUserID) {
+        if (currentWorkflowUserID && currentWorkflowUserID !== workflowUserID) return false;
+    }
+    return true;
+}
+
+function eventSequenceValue(payload: unknown): number | undefined {
+    if (!payload || typeof payload !== 'object') return undefined;
+    const data = payload as Record<string, unknown>;
+    return typeof data.seq === 'number' ? data.seq : (typeof data.sequence === 'number' ? data.sequence : undefined);
 }
 
 function subscribeEvent(eventName: string, handler: (...args: any[]) => void): () => void {
@@ -1795,7 +1892,7 @@ async function resolvePendingAITask(requestId: string, response: AIAssistantSend
 function buildBackgroundLaunchNotice(result: AIAssistantBackgroundLaunchResult): string {
     const detailLines = [
         "已转到后台运行。",
-        `任务会显示在“任务管理”里的后台列表。`,
+        "任务会显示在“任务管理”里的后台列表。",
         `session_id: ${result.sessionID}`,
     ];
     if (result.jobID) detailLines.push(`job_id: ${result.jobID}`);
@@ -1850,7 +1947,7 @@ function appendBackgroundLaunchMessages(messages: ChatMessage[], outgoingText: s
 }
 
 function createNewsMessage(article: any): ChatMessage {
-    const iconByCategory: Record<Exclude<NewsCategory, ''>, string> = { notice: '📢', update: '🚀', tip: '💡', alert: '⚠️' };
+    const iconByCategory: Record<Exclude<NewsCategory, ''>, string> = { notice: '📙', update: '🚀', tip: '💡', alert: '⚠️' };
     const category = normalizeNewsCategory(article?.category);
     const title = typeof article?.title === 'string' ? article.title : '';
     const body = typeof article?.content === 'string' ? article.content : '';
@@ -1865,7 +1962,7 @@ function createNewsMessage(article: any): ChatMessage {
             category,
             title,
             body,
-            icon: category ? iconByCategory[category] : '📄',
+            icon: category ? iconByCategory[category] : '📰',
         },
         timestamp: Date.now(),
     };
@@ -1895,12 +1992,12 @@ function isTraditionalSkillConfirmLang(lang: string): boolean {
 function criticalConfirmFeedback(lang: string, confirmed: boolean): string {
     const normalized = lang.trim().toLowerCase();
     if (normalized === 'en' || normalized.startsWith('en-')) {
-        return confirmed ? '\n\n✅ Confirmed. Installing...' : '\n\n❌ Installation rejected.';
+        return confirmed ? '\n\n✓ Confirmed. Installing...' : '\n\n✕ Installation rejected.';
     }
     if (isTraditionalSkillConfirmLang(normalized)) {
-        return confirmed ? '\n\n✅ 已確認，正在安裝...' : '\n\n❌ 已拒絕安裝。';
+        return confirmed ? '\n\nConfirmed. Installing...' : '\n\nInstallation rejected.';
     }
-    return confirmed ? '\n\n✅ 已确认，正在安装...' : '\n\n❌ 已拒绝安装。';
+    return confirmed ? '\n\nConfirmed. Installing...' : '\n\nInstallation rejected.';
 }
 
 function inferCriticalConfirmLangFromMessage(message: ChatMessage): string {
@@ -1932,10 +2029,17 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const latestNewsPayloadRef = useRef<string>("[]");
     const progressTailRef = useRef<string | null>(null);
     const streamTokenBufferRef = useRef<StreamTokenBuffer | null>(null);
-    const responseTimeoutClearRef = useRef<(() => void) | null>(null);
+    const responseTimeoutControllerRef = useRef<ResponseTimeoutController | null>(null);
+    const agentViewLifecycleSeqRef = useRef(0);
     const scrollOnNextNewsRef = useRef(true);
     const refreshSessionsOnlyRef = useRef(options?.refreshSessionsOnly);
     const lastPetSpeakingEmitAtRef = useRef(0);
+
+    const stopResponseTimeout = useCallback(() => {
+        const controller = responseTimeoutControllerRef.current;
+        responseTimeoutControllerRef.current = null;
+        controller?.stop();
+    }, []);
 
     const emitPetStateForAssistant = useCallback((state: DesktopPetState, source: string, ttlMs?: number) => {
         if (state === 'speaking') {
@@ -2150,11 +2254,72 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         return assistantMessageId;
     }, [setRoundState]);
 
+    const clearTransientProgress = useCallback(() => {
+        progressTailRef.current = null;
+        setProgressMessages([]);
+    }, []);
+
     const finalizeRound = useCallback((generation: number) => {
         if (activeRoundRef.current.generation !== generation) return;
+        clearTransientProgress();
         resetActiveRound();
         emitPetStateForAssistant('idle', 'ai:round-done');
-    }, [emitPetStateForAssistant, resetActiveRound]);
+    }, [clearTransientProgress, emitPetStateForAssistant, resetActiveRound]);
+
+    const startResponseTimeout = useCallback((round: { generation: number; assistantMessageId: string; requestId: string; source: string }) => {
+        stopResponseTimeout();
+        const ACTIVITY_TIMEOUT_MS = 120_000;
+        let activityTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const stopController = () => {
+            if (activityTimer) {
+                clearTimeout(activityTimer);
+                activityTimer = null;
+            }
+        };
+
+        const fireActivityTimeout = () => {
+            activityTimer = null;
+            if (responseTimeoutControllerRef.current !== controller) return;
+            const currentRound = activeRoundRef.current;
+            if (currentRound.generation !== round.generation) return;
+            if (currentRound.phase === 'idle') return;
+            if (currentRound.phase === 'streaming') return;
+            const activeRequestId = currentRound.requestId || round.requestId;
+            if (pendingTaskRef.current?.requestId === activeRequestId) return;
+            responseTimeoutControllerRef.current = null;
+            setMessages(prev => replaceRoundWithError(prev, round.assistantMessageId, activeRequestId,
+                '⏱️ 请求超时（120秒无响应），请重试。'));
+            clearTransientProgress();
+            resetActiveRound(round.generation);
+            emitPetStateForAssistant('idle', `${round.source}:timeout`);
+        };
+
+        const resetController = () => {
+            if (responseTimeoutControllerRef.current !== controller) return;
+            stopController();
+            activityTimer = setTimeout(fireActivityTimeout, ACTIVITY_TIMEOUT_MS);
+        };
+
+        const controller: ResponseTimeoutController = {
+            generation: round.generation,
+            requestId: round.requestId,
+            assistantMessageId: round.assistantMessageId,
+            reset: resetController,
+            stop: stopController,
+        };
+        responseTimeoutControllerRef.current = controller;
+        controller.reset();
+        return controller;
+    }, [clearTransientProgress, emitPetStateForAssistant, resetActiveRound, stopResponseTimeout]);
+
+    const resetResponseTimeoutForActiveRound = useCallback(() => {
+        const controller = responseTimeoutControllerRef.current;
+        if (!controller) return;
+        const currentRound = activeRoundRef.current;
+        if (currentRound.generation !== controller.generation) return;
+        controller.reset();
+    }, []);
 
     const appendTokenToAssistantMessage = useCallback((assistantMessageId: string, text: string) => {
         if (!assistantMessageId || !text) return;
@@ -2188,7 +2353,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         if (!round.assistantMessageId || !text) return;
 
         // Reasoning tokens (\x01 prefix) are rendered immediately without
-        // buffering. They display in a collapsed "thinking" area — the DOM
+        // buffering. They display in a collapsed "thinking" area - the DOM
         // update cost is minimal (hidden content), and immediate rendering
         // ensures the first reasoning token triggers the "thinking" UI state
         // without delay.
@@ -2325,6 +2490,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                     setPendingTaskState(null);
                     const currentRound = activeRoundRef.current;
                     if (currentRound.requestId === currentTask.requestId) {
+                        stopResponseTimeout();
+                        clearTransientProgress();
                         resetActiveRound(currentRound.generation);
                     }
                 }
@@ -2349,16 +2516,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offRemoteStateChanged();
             offRemoteSessionChanged();
         };
-    }, [pendingTask, resetActiveRound, setPendingTaskState]);
+    }, [clearTransientProgress, pendingTask, resetActiveRound, setPendingTaskState, stopResponseTimeout]);
 
     useEffect(() => {
         const tokenHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
-            if (responseTimeoutClearRef.current && event.request_id && matchesActiveRequest(currentRound, event)) {
-                responseTimeoutClearRef.current();
+            if (event.request_id && matchesActiveRequest(currentRound, event)) {
+                resetResponseTimeoutForActiveRound();
             }
-            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
+            if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
             const isActiveRequest = matchesActiveRequest(currentRound, event);
             logRolePrefixDiagnostic('stream-event-received', event.text || '', undefined, {
                 requestId: event.request_id,
@@ -2368,9 +2535,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             });
             if (!isActiveRequest) return;
             if (!currentRound.assistantMessageId || !event.text) return;
-            if (responseTimeoutClearRef.current) {
-                responseTimeoutClearRef.current();
-            }
+            resetResponseTimeoutForActiveRound();
             emitPetStateForAssistant('speaking', 'ai:stream-token', 1800);
             queueStreamToken(currentRound, event.text);
         };
@@ -2378,11 +2543,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const newRoundHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
-            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
+            if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
             if (!matchesActiveRequest(currentRound, event)) return;
-            if (responseTimeoutClearRef.current) {
-                responseTimeoutClearRef.current();
-            }
+            resetResponseTimeoutForActiveRound();
             emitPetStateForAssistant('thinking', 'ai:new-round', 10000);
             ensureRoundPlaceholder(currentRound.generation);
         };
@@ -2390,8 +2553,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const streamDoneHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
-            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
+            if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
             if (!matchesActiveRequest(currentRound, event)) return;
+            resetResponseTimeoutForActiveRound();
             emitPetStateForAssistant('thinking', 'ai:stream-done', 2500);
             flushStreamTokenBuffer();
             transitionRound(current => {
@@ -2409,11 +2573,11 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offStreamDone();
             resetStreamTokenBuffer();
         };
-    }, [activeSessionKeyForEvents, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetStreamTokenBuffer, transitionRound]);
+    }, [activeSessionKeyForEvents, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetResponseTimeoutForActiveRound, resetStreamTokenBuffer, transitionRound]);
 
         // Listen for the async response event. When SendAIAssistantMessage returns
     // {deferred: true} (non-blocking mode), the actual response arrives here.
-    // This is the single source of truth for final response processing —
+    // This is the single source of truth for final response processing -
     // all messages (including /new, /reset, normal chat) are handled here.
     useEffect(() => {
         const handler = (payload: any) => {
@@ -2431,8 +2595,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(normalized) || '';
             const currentRound = activeRoundRef.current;
-            // Only process if this response matches the active round's request.
-            if (!matchesActiveRequest(currentRound, { request_id: responseRequestId })) return;
+            // Final responses must carry the request id returned by SendAIAssistantMessage.
+            // Treat missing ids as malformed terminal events instead of unlocking the wrong round.
+            if (!matchesActiveResponseRequest(currentRound, responseRequestId)) return;
             flushStreamTokenBuffer();
             const assistantMessageId = currentRound.assistantMessageId || '';
             const effectiveRequestId = responseRequestId || currentRound.requestId;
@@ -2454,26 +2619,24 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 contextBoundaryMessageIDRef.current = nextBoundary;
                 persistContextBoundaryMessageID(nextBoundary);
                 localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
-                progressTailRef.current = null;
-                setProgressMessages([]);
+                clearTransientProgress();
                 setMessages(resetMessages);
             } else {
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, normalized, preferences));
                 if (normalized.clear_ui) {
                     contextBoundaryMessageIDRef.current = '';
                     persistContextBoundaryMessageID('');
-                    progressTailRef.current = null;
-                    setProgressMessages([]);
+                    clearTransientProgress();
                 }
             }
             setPendingTaskState(null);
-            responseTimeoutClearRef.current?.();
+            stopResponseTimeout();
             resetStreamTokenBuffer();
             finalizeRound(currentRound.generation);
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [finalizeRound, flushStreamTokenBuffer, preferences, resetStreamTokenBuffer]);
+    }, [clearTransientProgress, finalizeRound, flushStreamTokenBuffer, preferences, resetStreamTokenBuffer, stopResponseTimeout]);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
@@ -2502,9 +2665,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const contextStartIndex = resolveContextStartIndex(latestMessagesRef.current, contextBoundaryMessageIDRef.current);
         const recentMessages = buildClientContextMessages(latestMessagesRef.current, contextStartIndex);
 
+        stopResponseTimeout();
         resetStreamTokenBuffer();
-        progressTailRef.current = null;
-        setProgressMessages([]);
+        clearTransientProgress();
         setRoundState({
             generation,
             phase: 'requesting',
@@ -2520,37 +2683,17 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
         // Sliding-window activity timeout: reset whenever the backend shows signs
         // of life (token, progress, new-round). Only fires when the backend is
-        // completely silent for 120s — not from the initial send time.
-        const ACTIVITY_TIMEOUT_MS = 120_000;
-        let activityTimer: ReturnType<typeof setTimeout> | null = setTimeout(fireActivityTimeout, ACTIVITY_TIMEOUT_MS);
-        function fireActivityTimeout() {
-            activityTimer = null;
-            const currentRound = activeRoundRef.current;
-            if (currentRound.generation !== generation) return;
-            if (currentRound.phase === 'streaming') return; // tokens actively arriving
-            setMessages(prev => replaceRoundWithError(prev, assistantMessageId, requestId,
-                '⏱️ 请求超时（120秒无响应），请重试。'));
-            resetActiveRound(generation);
-            emitPetStateForAssistant('idle', 'ai:timeout');
-        }
-        const resetActivityTimeout = () => {
-            if (activityTimer) {
-                clearTimeout(activityTimer);
-                activityTimer = setTimeout(fireActivityTimeout, ACTIVITY_TIMEOUT_MS);
-            }
-        };
+        // completely silent for 120s - not from the initial send time.
+        const responseTimeoutController = startResponseTimeout({ generation, assistantMessageId, requestId, source: 'ai' });
         const clearResponseTimeout = () => {
-            if (activityTimer) {
-                clearTimeout(activityTimer);
-                activityTimer = null;
-            }
-            responseTimeoutClearRef.current = null;
+            if (responseTimeoutControllerRef.current !== responseTimeoutController) return;
+            responseTimeoutControllerRef.current = null;
+            responseTimeoutController.stop();
         };
-        responseTimeoutClearRef.current = resetActivityTimeout;
 
         let deferredAsync = false;
         try {
-            // All messages go through the async path — the binding returns
+            // All messages go through the async path - the binding returns
             // immediately with {deferred: true}. The actual response arrives
             // via the "ai-assistant-response" event and is processed by the
             // event handler above.
@@ -2612,16 +2755,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                     contextBoundaryMessageIDRef.current = nextBoundary;
                     persistContextBoundaryMessageID(nextBoundary);
                     localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
-                    progressTailRef.current = null;
-                    setProgressMessages([]);
+                    clearTransientProgress();
                     setMessages(resetMessages);
                 } else {
                     setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
                     if (response.clear_ui) {
                         contextBoundaryMessageIDRef.current = userMsg.id;
                         persistContextBoundaryMessageID(userMsg.id);
-                        progressTailRef.current = null;
-                        setProgressMessages([]);
+                        clearTransientProgress();
                     }
                 }
                 setPendingTaskState(null);
@@ -2636,14 +2777,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             setMessages(prev => resolveSendResult(prev, assistantMessageId, requestId, null, preferences, err?.message || String(err)));
             setPendingTaskState(null);
         } finally {
-            clearResponseTimeout();
-            resetStreamTokenBuffer();
             if (!deferredAsync) {
+                clearResponseTimeout();
+                resetStreamTokenBuffer();
                 finalizeRound(generation);
             }
         }
         return true;
-    }, [emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, preferences, resetActiveRound, resetStreamTokenBuffer, setRoundState, waitForForegroundIdle]);
+    }, [clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, preferences, resetActiveRound, resetStreamTokenBuffer, setRoundState, startResponseTimeout, stopResponseTimeout, waitForForegroundIdle]);
 
     const sendMessage = useCallback((text: string, options?: SendMessageOptions): Promise<boolean> => {
         const outgoingText = text.trim();
@@ -2693,7 +2834,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     }, [emitPetStateForAssistant, finalizeRound, setRoundState]);
 
     // sendBtwMessage sends a /btw side query via a dedicated backend binding.
-    // Unlike sendMessage, this does NOT check activeRound.phase — it can run
+    // Unlike sendMessage, this does NOT check activeRound.phase - it can run
     // while the main agent loop is active. It does NOT affect activeRound state,
     // so the main loop's streaming/progress continues uninterrupted.
     //
@@ -2703,10 +2844,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const sendBtwMessage = useCallback(async (query: string) => {
         const trimmedQuery = query.trim();
         if (!trimmedQuery) {
-            // Show usage help as a local message — no backend call needed.
+            // Show usage help as a local message - no backend call needed.
             setMessages(prev => [...prev,
                 { id: nextId(), role: 'user' as const, content: '/btw', timestamp: Date.now() },
-                { id: nextId(), role: 'assistant' as const, content: '用法: /btw <查询内容>\n\n示例:\n  /btw 最新的 Go 1.23 有什么新特性\n  /btw React 19 的主要变化\n  /btw 这个项目用了什么框架', timestamp: Date.now() },
+                { id: nextId(), role: 'assistant' as const, content: 'Usage: /btw <query>\n\nExamples:\n  /btw latest Go changes\n  /btw React 19 major changes\n  /btw what framework does this project use?', timestamp: Date.now() },
             ]);
             return;
         }
@@ -2789,6 +2930,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     }, [setSelectedFiles]);
 
     const clearHistory = useCallback(async () => {
+        stopResponseTimeout();
         resetActiveRound();
         setPendingTaskState(null);
         setSelectedFiles([]);
@@ -2805,8 +2947,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
         setMessages([]);
         setDraftInputValue("");
-        progressTailRef.current = null;
-        setProgressMessages([]);
+        clearTransientProgress();
         latestNewsPayloadRef.current = '[]';
         scrollOnNextNewsRef.current = true;
         doFetchNews();
@@ -2816,7 +2957,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             persistOnUnmountRef.current = true;
         }
-    }, [doFetchNews, resetActiveRound, setSelectedFiles]);
+    }, [clearTransientProgress, doFetchNews, resetActiveRound, setSelectedFiles, stopResponseTimeout]);
 
     const recordSubmittedPrompt = useCallback((prompt: string) => {
         setSubmittedPrompts(prev => appendSubmittedPrompt(prev, prompt));
@@ -2848,7 +2989,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         const executionConfirmMatch = command.match(/^__confirm_execution__\s+(\S+)$/);
         if (executionConfirmMatch) {
-            return sendMessage(command, { uiAction: true, displayText: '确认并开始', markConfirmationRunning: true });
+            return sendMessage(command, { uiAction: true, displayText: 'Confirm and start', markConfirmationRunning: true });
         }
         const executionCancelMatch = command.match(/^__cancel_execution__\s+(\S+)$/);
         if (executionCancelMatch) {
@@ -2872,7 +3013,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         const resumeMatch = command.match(/^__resume_unfinished__\s+(\S+)$/);
         if (resumeMatch) {
-            return sendMessage('继续上次未完成任务', { resumeSlotID: resumeMatch[1]?.trim() || '' });
+            return sendMessage('Continue previous unfinished task', { resumeSlotID: resumeMatch[1]?.trim() || '' });
         }
         // Backward compat: __start_new_task__ is no longer emitted by the
         // backend (merged into __dismiss_unfinished__), but keep the handler
@@ -2882,7 +3023,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         const dismissMatch = command.match(/^__dismiss_unfinished__\s+(\S+)$/);
         if (dismissMatch) {
-            return sendMessage('放弃上次未完成任务', { dismissSlotID: dismissMatch[1]?.trim() || '', startNewTask: true, uiAction: true });
+            return sendMessage('Dismiss previous unfinished task', { dismissSlotID: dismissMatch[1]?.trim() || '', startNewTask: true, uiAction: true });
         }
         return sendMessage(command);
     }, [sendMessage]);
@@ -2890,16 +3031,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     useEffect(() => {
         const handler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
-            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
+            const currentRound = activeRoundRef.current;
+            if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
             const progressText = event.text || (typeof payload === 'string' ? payload : '');
             if (!progressText) return;
-            if (!matchesActiveProgressRequest(activeRoundRef.current, event)) {
+            if (!matchesActiveProgressRequest(currentRound, event)) {
                 return;
             }
-            // Reset the sliding-window activity timeout — backend is alive.
-            if (responseTimeoutClearRef.current) {
-                responseTimeoutClearRef.current();
-            }
+            // Reset the sliding-window activity timeout - backend is alive.
+            resetResponseTimeoutForActiveRound();
             if (shouldHideProgressText(progressText)) {
                 return;
             }
@@ -2913,7 +3053,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         return () => {
             offProgress();
         };
-    }, [activeSessionKeyForEvents]);
+    }, [activeSessionKeyForEvents, resetResponseTimeoutForActiveRound]);
 
     useEffect(() => {
         // agent-view:lifecycle is the single source of truth for view state.
@@ -2922,30 +3062,48 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         // render cycle. Legacy events are retained only for external consumers
         // that haven't migrated to the lifecycle protocol.
         let lifecycleActive = false;
+        const acceptAgentViewSequence = (payload: unknown): boolean => {
+            const seq = eventSequenceValue(payload);
+            if (typeof seq !== 'number' || seq <= 0) return true;
+            if (seq < agentViewLifecycleSeqRef.current) return false;
+            agentViewLifecycleSeqRef.current = seq;
+            return true;
+        };
         const offView = subscribeEvent(AGENT_VIEW_EVENT, (payload: unknown) => {
             if (lifecycleActive) return; // lifecycle is authoritative
+            if (!acceptAgentViewSequence(payload)) return;
             const nextView = normalizeAgentView(payload);
             if (nextView) setAgentView(nextView);
         });
-        const offClear = subscribeEvent(AGENT_VIEW_CLEAR_EVENT, () => {
+        const offClear = subscribeEvent(AGENT_VIEW_CLEAR_EVENT, (payload: unknown) => {
             if (lifecycleActive) return;
-            setAgentView(null);
+            if (!acceptAgentViewSequence(payload)) return;
+            const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+            const event: AgentViewLifecyclePayload = {
+                action: 'dismiss',
+                view_id: typeof data.view_id === 'string' ? data.view_id : undefined,
+                workflow_id: typeof data.workflow_id === 'string' ? data.workflow_id : undefined,
+                workflow_phase: typeof data.workflow_phase === 'string' ? data.workflow_phase : undefined,
+                workflow_user_id: typeof data.workflow_user_id === 'string' ? data.workflow_user_id : undefined,
+            };
+            setAgentView(current => agentViewMatchesLifecycle(current, event) ? null : current);
         });
         const offLifecycle = subscribeEvent(AGENT_VIEW_LIFECYCLE_EVENT, (payload: unknown) => {
-            lifecycleActive = true;
             const event = normalizeAgentViewLifecycle(payload);
             if (!event) return;
+            if (!acceptAgentViewSequence(payload)) return;
+            lifecycleActive = true;
             switch (event.action) {
                 case "open":
                 case "update":
                     if (event.view) setAgentView(event.view);
                     break;
                 case "dismiss":
-                    setAgentView(null);
+                    setAgentView(current => agentViewMatchesLifecycle(current, event) ? null : current);
                     break;
                 case "complete":
                     if (event.view) setAgentView(event.view);
-                    else setAgentView(null);
+                    else setAgentView(current => agentViewMatchesLifecycle(current, event) ? null : current);
                     break;
                 case "error":
                     if (event.error) {
@@ -3031,9 +3189,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             setMessages(prev => markRoundCancelled(prev, canceledRound.assistantMessageId, canceledRound.requestId));
         }
         foregroundSendTailRef.current = Promise.resolve(true);
+        stopResponseTimeout();
         resetActiveRound(nextGeneration);
-        progressTailRef.current = null;
-        setProgressMessages([]);
+        clearTransientProgress();
         setPendingTaskState(null);
         emitPetStateForAssistant('idle', 'ai:cancel');
         try {
@@ -3058,7 +3216,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } catch {
             return { canceledText: "" };
         }
-    }, [emitPetStateForAssistant, flushStreamTokenBuffer, resetActiveRound, resetStreamTokenBuffer, setPendingTaskState]);
+    }, [clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, resetActiveRound, resetStreamTokenBuffer, setPendingTaskState, stopResponseTimeout]);
 
     // injectSupplementary sends a supplementary message into the running
     // agent loop without cancelling it. Returns true if the injection was
@@ -3096,12 +3254,52 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     }, []);
 
     const submitAgentView = useCallback(async (viewId: string | undefined, data: Record<string, unknown>) => {
-        setAgentView(null);
+        const isWorkflowFormSubmit = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
+        if (!isWorkflowFormSubmit) setAgentView(null);
         const payload = JSON.stringify({ view_id: viewId || "", data });
+        let workflowSubmitRound: { generation: number; assistantMessageId: string; requestId: string } | null = null;
+        const startAgentViewSubmitRound = (requestId: string) => {
+            const generation = activeRoundRef.current.generation + 1;
+            const assistantMessageId = nextId();
+            stopResponseTimeout();
+            resetStreamTokenBuffer();
+            clearTransientProgress();
+            setRoundState({ generation, phase: 'requesting', assistantMessageId, requestId, userText: '' });
+            setMessages(prev => appendAssistantPlaceholder(prev, assistantMessageId, requestId));
+            emitPetStateForAssistant('thinking', 'agent-view:submit', 15000);
+
+            startResponseTimeout({ generation, assistantMessageId, requestId, source: 'agent-view' });
+            return { generation, assistantMessageId, requestId };
+        };
         try {
-            await SubmitAgentView({ view_id: viewId || "", data });
+            if (isWorkflowFormSubmit) {
+                await waitForForegroundIdle();
+                workflowSubmitRound = startAgentViewSubmitRound(createForegroundRequestID());
+            }
+            const rawResponse = await SubmitAgentView({ view_id: viewId || "", data, request_id: workflowSubmitRound?.requestId || undefined }) as AIAssistantSendResult | null | undefined;
+            const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
+            if (response?.deferred && !workflowSubmitRound) {
+                const requestId = resolveSendRequestID(response) || createForegroundRequestID();
+                startAgentViewSubmitRound(requestId);
+            }
+            if (workflowSubmitRound && !response?.deferred) {
+                const round = workflowSubmitRound;
+                stopResponseTimeout();
+                flushStreamTokenBuffer();
+                setMessages(prev => resolveSendResult(prev, round.assistantMessageId, round.requestId, response, preferences));
+                resetActiveRound(round.generation);
+                emitPetStateForAssistant('idle', 'agent-view:done');
+            }
             return;
-        } catch {
+        } catch (err: any) {
+            if (workflowSubmitRound) {
+                const round = workflowSubmitRound;
+                stopResponseTimeout();
+                setMessages(prev => resolveSendResult(prev, round.assistantMessageId, round.requestId, null, preferences, err?.message || String(err)));
+                resetActiveRound(round.generation);
+                emitPetStateForAssistant('idle', 'agent-view:error');
+            }
+            if (isWorkflowFormSubmit) return;
             // Older desktop bindings may not expose the structured task-panel API yet.
         }
         const message = `__agent_view_submit__ ${payload}`;
@@ -3109,15 +3307,20 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         if (!injected) {
             await sendMessage(message, { uiAction: true, displayText: "Submit structured data" });
         }
-    }, [injectSupplementary, sendMessage]);
+    }, [clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, injectSupplementary, preferences, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, waitForForegroundIdle]);
 
     const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>) => {
-        setAgentView(null);
+        const isWorkflowFormDismiss = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
+        if (!isWorkflowFormDismiss) setAgentView(null);
         const payload = JSON.stringify({ view_id: viewId || "", data: data || {} });
         try {
             await DismissAgentView({ view_id: viewId || "", data: data || {} });
             return;
-        } catch {
+        } catch (err: any) {
+            if (isWorkflowFormDismiss) {
+                setMessages(prev => [...prev, createErrorMessage(err?.message || String(err))]);
+                return;
+            }
             // Older desktop bindings may not expose the structured task-panel API yet.
         }
         const message = `__agent_view_dismiss__ ${payload}`;

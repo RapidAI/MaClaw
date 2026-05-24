@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -78,6 +79,8 @@ type platformEmployeeRequest struct {
 	SourceType         string `json:"source_type"`
 	AccountType        string `json:"account_type"`
 	ReviewStatus       string `json:"review_status"`
+	DefaultLLM         string `json:"default_llm"`
+	LLMServiceGroupID  string `json:"llm_service_group_id"`
 }
 
 func PlatformProviderRegisterHandler(system store.SystemSettingsRepository, tenants ...store.TenantRepository) http.HandlerFunc {
@@ -205,6 +208,70 @@ func PlatformTenantsListHandler(system store.SystemSettingsRepository, tenants s
 	}
 }
 
+func PlatformLLMOptionsHandler(system store.SystemSettingsRepository, tenants store.TenantRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, body, ok := authenticatePlatformRequest(w, r, system)
+		if !ok {
+			return
+		}
+		var req struct {
+			TenantID    string `json:"tenant_id"`
+			HubTenantID string `json:"hub_tenant_id"`
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+				return
+			}
+		}
+		tenantID := strings.TrimSpace(req.HubTenantID)
+		if tenantID == "" {
+			tenantID = strings.TrimSpace(req.TenantID)
+		}
+		if tenantID == "" {
+			writeError(w, http.StatusBadRequest, "TENANT_REQUIRED", "hub_tenant_id is required")
+			return
+		}
+		if !platformTenantIDAllowed(r.Context(), tenants, tenantID) {
+			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Hub tenant not found")
+			return
+		}
+		reg, err := llmservice.LoadRegistry(r.Context(), scopedSystemSettingsForTenant(tenantID, system))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
+			return
+		}
+		groups := make([]map[string]any, 0, len(reg.ModelServiceGroups))
+		for _, group := range reg.ModelServiceGroups {
+			id := strings.TrimSpace(group.ID)
+			if id == "" || strings.EqualFold(id, llmservice.DefaultModelServiceGroupID) {
+				continue
+			}
+			groups = append(groups, map[string]any{"id": id, "name": strings.TrimSpace(group.Name), "description": strings.TrimSpace(group.Description), "access_policy": strings.TrimSpace(group.AccessPolicy)})
+		}
+		defaultGroup := ""
+		for _, id := range reg.DefaultNewUserServiceGroups {
+			if strings.TrimSpace(id) != "" && !strings.EqualFold(strings.TrimSpace(id), llmservice.DefaultModelServiceGroupID) {
+				defaultGroup = strings.TrimSpace(id)
+				break
+			}
+		}
+		if defaultGroup == "" && len(groups) > 0 {
+			defaultGroup, _ = groups[0]["id"].(string)
+		}
+		baseURL := strings.TrimRight(externalLLMBaseURL(r), "/")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                       true,
+			"hub_tenant_id":            tenantID,
+			"endpoints":                []map[string]any{{"id": "hub-openai-v1", "label": "Hub OpenAI v1", "url": baseURL}},
+			"service_groups":           groups,
+			"model_service_groups":     groups,
+			"default_endpoint":         baseURL,
+			"default_service_group_id": defaultGroup,
+		})
+	}
+}
+
 func PlatformTenantAdminsListHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, admins *auth.AdminService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, _, ok := authenticatePlatformRequest(w, r, system)
@@ -224,7 +291,7 @@ func PlatformTenantAdminsListHandler(system store.SystemSettingsRepository, tena
 		tenantIDs := []string{}
 		tenantOut := []map[string]any{}
 		for _, t := range items {
-			if !isPlatformTenantActive(t) {
+			if t == nil || strings.EqualFold(strings.TrimSpace(t.ID), store.DefaultTenantID) || !isPlatformTenantActive(t) {
 				continue
 			}
 			tenantIDs = append(tenantIDs, t.ID)
@@ -847,7 +914,97 @@ func platformEmployeeAccountExclusions(ctx context.Context, system store.SystemS
 	}
 	return ids, emails
 }
-func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, users store.UserRepository) http.HandlerFunc {
+
+func PlatformSourceUserViewerTokenHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, users store.UserRepository, identities ...*auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, body, ok := authenticatePlatformRequest(w, r, system)
+		if !ok {
+			return
+		}
+		if users == nil {
+			writeError(w, http.StatusServiceUnavailable, "USER_REPOSITORY_UNAVAILABLE", "user repository is unavailable")
+			return
+		}
+		if len(identities) == 0 || identities[0] == nil {
+			writeError(w, http.StatusServiceUnavailable, "IDENTITY_SERVICE_UNAVAILABLE", "identity service is unavailable")
+			return
+		}
+		var req struct {
+			SourceUserID string `json:"source_user_id"`
+			ExternalID   string `json:"external_id"`
+			Email        string `json:"email"`
+			HubTenantID  string `json:"hub_tenant_id"`
+			TenantID     string `json:"tenant_id"`
+		}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+				return
+			}
+		}
+		tenantID := firstNonEmpty(strings.TrimSpace(req.HubTenantID), strings.TrimSpace(req.TenantID))
+		if tenantID == "" {
+			writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "hub_tenant_id is required")
+			return
+		}
+		if !platformTenantIDAllowed(r.Context(), tenants, tenantID) {
+			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Hub tenant not found")
+			return
+		}
+		var user *store.User
+		var err error
+		seenUserIDs := map[string]struct{}{}
+		for _, userID := range []string{strings.TrimSpace(req.SourceUserID), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(req.ExternalID)} {
+			if userID == "" {
+				continue
+			}
+			if _, seen := seenUserIDs[userID]; seen {
+				continue
+			}
+			seenUserIDs[userID] = struct{}{}
+			candidate, lookupErr := users.GetByID(r.Context(), userID)
+			if lookupErr != nil {
+				err = lookupErr
+				break
+			}
+			if candidate == nil || strings.TrimSpace(candidate.TenantID) != tenantID {
+				continue
+			}
+			if strings.TrimSpace(req.Email) != "" && !strings.EqualFold(strings.TrimSpace(candidate.Email), strings.TrimSpace(req.Email)) {
+				continue
+			}
+			user = candidate
+			break
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "USER_LOOKUP_FAILED", err.Error())
+			return
+		}
+		if user == nil && strings.TrimSpace(req.Email) != "" {
+			user, err = users.GetByTenantEmail(r.Context(), tenantID, strings.TrimSpace(req.Email))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "USER_LOOKUP_FAILED", err.Error())
+				return
+			}
+		}
+		if user == nil || strings.TrimSpace(user.TenantID) != tenantID || user.Status != "active" {
+			writeError(w, http.StatusNotFound, "SOURCE_USER_NOT_FOUND", "source user was not found in Hub tenant")
+			return
+		}
+		viewerToken, err := identities[0].IssueViewerTokenForUser(r.Context(), user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "VIEWER_TOKEN_ISSUE_FAILED", err.Error())
+			return
+		}
+		if strings.TrimSpace(viewerToken) == "" {
+			writeError(w, http.StatusInternalServerError, "VIEWER_TOKEN_EMPTY", "Hub did not issue a viewer token")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "source_user_id": user.ID, "hub_account_id": user.ID, "hub_tenant_id": tenantID, "viewer_token": viewerToken, "hub_llm_viewer_token": viewerToken, "access_token": viewerToken})
+	}
+}
+
+func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, users store.UserRepository, identities ...*auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		entry, body, ok := authenticatePlatformRequest(w, r, system)
 		if !ok {
@@ -913,6 +1070,10 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 		veID := "ve_" + strings.TrimPrefix(machineID, "ve_")
 		tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
 		reg := loadVERegistry(r.Context(), tenantSystem)
+		if err := ensurePlatformEmployeeLLMEntitlement(r.Context(), tenantSystem, email, firstNonEmpty(req.LLMServiceGroupID, req.DefaultLLM)); err != nil {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED", err.Error())
+			return
+		}
 		veEntry := digitalEmployeeEntry{ID: veID, MachineID: machineID, PlatformID: entry.PlatformID, PlatformEmployeeID: platformEmployeeID, OwnerUserID: userID, OwnerEmail: email, Name: name, SkillDescription: strings.TrimSpace(req.SkillDescription), AccessPolicy: "public", Status: veStatusActive, OnlineStatus: "platform", RegisteredAt: time.Now().UTC().Format(time.RFC3339), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 		if i := reg.findByIDOrMachineID(veID); i >= 0 {
 			veEntry.RegisteredAt = reg.Employees[i].RegisteredAt
@@ -924,7 +1085,154 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 			writeError(w, http.StatusInternalServerError, "VE_REGISTRY_SAVE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee": veEntry, "hub_employee_id": veEntry.ID, "hub_account_id": userID, "hub_tenant_id": tenantID, "platform_id": entry.PlatformID})
+		resp := map[string]any{"ok": true, "employee": veEntry, "hub_employee_id": veEntry.ID, "hub_account_id": userID, "hub_tenant_id": tenantID, "platform_id": entry.PlatformID}
+		if len(identities) > 0 && identities[0] != nil {
+			if viewerToken, err := identities[0].IssueViewerTokenForUser(r.Context(), userID); err == nil && strings.TrimSpace(viewerToken) != "" {
+				resp["viewer_token"] = viewerToken
+				resp["hub_llm_viewer_token"] = viewerToken
+				resp["access_token"] = viewerToken
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func ensurePlatformEmployeeLLMEntitlement(ctx context.Context, tenantSystem llmservice.SystemSettingsRepository, email, serviceGroupID string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if email == "" || serviceGroupID == "" || strings.EqualFold(serviceGroupID, llmservice.DefaultModelServiceGroupID) {
+		return nil
+	}
+	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		return err
+	}
+	group := reg.FindModelServiceGroup(serviceGroupID)
+	if group == nil {
+		return fmt.Errorf("llm service group %q not found", serviceGroupID)
+	}
+	upsertPlatformEmployeeUserBinding(reg, email, serviceGroupID)
+	if group.AccessPolicy == llmservice.AccessPolicyGrantRequired && !platformEmployeeHasActiveGrant(reg, email, serviceGroupID, time.Now().UTC()) {
+		now := time.Now().UTC()
+		reg.Grants = append(reg.Grants, llmservice.Grant{
+			ID:             llmservice.NewID("grant"),
+			Email:          email,
+			ServiceGroupID: serviceGroupID,
+			Source:         "ve_platform_employee",
+			StartsAt:       now,
+			ExpiresAt:      now.AddDate(10, 0, 0),
+			CreatedAt:      now,
+		})
+	}
+	return llmservice.SaveRegistry(ctx, tenantSystem, reg)
+}
+
+func upsertPlatformEmployeeUserBinding(reg *llmservice.Registry, email, serviceGroupID string) {
+	for i := range reg.UserBindings {
+		if !strings.EqualFold(strings.TrimSpace(reg.UserBindings[i].Email), email) {
+			continue
+		}
+		for _, id := range reg.UserBindings[i].ServiceGroupIDs {
+			if strings.EqualFold(strings.TrimSpace(id), serviceGroupID) {
+				return
+			}
+		}
+		reg.UserBindings[i].ServiceGroupIDs = append(reg.UserBindings[i].ServiceGroupIDs, serviceGroupID)
+		return
+	}
+	reg.UserBindings = append(reg.UserBindings, llmservice.UserBinding{Email: email, ServiceGroupIDs: []string{serviceGroupID}})
+}
+
+func platformEmployeeHasActiveGrant(reg *llmservice.Registry, email, serviceGroupID string, now time.Time) bool {
+	for _, grant := range reg.Grants {
+		if !strings.EqualFold(strings.TrimSpace(grant.Email), email) || !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
+			continue
+		}
+		if !now.Before(grant.StartsAt) && now.Before(grant.ExpiresAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func PlatformEmployeeViewerTokenHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, users store.UserRepository, identities ...*auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		entry, body, ok := authenticatePlatformRequest(w, r, system)
+		if !ok {
+			return
+		}
+		if users == nil {
+			writeError(w, http.StatusServiceUnavailable, "USER_REPOSITORY_UNAVAILABLE", "user repository is unavailable")
+			return
+		}
+		if len(identities) == 0 || identities[0] == nil {
+			writeError(w, http.StatusServiceUnavailable, "IDENTITY_SERVICE_UNAVAILABLE", "identity service is unavailable")
+			return
+		}
+		var req struct {
+			EmployeeID         string `json:"employee_id"`
+			PlatformEmployeeID string `json:"platform_employee_id"`
+			HubTenantID        string `json:"hub_tenant_id"`
+			TenantID           string `json:"tenant_id"`
+			HubEmployeeID      string `json:"hub_employee_id"`
+			HubAccountID       string `json:"hub_account_id"`
+		}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+				return
+			}
+		}
+		platformEmployeeID := firstNonEmpty(strings.TrimSpace(req.PlatformEmployeeID), strings.TrimSpace(req.EmployeeID), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(req.HubEmployeeID))
+		if platformEmployeeID == "" {
+			writeError(w, http.StatusBadRequest, "EMPLOYEE_ID_REQUIRED", "employee_id is required")
+			return
+		}
+		tenantID := firstNonEmpty(strings.TrimSpace(req.HubTenantID), strings.TrimSpace(req.TenantID))
+		if tenantID == "" {
+			writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "hub_tenant_id is required")
+			return
+		}
+		if !platformTenantIDAllowed(r.Context(), tenants, tenantID) {
+			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Hub tenant not found")
+			return
+		}
+		employeeEntry, found := platformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID)
+		if !found {
+			writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
+			return
+		}
+		if strings.TrimSpace(req.HubEmployeeID) != "" && strings.TrimSpace(req.HubEmployeeID) != firstNonEmpty(employeeEntry.ID, employeeEntry.MachineID) {
+			writeError(w, http.StatusForbidden, "EMPLOYEE_IDENTITY_MISMATCH", "hub_employee_id does not match the registered platform employee")
+			return
+		}
+		if strings.TrimSpace(req.HubAccountID) != "" && strings.TrimSpace(employeeEntry.OwnerUserID) != "" && strings.TrimSpace(req.HubAccountID) != strings.TrimSpace(employeeEntry.OwnerUserID) {
+			writeError(w, http.StatusForbidden, "EMPLOYEE_IDENTITY_MISMATCH", "hub_account_id does not match the registered platform employee")
+			return
+		}
+		if strings.TrimSpace(employeeEntry.OwnerUserID) == "" {
+			writeError(w, http.StatusConflict, "EMPLOYEE_ACCOUNT_NOT_BOUND", "platform employee is not bound to a Hub account")
+			return
+		}
+		user, err := users.GetByID(r.Context(), strings.TrimSpace(employeeEntry.OwnerUserID))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "USER_LOOKUP_FAILED", err.Error())
+			return
+		}
+		if user == nil || strings.TrimSpace(user.TenantID) != tenantID || user.Status != "active" {
+			writeError(w, http.StatusNotFound, "EMPLOYEE_ACCOUNT_NOT_FOUND", "platform employee Hub account was not found")
+			return
+		}
+		viewerToken, err := identities[0].IssueViewerTokenForUser(r.Context(), user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "VIEWER_TOKEN_ISSUE_FAILED", err.Error())
+			return
+		}
+		if strings.TrimSpace(viewerToken) == "" {
+			writeError(w, http.StatusInternalServerError, "VIEWER_TOKEN_EMPTY", "Hub did not issue a viewer token")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee_id": platformEmployeeID, "hub_employee_id": firstNonEmpty(employeeEntry.ID, employeeEntry.MachineID), "hub_account_id": user.ID, "hub_tenant_id": tenantID, "viewer_token": viewerToken, "hub_llm_viewer_token": viewerToken, "access_token": viewerToken})
 	}
 }
 
@@ -1043,7 +1351,7 @@ func platformTenantIDAllowed(ctx context.Context, tenants store.TenantRepository
 
 func normalizePlatformEmployeeStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "suspended", "disabled", "inactive", "stopped":
+	case "suspended", "disabled", "inactive", "stopped", "deleted", "removed":
 		return veStatusDisabled
 	case "published", "active", "ready", "enabled":
 		return veStatusActive

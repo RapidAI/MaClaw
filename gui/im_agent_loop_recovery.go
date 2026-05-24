@@ -109,7 +109,16 @@ func buildEmptyResultRecoverPromptWithTasks(pendingTaskHint string) string {
 	if pendingTaskHint != "" {
 		base += "\n" + pendingTaskHint
 	}
-	base += "\n[/Recover 闃舵]"
+	base += "\n[/Recover]"
+	return base
+}
+
+func buildPendingBackgroundTaskRecoverPrompt(pendingTaskHint string) string {
+	base := "[Recover]\nA background task that was started during this loop is still active. Do not finalize with a wait/promise-only message. Call the appropriate status tool now and report concrete progress. For SSH tasks that should finish soon, use ssh(action=\"wait_task\", task_id=..., timeout=60)."
+	if strings.TrimSpace(pendingTaskHint) != "" {
+		base += "\n" + pendingTaskHint
+	}
+	base += "\n[/Recover]"
 	return base
 }
 
@@ -224,6 +233,13 @@ func isRecoverOrNudgeSystemMessage(content string) bool {
 // the cost is negligible (List() calls on empty or small slices).
 func (h *IMMessageHandler) pendingBackgroundTaskHint(loopStart time.Time) string {
 	return pendingBackgroundTaskHintFromStatus(h.collectRuntimeStatus(), loopStart)
+}
+
+func (h *IMMessageHandler) pendingBackgroundTaskBoundaryKey(ctx *LoopContext) string {
+	if h == nil || ctx == nil {
+		return ""
+	}
+	return pendingBackgroundTaskKeyFromStatus(h.collectRuntimeStatus(), ctx.StartedAt)
 }
 
 // cancelledExitResponse saves accumulated history and returns a clean

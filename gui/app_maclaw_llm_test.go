@@ -1390,6 +1390,42 @@ func TestMaclawAgentMaxIterations_NormalizesBounds(t *testing.T) {
 	}
 }
 
+func TestSubAgentConcurrencyNormalizesBounds(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "zero defaults", in: 0, want: corelib.DefaultSubAgentConcurrency},
+		{name: "one stays", in: 1, want: 1},
+		{name: "middle stays", in: 3, want: 3},
+		{name: "above max clamps", in: 9, want: corelib.MaxSubAgentConcurrency},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := app.SetSubAgentConcurrency(tc.in); err != nil {
+				t.Fatalf("SetSubAgentConcurrency(%d) error = %v", tc.in, err)
+			}
+			if got := app.GetSubAgentConcurrency(); got != tc.want {
+				t.Fatalf("GetSubAgentConcurrency() = %d, want %d", got, tc.want)
+			}
+			saved, err := app.LoadConfig()
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if got := saved.SubAgentConcurrency; got != tc.want {
+				t.Fatalf("saved SubAgentConcurrency = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // resolveProviders extracts the provider-selection logic from
 // GetMaclawLLMProviders: if saved is non-empty, return it as-is;
 // otherwise fall back to defaultMaclawLLMProviders().

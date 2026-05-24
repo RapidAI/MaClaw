@@ -73,7 +73,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		effectiveMax = cm
 		result.EffectiveMax = effectiveMax
 	}
-	effectiveMax = extendEffectiveMaxForPendingGuideReference(opts.Iteration, effectiveMax, h.hasPendingGuideReferenceInjection(opts.UserID))
+	effectiveMax = h.applyAgentLoopBoundaryExtensions(ctx, opts.UserID, opts.Iteration, effectiveMax)
 	result.EffectiveMax = effectiveMax
 	if shouldStopForAgentLoopIterationLimit(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace) {
 		result.Stop = true
@@ -174,4 +174,30 @@ func extendEffectiveMaxForPendingGuideReference(iteration, effectiveMax int, has
 		return iteration + 1
 	}
 	return effectiveMax
+}
+
+func extendEffectiveMaxForPendingBackgroundTask(iteration, effectiveMax int, hasPendingBackgroundTask bool) int {
+	if hasPendingBackgroundTask && iteration == effectiveMax {
+		return iteration + 1
+	}
+	return effectiveMax
+}
+
+func (h *IMMessageHandler) applyAgentLoopBoundaryExtensions(ctx *LoopContext, userID string, iteration, effectiveMax int) int {
+	extendedMax := extendEffectiveMaxForPendingGuideReference(iteration, effectiveMax, h.hasPendingGuideReferenceInjection(userID))
+	backgroundExtended := false
+	backgroundTaskKey := h.pendingBackgroundTaskBoundaryKey(ctx)
+	if backgroundTaskKey != "" {
+		backgroundExtendedMax := extendEffectiveMaxForPendingBackgroundTask(iteration, effectiveMax, true)
+		if backgroundExtendedMax > effectiveMax && (ctx == nil || ctx.MarkBackgroundTaskBoundaryExtended(backgroundTaskKey)) {
+			backgroundExtended = true
+			if backgroundExtendedMax > extendedMax {
+				extendedMax = backgroundExtendedMax
+			}
+		}
+	}
+	if ctx != nil && backgroundExtended && extendedMax > effectiveMax {
+		ctx.SetMaxIterations(extendedMax)
+	}
+	return extendedMax
 }

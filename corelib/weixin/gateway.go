@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -245,16 +246,23 @@ type apiStatusResp struct {
 }
 
 type qrCodeResponse struct {
+	Ret              *int   `json:"ret,omitempty"`
+	ErrCode          *int   `json:"errcode,omitempty"`
+	ErrMsg           string `json:"errmsg,omitempty"`
+	Message          string `json:"message,omitempty"`
 	QRCode           string `json:"qrcode"`
 	QRCodeImgContent string `json:"qrcode_img_content"`
 }
 
 type qrStatusResponse struct {
 	Status      QRLoginStatus `json:"status"`
+	Ret         *int          `json:"ret,omitempty"`
+	ErrCode     *int          `json:"errcode,omitempty"`
 	BotToken    string        `json:"bot_token,omitempty"`
 	ILinkBotID  string        `json:"ilink_bot_id,omitempty"`
 	BaseURL     string        `json:"baseurl,omitempty"`
 	ILinkUserID string        `json:"ilink_user_id,omitempty"`
+	Message     string        `json:"message,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +312,31 @@ type QRLoginResult struct {
 	BaseURL   string
 	UserID    string
 	Message   string
+}
+
+var ErrQRCodeTokenEmpty = errors.New("qrcode token is empty")
+
+type qrLoginServerError struct {
+	Op      string
+	Message string
+}
+
+func (e *qrLoginServerError) Error() string {
+	return fmt.Sprintf("%s failed: %s", e.Op, firstNonEmpty(e.Message, "server returned an error"))
+}
+
+func IsQRLoginRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrQRCodeTokenEmpty) {
+		return false
+	}
+	var serverErr *qrLoginServerError
+	if errors.As(err, &serverErr) {
+		return false
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -1838,6 +1871,7 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 // Returns the QR code image URL and a qrcode token for polling status.
 // qrHTTPClient is shared across QR login functions to reuse connections.
 var qrHTTPClient = &http.Client{Timeout: 40 * time.Second}
+var qrPollTimeout = 35 * time.Second
 
 func StartQRLogin(ctx context.Context, baseURL, botType string) (qrcodeURL string, qrcodeToken string, err error) {
 	if baseURL == "" {
@@ -1863,13 +1897,31 @@ func StartQRLogin(ctx context.Context, baseURL, botType string) (qrcodeURL strin
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", "", fmt.Errorf("get_bot_qrcode returned %d: %s", resp.StatusCode, string(body))
+		return "", "", &qrLoginServerError{Op: "get_bot_qrcode", Message: fmt.Sprintf("returned %d: %s", resp.StatusCode, string(body))}
 	}
 	var qr qrCodeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&qr); err != nil {
 		return "", "", fmt.Errorf("decode QR response: %w", err)
 	}
-	return qr.QRCodeImgContent, qr.QRCode, nil
+	if qrCodeResponseHasServerError(qr) {
+		return "", "", &qrLoginServerError{Op: "get_bot_qrcode", Message: firstNonEmpty(qr.ErrMsg, qr.Message, "server returned an error")}
+	}
+	qrcodeURL = strings.TrimSpace(qr.QRCodeImgContent)
+	qrcodeToken = strings.TrimSpace(qr.QRCode)
+	if qrcodeURL == "" || qrcodeToken == "" {
+		return "", "", &qrLoginServerError{Op: "get_bot_qrcode", Message: "response is incomplete"}
+	}
+	return qrcodeURL, qrcodeToken, nil
+}
+
+func qrCodeResponseHasServerError(qr qrCodeResponse) bool {
+	if qr.Ret != nil && *qr.Ret != 0 {
+		return true
+	}
+	if qr.ErrCode != nil && *qr.ErrCode != 0 {
+		return true
+	}
+	return false
 }
 
 // PollQRStatus polls the QR code login status once. Returns the status response.
@@ -1877,10 +1929,14 @@ func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginRes
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	qrcodeToken = strings.TrimSpace(qrcodeToken)
+	if qrcodeToken == "" {
+		return nil, QRLoginStatusUnknown, ErrQRCodeTokenEmpty
+	}
 	base := strings.TrimRight(baseURL, "/")
 	u := fmt.Sprintf("%s/ilink/bot/get_qrcode_status?qrcode=%s", base, url.QueryEscape(qrcodeToken))
 
-	pollCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	pollCtx, cancel := context.WithTimeout(ctx, qrPollTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(pollCtx, "GET", u, nil)
@@ -1891,7 +1947,7 @@ func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginRes
 
 	resp, err := qrHTTPClient.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || pollCtx.Err() != nil {
 			return &QRLoginResult{Message: "timeout"}, QRLoginStatusWait, nil
 		}
 		return nil, QRLoginStatusUnknown, err
@@ -1902,20 +1958,91 @@ func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginRes
 		return nil, QRLoginStatusUnknown, err
 	}
 	if resp.StatusCode != 200 {
-		return nil, QRLoginStatusUnknown, fmt.Errorf("get_qrcode_status returned %d: %s", resp.StatusCode, string(data[:min(len(data), 512)]))
+		return nil, QRLoginStatusUnknown, &qrLoginServerError{Op: "get_qrcode_status", Message: fmt.Sprintf("returned %d: %s", resp.StatusCode, string(data[:min(len(data), 512)]))}
 	}
 
-	var status qrStatusResponse
-	if err := json.Unmarshal(data, &status); err != nil {
+	status, err := decodeQRStatusResponse(data)
+	if err != nil {
 		return nil, QRLoginStatusUnknown, fmt.Errorf("decode status: %w", err)
 	}
+	if qrStatusHasServerError(status) {
+		return nil, QRLoginStatusUnknown, &qrLoginServerError{Op: "get_qrcode_status", Message: firstNonEmpty(status.Message, "server returned an error")}
+	}
+	normalizedStatus := NormalizeQRLoginStatus(status.Status)
+	if strings.TrimSpace(status.Message) == "" {
+		status.Message = qrStatusDefaultMessage(normalizedStatus)
+	}
+	return qrLoginResultFromStatus(status, normalizedStatus)
+}
 
-	switch NormalizeQRLoginStatus(status.Status) {
+func decodeQRStatusResponse(data []byte) (qrStatusResponse, error) {
+	var status qrStatusResponse
+	if err := json.Unmarshal(data, &status); err != nil {
+		return status, err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return status, nil
+	}
+	mergeQRStatusFields(&status, raw)
+	mergeNestedQRStatusFields(&status, raw, 0)
+	if status.Status == "" && status.ILinkBotID != "" {
+		status.Status = QRLoginStatusConfirmed
+	}
+	return status, nil
+}
+
+func qrStatusHasServerError(status qrStatusResponse) bool {
+	if status.Ret != nil && *status.Ret != 0 {
+		return true
+	}
+	if status.ErrCode != nil && *status.ErrCode != 0 {
+		return true
+	}
+	return false
+}
+
+func mergeNestedQRStatusFields(status *qrStatusResponse, raw map[string]json.RawMessage, depth int) {
+	if depth >= 4 {
+		return
+	}
+	for _, value := range raw {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(value, &nested); err == nil && len(nested) > 0 {
+			mergeQRStatusFields(status, nested)
+			mergeNestedQRStatusFields(status, nested, depth+1)
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(value, &items); err != nil {
+			continue
+		}
+		for _, item := range items {
+			var itemMap map[string]json.RawMessage
+			if err := json.Unmarshal(item, &itemMap); err == nil && len(itemMap) > 0 {
+				mergeQRStatusFields(status, itemMap)
+				mergeNestedQRStatusFields(status, itemMap, depth+1)
+			}
+		}
+	}
+}
+
+func qrLoginResultFromStatus(status qrStatusResponse, normalizedStatus QRLoginStatus) (*QRLoginResult, QRLoginStatus, error) {
+	switch normalizedStatus {
 	case QRLoginStatusConfirmed:
 		if status.ILinkBotID == "" {
 			return &QRLoginResult{
 				Connected: false,
-				Message:   "登录失败：服务器未返回 ilink_bot_id",
+				Message:   firstNonEmpty(status.Message, "login failed: server did not return ilink_bot_id"),
+			}, QRLoginStatusConfirmed, nil
+		}
+		if status.BotToken == "" {
+			return &QRLoginResult{
+				Connected: false,
+				AccountID: status.ILinkBotID,
+				BaseURL:   status.BaseURL,
+				UserID:    status.ILinkUserID,
+				Message:   firstNonEmpty(status.Message, "login failed: server did not return bot_token"),
 			}, QRLoginStatusConfirmed, nil
 		}
 		return &QRLoginResult{
@@ -1924,14 +2051,77 @@ func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginRes
 			AccountID: status.ILinkBotID,
 			BaseURL:   status.BaseURL,
 			UserID:    status.ILinkUserID,
-			Message:   "✅ 与微信连接成功！",
+			Message:   firstNonEmpty(status.Message, "WeChat connected"),
 		}, QRLoginStatusConfirmed, nil
 	case QRLoginStatusScanned:
-		return &QRLoginResult{Message: "已扫码，请在微信确认"}, QRLoginStatusScanned, nil
+		return &QRLoginResult{Message: status.Message}, QRLoginStatusScanned, nil
 	case QRLoginStatusExpired:
-		return &QRLoginResult{Message: "二维码已过期"}, QRLoginStatusExpired, nil
-	default: // "wait"
-		return &QRLoginResult{Message: "waiting for scan"}, QRLoginStatusWait, nil
+		return &QRLoginResult{Message: status.Message}, QRLoginStatusExpired, nil
+	default:
+		return &QRLoginResult{Message: status.Message}, QRLoginStatusWait, nil
+	}
+}
+
+func mergeQRStatusFields(status *qrStatusResponse, raw map[string]json.RawMessage) {
+	if status.Status == "" {
+		status.Status = QRLoginStatus(rawJSONFirstString(raw, "status", "state", "qr_status", "qrStatus"))
+	}
+	if status.BotToken == "" {
+		status.BotToken = rawJSONFirstString(raw, "bot_token", "botToken", "ilink_bot_token", "ilinkBotToken", "token", "access_token", "accessToken")
+	}
+	if status.ILinkBotID == "" {
+		status.ILinkBotID = rawJSONFirstString(raw, "ilink_bot_id", "ilinkBotId", "bot_id", "botId", "account_id", "accountId")
+	}
+	if status.BaseURL == "" {
+		status.BaseURL = rawJSONFirstString(raw, "baseurl", "base_url", "baseUrl")
+	}
+	if status.ILinkUserID == "" {
+		status.ILinkUserID = rawJSONFirstString(raw, "ilink_user_id", "ilinkUserId", "user_id", "userId")
+	}
+	if status.Message == "" {
+		status.Message = rawJSONFirstString(raw, "message", "msg", "errmsg", "error")
+	}
+}
+
+func rawJSONFirstString(raw map[string]json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		value := raw[key]
+		if len(value) == 0 || string(value) == "null" {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(value, &s); err == nil && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+		var n json.Number
+		decoder := json.NewDecoder(bytes.NewReader(value))
+		decoder.UseNumber()
+		if err := decoder.Decode(&n); err == nil && strings.TrimSpace(n.String()) != "" {
+			return strings.TrimSpace(n.String())
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func qrStatusDefaultMessage(status QRLoginStatus) string {
+	switch status {
+	case QRLoginStatusScanned:
+		return "scanned, waiting for phone confirmation"
+	case QRLoginStatusConfirmed:
+		return "WeChat connected"
+	case QRLoginStatusExpired:
+		return "QR code expired"
+	default:
+		return "waiting for scan"
 	}
 }
 

@@ -204,28 +204,30 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	regP("manage_skill", skill.ManageSkillDescription(),
 		ToolCategoryBuiltin, append([]string{"skill"}, skill.ManageSkillActionNames()...),
 		map[string]interface{}{
-			"action":                 map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
-			"query":                  map[string]string{"type": "string", "description": "Search query for skill discovery."},
-			"skill_id":               map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
-			"hub_url":                map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
-			"auto_run":               map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（install 时可选，默认 true）"},
-			"name":                   map[string]string{"type": "string", "description": "Skill 名称（run/upload 时必填）"},
-			"args":                   map[string]string{"type": "object", "description": "Skill 运行参数（run 时按需传入）。Skill 命令中的 {{key}} 占位符会被替换为 args 中对应的值。例如 Skill 命令含 {{city}} 则传 args={\"city\":\"北京\"}，含 {{input}} 则传 args={\"input\":\"文件路径\"}。如果首次调用因缺少参数而失败，错误信息会提示需要哪些 key。"},
-			"env":                    map[string]string{"type": "object", "description": "注入到 skill 子进程的环境变量（run 时可选），例如 {\"LIBTV_ACCESS_KEY\": \"xxx\"}"},
-			"operation":              map[string]string{"type": "string", "description": "Optional operation name for api_workflow skills."},
-			"input":                  map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
-			"output":                 map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
-			"user_prompt":            map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
-			"wait_seconds":           map[string]string{"type": "number", "description": "Seconds to wait for a status snapshot."},
-			"run_id":                 map[string]string{"type": "string", "description": "Run ID returned by a previous run action."},
-			"max_actions":            map[string]string{"type": "integer", "description": "maintenance_plan max action count."},
-			"stale_after_days":       map[string]string{"type": "integer", "description": "maintenance_plan stale learned/crafted skill threshold in days."},
-			"min_failure_runs":       map[string]string{"type": "integer", "description": "maintenance_plan minimum failed runs before review/repair."},
-			"duplicate_similarity":   map[string]string{"type": "number", "description": "maintenance_plan duplicate skill similarity threshold."},
-			"dry_run":                map[string]string{"type": "boolean", "description": "execute_maintenance_plan preview mode; defaults true."},
-			"confirm":                map[string]string{"type": "boolean", "description": "Required true when execute_maintenance_plan uses dry_run=false."},
-			"approved_actions":       map[string]string{"type": "array", "description": "Approved maintenance action names for execute_maintenance_plan."},
-			"allow_duplicate_retire": map[string]string{"type": "boolean", "description": "Allow execute_maintenance_plan to disable the recommended duplicate skill after merge draft review."},
+			"action":                    map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
+			"query":                     map[string]string{"type": "string", "description": "Search query for skill discovery."},
+			"skill_id":                  map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
+			"hub_url":                   map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
+			"auto_run":                  map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（install 时可选，默认 true）"},
+			"name":                      map[string]string{"type": "string", "description": "Skill 名称（run/upload 时必填）"},
+			"args":                      map[string]string{"type": "object", "description": "Skill 运行参数（run 时按需传入）。Skill 命令中的 {{key}} 占位符会被替换为 args 中对应的值。例如 Skill 命令含 {{city}} 则传 args={\"city\":\"北京\"}，含 {{input}} 则传 args={\"input\":\"文件路径\"}。如果首次调用因缺少参数而失败，错误信息会提示需要哪些 key。"},
+			"env":                       map[string]string{"type": "object", "description": "注入到 skill 子进程的环境变量（run 时可选），例如 {\"LIBTV_ACCESS_KEY\": \"xxx\"}"},
+			"operation":                 map[string]string{"type": "string", "description": "Optional operation name for api_workflow skills."},
+			"input":                     map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
+			"output":                    map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
+			"user_prompt":               map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
+			"wait_seconds":              map[string]string{"type": "number", "description": "Seconds to wait for a status snapshot."},
+			"run_id":                    map[string]string{"type": "string", "description": "Run ID returned by a previous run action."},
+			"max_actions":               map[string]string{"type": "integer", "description": "maintenance_plan max action count."},
+			"stale_after_days":          map[string]string{"type": "integer", "description": "maintenance_plan stale learned/crafted skill threshold in days."},
+			"min_failure_runs":          map[string]string{"type": "integer", "description": "maintenance_plan minimum failed runs before review/repair."},
+			"duplicate_similarity":      map[string]string{"type": "number", "description": "maintenance_plan duplicate skill similarity threshold."},
+			"dry_run":                   map[string]string{"type": "boolean", "description": "execute_maintenance_plan preview mode; defaults true."},
+			"confirm":                   map[string]string{"type": "boolean", "description": "Required true when execute_maintenance_plan uses dry_run=false."},
+			"approved_actions":          map[string]string{"type": "array", "description": "Approved maintenance action names for execute_maintenance_plan."},
+			"approved_draft_ids":        map[string]string{"type": "array", "description": "Reviewed skill governance draft ids to execute. Real runs require confirm=true and either approved_draft_ids or approved_actions."},
+			"approved_review_trace_ids": map[string]string{"type": "array", "description": "Completed skill_draft_review trace ids whose stored draft_id should be executed through approved_draft_ids."},
+			"allow_duplicate_retire":    map[string]string{"type": "boolean", "description": "Allow execute_maintenance_plan to disable the recommended duplicate skill after merge draft review."},
 		}, []string{"action"},
 		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolManageSkill(args, onProgress)
@@ -246,12 +248,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolGetSkillRun(args) })
 
 	// --- Orchestration tools ---
-	reg("parallel_execute", "并行执行多个编程任务，每个任务在独立会话中运行（最多5个）",
-		ToolCategoryBuiltin, []string{"orchestrate", "parallel", "multi"},
+	reg("parallel_execute", "按 SubAgent 并发数分批执行多个编程任务（最多5个任务，并发上限4），每个任务在独立会话中运行",
+		ToolCategoryBuiltin, []string{"orchestrate", "queue", "multi"},
 		map[string]interface{}{
 			"tasks": map[string]interface{}{
 				"type":        "array",
-				"description": "任务列表，每个任务包含 tool（工具名）、description（任务描述）、project_path（项目路径）",
+				"description": "任务列表；按数组顺序和 SubAgent 并发数执行，每个任务包含 tool（工具名）、description（任务描述）、project_path（项目路径）",
 				"items": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -438,15 +440,18 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolMemory(args) })
 
 	// --- Experience learning governance ---
-	reg("experience_learning", "Inspect and record experience-learning governance without executing changes. Actions include snapshot pointing to governance_summary, governance_summary.memory carrying the memory maintenance, governance_summary.routing_self_evolution carrying the routing_signals and tool_recovery_governance, tool_recovery provider/model/wire_api filters, governance_summary.a2a_discussion carrying read-only A2A trace inspection handoffs, next_actions, queues, follow_up_actions, routing_signals, tool_recovery/inspect_tool_recovery_governance/recovery_governance/tool_recovery_governance handoffs, memory_candidates, trace_details exposing read-only non_executing_boundary, build_*_draft helpers, record_followup, record_review, and record_draft_review. Responses expose recommended_focus_context, recommended_tool_call, governance_focus_context, and non_executing=true boundaries. This tool must never approve reviews, rewrite memory, change routing, retry execution, change credentials, write files, execute tools, notify users, or install skills by itself.",
+	reg("experience_learning", "Inspect and record experience-learning governance without executing changes. Actions include snapshot pointing to governance_summary, governance_summary.memory carrying the memory maintenance, governance_summary.routing_self_evolution carrying the routing_signals and tool_recovery_governance, tool_recovery provider/model/wire_api filters, governance_summary.a2a_discussion carrying read-only A2A trace inspection handoffs, next_actions, queues, follow_up_actions, routing_signals, tool_recovery/inspect_tool_recovery_governance/recovery_governance/tool_recovery_governance handoffs, memory_candidates, trace_details exposing read-only non_executing_boundary, build_*_draft helpers, build_blocked_skill_draft repair/evidence draft, record_followup, record_review, record_draft_review, and record_blocked_skill_draft_review. Responses expose recommended_focus_context, recommended_tool_call, governance_focus_context, and non_executing=true boundaries. This tool must never approve reviews, rewrite memory, change routing, retry execution, change credentials, write files, execute tools, notify users, or install skills by itself.",
 		ToolCategoryBuiltin, []string{"experience", "learning", "governance", "memory", "routing", "review", "recovery"},
 		map[string]interface{}{
-			"action":                  map[string]string{"type": "string", "description": "Action: snapshot/governance_summary/next_actions/queues/follow_up_actions/routing_signals/tool_recovery/recovery_governance/tool_recovery_governance/inspect_tool_recovery_governance/build_routing_adjustment_draft/memory_candidates/build_memory_maintenance_draft/trace_details/build_followup/build_skill_draft/build_rollback_draft/build_escalation_brief/build_conflict_draft/record_followup/record_review/record_draft_review"},
+			"action":                  map[string]string{"type": "string", "description": "Action: snapshot/governance_summary/next_actions/queues/follow_up_actions/routing_signals/tool_recovery/recovery_governance/tool_recovery_governance/inspect_tool_recovery_governance/build_routing_adjustment_draft/memory_candidates/build_memory_maintenance_draft/trace_details/build_followup/build_skill_draft/build_blocked_skill_draft/build_rollback_draft/build_escalation_brief/build_conflict_draft/record_followup/record_review/record_draft_review/record_blocked_skill_draft_review"},
 			"query":                   map[string]string{"type": "string", "description": "Search or filter query for governance queues, memory candidates, routing signals, or trace details."},
 			"q":                       map[string]string{"type": "string", "description": "Alias for query."},
 			"trace_id":                map[string]string{"type": "string", "description": "Trace id for exact trace_details filtering, review, or draft-review attachment."},
 			"source_trace_id":         map[string]string{"type": "string", "description": "Source trace id that a generated draft or follow-up action is based on."},
 			"draft_kind":              map[string]string{"type": "string", "description": "Draft kind: skill_draft, rollback_workflow_draft, escalation_brief, conflict_reconciliation_draft, routing_adjustment_draft, memory_maintenance_draft."},
+			"draft_id":                map[string]string{"type": "string", "description": "Exact governance draft id being reviewed, such as skill_draft:mark_needs_review:broken:."},
+			"resolution":              map[string]string{"type": "string", "description": "For record_blocked_skill_draft_review: reopen or close."},
+			"replacement_draft_id":    map[string]string{"type": "string", "description": "For record_blocked_skill_draft_review resolution=reopen: replacement governance draft id to preview."},
 			"draft_markdown":          map[string]string{"type": "string", "description": "Markdown body for a non-executing draft review record."},
 			"non_executing_boundary":  map[string]string{"type": "string", "description": "Caller-supplied boundary text confirming the record is audit-only and non-executing."},
 			"status":                  map[string]string{"type": "string", "description": "Review or draft review status, such as approved/rejected/recorded/blocked."},
@@ -640,10 +645,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		})
 
 	// --- SSH remote server tools ---
-	reg("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）。长命令自动转后台模式，支持 SFTP 文件传输。",
+	reg("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close）。长命令自动转后台模式，支持 SFTP 文件传输。",
 		ToolCategoryBuiltin, []string{"ssh", "remote", "server", "connect", "exec", "background", "upload", "download", "sftp"},
 		map[string]interface{}{
-			"action":          map[string]string{"type": "string", "description": "操作: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close"},
+			"action":          map[string]string{"type": "string", "description": "操作: connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close"},
 			"host":            map[string]string{"type": "string", "description": "远程主机地址（connect 时必填）"},
 			"user":            map[string]string{"type": "string", "description": "登录用户名（connect 时必填）"},
 			"port":            map[string]string{"type": "integer", "description": "SSH 端口（默认 22）"},
@@ -655,8 +660,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"session_id":      map[string]string{"type": "string", "description": "SSH 会话 ID（exec/exec_background/upload/download/close 时必填）"},
 			"command":         map[string]string{"type": "string", "description": "要执行的命令（exec/exec_background 时必填）"},
 			"wait_seconds":    map[string]string{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 5，最大 600）"},
-			"task_id":         map[string]string{"type": "string", "description": "后台任务 ID（check_task/kill_task 时必填）"},
-			"tail_lines":      map[string]string{"type": "integer", "description": "查看日志尾部行数（check_task 时可选，默认 50）"},
+			"task_id":         map[string]string{"type": "string", "description": "后台任务 ID（check_task/wait_task/kill_task 时必填）"},
+			"tail_lines":      map[string]string{"type": "integer", "description": "查看日志尾部行数（check_task/wait_task 时可选，默认 50）"},
+			"timeout":         map[string]string{"type": "integer", "description": "wait_task 等待超时秒数（默认 60，最大 600）"},
 			"local_path":      map[string]string{"type": "string", "description": "本地文件/目录路径（upload/download 时必填）"},
 			"remote_path":     map[string]string{"type": "string", "description": "远程文件/目录路径（upload/download 时必填）"},
 		}, []string{"action"},

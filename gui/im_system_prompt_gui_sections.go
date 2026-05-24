@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 )
 
 // appendGUIPostCorePrinciples injects GUI-only rules after core principles:
@@ -191,7 +192,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	if isProMode {
 		b.WriteString("\n## 高级能力\n")
 		b.WriteString("- tool=auto: 创建会话时自动选择最适合的编程工具\n")
-		b.WriteString("- orchestrate_task: 将复杂任务拆分为多个子任务并行执行\n")
+		b.WriteString("- orchestrate_task: 将复杂任务拆分为多个子任务按队列逐个执行\n")
 		b.WriteString("- add_context_note: 记录项目上下文备注，跨会话共享\n")
 	}
 
@@ -263,7 +264,7 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 // appendGUIEpilogue injects final GUI-only sections:
 // steering (handled by deps), memory, knowledge auto-recall, knowledge skills,
 // skill repairs, bundle context.
-func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string) {
+func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext) {
 	epilogueStart := time.Now()
 
 	// OpenHuman-inspired: inject situation report (active tasks, SSH sessions, etc.)
@@ -274,7 +275,7 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	}
 
 	// Memory section (frozen snapshot + proactive recall)
-	h.appendMemorySection(b, includeMemoryGuide, msg)
+	h.appendMemorySection(b, includeMemoryGuide, eventContext, msg)
 	memoryElapsed := time.Since(epilogueStart)
 
 	// Knowledge base auto-recall

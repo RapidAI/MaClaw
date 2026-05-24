@@ -30,6 +30,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InjectAIAssistantSupplementary: vi.fn(async () => false),
     InjectAIAssistantGuideReference: vi.fn(async () => true),
     InjectAIAssistantGuideReferenceForSession: vi.fn(async () => true),
+    SubmitAgentView: vi.fn(async () => ({ text: 'submitted', error: '' })),
+    DismissAgentView: vi.fn(async () => ({ text: 'dismissed', error: '' })),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -42,7 +44,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
@@ -109,10 +111,16 @@ function resetAppMocks() {
     (FetchNews as any).mockImplementation(async () => []);
     (SelectAIAssistantFiles as any).mockReset();
     (SelectAIAssistantFiles as any).mockImplementation(async () => []);
+    (InjectAIAssistantSupplementary as any).mockReset();
+    (InjectAIAssistantSupplementary as any).mockImplementation(async () => false);
     (InjectAIAssistantGuideReference as any).mockReset();
     (InjectAIAssistantGuideReference as any).mockImplementation(async () => true);
     (InjectAIAssistantGuideReferenceForSession as any).mockReset();
     (InjectAIAssistantGuideReferenceForSession as any).mockImplementation(async () => true);
+    (SubmitAgentView as any).mockReset();
+    (SubmitAgentView as any).mockImplementation(async () => ({ text: 'submitted', error: '' }));
+    (DismissAgentView as any).mockReset();
+    (DismissAgentView as any).mockImplementation(async () => ({ text: 'dismissed', error: '' }));
 }
 
 function assistantMessages(messages: Array<{ role: string; content: string; fields?: unknown; actions?: unknown; confirmation?: { status?: string } }>) {
@@ -727,6 +735,46 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.sending).toBe(false);
     });
 
+    it('treats stream-done as activity for the foreground timeout window', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+            (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('long post-stream work');
+                await Promise.resolve();
+            });
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+                emitRuntimeEvent('ai-assistant-token', requestEvent('partial'));
+                await vi.advanceTimersByTimeAsync(119_000);
+                emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+                await vi.advanceTimersByTimeAsync(1_000);
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('超时');
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(118_999);
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('超时');
+
+            await act(async () => {
+                pending.resolve({ text: 'done', error: '', fields: null, actions: null });
+                await pending.promise;
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('keeps sending true after the foreground response returns while an AI session is still active', async () => {
         mockSendResponse = {
             text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
@@ -864,6 +912,48 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.visualBusy).toBe(false);
     });
 
+    it('does not turn an active remote AI task into a foreground response timeout', async () => {
+        vi.useFakeTimers();
+        try {
+            mockSendResponse = {
+                text: 'remote task is still running',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: 'req-default',
+                deferred: true,
+                run_id: 'run-active-timeout',
+                job_id: 'job-active-timeout',
+            };
+            (ListRemoteSessions as any).mockResolvedValue([
+                {
+                    id: 'sess-active-timeout',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-active-timeout',
+                    job_id: 'job-active-timeout',
+                },
+            ]);
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                await result.current.sendMessage('long remote task');
+            });
+
+            expect(result.current.sending).toBe(true);
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(120_001);
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('超时');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('does not keep sending true for unrelated remote sessions', async () => {
         mockSendResponse = {
             text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
@@ -965,6 +1055,68 @@ describe('useAIAssistant property tests', () => {
 
         await waitFor(() => {
             expect(result.current.sending).toBe(false);
+        });
+    });
+
+    it('clears pending AI task progress when the tracked remote session exits', async () => {
+        mockSendResponse = {
+            text: 'remote task is still running',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'req-default',
+            deferred: true,
+            run_id: 'run-finished-progress',
+            job_id: 'job-finished-progress',
+        };
+        (ListRemoteSessions as any)
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-finished-progress',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-finished-progress',
+                    job_id: 'job-finished-progress',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-finished-progress',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-finished-progress',
+                    job_id: 'job-finished-progress',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-finished-progress',
+                    launch_source: 'ai',
+                    status: 'exited',
+                    run_id: 'run-finished-progress',
+                    job_id: 'job-finished-progress',
+                },
+            ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('wait for exit progress');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-default', text: 'running remote task' });
+        });
+        expect(result.current.progressMessages).toHaveLength(1);
+
+        await act(async () => {
+            emitRuntimeEvent('remote-state-changed');
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(result.current.sending).toBe(false);
+            expect(result.current.progressMessages).toEqual([]);
         });
     });
 
@@ -1460,6 +1612,99 @@ describe('useAIAssistant property tests', () => {
             `partial\n${CANCELED_BY_USER_LINE}`,
             'fresh reply',
         ]);
+    });
+
+    it('cancelSession clears live progress and stops the deferred response timeout', async () => {
+        vi.useFakeTimers();
+        try {
+            mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+            (CancelAIAssistantSession as any).mockResolvedValueOnce('');
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                await result.current.sendMessage('cancel deferred request');
+            });
+
+            const req = requestEvent();
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'running task' });
+            });
+            expect(result.current.progressMessages).toHaveLength(1);
+
+            await act(async () => {
+                await result.current.cancelSession();
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(result.current.progressMessages).toEqual([]);
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(120_001);
+            });
+
+            expect(messageContents(result.current.messages)).not.toContain('⏱️ 请求超时（120秒无响应），请重试。');
+            expect(result.current.sending).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('stale canceled requests do not clear the next round response timeout controller', async () => {
+        vi.useFakeTimers();
+        try {
+            const first = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; deferred: boolean }>();
+            const second = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; deferred: boolean }>();
+            (SendAIAssistantMessage as any)
+                .mockImplementationOnce(() => first.promise)
+                .mockImplementationOnce(() => second.promise);
+            (CancelAIAssistantSession as any).mockResolvedValueOnce('');
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('first slow request');
+                await Promise.resolve();
+            });
+
+            await act(async () => {
+                await result.current.cancelSession();
+            });
+
+            await act(async () => {
+                void result.current.sendMessage('second slow request');
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+
+            expect(SendAIAssistantMessage).toHaveBeenCalledTimes(2);
+
+            const secondReq = requestEvent();
+
+            await act(async () => {
+                first.resolve({ text: 'stale done', error: '', fields: null, actions: null, request_id: 'stale-request', deferred: false });
+                await first.promise;
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(60_000);
+                emitRuntimeEvent('ai-assistant-progress', { request_id: secondReq.request_id, text: 'second still alive' });
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(10_000);
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('超时');
+
+            await act(async () => {
+                second.resolve({ text: '', error: '', fields: null, actions: null, request_id: secondReq.request_id || '', deferred: true });
+                await second.promise;
+                emitRuntimeEvent('ai-assistant-response', { request_id: secondReq.request_id || '', text: 'fresh done' });
+            });
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('cancelSession skips backend cancel when already idle', async () => {
@@ -2314,6 +2559,255 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.agentView?.id).toBe('tool-result');
     });
 
+    it('ignores stale AgentView lifecycle close events for a newer view', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: { id: 'workflow:form:new', type: 'form', title: 'New', fields: [] },
+            });
+            emitRuntimeEvent('agent-view:lifecycle', { action: 'dismiss', view_id: 'workflow:form:old' });
+            emitRuntimeEvent('agent-view:lifecycle', { action: 'complete', view_id: 'workflow:form:old' });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:new');
+    });
+
+    it('ignores stale AgentView lifecycle open events by sequence', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                seq: 2,
+                view: { id: 'workflow:form:new', type: 'form', title: 'New', fields: [] },
+            });
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                seq: 1,
+                view: { id: 'workflow:form:old', type: 'form', title: 'Old', fields: [] },
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:new');
+    });
+
+    it('ignores stale lifecycle dismiss events by sequence even when workflow identity matches', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                seq: 2,
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'dismiss',
+                seq: 1,
+                view_id: 'workflow:form:requirements',
+                workflow_phase: 'requirements',
+                workflow_id: 'wf-new',
+                workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+    });
+
+    it('ignores stale workflow form close events with the same phase view id', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'dismiss',
+                view_id: 'workflow:form:requirements',
+                workflow_phase: 'requirements',
+                workflow_id: 'wf-old',
+                workflow_user_id: 'desktop-user:C:/old',
+            });
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'complete',
+                view_id: 'workflow:form:requirements',
+                workflow_phase: 'requirements',
+                workflow_id: 'wf-old',
+                workflow_user_id: 'desktop-user:C:/old',
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+    });
+
+    it('guards legacy AgentView clear events with workflow identity before lifecycle is active', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view')).toBe(true);
+            expect(runtimeHandlers.has('agent-view-clear')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view', {
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+            emitRuntimeEvent('agent-view-clear', {
+                view_id: 'workflow:form:requirements',
+                workflow_phase: 'requirements',
+                workflow_id: 'wf-old',
+                workflow_user_id: 'desktop-user:C:/old',
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+    });
+
+    it('ignores stale legacy AgentView open events by sequence before lifecycle is active', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view', {
+                seq: 2,
+                view: { id: 'workflow:form:new', type: 'form', title: 'New', fields: [] },
+            });
+            emitRuntimeEvent('agent-view', {
+                seq: 1,
+                view: { id: 'workflow:form:old', type: 'form', title: 'Old', fields: [] },
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:new');
+    });
+
+    it('ignores stale legacy AgentView clear events by sequence before lifecycle is active', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view')).toBe(true);
+            expect(runtimeHandlers.has('agent-view-clear')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view', {
+                seq: 2,
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+            emitRuntimeEvent('agent-view-clear', {
+                seq: 1,
+                view_id: 'workflow:form:requirements',
+                workflow_phase: 'requirements',
+                workflow_id: 'wf-new',
+                workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+    });
+
+    it('keeps workflow forms when old clear events omit workflow identity', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view')).toBe(true);
+            expect(runtimeHandlers.has('agent-view-clear')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view', {
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+            emitRuntimeEvent('agent-view-clear', { view_id: 'workflow:form:requirements' });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+    });
+
+    it('does not let malformed lifecycle events disable legacy AgentView events', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view')).toBe(true);
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', { action: 'unknown' });
+            emitRuntimeEvent('agent-view', {
+                view: { id: 'legacy-form', type: 'form', title: 'Legacy', fields: [] },
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('legacy-form');
+    });
+
     it('surfaces lifecycle AgentView errors as chat errors', async () => {
         const { result } = renderAssistantHook();
 
@@ -2332,6 +2826,237 @@ describe('useAIAssistant property tests', () => {
         const last = result.current.messages[result.current.messages.length - 1];
         expect(last.role).toBe('error');
         expect(last.content).toBe('Amount must be greater than zero.');
+    });
+
+    it('keeps workflow forms visible when dismiss backend rejects', async () => {
+        (DismissAgentView as any).mockImplementationOnce(async () => {
+            throw new Error('save skipped phase form state: disk full');
+        });
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+        });
+
+        await act(async () => {
+            await result.current.dismissAgentView('workflow:form:requirements', {
+                _workflow_phase: 'requirements',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+        expect(messageContents(result.current.messages)).toContain('save skipped phase form state: disk full');
+        expect(InjectAIAssistantSupplementary).not.toHaveBeenCalled();
+    });
+
+    it('clears workflow forms from dismiss lifecycle after backend accepts', async () => {
+        (DismissAgentView as any).mockImplementationOnce(async () => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'dismiss',
+                view_id: 'workflow:form:requirements',
+                workflow_phase: 'requirements',
+                workflow_id: 'wf-new',
+                workflow_user_id: 'desktop-user:C:/new',
+            });
+            return { text: 'dismissed', error: '' };
+        });
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+        });
+
+        await act(async () => {
+            await result.current.dismissAgentView('workflow:form:requirements', {
+                _workflow_phase: 'requirements',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView).toBeNull();
+    });
+
+    it('opens a workflow form submit round before backend events arrive', async () => {
+        const pending = deferred<{ text: string; error: string; request_id: string; deferred: boolean }>();
+        (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: payload.request_id || '', session_key: 'desktop-user:C:/work', text: 'early token' });
+            return pending.promise;
+        });
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.submitAgentView('workflow:form:requirements', { project_name: 'snake' });
+            await Promise.resolve();
+        });
+
+        await waitFor(() => expect(SubmitAgentView).toHaveBeenCalledTimes(1));
+        const submitPayload = (SubmitAgentView as any).mock.calls[0][0] as { request_id?: string };
+        expect(submitPayload.request_id).toMatch(/^desktop-ai-/);
+        await waitFor(() => expect(messageContents(result.current.messages)).toContain('early token'));
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', request_id: submitPayload.request_id || '', deferred: true });
+            await pending.promise;
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', { request_id: submitPayload.request_id || '', text: '' });
+        });
+
+        await waitFor(() => expect(result.current.sending).toBe(false));
+        expect(messageContents(result.current.messages)).toContain('early token');
+    });
+
+    it('keeps workflow forms visible when submit backend rejects without lifecycle dismiss', async () => {
+        (SubmitAgentView as any).mockImplementationOnce(async (payload: { request_id?: string }) => ({
+            text: 'The workflow form phase is no longer current.',
+            error: 'workflow phase field mismatch',
+            request_id: payload.request_id || '',
+            deferred: false,
+        }));
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+        });
+
+        await act(async () => {
+            await result.current.submitAgentView('workflow:form:requirements', {
+                _workflow_phase: 'stale_phase',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+    });
+
+    it('does not fall back to synthetic workflow form submit when structured submit rejects', async () => {
+        (SubmitAgentView as any).mockImplementationOnce(async () => {
+            throw new Error('structured submit failed');
+        });
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'workflow:form:requirements',
+                    type: 'form',
+                    title: 'Requirements',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'requirements' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-new' },
+                        { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:C:/new' },
+                    ],
+                },
+            });
+        });
+
+        await act(async () => {
+            await result.current.submitAgentView('workflow:form:requirements', {
+                _workflow_phase: 'requirements',
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user:C:/new',
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('workflow:form:requirements');
+        expect(messageContents(result.current.messages)).toContain('structured submit failed');
+        expect(InjectAIAssistantSupplementary).not.toHaveBeenCalled();
+    });
+
+    it('stops workflow form submit timeout after final response', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; request_id: string; deferred: boolean }>();
+            (SubmitAgentView as any).mockImplementationOnce(async () => pending.promise);
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.submitAgentView('workflow:form:requirements', { project_name: 'snake' });
+                await Promise.resolve();
+            });
+
+            const submitPayload = (SubmitAgentView as any).mock.calls[0][0] as { request_id?: string };
+
+            await act(async () => {
+                pending.resolve({ text: '', error: '', request_id: submitPayload.request_id || '', deferred: true });
+                await pending.promise;
+            });
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-response', { request_id: submitPayload.request_id || '', text: 'done' });
+                await Promise.resolve();
+            });
+
+            expect(result.current.sending).toBe(false);
+
+            await act(async () => {
+                vi.advanceTimersByTime(120_000);
+            });
+
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('超时');
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('keeps coding agent progress events visible in live progress state', async () => {
@@ -2450,6 +3175,163 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('deduplicates consecutive coding agent events that only differ by timestamp', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('track coding progress');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T0","title":"初始化 CMake 构建环境和依赖配置","turn_id":"turn-1","detail":"bash","ts":"2026-05-23T01:00:00Z"}' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T0","title":"初始化 CMake 构建环境和依赖配置","turn_id":"turn-1","detail":"bash","ts":"2026-05-23T01:00:01Z"}' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T0","title":"初始化 CMake 构建环境和依赖配置","turn_id":"turn-1","detail":"bash","ts":"2026-05-23T01:00:02Z"}' });
+        });
+
+        expect(result.current.progressMessages).toHaveLength(1);
+        expect(result.current.progressMessages[0].content).toContain('"detail":"bash"');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
+            await pending.promise;
+        });
+    });
+
+    it('caps live progress messages to the latest 30 entries', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('track many progress updates');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            for (let i = 0; i < 35; i++) {
+                emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: `progress-${i}` });
+            }
+        });
+
+        expect(result.current.progressMessages).toHaveLength(30);
+        expect(result.current.progressMessages[0].content).toBe('progress-5');
+        expect(result.current.progressMessages[29].content).toBe('progress-34');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
+            await pending.promise;
+        });
+    });
+
+    it('clears live progress when a deferred response finalizes the active round', async () => {
+        mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('track deferred progress');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'running task' });
+        });
+        expect(result.current.sending).toBe(true);
+        expect(result.current.progressMessages).toHaveLength(1);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', { request_id: req.request_id, text: 'done', error: '' });
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.progressMessages).toEqual([]);
+    });
+
+    it('ignores malformed deferred responses without the active request id', async () => {
+        vi.useFakeTimers();
+        try {
+            mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                await result.current.sendMessage('track malformed response');
+            });
+
+            const req = requestEvent();
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'running task' });
+                emitRuntimeEvent('ai-assistant-response', { text: 'wrong terminal event', error: '' });
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages)).not.toContain('wrong terminal event');
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(120_001);
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(result.current.progressMessages).toEqual([]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('ignores deferred final responses with the wrong request id', async () => {
+        mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('track wrong response id');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'running task' });
+            emitRuntimeEvent('ai-assistant-response', { request_id: 'other-request', text: 'wrong terminal event', error: '' });
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(result.current.progressMessages).toHaveLength(1);
+        expect(messageContents(result.current.messages)).not.toContain('wrong terminal event');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-response', { request_id: req.request_id, text: 'right terminal event', error: '' });
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.progressMessages).toEqual([]);
+        expect(messageContents(result.current.messages)).toContain('right terminal event');
+    });
+
+    it('clears live progress when a deferred round times out', async () => {
+        vi.useFakeTimers();
+        mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('timeout deferred progress');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'running task' });
+        });
+        expect(result.current.progressMessages).toHaveLength(1);
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(120_001);
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.progressMessages).toEqual([]);
+        vi.useRealTimers();
+    });
+
     it('clearHistory resets progress dedupe state', async () => {
         const first = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
         const second = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
@@ -2519,18 +3401,10 @@ describe('useAIAssistant property tests', () => {
 
                     const msgs = result.current.messages;
                     const assistantMsg = msgs.find(m => m.role === 'assistant');
-                    const progressMsgs = result.current.progressMessages;
 
                     expect(assistantMsg).toBeDefined();
-                    if (progressTexts.some(text => text.trim().length > 0)) {
-                        expect(progressMsgs.length).toBeGreaterThan(0);
-                    }
                     expect(assistantMsg!.content).toBe('done');
-
-                    for (const pt of progressTexts) {
-                        if (pt.trim().length === 0) continue;
-                        expect(progressMsgs.find(m => m.content === pt)).toBeDefined();
-                    }
+                    expect(result.current.progressMessages).toEqual([]);
 
                     unmount();
                 },

@@ -32,6 +32,6 @@
 ## 当前边界
 
 - config-backed skill：可审批后直接补齐 `params/required_args`。
-- file-backed skill：只生成 patch draft。
-- `attempt_repair`：仍走 SelfRepair。
-- `merge_duplicate`：仍需独立合并审阅流。
+- file-backed skill：`improve_contract` 只生成 patch draft。
+- maintenance-triggered `attempt_repair`：file-backed skill 不排队，转入 review/patch flow；非 file-backed skill 仍交给 SelfRepair。
+- `merge_duplicate`：默认只生成 `merge_draft`，除非显式允许软退休 learned/crafted duplicate。

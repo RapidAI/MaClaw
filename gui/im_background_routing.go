@@ -50,7 +50,7 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	var systemPrompt string
 	history := h.memory.Load(msg.UserID)
 	if h.memoryStore != nil {
-		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0)
+		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0, loopCtx)
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
@@ -75,6 +75,7 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	} else {
 		loopCtx.SetLoopState(LoopStateCompleted)
 	}
+	h.recordAgentLoopTerminalExperience(loopCtx, result)
 	summaryText := ""
 	errText := ""
 	if result != nil {

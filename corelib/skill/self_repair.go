@@ -27,11 +27,11 @@ type LLMRepairer interface {
 // Inspired by Memento-Skills' failure attribution mechanism: the repairer
 // needs to see the specific failure trace, not just the last error string.
 type RepairContext struct {
-	FailedStepIndex    int               `json:"failed_step_index"`
-	StepOutput         string            `json:"step_output"`          // truncated to 2000 chars
-	ErrorClass         string            `json:"error_class"`          // from classifySkillStepError
-	RunArgs            map[string]string  `json:"run_args"`            // args used in this run
-	PreviousRepairCount int              `json:"previous_repair_count"`
+	FailedStepIndex     int               `json:"failed_step_index"`
+	StepOutput          string            `json:"step_output"` // truncated to 2000 chars
+	ErrorClass          string            `json:"error_class"` // from classifySkillStepError
+	RunArgs             map[string]string `json:"run_args"`    // args used in this run
+	PreviousRepairCount int               `json:"previous_repair_count"`
 }
 
 // IsRepairableError returns true if the error class is worth attempting
@@ -65,7 +65,17 @@ func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
 	if skill.LastError == "" {
 		return false
 	}
+	if !isRepairEligibleStatus(skill.Status) {
+		return false
+	}
+	if IsFileBackedSkill(*skill) {
+		return false
+	}
 	if skill.RepairAttemptCount >= SelfRepairMaxAttempts {
+		return false
+	}
+	errorClass := ExtractErrorClass(skill.LastError)
+	if !IsRepairableError(errorClass) {
 		return false
 	}
 
@@ -73,8 +83,7 @@ func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
 	// signal (environment incompatibility). Repair immediately if the error
 	// class is repairable.
 	if skill.UsageCount <= 2 && isHubSource(skill.Source) {
-		errorClass := ExtractErrorClass(skill.LastError)
-		return IsRepairableError(errorClass)
+		return true
 	}
 
 	// Path 2: Statistical — enough data to judge.
@@ -85,11 +94,26 @@ func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
 	return successRate < 0.5
 }
 
+// IsFileBackedSkill returns true for skills whose authoritative definition
+// lives on disk and should go through a reviewed patch flow before edits.
+func IsFileBackedSkill(skill corelib.NLSkillEntry) bool {
+	return strings.EqualFold(strings.TrimSpace(skill.Source), "file") && strings.TrimSpace(skill.SkillDir) != ""
+}
+
+func isRepairEligibleStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "active":
+		return true
+	default:
+		return false
+	}
+}
+
 // isHubSource returns true if the skill source indicates it was installed
 // from a hub or auto-discovered (not locally created).
 func isHubSource(source string) bool {
-	switch source {
-	case "hub", "auto_hub", "auto_github":
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "hub", "skillhub", "clawhub", "github", "auto_hub", "auto_github":
 		return true
 	}
 	return false
@@ -116,10 +140,10 @@ func ExtractErrorClass(lastError string) string {
 
 // RepairResult holds the outcome of a self-repair attempt.
 type RepairResult struct {
-	Repaired    bool              `json:"repaired"`
-	NewSteps    []SkillYAMLStep   `json:"new_steps,omitempty"`
-	Explanation string            `json:"explanation"`
-	ShouldDisable bool           `json:"should_disable"`
+	Repaired      bool            `json:"repaired"`
+	NewSteps      []SkillYAMLStep `json:"new_steps,omitempty"`
+	Explanation   string          `json:"explanation"`
+	ShouldDisable bool            `json:"should_disable"`
 }
 
 // AttemptRepair uses an LLM to analyze the skill's last error and propose
@@ -249,9 +273,14 @@ Propose a fix.`,
 // ApplyRepair writes the repaired steps back to the skill entry.
 // Returns true if the skill was modified, false if it was disabled or unchanged.
 func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
+	if skill == nil || result == nil {
+		return false
+	}
+	errorClass := ExtractErrorClass(skill.LastError)
 	if result.ShouldDisable {
 		skill.Status = "needs_review"
 		skill.LastError = fmt.Sprintf("auto-disabled: %s", result.Explanation)
+		recordRepairAttempt(skill, errorClass, result.Explanation)
 		log.Printf("[skill-repair] marked skill %s as needs_review: %s", skill.Name, result.Explanation)
 		return false
 	}
@@ -272,28 +301,34 @@ func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
 
 	skill.Steps = newSteps
 	skill.LastError = fmt.Sprintf("auto-repaired: %s", result.Explanation)
-	skill.RepairAttemptCount++
-	skill.LastRepairAt = time.Now().Format(time.RFC3339)
-
-	// Append to repair history (keep last 5).
-	record := corelib.SkillRepairRecord{
-		Timestamp:   skill.LastRepairAt,
-		Explanation: result.Explanation,
-		Success:     false, // caller sets to true after verify
-	}
-	skill.RepairHistory = append(skill.RepairHistory, record)
-	if len(skill.RepairHistory) > 5 {
-		skill.RepairHistory = skill.RepairHistory[len(skill.RepairHistory)-5:]
-	}
+	recordRepairAttempt(skill, errorClass, result.Explanation)
 
 	log.Printf("[skill-repair] repaired skill %s with %d new steps (attempt %d)",
 		skill.Name, len(newSteps), skill.RepairAttemptCount)
 	return true
 }
 
+func recordRepairAttempt(skill *corelib.NLSkillEntry, errorClass, explanation string) {
+	skill.RepairAttemptCount++
+	skill.LastRepairAt = time.Now().Format(time.RFC3339)
+	record := corelib.SkillRepairRecord{
+		Timestamp:   skill.LastRepairAt,
+		ErrorClass:  errorClass,
+		Explanation: explanation,
+		Success:     false, // caller sets to true after verify
+	}
+	skill.RepairHistory = append(skill.RepairHistory, record)
+	if len(skill.RepairHistory) > 5 {
+		skill.RepairHistory = skill.RepairHistory[len(skill.RepairHistory)-5:]
+	}
+}
+
 // MarkRepairVerified marks the last repair history entry as verified (success).
 // Call this after VerifyRepair succeeds.
 func MarkRepairVerified(skill *corelib.NLSkillEntry) {
+	if skill == nil {
+		return
+	}
 	if len(skill.RepairHistory) > 0 {
 		skill.RepairHistory[len(skill.RepairHistory)-1].Success = true
 	}
@@ -302,5 +337,8 @@ func MarkRepairVerified(skill *corelib.NLSkillEntry) {
 // ResetRepairCount resets the consecutive repair attempt counter.
 // Call this when the skill succeeds after a repair, indicating the fix worked.
 func ResetRepairCount(skill *corelib.NLSkillEntry) {
+	if skill == nil {
+		return
+	}
 	skill.RepairAttemptCount = 0
 }

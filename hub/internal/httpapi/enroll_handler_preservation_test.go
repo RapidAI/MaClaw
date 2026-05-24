@@ -59,6 +59,50 @@ func newPreservationTestIdentity(t *testing.T) (*auth.IdentityService, *store.St
 	return identity, st, provider
 }
 
+func TestApproveEnrollmentHandlerAssignsSecurityGroupInEnrollmentTenant(t *testing.T) {
+	identity, st, provider := newPreservationTestIdentity(t)
+	secStore := security.NewSecurityStore(provider.Write)
+	if err := secStore.InitSchema(context.Background()); err != nil {
+		t.Fatalf("init security schema: %v", err)
+	}
+	securitySvc := security.NewSecurityService(secStore, st.System, st.AdminAudit)
+
+	now := time.Now().UTC()
+	enrollment := &store.UserEnrollment{
+		ID:        "enroll_tenant_acme",
+		TenantID:  "tenant_acme",
+		Email:     "tenant-approve@example.com",
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.Enrollments.Create(context.Background(), enrollment); err != nil {
+		t.Fatalf("create enrollment: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/admin/enrollments/approve?tenant_id=tenant_acme", strings.NewReader(`{"id":"enroll_tenant_acme"}`))
+	rr := httptest.NewRecorder()
+	ApproveEnrollmentHandler(identity, securitySvc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	groupID, err := secStore.GetUserGroup(security.WithTenant(context.Background(), "tenant_acme"), "tenant-approve@example.com")
+	if err != nil {
+		t.Fatalf("get tenant group: %v", err)
+	}
+	if groupID == "" {
+		t.Fatal("expected approved user to be assigned in tenant_acme security scope")
+	}
+	defaultGroupID, err := secStore.GetUserGroup(context.Background(), "tenant-approve@example.com")
+	if err != nil {
+		t.Fatalf("get default group: %v", err)
+	}
+	if defaultGroupID != "" {
+		t.Fatalf("expected no default-tenant assignment, got %q", defaultGroupID)
+	}
+}
+
 // stubInvitationValidator implements auth.InvitationCodeValidator for testing
 // invitation-code-related error paths.
 type stubInvitationValidator struct {

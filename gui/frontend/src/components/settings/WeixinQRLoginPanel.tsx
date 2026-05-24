@@ -1,4 +1,4 @@
-﻿import type { Dispatch, SetStateAction } from 'react';
+import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { LoadConfig, PollWeixinQRStatus, StartWeixinQRLogin } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
@@ -31,24 +31,42 @@ export const WeixinQRLoginPanel = ({
     weixinQRError,
     setWeixinQRError,
 }: WeixinQRLoginPanelProps) => {
+    const activeQRTokenRef = useRef('');
+    const activeQRSessionRef = useRef(0);
+
+    useEffect(() => () => {
+        activeQRSessionRef.current += 1;
+        activeQRTokenRef.current = '';
+    }, []);
+
     const startQRLogin = async () => {
+        const session = activeQRSessionRef.current + 1;
+        activeQRSessionRef.current = session;
+        activeQRTokenRef.current = '';
         setWeixinQRError('');
         setWeixinQRLoading(true);
         try {
             const res = await StartWeixinQRLogin();
+            if (activeQRSessionRef.current !== session) return;
             if (res.error) {
                 setWeixinQRError(res.error);
                 setWeixinQRLoading(false);
                 return;
             }
             const token = res.qrcode_token || '';
+            activeQRTokenRef.current = token;
             setWeixinQRCode(res.qrcode_url || '');
             setWeixinQRLoading(false);
             setWeixinQRWaiting(true);
             const pollStart = Date.now();
             const maxMs = 8 * 60 * 1000;
             const poll = async () => {
+                if (activeQRSessionRef.current !== session) return;
+                if (activeQRTokenRef.current !== token) return;
                 if (Date.now() - pollStart > maxMs) {
+                    if (activeQRSessionRef.current !== session) return;
+                    if (activeQRTokenRef.current !== token) return;
+                    activeQRTokenRef.current = '';
                     setWeixinQRWaiting(false);
                     setWeixinQRCode('');
                     setWeixinQRError(textForLang(lang, 'QR expired', '\u4e8c\u7ef4\u7801\u5df2\u8fc7\u671f', '\u4e8c\u7dad\u78bc\u5df2\u904e\u671f'));
@@ -56,28 +74,43 @@ export const WeixinQRLoginPanel = ({
                 }
                 try {
                     const p = await PollWeixinQRStatus(token);
+                    if (activeQRSessionRef.current !== session) return;
+                    if (activeQRTokenRef.current !== token) return;
                     const st = p.status || '';
                     if (st === 'confirmed') {
+                        activeQRTokenRef.current = '';
                         setWeixinQRWaiting(false);
                         setWeixinQRCode('');
                         if (p.error) {
                             setWeixinQRError(p.error);
                         } else {
+                            setWeixinQRError('');
                             setWeixinStatus('connected');
                             LoadConfig().then((cfg: any) => setConfig(cfg)).catch(() => {});
                         }
                     } else if (st === 'expired') {
+                        activeQRTokenRef.current = '';
                         setWeixinQRWaiting(false);
                         setWeixinQRCode('');
                         setWeixinQRError(p.message || textForLang(lang, 'QR expired', '\u4e8c\u7ef4\u7801\u5df2\u8fc7\u671f', '\u4e8c\u7dad\u78bc\u5df2\u904e\u671f'));
                     } else if (p.error) {
+                        if (p.retryable === 'true') {
+                            setWeixinQRError(p.error);
+                            setTimeout(poll, 2000);
+                            return;
+                        }
+                        activeQRTokenRef.current = '';
                         setWeixinQRWaiting(false);
                         setWeixinQRCode('');
                         setWeixinQRError(p.error);
                     } else {
+                        setWeixinQRError('');
                         setTimeout(poll, 2000);
                     }
                 } catch (err: any) {
+                    if (activeQRSessionRef.current !== session) return;
+                    if (activeQRTokenRef.current !== token) return;
+                    activeQRTokenRef.current = '';
                     setWeixinQRWaiting(false);
                     setWeixinQRCode('');
                     setWeixinQRError(err?.message || String(err));
@@ -85,6 +118,8 @@ export const WeixinQRLoginPanel = ({
             };
             poll();
         } catch (e: any) {
+            if (activeQRSessionRef.current !== session) return;
+            activeQRTokenRef.current = '';
             setWeixinQRError(e?.message || String(e));
             setWeixinQRLoading(false);
             setWeixinQRWaiting(false);
@@ -93,6 +128,8 @@ export const WeixinQRLoginPanel = ({
     };
 
     const cancelQRLogin = () => {
+        activeQRSessionRef.current += 1;
+        activeQRTokenRef.current = '';
         setWeixinQRCode('');
         setWeixinQRWaiting(false);
         setWeixinQRLoading(false);

@@ -171,6 +171,24 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		`id="mcpTypeLocalBtn" aria-pressed="false"`,
 		`document.getElementById('mcpTypeRemoteBtn').setAttribute('aria-pressed', type === 'remote' ? 'true' : 'false')`,
 		`aria-pressed="'+(mode==='daily'?'true':'false')+'" onclick="setUserMgmtReportMode`,
+		`class="user-mgmt-layout"`,
+		`class="user-mgmt-migration-grid"`,
+		`class="user-mgmt-card-grid`,
+		`const userMgmtPageSize=8`,
+		`function userMgmtPager`,
+		`function renderUserMgmtMatchedHubs`,
+		`function renderHubTenantPanel`,
+		`function hubTenantDomainText`,
+		`function hubTenantOptionLabel`,
+		`function setHubTenantSelection`,
+		`id="hubTenantSelect-`,
+		`select.disabled=shown===0`,
+		`邮件域只按租户展示`,
+		`数字员工授权按当前租户处理。`,
+		`h.tenant_name||h.tenant_id||'-'`,
+		`routeQueryHubTenant:'Tenant'`,
+		`${tr('routeQueryHubCardTitle')} ${idx+1} · ${escapeHtml(tenant)}`,
+		`${tr('routeQueryHubTenant')}:</strong> ${escapeHtml(tenant)}`,
 		`function enhanceUserMgmtRegions`,
 		`'userMgmtRegistrationReport','userMgmtDashboard','userMgmtFromHub','userMgmtResult'`,
 		`el.setAttribute('role','status');el.setAttribute('aria-live','polite');el.setAttribute('aria-busy','false')`,
@@ -398,5 +416,20 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 	css := read(t, "pro-ui.css")
 	if !strings.Contains(css, `[role="button"]`) {
 		t.Fatalf("shared css must size and focus custom button roles")
+	}
+	if !strings.Contains(css, `.user-mgmt-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));`) {
+		t.Fatalf("shared css must keep user management cards in a two-column grid")
+	}
+	if !strings.Contains(css, `#hubs.list { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }`) || !strings.Contains(css, `.hub-tenant-controls { display: grid;`) {
+		t.Fatalf("shared css must keep registered hubs in two columns with tenant controls")
+	}
+	if !strings.Contains(css, `.user-mgmt-migration-grid { display: grid; grid-template-columns: minmax(0, 1fr);`) || !strings.Contains(css, `.user-mgmt-form-panel, .user-mgmt-result-panel { min-width: 0; display: contents; }`) {
+		t.Fatalf("shared css must keep user migration as a full-width vertical workflow")
+	}
+	if !strings.Contains(css, `.route-query-kv .item-meta { min-width: 0; overflow-wrap: anywhere; }`) {
+		t.Fatalf("shared css must keep long route query values inside cards")
+	}
+	if !strings.Contains(css, `.user-mgmt-layout, .user-mgmt-migration-grid, .user-mgmt-card-grid, .user-mgmt-stat-grid { grid-template-columns: 1fr; }`) {
+		t.Fatalf("shared css must collapse user management grids on mobile")
 	}
 }

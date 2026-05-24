@@ -371,6 +371,23 @@ func TestCodingSubAgentExecuteToolEmitsStructuredToolEvent(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentOnToolCallDoesNotEmitRawProgress(t *testing.T) {
+	var progress []string
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{
+			onProgress: func(text string) {
+				progress = append(progress, text)
+			},
+		},
+	}
+
+	cb.OnToolCall("read_file")
+
+	if len(progress) != 0 {
+		t.Fatalf("OnToolCall should not emit raw progress rows, got %#v", progress)
+	}
+}
+
 func TestCodingToolExecutionUsesStructuredOutcome(t *testing.T) {
 	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{}}
 	blocked := cb.executeToolWithOutcome("read_file", `{"path":"main.go"}`)

@@ -280,6 +280,15 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 	for {
 		result, status, err := weixin.PollQRStatus(waitCtx, baseURL, qrToken)
 		if err != nil {
+			if weixin.IsQRLoginRetryableError(err) {
+				fmt.Printf("WeChat QR status check failed; retrying: %v\n", err)
+				select {
+				case <-waitCtx.Done():
+					return fmt.Errorf("WeChat binding timed out")
+				case <-time.After(2 * time.Second):
+				}
+				continue
+			}
 			return fmt.Errorf("poll WeChat QR status: %w", err)
 		}
 		if status != lastStatus {

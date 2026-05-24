@@ -102,74 +102,74 @@ function isMultipleOf(value: number, step: number): boolean {
     return Math.abs(quotient - Math.round(quotient)) < 1e-9;
 }
 
-function numberValidationError(label: string, value: unknown, min?: number, max?: number, exclusiveMin?: number, exclusiveMax?: number, step?: number): string | null {
+function numberValidationError(label: string, value: unknown, min: number | undefined, max: number | undefined, exclusiveMin: number | undefined, exclusiveMax: number | undefined, step: number | undefined, s: AgentViewStrings): string | null {
     if (value === "" || value === null || value === undefined) return null;
     const numberValue = typeof value === "number" ? value : Number(value);
-    if (!Number.isFinite(numberValue)) return `${label} must be a valid number`;
-    if (typeof min === "number" && numberValue < min) return `${label} must be at least ${min}`;
-    if (typeof max === "number" && numberValue > max) return `${label} must be at most ${max}`;
-    if (typeof exclusiveMin === "number" && numberValue <= exclusiveMin) return `${label} must be greater than ${exclusiveMin}`;
-    if (typeof exclusiveMax === "number" && numberValue >= exclusiveMax) return `${label} must be less than ${exclusiveMax}`;
-    if (typeof step === "number" && !isMultipleOf(numberValue, step)) return `${label} must be a multiple of ${step}`;
+    if (!Number.isFinite(numberValue)) return s.mustBeValidNumber(label);
+    if (typeof min === "number" && numberValue < min) return s.mustBeAtLeast(label, min);
+    if (typeof max === "number" && numberValue > max) return s.mustBeAtMost(label, max);
+    if (typeof exclusiveMin === "number" && numberValue <= exclusiveMin) return s.mustBeGreaterThan(label, exclusiveMin);
+    if (typeof exclusiveMax === "number" && numberValue >= exclusiveMax) return s.mustBeLessThan(label, exclusiveMax);
+    if (typeof step === "number" && !isMultipleOf(numberValue, step)) return s.mustBeMultipleOf(label, step);
     return null;
 }
 
-function formatValidationError(label: string, text: string, format?: string): string | null {
+function formatValidationError(label: string, text: string, format: string | undefined, s: AgentViewStrings): string | null {
     const normalized = (format || "").trim().toLowerCase();
     if (!text.trim()) return null;
     if (!normalized) return null;
     if (normalized === "email") {
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return `${label} must be a valid email`;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return s.mustBeValidEmail(label);
         return null;
     }
     if (normalized === "uri" || normalized === "url" || normalized === "uri-reference") {
         try {
             const url = new URL(text);
-            if (!url.protocol || !url.host) return `${label} must be a valid URL`;
+            if (!url.protocol || !url.host) return s.mustBeValidURL(label);
         } catch {
-            return `${label} must be a valid URL`;
+            return s.mustBeValidURL(label);
         }
         return null;
     }
     if (normalized === "uuid") {
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)) return `${label} must be a valid UUID`;
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)) return s.mustBeValidUUID(label);
         return null;
     }
     if (normalized === "date") {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(Date.parse(`${text}T00:00:00`))) return `${label} must be a valid date`;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(Date.parse(`${text}T00:00:00`))) return s.mustBeValidDate(label);
         return null;
     }
     if (normalized === "date-time" || normalized === "datetime") {
-        if (Number.isNaN(Date.parse(text))) return `${label} must be a valid date and time`;
+        if (Number.isNaN(Date.parse(text))) return s.mustBeValidDateTime(label);
         return null;
     }
     return null;
 }
 
-function textValidationError(label: string, value: unknown, minLength?: number, maxLength?: number, pattern?: string, format?: string): string | null {
+function textValidationError(label: string, value: unknown, minLength: number | undefined, maxLength: number | undefined, pattern: string | undefined, format: string | undefined, s: AgentViewStrings): string | null {
     if (value === "" || value === null || value === undefined) return null;
     const text = formatValue(value);
-    if (typeof minLength === "number" && text.length < minLength) return `${label} must be at least ${minLength} characters`;
-    if (typeof maxLength === "number" && text.length > maxLength) return `${label} must be at most ${maxLength} characters`;
+    if (typeof minLength === "number" && text.length < minLength) return s.mustBeAtLeastChars(label, minLength);
+    if (typeof maxLength === "number" && text.length > maxLength) return s.mustBeAtMostChars(label, maxLength);
     if (pattern) {
         try {
-            if (!new RegExp(pattern).test(text)) return `${label} has an invalid format`;
+            if (!new RegExp(pattern).test(text)) return s.invalidFormat(label);
         } catch {
             return null;
         }
     }
-    const formatError = formatValidationError(label, text, format);
+    const formatError = formatValidationError(label, text, format, s);
     if (formatError) return formatError;
     return null;
 }
 
-function optionValidationErrors(label: string, value: unknown, options?: Array<string | AgentViewOption>, multiple = false): string[] {
+function optionValidationErrors(label: string, value: unknown, options: Array<string | AgentViewOption> | undefined, multiple: boolean, s: AgentViewStrings): string[] {
     const allowed = allowedOptionValues(options);
     if (allowed.length === 0 || value === "" || value === null || value === undefined) return [];
     const selected = multiple ? normalizeMultiValue(value) : [formatValue(value)];
     const invalid = selected.filter((item) => item.trim() !== "" && !allowed.includes(item));
     if (invalid.length === 0) return [];
-    return [`${label} must be one of: ${allowed.join(", ")}`];
+    return [s.mustBeOneOf(label, allowed.join(", "))];
 }
 
 function valuesEqual(left: unknown, right: unknown): boolean {
@@ -188,21 +188,21 @@ function stableValueKey(value: unknown): string {
     return formatValue(value);
 }
 
-function duplicateArrayItemError(label: string, value: unknown, uniqueItems?: boolean): string | null {
+function duplicateArrayItemError(label: string, value: unknown, uniqueItems: boolean | undefined, s: AgentViewStrings): string | null {
     if (!uniqueItems || !Array.isArray(value)) return null;
     const seen = new Set<string>();
     for (const item of value) {
         const key = stableValueKey(item);
-        if (seen.has(key)) return `${label} must not contain duplicate items`;
+        if (seen.has(key)) return s.noDuplicateItems(label);
         seen.add(key);
     }
     return null;
 }
 
-function constValidationError(label: string, value: unknown, constValue: unknown): string | null {
+function constValidationError(label: string, value: unknown, constValue: unknown, s: AgentViewStrings): string | null {
     if (constValue === undefined || value === "" || value === null || value === undefined) return null;
     if (valuesEqual(value, constValue)) return null;
-    return `${label} must be ${formatValue(constValue)}`;
+    return s.mustBe(label, formatValue(constValue));
 }
 
 function isTextLikeType(type: AgentViewField["type"] | AgentViewTableColumn["type"]): boolean {
@@ -214,63 +214,63 @@ function isSensitiveFormat(format?: string): boolean {
     return normalized === "password" || normalized === "secret" || normalized === "token";
 }
 
-function fieldValidationErrors(field: AgentViewField, value: unknown): string[] {
+function fieldValidationErrors(field: AgentViewField, value: unknown, s: AgentViewStrings): string[] {
     const label = field.label || field.name;
     const errors: string[] = [];
     if (field.required && isMissingFormValue(value)) {
         errors.push(label);
         return errors;
     }
-    const constError = constValidationError(label, value, field.constValue);
+    const constError = constValidationError(label, value, field.constValue, s);
     if (constError) errors.push(constError);
     errors.push(...nestedRequiredMissing(field, value));
     if (field.type === "number") {
-        const error = numberValidationError(label, value, field.min, field.max, field.exclusiveMin, field.exclusiveMax, field.step);
+        const error = numberValidationError(label, value, field.min, field.max, field.exclusiveMin, field.exclusiveMax, field.step, s);
         if (error) errors.push(error);
     }
     if (isTextLikeType(field.type)) {
-        const error = textValidationError(label, value, field.minLength, field.maxLength, field.pattern, field.format);
+        const error = textValidationError(label, value, field.minLength, field.maxLength, field.pattern, field.format, s);
         if (error) errors.push(error);
     }
     if (field.type === "date" || field.type === "datetime") {
-        const error = formatValidationError(label, formatValue(value), field.type === "datetime" ? "date-time" : "date");
+        const error = formatValidationError(label, formatValue(value), field.type === "datetime" ? "date-time" : "date", s);
         if (error) errors.push(error);
     }
     if (field.type === "select" || field.type === "business_ref" || field.type === "user_ref" || field.type === "department_ref") {
-        errors.push(...optionValidationErrors(label, value, field.options));
+        errors.push(...optionValidationErrors(label, value, field.options, false, s));
     }
     if (field.type === "multiselect") {
-        errors.push(...optionValidationErrors(label, value, field.options, true));
+        errors.push(...optionValidationErrors(label, value, field.options, true, s));
     }
     if (field.type === "multiselect" || field.type === "array_table") {
         const itemCount = Array.isArray(value) ? value.length : 0;
-        if (typeof field.minItems === "number" && itemCount < field.minItems) errors.push(`${label} needs at least ${field.minItems} item(s)`);
-        if (typeof field.maxItems === "number" && itemCount > field.maxItems) errors.push(`${label} allows at most ${field.maxItems} item(s)`);
-        const duplicateError = duplicateArrayItemError(label, value, field.uniqueItems);
+        if (typeof field.minItems === "number" && itemCount < field.minItems) errors.push(s.needsAtLeastItems(label, field.minItems));
+        if (typeof field.maxItems === "number" && itemCount > field.maxItems) errors.push(s.allowsAtMostItems(label, field.maxItems));
+        const duplicateError = duplicateArrayItemError(label, value, field.uniqueItems, s);
         if (duplicateError) errors.push(duplicateError);
     }
     if (field.type === "object_form") {
         const objectValue = normalizeObjectValue(value);
         const columns = inferObjectColumns(field, objectValue);
-        errors.push(...nestedDependentRequiredErrors(label, columns, objectValue, field.dependentRequired));
+        errors.push(...nestedDependentRequiredErrors(label, columns, objectValue, field.dependentRequired, s));
         for (const column of columns) {
             const nestedLabel = `${label}.${column.label || column.name}`;
-            const constError = constValidationError(nestedLabel, objectValue[column.name], column.constValue);
+            const constError = constValidationError(nestedLabel, objectValue[column.name], column.constValue, s);
             if (constError) errors.push(constError);
             if (column.type === "number") {
-                const error = numberValidationError(nestedLabel, objectValue[column.name], column.min, column.max, column.exclusiveMin, column.exclusiveMax, column.step);
+                const error = numberValidationError(nestedLabel, objectValue[column.name], column.min, column.max, column.exclusiveMin, column.exclusiveMax, column.step, s);
                 if (error) errors.push(error);
             }
             if (isTextLikeType(column.type)) {
-                const error = textValidationError(nestedLabel, objectValue[column.name], column.minLength, column.maxLength, column.pattern, column.format);
+                const error = textValidationError(nestedLabel, objectValue[column.name], column.minLength, column.maxLength, column.pattern, column.format, s);
                 if (error) errors.push(error);
             }
             if (column.type === "date") {
-                const error = formatValidationError(nestedLabel, formatValue(objectValue[column.name]), "date");
+                const error = formatValidationError(nestedLabel, formatValue(objectValue[column.name]), "date", s);
                 if (error) errors.push(error);
             }
             if (column.type === "select") {
-                errors.push(...optionValidationErrors(nestedLabel, objectValue[column.name], column.options));
+                errors.push(...optionValidationErrors(nestedLabel, objectValue[column.name], column.options, false, s));
             }
         }
     }
@@ -278,25 +278,25 @@ function fieldValidationErrors(field: AgentViewField, value: unknown): string[] 
         const rows = normalizeTableRows(value);
         const columns = inferTableColumns(field, rows);
         rows.forEach((row, rowIndex) => {
-            errors.push(...nestedDependentRequiredErrors(`${label}[${rowIndex + 1}]`, columns, row, field.dependentRequired));
+            errors.push(...nestedDependentRequiredErrors(`${label}[${rowIndex + 1}]`, columns, row, field.dependentRequired, s));
             columns.forEach((column) => {
                 const nestedLabel = `${label}[${rowIndex + 1}].${column.label || column.name}`;
-                const constError = constValidationError(nestedLabel, row[column.name], column.constValue);
+                const constError = constValidationError(nestedLabel, row[column.name], column.constValue, s);
                 if (constError) errors.push(constError);
                 if (column.type === "number") {
-                    const error = numberValidationError(nestedLabel, row[column.name], column.min, column.max, column.exclusiveMin, column.exclusiveMax, column.step);
+                    const error = numberValidationError(nestedLabel, row[column.name], column.min, column.max, column.exclusiveMin, column.exclusiveMax, column.step, s);
                     if (error) errors.push(error);
                 }
                 if (isTextLikeType(column.type)) {
-                    const error = textValidationError(nestedLabel, row[column.name], column.minLength, column.maxLength, column.pattern, column.format);
+                    const error = textValidationError(nestedLabel, row[column.name], column.minLength, column.maxLength, column.pattern, column.format, s);
                     if (error) errors.push(error);
                 }
                 if (column.type === "date") {
-                    const error = formatValidationError(nestedLabel, formatValue(row[column.name]), "date");
+                    const error = formatValidationError(nestedLabel, formatValue(row[column.name]), "date", s);
                     if (error) errors.push(error);
                 }
                 if (column.type === "select") {
-                    errors.push(...optionValidationErrors(nestedLabel, row[column.name], column.options));
+                    errors.push(...optionValidationErrors(nestedLabel, row[column.name], column.options, false, s));
                 }
             });
         });
@@ -304,7 +304,7 @@ function fieldValidationErrors(field: AgentViewField, value: unknown): string[] 
     return errors;
 }
 
-function dependentRequiredErrors(fields: AgentViewField[], data: Record<string, unknown>, dependentRequired?: Record<string, string[]>): string[] {
+function dependentRequiredErrors(fields: AgentViewField[], data: Record<string, unknown>, dependentRequired: Record<string, string[]> | undefined, s: AgentViewStrings): string[] {
     if (!dependentRequired) return [];
     const byName = new Map(fields.map((field) => [field.name, field]));
     const errors: string[] = [];
@@ -314,13 +314,13 @@ function dependentRequiredErrors(fields: AgentViewField[], data: Record<string, 
         requiredFields.forEach((requiredName) => {
             if (!isMissingFormValue(data[requiredName])) return;
             const requiredLabel = byName.get(requiredName)?.label || requiredName;
-            errors.push(`${requiredLabel} is required when ${triggerLabel} is provided`);
+            errors.push(s.requiredWhen(requiredLabel, triggerLabel));
         });
     });
     return errors;
 }
 
-function nestedDependentRequiredErrors(prefix: string, columns: AgentViewTableColumn[], data: Record<string, unknown>, dependentRequired?: Record<string, string[]>): string[] {
+function nestedDependentRequiredErrors(prefix: string, columns: AgentViewTableColumn[], data: Record<string, unknown>, dependentRequired: Record<string, string[]> | undefined, s: AgentViewStrings): string[] {
     if (!dependentRequired) return [];
     const byName = new Map(columns.map((column) => [column.name, column]));
     const errors: string[] = [];
@@ -330,7 +330,7 @@ function nestedDependentRequiredErrors(prefix: string, columns: AgentViewTableCo
         requiredColumns.forEach((requiredName) => {
             if (!isMissingFormValue(data[requiredName])) return;
             const requiredLabel = byName.get(requiredName)?.label || requiredName;
-            errors.push(`${prefix}.${requiredLabel} is required when ${triggerLabel} is provided`);
+            errors.push(s.requiredWhen(`${prefix}.${requiredLabel}`, triggerLabel));
         });
     });
     return errors;
@@ -419,10 +419,10 @@ function initialFieldMapping(view: AgentView): Record<string, string> {
     return mapping;
 }
 
-function fieldMapperValidationErrors(fields: AgentViewField[], mapping: Record<string, string>): string[] {
+function fieldMapperValidationErrors(fields: AgentViewField[], mapping: Record<string, string>, s: AgentViewStrings): string[] {
     return fields
         .filter((field) => field.required && !stringsTrim(mapping[field.name]))
-        .map((field) => `${field.label || field.name} needs a source field`);
+        .map((field) => s.needsSourceField(field.label || field.name));
 }
 
 function stringsTrim(value: unknown): string {
@@ -835,29 +835,29 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
         if (view.type !== "form") return [];
         const fields = visibleFormFields(view, activeVariant);
         return [
-            ...fields.flatMap((field) => fieldValidationErrors(field, formData[field.name])),
-            ...dependentRequiredErrors(fields, formData, { ...(view.dependentRequired || {}), ...(activeVariant?.dependentRequired || {}) }),
+            ...fields.flatMap((field) => fieldValidationErrors(field, formData[field.name], s)),
+            ...dependentRequiredErrors(fields, formData, { ...(view.dependentRequired || {}), ...(activeVariant?.dependentRequired || {}) }, s),
         ];
-    }, [activeVariant, formData, view]);
+    }, [activeVariant, formData, s, view]);
     const wizardValidationErrors = useMemo(() => {
         if (view.type !== "wizard" || !activeWizardStep) return [];
         return [
-            ...activeWizardStep.fields.flatMap((field) => fieldValidationErrors(field, wizardData[field.name])),
-            ...dependentRequiredErrors(activeWizardStep.fields, wizardData, activeWizardStep.dependentRequired),
+            ...activeWizardStep.fields.flatMap((field) => fieldValidationErrors(field, wizardData[field.name], s)),
+            ...dependentRequiredErrors(activeWizardStep.fields, wizardData, activeWizardStep.dependentRequired, s),
         ];
-    }, [activeWizardStep, view, wizardData]);
+    }, [activeWizardStep, s, view, wizardData]);
     const allWizardValidationErrors = useMemo(() => {
         if (view.type !== "wizard") return [];
         return view.steps.flatMap((step) => [
-            ...step.fields.flatMap((field) => fieldValidationErrors(field, wizardData[field.name])),
-            ...dependentRequiredErrors(step.fields, wizardData, step.dependentRequired),
+            ...step.fields.flatMap((field) => fieldValidationErrors(field, wizardData[field.name], s)),
+            ...dependentRequiredErrors(step.fields, wizardData, step.dependentRequired, s),
         ]);
-    }, [view, wizardData]);
+    }, [s, view, wizardData]);
     const tableEditorField = useMemo<AgentViewField | undefined>(() => {
         if (view.type !== "table_editor") return undefined;
         return {
             name: "rows",
-            label: "Rows",
+            label: s.rows,
             type: "array_table",
             columns: view.columns,
             value: tableRows,
@@ -866,14 +866,15 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
             uniqueItems: view.uniqueItems,
             dependentRequired: view.dependentRequired,
         };
-    }, [tableRows, view]);
-    const tableValidationErrors = useMemo(() => tableEditorField ? fieldValidationErrors(tableEditorField, tableRows) : [], [tableEditorField, tableRows]);
+    }, [s.rows, tableRows, view]);
+    const tableValidationErrors = useMemo(() => tableEditorField ? fieldValidationErrors(tableEditorField, tableRows, s) : [], [s, tableEditorField, tableRows]);
     const resourceValidationErrors = useMemo(() => {
         if (view.type !== "resource_picker") return [];
-        if (view.multiple) return normalizeMultiValue(resourceSelection).length === 0 ? [`Select at least one ${view.resourceType || "resource"}`] : [];
-        return stringsTrim(resourceSelection) === "" ? [`Select a ${view.resourceType || "resource"}`] : [];
-    }, [resourceSelection, view]);
-    const fieldMappingErrors = useMemo(() => view.type === "field_mapper" ? fieldMapperValidationErrors(view.targetFields, fieldMapping) : [], [fieldMapping, view]);
+        const resourceType = view.resourceType || s.resource;
+        if (view.multiple) return normalizeMultiValue(resourceSelection).length === 0 ? [s.selectAtLeastOne(resourceType)] : [];
+        return stringsTrim(resourceSelection) === "" ? [s.selectA(resourceType)] : [];
+    }, [resourceSelection, s, view]);
+    const fieldMappingErrors = useMemo(() => view.type === "field_mapper" ? fieldMapperValidationErrors(view.targetFields, fieldMapping, s) : [], [fieldMapping, s, view]);
 
     const setFieldValue = (name: string, next: unknown) => {
         setFormData((current) => ({ ...current, [name]: next }));

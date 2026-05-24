@@ -612,15 +612,42 @@ function llmServiceProviderDisplay(provider) {
   if (!name || name === id) return id;
   return name + ' (' + id + ')';
 }
-async function loadLLMServiceProviderOptions() {
+function llmServiceProviderOptionListFromProviderTab() {
+  if (typeof window.getLlmProviderOptions !== 'function') return [];
   try {
-    const data = await api('/api/admin/llm/providers');
-    llmServiceProviderOptions = (data && data.providers || []).map(function(provider) {
-      return { id: String(provider.id || '').trim(), name: String(provider.name || '').trim() };
+    return (window.getLlmProviderOptions() || []).map(function(provider) {
+      return { id: String(provider && provider.id || '').trim(), name: String(provider && provider.name || '').trim() };
     }).filter(function(provider) { return provider.id; });
   } catch (_) {
-    llmServiceProviderOptions = [];
+    return [];
   }
+}
+function setLLMServiceProviderOptions(options) {
+  var byID = {};
+  (options || []).forEach(function(provider) {
+    var id = String(provider && provider.id || '').trim();
+    if (!id) return;
+    byID[id] = { id: id, name: String(provider && provider.name || '').trim() };
+  });
+  llmServiceProviderOptions = Object.keys(byID).sort().map(function(id) { return byID[id]; });
+}
+async function loadLLMServiceProviderOptions() {
+  const localOptions = llmServiceProviderOptionListFromProviderTab();
+  if (localOptions.length) setLLMServiceProviderOptions(localOptions);
+  try {
+    const data = await api('/api/admin/llm/providers');
+    const apiOptions = (data && data.providers || []).map(function(provider) {
+      return { id: String(provider.id || '').trim(), name: String(provider.name || '').trim() };
+    }).filter(function(provider) { return provider.id; });
+    setLLMServiceProviderOptions(localOptions.concat(apiOptions));
+  } catch (_) {
+    if (!localOptions.length) llmServiceProviderOptions = [];
+  }
+}
+async function refreshLLMServiceProviderOptions(opts) {
+  await loadLLMServiceProviderOptions();
+  if (opts && opts.render && llmServiceAdminCache) renderLLMServiceAdmin();
+  if (opts && opts.renderDialog && llmServiceGroupDraft) renderLLMServiceGroupDialog();
 }
 function llmServiceFlattenSecurityGroups(node, path, out) {
   if (!node) return;
@@ -2323,7 +2350,7 @@ function registerLLMServiceTabs() {
     id: 'modelservices',
     title: function() { return lsx('tabTitle'); },
     subtitle: function() { return lsx('tabSubtitle'); },
-    onOpen: function() { ensureLLMServiceAdminUI(); applyLLMServiceTabI18n(); loadLLMServiceAdmin(); }
+    onOpen: function() { ensureLLMServiceAdminUI(); if (typeof window.loadLlmProviders === 'function') window.loadLlmProviders(); applyLLMServiceTabI18n(); loadLLMServiceAdmin(); }
   });
   window.AdminTabRegistry.registerTab({
     id: 'servicecards',
@@ -2356,6 +2383,7 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
   });
 }
 window.loadLlmServiceGroups = loadLLMServiceAdmin;
+window.refreshLlmServiceProviderOptions = refreshLLMServiceProviderOptions;
 window.ensureLLMProviderRuntimeUI = ensureLLMProviderRuntimeUI;
 window.loadLLMServiceModelRuntime = loadLLMServiceModelRuntime;
 window.triggerLLMServiceModelDownload = triggerLLMServiceModelDownload;
@@ -2581,8 +2609,9 @@ function llsProviderOptions() {
     return '<option value="' + llsEsc(p.id) + '">' + escapeHtml(llmServiceProviderDisplay(p)) + '</option>';
   }).join('');
 }
-function openLLMServiceGroupDialog(mode, id) {
+async function openLLMServiceGroupDialog(mode, id) {
   ensureLLMServiceGroupModalUI();
+  await refreshLLMServiceProviderOptions();
   var g = mode === 'edit' ? ((llmServiceAdminCache && llmServiceAdminCache.model_service_groups || []).find(function(x) { return x.id === id; }) || null) : null;
   if (mode === 'edit' && (!g || isBuiltinLLMServiceGroup(g.id))) {
     showToast(lsx('builtInDefaultReadOnly'), 'info');

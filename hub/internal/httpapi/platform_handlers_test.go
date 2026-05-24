@@ -21,6 +21,7 @@ import (
 
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
@@ -466,6 +467,29 @@ func (f fakePlatformUserRepo) UpdateSmartRoute(ctx context.Context, userID strin
 	return nil
 }
 
+type fakePlatformViewerTokenRepo struct {
+	items []*store.ViewerToken
+}
+
+func (f *fakePlatformViewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) error {
+	_ = ctx
+	f.items = append(f.items, token)
+	return nil
+}
+
+func (f *fakePlatformViewerTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) (*store.ViewerToken, error) {
+	_ = ctx
+	_ = tokenHash
+	return nil, nil
+}
+
+func (f *fakePlatformViewerTokenRepo) ExtendExpiry(ctx context.Context, tokenID string, expiresAt time.Time) error {
+	_ = ctx
+	_ = tokenID
+	_ = expiresAt
+	return nil
+}
+
 func TestPlatformSourceUsersForTenantExcludesPlatformEmployees(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	now := time.Now().UTC()
@@ -485,6 +509,37 @@ func TestPlatformSourceUsersForTenantExcludesPlatformEmployees(t *testing.T) {
 	}
 	if len(items) != 1 || items[0]["id"] != "real-1" {
 		t.Fatalf("expected only real user, got %#v", items)
+	}
+}
+
+func TestPlatformSourceUserViewerTokenUsesTenantUser(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	users := fakePlatformUserRepo{items: []*store.User{{ID: "src-local", TenantID: "tenant-a", Email: "other@example.com", Status: "active"}, {ID: "real-1", TenantID: "tenant-a", Email: "real@example.com", Status: "active"}}}
+	viewerTokens := &fakePlatformViewerTokenRepo{}
+	identity := auth.NewIdentityService(users, nil, nil, nil, viewerTokens, nil, nil, nil, "open", true, nil, "")
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/source-users/src-local/viewer-token", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "source_user_id": "src-local", "external_id": "real-1", "email": "real@example.com"})
+	rec := httptest.NewRecorder()
+	PlatformSourceUserViewerTokenHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, users, identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("viewer token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if strings.TrimSpace(resp["hub_llm_viewer_token"].(string)) == "" || resp["source_user_id"] != "real-1" || resp["hub_tenant_id"] != "tenant-a" {
+		t.Fatalf("unexpected token response: %#v", resp)
+	}
+	if len(viewerTokens.items) != 1 || viewerTokens.items[0].UserID != "real-1" || viewerTokens.items[0].TenantID != "tenant-a" {
+		t.Fatalf("viewer token was not issued for source user: %#v", viewerTokens.items)
 	}
 }
 
@@ -525,6 +580,107 @@ func TestPlatformEmployeeRegisterRequiresUserRepoAndEmployeeID(t *testing.T) {
 		t.Fatalf("unexpected registered employee: %#v", registry.Employees)
 	}
 }
+func TestPlatformEmployeeRegisterInvalidLLMServiceGroupDoesNotCreateDigitalEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := llmservice.SaveRegistry(context.Background(), tenantSystem, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "ops-pro", Name: "Ops Pro"}}}); err != nil {
+		t.Fatalf("save llm registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "missing-group"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED") {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	registry := loadVERegistry(context.Background(), tenantSystem)
+	if len(registry.Employees) != 0 {
+		t.Fatalf("digital employee should not be created for invalid llm service group: %#v", registry.Employees)
+	}
+}
+func TestPlatformEmployeeRegisterGrantsRequestedLLMServiceGroup(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := llmservice.SaveRegistry(context.Background(), tenantSystem, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "ops-pro", Name: "Ops Pro", AccessPolicy: llmservice.AccessPolicyGrantRequired, Models: []llmservice.ModelServiceModel{{Name: "gpt-test", ProviderIDs: []string{"hub-provider"}}}}}}); err != nil {
+		t.Fatalf("save llm registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "ops-pro"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	saved, err := llmservice.LoadRegistry(context.Background(), tenantSystem)
+	if err != nil {
+		t.Fatalf("load llm registry: %v", err)
+	}
+	status, _, err := llmservice.ResolveStatusFromRegistry(context.Background(), saved, nil, "worker@tenant.test", "https://hub.example/api/llm/v1")
+	if err != nil {
+		t.Fatalf("resolve status: %v", err)
+	}
+	if !status.Active || len(status.ServiceGroupIDs) != 1 || status.ServiceGroupIDs[0] != "ops-pro" || status.DefaultModel != "gpt-test" {
+		t.Fatalf("status = %#v", status)
+	}
+	if len(status.ActiveGrants) != 1 || status.ActiveGrants[0].ServiceGroupID != "ops-pro" || status.ActiveGrants[0].Source != "ve_platform_employee" {
+		t.Fatalf("active grants = %#v", status.ActiveGrants)
+	}
+}
+
+func TestPlatformEmployeeViewerTokenUsesExistingEmployeeAccount(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_platform-employee-1", MachineID: "ve_platform-employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", OwnerEmail: "worker@tenant.test", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	users := fakePlatformUserRepo{items: []*store.User{{ID: "hub-account-1", TenantID: "tenant-a", Email: "worker@tenant.test", Status: "active"}}}
+	viewerTokens := &fakePlatformViewerTokenRepo{}
+	identity := auth.NewIdentityService(users, nil, nil, nil, viewerTokens, nil, nil, nil, "open", true, nil, "")
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees/platform-employee-1/viewer-token", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "hub_employee_id": "ve_platform-employee-1", "hub_account_id": "hub-account-1"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeViewerTokenHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, users, identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("viewer token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if strings.TrimSpace(resp["hub_llm_viewer_token"].(string)) == "" || resp["hub_account_id"] != "hub-account-1" || resp["hub_employee_id"] != "ve_platform-employee-1" {
+		t.Fatalf("unexpected token response: %#v", resp)
+	}
+	if len(viewerTokens.items) != 1 || viewerTokens.items[0].UserID != "hub-account-1" || viewerTokens.items[0].TenantID != "tenant-a" {
+		t.Fatalf("viewer token was not issued for bound account: %#v", viewerTokens.items)
+	}
+}
+
 func TestPlatformEmployeeExistsInTenantMatchesPlatformEmployeeID(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive}}}
@@ -721,6 +877,14 @@ func TestPlatformEmployeeStatusAcceptsPlatformEmployeeID(t *testing.T) {
 	updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
 	if len(updated.Employees) != 1 || updated.Employees[0].Status != veStatusDisabled {
 		t.Fatalf("employee status was not updated: %#v", updated.Employees)
+	}
+}
+
+func TestNormalizePlatformEmployeeDeletedStatusDisablesEmployee(t *testing.T) {
+	for _, status := range []string{"deleted", "removed"} {
+		if got := normalizePlatformEmployeeStatus(status); got != veStatusDisabled {
+			t.Fatalf("normalize %q = %q, want %q", status, got, veStatusDisabled)
+		}
 	}
 }
 
@@ -986,6 +1150,48 @@ func TestPlatformTenantsListIncludesVirtualEmployeeImportFields(t *testing.T) {
 	}
 	if resp.Tenants[1].HubTenantID != "tenant-b" || resp.Tenants[1].VirtualMailDomain != "custom-b.ve.example.com" || !resp.Tenants[1].VEEnabled {
 		t.Fatalf("tenant-b missing custom import fields: %#v", resp.Tenants[1])
+	}
+}
+
+func TestPlatformLLMOptionsAreTenantScoped(t *testing.T) {
+	deps := newPlatformHubTestDeps(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(ctx, &store.Tenant{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", PrimaryDomain: "tenant-a.example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if err := llmservice.SaveRegistry(ctx, scopedSystemSettingsForTenant("tenant-a", deps.store.System), &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}, {ID: "ops-pro", Name: "Ops Pro"}}, DefaultNewUserServiceGroups: []string{"coding-basic"}}); err != nil {
+		t.Fatalf("save llm registry: %v", err)
+	}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(ctx, deps.store.System, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/llm/options", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a"})
+	rec := httptest.NewRecorder()
+	PlatformLLMOptionsHandler(deps.store.System, deps.store.Tenants).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("options status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		DefaultServiceGroupID string `json:"default_service_group_id"`
+		ServiceGroups         []struct {
+			ID string `json:"id"`
+		} `json:"service_groups"`
+		Endpoints []struct {
+			URL string `json:"url"`
+		} `json:"endpoints"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.DefaultServiceGroupID != "coding-basic" || len(resp.ServiceGroups) != 2 || resp.ServiceGroups[1].ID != "ops-pro" || len(resp.Endpoints) != 1 {
+		t.Fatalf("unexpected llm options: %#v", resp)
 	}
 }
 

@@ -140,6 +140,39 @@ button, .btn, .tab, .cap-tab, .auth-tab, .filter, .user-link, .nav-link, .nav-bt
 .metric, .stat, .summary-card, .auth-metric { background: var(--soft) !important; }
 .console { background: #0f172a !important; border-color: #1e293b !important; color: #dbeafe !important; }
 .state, .empty, .hint { border-style: dashed !important; background: #fbfcfe !important; }
+.route-query-kv .item-meta { min-width: 0; overflow-wrap: anywhere; }
+#hubs.list { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+.hub-card { min-width: 0; overflow-wrap: anywhere; }
+.hub-tenant-panel { margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; }
+.hub-tenant-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .8fr); gap: 10px; margin-top: 12px; }
+.hub-tenant-controls input, .hub-tenant-controls select { min-width: 0; width: 100%; }
+.hub-tenant-detail { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.hub-tenant-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+.hub-tenant-stats label { display: block; font-size: 12px; }
+.hub-tenant-stats strong { display: block; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
+.user-mgmt-layout { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; }
+.user-mgmt-section { width: 100%; }
+.user-mgmt-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.user-mgmt-migration-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; margin-top: 16px; }
+.user-mgmt-form-panel, .user-mgmt-result-panel { min-width: 0; display: contents; }
+.user-mgmt-form-panel .grid2 { order: 1; }
+.user-mgmt-form-panel > .section-gap { order: 2; }
+.user-mgmt-result-panel > :first-child { order: 3; }
+.user-mgmt-form-panel .actions { order: 4; }
+.user-mgmt-result-panel > .section-gap { order: 5; }
+.user-mgmt-route-box { min-height: 76px; padding: 14px !important; overflow-wrap: anywhere; }
+.user-mgmt-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: stretch; }
+.user-mgmt-data-card { min-height: 100%; box-shadow: none !important; overflow-wrap: anywhere; }
+.user-mgmt-migration { width: 100%; }
+.user-mgmt-stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.user-mgmt-stat-grid strong { display: block; font-size: 26px; line-height: 1.05; color: var(--text); }
+.user-mgmt-signup-title { font-size: 14px !important; line-height: 1.35; }
+.user-mgmt-report-row { display: grid; grid-template-columns: 96px minmax(0, 1fr) 42px; gap: 10px; align-items: center; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.user-mgmt-report-row + .user-mgmt-report-row { margin-top: 6px; }
+.user-mgmt-report-row strong { text-align: right; color: var(--muted); font-size: 13px; }
+.user-mgmt-report-bar { height: 8px; border-radius: 999px; background: #edf0f4; overflow: hidden; }
+.user-mgmt-report-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(135deg, var(--primary), var(--primary-strong)); }
+.user-mgmt-pager { grid-column: 1 / -1; }
 table { border-collapse: separate !important; border-spacing: 0; }
 th { background: #f1f5f9 !important; font-weight: 650 !important; }
 td, th { border-bottom-color: var(--line) !important; }
@@ -160,4 +193,7 @@ td, th { border-bottom-color: var(--line) !important; }
   h1, .hero h1, .search-panel h2, .auth-brand-panel h2, .top h2 { font-size: 24px !important; }
   .toolbar, .topbar, .head, .section-head, .nav-actions { align-items: stretch !important; }
   .toolbar input, .toolbar button, .nav-link, .user-link { width: 100%; }
+  #hubs.list, .hub-tenant-controls, .hub-tenant-stats { grid-template-columns: 1fr !important; }
+  .user-mgmt-layout, .user-mgmt-migration-grid, .user-mgmt-card-grid, .user-mgmt-stat-grid { grid-template-columns: 1fr; }
+  .user-mgmt-report-row { grid-template-columns: 82px minmax(0, 1fr) 34px; }
 }

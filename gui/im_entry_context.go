@@ -69,7 +69,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		result.EntriesBeforeClear,
 		&result.UnfinishedSlot,
 		result.AskUserContext,
-		opts.ConfirmedResume,
+		opts.ConfirmedResume || result.WorkflowAgentLoop,
 		result.FreshTask,
 		result.HasPendingAskUser || result.HasPendingUserReply,
 	)

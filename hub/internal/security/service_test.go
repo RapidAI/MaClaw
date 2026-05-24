@@ -347,6 +347,27 @@ func TestServiceGetGroupTree(t *testing.T) {
 	}
 }
 
+func TestServiceGetGroupTreeInitializesTenantRoot(t *testing.T) {
+	st := newTestStore(t)
+	svc := NewSecurityService(st, newMockSystemSettings(), &mockAuditRepo{})
+	ctx := WithTenant(context.Background(), "tenant_lazy")
+
+	tree, err := svc.GetGroupTree(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree == nil || tree.ID == "" || tree.TenantID != "tenant_lazy" {
+		t.Fatalf("expected lazy tenant root, got %#v", tree)
+	}
+	rootID, err := svc.GetRootGroupID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootID != tree.ID {
+		t.Fatalf("expected root id %q, got %q", tree.ID, rootID)
+	}
+}
+
 func TestServiceGetGroupTree_CountsAssignableUsersAndDescendants(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -794,6 +815,67 @@ func TestServiceGetSettings_UsesCachedSnapshotUntilInvalidated(t *testing.T) {
 	}
 	if !refreshed.CentralizedSecurityEnabled {
 		t.Fatal("expected settings cache to refresh after update")
+	}
+}
+
+func TestServiceUpdateSettings_TenantContextDoesNotPoisonDefaultCache(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	initial, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.CentralizedSecurityEnabled {
+		t.Fatal("expected initial default settings to be disabled")
+	}
+
+	tenantCtx := WithTenant(ctx, "tenant_a")
+	if err := svc.UpdateSettings(tenantCtx, &SecuritySettings{CentralizedSecurityEnabled: true}, "tenant-admin"); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultSettings, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultSettings.CentralizedSecurityEnabled {
+		t.Fatal("tenant settings update must not replace cached default-tenant settings")
+	}
+}
+
+func TestServiceGetSettings_TenantSettingsAreIsolated(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	ctxA := WithTenant(ctx, "tenant_a")
+	ctxB := WithTenant(ctx, "tenant_b")
+
+	if err := svc.UpdateSettings(ctxA, &SecuritySettings{CentralizedSecurityEnabled: true, OrgStructureEnabled: true}, "tenant-a-admin"); err != nil {
+		t.Fatal(err)
+	}
+
+	settingsA, err := svc.GetSettings(ctxA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settingsA.CentralizedSecurityEnabled || !settingsA.OrgStructureEnabled {
+		t.Fatalf("expected tenant A settings to persist, got %+v", settingsA)
+	}
+
+	settingsB, err := svc.GetSettings(ctxB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settingsB.CentralizedSecurityEnabled || settingsB.OrgStructureEnabled {
+		t.Fatalf("expected tenant B settings to stay empty, got %+v", settingsB)
+	}
+
+	defaultSettings, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultSettings.CentralizedSecurityEnabled || defaultSettings.OrgStructureEnabled {
+		t.Fatalf("expected default settings to stay empty, got %+v", defaultSettings)
 	}
 }
 

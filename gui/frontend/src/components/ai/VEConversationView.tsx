@@ -300,6 +300,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [mentionStart, setMentionStart] = useState(-1);
     const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
     const [sending, setSending] = useState(false);
+    const [awaitingReplyVisible, setAwaitingReplyVisible] = useState(false);
     const [pendingAttachments, setPendingAttachments] = useState<PendingVEAttachment[]>([]);
     const [visibleQueue, setVisibleQueue] = useState<QueuedVEMessage[]>([]);
     // Track VE online status; input is disabled when offline.
@@ -347,15 +348,24 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         setMentionSelectedIndex(0);
     }, []);
 
+    const showAwaitingReply = useCallback(() => {
+        if (mountedRef.current) setAwaitingReplyVisible(true);
+    }, []);
+
+    const hideAwaitingReply = useCallback(() => {
+        if (mountedRef.current) setAwaitingReplyVisible(false);
+    }, []);
+
     const releaseResponseGate = useCallback(() => {
         awaitingReplyRef.current = false;
+        hideAwaitingReply();
         if (responseWatchdogRef.current) {
             clearTimeout(responseWatchdogRef.current);
             responseWatchdogRef.current = null;
         }
         if (!mountedRef.current) return;
         setQueueDrainSignal((value) => value + 1);
-    }, []);
+    }, [hideAwaitingReply]);
 
     const armResponseWatchdog = useCallback(() => {
         if (responseWatchdogRef.current) clearTimeout(responseWatchdogRef.current);
@@ -442,7 +452,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             responseWatchdogRef.current = null;
         }
         setSending(false);
-    }, [readOnly]);
+        hideAwaitingReply();
+    }, [hideAwaitingReply, readOnly]);
 
     useEffect(() => {
         if (readOnly || !externalMentionInsert?.name) return;
@@ -626,6 +637,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             responseWatchdogRef.current = null;
         }
         awaitingReplyRef.current = false;
+        hideAwaitingReply();
         queueDrainRunningRef.current = false;
         setPendingAttachments([]);
         setInputText("");
@@ -660,7 +672,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             }
         }
         if (veOnline) void initSession();
-    }, [closeMentionPopover, closeSession, initSession, onConversationCleared, readOnly, veOnline]);
+    }, [closeMentionPopover, closeSession, hideAwaitingReply, initSession, onConversationCleared, readOnly, veOnline]);
 
     const lastClearSignalRef = useRef(clearSignal);
     useEffect(() => {
@@ -718,6 +730,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             const content = data?.content || data?.chunk || "";
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
+            hideAwaitingReply();
             const senderId = String(data?.from_id || data?.fromId || data?.sender_id || data?.senderId || "");
             const senderName = String(data?.from_name || data?.fromName || data?.sender_name || data?.senderName || "");
             const attachments = normalizeVEMessageAttachments(data?.attachments);
@@ -758,6 +771,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             const sessionId = data?.session_id || data?.sessionId;
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
+            hideAwaitingReply();
             setState((prev) => {
                 const finalContent = prev.streamContent;
                 const endAttachments = normalizeVEMessageAttachments(data?.attachments);
@@ -790,6 +804,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
             if (reconnectTimerRef.current) return;
+            hideAwaitingReply();
             releaseResponseGate();
             setState((prev) => ({
                 ...prev,
@@ -815,7 +830,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (typeof unsub3 === "function") unsub3();
             else EventsOff("ve:disconnected");
         };
-    }, [attemptReconnect, releaseResponseGate]);
+    }, [attemptReconnect, hideAwaitingReply, releaseResponseGate]);
 
     // --- Message Sending ---
 
@@ -882,6 +897,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         setVisibleQueue((prev) => prev.filter((item) => item.id !== msg.id));
         queueDrainRunningRef.current = true;
         awaitingReplyRef.current = true;
+        showAwaitingReply();
         setState((prev) => ({
             ...prev,
             messages: prev.messages.some((item) => item.id === msg.message.id)
@@ -896,7 +912,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         } else {
             releaseResponseGate();
         }
-    }, [armResponseWatchdog, doSendMessage, releaseResponseGate]);
+    }, [armResponseWatchdog, doSendMessage, releaseResponseGate, showAwaitingReply]);
 
     useEffect(() => {
         if (readOnly || state.connectionState !== "connected" || !state.sessionId || state.streaming) return;
@@ -959,6 +975,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
         try {
             awaitingReplyRef.current = true;
+            showAwaitingReply();
             const sent = await doSendMessage(content, filePaths, userMsg.id);
             if (sent && awaitingReplyRef.current) {
                 armResponseWatchdog();
@@ -967,9 +984,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             }
         } finally {
             sendingRef.current = false;
-            setSending(false);
+            if (mountedRef.current) setSending(false);
         }
-    }, [armResponseWatchdog, clearConversation, doSendMessage, inputText, localSpeakerName, pendingAttachments, readOnly, releaseResponseGate, state.connectionState, state.sessionId, state.streaming]);
+    }, [armResponseWatchdog, clearConversation, doSendMessage, inputText, localSpeakerName, pendingAttachments, readOnly, releaseResponseGate, showAwaitingReply, state.connectionState, state.sessionId, state.streaming]);
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
@@ -1084,6 +1101,28 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         userName={readableSpeakerName(msg.fromName, msg.fromId, participants, localSpeakerName)}
                     />
                 ))}
+
+                {/* Awaiting first response chunk */}
+                {awaitingReplyVisible && !state.streaming && (
+                    <div data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
+                        <div
+                            style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "8px 12px",
+                                borderRadius: 8,
+                                background: theme.fieldBg,
+                                borderLeft: `3px solid ${theme.responseBorderLeft}`,
+                                fontSize: 13,
+                                color: theme.textMuted || theme.text,
+                            }}
+                        >
+                            <span>{isZh ? "思考中" : "Thinking"}</span>
+                            <span className="ve-cursor-blink">...</span>
+                        </div>
+                    </div>
+                )}
 
                 {/* Streaming Indicator */}
                 {state.streaming && (

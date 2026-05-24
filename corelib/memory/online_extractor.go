@@ -355,23 +355,30 @@ func (oe *OnlineExtractor) classifyAndApply(
 
 	case OpUpdate:
 		if classified.TargetID != "" && classified.MergedText != "" {
-			// Use Store.Update to ensure all indices are updated consistently.
-			// Merge tags from the new fact into the existing entry's tags.
-			// Preserve the target entry original category: UPDATE augments existing memory.
-			// "augment existing memory", not "reclassify it".
-			mergedTags := tags
-			targetCat := cat // fallback to new fact's category if target not found
-			oe.store.mu.RLock()
-			for i := range oe.store.entries {
-				if oe.store.entries[i].ID == classified.TargetID {
-					mergedTags = mergeTags(oe.store.entries[i].Tags, tags)
-					targetCat = oe.store.entries[i].Category
-					break
+			targets := oe.store.SearchDirectByID(classified.TargetID)
+			if len(targets) == 0 {
+				entry := Entry{
+					Content:  content,
+					Category: cat,
+					Tags:     tags,
+					Entities: fact.ParsedEntities(),
+					ValidAt:  validAt,
+					OwnerID:  ownerID,
 				}
+				op, _ := oe.saveGovernedExtractedEntry(entry)
+				return op, nil
 			}
-			oe.store.mu.RUnlock()
-
-			if err := oe.store.Update(classified.TargetID, classified.MergedText, targetCat, mergedTags); err != nil {
+			updated := targets[0]
+			updated.Content = classified.MergedText
+			updated.Tags = mergeTags(updated.Tags, tags)
+			updated.Entities = mergeStringSlice(updated.Entities, fact.ParsedEntities())
+			if validAt != nil {
+				updated.ValidAt = validAt
+			}
+			if invalidAt != nil {
+				updated.InvalidAt = invalidAt
+			}
+			if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
 				log.Printf("[online_extractor] update failed for %s: %v", classified.TargetID, err)
 				// Fallback to ADD.
 				entry := Entry{
@@ -384,30 +391,6 @@ func (oe *OnlineExtractor) classifyAndApply(
 				}
 				op, _ := oe.saveGovernedExtractedEntry(entry)
 				return op, nil
-			}
-
-			// Update entities on the target entry (Store.Update doesn't handle Entities).
-			if parsedEnts := fact.ParsedEntities(); len(parsedEnts) > 0 || validAt != nil {
-				changed := false
-				oe.store.mu.Lock()
-				for i := range oe.store.entries {
-					if oe.store.entries[i].ID == classified.TargetID {
-						if len(parsedEnts) > 0 {
-							oe.store.entries[i].Entities = mergeStringSlice(oe.store.entries[i].Entities, parsedEnts)
-						}
-						if validAt != nil {
-							oe.store.entries[i].ValidAt = validAt
-						}
-						oe.store.rebuildDerivedIndexesLocked(false)
-						oe.store.dirty = true
-						changed = true
-						break
-					}
-				}
-				oe.store.mu.Unlock()
-				if changed {
-					oe.store.signalSave()
-				}
 			}
 			return OpUpdate, nil
 		}
@@ -428,12 +411,30 @@ func (oe *OnlineExtractor) classifyAndApply(
 			// Invalidate the contradicted entry using temporal invalidation
 			// (Graphiti-style: set InvalidAt + mark superseded) instead of
 			// hard-deleting. This preserves history for temporal reasoning.
-			now := time.Now()
-			oe.store.mu.Lock()
-			changed := oe.store.supersedeEntryLocked(classified.TargetID, now)
-			oe.store.mu.Unlock()
-			if changed {
-				oe.store.signalSave()
+			if targets := oe.store.SearchDirectByID(classified.TargetID); len(targets) > 0 {
+				updated := targets[0]
+				changed := false
+				if updated.Status != StatusSuperseded {
+					updated.Status = StatusSuperseded
+					changed = true
+				}
+				if !updated.Stale {
+					updated.Stale = true
+					changed = true
+				}
+				if updated.InvalidAt == nil {
+					invalid := time.Now()
+					if !updated.CreatedAt.IsZero() && !invalid.After(updated.CreatedAt) {
+						invalid = updated.CreatedAt.Add(time.Nanosecond)
+					}
+					updated.InvalidAt = &invalid
+					changed = true
+				}
+				if changed {
+					if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
+						return "", fmt.Errorf("supersede target: %w", err)
+					}
+				}
 			}
 
 			// Also ADD the new fact (the contradicting information).

@@ -202,36 +202,27 @@ func (pc *ProfileConsolidator) upsertProfile(newContent string, ownerID string, 
 	evidenceIDs := synthesisEvidenceIDs(evidenceEntries)
 	boundary := InferMemoryBoundary(evidenceEntries)
 
-	pc.store.mu.Lock()
+	pc.store.mu.RLock()
 	for i := range pc.store.entries {
 		if pc.store.entries[i].Category == CategoryProfile && pc.store.entries[i].IsActive() && pc.store.entries[i].OwnerID == ownerID {
-			// Update existing: snapshot old version.
-			old := pc.store.entries[i].Content
-			if len(pc.store.entries[i].Versions) >= 3 {
-				pc.store.entries[i].Versions = pc.store.entries[i].Versions[1:]
+			updated := pc.store.entries[i]
+			pc.store.mu.RUnlock()
+
+			updated.Content = newContent
+			updated.Level = LevelProfile
+			updated.AccessCount++
+			updated.EvidenceIDs = evidenceIDs
+			updated.RelatedIDs = mergeTags(updated.RelatedIDs, evidenceIDs)
+			updated.DerivedKind = "profile"
+			updated.Boundary = &boundary
+			updated.SourceType = "profile_consolidation"
+			if updated.Interval == nil {
+				updated.Interval = &TimeInterval{Start: now, End: now}
 			}
-			pc.store.entries[i].Versions = append(pc.store.entries[i].Versions, VersionSnapshot{
-				Content:   old,
-				Timestamp: pc.store.entries[i].UpdatedAt,
-			})
-			pc.store.entries[i].Content = newContent
-			pc.store.entries[i].UpdatedAt = now
-			pc.store.entries[i].Level = LevelProfile
-			pc.store.entries[i].ContentHash = computeContentHash(newContent)
-			pc.store.entries[i].AccessCount++
-			pc.store.entries[i].EvidenceIDs = evidenceIDs
-			pc.store.entries[i].RelatedIDs = mergeTags(pc.store.entries[i].RelatedIDs, evidenceIDs)
-			pc.store.entries[i].DerivedKind = "profile"
-			pc.store.entries[i].Boundary = &boundary
-			pc.store.entries[i].SourceType = "profile_consolidation"
-			pc.store.rebuildDerivedIndexesLocked(false)
-			pc.store.dirty = true
-			pc.store.mu.Unlock()
-			pc.store.signalSave()
-			return nil
+			return pc.store.UpdateEntriesByID([]Entry{updated})
 		}
 	}
-	pc.store.mu.Unlock()
+	pc.store.mu.RUnlock()
 
 	// No existing profile: create one.
 	_, err := pc.store.UpsertEntryByTags(UpsertByTagsOptions{

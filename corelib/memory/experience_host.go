@@ -81,11 +81,11 @@ func (s *Store) EntriesWithTagForHost(tag string) []Entry {
 	return out
 }
 func experienceHostEntryMoreRecent(a, b Entry) bool {
-	if !a.UpdatedAt.Equal(b.UpdatedAt) {
-		return a.UpdatedAt.After(b.UpdatedAt)
-	}
 	if !a.CreatedAt.Equal(b.CreatedAt) {
 		return a.CreatedAt.After(b.CreatedAt)
+	}
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.After(b.UpdatedAt)
 	}
 	return a.ID > b.ID
 }

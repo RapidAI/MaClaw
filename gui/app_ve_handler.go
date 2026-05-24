@@ -780,12 +780,8 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 
 	switch name {
 	case "send_file":
-		// Step 2: Path parameter check
 		path, _ := args["path"].(string)
-		if strings.TrimSpace(path) == "" {
-			return "[error] missing path parameter"
-		}
-		// Step 3: Directory containment check (also returns FileInfo to avoid double stat)
+		// Steps 2-3: empty path + directory containment check (also returns FileInfo to avoid double stat)
 		canonicalPath, info, err := ValidateVEFilePathWithInfo(path, allowedDirs)
 		if err != nil {
 			return err.Error()
@@ -819,12 +815,8 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		// handler (veToolReadFile) which only does sensitive file check + size limit.
 		// This preserves backward compatibility: VE can always read non-sensitive files.
 		if len(allowedDirs) > 0 {
-			// Step 2: Path parameter check
 			path, _ := args["path"].(string)
-			if strings.TrimSpace(path) == "" {
-				return "[error] missing path parameter"
-			}
-			// Step 3: Directory containment check
+			// Steps 2-3: empty path + directory containment check
 			canonicalPath, err := ValidateVEFilePath(path, allowedDirs)
 			if err != nil {
 				return err.Error()
@@ -842,12 +834,8 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		// When allowedDirs is empty, fall through to the original VE list_directory
 		// handler (veToolListDirectory) which only blocks sensitive directories.
 		if len(allowedDirs) > 0 {
-			// Step 2: Path parameter check
 			path, _ := args["path"].(string)
-			if strings.TrimSpace(path) == "" {
-				return "[error] missing path parameter"
-			}
-			// Step 3: Directory containment check
+			// Steps 2-3: empty path + directory containment check
 			if _, err := IsWithinAllowedDirs(path, allowedDirs); err != nil {
 				return err.Error()
 			}

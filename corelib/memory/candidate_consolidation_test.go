@@ -74,6 +74,48 @@ func TestConsolidateMemoryCandidatesMarksRejectedStale(t *testing.T) {
 	}
 }
 
+func TestConsolidateMemoryCandidatesPersistsPromoteRejectThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	if err := store.Save(Entry{ID: "candidate-promote", Content: "Project API endpoint is https://api.example.com and build command is pnpm test", Category: CategoryProjectKnowledge, Tags: []string{memoryCandidateTag, "api"}, Status: StatusDormant, SourceType: memoryCandidateTag}); err != nil {
+		t.Fatalf("save promote: %v", err)
+	}
+	if err := store.Save(Entry{ID: "candidate-reject", Content: "thanks", Category: CategoryProjectKnowledge, Tags: []string{memoryCandidateTag}, Status: StatusDormant}); err != nil {
+		t.Fatalf("save reject: %v", err)
+	}
+
+	result := store.ConsolidateMemoryCandidates(context.Background())
+	if result.Scanned != 2 || result.Promoted != 1 || result.Rejected != 1 || len(result.Errors) != 0 {
+		t.Fatalf("unexpected consolidation result: %+v", result)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]Entry{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry
+	}
+	promoted := seen["candidate-promote"]
+	if promoted.Status != StatusActive || hasTag(promoted.Tags, memoryCandidateTag) || promoted.SourceType != "memory_governed" {
+		t.Fatalf("promoted candidate state not persisted: %+v", promoted)
+	}
+	rejected := seen["candidate-reject"]
+	if rejected.Status != StatusDormant || !rejected.Stale {
+		t.Fatalf("rejected candidate state not persisted: %+v", rejected)
+	}
+}
+
 func TestConsolidateMemoryCandidatesMergesDuplicateIntoActive(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {
@@ -113,6 +155,76 @@ func TestConsolidateMemoryCandidatesMergesDuplicateIntoActive(t *testing.T) {
 	}
 	if entries[0].ID != "active-api" || !hasTag(entries[0].Tags, "endpoint") || hasTag(entries[0].Tags, memoryCandidateTag) {
 		t.Fatalf("active entry should absorb non-candidate tags, got %+v", entries[0])
+	}
+}
+
+func TestConsolidateMemoryCandidatesDuplicateMergePersistsUpdateAndDeleteThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	now := time.Now().UTC()
+	active := Entry{
+		ID:        "active-api-sqlite",
+		Content:   "Project API endpoint is https://api.example.com and build command is pnpm test",
+		Category:  CategoryProjectKnowledge,
+		Tags:      []string{"api"},
+		Status:    StatusActive,
+		Strength:  1,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	candidate := Entry{
+		ID:        "candidate-api-sqlite",
+		Content:   "API endpoint is https://api.example.com and build command is pnpm test",
+		Category:  CategoryProjectKnowledge,
+		Tags:      []string{memoryCandidateTag, "endpoint"},
+		Status:    StatusDormant,
+		Strength:  1,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	insertTestEntries(store, active, candidate)
+	if err := backend.SaveEntry(&active); err != nil {
+		t.Fatalf("persist active: %v", err)
+	}
+	if err := backend.SaveEntry(&candidate); err != nil {
+		t.Fatalf("persist candidate: %v", err)
+	}
+
+	result := store.ConsolidateMemoryCandidates(context.Background())
+	if result.Scanned != 1 || result.Merged != 1 || len(result.Errors) != 0 {
+		t.Fatalf("expected duplicate candidate merge, got %+v", result)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]Entry{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry
+	}
+	merged := seen["active-api-sqlite"]
+	if merged.ID == "" || !hasTag(merged.Tags, "endpoint") || hasTag(merged.Tags, memoryCandidateTag) {
+		t.Fatalf("active entry should persist absorbed candidate tags, got %+v", merged)
+	}
+	if _, ok := seen["candidate-api-sqlite"]; ok {
+		t.Fatalf("merged candidate should be absent from LoadAll: %+v", seen["candidate-api-sqlite"])
+	}
+	modified, deleted, err := backend.Since(0)
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "candidate-api-sqlite" {
+		t.Fatalf("candidate delete should be visible in same sync stream, modified=%d deleted=%v", len(modified), deleted)
 	}
 }
 

@@ -904,7 +904,7 @@ func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *Wo
 		Advance:      true,
 	}
 
-	// When advancing to an execution phase (ToolFilterFull + !NeedsConfirm),
+	// When advancing to an orchestrator-backed execution phase,
 	// signal the caller to activate the task orchestrator. This is the
 	// workflow engine's declaration that "planning phases are done, execute."
 	// The caller decides HOW to execute (SubAgent vs main loop vs external).
@@ -913,7 +913,7 @@ func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *Wo
 	// "ppt_generation" all satisfy ToolFilterFull && !NeedsConfirm.
 	// Templates can opt out when full-tool execution must stay inside the
 	// phase prompt itself (for example controlled ops execution).
-	if nextPhase.ToolPolicy == ToolFilterFull && !nextPhase.NeedsConfirm && !nextPhase.DisableOrchestrator {
+	if IsExecutionOrchestratorPhase(*nextPhase) {
 		resp.ActivateOrchestrator = true
 		// The task list is in the phase immediately before the execution phase.
 		if nextIndex > 0 {
@@ -1052,6 +1052,56 @@ func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy {
 	}
 
 	return GetToolFilterForPhase(phase)
+}
+
+// GetActivePhaseToolFilter returns the template tool policy for the current
+// active phase even when the phase is temporarily blocked by a form, input, or
+// review gate. Use this for defensive LLM-facing filtering; use
+// GetPhaseToolFilter when the caller needs to know whether phase execution is
+// currently allowed.
+func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolicy {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return ToolFilterNone
+	}
+
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return ToolFilterNone
+	}
+	phase := &tmpl.Phases[ws.PhaseIndex]
+	if phase.ID != ws.CurrentPhase {
+		return ToolFilterNone
+	}
+
+	return GetToolFilterForPhase(phase)
+}
+
+// IsPhaseExecutionBlocked reports whether the active workflow phase is waiting
+// for form/input/review completion. A missing workflow is not blocked; corrupt
+// workflow state is treated as blocked.
+func (e *WorkflowEngine) IsPhaseExecutionBlocked(userID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return false
+	}
+
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return true
+	}
+	phase := &tmpl.Phases[ws.PhaseIndex]
+	if phase.ID != ws.CurrentPhase {
+		return true
+	}
+
+	return e.isPhaseExecutionBlockedLocked(ws, tmpl, phase)
 }
 
 func (e *WorkflowEngine) isPhaseExecutionBlockedLocked(ws *WorkflowState, tmpl *WorkflowTemplate, phase *PhaseTemplate) bool {

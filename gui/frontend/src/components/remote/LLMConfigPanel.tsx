@@ -26,9 +26,10 @@ interface Props {
     lang?: string;
     codexModels?: unknown[];
     onStatusChange?: (online: boolean, configured: boolean) => void;
+    onProviderChanged?: () => void;
 }
 
-export function LLMConfigPanel({ lang, onStatusChange }: Props) {
+export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Props) {
     const { showAlert, showConfirm } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
@@ -85,6 +86,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
                 setDlgDirty(false);
                 onStatusChange?.(true, true);
+                onProviderChanged?.();
                 setDlgTestResult({ ok: true, msg: t("OAuth login successful", "OAuth 登录成功") });
                 setTimeout(() => setDlgOpen(false), 1200);
             }
@@ -92,7 +94,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             setDlgTestResult({ ok: false, msg: String(e) });
         }
         setOauthBusy(false);
-    }, [t, onStatusChange, loadHubServiceStatus]);
+    }, [t, onStatusChange, onProviderChanged, loadHubServiceStatus]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -157,8 +159,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             console.info("[LLMConfigPanel] hub-llm-service-changed event received, reloading");
             loadProviders();
         };
-        EventsOn("hub-llm-service-changed", handler);
-        return () => { EventsOff("hub-llm-service-changed"); };
+        const cleanup = EventsOn("hub-llm-service-changed", handler);
+        return () => { if (typeof cleanup === 'function') cleanup(); else EventsOff("hub-llm-service-changed"); };
     }, [loadProviders]);
 
     const isNone = currentName === NONE_PROVIDER;
@@ -307,13 +309,14 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setCurrentName(HUB_SERVICE_PROVIDER_NAME);
             }
             onStatusChange?.(true, true);
+            onProviderChanged?.();
             setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
             setTimeout(() => setDlgOpen(false), 800);
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
         }
         setDlgSaving(false);
-    }, [dlgProviders, currentName, hubSelectionAlreadySynced, t, onStatusChange]);
+    }, [dlgProviders, hubSelectionAlreadySynced, t, onStatusChange, onProviderChanged]);
 
     const dlgQuickFill = useCallback((epName: string) => {
         const ep = KNOWN_OPENAI_ENDPOINTS.find(x => x.name === epName);
@@ -344,6 +347,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(NONE_PROVIDER);
                 onStatusChange?.(false, false);
+                onProviderChanged?.();
                 setDlgOpen(false);
             } catch (e) { showAlert(String(e)); }
             setDlgSaving(false);
@@ -367,6 +371,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
                 onStatusChange?.(!!sp.key, !!sp.key);
+                onProviderChanged?.();
                 setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
             } catch (e) {
@@ -387,6 +392,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
                 onStatusChange?.(true, true);
+                onProviderChanged?.();
                 setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
                 setDlgSaving(false);
@@ -426,6 +432,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                     : t("Vision support: disabled", "图片理解：不支持")}`,
             });
             onStatusChange?.(true, true);
+            onProviderChanged?.();
             // Don't auto-close: let user review the vision probe result and
             // manually override supports_vision if needed before closing.
         } catch (e) {
@@ -947,6 +954,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                             setCurrentName(data.current || NONE_PROVIDER);
                                                             setDlgDirty(false);
                                                             onStatusChange?.(true, true);
+                                                            onProviderChanged?.();
                                                         }
                                                         setDlgTestResult({ ok: true, msg: msg || "已从 Codex 导入" });
                                                     } catch (e) {

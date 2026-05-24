@@ -50,8 +50,9 @@ func (h *IMMessageHandler) toolMISData(args map[string]interface{}) string {
 }
 
 type AgentViewSubmitPayload struct {
-	ViewID string                 `json:"view_id"`
-	Data   map[string]interface{} `json:"data"`
+	ViewID    string                 `json:"view_id"`
+	Data      map[string]interface{} `json:"data"`
+	RequestID string                 `json:"request_id,omitempty"`
 }
 
 type AgentViewDismissPayload struct {
@@ -66,25 +67,36 @@ func (a *App) SubmitAgentView(payload AgentViewSubmitPayload) (*IMAgentResponse,
 }
 
 func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentResponse, error) {
-	a.clearAgentView(payload.ViewID)
-
 	// When a workflow form is dismissed, mark the form as skipped so the
 	// engine doesn't re-show it on the next HandleInput call.
 	if phaseID, ok := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "workflow:form:"); ok {
+		phaseID = strings.TrimSpace(phaseID)
+		workflowLifecyclePayload := workflowFormLifecyclePayloadFor("", phaseID, "", payload.Data)
+		cleared := false
 		hubClient := a.ensureHubClient()
 		if hubClient != nil {
 			handler := hubClient.ensureIMHandler()
 			if engine := handler.getWorkflowEngine(); engine != nil {
-				userID := resolveWorkflowFormUserID(handler, engine, strings.TrimSpace(phaseID), payload.Data)
-				if workflowFormMatchesActiveWorkflow(engine, userID, strings.TrimSpace(phaseID), payload.Data) {
+				userID := resolveWorkflowFormUserID(handler, engine, phaseID, payload.Data)
+				if ws := engine.GetActiveWorkflow(userID); ws != nil && ws.CurrentPhase == phaseID {
+					workflowLifecyclePayload = workflowFormLifecyclePayloadWithFallback(ws.ID, phaseID, userID, payload.Data)
+				}
+				if workflowFormMatchesActiveWorkflow(engine, userID, phaseID, payload.Data) {
 					if err := engine.SkipPhaseForm(userID); err != nil {
 						return nil, fmt.Errorf("skip workflow form: %w", err)
 					}
 				}
+				a.clearAgentViewWithPayload(payload.ViewID, workflowLifecyclePayload)
+				cleared = true
 				// Closing a stale or ambiguous workflow form should not block panel dismissal.
 				// Submit still validates workflow identity; dismiss can safely be best-effort.
 			}
 		}
+		if !cleared {
+			a.clearAgentViewWithPayload(payload.ViewID, workflowLifecyclePayload)
+		}
+	} else {
+		a.clearAgentView(payload.ViewID)
 	}
 
 	resp := &IMAgentResponse{Text: avTr("Task panel closed.", "任务面板已关闭。"), ResponseSource: imResponseSourceAgentViewDismiss.String()}
@@ -128,6 +140,9 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 		lifecyclePayload := map[string]interface{}{
 			"view_id": payload.ViewID,
 		}
+		for key, value := range workflowFormLifecyclePayload(payload.Data) {
+			lifecyclePayload[key] = value
+		}
 		if strings.TrimSpace(resp.Error) != "" {
 			lifecyclePayload["error"] = resp.Error
 			a.emitAgentViewLifecycle(agentViewLifecycleError, lifecyclePayload)
@@ -169,7 +184,7 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 	case misAgentViewIDIntent:
 		return a.handleMISIntentAgentViewSubmit(viewID.Arg, payload.Data)
 	case misAgentViewIDWorkflowForm:
-		return a.handleWorkflowFormAgentViewSubmit(viewID.Arg, payload.Data)
+		return a.handleWorkflowFormAgentViewSubmit(viewID.Arg, payload.Data, payload.RequestID)
 	default:
 		return &IMAgentResponse{Text: avTr("Task panel submission received.", "任务面板提交已收到。"), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}

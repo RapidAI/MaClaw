@@ -125,13 +125,20 @@ export function useWorkflowState() {
     const pendingWorkingDirRef = useRef("");
     const transientTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    const setWorkflowSplitMode = useCallback((next: boolean | ((current: boolean) => boolean)) => {
+        setSplitMode(current => {
+            const resolved = typeof next === "function" ? next(current) : next;
+            return resolved;
+        });
+    }, []);
+
     // Listen for phase updates
     useEffect(() => {
         const unsub = EventsOn("workflow:phase_update", (state: any) => {
             if (!state) {
                 // Workflow fully reset — clear everything.
                 setActive(false);
-                setSplitMode(false);
+                setWorkflowSplitMode(false);
                 setWorkflowType("");
                 setCurrentPhaseID("");
                 setLatestDocumentPhaseID("");
@@ -208,10 +215,16 @@ export function useWorkflowState() {
 
             // Auto-open split mode for phases that are expected to produce preview documents.
             if (isActive && !userClosedRef.current) {
-                setSplitMode(currentPhase ? workflowPhaseExpectsDocument(currentPhase, incomingPhases) : false);
+                setWorkflowSplitMode(prev => {
+                    if (!currentPhase) return false;
+                    if (workflowPhaseExpectsDocument(currentPhase, incomingPhases)) return true;
+                    // Keep the workflow board visible while moving into coding/execution
+                    // phases, but do not auto-open the pane if it was closed or never opened.
+                    return prev;
+                });
             }
             if (!isActive) {
-                setSplitMode(false);
+                setWorkflowSplitMode(false);
                 userClosedRef.current = false;
                 // Don't clear phaseDocuments here — preserve documents so
                 // the user can still view them (e.g. task decomposition)
@@ -223,7 +236,7 @@ export function useWorkflowState() {
             if (typeof unsub === "function") unsub();
             else EventsOff("workflow:phase_update");
         };
-    }, []);
+    }, [setWorkflowSplitMode]);
 
     // Listen for document updates
     useEffect(() => {
@@ -246,14 +259,14 @@ export function useWorkflowState() {
             setLatestDocumentPhaseID(phaseID);
             // Auto-open split mode when new doc content arrives
             if (!userClosedRef.current) {
-                setSplitMode(true);
+                setWorkflowSplitMode(true);
             }
         });
         return () => {
             if (typeof unsub === "function") unsub();
             else EventsOff("workflow:doc_update");
         };
-    }, []);
+    }, [setWorkflowSplitMode]);
 
     // Listen for gate results
     useEffect(() => {
@@ -349,15 +362,15 @@ export function useWorkflowState() {
 
     const openDocPreview = useCallback((phaseID?: string) => {
         userClosedRef.current = false;
-        setSplitMode(true);
+        setWorkflowSplitMode(true);
         const normalizedPhaseID = normalizeWorkflowPhaseID(phaseID);
         if (normalizedPhaseID) setLatestDocumentPhaseID(normalizedPhaseID);
-    }, []);
+    }, [setWorkflowSplitMode]);
 
     const closeDocPreview = useCallback(() => {
         userClosedRef.current = true;
-        setSplitMode(false);
-    }, []);
+        setWorkflowSplitMode(false);
+    }, [setWorkflowSplitMode]);
 
     const setSplitRatio = useCallback((ratio: number) => {
         setSplitRatioState(Math.max(0.2, Math.min(0.8, ratio)));

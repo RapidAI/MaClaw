@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -86,7 +87,8 @@ func (o *TaskOrchestrator2) CreatePlan(description string, subTasks []PlanSubTas
 	return plan, nil
 }
 
-// Execute runs a plan. Subtasks with no dependencies run in parallel.
+// Execute runs a plan. Ready subtasks are executed one by one to avoid
+// simultaneous LLM requests and provider rate-limit bursts.
 // Already-completed subtasks are skipped (supports Resume).
 func (o *TaskOrchestrator2) Execute(planID string) error {
 	o.mu.Lock()
@@ -99,7 +101,6 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 	o.mu.Unlock()
 
 	completed := make(map[string]bool)
-	var completedMu sync.Mutex // protects the completed map
 	// Pre-populate with already-completed subtasks (for Resume).
 	o.mu.RLock()
 	for _, st := range plan.SubTasks {
@@ -109,14 +110,11 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 	}
 	o.mu.RUnlock()
 
-	var wg sync.WaitGroup
-	var errMu sync.Mutex
 	var firstErr error
 
 	for {
 		var ready []int
 		o.mu.RLock()
-		completedMu.Lock()
 		for i, st := range plan.SubTasks {
 			if !st.Status.IsPending() {
 				continue
@@ -132,56 +130,69 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 				ready = append(ready, i)
 			}
 		}
-		completedMu.Unlock()
 		o.mu.RUnlock()
 
 		if len(ready) == 0 {
 			allDone := true
+			blockedPending := make([]string, 0)
+			running := false
 			o.mu.RLock()
 			for _, st := range plan.SubTasks {
+				if st.Status.IsRunning() {
+					running = true
+				}
+				if st.Status.IsPending() {
+					blockedPending = append(blockedPending, st.ID)
+				}
 				if st.Status.IsActive() {
 					allDone = false
-					break
 				}
 			}
 			o.mu.RUnlock()
 			if allDone {
 				break
 			}
+			if !running && len(blockedPending) > 0 {
+				firstErr = fmt.Errorf("plan %s has blocked subtasks with unsatisfied dependencies: %s", planID, strings.Join(blockedPending, ", "))
+				o.mu.Lock()
+				plan.Status = orchestratorTaskStatusFailed
+				for i := range plan.SubTasks {
+					if plan.SubTasks[i].Status.IsPending() {
+						plan.SubTasks[i].Status = orchestratorTaskStatusFailed
+						plan.SubTasks[i].Result = firstErr.Error()
+					}
+				}
+				o.mu.Unlock()
+				_ = o.savePlans()
+				return firstErr
+			}
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
-		for _, idx := range ready {
-			i := idx
+		for _, i := range ready {
 			o.mu.Lock()
 			plan.SubTasks[i].Status = orchestratorTaskStatusRunning
 			o.mu.Unlock()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				result, err := o.executeSubTask(&plan.SubTasks[i])
-				o.mu.Lock()
-				if err != nil {
-					plan.SubTasks[i].Status = orchestratorTaskStatusFailed
-					plan.SubTasks[i].Result = err.Error()
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					errMu.Unlock()
-				} else {
-					plan.SubTasks[i].Status = orchestratorTaskStatusCompleted
-					plan.SubTasks[i].Result = result
-					completedMu.Lock()
-					completed[plan.SubTasks[i].ID] = true
-					completedMu.Unlock()
+			result, err := o.executeSubTask(&plan.SubTasks[i])
+			o.mu.Lock()
+			if err != nil {
+				plan.SubTasks[i].Status = orchestratorTaskStatusFailed
+				plan.SubTasks[i].Result = err.Error()
+				if firstErr == nil {
+					firstErr = err
 				}
-				o.mu.Unlock()
-				_ = o.savePlans()
-			}()
+			} else {
+				plan.SubTasks[i].Status = orchestratorTaskStatusCompleted
+				plan.SubTasks[i].Result = result
+				completed[plan.SubTasks[i].ID] = true
+			}
+			o.mu.Unlock()
+			_ = o.savePlans()
+			if firstErr != nil {
+				break
+			}
 		}
-		wg.Wait()
 		if firstErr != nil {
 			o.mu.Lock()
 			plan.Status = orchestratorTaskStatusFailed

@@ -1636,10 +1636,10 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 		// Mark the run as having a pending self-repair so the LLM knows to
 		// wait before retrying. The flag is set on the run status (if still
 		// accessible) before launching the goroutine.
-		if cskill.ShouldAttemptRepair(updatedEntry) {
+		if r.canStartRepairSkill(updatedEntry) {
 			r.markSelfRepairPending(updatedEntry.Name)
+			go r.maybeRepairSkill(updatedEntry)
 		}
-		go r.maybeRepairSkill(updatedEntry)
 	}
 }
 
@@ -1684,6 +1684,10 @@ func (r *SkillRunner) markSelfRepairPending(skillName string) {
 			break
 		}
 	}
+}
+
+func (r *SkillRunner) canStartRepairSkill(entry *corelib.NLSkillEntry) bool {
+	return cskill.ShouldAttemptRepair(entry) && r.buildSkillRepairer() != nil
 }
 
 // maybeRepairSkill checks if a skill is eligible for LLM-driven self-repair

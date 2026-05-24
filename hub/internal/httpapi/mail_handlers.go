@@ -7,10 +7,71 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
+
+const tenantMailSenderNameKey = "mail_sender_name"
 
 type AdminSendTestMailRequest struct {
 	Email string `json:"email"`
+}
+
+type TenantMailSenderNameState struct {
+	FromName string `json:"from_name"`
+}
+
+func GetTenantMailSenderNameHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if system == nil {
+			writeError(w, http.StatusInternalServerError, "SYSTEM_SETTINGS_UNAVAILABLE", "System settings are unavailable")
+			return
+		}
+		scoped := scopedSystemSettingsForRequest(r, system)
+		raw, err := scoped.Get(r.Context(), tenantMailSenderNameKey)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_LOAD_FAILED", err.Error())
+			return
+		}
+		state := TenantMailSenderNameState{}
+		if strings.TrimSpace(raw) != "" {
+			if err := json.Unmarshal([]byte(raw), &state); err != nil {
+				writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_INVALID", err.Error())
+				return
+			}
+		}
+		state.FromName = strings.TrimSpace(state.FromName)
+		writeJSON(w, http.StatusOK, state)
+	}
+}
+
+func UpdateTenantMailSenderNameHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if system == nil {
+			writeError(w, http.StatusInternalServerError, "SYSTEM_SETTINGS_UNAVAILABLE", "System settings are unavailable")
+			return
+		}
+		var state TenantMailSenderNameState
+		if err := json.NewDecoder(r.Body).Decode(&state); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		state.FromName = strings.TrimSpace(state.FromName)
+		if len([]rune(state.FromName)) > 80 {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "From name must be 80 characters or fewer")
+			return
+		}
+		scoped := scopedSystemSettingsForRequest(r, system)
+		data, err := json.Marshal(state)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_SAVE_FAILED", err.Error())
+			return
+		}
+		if err := scoped.Set(r.Context(), tenantMailSenderNameKey, string(data)); err != nil {
+			writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_SAVE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	}
 }
 
 func GetMailConfigHandler(mailer *mail.Service) http.HandlerFunc {

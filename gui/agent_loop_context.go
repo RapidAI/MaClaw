@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,10 +21,11 @@ type LoopContext struct {
 	SlotKind    SlotKind // Coding, Scheduled, Auto (Background only)
 	Description string   // human-readable task description
 
-	mu            sync.RWMutex
-	maxIterations int // current max iterations for this loop
-	iteration     int // current iteration count
-	status        LoopState
+	mu                                  sync.RWMutex
+	maxIterations                       int // current max iterations for this loop
+	iteration                           int // current iteration count
+	status                              LoopState
+	backgroundTaskBoundaryExtensionKeys map[string]struct{}
 
 	Conversation []interface{}             // this loop's conversation messages
 	History      []agent.ConversationEntry // loaded history (for chat loops)
@@ -52,6 +54,12 @@ type LoopContext struct {
 	// task (intent=coding), the coding gate enforces the three-phase flow
 	// regardless of this flag.
 	SkipNeedsConfirmGate bool
+
+	// WorkflowAgentLoop is true when this loop was launched by the workflow
+	// engine to produce the current phase deliverable. Workflow tool policy must
+	// remain active in this case even if the user message was a confirmation that
+	// set SkipNeedsConfirmGate.
+	WorkflowAgentLoop bool
 
 	// IsAskUserResponse is true when the current message is a response to a
 	// previous ask_user tool question. In this case the user's text is a
@@ -140,6 +148,35 @@ func (c *LoopContext) AddMaxIterations(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.maxIterations += n
+}
+
+func (c *LoopContext) MarkBackgroundTaskBoundaryExtended(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := strings.Split(key, ",")
+	if c.backgroundTaskBoundaryExtensionKeys == nil {
+		c.backgroundTaskBoundaryExtensionKeys = make(map[string]struct{}, len(keys))
+	}
+	hasNewKey := false
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if _, exists := c.backgroundTaskBoundaryExtensionKeys[k]; !exists {
+			hasNewKey = true
+		}
+	}
+	if !hasNewKey {
+		return false
+	}
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			c.backgroundTaskBoundaryExtensionKeys[k] = struct{}{}
+		}
+	}
+	return true
 }
 
 // Iteration returns the current iteration count (thread-safe).

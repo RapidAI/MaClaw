@@ -19,6 +19,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-isatty v0.0.20
+	github.com/mattn/go-runewidth v0.0.19
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.10
 	github.com/refraction-networking/utls v1.8.2
@@ -34,6 +35,7 @@ require (
 	golang.org/x/net v0.42.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.38.0
+	golang.org/x/term v0.34.0
 	golang.org/x/text v0.35.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
@@ -71,7 +73,6 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
-	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/metakeule/fmtdate v1.1.2 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect

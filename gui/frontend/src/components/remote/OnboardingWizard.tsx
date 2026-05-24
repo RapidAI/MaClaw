@@ -51,7 +51,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const displayName = brandDisplayName || 'MaClaw';
 
     const [step, setStep] = useState(1);
-
     const [regEmail, setRegEmail] = useState(email || "");
     const [invCode, setInvCode] = useState("");
     const [invRequired, setInvRequired] = useState(false);
@@ -74,25 +73,21 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [regBusy, setRegBusy] = useState(false);
     const [regDone, setRegDone] = useState(false);
     const [hubConnecting, setHubConnecting] = useState(false);
-
     const [qrCodeURL, setQrCodeURL] = useState("");
     const [embeddedSSOLoading, setEmbeddedSSOLoading] = useState(false);
     const [embeddedSSOError, setEmbeddedSSOError] = useState("");
-
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
-
     const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [maclawModel, setMaclawModel] = useState("");        // MaClaw Agent 使用的模型
     const [claudeCodeModel, setClaudeCodeModel] = useState(""); // TigerClaw Code 使用的模型
     const [modelSaving, setModelSaving] = useState(false);
     const [modelSaved, setModelSaved] = useState(false);
-
     const [wxDone, setWxDone] = useState(false);
     const [wxSkipped, setWxSkipped] = useState(false);
     const [wxQrUrl, setWxQrUrl] = useState("");
@@ -103,7 +98,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const wxCompleted = wxDone || wxSkipped;
     const effectiveRegDone = offlineMode || regDone;
-
     const stepDone = useMemo(() => getOnboardingStepDone(onboardingFlow, {
         regDone: effectiveRegDone,
         llmDone,
@@ -122,7 +116,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const canPrev = step > 1;
     const isLastStep = step === totalSteps;
     const lastStepCompleted = !!stepDone[step];
-
     const applyHubServiceStatus = useCallback((status?: HubLLMServiceStatus | null) => {
         const shouldSkipLLM = !!status?.active && !!status?.skip_llm_config;
         if (shouldSkipLLM) {
@@ -611,12 +604,21 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         return;
                     } else if (st === "scaned") {
                         setWxMsg(t("已扫码，请在微信确认...", "Scanned, please confirm in WeChat..."));
+                    } else if (st === "wait" || !st) {
+                        setWxStatus("wait");
+                        setWxMsg(t("请用微信扫描二维码", "Scan with WeChat"));
                     } else if (st === "expired") {
                         setWxStatus("expired");
                         setWxMsg(poll.message || t("二维码已过期，请刷新", "QR expired, please refresh"));
                         wxPollingRef.current = false;
                         return;
                     } else if (poll.error) {
+                        if (poll.retryable === "true") {
+                            setWxStatus("wait");
+                            setWxMsg("❌ " + poll.error);
+                            setTimeout(doPoll, 2000);
+                            return;
+                        }
                         setWxStatus("error");
                         setWxMsg("❌ " + poll.error);
                         wxPollingRef.current = false;

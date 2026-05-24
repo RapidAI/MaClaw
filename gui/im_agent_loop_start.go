@@ -99,6 +99,12 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 
 	gateConfig, workflowOff, orchestratorActive := h.prepareAgentLoopCodingGate(opts.UserID, opts.UserText, ctx, opts.MilestoneTracker)
 	skipCodingGate := shouldSkipCodingGate(ctx, gateConfig)
+	if h.shouldBypassCodingGateForWorkflowAgentLoop(opts.UserID, ctx) {
+		if gateConfig.active {
+			log.Printf("[coding-gate] bypassed: workflow agent loop uses workflow tool policy user=%s", opts.UserID)
+		}
+		skipCodingGate = true
+	}
 	tools, toolsTokenBudget = h.applyInitialCodingToolGate(tools, gateConfig, skipCodingGate, orchestratorActive)
 
 	return agentLoopStartState{

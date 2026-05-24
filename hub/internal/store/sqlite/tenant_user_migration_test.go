@@ -3,8 +3,10 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -544,5 +546,168 @@ func TestTenantUserMigrationRemotePlainKeyValueTenantIsHonored(t *testing.T) {
 	defer tx.Rollback()
 	if moved, err := moveRemoteGatewayBindingSetting(ctx, tx, "im_telegram_bindings", store.DefaultTenantID, "tenant_a", "alice@example.com"); err != nil || moved != 0 {
 		t.Fatalf("moved = %d err=%v, want 0 nil", moved, err)
+	}
+}
+
+func TestMergeTenantsMovesScopedRowsAndDeletesSource(t *testing.T) {
+	ctx := context.Background()
+	provider := newTenantMigrationProvider(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO tenants (id, slug, name, status, settings_json, created_by_admin_id, created_at, updated_at) VALUES (?, ?, ?, 'active', '{}', 'test', ?, ?)`, "tenant_a", "a", "Tenant A", now, now); err != nil {
+		t.Fatalf("insert source tenant: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO tenants (id, slug, name, status, settings_json, created_by_admin_id, created_at, updated_at) VALUES (?, ?, ?, 'active', '{}', 'test', ?, ?)`, "tenant_b", "b", "Tenant B", now, now); err != nil {
+		t.Fatalf("insert target tenant: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', 'approved', 0, ?, ?)`, "u-a", "tenant_a", "alice@example.com", "sn-a", now, now); err != nil {
+		t.Fatalf("insert source user: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', 'approved', 0, ?, ?)`, "u-b", "tenant_b", "bob@example.com", "sn-b", now, now); err != nil {
+		t.Fatalf("insert target user: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, ?)`, "tenant:tenant_a:security_settings", `{"org_structure_enabled":true}`, now); err != nil {
+		t.Fatalf("insert tenant setting: %v", err)
+	}
+	sourceRegistry := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "source-group", Name: "Source Group"}}, GlobalServiceGroupIDs: []string{"source-group"}}
+	targetRegistry := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "target-group", Name: "Target Group"}}, GlobalServiceGroupIDs: []string{"target-group"}}
+	sourceRegistryRaw, _ := json.Marshal(sourceRegistry)
+	targetRegistryRaw, _ := json.Marshal(targetRegistry)
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, ?), (?, ?, ?)`, tenantRegistryKey("tenant_a"), string(sourceRegistryRaw), now, tenantRegistryKey("tenant_b"), string(targetRegistryRaw), now); err != nil {
+		t.Fatalf("insert llm registries: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO security_groups (tenant_id, id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?), (?, ?, ?, '', ?, ?), (?, ?, ?, ?, ?, ?)`, "tenant_a", "root-a", "Root A", now, now, "tenant_b", "root-b", "Root B", now, now, "tenant_a", "child-a", "Child A", "root-a", now, now); err != nil {
+		t.Fatalf("insert security groups: %v", err)
+	}
+
+	dry, err := MergeTenants(ctx, provider.Write, TenantMergeOptions{FromTenant: "tenant_a", ToTenant: "tenant_b", DryRun: true, DeleteSource: true})
+	if err != nil {
+		t.Fatalf("dry merge: %v", err)
+	}
+	if dry.Tables["users"].MovedRows != 1 || dry.SystemSettings.MovedKeys != 1 {
+		t.Fatalf("unexpected dry result: %#v", dry)
+	}
+	var tenantAfterDry string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT tenant_id FROM users WHERE id = 'u-a'`).Scan(&tenantAfterDry); err != nil || tenantAfterDry != "tenant_a" {
+		t.Fatalf("dry run changed source user tenant=%q err=%v", tenantAfterDry, err)
+	}
+
+	result, err := MergeTenants(ctx, provider.Write, TenantMergeOptions{FromTenant: "tenant_a", ToTenant: "tenant_b", DeleteSource: true})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if result.Tables["users"].MovedRows != 1 || result.SystemSettings.MovedKeys != 1 || result.SystemSettings.MergedKeys != 1 {
+		t.Fatalf("unexpected merge result: %#v", result)
+	}
+	var tenantID string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT tenant_id FROM users WHERE id = 'u-a'`).Scan(&tenantID); err != nil || tenantID != "tenant_b" {
+		t.Fatalf("source user tenant=%q err=%v", tenantID, err)
+	}
+	var status string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT status FROM tenants WHERE id = 'tenant_a'`).Scan(&status); err != nil || status != "deleted" {
+		t.Fatalf("source tenant status=%q err=%v", status, err)
+	}
+	var targetSetting string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key = 'tenant:tenant_b:security_settings'`).Scan(&targetSetting); err != nil || !strings.Contains(targetSetting, "org_structure_enabled") {
+		t.Fatalf("target setting=%q err=%v", targetSetting, err)
+	}
+	var registryRaw string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key = ?`, tenantRegistryKey("tenant_b")).Scan(&registryRaw); err != nil {
+		t.Fatalf("target registry missing: %v", err)
+	}
+	if !strings.Contains(registryRaw, "source-group") || !strings.Contains(registryRaw, "target-group") {
+		t.Fatalf("target registry did not merge source and target groups: %s", registryRaw)
+	}
+	var sourceRegistryCount int
+	if err := provider.Write.QueryRowContext(ctx, `SELECT COUNT(*) FROM system_settings WHERE key = ?`, tenantRegistryKey("tenant_a")).Scan(&sourceRegistryCount); err != nil || sourceRegistryCount != 0 {
+		t.Fatalf("source registry count=%d err=%v", sourceRegistryCount, err)
+	}
+	var targetRootCount int
+	if err := provider.Write.QueryRowContext(ctx, `SELECT COUNT(*) FROM security_groups WHERE tenant_id = 'tenant_b' AND parent_id = ''`).Scan(&targetRootCount); err != nil || targetRootCount != 1 {
+		t.Fatalf("target root count=%d err=%v", targetRootCount, err)
+	}
+	var childParent string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT parent_id FROM security_groups WHERE id = 'child-a'`).Scan(&childParent); err != nil || childParent != "root-b" {
+		t.Fatalf("child parent=%q err=%v", childParent, err)
+	}
+}
+
+func TestMergeTenantsRejectsTenantScopedRowConflicts(t *testing.T) {
+	ctx := context.Background()
+	provider := newTenantMigrationProvider(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO tenants (id, slug, name, status, settings_json, created_by_admin_id, created_at, updated_at) VALUES (?, ?, ?, 'active', '{}', 'test', ?, ?)`, "tenant_a", "a", "Tenant A", now, now); err != nil {
+		t.Fatalf("insert source tenant: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO tenants (id, slug, name, status, settings_json, created_by_admin_id, created_at, updated_at) VALUES (?, ?, ?, 'active', '{}', 'test', ?, ?)`, "tenant_b", "b", "Tenant B", now, now); err != nil {
+		t.Fatalf("insert target tenant: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `CREATE TABLE tenant_merge_conflict_probe (tenant_id TEXT NOT NULL, item_key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (tenant_id, item_key))`); err != nil {
+		t.Fatalf("create probe table: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO tenant_merge_conflict_probe (tenant_id, item_key, value) VALUES ('tenant_a', 'same-key', 'source'), ('tenant_b', 'same-key', 'target')`); err != nil {
+		t.Fatalf("insert probe rows: %v", err)
+	}
+
+	_, err := MergeTenants(ctx, provider.Write, TenantMergeOptions{FromTenant: "tenant_a", ToTenant: "tenant_b", DeleteSource: true})
+	if !errors.Is(err, ErrTenantMergeConflict) || !strings.Contains(err.Error(), "tenant_merge_conflict_probe") {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+	var sourceCount, targetCount int
+	if err := provider.Write.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenant_merge_conflict_probe WHERE tenant_id = 'tenant_a'`).Scan(&sourceCount); err != nil {
+		t.Fatalf("count source rows: %v", err)
+	}
+	if err := provider.Write.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenant_merge_conflict_probe WHERE tenant_id = 'tenant_b'`).Scan(&targetCount); err != nil {
+		t.Fatalf("count target rows: %v", err)
+	}
+	if sourceCount != 1 || targetCount != 1 {
+		t.Fatalf("merge should not delete conflicting rows, source=%d target=%d", sourceCount, targetCount)
+	}
+}
+
+func TestMergeTenantsFromDefaultPreservesDefaultTenantAndSettings(t *testing.T) {
+	ctx := context.Background()
+	provider := newTenantMigrationProvider(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO tenants (id, slug, name, status, settings_json, created_by_admin_id, created_at, updated_at) VALUES (?, ?, ?, 'active', '{}', 'test', ?, ?)`, "tenant_b", "b", "Tenant B", now, now); err != nil {
+		t.Fatalf("insert target tenant: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', 'approved', 0, ?, ?)`, "u-default", store.DefaultTenantID, "default@example.com", "sn-default", now, now); err != nil {
+		t.Fatalf("insert default user: %v", err)
+	}
+	sourceRegistry := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "default-source", Name: "Default Source"}}, GlobalServiceGroupIDs: []string{"default-source"}}
+	sourceRegistryRaw, _ := json.Marshal(sourceRegistry)
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, ?), ('security_settings', ?, ?)`, llmservice.RegistryKey, string(sourceRegistryRaw), now, `{"org_structure_enabled":true}`, now); err != nil {
+		t.Fatalf("insert default settings: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO security_groups (tenant_id, id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?), (?, ?, ?, '', ?, ?), (?, ?, ?, ?, ?, ?)`, store.DefaultTenantID, "default-root", "Default Root", now, now, "tenant_b", "root-b", "Root B", now, now, store.DefaultTenantID, "default-child", "Default Child", "default-root", now, now); err != nil {
+		t.Fatalf("insert security groups: %v", err)
+	}
+
+	result, err := MergeTenants(ctx, provider.Write, TenantMergeOptions{FromTenant: store.DefaultTenantID, ToTenant: "tenant_b", DeleteSource: true})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatalf("expected default tenant delete warning, got %#v", result)
+	}
+	var defaultStatus string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT status FROM tenants WHERE id = ?`, store.DefaultTenantID).Scan(&defaultStatus); err != nil || defaultStatus != "active" {
+		t.Fatalf("default status=%q err=%v", defaultStatus, err)
+	}
+	var defaultRegistryRaw string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key = ?`, llmservice.RegistryKey).Scan(&defaultRegistryRaw); err != nil || !strings.Contains(defaultRegistryRaw, "default-source") {
+		t.Fatalf("default registry=%q err=%v", defaultRegistryRaw, err)
+	}
+	var targetRegistryRaw string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key = ?`, tenantRegistryKey("tenant_b")).Scan(&targetRegistryRaw); err != nil || !strings.Contains(targetRegistryRaw, "default-source") {
+		t.Fatalf("target registry=%q err=%v", targetRegistryRaw, err)
+	}
+	var defaultRootCount int
+	if err := provider.Write.QueryRowContext(ctx, `SELECT COUNT(*) FROM security_groups WHERE tenant_id = ? AND parent_id = ''`, store.DefaultTenantID).Scan(&defaultRootCount); err != nil || defaultRootCount != 1 {
+		t.Fatalf("default root count=%d err=%v", defaultRootCount, err)
+	}
+	var childParent string
+	if err := provider.Write.QueryRowContext(ctx, `SELECT parent_id FROM security_groups WHERE id = 'default-child'`).Scan(&childParent); err != nil || childParent != "root-b" {
+		t.Fatalf("child parent=%q err=%v", childParent, err)
 	}
 }

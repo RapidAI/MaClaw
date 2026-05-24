@@ -106,6 +106,9 @@ func TestLoadConfigDefaultsLocalAIModelsWhenFieldsAbsent(t *testing.T) {
 	if cfg.ScreenParsingEnabled == nil || !*cfg.ScreenParsingEnabled {
 		t.Fatal("absent screen_parsing_enabled should default to true")
 	}
+	if cfg.SubAgentConcurrency != corelib.DefaultSubAgentConcurrency {
+		t.Fatalf("absent subagent_concurrency should default to %d, got %d", corelib.DefaultSubAgentConcurrency, cfg.SubAgentConcurrency)
+	}
 }
 
 func TestLoadConfigPreservesExplicitLocalAIModelDisable(t *testing.T) {
@@ -355,6 +358,30 @@ func TestSaveConfigPersistsLogDetailEnabled(t *testing.T) {
 	}
 	if !reloaded.LogDetailEnabled {
 		t.Fatal("expected LogDetailEnabled to persist as true")
+	}
+}
+
+func TestSaveConfigSanitizesSubAgentConcurrency(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.SubAgentConcurrency = 9
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.SubAgentConcurrency != corelib.MaxSubAgentConcurrency {
+		t.Fatalf("SubAgentConcurrency = %d, want %d", reloaded.SubAgentConcurrency, corelib.MaxSubAgentConcurrency)
 	}
 }
 

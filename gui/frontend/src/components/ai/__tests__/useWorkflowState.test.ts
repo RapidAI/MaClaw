@@ -503,6 +503,55 @@ describe('workflow state document collection', () => {
         expect(result.current.state.splitMode).toBe(true);
     });
 
+    it('keeps workflow board visible when coding workflow enters implementation phase', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'implementation',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
+        expect(result.current.state.currentPhaseID).toBe('implementation');
+    });
+
+    it('does not reopen implementation preview after the user closes it', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+        });
+        act(() => {
+            result.current.closeDocPreview();
+        });
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'implementation',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(false);
+    });
+
     it('updates fallback phase output snapshots until a doc update becomes authoritative', () => {
         const { result } = renderHook(() => useWorkflowState());
 

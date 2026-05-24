@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f6f8fb" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#101418" media="(prefers-color-scheme: dark)" />
+  <title>MaClawSrv</title>
+  <link rel="stylesheet" href="/app/styles.css?v=20260525-24" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="User app sections">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">M</div>
+        <div><strong>MaClawSrv</strong><span id="brandSubtitle">用户工作台</span></div>
+      </div>
+      <nav class="nav" aria-label="User views">
+        <button type="button" data-view="assistant">AI 助手</button>
+        <button type="button" data-view="settings">系统设置</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div id="identity" class="identity">未登录</div>
+        <button id="logoutBtn" type="button" class="ghost">退出</button>
+      </div>
+    </aside>
+    <main id="main" class="main" tabindex="-1">
+      <header class="topbar">
+        <div><h1 id="pageTitle">AI 助手</h1><p id="pageHint">多个实例共享用户级配置、工具与知识。</p></div>
+        <div id="statusBadge" class="badge" role="status" aria-live="polite">启动中</div>
+      </header>
+      <section id="content" class="content" aria-live="polite"></section>
+    </main>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  </div>
+  <script src="/app/app.js?v=20260525-24"></script>
+</body>
+</html>

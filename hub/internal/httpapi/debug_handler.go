@@ -69,10 +69,12 @@ func DebugListMachinesHandler(devices *device.Service, users machineUserLookup) 
 			return
 		}
 
-		if all == "1" || all == "true" || isTenantScopedAdminRequest(r) {
+		allRequested := all == "1" || strings.EqualFold(all, "true")
+		tenantScoped := isTenantScopedAdminRequest(r)
+		if allRequested {
 			var items []device.MachineRuntimeInfo
 			var err error
-			if isTenantScopedAdminRequest(r) {
+			if tenantScoped {
 				items, err = devices.ListMachinesByTenant(r.Context(), tenantID)
 			} else {
 				items, err = devices.ListAllMachines(r.Context())
@@ -87,10 +89,29 @@ func DebugListMachinesHandler(devices *device.Service, users machineUserLookup) 
 			return
 		}
 
+		items := devices.ListOnlineMachines()
+		if tenantScoped {
+			items = filterMachineListByTenant(items, tenantID)
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
-			"machines": enrichMachineList(r.Context(), devices.ListOnlineMachines(), users),
+			"machines": enrichMachineList(r.Context(), items, users),
 		})
 	}
+}
+
+func filterMachineListByTenant(items []device.MachineRuntimeInfo, tenantID string) []device.MachineRuntimeInfo {
+	tenantID = store.NormalizeTenantID(tenantID)
+	if tenantID == "" || len(items) == 0 {
+		return []device.MachineRuntimeInfo{}
+	}
+	out := make([]device.MachineRuntimeInfo, 0, len(items))
+	for _, item := range items {
+		if store.NormalizeTenantID(item.TenantID) == tenantID {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func enrichMachineList(ctx context.Context, items []device.MachineRuntimeInfo, users machineUserLookup) []machineListItem {

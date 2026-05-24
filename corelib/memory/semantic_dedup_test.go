@@ -81,6 +81,85 @@ ew.md`,
 	}
 }
 
+func TestProcessPendingDedupMergePersistsUpdateAndDeleteThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	now := time.Now().UTC()
+	candidate := Entry{
+		ID:           "candidate-sqlite",
+		Content:      "alpha endpoint is https://old.example.test",
+		Category:     CategoryProjectKnowledge,
+		Tags:         []string{"alpha"},
+		Entities:     []string{"entity:alpha", "entity:https://old.example.test"},
+		Embedding:    []float32{1, 0, 0, 0},
+		RelatedIDs:   []string{"new-entry-sqlite"},
+		RelatedEdges: []RelatedEdge{{ID: "new-entry-sqlite", Strength: 0.9}},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	newEntry := Entry{
+		ID:           "new-entry-sqlite",
+		Content:      "alpha endpoint is https://new.example.test",
+		Category:     CategoryProjectKnowledge,
+		Tags:         []string{"beta"},
+		Entities:     []string{"entity:alpha", "entity:https://new.example.test"},
+		Embedding:    []float32{1, 0, 0, 0},
+		RelatedIDs:   []string{"candidate-sqlite"},
+		RelatedEdges: []RelatedEdge{{ID: "candidate-sqlite", Strength: 0.9}},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.Save(candidate); err != nil {
+		t.Fatalf("save candidate: %v", err)
+	}
+	if err := store.Save(newEntry); err != nil {
+		t.Fatalf("save new entry: %v", err)
+	}
+	store.SetLLMDedup(mockLLMForDedup{response: `{"decision":"merge","merged":"alpha endpoint is https://new.example.test","reason":"same endpoint fact"}`})
+	store.mu.Lock()
+	store.pendingDedup = []pendingDedupPair{{NewEntryID: "new-entry-sqlite", CandidateEntryID: "candidate-sqlite", CreatedAt: now}}
+	store.mu.Unlock()
+
+	if merged := store.ProcessPendingDedup(context.Background()); merged != 1 {
+		t.Fatalf("expected one merge, got %d", merged)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]Entry{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry
+	}
+	mergedEntry := seen["candidate-sqlite"]
+	if mergedEntry.Content != "alpha endpoint is https://new.example.test" || !hasTag(mergedEntry.Tags, "beta") {
+		t.Fatalf("candidate update not persisted: %+v", mergedEntry)
+	}
+	if len(mergedEntry.RelatedIDs) != 0 || len(mergedEntry.RelatedEdges) != 0 {
+		t.Fatalf("candidate should drop edges to deleted entry: related=%v edges=%v", mergedEntry.RelatedIDs, mergedEntry.RelatedEdges)
+	}
+	if _, ok := seen["new-entry-sqlite"]; ok {
+		t.Fatalf("merged new entry should be absent from LoadAll: %+v", seen["new-entry-sqlite"])
+	}
+	_, deleted, err := backend.Since(0)
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "new-entry-sqlite" {
+		t.Fatalf("new entry delete should be visible in sync stream, got %v", deleted)
+	}
+}
+
 func TestSemanticDedupCandidateSkipsInactiveEntries(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
 	if err != nil {

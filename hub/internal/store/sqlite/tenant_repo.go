@@ -70,9 +70,24 @@ func (r *tenantRepo) UpdateDomains(ctx context.Context, id string, primaryDomain
 	return execWrite(ctx, r.batch, r.db, `UPDATE tenants SET primary_domain = ?, settings_json = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, primaryDomain, settingsJSON, now, id)
 }
 
+func (r *tenantRepo) UpdateSettings(ctx context.Context, id string, name string, primaryDomain string, settingsJSON string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return execWrite(ctx, r.batch, r.db, `UPDATE tenants SET name = ?, primary_domain = ?, settings_json = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, name, primaryDomain, settingsJSON, now, id)
+}
+
 func (r *tenantRepo) EnsureDefault(ctx context.Context) (*store.Tenant, error) {
 	if existing, err := r.GetByID(ctx, store.DefaultTenantID); err != nil || existing != nil {
-		return existing, err
+		if err != nil || existing == nil {
+			return existing, err
+		}
+		if existing.DeletedAt != nil || existing.Status != "active" {
+			now := time.Now().UTC().Format(time.RFC3339)
+			if updateErr := execWrite(ctx, r.batch, r.db, `UPDATE tenants SET status = 'active', deleted_at = NULL, updated_at = ? WHERE id = ?`, now, store.DefaultTenantID); updateErr != nil {
+				return nil, updateErr
+			}
+			return r.GetByID(ctx, store.DefaultTenantID)
+		}
+		return existing, nil
 	}
 	t := normalizeTenantRecord(nil)
 	if err := r.Create(ctx, &t); err != nil {

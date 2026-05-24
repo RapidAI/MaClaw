@@ -7,7 +7,10 @@
   var loginTenantOptionsCache = [];
   var tenantCreateBusy = false;
   var tenantAdminCreateBusy = false;
+  var tenantMergeBusy = {};
   var tenantDomainSaveBusy = {};
+  var tenantListPage = 1;
+  var tenantListPageSize = 10;
   var TENANT_I18N = {
     nav: { zh: '\u79df\u6237\u7ba1\u7406', en: 'Tenants' },
     navDesc: { zh: '\u521b\u5efa\u79df\u6237\u548c\u79df\u6237\u7ba1\u7406\u5458', en: 'Create tenants and tenant admins' },
@@ -29,9 +32,13 @@
     name: { zh: '\u79df\u6237\u540d\u79f0', en: 'Tenant Name' },
     tenantID: { zh: 'Tenant ID', en: 'Tenant ID' },
     domain: { zh: '\u90ae\u7bb1\u57df\u540d\uff08\u53ef\u9009\uff0c\u591a\u4e2a\uff09', en: 'Email Domains (optional, multiple)' },
-    saveDomains: { zh: '\u4fdd\u5b58\u57df\u540d', en: 'Save Domains' },
-    domainsSaved: { zh: '\u79df\u6237\u57df\u540d\u5df2\u66f4\u65b0\u3002', en: 'Tenant domains updated.' },
-    domainsSaveFailed: { zh: '\u66f4\u65b0\u79df\u6237\u57df\u540d\u5931\u8d25: {error}', en: 'Update tenant domains failed: {error}' },
+    saveSettings: { zh: '\u4fdd\u5b58\u8bbe\u7f6e', en: 'Save Settings' },
+    domainsSaved: { zh: '\u79df\u6237\u8bbe\u7f6e\u5df2\u66f4\u65b0\u3002', en: 'Tenant settings updated.' },
+    domainsSaveFailed: { zh: '\u66f4\u65b0\u79df\u6237\u8bbe\u7f6e\u5931\u8d25: {error}', en: 'Update tenant settings failed: {error}' },
+    registration: { zh: '\u65b0\u7528\u6237\u6ce8\u518c', en: 'New User Registration' },
+    registrationOpen: { zh: '\u5141\u8bb8', en: 'Open' },
+    registrationClosed: { zh: '\u5173\u95ed', en: 'Closed' },
+    acceptRegistration: { zh: '\u63a5\u53d7\u65b0\u7528\u6237\u6ce8\u518c', en: 'Accept new user registration' },
     adminUser: { zh: '\u7ba1\u7406\u5458\u7528\u6237\u540d', en: 'Admin Username' },
     adminEmail: { zh: '\u7ba1\u7406\u5458\u90ae\u7bb1', en: 'Admin Email' },
     adminName: { zh: '\u663e\u793a\u540d\u79f0', en: 'Display Name' },
@@ -67,6 +74,17 @@
     inactive: { zh: '\u5df2\u505c\u7528', en: 'Inactive' },
     deleted: { zh: '\u5df2\u5220\u9664', en: 'Deleted' },
     noActiveTenants: { zh: '\u6682\u65e0\u53ef\u7528\u79df\u6237', en: 'No active tenants' },
+    pagePrev: { zh: '\u4e0a\u4e00\u9875', en: 'Prev' },
+    pageNext: { zh: '\u4e0b\u4e00\u9875', en: 'Next' },
+    pageInfo: { zh: '\u7b2c {page}/{pages} \u9875\uff0c\u5171 {total} \u4e2a\u79df\u6237', en: 'Page {page}/{pages}, {total} tenants' },
+    mergeTenant: { zh: '\u5408\u5e76', en: 'Merge' },
+    mergeDryRun: { zh: '\u9884\u68c0', en: 'Preview' },
+    mergeChooseTarget: { zh: '\u8bf7\u9009\u62e9\u8981\u5408\u5e76\u5230\u7684\u76ee\u6807\u79df\u6237\u3002', en: 'Choose target tenant to merge into.' },
+    mergeConfirm: { zh: '\u786e\u8ba4\u5c06\u79df\u6237 {source} \u7684\u6570\u636e\u5408\u5e76\u5230 {target} \u5417\uff1f\u5408\u5e76\u540e\u6e90\u79df\u6237\u4f1a\u88ab\u6807\u8bb0\u5220\u9664\u3002', en: 'Merge tenant {source} into {target}? The source tenant will be marked deleted after merge.' },
+    mergeConfirmDefault: { zh: '\u786e\u8ba4\u5c06\u9ed8\u8ba4\u79df\u6237 {source} \u7684\u6570\u636e\u5408\u5e76\u5230 {target} \u5417\uff1f\u9ed8\u8ba4\u79df\u6237\u4e0d\u4f1a\u88ab\u5220\u9664\uff0c\u4f46\u6570\u636e\u4f1a\u8fc1\u79fb\u5230\u76ee\u6807\u79df\u6237\u3002', en: 'Merge default tenant {source} into {target}? Default tenant will not be deleted, but its data will move to the target tenant.' },
+    mergeDone: { zh: '\u79df\u6237\u5408\u5e76\u5b8c\u6210\uff1a\u79fb\u52a8 {moved} \u6761\uff0c\u7cfb\u7edf\u8bbe\u7f6e\u5408\u5e76 {merged} \u9879\u3002', en: 'Tenant merge done: moved {moved} rows and merged {merged} system settings.' },
+    mergePreviewDone: { zh: '\u9884\u68c0\u5b8c\u6210\uff1a\u5c06\u79fb\u52a8 {moved} \u6761\uff0c\u7cfb\u7edf\u8bbe\u7f6e\u5408\u5e76 {merged} \u9879\u3002', en: 'Preview done: would move {moved} rows and merge {merged} system settings.' },
+    mergeFailed: { zh: '\u79df\u6237\u5408\u5e76\u5931\u8d25: {error}', en: 'Tenant merge failed: {error}' },
     deactivate: { zh: '\u505c\u7528', en: 'Deactivate' },
     reactivate: { zh: '\u542f\u7528', en: 'Reactivate' },
     deleteTenant: { zh: '\u5220\u9664', en: 'Delete' },
@@ -137,6 +155,22 @@
     if (item.primary_domain) domains.unshift(item.primary_domain);
     return splitDomains(domains.join('\n'));
   }
+  function tenantSettings(item) {
+    if (!item || !item.settings_json) return {};
+    try {
+      var parsed = JSON.parse(String(item.settings_json || '{}'));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function tenantAllowsRegistration(item) {
+    if (!item) return true;
+    if (typeof item.allow_user_registration === 'boolean') return item.allow_user_registration;
+    var settings = tenantSettings(item);
+    if (settings.allow_user_registration === false || settings.registration_enabled === false) return false;
+    return true;
+  }
   function tenantDomainConflict(domains, currentTenantID) {
     var wanted = {};
     (domains || []).forEach(function(domain) { if (domain) wanted[domain] = true; });
@@ -158,7 +192,10 @@
   }
   function isReservedTenantID(id) {
     id = String(id || '').trim();
-    return id === '__global__' || id === 'tenant_default';
+    return id === '__global__';
+  }
+  function isDefaultTenantID(id) {
+    return String(id || '').trim() === 'tenant_default';
   }
   function isAssignableTenant(item) {
     return !!(item && item.id && !isReservedTenantID(item.id) && tenantIsActive(item));
@@ -181,16 +218,62 @@
     var nextStatus = tenantStatus(item) === 'active' ? 'inactive' : 'active';
     var statusKey = nextStatus === 'active' ? 'reactivate' : 'deactivate';
     var confirmKey = nextStatus === 'active' ? 'reactivateConfirm' : 'deactivateConfirm';
-    return '<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">'
-      + '<button class="btn-ghost" style="height:30px;font-size:11px;padding:0 10px" type="button" onclick="updateTenantStatus(' + JSON.stringify(item.id) + ',' + JSON.stringify(nextStatus) + ',' + JSON.stringify(label) + ',' + JSON.stringify(confirmKey) + ')">' + esc(tt(statusKey)) + '</button>'
-      + '<button class="btn-danger" style="height:30px;font-size:11px;padding:0 10px" type="button" onclick="deleteTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('deleteTenant')) + '</button>'
+    var actions = '<button class="btn-secondary" type="button" onclick="previewTenantMerge(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('mergeDryRun')) + '</button>'
+      + '<button class="btn-secondary" type="button" onclick="mergeTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('mergeTenant')) + '</button>';
+    if (!isDefaultTenantID(item.id)) {
+      actions += '<button class="btn-ghost" type="button" onclick="updateTenantStatus(' + JSON.stringify(item.id) + ',' + JSON.stringify(nextStatus) + ',' + JSON.stringify(label) + ',' + JSON.stringify(confirmKey) + ')">' + esc(tt(statusKey)) + '</button>'
+        + '<button class="btn-danger" type="button" onclick="deleteTenant(' + JSON.stringify(item.id) + ',' + JSON.stringify(label) + ')">' + esc(tt('deleteTenant')) + '</button>';
+    }
+    return '<div class="tenant-actions">'
+      + actions
       + '</div>';
   }
+
+  function tenantMergeTargetOptions(sourceID) {
+    return (tenantCache || []).filter(function(item) {
+      return item && item.id && item.id !== sourceID && !isReservedTenantID(item.id) && tenantIsActive(item);
+    });
+  }
+
+  function chooseTenantMergeTarget(sourceID) {
+    var options = tenantMergeTargetOptions(sourceID);
+    if (!options.length) return '';
+    var message = tt('mergeChooseTarget') + '\n' + options.map(function(item, index) { return String(index + 1) + '. ' + tenantOptionLabel(item); }).join('\n');
+    var raw = global.prompt(message, '1');
+    var index = Number(raw) - 1;
+    if (!Number.isFinite(index) || index < 0 || index >= options.length) return '';
+    return options[index].id;
+  }
+
+  function tenantMergeTotals(result) {
+    var moved = 0;
+    var merged = 0;
+    var tables = result && result.tables || {};
+    Object.keys(tables).forEach(function(name) {
+      moved += Number(tables[name] && tables[name].moved_rows || 0);
+      merged += Number(tables[name] && tables[name].merged_rows || 0);
+    });
+    moved += Number(result && result.system_settings && result.system_settings.moved_keys || 0);
+    merged += Number(result && result.system_settings && result.system_settings.merged_keys || 0);
+    return { moved: moved, merged: merged };
+  }
+
+  function setTenantListPage(page) {
+    tenantListPage = Math.max(1, Number(page) || 1);
+    renderTenants(tenantCache);
+  }
+
+  function renderTenantPager(page, pages, total) {
+    if (pages <= 1) return '';
+    return '<div class="tenant-pager"><button class="btn-ghost" type="button" ' + (page <= 1 ? 'disabled ' : '') + 'onclick="setTenantListPage(' + (page - 1) + ')">' + esc(tt('pagePrev')) + '</button><span class="item-meta">' + esc(tt('pageInfo', { page: page, pages: pages, total: total })) + '</span><button class="btn-ghost" type="button" ' + (page >= pages ? 'disabled ' : '') + 'onclick="setTenantListPage(' + (page + 1) + ')">' + esc(tt('pageNext')) + '</button></div>';
+  }
+
   function applyTenantI18n() {
     setText('navTenants', 'nav'); setText('navTenantsDesc', tenantScoped() ? 'navDescTenant' : 'navDesc'); setText('loginTenantLabel', 'loginTenant'); setText('loginTenantHint', 'loginTenantHint'); setText('tenantsTitle', 'title'); setText('tenantsDesc', tenantScoped() ? 'descTenant' : 'desc');
     setText('tenantsReloadBtn', 'reload'); setText('tenantCreateTitle', 'createTitle'); setText('tenantCreateDesc', 'createDesc');
     setText('tenantAdminCreateTitle', 'adminCreateTitle'); setText('tenantAdminCreateDesc', 'adminCreateDesc'); setText('tenantListTitle', 'listTitle'); setText('tenantListDesc', tenantScoped() ? 'listDescTenant' : 'listDesc');
     setText('tenantCreateBtn', 'create'); setText('tenantAdminCreateBtn', 'addAdmin'); setText('tenantNameLabel', 'name'); setText('tenantIDLabel', 'tenantID'); setText('tenantDomainLabel', 'domain');
+    setText('tenantCreateAcceptRegistrationLabel', 'acceptRegistration');
     setText('tenantAdminUsernameLabel', 'adminUser'); setText('tenantAdminEmailLabel', 'adminEmail'); setText('tenantAdminNameLabel', 'adminName'); setText('tenantAdminPasswordLabel', 'adminPassword');
     setText('tenantAdminTenantLabel', 'tenant'); setText('tenantAdminRoleLabel', 'role'); setText('tenantExtraAdminUsernameLabel', 'adminUser'); setText('tenantExtraAdminEmailLabel', 'adminEmail'); setText('tenantExtraAdminNameLabel', 'adminName'); setText('tenantExtraAdminPasswordLabel', 'adminPassword');
     var empty = byID('tenantListEmpty'); if (empty) empty.textContent = tt('empty');
@@ -244,30 +327,41 @@
   function renderTenants(items) {
     var root = byID('tenantList');
     var badge = byID('tenantCountBadge');
-    var list = Array.isArray(items) ? items.filter(function(item) { return item && !isReservedTenantID(item.id); }) : [];
-    if (badge) badge.textContent = String(list.length);
-    renderTenantSelect(list);
+    var list = Array.isArray(items) ? items.map(function(item, index) { return { item: item, index: index }; }).filter(function(entry) { return entry.item && !isReservedTenantID(entry.item.id); }) : [];
+    var total = list.length;
+    var pages = Math.max(1, Math.ceil(total / tenantListPageSize));
+    tenantListPage = Math.min(Math.max(tenantListPage, 1), pages);
+    var start = (tenantListPage - 1) * tenantListPageSize;
+    var pageEntries = list.slice(start, start + tenantListPageSize);
+    if (badge) badge.textContent = String(total);
+    renderTenantSelect(list.map(function(entry) { return entry.item; }));
     if (!root) return;
-    if (!list.length) {
+    if (!total) {
       root.innerHTML = '<div class="hint" id="tenantListEmpty">' + esc(tt('empty')) + '</div>';
       return;
     }
-    root.innerHTML = '<div style="display:grid;gap:8px">' + list.map(function(item, index) {
+    root.innerHTML = '<div class="tenant-list-shell">' + pageEntries.map(function(entry) {
+      var item = entry.item;
+      var index = entry.index;
       var domains = tenantDomains(item);
       var domain = domains.length ? domains.join(', ') : '-';
+      var registrationOpen = tenantAllowsRegistration(item);
+      var registrationText = registrationOpen ? tt('registrationOpen') : tt('registrationClosed');
+      var registrationBadge = registrationOpen ? 'ok' : 'warn';
       var statusTitle = tt('updated') + ': ' + fmtTime(item.updated_at);
       if (item.deleted_at) statusTitle += ' / ' + tt('deleted') + ': ' + fmtTime(item.deleted_at);
       var canEditDomains = item && item.id && !isReservedTenantID(item.id) && tenantStatus(item) !== 'deleted';
-      return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
-        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:center">'
-        + '<div style="min-width:0"><div class="item-title" style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(tenantLabel(item)) + '</div><div class="item-meta mono" style="font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(item.id || '') + '</div></div>'
-        + '<div style="min-width:0"><label style="margin:0 0 3px;font-size:9px">' + esc(tt('domain')) + '</label><div class="mono" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(domain) + '</div></div>'
-        + '<div style="display:flex;justify-content:flex-start"><span class="badge ' + esc(tenantBadgeClass(item)) + '" title="' + esc(statusTitle) + '">' + esc(tenantStatusText(item)) + '</span></div>'
+      return '<div class="tenant-card ' + (isDefaultTenantID(item.id) ? 'tenant-default' : '') + '">'
+        + '<div class="tenant-summary">'
+        + '<div class="tenant-identity"><span class="tenant-dot" aria-hidden="true"></span><div><div class="tenant-name" title="' + esc(tenantLabel(item)) + '">' + esc(tenantLabel(item)) + '</div><div class="tenant-id mono" title="' + esc(item.id || '') + '">' + esc(item.id || '') + '</div></div></div>'
+        + '<div class="tenant-cell"><label>' + esc(tt('domain')) + '</label><div class="tenant-value mono" title="' + esc(domain) + '">' + esc(domain) + '</div></div>'
+        + '<div class="tenant-cell"><label>' + esc(tt('registration')) + '</label><div class="tenant-status-row"><span class="badge ' + esc(registrationBadge) + '">' + esc(registrationText) + '</span></div></div>'
+        + '<div class="tenant-cell"><label>' + esc(tt('updated')) + '</label><div class="tenant-status-row"><span class="badge ' + esc(tenantBadgeClass(item)) + '" title="' + esc(statusTitle) + '">' + esc(tenantStatusText(item)) + '</span></div></div>'
         + tenantAdminActions(item)
         + '</div>'
-        + (canEditDomains ? '<div style="display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:8px;align-items:end;margin-top:8px"><div><label style="margin:0 0 4px;font-size:10px">' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" style="min-height:54px;font-size:12px;line-height:1.4;resize:vertical" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><button class="btn-secondary" id="tenantDomainsSave_' + index + '" style="height:32px;font-size:11px;padding:0 10px" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveDomains')) + '</button></div>' : '')
+        + (canEditDomains ? '<div class="tenant-settings"><div><label>' + esc(tt('name')) + '</label><input id="tenantNameEdit_' + index + '" value="' + esc(item.name || '') + '"></div><div><label>' + esc(tt('domain')) + '</label><textarea id="tenantDomainsEdit_' + index + '" placeholder="acme.example.com\nsubsidiary.example.com">' + esc(domains.join('\n')) + '</textarea></div><label class="tenant-check"><input id="tenantRegistrationEdit_' + index + '" type="checkbox" ' + (registrationOpen ? 'checked ' : '') + '>' + esc(tt('acceptRegistration')) + '</label><button class="btn-secondary tenant-save" id="tenantDomainsSave_' + index + '" type="button" onclick="saveTenantDomains(' + index + ')">' + esc(tt('saveSettings')) + '</button></div>' : '')
         + '</div>';
-    }).join('') + '</div>';
+    }).join('') + '</div>' + renderTenantPager(tenantListPage, pages, total);
   }
 
   async function loadLoginTenants() {
@@ -277,6 +371,10 @@
       try { data = await res.json(); } catch (_) {}
       if (!res.ok) throw new Error(data.message || res.statusText || 'request failed');
       loginTenantOptionsCache = Array.isArray(data.tenants) ? data.tenants : [];
+      var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+      if (profile && String(profile.scope || '').toLowerCase() === 'tenant' && profile.tenant_id && typeof global.updateCurrentTenantContext === 'function') {
+        loginTenantOptionsCache.some(function(item) { if (item && item.id === profile.tenant_id) { global.updateCurrentTenantContext(item); return true; } return false; });
+      }
       renderLoginTenantOptions(loginTenantOptionsCache);
       var hint = byID('loginTenantHint');
       if (hint) hint.textContent = tt('loginTenantHint');
@@ -299,6 +397,7 @@
         if (!profile.tenant_id) throw new Error('tenant id is missing');
         var detail = await global.api('/api/admin/tenants/' + encodeURIComponent(profile.tenant_id));
         tenantCache = detail && detail.tenant ? [detail.tenant] : [currentTenantItem()];
+        if (detail && detail.tenant && typeof global.updateCurrentTenantContext === 'function') global.updateCurrentTenantContext(detail.tenant);
       } else {
         var data = await global.api('/api/admin/tenants');
         tenantCache = Array.isArray(data.tenants) ? data.tenants : [];
@@ -306,6 +405,7 @@
       renderTenants(tenantCache);
       return tenantCache;
     } catch (err) {
+      if (err && err.staleAuth) return tenantCache;
       var fallback = currentTenantItem();
       tenantCache = fallback ? [fallback] : [];
       if (fallback) renderTenants(tenantCache); else renderTenantSelect([]);
@@ -320,7 +420,7 @@
     if (tenantCreateBusy) return;
     var createDomains = splitDomains(val('tenantDomain'));
     var payload = {
-      id: val('tenantID'), name: val('tenantName'), primary_domain: createDomains[0] || '', domains: createDomains,
+      id: val('tenantID'), name: val('tenantName'), primary_domain: createDomains[0] || '', domains: createDomains, allow_user_registration: (byID('tenantCreateAcceptRegistration') ? !!byID('tenantCreateAcceptRegistration').checked : true),
       initial_admin_username: val('tenantAdminUsername'), initial_admin_password: val('tenantAdminPassword'), initial_admin_email: val('tenantAdminEmail'), initial_admin_name: val('tenantAdminName')
     };
     if (!payload.name) {
@@ -352,6 +452,8 @@
     try {
       var data = await global.api('/api/admin/tenants', { method: 'POST', body: JSON.stringify(payload) });
       ['tenantID','tenantName','tenantDomain','tenantAdminUsername','tenantAdminPassword','tenantAdminEmail','tenantAdminName'].forEach(function(id) { var el = byID(id); if (el) el.value = ''; });
+      var acceptEl = byID('tenantCreateAcceptRegistration');
+      if (acceptEl) acceptEl.checked = true;
       await loadTenants();
       await loadLoginTenants();
       setTenantOutput(tt('createDone', { tenant: tenantLabel(data.tenant || payload) }), 'success');
@@ -382,7 +484,8 @@
     tenantDomainSaveBusy[item.id] = true;
     if (btn) btn.disabled = true;
     try {
-      var data = await global.api('/api/admin/tenants/' + encodeURIComponent(item.id) + '/domains', { method: 'PATCH', body: JSON.stringify({ primary_domain: domains[0] || '', domains: domains }) });
+      var regEl = byID('tenantRegistrationEdit_' + index);
+      var data = await global.api('/api/admin/tenants/' + encodeURIComponent(item.id) + '/domains', { method: 'PATCH', body: JSON.stringify({ name: val('tenantNameEdit_' + index) || item.name || item.id, primary_domain: domains[0] || '', domains: domains, allow_user_registration: regEl ? !!regEl.checked : tenantAllowsRegistration(item) }) });
       if (data && data.tenant) tenantCache[index] = data.tenant;
       await loadTenants();
       await loadLoginTenants();
@@ -447,6 +550,34 @@
       setTenantOutput(tt('deleteFailed', { error: err.message || err }), 'error');
     }
   }
+
+  async function runTenantMerge(tenantID, label, dryRun) {
+    if (!tenantID || tenantMergeBusy[tenantID]) return;
+    var targetID = chooseTenantMergeTarget(tenantID);
+    if (!targetID) return;
+    var target = (tenantCache || []).filter(function(item) { return item && item.id === targetID; })[0] || { id: targetID };
+    var confirmKey = isDefaultTenantID(tenantID) ? 'mergeConfirmDefault' : 'mergeConfirm';
+    if (!dryRun && !global.confirm(tt(confirmKey, { source: label || tenantID, target: tenantLabel(target) || targetID }))) return;
+    tenantMergeBusy[tenantID] = true;
+    try {
+      var data = await global.api('/api/admin/tenants/' + encodeURIComponent(tenantID) + '/merge', { method: 'POST', body: JSON.stringify({ target_tenant_id: targetID, dry_run: !!dryRun, delete_source: true }) });
+      var totals = tenantMergeTotals(data && data.result || {});
+      if (dryRun) {
+        setTenantOutput(tt('mergePreviewDone', totals), 'info');
+      } else {
+        await loadTenants();
+        await loadLoginTenants();
+        setTenantOutput(tt('mergeDone', totals), 'success');
+      }
+    } catch (err) {
+      setTenantOutput(tt('mergeFailed', { error: err.message || err }), 'error');
+    } finally {
+      delete tenantMergeBusy[tenantID];
+    }
+  }
+
+  function previewTenantMerge(tenantID, label) { runTenantMerge(tenantID, label, true); }
+  function mergeTenant(tenantID, label) { runTenantMerge(tenantID, label, false); }
 
   function isTenantAdminProfile(profile) {
     return !!(profile && String(profile.scope || '').toLowerCase() === 'tenant');
@@ -531,6 +662,8 @@
       var card = byID(id);
       if (card) card.classList.toggle('hidden', !!(hasProfile && tenantAdmin));
     });
+    var tenantSenderCard = byID('tenantMailSenderCard');
+    if (tenantSenderCard) tenantSenderCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     if (typeof global.applyImScopeUI === 'function') global.applyImScopeUI();
     applySystemScopeCopy(!!(hasProfile && tenantAdmin));
     applyOverviewScopeUI(!!(hasProfile && tenantAdmin), hasProfile);
@@ -556,6 +689,9 @@
   global.createTenant = createTenant;
   global.createTenantAdmin = createTenantAdmin;
   global.saveTenantDomains = saveTenantDomains;
+  global.setTenantListPage = setTenantListPage;
+  global.previewTenantMerge = previewTenantMerge;
+  global.mergeTenant = mergeTenant;
   global.updateTenantStatus = updateTenantStatus;
   global.deleteTenant = deleteTenant;
   applyAdminScopeUI();

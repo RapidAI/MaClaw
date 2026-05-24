@@ -108,6 +108,16 @@ func (b *jsonFileBackend) UpdateEntry(entry *Entry) error {
 	return nil
 }
 
+func (b *jsonFileBackend) UpdateEntries(entries []*Entry) error {
+	b.signalSave()
+	return nil
+}
+
+func (b *jsonFileBackend) UpdateEntriesAndDeleteIDs(entries []*Entry, deleteIDs []string) error {
+	b.signalSave()
+	return nil
+}
+
 // DeleteEntry signals that entries have changed.
 func (b *jsonFileBackend) DeleteEntry(id string) error {
 	b.signalSave()

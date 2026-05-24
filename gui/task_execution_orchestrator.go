@@ -110,6 +110,11 @@ type TaskItem struct {
 	ExecMode           TaskExecMode // resolved per-task at execution time
 }
 
+type TaskRunHandle struct {
+	Task  *TaskItem
+	RunID int
+}
+
 // ExternalToolChecker tests whether an external coding tool is available.
 // Implemented by the host (GUI provides SessionPrecheck-based impl).
 type ExternalToolChecker interface {
@@ -248,6 +253,114 @@ func (o *TaskExecutionOrchestrator) CurrentTaskHandle() (*TaskItem, int) {
 		return nil, 0
 	}
 	return o.Tasks[o.CurrentIndex], o.RunID
+}
+
+func (o *TaskExecutionOrchestrator) ReadyTaskHandles(limit int) []TaskRunHandle {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.Active || limit <= 0 {
+		return nil
+	}
+	handles := make([]TaskRunHandle, 0, limit)
+	for _, task := range o.Tasks {
+		if task == nil || !taskRunnableLocked(task) || !o.taskDependenciesPassedLocked(task) {
+			continue
+		}
+		handles = append(handles, TaskRunHandle{Task: task, RunID: o.RunID})
+		if len(handles) >= limit {
+			break
+		}
+	}
+	return handles
+}
+
+func (o *TaskExecutionOrchestrator) HasBlockedRunnableTasks() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.Active {
+		return false
+	}
+	for _, task := range o.Tasks {
+		if task != nil && taskRunnableLocked(task) && !o.taskDependenciesPassedLocked(task) {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *TaskExecutionOrchestrator) MarkTasksBlockedByDependencies() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.Active {
+		return 0
+	}
+	blocked := 0
+	for _, task := range o.Tasks {
+		if task == nil || !taskRunnableLocked(task) {
+			continue
+		}
+		if reason := o.taskDependencyBlockReasonLocked(task); reason != "" {
+			applyTaskStatus(task, TaskExecSkipped, reason)
+			blocked++
+		}
+	}
+	return blocked
+}
+
+func (o *TaskExecutionOrchestrator) MarkDependencyDeadlockTasks() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.Active {
+		return 0
+	}
+	for _, task := range o.Tasks {
+		if task != nil && taskRunnableLocked(task) && o.taskDependenciesPassedLocked(task) {
+			return 0
+		}
+	}
+	blocked := 0
+	for _, task := range o.Tasks {
+		if task == nil || !taskRunnableLocked(task) || len(task.DependsOn) == 0 {
+			continue
+		}
+		applyTaskStatus(task, TaskExecSkipped, "blocked by dependency deadlock")
+		blocked++
+	}
+	return blocked
+}
+
+func taskRunnableLocked(task *TaskItem) bool {
+	switch task.Status {
+	case TaskExecPending, TaskExecInProgress, TaskExecTesting:
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *TaskExecutionOrchestrator) taskDependenciesPassedLocked(task *TaskItem) bool {
+	for _, depIdx := range task.DependsOn {
+		if depIdx < 0 || depIdx >= len(o.Tasks) || o.Tasks[depIdx] == nil || o.Tasks[depIdx].Status != TaskExecPassed {
+			return false
+		}
+	}
+	return true
+}
+
+func (o *TaskExecutionOrchestrator) taskDependencyBlockReasonLocked(task *TaskItem) string {
+	for _, depIdx := range task.DependsOn {
+		if depIdx < 0 || depIdx >= len(o.Tasks) || o.Tasks[depIdx] == nil {
+			return fmt.Sprintf("blocked by invalid dependency index %d", depIdx)
+		}
+		dep := o.Tasks[depIdx]
+		switch dep.Status {
+		case TaskExecPassed:
+			continue
+		case TaskExecFailed, TaskExecSkipped:
+			return fmt.Sprintf("blocked because dependency T%d is %s", dep.Index, dep.Status)
+		}
+	}
+	return ""
 }
 
 func (o *TaskExecutionOrchestrator) validTaskRunLocked(task *TaskItem, runID int) bool {
@@ -1059,10 +1172,17 @@ func (o *TaskExecutionOrchestrator) ProgressSummary() string {
 		b.WriteString(fmt.Sprintf("... \u8fd8\u6709 %d \u4e2a\u4efb\u52a1\u672a\u5c55\u5f00\n", remaining))
 	}
 
-	passed, failed, _ := o.countStatusLocked()
+	passed, failed, remaining := o.countStatusLocked()
+	skipped := len(o.Tasks) - passed - failed - remaining
 	b.WriteString(fmt.Sprintf("\nTotal: %d/%d passed", passed, len(o.Tasks)))
 	if failed > 0 {
 		b.WriteString(fmt.Sprintf(", %d failed", failed))
+	}
+	if skipped > 0 {
+		b.WriteString(fmt.Sprintf(", %d skipped", skipped))
+	}
+	if remaining > 0 {
+		b.WriteString(fmt.Sprintf(", %d remaining", remaining))
 	}
 	return b.String()
 }
@@ -1278,10 +1398,17 @@ func isTaskHeader(line string) bool {
 	if line == "" {
 		return false
 	}
+	line = strings.TrimSpace(strings.TrimLeft(line, "#"))
+	if line == "" {
+		return false
+	}
 	if hasNumericTaskPrefix(line) {
 		return true
 	}
 	lower := strings.ToLower(line)
+	if hasAlphaNumericTaskPrefix(lower, 't') {
+		return true
+	}
 	for _, prefix := range []string{"\u4efb\u52a1", "task"} {
 		if !strings.HasPrefix(lower, prefix) {
 			continue
@@ -1290,6 +1417,19 @@ func isTaskHeader(line string) bool {
 		return len(rest) > 0 && rest[0] >= '0' && rest[0] <= '9'
 	}
 	return false
+}
+
+func hasAlphaNumericTaskPrefix(line string, prefix rune) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	r, width := utf8DecodeRuneInString(line)
+	if r != prefix {
+		return false
+	}
+	rest := strings.TrimSpace(line[width:])
+	return hasNumericTaskPrefix(rest)
 }
 
 func hasNumericTaskPrefix(line string) bool {
@@ -1319,6 +1459,14 @@ func isTaskHeaderDelimiter(r rune) bool {
 // extractTaskTitle extracts the title from a task header line.
 func extractTaskTitle(line string) string {
 	line = strings.TrimSpace(line)
+	line = strings.TrimSpace(strings.TrimLeft(line, "#"))
+	if len(line) > 1 {
+		lower := strings.ToLower(line)
+		if hasAlphaNumericTaskPrefix(lower, 't') {
+			_, width := utf8DecodeRuneInString(line)
+			line = strings.TrimSpace(line[width:])
+		}
+	}
 	for i, r := range line {
 		if isTaskHeaderDelimiter(r) {
 			rest := strings.TrimSpace(line[i+utf8RuneWidth(r):])

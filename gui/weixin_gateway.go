@@ -1093,7 +1093,11 @@ func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
 
 	result, status, err := weixin.PollQRStatus(ctx, baseURL, qrcodeToken)
 	if err != nil {
-		return map[string]string{"error": err.Error(), "status": string(gatewayConnectionStatusError)}
+		resp := map[string]string{"error": err.Error(), "status": string(gatewayConnectionStatusError)}
+		if weixin.IsQRLoginRetryableError(err) {
+			resp["retryable"] = "true"
+		}
+		return resp
 	}
 	resp := map[string]string{
 		"status":  status.String(),

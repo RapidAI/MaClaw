@@ -78,6 +78,7 @@ type agentLoopNoToolBranchResult struct {
 }
 
 type agentLoopNoToolFinalizeOptions struct {
+	Context                *LoopContext
 	UserID                 string
 	UserText               string
 	Iteration              int
@@ -194,6 +195,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolPath(opts agentLoopNoToolPathOpt
 		return result
 	}
 	noToolFinalize := h.finalizeAgentLoopNoToolBranch(agentLoopNoToolFinalizeOptions{
+		Context:                opts.Context,
 		UserID:                 opts.UserID,
 		UserText:               opts.UserText,
 		Iteration:              opts.Iteration,
@@ -228,6 +230,9 @@ func (h *IMMessageHandler) finalizeAgentLoopNoToolBranch(opts agentLoopNoToolFin
 		phase = *opts.Phase
 	}
 	finalText := assembleNoToolFinalText(opts.MessageContent, opts.LengthContinuationText, phase)
+	if opts.Context != nil {
+		finalText = appendPendingBackgroundTaskFinalHint(finalText, h.pendingBackgroundTaskHint(opts.Context.StartedAt))
+	}
 	finalResp := &IMAgentResponse{Text: stripThinkingTags(finalText)}
 	BrowserDiagCP7_FinalOutput(finalResp.Text, "msgContent")
 	if opts.StreamDone {
@@ -312,7 +317,12 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 	}
 
 	result.TrimmedVisibleContent = strings.TrimSpace(stripThinkingTags(result.MessageContent))
-	hardCapResult := h.maybeExitAgentLoopForNoToolHardCap(opts.UserID, result.MessageContent, opts.LengthContinuationBuffer.String(), phase, opts.History, opts.StreamDone, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
+	if recovered := h.recoverForPendingBackgroundTaskNoToolReply(opts.Context, opts.MessageContent, phase); recovered {
+		result.ContinueLoop = true
+		return result
+	}
+
+	hardCapResult := h.maybeExitAgentLoopForNoToolHardCap(opts.Context, opts.UserID, result.MessageContent, opts.LengthContinuationBuffer.String(), phase, opts.History, opts.StreamDone, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
 	if hardCapResult.PostStreamReturnPrepTime {
 		result.PostStreamReturnPrepTime = true
 	}
@@ -513,7 +523,25 @@ func suppressPostToolPromiseOnlyDeliverable(promiseOnlyDeliverable bool, phase a
 	return promiseOnlyDeliverable
 }
 
+func (h *IMMessageHandler) recoverForPendingBackgroundTaskNoToolReply(ctx *LoopContext, msgContent string, phase *agentLoopPhase) bool {
+	if ctx == nil || phase == nil || phase.TotalRecoverInjections >= maxTotalRecoverInjections {
+		return false
+	}
+	taskHint := h.pendingBackgroundTaskHint(ctx.StartedAt)
+	if !shouldRecoverForPendingBackgroundTaskNoToolReply(msgContent, taskHint) {
+		return false
+	}
+	log.Printf("[agent-loop] pending background task active before no-tool finalization; forcing status check")
+	enterRecoverPhase(phase, agentRecoverBackgroundTaskPending, buildPendingBackgroundTaskRecoverPrompt(taskHint))
+	return true
+}
+
+func shouldRecoverForPendingBackgroundTaskNoToolReply(msgContent string, taskHint string) bool {
+	return strings.TrimSpace(taskHint) != "" && strings.TrimSpace(stripThinkingTags(msgContent)) != ""
+}
+
 func (h *IMMessageHandler) maybeExitAgentLoopForNoToolHardCap(
+	ctx *LoopContext,
 	userID string,
 	msgContent string,
 	lengthContinuationText string,
@@ -530,13 +558,25 @@ func (h *IMMessageHandler) maybeExitAgentLoopForNoToolHardCap(
 	}
 	log.Printf("[agent-loop] hard cap: %d consecutive no-tool iterations, force-returning response", phase.ConsecutiveNoTool)
 	phase.Stage = agentStageFinalize
-	finalResp := &IMAgentResponse{Text: stripThinkingTags(lengthContinuationText + msgContent)}
+	finalText := stripThinkingTags(lengthContinuationText + msgContent)
+	if ctx != nil {
+		finalText = appendPendingBackgroundTaskFinalHint(finalText, h.pendingBackgroundTaskHint(ctx.StartedAt))
+	}
+	finalResp := &IMAgentResponse{Text: finalText}
 	result.PostStreamReturnPrepTime = streamDone
 	attachLLMTelemetry(finalResp)
 	attachPendingVisibleArtifacts(finalResp)
 	h.saveConversationHistoryTimed(userID, history, finalResp)
 	result.Response = finalResp
 	return result
+}
+
+func appendPendingBackgroundTaskFinalHint(finalText string, taskHint string) string {
+	taskHint = strings.TrimSpace(taskHint)
+	if taskHint == "" {
+		return finalText
+	}
+	return strings.TrimSpace(finalText) + "\n\n" + taskHint + "\nBackground task is still active; ask me to check progress later."
 }
 
 func assembleNoToolFinalText(msgContent string, lengthContinuationText string, phase agentLoopPhase) string {

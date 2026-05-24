@@ -81,5 +81,11 @@ describe('PetSettingsPanel localization', () => {
         expect(screen.getByText('Idle')).toBeTruthy();
         expect(screen.getByText('Text First')).toBeTruthy();
         expect(screen.getByText('Done Only')).toBeTruthy();
+        expect(screen.getByText('Desktop Entry')).toBeTruthy();
+        expect(screen.getByLabelText('ASR not enabled')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Balanced' }).getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByRole('button', { name: 'Classic: The current comic motion sound.' }).getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByLabelText('Size').getAttribute('aria-valuetext')).toBe('88px');
+        expect(screen.getByLabelText('Continuous Timeout').getAttribute('aria-valuetext')).toBe('30s');
     });
 });

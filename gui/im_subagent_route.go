@@ -25,11 +25,20 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 				onProgress(text)
 			}
 		})
+		runCompleted := taskOrch.AllDone()
+		runCancelled := loopCtx != nil && loopCtx.IsCancelled()
+		runHasPassedTasks := taskOrch.HasPassedTasks()
 
-		// Deactivate orchestrator after all workflow integration and state updates
-		// because these operations still need task state and collected outputs.
-		defer taskOrch.Deactivate()
+		// Keep incomplete runs active so a later user turn can resume after transient
+		// provider failures such as LLM rate limits.
+		defer func() {
+			if shouldDeactivateSubAgentOrchestratorAfterRun(runCompleted, runCancelled) {
+				taskOrch.Deactivate()
+			}
+		}()
 
+		workflowSaveAllowed := shouldSaveSubAgentWorkflowOutput(runCompleted, runCancelled, runHasPassedTasks)
+		integrationFailed := false
 		if engine := h.getWorkflowEngine(); engine != nil {
 			if h.app != nil && h.app.workflowArtifactSaver != nil {
 				h.app.workflowArtifactSaver.SetCurrentUserID(msg.UserID)
@@ -38,7 +47,7 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 			// Run integration before saving the implementation deliverable. The engine
 			// should persist the final phase artifact, not an intermediate report that
 			// is missing integration output.
-			if taskOrch.HasPassedTasks() && !loopCtx.IsCancelled() {
+			if workflowSaveAllowed {
 				integrationPrompt := taskOrch.BuildIntegrationPrompt()
 				if integrationPrompt != "" {
 					if onProgress != nil {
@@ -61,15 +70,23 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 							}
 						},
 					)
-					report += "\n\n## Integration\n\n" + integrationResult.Summary
+					if !subAgentIntegrationPassed(integrationResult) {
+						workflowSaveAllowed = false
+						integrationFailed = true
+					}
+					if integrationResult != nil {
+						report += "\n\n## Integration\n\n" + integrationResult.Summary
+					}
 				}
 			}
 
 			// Use the same phase-completion transition as the main agent loop. A
 			// cancelled SubAgent run is conversation evidence, not a durable phase
 			// deliverable, so it must not mutate workflow output/review state.
-			if loopCtx.IsCancelled() {
+			if runCancelled {
 				log.Printf("[WorkflowEngine] subagent phase output not saved after cancellation: user=%s", msg.UserID)
+			} else if !workflowSaveAllowed {
+				logSubAgentWorkflowSaveBlocked(msg.UserID, runCompleted, runHasPassedTasks, integrationFailed)
 			} else {
 				_, advResp, err := engine.SavePhaseOutputAndMaybeAdvance(msg.UserID, report)
 				if err != nil {
@@ -95,4 +112,29 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 	}
 
 	return nil, history, false
+}
+
+func shouldDeactivateSubAgentOrchestratorAfterRun(runCompleted, runCancelled bool) bool {
+	return runCompleted || runCancelled
+}
+
+func shouldSaveSubAgentWorkflowOutput(runCompleted, runCancelled, hasPassedTasks bool) bool {
+	return runCompleted && !runCancelled && hasPassedTasks
+}
+
+func subAgentIntegrationPassed(result *CodingSubAgentResult) bool {
+	return result != nil && result.Status == TaskExecPassed
+}
+
+func logSubAgentWorkflowSaveBlocked(userID string, runCompleted, hasPassedTasks, integrationFailed bool) {
+	switch {
+	case !runCompleted:
+		log.Printf("[WorkflowEngine] subagent phase output not saved before all tasks complete: user=%s", userID)
+	case !hasPassedTasks:
+		log.Printf("[WorkflowEngine] subagent phase output not saved because no tasks passed: user=%s", userID)
+	case integrationFailed:
+		log.Printf("[WorkflowEngine] subagent phase output not saved because integration failed: user=%s", userID)
+	default:
+		log.Printf("[WorkflowEngine] subagent phase output not saved: user=%s", userID)
+	}
 }

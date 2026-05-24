@@ -13,12 +13,12 @@ const (
 )
 
 func NormalizeQRLoginStatus(status QRLoginStatus) QRLoginStatus {
-	switch QRLoginStatus(strings.TrimSpace(string(status))) {
+	switch QRLoginStatus(strings.ToLower(strings.TrimSpace(string(status)))) {
 	case QRLoginStatusWait:
 		return QRLoginStatusWait
-	case QRLoginStatusScanned:
+	case QRLoginStatusScanned, "scanned", "scan":
 		return QRLoginStatusScanned
-	case QRLoginStatusConfirmed:
+	case QRLoginStatusConfirmed, "confirm", "success", "succeeded", "connected", "done", "ok":
 		return QRLoginStatusConfirmed
 	case QRLoginStatusExpired:
 		return QRLoginStatusExpired

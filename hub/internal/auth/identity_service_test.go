@@ -10,6 +10,50 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+type closedDefaultTenantRepo struct {
+	store.TenantRepository
+}
+
+type testInvitationCodeValidator struct {
+	required bool
+	code     string
+	consumed int
+}
+
+func (v *testInvitationCodeValidator) IsRequired(context.Context) (bool, error) {
+	return v.required, nil
+}
+func (v *testInvitationCodeValidator) IsRequiredForTenant(context.Context, string) (bool, error) {
+	return v.required, nil
+}
+func (v *testInvitationCodeValidator) ValidateAndConsume(_ context.Context, code string, _ string) error {
+	return v.ValidateAndConsumeForTenant(context.Background(), store.DefaultTenantID, code, "")
+}
+func (v *testInvitationCodeValidator) ValidateAndConsumeForTenant(_ context.Context, _ string, code string, _ string) error {
+	if code != v.code {
+		return ErrInvalidInvitationCode
+	}
+	v.consumed++
+	return nil
+}
+func (v *testInvitationCodeValidator) CheckExpiry(context.Context, string) (bool, *time.Time, error) {
+	return false, nil, nil
+}
+func (v *testInvitationCodeValidator) CheckExpiryForTenant(context.Context, string, string) (bool, *time.Time, error) {
+	return false, nil, nil
+}
+
+func (r closedDefaultTenantRepo) GetByID(ctx context.Context, id string) (*store.Tenant, error) {
+	if id == store.DefaultTenantID {
+		return &store.Tenant{ID: store.DefaultTenantID, Slug: "default", Name: "Default Tenant", Status: "active", SettingsJSON: `{"allow_user_registration":false}`}, nil
+	}
+	return r.TenantRepository.GetByID(ctx, id)
+}
+
+func (r closedDefaultTenantRepo) EnsureDefault(ctx context.Context) (*store.Tenant, error) {
+	return r.GetByID(ctx, store.DefaultTenantID)
+}
+
 func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 	deps := newTestStore(t)
 	svc := NewIdentityService(
@@ -218,6 +262,124 @@ func TestResolveTenantByEmailConfiguredDomainAmbiguous(t *testing.T) {
 	}
 	if !found || !ambiguous {
 		t.Fatalf("expected ambiguous domain route, found=%v ambiguous=%v", found, ambiguous)
+	}
+}
+
+func TestStartEnrollmentRejectsNewUserWhenTenantRegistrationClosed(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{ID: "tenant_closed", Slug: "tenant-closed", Name: "Closed", Status: "active", SettingsJSON: `{"allow_user_registration":false}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	_, err := svc.StartEnrollment(WithTenant(context.Background(), "tenant_closed"), "new@example.com", "office-pc", "windows", "", "")
+	if err == nil || err != ErrRegistrationDisabled {
+		t.Fatalf("expected ErrRegistrationDisabled, got %v", err)
+	}
+}
+
+func TestStartEnrollmentAllowsInvitedUserWhenTenantRegistrationClosed(t *testing.T) {
+	deps := newTestStore(t)
+	invites := &testInvitationCodeValidator{code: "INVITE-1"}
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		invites,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{ID: "tenant_closed", Slug: "tenant-closed", Name: "Closed", Status: "active", SettingsJSON: `{"allow_user_registration":false}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	result, err := svc.StartEnrollment(WithTenant(context.Background(), "tenant_closed"), "invited@example.com", "office-pc", "windows", "", "INVITE-1")
+	if err != nil {
+		t.Fatalf("StartEnrollment invited user: %v", err)
+	}
+	if result == nil || result.Status != "approved" || invites.consumed != 1 {
+		t.Fatalf("unexpected result=%+v consumed=%d", result, invites.consumed)
+	}
+}
+
+func TestClosedTenantAllowsExistingUserEnrollment(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{ID: "tenant_closed", Slug: "tenant-closed", Name: "Closed", Status: "active", SettingsJSON: `{"allow_user_registration":false}`, CreatedByAdminID: "test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if _, err := svc.ManualBindForTenant(WithTenant(context.Background(), "tenant_closed"), "tenant_closed", "existing@example.com"); err != nil {
+		t.Fatalf("manual bind: %v", err)
+	}
+
+	result, err := svc.StartEnrollment(WithTenant(context.Background(), "tenant_closed"), "existing@example.com", "office-pc", "windows", "", "")
+	if err != nil {
+		t.Fatalf("StartEnrollment existing user: %v", err)
+	}
+	if result == nil || result.Status != "approved" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestRequestEmailLoginRejectsNewUserWhenDefaultTenantRegistrationClosed(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(closedDefaultTenantRepo{TenantRepository: deps.store.Tenants})
+
+	_, err := svc.RequestEmailLogin(context.Background(), "loose@example.com")
+	if err == nil || err != ErrRegistrationDisabled {
+		t.Fatalf("expected ErrRegistrationDisabled, got %v", err)
 	}
 }
 

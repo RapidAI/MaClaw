@@ -158,6 +158,39 @@ const ROUTING_I18N = {
   }
 };
 const srx = (key, vars = {}) => ((ROUTING_I18N[currentLang] || ROUTING_I18N.en)[key] || ROUTING_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+const TENANT_MAIL_SENDER_I18N = {
+  en: {
+    title: 'Mail Sender Name',
+    desc: 'Tenant admins can set the sender display name only. SMTP server, sender email, and test mail remain global admin settings.',
+    reload: 'Reload',
+    label: 'Sender display name',
+    hint: 'Used as this tenant display name when tenant-scoped mail is sent.',
+    save: 'Save Sender Name',
+    saved: 'Sender name saved.',
+    loadFailed: 'Load sender name failed: {error}',
+    saveFailed: 'Save sender name failed: {error}'
+  },
+  zh: {
+    title: '\u90ae\u4ef6\u53d1\u4ef6\u4eba\u540d\u79f0',
+    desc: '\u79df\u6237\u7ba1\u7406\u5458\u53ea\u80fd\u8bbe\u7f6e\u53d1\u4ef6\u4eba\u5c55\u793a\u540d\u79f0\u3002SMTP \u670d\u52a1\u3001\u53d1\u4ef6\u90ae\u7bb1\u548c\u6d4b\u8bd5\u90ae\u4ef6\u4ecd\u7531\u5168\u5c40\u7ba1\u7406\u5458\u914d\u7f6e\u3002',
+    reload: '\u5237\u65b0',
+    label: '\u53d1\u4ef6\u4eba\u5c55\u793a\u540d\u79f0',
+    hint: '\u7528\u4e8e\u79df\u6237\u8303\u56f4\u90ae\u4ef6\u7684\u53d1\u4ef6\u4eba\u5c55\u793a\u540d\u79f0\u3002',
+    save: '\u4fdd\u5b58\u53d1\u4ef6\u4eba\u540d\u79f0',
+    saved: '\u53d1\u4ef6\u4eba\u540d\u79f0\u5df2\u4fdd\u5b58\u3002',
+    loadFailed: '\u52a0\u8f7d\u53d1\u4ef6\u4eba\u540d\u79f0\u5931\u8d25: {error}',
+    saveFailed: '\u4fdd\u5b58\u53d1\u4ef6\u4eba\u540d\u79f0\u5931\u8d25: {error}'
+  }
+};
+const tmsx = (key, vars = {}) => ((TENANT_MAIL_SENDER_I18N[currentLang] || TENANT_MAIL_SENDER_I18N.en)[key] || TENANT_MAIL_SENDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+function applyTenantMailSenderI18n() {
+  _s('tenantMailSenderTitle', 'textContent', tmsx('title'));
+  _s('tenantMailSenderDesc', 'textContent', tmsx('desc'));
+  _s('tenantMailSenderReloadBtn', 'textContent', tmsx('reload'));
+  _s('tenantMailFromNameLabel', 'textContent', tmsx('label'));
+  _s('tenantMailSenderHint', 'textContent', tmsx('hint'));
+  _s('tenantMailSenderSaveBtn', 'textContent', tmsx('save'));
+}
 function normalizeSystemRoutingDomains(value) {
   return String(value || '')
     .split(/[\n,]/)
@@ -298,10 +331,12 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
   window.AdminTabRegistry.onLanguageChange(function() {
     applyTLSI18n();
     applySystemRoutingI18n();
+    applyTenantMailSenderI18n();
   });
 }
 applyTLSI18n();
 applySystemRoutingI18n();
+applyTenantMailSenderI18n();
 function findMailPreset(provider) { return MAIL_PRESETS[provider] || MAIL_PRESETS.custom; }
 function detectMailProvider(cfg) { const host = String(cfg?.smtp_host || '').trim().toLowerCase(); const port = Number(cfg?.smtp_port || 0); const encryption = String(cfg?.smtp_encryption || '').trim().toLowerCase(); for (const [provider, preset] of Object.entries(MAIL_PRESETS)) { if (provider === 'custom') continue; if (host === preset.smtp_host && (!port || port === preset.smtp_port) && (!encryption || encryption === preset.smtp_encryption)) return provider; } return String(cfg?.provider || '').trim() || 'custom'; }
 function renderMailConfig(cfg = {}) { const provider = detectMailProvider(cfg); document.getElementById('mailProvider').value = MAIL_PRESETS[provider] ? provider : 'custom'; document.getElementById('mailHost').value = cfg.smtp_host || ''; document.getElementById('mailPort').value = cfg.smtp_port ? String(cfg.smtp_port) : ''; document.getElementById('mailEncryption').value = cfg.smtp_encryption || 'auto'; document.getElementById('mailUsername').value = cfg.smtp_username || ''; document.getElementById('mailPassword').value = cfg.smtp_password || ''; document.getElementById('mailFromName').value = cfg.from_name || 'MaClaw Hub'; document.getElementById('mailFromEmail').value = cfg.from_email || cfg.smtp_username || ''; }
@@ -309,7 +344,9 @@ function applyMailPreset() { const provider = document.getElementById('mailProvi
 function collectMailConfig() { const host = document.getElementById('mailHost').value.trim(); const username = document.getElementById('mailUsername').value.trim(); const password = document.getElementById('mailPassword').value; const fromEmail = document.getElementById('mailFromEmail').value.trim(); const provider = document.getElementById('mailProvider').value || 'custom'; if (!host || !username || !password || !fromEmail) throw new Error(tr('mailRequiredFields')); const parsedPort = Number(document.getElementById('mailPort').value || 0); return { enabled: true, provider, smtp_host: host, smtp_port: parsedPort > 0 ? parsedPort : findMailPreset(provider).smtp_port || 587, smtp_encryption: document.getElementById('mailEncryption').value || 'auto', smtp_username: username, smtp_password: password, from_name: document.getElementById('mailFromName').value.trim() || 'MaClaw Hub', from_email: fromEmail }; }
 async function loadMailConfig() { try { const data = await api('/api/admin/mail/config'); renderMailConfig(data || {}); } catch (err) { const msg = tr('mailConfigLoadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function saveMailConfig() { try { const payload = collectMailConfig(); const data = await api('/api/admin/mail/config', { method: 'POST', body: JSON.stringify(payload) }); renderMailConfig(data || payload); const msg = tr('mailConfigSaved'); setOutput(msg); showToast(msg, 'success'); return data || payload; } catch (err) { const msg = tr('mailConfigSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
+async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { const data = await api('/api/admin/mail/sender-name'); const input = document.getElementById('tenantMailFromName'); if (input) input.value = (data && data.from_name) || ''; return data || {}; } catch (err) { const msg = tmsx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
+async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = input ? input.value.trim() : ''; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 // Machines runtime moved to machines-tab.js
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
-async function changeAdminPassword() { const currentPassword = document.getElementById('currentPasswordInput').value; const newPassword = document.getElementById('newPasswordInput').value; const confirmPassword = document.getElementById('confirmPasswordInput').value; if (!currentPassword || !newPassword) { const msg = tr('requestFailed'); setOutput(msg); showToast(msg, 'error'); return; } if (newPassword !== confirmPassword) { const msg = ptr('mismatch'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) localStorage.setItem(adminProfileKey, JSON.stringify(data.admin)); document.getElementById('currentPasswordInput').value = ''; document.getElementById('newPasswordInput').value = ''; document.getElementById('confirmPasswordInput').value = ''; refreshAdminHeader(); const msg = ptr('changed'); setOutput(msg); showToast(msg, 'success'); } catch (err) { setOutput(err.message); showToast(err.message, 'error'); } }
-async function updateAdminProfile() { const email = document.getElementById('adminEmailInput').value.trim(); if (!email) { const msg = prf('required'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/profile', { method: 'POST', body: JSON.stringify({ email }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) localStorage.setItem(adminProfileKey, JSON.stringify(data.admin)); refreshAdminHeader(); const msg = prf('saved'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = prf('failed').replace('{error}', err.message); setOutput(msg); showToast(msg, 'error'); } }
+async function changeAdminPassword() { const currentPassword = document.getElementById('currentPasswordInput').value; const newPassword = document.getElementById('newPasswordInput').value; const confirmPassword = document.getElementById('confirmPasswordInput').value; if (!currentPassword || !newPassword) { const msg = tr('requestFailed'); setOutput(msg); showToast(msg, 'error'); return; } if (newPassword !== confirmPassword) { const msg = ptr('mismatch'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) setAdminProfile(data.admin); document.getElementById('currentPasswordInput').value = ''; document.getElementById('newPasswordInput').value = ''; document.getElementById('confirmPasswordInput').value = ''; refreshAdminHeader(); const msg = ptr('changed'); setOutput(msg); showToast(msg, 'success'); } catch (err) { setOutput(err.message); showToast(err.message, 'error'); } }
+async function updateAdminProfile() { const email = document.getElementById('adminEmailInput').value.trim(); if (!email) { const msg = prf('required'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/profile', { method: 'POST', body: JSON.stringify({ email }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) setAdminProfile(data.admin); refreshAdminHeader(); const msg = prf('saved'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = prf('failed').replace('{error}', err.message); setOutput(msg); showToast(msg, 'error'); } }

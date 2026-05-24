@@ -463,3 +463,75 @@ func TestProperty_RevivalLimit(t *testing.T) {
 		}
 	})
 }
+
+func TestRunGCSynchronizesSQLiteArchiveTombstonesAndRevival(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	backend := newTestSQLiteBackend(t)
+	store.SetBackend(backend, SyncConfig{})
+
+	now := time.Now()
+	active := []Entry{
+		{ID: "gc-low-0", Content: "low zero task artifact", Category: CategoryTaskArtifact, Tags: []string{"cold"}, AccessCount: 1, Strength: 1, CreatedAt: now.Add(-6 * time.Hour), UpdatedAt: now.Add(-6 * time.Hour)},
+		{ID: "gc-low-1", Content: "low one task artifact", Category: CategoryTaskArtifact, Tags: []string{"cold"}, AccessCount: 1, Strength: 1, CreatedAt: now.Add(-5 * time.Hour), UpdatedAt: now.Add(-5 * time.Hour)},
+		{ID: "gc-keep-0", Content: "keep zero project topic", Category: CategoryProjectKnowledge, Tags: []string{"hot"}, AccessCount: 20, Strength: 1, CreatedAt: now.Add(-4 * time.Hour), UpdatedAt: now.Add(-4 * time.Hour)},
+		{ID: "gc-keep-1", Content: "keep one project topic", Category: CategoryProjectKnowledge, Tags: []string{"hot"}, AccessCount: 19, Strength: 1, CreatedAt: now.Add(-3 * time.Hour), UpdatedAt: now.Add(-3 * time.Hour)},
+		{ID: "gc-keep-2", Content: "keep two project topic", Category: CategoryProjectKnowledge, Tags: []string{"hot"}, AccessCount: 18, Strength: 1, CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour)},
+		{ID: "gc-keep-3", Content: "keep three project topic", Category: CategoryProjectKnowledge, Tags: []string{"hot"}, AccessCount: 17, Strength: 1, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)},
+	}
+	if err := store.UpsertEntriesByID(active); err != nil {
+		t.Fatalf("UpsertEntriesByID active: %v", err)
+	}
+	if err := store.archive.Add(Entry{ID: "gc-revive-0", Content: "revived project topic", Category: CategoryProjectKnowledge, Tags: []string{"hot"}, AccessCount: 1, Strength: 1, CreatedAt: now.Add(-24 * time.Hour), UpdatedAt: now.Add(-24 * time.Hour)}); err != nil {
+		t.Fatalf("archive add: %v", err)
+	}
+
+	comp := NewCompressor(store, nil, nil)
+	comp.SetGCThreshold(4)
+	result, err := comp.RunGC(context.Background())
+	if err != nil {
+		t.Fatalf("RunGC: %v", err)
+	}
+	if result.ArchivedCount != 2 {
+		t.Fatalf("ArchivedCount=%d, want 2", result.ArchivedCount)
+	}
+	if result.RevivedCount != 1 {
+		t.Fatalf("RevivedCount=%d, want 1", result.RevivedCount)
+	}
+
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := make(map[string]bool, len(loaded))
+	for _, entry := range loaded {
+		seen[entry.ID] = true
+	}
+	for _, id := range []string{"gc-low-0", "gc-low-1"} {
+		if seen[id] {
+			t.Fatalf("archived entry %s should be tombstoned from active SQLite rows", id)
+		}
+	}
+	if !seen["gc-revive-0"] {
+		t.Fatal("revived archive entry should be restored through SQLite batch upsert")
+	}
+
+	_, deleted, err := backend.Since(0)
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	deletedSet := make(map[string]bool, len(deleted))
+	for _, id := range deleted {
+		deletedSet[id] = true
+	}
+	for _, id := range []string{"gc-low-0", "gc-low-1"} {
+		if !deletedSet[id] {
+			t.Fatalf("archived entry %s should appear in SQLite sync tombstones: %v", id, deleted)
+		}
+	}
+}

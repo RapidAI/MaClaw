@@ -64,6 +64,7 @@ type HTTPServer struct {
 	adminSecret    string
 	mux            *http.ServeMux
 	authLimiter    *authLimiter
+	launchTokens   *launchTokenStore
 	jobs           *asyncJobManager
 	knowledgeMgr   *knowledgeStoreManager
 	skillSourceSvc *cskill.SourceControlService
@@ -77,7 +78,7 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	if sourceSvc == nil {
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()
 	return s
@@ -207,6 +208,8 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPI)
 	s.mux.HandleFunc("GET /admin", s.handleAdminWeb)
 	s.mux.HandleFunc("GET /admin/", s.handleAdminWeb)
+	s.mux.HandleFunc("GET /app", s.handleUserWeb)
+	s.mux.HandleFunc("GET /app/", s.handleUserWeb)
 	s.mux.HandleFunc("GET /api/v1/admin/bootstrap/status", s.withAdminSecurityHeaders(s.handleAdminBootstrapStatus))
 	s.mux.HandleFunc("POST /api/v1/admin/bootstrap/initialize", s.withAdminSecurityHeaders(s.handleAdminBootstrapInitialize))
 	s.mux.HandleFunc("POST /api/v1/admin/auth/login", s.withAdminSecurityHeaders(s.handleAdminAuthLogin))
@@ -274,6 +277,19 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/admin/sandbox/install", s.withAdmin(s.handleAdminSandboxInstall))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants", s.withAdmin(s.handleListTenants))
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
+	s.mux.HandleFunc("GET /api/platform/runtime/report", s.withPlatformAdmin(s.handlePlatformRuntimeReport))
+	s.mux.HandleFunc("POST /api/platform/virtual-employees", s.withPlatformAdmin(s.handlePlatformCreateVirtualEmployee))
+	s.mux.HandleFunc("DELETE /api/platform/virtual-employees/{employeeId}", s.withPlatformAdmin(s.handlePlatformDeleteVirtualEmployee))
+	s.mux.HandleFunc("POST /api/platform/source-users/runtime-status", s.withPlatformAdmin(s.handlePlatformSourceUsersRuntimeStatus))
+	s.mux.HandleFunc("GET /api/platform/source-users/{sourceUserId}/runtime-status", s.withPlatformAdmin(s.handlePlatformSourceUserRuntimeStatus))
+	s.mux.HandleFunc("GET /api/platform/source-users/{sourceUserId}/assistant-instances", s.withPlatformAdmin(s.handlePlatformSourceUserAssistantInstances))
+	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/assistant-instances", s.withPlatformAdmin(s.handlePlatformCreateSourceUserAssistantInstance))
+	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/assistant-link", s.withPlatformAdmin(s.handlePlatformSourceUserAssistantLink))
+	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/settings-link", s.withPlatformAdmin(s.handlePlatformSourceUserSettingsLink))
+	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/knowledge/imports", s.withPlatformAdmin(s.handlePlatformKnowledgeImport))
+	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/migrations/imports", s.withPlatformAdmin(s.handlePlatformMigrationImport))
+	s.mux.HandleFunc("POST /api/platform/sync/jobs/{jobId}/run", s.withPlatformAdmin(s.handlePlatformSyncJobRun))
+	s.mux.HandleFunc("POST /api/platform/sync/conflicts/{conflictId}/resolve", s.withPlatformAdmin(s.handlePlatformSyncConflictResolve))
 	s.mux.HandleFunc("GET /api/v1/admin/export", s.withAdmin(s.handleExportServiceState))
 	s.mux.HandleFunc("POST /api/v1/admin/import", s.withAdmin(s.handleImportServiceState))
 	s.mux.HandleFunc("GET /api/v1/admin/snapshots", s.withAdmin(s.handleListServiceSnapshots))
@@ -296,6 +312,11 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleListUsers))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleCreateUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleGetUser))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/config/schema", s.withAdmin(s.handleAdminGetUserConfigSchema))
+	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/config", s.withAdmin(s.handleAdminGetUserConfig))
+	s.mux.HandleFunc("PUT /api/v1/admin/tenants/{tenantId}/users/{userId}/config", s.withAdmin(s.handleAdminUpdateUserConfig))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate", s.withAdmin(s.handleAdminValidateUserConfig))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test", s.withAdmin(s.handleAdminTestUserConfig))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/delete-check", s.withAdmin(s.handleGetUserDeleteCheck))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleUpdateUser))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/pause", s.withAdmin(s.handlePauseUser))
@@ -309,6 +330,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-key", s.withAdmin(s.handleRotateCredentialKey))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleRevokeCredential))
 	s.mux.HandleFunc("POST /api/v1/auth/token", s.handleIssueToken)
+	s.mux.HandleFunc("POST /api/v1/web/exchange", s.handleWebLaunchExchange)
 	s.mux.HandleFunc("GET /api/v1/me", s.withPrincipal(s.handleGetMe))
 	s.mux.HandleFunc("GET /api/v1/config/schema", s.withPrincipal(s.handleGetConfigSchema))
 	s.mux.HandleFunc("GET /api/v1/config", s.withPrincipal(s.handleGetConfig))
@@ -972,6 +994,8 @@ func riskEventFromAudit(dataRoot string, event agentservice.AuditEvent) (adminRi
 		severity, kind, summary = "high", "auth_rate_limited", "Authentication rate limit was triggered."
 	case "auth.token_failed", "admin.auth_failed", "admin.login_failed", "admin.bootstrap_failed", "admin.password_change_failed":
 		severity, kind, summary = "medium", "auth_failed", "Authentication or admin credential validation failed."
+	case "web.launch_token.rejected":
+		severity, kind, summary = "medium", "web_launch_token_rejected", "A user web launch token was rejected during exchange."
 	case "admin.owner_required_failed":
 		severity, kind, summary = "medium", "admin_authorization_denied", "An Admin Web operator attempted an owner-only operation."
 	case "admin.sandbox_diagnose_failed", "admin.sandbox_startup_diagnose_failed", "admin.sandbox_smoke_test_failed":
@@ -1969,6 +1993,49 @@ func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	tenantID := r.PathValue("tenantId")
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true") {
+		var in adminForceDeleteRequest
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		if !s.requireAdminForceDelete(w, r, in) {
+			return
+		}
+		check, err := s.svc.GetTenantDeleteCheck(r.Context(), tenantID)
+		if err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		if blockers := nonDeleteProtectionBlockers(check.Blockers); len(blockers) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "tenant has active delete blockers", "blockers": blockers})
+			return
+		}
+		unprotected := false
+		if _, err := s.svc.UpdateTenant(r.Context(), tenantID, agentservice.UpdateTenantInput{DeleteProtected: &unprotected}); err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		users, err := s.svc.ListUsers(r.Context(), tenantID, agentservice.ListUsersAdminInput{})
+		if err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		for _, user := range users {
+			if user.DeleteProtected {
+				if _, err := s.svc.UpdateUser(r.Context(), tenantID, user.ID, agentservice.UpdateUserInput{DeleteProtected: &unprotected}); err != nil {
+					writeRedactedError(w, err, s.svc.DataRoot())
+					return
+				}
+			}
+		}
+		if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		_ = s.recordAdminAudit(r.Context(), "admin.tenant_force_deleted", "tenant", tenantID, map[string]string{"users": strconv.Itoa(len(users)), "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "forced": true, "users_deleted": len(users)})
+		return
+	}
 	if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
@@ -2049,6 +2116,80 @@ func (s *HTTPServer) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+func (s *HTTPServer) adminUserPrincipal(r *http.Request) agentservice.Principal {
+	return agentservice.Principal{TenantID: r.PathValue("tenantId"), UserID: r.PathValue("userId")}
+}
+
+func (s *HTTPServer) handleAdminGetUserConfigSchema(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetParameterDefinitions(r.Context(), s.adminUserPrincipal(r))
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+func (s *HTTPServer) handleAdminGetUserConfig(w http.ResponseWriter, r *http.Request) {
+	out, err := s.svc.GetUserConfig(r.Context(), s.adminUserPrincipal(r))
+	if err != nil {
+		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
+			writeJSON(w, http.StatusOK, map[string]any{"app_config": corelib.AppConfig{}})
+			return
+		}
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleAdminUpdateUserConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	inPtr, ok := decodeOptionalAppConfig(w, r)
+	if !ok {
+		return
+	}
+	if inPtr == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
+		return
+	}
+	out, err := s.svc.UpdateUserConfig(r.Context(), s.adminUserPrincipal(r), *inPtr)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.user_config_updated", "user", r.PathValue("userId"), map[string]string{"tenant_id": r.PathValue("tenantId"), "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleAdminValidateUserConfig(w http.ResponseWriter, r *http.Request) {
+	candidate, ok := decodeOptionalAppConfig(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.svc.ValidateConfigCandidate(r.Context(), s.adminUserPrincipal(r), candidate)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleAdminTestUserConfig(w http.ResponseWriter, r *http.Request) {
+	candidate, ok := decodeOptionalAppConfig(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.svc.TestConfigCandidate(r.Context(), s.adminUserPrincipal(r), candidate)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, sanitizeConfigTestResultForAPI(s.svc.DataRoot(), out))
+}
+
 func (s *HTTPServer) handleGetUserDeleteCheck(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetUserDeleteCheck(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
 	if err != nil {
@@ -2103,12 +2244,52 @@ func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := r.PathValue("tenantId")
 	userID := r.PathValue("userId")
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true") {
+		var in adminForceDeleteRequest
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		if !s.requireAdminForceDelete(w, r, in) {
+			return
+		}
+		check, err := s.svc.GetUserDeleteCheck(r.Context(), tenantID, userID)
+		if err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		if blockers := nonDeleteProtectionBlockers(check.Blockers); len(blockers) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "user has active delete blockers", "blockers": blockers})
+			return
+		}
+		unprotected := false
+		if _, err := s.svc.UpdateUser(r.Context(), tenantID, userID, agentservice.UpdateUserInput{DeleteProtected: &unprotected}); err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		_ = s.recordAdminAudit(r.Context(), "admin.user_force_deleted", "user", userID, map[string]string{"tenant_id": tenantID, "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "forced": true})
+		return
+	}
 	if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.user_deleted", "user", userID, map[string]string{"tenant_id": tenantID, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func nonDeleteProtectionBlockers(blockers []agentservice.DeleteBlocker) []agentservice.DeleteBlocker {
+	out := make([]agentservice.DeleteBlocker, 0, len(blockers))
+	for _, blocker := range blockers {
+		if blocker.Kind != "delete_protected" {
+			out = append(out, blocker)
+		}
+	}
+	return out
 }
 func (s *HTTPServer) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.ListCredentials(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))

@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
+    BuildExperienceBlockedSkillDraft: vi.fn(),
     BuildExperienceConflictReconciliationDraft: vi.fn(),
     BuildExperienceEscalationBrief: vi.fn(),
     BuildExperienceMemoryMaintenanceDraft: vi.fn(),
@@ -9,12 +10,15 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     BuildExperienceRoutingAdjustmentDraft: vi.fn(),
     BuildExperienceSkillDraft: vi.fn(),
     BuildExperienceTraceFollowUp: vi.fn(),
+    ConfirmPreviewedSkillDraftReview: vi.fn(),
     GetExperienceGovernanceSummary: vi.fn(),
+    RecordBlockedSkillDraftReview: vi.fn(),
     RecordExperienceDraftReview: vi.fn(),
     RecordExperienceTraceFollowUp: vi.fn(),
     ReviewExperienceTrace: vi.fn(),
 }));
 
+import { BuildExperienceBlockedSkillDraft, ConfirmPreviewedSkillDraftReview, RecordBlockedSkillDraftReview } from '../../../../wailsjs/go/main/App';
 import { ExperienceLearningPanel } from '../MemoryExperienceLearningPanel';
 
 const t = (en: string) => en;
@@ -105,5 +109,113 @@ describe('ExperienceLearningPanel tool recovery governance', () => {
 
         expect(screen.getAllByText('Browser retry recovery').length).toBeGreaterThan(0);
         expect(screen.getAllByText((text) => text.includes('inspect repeated tool failure recovery windows')).length).toBeGreaterThan(0);
+    });
+});
+
+function blockedSkillLearning() {
+    return {
+        routing_hints: [],
+        skill_nudge_candidates: [],
+        usage_patterns: [],
+        recovery_patterns: [],
+        trace_kind_counts: { skill_draft_review: 1 },
+        trace_source_counts: { experience_learning: 1 },
+        review_status_counts: {},
+        next_action_kind_counts: {},
+        follow_up_status_counts: {},
+        follow_up_action_kind_counts: {},
+        review_summaries: [],
+        next_action_summaries: [],
+        follow_up_summaries: [],
+        follow_up_action_summaries: [],
+        trace_detail_count: 1,
+        trace_details: [{
+            id: 'memory:blocked-skill-review',
+            kind: 'skill_draft_review',
+            title: 'Blocked skill review',
+            source_type: 'experience_learning',
+            review_required: false,
+            draft_id: 'skill_draft:mark_needs_review:broken:',
+            draft_execution_status: 'blocked',
+            draft_execution_note: 'current plan no longer contains reviewed draft',
+        }, {
+            id: 'memory:previewed-skill-review',
+            kind: 'skill_draft_review',
+            title: 'Previewed skill review',
+            source_type: 'experience_learning',
+            review_required: false,
+            draft_id: 'skill_draft:mark_needs_review:previewed:',
+            draft_execution_status: 'previewed',
+        }],
+        governance_summary: {
+            queues: {
+                blocked_skill_draft_review_count: 1,
+                skill_draft_review_queues: {
+                    previewed_waiting_confirm: [{
+                        trace_id: 'memory:previewed-skill-review',
+                        title: 'Previewed skill review',
+                        draft_id: 'skill_draft:mark_needs_review:previewed:',
+                        execution_status: 'previewed',
+                        execution_affordances: [{ id: 'confirm_previewed_skill_draft', label: 'Confirm previewed draft' }],
+                    }],
+                    blocked: [{
+                        trace_id: 'memory:blocked-skill-review',
+                        title: 'Blocked skill review',
+                        draft_id: 'skill_draft:mark_needs_review:broken:',
+                        execution_status: 'blocked',
+                        stale: true,
+                        stale_recommendation: 'blocked skill draft is stale',
+                    }],
+                },
+            },
+        },
+    };
+}
+
+describe('ExperienceLearningPanel blocked skill draft affordances', () => {
+    it('renders close and reopen actions from backend affordance metadata', async () => {
+        vi.mocked(BuildExperienceBlockedSkillDraft).mockResolvedValueOnce({
+            draft_id: 'skill_draft:mark_needs_review:broken:',
+            execution_status: 'blocked',
+            draft_markdown: '# Blocked Skill Draft Repair/Evidence Draft',
+            non_executing_boundary: 'read-only blocked skill draft repair/evidence draft',
+            review_affordances: [
+                {
+                    id: 'close',
+                    label: 'Close blocked draft',
+                    intent: 'close_blocked_skill_draft',
+                    tool_call: { tool: 'experience_learning', args: { action: 'record_blocked_skill_draft_review', resolution: 'close' } },
+                },
+                {
+                    id: 'reopen',
+                    label: 'Reopen with replacement draft',
+                    intent: 'reopen_blocked_skill_draft',
+                    required_inputs: [{ name: 'replacement_draft_id', required: true, placeholder: 'skill_draft:...' }],
+                    tool_call: { tool: 'experience_learning', args: { action: 'record_blocked_skill_draft_review', resolution: 'reopen' } },
+                },
+            ],
+        });
+        vi.mocked(RecordBlockedSkillDraftReview).mockResolvedValueOnce({
+            kind: 'skill_draft_review',
+            status: 'completed',
+            recommended_tool_call: { tool: 'manage_skill', args: { action: 'execute_maintenance_plan', dry_run: true } },
+        });
+        vi.mocked(ConfirmPreviewedSkillDraftReview).mockResolvedValueOnce({ ok: true, draft_execution_queue: 'applied', result: { executed_count: 1 } });
+
+        render(<ExperienceLearningPanel t={t} learning={blockedSkillLearning()} error="" />);
+
+        expect(screen.getByText('Skill draft review queues')).toBeTruthy();
+        expect(screen.getByText('blocked skill draft is stale')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm previewed draft' }));
+        await waitFor(() => expect(ConfirmPreviewedSkillDraftReview).toHaveBeenCalledWith('memory:previewed-skill-review'));
+        await screen.findByText((text) => text.includes('Previewed draft confirmed') && text.includes('Executed: 1') && text.includes('Queue: applied'));
+        fireEvent.click(screen.getByRole('button', { name: 'Repair Draft' }));
+        await waitFor(() => expect(BuildExperienceBlockedSkillDraft).toHaveBeenCalledWith('memory:blocked-skill-review'));
+        await screen.findByText('Blocked draft decision');
+
+        fireEvent.change(screen.getByPlaceholderText('skill_draft:...'), { target: { value: 'skill_draft:mark_needs_review:fixed:' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Reopen with replacement draft' }));
+
+        await waitFor(() => expect(RecordBlockedSkillDraftReview).toHaveBeenCalledWith('memory:blocked-skill-review', 'reopen', 'skill_draft:mark_needs_review:fixed:', '', 'operator'));
     });
 });

@@ -145,20 +145,37 @@ function assertTenantAdminUIHooks() {
     'id="tab-tenants"',
     'id="tab-hubllm"',
     'id="tenantCreatePanel"',
+    'id="currentTenantChip"',
+    'id="currentTenantName"',
     'src="/admin/tenant-tab.js"'
   ].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant admin UI marker: ' + marker);
     }
   });
+  const chipIndex = html.indexOf('id="currentTenantChip"');
+  const topbarIndex = html.indexOf('class="topbar"');
+  const adminChipIndex = html.indexOf('class="admin-chip"');
+  const brandIndex = html.indexOf('class="brand"');
+  const navIndex = html.indexOf('<nav class="nav"');
+  if (chipIndex < topbarIndex || chipIndex > adminChipIndex || (brandIndex >= 0 && navIndex > brandIndex && chipIndex > brandIndex && chipIndex < navIndex)) {
+    fail('index.html must place the tenant context chip in the right topbar before the admin chip.');
+  }
   const admin = read('admin.js');
-  ['window.tr = tr', 'window.tabMeta = tabMeta', 'Object.assign(window', 'adminProfile', 'setOutput', 'showToast', 'openTab'].forEach(function(marker) {
+  ['window.tr = tr', 'window.tabMeta = tabMeta', 'Object.assign(window', 'adminProfile', 'refreshTenantChip', 'updateCurrentTenantContext', 'setOutput', 'showToast', 'openTab'].forEach(function(marker) {
     if (!admin.includes(marker)) {
       fail('admin.js must expose shared admin runtime marker: ' + marker);
     }
   });
   if (!admin.includes("tenant: document.getElementById('loginTenant')")) {
     fail('admin.js login payload must include selected tenant scope.');
+  }
+  if (!admin.includes('previous.tenant_name') || !admin.includes('previous.tenant_slug')) {
+    fail('admin.js must preserve tenant display context when refreshing admin profile tokens.');
+  }
+  const system = read('system-tab.js');
+  if (!system.includes('setAdminProfile(data.admin)') || system.includes('localStorage.setItem(adminProfileKey, JSON.stringify(data.admin))')) {
+    fail('system-tab.js must preserve tenant display context when password/profile updates return a fresh admin token.');
   }
   ['adminTabAllowed', 'window.adminGlobalOnlyTabs', 'window.adminTenantOnlyTabs', "return 'tenants'"].forEach(function(marker) {
     if (!admin.includes(marker)) {
@@ -168,6 +185,16 @@ function assertTenantAdminUIHooks() {
   if (!admin.includes("normalized === 'system'") || !admin.includes("String(profile.scope || '').toLowerCase() === 'tenant'") || !admin.includes('openDefaultImSub')) {
     fail('admin.js must avoid global-only system loads for tenant admins.');
   }
+  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName'].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html is missing tenant-safe mail settings marker: ' + marker);
+    }
+  });
+  ['loadTenantMailSenderName', 'saveTenantMailSenderName', '/api/admin/mail/sender-name'].forEach(function(marker) {
+    if (!system.includes(marker)) {
+      fail('system-tab.js is missing tenant sender-name marker: ' + marker);
+    }
+  });
   const bootstrap = read('admin-bootstrap.js');
   ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
     if (!bootstrap.includes(marker)) {
@@ -206,6 +233,7 @@ function assertTenantAdminUIHooks() {
     'isReservedTenantID',
     'tenant_default',
     'applyImScopeUI',
+    'tenantMailSenderCard',
     "toggleNearest('machineCountHero'"
   ].forEach(function(marker) {
     if (!tenant.includes(marker)) {
@@ -334,6 +362,25 @@ function assertScopedRefreshHooks() {
   ['llmServiceTenantScoped', 'if (llmServiceTenantScoped()) { applyLLMServiceSystemI18n(); ensureLLMServiceSystemSettingsLoaded(); }'].forEach(function(marker) {
     if (!llmService.includes(marker)) {
       fail('llm-service-tabs.js is missing tenant-scoped system settings marker: ' + marker);
+    }
+  });
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const providerConfigIndex = html.indexOf('id="llmProviderConfigSection"');
+  const modelServicesIndex = html.indexOf('id="tab-modelservices"');
+  const serviceCardsIndex = html.indexOf('id="tab-servicecards"');
+  if (providerConfigIndex < 0 || modelServicesIndex < 0 || providerConfigIndex < modelServicesIndex || (serviceCardsIndex > 0 && providerConfigIndex > serviceCardsIndex)) {
+    fail('index.html must place LLM provider configuration inside the Model Services tab.');
+  }
+  const llmProvidersSection = html.slice(html.indexOf('id="tab-llmproviders"'), modelServicesIndex);
+  if (llmProvidersSection.includes('id="llmProviderList"')) {
+    fail('index.html must keep provider list out of the LLM EndPoint tab.');
+  }
+  if (!llmService.includes("id: 'modelservices'") || !llmService.includes('window.loadLlmProviders')) {
+    fail('llm-service-tabs.js must load provider configuration when Model Services opens.');
+  }
+  ['window.refreshLlmServiceProviderOptions', 'window.getLlmProviderOptions', 'await refreshLLMServiceProviderOptions()'].forEach(function(marker) {
+    if (!llmService.includes(marker) && !read('llm-provider-tab.js').includes(marker)) {
+      fail('LLM service/provider tabs must keep provider options in sync: ' + marker);
     }
   });
   const pwa = read('pwa-tab.js');
@@ -505,6 +552,43 @@ function assertSecurityCapabilityComplianceExportHooks() {
   });
 }
 
+function assertSecurityDefaultGroupUsesName() {
+  const content = read('security-tab.js');
+  [
+    'defaultGroupName',
+    'settings.default_group_name',
+    'defaultGroupLabel()',
+    'renderDefaultGroupHint()',
+    'default_group_id: state().defaultGroupId'
+  ].forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail('security-tab.js is missing default group display-name marker: ' + marker);
+    }
+  });
+  if (content.includes("settings.default_group_id || st('notSet')")) {
+    fail('security-tab.js must not render default_group_id directly as the default group label');
+  }
+}
+
+function assertSecurityTenantSchemaGuards() {
+  const securityStore = fs.readFileSync(path.join(root, '..', '..', 'internal', 'security', 'store.go'), 'utf8');
+  const sqliteMigrations = fs.readFileSync(path.join(root, '..', '..', 'internal', 'store', 'sqlite', 'migrations.go'), 'utf8');
+  [securityStore, sqliteMigrations].forEach(function(content, index) {
+    const name = index === 0 ? 'security/store.go' : 'store/sqlite/migrations.go';
+    [
+      'PRIMARY KEY (tenant_id, email)',
+      'PRIMARY KEY (tenant_id, group_id)'
+    ].forEach(function(marker) {
+      if (!content.includes(marker)) {
+        fail(name + ' is missing tenant-scoped security schema marker: ' + marker);
+      }
+    });
+    if (content.includes('email TEXT PRIMARY KEY') || content.includes('group_id TEXT PRIMARY KEY')) {
+      fail(name + ' must not use single-column primary keys for tenant-scoped security tables');
+    }
+  });
+}
+
 expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.forEach(assertModuleExports);
@@ -523,6 +607,8 @@ assertScopedRefreshHooks();
 assertLegacyMirrorRemoved();
 assertHubLlmStatusTextIsIconFree();
 assertLLMProviderPricingHooks();
+assertSecurityDefaultGroupUsesName();
+assertSecurityTenantSchemaGuards();
 assertSecurityCapabilityComplianceExportHooks();
 
 if (!process.exitCode) {

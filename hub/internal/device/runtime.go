@@ -492,6 +492,7 @@ func (s *Service) ListOnlineMachines() []MachineRuntimeInfo {
 			info.Status = meta.Status
 		}
 		if conn != nil {
+			info.TenantID = conn.TenantID
 			info.UserID = conn.UserID
 			info.Role = conn.Role
 		}
@@ -769,6 +770,7 @@ func (s *Service) runtimeOnlyMachineInfo(machineID string, conn *ws.ConnContext)
 		Status:    "online",
 	}
 	if conn != nil {
+		info.TenantID = conn.TenantID
 		info.UserID = conn.UserID
 		info.Role = conn.Role
 	}

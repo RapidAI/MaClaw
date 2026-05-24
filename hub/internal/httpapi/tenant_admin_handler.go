@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -11,23 +13,27 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
 type tenantCreateRequest struct {
-	ID                   string   `json:"id"`
-	Slug                 string   `json:"slug"`
-	Name                 string   `json:"name"`
-	PrimaryDomain        string   `json:"primary_domain"`
-	Domains              []string `json:"domains"`
-	InitialAdminUsername string   `json:"initial_admin_username"`
-	InitialAdminPassword string   `json:"initial_admin_password"`
-	InitialAdminEmail    string   `json:"initial_admin_email"`
-	InitialAdminName     string   `json:"initial_admin_name"`
+	ID                    string   `json:"id"`
+	Slug                  string   `json:"slug"`
+	Name                  string   `json:"name"`
+	PrimaryDomain         string   `json:"primary_domain"`
+	Domains               []string `json:"domains"`
+	AllowUserRegistration *bool    `json:"allow_user_registration"`
+	InitialAdminUsername  string   `json:"initial_admin_username"`
+	InitialAdminPassword  string   `json:"initial_admin_password"`
+	InitialAdminEmail     string   `json:"initial_admin_email"`
+	InitialAdminName      string   `json:"initial_admin_name"`
 }
 
 type tenantDomainsUpdateRequest struct {
-	PrimaryDomain string   `json:"primary_domain"`
-	Domains       []string `json:"domains"`
+	Name                  string   `json:"name"`
+	PrimaryDomain         string   `json:"primary_domain"`
+	Domains               []string `json:"domains"`
+	AllowUserRegistration *bool    `json:"allow_user_registration"`
 }
 
 var tenantIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,63}$`)
@@ -45,6 +51,12 @@ type tenantStatusUpdateRequest struct {
 	Status string `json:"status"`
 }
 
+type tenantMergeRequest struct {
+	TargetTenantID string `json:"target_tenant_id"`
+	DryRun         bool   `json:"dry_run"`
+	DeleteSource   *bool  `json:"delete_source"`
+}
+
 type tenantStatusUpdater interface {
 	UpdateStatus(ctx context.Context, id string, status string) error
 }
@@ -53,26 +65,42 @@ type tenantDomainsUpdater interface {
 	UpdateDomains(ctx context.Context, id string, primaryDomain string, settingsJSON string) error
 }
 
+type tenantSettingsUpdater interface {
+	UpdateSettings(ctx context.Context, id string, name string, primaryDomain string, settingsJSON string) error
+}
+
 type tenantSoftDeleter interface {
 	SoftDeleteByID(ctx context.Context, id string) error
 }
 
 func AdminLoginTenantsHandler(tenants store.TenantRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defaultTenant, _ := tenants.EnsureDefault(r.Context())
 		items, err := tenants.List(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "TENANTS_LIST_FAILED", err.Error())
 			return
 		}
 		out := make([]map[string]any, 0, len(items))
+		seenDefault := false
 		for _, item := range items {
-			if item == nil || item.DeletedAt != nil || isReservedTenantID(item.ID) || !strings.EqualFold(strings.TrimSpace(item.Status), "active") {
+			if item != nil && strings.EqualFold(strings.TrimSpace(item.ID), store.DefaultTenantID) {
+				seenDefault = true
+			}
+			if !tenantLoginOptionVisible(item) {
 				continue
 			}
 			out = append(out, tenantLoginOptionDTO(item))
 		}
+		if !seenDefault && tenantLoginOptionVisible(defaultTenant) {
+			out = append(out, tenantLoginOptionDTO(defaultTenant))
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"tenants": out})
 	}
+}
+
+func tenantLoginOptionVisible(item *store.Tenant) bool {
+	return item != nil && item.DeletedAt == nil && !strings.EqualFold(strings.TrimSpace(item.ID), auth.ExplicitGlobalAdminTenantScope) && strings.EqualFold(strings.TrimSpace(item.Status), "active")
 }
 
 func AdminTenantsListHandler(tenants store.TenantRepository) http.HandlerFunc {
@@ -81,17 +109,25 @@ func AdminTenantsListHandler(tenants store.TenantRepository) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Global admin authorization required")
 			return
 		}
+		defaultTenant, _ := tenants.EnsureDefault(r.Context())
 		items, err := tenants.List(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "TENANTS_LIST_FAILED", err.Error())
 			return
 		}
 		out := make([]*store.Tenant, 0, len(items))
+		seenDefault := false
 		for _, item := range items {
-			if item == nil || isReservedTenantID(item.ID) {
+			if item != nil && strings.EqualFold(strings.TrimSpace(item.ID), store.DefaultTenantID) {
+				seenDefault = true
+			}
+			if item == nil || strings.EqualFold(strings.TrimSpace(item.ID), auth.ExplicitGlobalAdminTenantScope) {
 				continue
 			}
 			out = append(out, item)
+		}
+		if !seenDefault && defaultTenant != nil && !strings.EqualFold(strings.TrimSpace(defaultTenant.ID), auth.ExplicitGlobalAdminTenantScope) {
+			out = append(out, defaultTenant)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"tenants": tenantDTOs(out)})
 	}
@@ -134,11 +170,15 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Initial admin username, password, and email are required when creating an initial admin")
 			return
 		}
+		if adminRequested && admins == nil {
+			writeError(w, http.StatusServiceUnavailable, "TENANT_ADMIN_UNSUPPORTED", "Tenant admin creation is not supported")
+			return
+		}
 		tenantID := normalizeTenantIDInput(req.ID)
 		if tenantID == "" {
 			tenantID = "tenant_" + slug
 		}
-		if isReservedTenantID(tenantID) || !isValidTenantID(tenantID) {
+		if isReservedTenantID(tenantID) || tenantID == store.DefaultTenantID || !isValidTenantID(tenantID) {
 			writeError(w, http.StatusBadRequest, "INVALID_TENANT_ID", "Tenant id must start with a letter and contain only lowercase letters, numbers, underscores, or hyphens")
 			return
 		}
@@ -158,7 +198,7 @@ func adminTenantCreateHandler(system store.SystemSettingsRepository, tenants sto
 		if len(domains) > 0 {
 			primaryDomain = domains[0]
 		}
-		settingsJSON := tenantSettingsJSONWithDomains("{}", domains)
+		settingsJSON := tenantSettingsJSONWithDomainsAndRegistration("{}", domains, req.AllowUserRegistration)
 		now := time.Now()
 		tenant := &store.Tenant{ID: tenantID, Slug: slug, Name: name, Status: "active", PrimaryDomain: primaryDomain, SettingsJSON: settingsJSON, CreatedByAdminID: actor.ID, CreatedAt: now, UpdatedAt: now}
 		if err := tenants.Create(r.Context(), tenant); err != nil {
@@ -229,8 +269,9 @@ func AdminTenantDomainsUpdateWithPlatformCallbackHandler(system store.SystemSett
 func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
-		updater, ok := tenants.(tenantDomainsUpdater)
-		if !ok {
+		domainUpdater, hasDomainUpdater := tenants.(tenantDomainsUpdater)
+		settingsUpdater, hasSettingsUpdater := tenants.(tenantSettingsUpdater)
+		if !hasDomainUpdater && !hasSettingsUpdater {
 			writeError(w, http.StatusServiceUnavailable, "TENANT_DOMAINS_UNSUPPORTED", "Tenant domain updates are not supported")
 			return
 		}
@@ -257,6 +298,10 @@ func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tena
 			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Tenant not found")
 			return
 		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = tenant.Name
+		}
 		domains, invalidDomain := normalizeTenantDomainsForInput(append([]string{req.PrimaryDomain}, req.Domains...))
 		if invalidDomain != "" {
 			writeError(w, http.StatusBadRequest, "INVALID_TENANT_DOMAIN", "Tenant email domain is invalid: "+invalidDomain)
@@ -273,13 +318,22 @@ func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tena
 		if len(domains) > 0 {
 			primaryDomain = domains[0]
 		}
-		settingsJSON := tenantSettingsJSONWithDomains(tenant.SettingsJSON, domains)
-		if err := updater.UpdateDomains(r.Context(), tenantID, primaryDomain, settingsJSON); err != nil {
-			writeError(w, http.StatusInternalServerError, "TENANT_DOMAINS_UPDATE_FAILED", err.Error())
+		settingsJSON := tenantSettingsJSONWithDomainsAndRegistration(tenant.SettingsJSON, domains, req.AllowUserRegistration)
+		var updateErr error
+		if hasSettingsUpdater {
+			updateErr = settingsUpdater.UpdateSettings(r.Context(), tenantID, name, primaryDomain, settingsJSON)
+		} else if name != tenant.Name {
+			writeError(w, http.StatusServiceUnavailable, "TENANT_SETTINGS_UNSUPPORTED", "Tenant setting updates are not supported")
+			return
+		} else {
+			updateErr = domainUpdater.UpdateDomains(r.Context(), tenantID, primaryDomain, settingsJSON)
+		}
+		if updateErr != nil {
+			writeError(w, http.StatusInternalServerError, "TENANT_DOMAINS_UPDATE_FAILED", updateErr.Error())
 			return
 		}
 		updated, _ := tenants.GetByID(r.Context(), tenantID)
-		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.domains_updated", map[string]any{"tenant_id": tenantID, "domains": domains})
+		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.settings_updated", map[string]any{"tenant_id": tenantID, "name": name, "domains": domains, "allow_user_registration": tenantAllowsUserRegistration(updated)})
 		postPlatformTenantCallbacks(r.Context(), system, updated, "")
 		writeJSON(w, http.StatusOK, map[string]any{"tenant": tenantDTO(updated)})
 	}
@@ -393,6 +447,73 @@ func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store
 	}
 }
 
+func AdminTenantMergeHandler(db *sql.DB, tenants store.TenantRepository, audit store.AdminAuditRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+	runtimeStopper := firstTenantIMRuntimeStopper(runtimeStoppers)
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor := AdminFromContext(r.Context())
+		if actor == nil || !IsGlobalAdmin(r.Context()) {
+			writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Global admin authorization required")
+			return
+		}
+		if db == nil {
+			writeError(w, http.StatusServiceUnavailable, "TENANT_MERGE_UNSUPPORTED", "Tenant merge is not supported")
+			return
+		}
+		sourceTenantID := strings.TrimSpace(r.PathValue("tenantId"))
+		if sourceTenantID == "" || isReservedTenantID(sourceTenantID) {
+			writeError(w, http.StatusBadRequest, "INVALID_TENANT", "Source tenant id is invalid")
+			return
+		}
+		var req tenantMergeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		targetTenantID := strings.TrimSpace(req.TargetTenantID)
+		if targetTenantID == "" || isReservedTenantID(targetTenantID) || sourceTenantID == targetTenantID {
+			writeError(w, http.StatusBadRequest, "INVALID_TARGET_TENANT", "Target tenant id is invalid")
+			return
+		}
+		if source, err := tenants.GetByID(r.Context(), sourceTenantID); err != nil {
+			writeError(w, http.StatusInternalServerError, "TENANT_LOOKUP_FAILED", err.Error())
+			return
+		} else if source == nil || source.DeletedAt != nil {
+			writeError(w, http.StatusNotFound, "SOURCE_TENANT_NOT_FOUND", "Source tenant not found")
+			return
+		}
+		if target, err := tenants.GetByID(r.Context(), targetTenantID); err != nil {
+			writeError(w, http.StatusInternalServerError, "TENANT_LOOKUP_FAILED", err.Error())
+			return
+		} else if target == nil || target.DeletedAt != nil {
+			writeError(w, http.StatusNotFound, "TARGET_TENANT_NOT_FOUND", "Target tenant not found")
+			return
+		} else if !strings.EqualFold(strings.TrimSpace(target.Status), "active") {
+			writeError(w, http.StatusBadRequest, "TARGET_TENANT_INACTIVE", "Target tenant must be active")
+			return
+		}
+		deleteSource := true
+		if req.DeleteSource != nil {
+			deleteSource = *req.DeleteSource
+		}
+		result, err := sqlite.MergeTenants(r.Context(), db, sqlite.TenantMergeOptions{FromTenant: sourceTenantID, ToTenant: targetTenantID, DryRun: req.DryRun, DeleteSource: deleteSource})
+		if err != nil {
+			if errors.Is(err, sqlite.ErrTenantMergeConflict) {
+				writeError(w, http.StatusConflict, "TENANT_MERGE_CONFLICT", err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "TENANT_MERGE_FAILED", err.Error())
+			return
+		}
+		if !req.DryRun {
+			if deleteSource && runtimeStopper != nil && sourceTenantID != store.DefaultTenantID {
+				runtimeStopper.StopTenantIMs(r.Context(), sourceTenantID)
+			}
+			writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.merged", map[string]any{"source_tenant_id": sourceTenantID, "target_tenant_id": targetTenantID, "delete_source": deleteSource})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"result": result})
+	}
+}
+
 func postPlatformTenantCallbacks(ctx context.Context, system store.SystemSettingsRepository, tenant *store.Tenant, statusOverride string) {
 	if system == nil || tenant == nil {
 		return
@@ -443,12 +564,19 @@ func AdminTenantAdminCreateHandler(tenants store.TenantRepository, admins *auth.
 			writeError(w, http.StatusBadRequest, "TENANT_REQUIRED", "Tenant id is required")
 			return
 		}
-		if isReservedTenantID(tenantID) || tenantID == store.DefaultTenantID {
+		if isReservedTenantID(tenantID) {
 			writeError(w, http.StatusBadRequest, "INVALID_TENANT", "Tenant id is invalid")
 			return
 		}
+		if strings.EqualFold(tenantID, store.DefaultTenantID) {
+			_, _ = tenants.EnsureDefault(r.Context())
+		}
 		if actor == nil || (!IsGlobalAdmin(r.Context()) && AdminTenantID(r.Context()) != tenantID) {
 			writeError(w, http.StatusForbidden, "TENANT_FORBIDDEN", "Tenant access denied")
+			return
+		}
+		if admins == nil {
+			writeError(w, http.StatusServiceUnavailable, "TENANT_ADMIN_UNSUPPORTED", "Tenant admin creation is not supported")
 			return
 		}
 		tenant, err := tenants.GetByID(r.Context(), tenantID)
@@ -524,7 +652,7 @@ func tenantDTOs(items []*store.Tenant) []map[string]any {
 
 func isReservedTenantID(id string) bool {
 	trimmed := strings.TrimSpace(id)
-	return strings.EqualFold(trimmed, auth.ExplicitGlobalAdminTenantScope) || strings.EqualFold(trimmed, store.DefaultTenantID)
+	return strings.EqualFold(trimmed, auth.ExplicitGlobalAdminTenantScope)
 }
 func normalizeTenantIDInput(id string) string { return strings.ToLower(strings.TrimSpace(id)) }
 func isValidTenantID(id string) bool          { return tenantIDPattern.MatchString(strings.TrimSpace(id)) }
@@ -631,13 +759,35 @@ func tenantEmailDomains(t *store.Tenant) []string {
 }
 
 func tenantSettingsJSONWithDomains(settingsJSON string, domains []string) string {
+	return tenantSettingsJSONWithDomainsAndRegistration(settingsJSON, domains, nil)
+}
+
+func tenantSettingsJSONWithDomainsAndRegistration(settingsJSON string, domains []string, allowUserRegistration *bool) string {
 	settings := tenantSettingsMap(settingsJSON)
 	settings["email_domains"] = domains
+	delete(settings, "domains")
+	if allowUserRegistration != nil {
+		settings["allow_user_registration"] = *allowUserRegistration
+		delete(settings, "registration_enabled")
+	}
 	data, err := json.Marshal(settings)
 	if err != nil {
 		return "{}"
 	}
 	return string(data)
+}
+
+func tenantAllowsUserRegistration(t *store.Tenant) bool {
+	if t == nil {
+		return true
+	}
+	settings := tenantSettingsMap(t.SettingsJSON)
+	for _, key := range []string{"allow_user_registration", "registration_enabled"} {
+		if value, ok := settings[key].(bool); ok {
+			return value
+		}
+	}
+	return true
 }
 
 func tenantSettingsMap(settingsJSON string) map[string]any {
@@ -655,14 +805,14 @@ func tenantLoginOptionDTO(t *store.Tenant) map[string]any {
 	if t == nil {
 		return map[string]any{}
 	}
-	return map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t)}
+	return map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "allow_user_registration": tenantAllowsUserRegistration(t)}
 }
 
 func tenantDTO(t *store.Tenant) map[string]any {
 	if t == nil {
 		return map[string]any{}
 	}
-	out := map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "status": t.Status, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "settings_json": t.SettingsJSON, "created_at": t.CreatedAt.Format(time.RFC3339), "updated_at": t.UpdatedAt.Format(time.RFC3339)}
+	out := map[string]any{"id": t.ID, "slug": t.Slug, "name": t.Name, "status": t.Status, "primary_domain": t.PrimaryDomain, "domains": tenantEmailDomains(t), "allow_user_registration": tenantAllowsUserRegistration(t), "settings_json": t.SettingsJSON, "created_at": t.CreatedAt.Format(time.RFC3339), "updated_at": t.UpdatedAt.Format(time.RFC3339)}
 	if t.DeletedAt != nil {
 		out["deleted_at"] = t.DeletedAt.Format(time.RFC3339)
 	}

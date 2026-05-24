@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUpsertEntryByTagsDoesNotEnqueueSemanticDedup(t *testing.T) {
@@ -87,6 +88,64 @@ func TestUpsertEntryByTagsCreatesUpdatesAndTouches(t *testing.T) {
 	if len(entries) != 1 || !hasTag(entries[0].Tags, "updated") || !hasTag(entries[0].Tags, "routing") {
 		t.Fatalf("unexpected updated entry: %+v", entries)
 	}
+}
+
+func TestUpsertEntryByTagsUpdatePersistsRelatedEdgesAndRefreshesGraph(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	now := time.Now().UTC()
+	created, err := store.UpsertEntryByTags(UpsertByTagsOptions{
+		Content:          "generated profile edge left",
+		Category:         CategoryProjectKnowledge,
+		Tags:             []string{"generated", "edge-left"},
+		IdentityTagCount: 2,
+	})
+	if err != nil || !created.Created {
+		t.Fatalf("create left: result=%+v err=%v", created, err)
+	}
+	if err := store.Save(Entry{ID: "edge-right", Content: "generated profile edge right", Category: CategoryProjectKnowledge}); err != nil {
+		t.Fatalf("save right: %v", err)
+	}
+
+	updated, err := store.UpsertEntryByTags(UpsertByTagsOptions{
+		Content:          "generated profile edge left updated",
+		Category:         CategoryProjectKnowledge,
+		Tags:             []string{"generated", "edge-left", "updated"},
+		IdentityTagCount: 2,
+		RelatedIDs:       []string{"edge-right"},
+		RelatedEdges:     []RelatedEdge{{ID: "edge-right", Strength: 0.6, LinkType: LinkDerivedFrom, UpdatedAt: now}},
+	})
+	if err != nil || !updated.Updated || updated.EntryID != created.EntryID {
+		t.Fatalf("update left: result=%+v err=%v", updated, err)
+	}
+
+	neighbors := store.graph.neighborsTypedOf(created.EntryID)
+	if edge, ok := neighbors["edge-right"]; !ok || edge.LinkType != LinkDerivedFrom || edge.Strength != 0.6 {
+		t.Fatalf("upsert update did not refresh graph edges: %#v", neighbors)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, entry := range loaded {
+		if entry.ID == created.EntryID {
+			if len(entry.RelatedEdges) != 1 || entry.RelatedEdges[0].ID != "edge-right" || entry.RelatedEdges[0].LinkType != LinkDerivedFrom {
+				t.Fatalf("related edge was not persisted: %+v", entry.RelatedEdges)
+			}
+			return
+		}
+	}
+	t.Fatalf("updated entry %s not loaded", created.EntryID)
 }
 
 func TestUpsertEntryByTagsRepairsExistingDuplicateContent(t *testing.T) {
@@ -438,6 +497,55 @@ func TestUpsertEntryByIDRepairsExistingDuplicateContent(t *testing.T) {
 	entries := store.SearchDirectByID("existing-duplicate")
 	if len(entries) != 1 || entries[0].Scope != ScopeProject || entries[0].SourceType != "generated_test" || entries[0].DerivedKind != "generated_test" || !hasTag(entries[0].Tags, "old") || !hasTag(entries[0].Tags, "new") {
 		t.Fatalf("duplicate entry was not repaired with generated metadata: %+v", entries)
+	}
+}
+
+func TestUpsertEntryByIDUpdatePersistsThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	backend := newTestSQLiteBackend(t)
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	seed := Entry{ID: "upsert-sqlite", Content: "old generated memory", Category: CategoryProjectKnowledge, Tags: []string{"old"}, AccessCount: 1, Strength: 1, CreatedAt: time.Now().Add(-time.Hour), UpdatedAt: time.Now().Add(-time.Hour)}
+	if err := store.UpsertEntriesByID([]Entry{seed}); err != nil {
+		t.Fatalf("seed UpsertEntriesByID: %v", err)
+	}
+
+	result, err := store.UpsertEntryByID(Entry{
+		ID:           "upsert-sqlite",
+		Content:      "new generated memory",
+		Category:     CategoryProjectKnowledge,
+		Tags:         []string{"new"},
+		Scope:        ScopeProject,
+		SourceType:   "generated_test",
+		SourceURL:    "file://generated",
+		EvidenceIDs:  []string{"evidence-1"},
+		RelatedIDs:   []string{"evidence-1"},
+		RelatedEdges: []RelatedEdge{{ID: "evidence-1", Strength: 0.8, LinkType: LinkReferences}},
+		DerivedKind:  "generated_test",
+	})
+	if err != nil || !result.Updated || result.EntryID != "upsert-sqlite" {
+		t.Fatalf("expected sqlite upsert update, result=%+v err=%v", result, err)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one backend entry, got %+v", loaded)
+	}
+	got := loaded[0]
+	if got.Content != "new generated memory" || got.Scope != ScopeProject || got.SourceType != "generated_test" || got.DerivedKind != "generated_test" {
+		t.Fatalf("backend upsert update not persisted: %+v", got)
+	}
+	if len(got.Versions) != 1 || got.Versions[0].Content != "old generated memory" {
+		t.Fatalf("content update should preserve version history, got %+v", got.Versions)
+	}
+	if !hasTag(got.Tags, "new") || len(got.RelatedEdges) != 1 || got.RelatedEdges[0].ID != "evidence-1" {
+		t.Fatalf("metadata update not persisted: %+v", got)
 	}
 }
 

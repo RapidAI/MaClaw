@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -242,13 +243,23 @@ func TestToolManageSkillExecuteMaintenancePlanRequiresConfirmAndAppliesApprovedM
 	if !strings.Contains(blocked, "confirm=true is required") {
 		t.Fatalf("expected confirm guard, got %s", blocked)
 	}
+	var guardPayload struct {
+		OK     bool `json:"ok"`
+		DryRun bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal([]byte(blocked), &guardPayload); err != nil || guardPayload.OK || guardPayload.DryRun {
+		t.Fatalf("confirm guard should preserve dry_run=false, payload=%#v err=%v raw=%s", guardPayload, err, blocked)
+	}
 	blocked = h.toolManageSkill(map[string]interface{}{
 		"action":  "execute_maintenance_plan",
 		"dry_run": false,
 		"confirm": true,
 	}, nil)
-	if !strings.Contains(blocked, "approved_actions is required") {
+	if !strings.Contains(blocked, "approved_actions, approved_draft_ids, or approved_review_trace_ids is required") {
 		t.Fatalf("expected approved action guard, got %s", blocked)
+	}
+	if err := json.Unmarshal([]byte(blocked), &guardPayload); err != nil || guardPayload.OK || guardPayload.DryRun {
+		t.Fatalf("approval guard should preserve dry_run=false, payload=%#v err=%v raw=%s", guardPayload, err, blocked)
 	}
 
 	raw := h.toolManageSkill(map[string]interface{}{
@@ -259,8 +270,10 @@ func TestToolManageSkillExecuteMaintenancePlanRequiresConfirmAndAppliesApprovedM
 		"approved_actions": []interface{}{skill.MaintenanceActionMarkNeedsReview},
 	}, nil)
 	var payload struct {
-		OK     bool `json:"ok"`
-		Result struct {
+		OK                   bool   `json:"ok"`
+		DraftExecutionStatus string `json:"draft_execution_status"`
+		DraftExecutionQueue  string `json:"draft_execution_queue"`
+		Result               struct {
 			ExecutedCount int `json:"executed_count"`
 		} `json:"result"`
 	}
@@ -276,6 +289,276 @@ func TestToolManageSkillExecuteMaintenancePlanRequiresConfirmAndAppliesApprovedM
 	}
 	if got := reloaded.NLSkills[0].Status; got != "needs_review" {
 		t.Fatalf("status = %q, want needs_review", got)
+	}
+}
+
+func TestToolManageSkillExecuteMaintenancePlanUsesApprovedDraftReviewTrace(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	store, err := memory.NewStore(filepath.Join(tempHome, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	app.memoryStore = store
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:               "fragile-review-skill",
+		Source:             "test",
+		Status:             "active",
+		UsageCount:         3,
+		FailureCount:       3,
+		SuccessCount:       0,
+		LastError:          "rate_limit: too many requests",
+		RepairAttemptCount: skill.SelfRepairMaxAttempts,
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app}
+	draftID := "skill_draft:mark_needs_review:fragile-review-skill:"
+	record, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
+		Kind:          experienceDraftKindSkill,
+		Status:        "completed",
+		DraftID:       draftID,
+		DraftMarkdown: "# Skill governance draft\n\nApprove needs_review metadata update.",
+	})
+	if err != nil {
+		t.Fatalf("RecordExperienceDraftReview: %v", err)
+	}
+
+	previewRaw := h.toolManageSkill(map[string]interface{}{
+		"action":                    "execute_maintenance_plan",
+		"dry_run":                   true,
+		"min_failure_runs":          3,
+		"approved_review_trace_ids": []interface{}{record.TraceID},
+	}, nil)
+	var previewPayload struct {
+		OK     bool `json:"ok"`
+		DryRun bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal([]byte(previewRaw), &previewPayload); err != nil {
+		t.Fatalf("unmarshal preview result: %v\n%s", err, previewRaw)
+	}
+	if !previewPayload.OK || !previewPayload.DryRun {
+		t.Fatalf("unexpected preview payload: %#v raw=%s", previewPayload, previewRaw)
+	}
+	previewEntry, err := findExperienceMemoryEntryByTraceID(store, record.TraceID)
+	if err != nil {
+		t.Fatalf("find review entry after preview: %v", err)
+	}
+	previewDetail, ok := traceDetailFromMemoryEntry(previewEntry)
+	if !ok || previewDetail.DraftExecutionStatus != skillDraftExecutionPreviewed || previewDetail.DraftExecutionAt == "" {
+		t.Fatalf("expected previewed draft execution audit, detail=%#v ok=%v", previewDetail, ok)
+	}
+	previewSnapshot := buildExperienceLearningSnapshot(nil, store)
+	if previewSnapshot.ApprovedSkillDraftReviewCount != 1 || len(previewSnapshot.ApprovedSkillDraftReviews) != 1 || previewSnapshot.ApprovedSkillDraftReviews[0].ExecutionStatus != skillDraftExecutionPreviewed {
+		t.Fatalf("previewed skill draft review should stay queued with status: %#v", previewSnapshot.ApprovedSkillDraftReviews)
+	}
+	previewQueue := previewSnapshot.SkillDraftReviewQueues.PreviewedWaitingConfirm
+	if len(previewQueue) != 1 || len(previewQueue[0].ExecutionAffordances) != 1 || previewQueue[0].ExecutionAffordances[0].ID != "confirm_previewed_skill_draft" {
+		t.Fatalf("previewed queue should expose confirm affordance: %#v", previewQueue)
+	}
+	if previewQueue[0].ExecutionAffordances[0].ToolCall["non_executing"] != false {
+		t.Fatalf("confirm affordance must be executable and explicit: %#v", previewQueue[0].ExecutionAffordances[0].ToolCall)
+	}
+
+	var payload struct {
+		OK                   bool   `json:"ok"`
+		DraftExecutionStatus string `json:"draft_execution_status"`
+		DraftExecutionQueue  string `json:"draft_execution_queue"`
+		Result               struct {
+			ExecutedCount int `json:"executed_count"`
+		} `json:"result"`
+	}
+	confirmResult, err := app.ConfirmPreviewedSkillDraftReview(record.TraceID)
+	if err != nil {
+		t.Fatalf("ConfirmPreviewedSkillDraftReview: %v", err)
+	}
+	confirmData, err := json.Marshal(confirmResult)
+	if err != nil {
+		t.Fatalf("marshal confirm result: %v", err)
+	}
+	if err := json.Unmarshal(confirmData, &payload); err != nil {
+		t.Fatalf("unmarshal execute result: %v\n%s", err, string(confirmData))
+	}
+	if !payload.OK || payload.Result.ExecutedCount != 1 || payload.DraftExecutionStatus != skillDraftExecutionApplied || payload.DraftExecutionQueue != "applied" {
+		t.Fatalf("unexpected execute payload: %#v raw=%s", payload, string(confirmData))
+	}
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after execute = %v", err)
+	}
+	if got := reloaded.NLSkills[0].Status; got != "needs_review" {
+		t.Fatalf("status = %q, want needs_review", got)
+	}
+	entry, err := findExperienceMemoryEntryByTraceID(store, record.TraceID)
+	if err != nil {
+		t.Fatalf("find review entry after execute: %v", err)
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok || detail.DraftExecutionStatus != skillDraftExecutionApplied || detail.DraftExecutionAt == "" {
+		t.Fatalf("expected applied draft execution audit, detail=%#v ok=%v", detail, ok)
+	}
+	snapshot := buildExperienceLearningSnapshot(nil, store)
+	if snapshot.ApprovedSkillDraftReviewCount != 0 || len(snapshot.ApprovedSkillDraftReviews) != 0 {
+		t.Fatalf("applied skill draft review should leave approval queue: %#v", snapshot.ApprovedSkillDraftReviews)
+	}
+	if _, err := app.ConfirmPreviewedSkillDraftReview(record.TraceID); err == nil {
+		t.Fatalf("ConfirmPreviewedSkillDraftReview should reject already applied trace")
+	}
+	replayRaw := h.toolManageSkill(map[string]interface{}{
+		"action":                    "execute_maintenance_plan",
+		"dry_run":                   false,
+		"confirm":                   true,
+		"approved_review_trace_ids": []interface{}{record.TraceID},
+	}, nil)
+	if !strings.Contains(replayRaw, "already applied") {
+		t.Fatalf("applied review trace should not be replayable: %s", replayRaw)
+	}
+}
+
+func TestToolManageSkillExecuteMaintenancePlanDoesNotOvercountRepairWithoutLLM(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:         "repairable-skill",
+		Source:       "hub",
+		Status:       "active",
+		UsageCount:   4,
+		FailureCount: 4,
+		SuccessCount: 0,
+		LastError:    skill.FormatErrorForLLM(skill.ClassifiedError{Class: skill.ErrCommandNotFound, UserMessage: "command missing", Repairable: true}),
+	}}
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", IsCustom: true}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	raw := h.toolManageSkill(map[string]interface{}{
+		"action":           "execute_maintenance_plan",
+		"dry_run":          false,
+		"confirm":          true,
+		"min_failure_runs": 3,
+		"approved_actions": []interface{}{skill.MaintenanceActionAttemptRepair},
+	}, nil)
+	var payload struct {
+		OK                        bool `json:"ok"`
+		SelfRepairTriggersStarted int  `json:"self_repair_triggers_started"`
+		Result                    struct {
+			QueuedCount int `json:"queued_count"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal execute result: %v\n%s", err, raw)
+	}
+	if !payload.OK || payload.Result.QueuedCount != 1 {
+		t.Fatalf("expected queued repair payload: %#v", payload)
+	}
+	if payload.SelfRepairTriggersStarted != 0 {
+		t.Fatalf("self_repair_triggers_started = %d, want 0 without configured LLM", payload.SelfRepairTriggersStarted)
+	}
+}
+
+func TestToolManageSkillExecuteMaintenancePlanBlocksMissingReviewedDraft(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	store, err := memory.NewStore(filepath.Join(tempHome, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	app.memoryStore = store
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "healthy-skill", Source: "test", Status: "active", UsageCount: 1, SuccessCount: 1}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	record, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
+		Kind:    experienceDraftKindSkill,
+		Status:  "completed",
+		DraftID: "skill_draft:mark_needs_review:missing-skill:",
+	})
+	if err != nil {
+		t.Fatalf("RecordExperienceDraftReview: %v", err)
+	}
+
+	raw := (&IMMessageHandler{app: app}).toolManageSkill(map[string]interface{}{
+		"action":                    "execute_maintenance_plan",
+		"dry_run":                   true,
+		"approved_review_trace_ids": []interface{}{record.TraceID},
+	}, nil)
+	var payload struct {
+		OK     bool   `json:"ok"`
+		DryRun bool   `json:"dry_run"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal missing draft result: %v\n%s", err, raw)
+	}
+	if payload.OK || !payload.DryRun || !strings.Contains(payload.Error, "not found") {
+		t.Fatalf("expected missing reviewed draft to block dry-run preview: %#v raw=%s", payload, raw)
+	}
+	entry, err := findExperienceMemoryEntryByTraceID(store, record.TraceID)
+	if err != nil {
+		t.Fatalf("find review entry after missing draft preview: %v", err)
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok || detail.DraftExecutionStatus != skillDraftExecutionBlocked || !strings.Contains(detail.DraftExecutionNote, "not found") {
+		t.Fatalf("expected missing reviewed draft to audit blocked state: %#v ok=%v", detail, ok)
+	}
+}
+
+func TestRecordSkillDraftExecutionAuditPrevalidatesBatch(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	app := &App{memoryStore: store}
+	valid, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
+		Kind:    experienceDraftKindSkill,
+		Status:  "completed",
+		DraftID: "skill_draft:mark_needs_review:valid:",
+	})
+	if err != nil {
+		t.Fatalf("record valid skill review: %v", err)
+	}
+	invalid, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
+		Kind:   experienceDraftKindRouting,
+		Status: "completed",
+	})
+	if err != nil {
+		t.Fatalf("record invalid routing review: %v", err)
+	}
+
+	err = (&IMMessageHandler{app: app}).recordSkillDraftExecutionAudit([]string{valid.TraceID, invalid.TraceID}, skillDraftExecutionPreviewed, "batch preview")
+	if err == nil || !strings.Contains(err.Error(), "not a completed skill draft review") {
+		t.Fatalf("expected batch prevalidation error, got %v", err)
+	}
+	entry, err := findExperienceMemoryEntryByTraceID(store, valid.TraceID)
+	if err != nil {
+		t.Fatalf("find valid review after failed batch audit: %v", err)
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok || detail.DraftExecutionStatus != "" {
+		t.Fatalf("valid trace should not be partially audited after failed batch: %#v ok=%v", detail, ok)
 	}
 }
 

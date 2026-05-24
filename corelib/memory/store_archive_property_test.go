@@ -389,3 +389,184 @@ func TestProperty_RestoreRoundTrip(t *testing.T) {
 		}
 	})
 }
+
+func TestLRUCapacityEvictionSynchronizesSQLiteArchiveTombstone(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	backend := newTestSQLiteBackend(t)
+	store.SetBackend(backend, SyncConfig{})
+	store.mu.Lock()
+	store.maxItems = 2
+	store.mu.Unlock()
+
+	entries := []Entry{
+		{ID: "capacity-evict", Content: "capacity evict cold", Category: CategoryProjectKnowledge, AccessCount: 1, Strength: 1},
+		{ID: "capacity-keep-a", Content: "capacity keep a", Category: CategoryProjectKnowledge, AccessCount: 10, Strength: 1},
+		{ID: "capacity-keep-b", Content: "capacity keep b", Category: CategoryProjectKnowledge, AccessCount: 10, Strength: 1},
+	}
+	for _, entry := range entries {
+		if err := store.Save(entry); err != nil {
+			t.Fatalf("Save %s: %v", entry.ID, err)
+		}
+	}
+
+	if got := store.ActiveCount(); got != 2 {
+		t.Fatalf("ActiveCount=%d, want 2", got)
+	}
+	archived := store.archive.List(CategoryProjectKnowledge, "capacity evict cold")
+	if len(archived) != 1 || archived[0].ID != "capacity-evict" {
+		t.Fatalf("evicted entry should be archived, got %+v", archived)
+	}
+
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, entry := range loaded {
+		if entry.ID == "capacity-evict" {
+			t.Fatal("evicted entry should be tombstoned from active SQLite rows")
+		}
+	}
+	_, deleted, err := backend.Since(0)
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	for _, id := range deleted {
+		if id == "capacity-evict" {
+			return
+		}
+	}
+	t.Fatalf("evicted entry should appear in SQLite sync tombstones: %v", deleted)
+}
+
+func TestArchiveStoreAddIsIDIdempotentAndRemoveIDsIsOrdered(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "archive.json")
+	archive, err := NewArchiveStore(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Stop()
+
+	first := Entry{ID: "archive-idempotent", Content: "old content", Category: CategoryProjectKnowledge, UpdatedAt: time.Now().Add(-time.Hour)}
+	replacement := Entry{ID: "archive-idempotent", Content: "new content", Category: CategoryProjectKnowledge, UpdatedAt: time.Now()}
+	second := Entry{ID: "archive-second", Content: "second content", Category: CategoryProjectKnowledge, UpdatedAt: time.Now()}
+	if err := archive.AddDurable(first, second); err != nil {
+		t.Fatalf("Add first: %v", err)
+	}
+	if err := archive.AddDurable(replacement); err != nil {
+		t.Fatalf("Add replacement: %v", err)
+	}
+	archiveReloaded, err := NewArchiveStore(archivePath)
+	if err != nil {
+		t.Fatalf("reload archive: %v", err)
+	}
+	defer archiveReloaded.Stop()
+	if got := archiveReloaded.List(CategoryProjectKnowledge, "new content"); len(got) != 1 || got[0].ID != "archive-idempotent" {
+		t.Fatalf("AddDurable should persist replacement before async flush, got %+v", got)
+	}
+	if got := archive.Count(); got != 2 {
+		t.Fatalf("duplicate ID add should replace, got count %d", got)
+	}
+	peeked := archive.EntriesByIDs([]string{"archive-idempotent", "archive-second"})
+	if len(peeked) != 2 || peeked[0].Content != "new content" {
+		t.Fatalf("EntriesByIDs should return current entries without removal, got %+v", peeked)
+	}
+
+	removed, err := archive.RemoveIDsDurable([]string{"archive-second", "missing", "archive-idempotent", "archive-second"})
+	if err != nil {
+		t.Fatalf("RemoveIDs: %v", err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed len=%d, want 2: %+v", len(removed), removed)
+	}
+	if removed[0].ID != "archive-second" || removed[1].ID != "archive-idempotent" {
+		t.Fatalf("RemoveIDs should follow requested order, got %+v", removed)
+	}
+	if removed[1].Content != "new content" {
+		t.Fatalf("replacement content not preserved: %+v", removed[1])
+	}
+	if got := archive.Count(); got != 0 {
+		t.Fatalf("archive should be empty after removal, got %d", got)
+	}
+	archiveReloadedAfterRemove, err := NewArchiveStore(archivePath)
+	if err != nil {
+		t.Fatalf("reload removed archive: %v", err)
+	}
+	defer archiveReloadedAfterRemove.Stop()
+	if got := archiveReloadedAfterRemove.Count(); got != 0 {
+		t.Fatalf("RemoveIDsDurable should persist removal before async flush, got %d", got)
+	}
+	auditData, err := os.ReadFile(archivePath + ".transitions.jsonl")
+	if err != nil {
+		t.Fatalf("read transition audit: %v", err)
+	}
+	audit := string(auditData)
+	if !strings.Contains(audit, "archive_add_durable") || !strings.Contains(audit, "archive_remove_durable") {
+		t.Fatalf("transition audit should record durable add/remove, got %s", audit)
+	}
+}
+
+func TestNewStoreReconcilesActiveArchiveDuplicateIDs(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "memories.json")
+	store, err := NewStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := Entry{ID: "reconcile-json", Content: "active duplicate json", Category: CategoryProjectKnowledge, AccessCount: 1, Strength: 1}
+	if err := store.Save(entry); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if err := store.Archive().AddDurable(entry); err != nil {
+		t.Fatalf("AddDurable: %v", err)
+	}
+	store.Stop()
+
+	reloaded, err := NewStore(storePath)
+	if err != nil {
+		t.Fatalf("reload NewStore: %v", err)
+	}
+	defer reloaded.Stop()
+	if got := reloaded.Archive().EntriesByIDs([]string{"reconcile-json"}); len(got) != 0 {
+		t.Fatalf("startup reconciliation should remove active/archive duplicate, got %+v", got)
+	}
+}
+
+func TestSQLiteStoreReconcilesActiveArchiveDuplicateIDs(t *testing.T) {
+	dir := t.TempDir()
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := Entry{ID: "reconcile-sqlite", Content: "active duplicate sqlite", Category: CategoryProjectKnowledge, AccessCount: 1, Strength: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := backend.SaveEntry(&entry); err != nil {
+		t.Fatalf("SaveEntry: %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close backend: %v", err)
+	}
+	archive, err := NewArchiveStore(filepath.Join(dir, "archive.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.AddDurable(entry); err != nil {
+		t.Fatalf("AddDurable: %v", err)
+	}
+	archive.Stop()
+
+	store, err := NewStoreWithMode(dir, StoreModeSQLite)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode sqlite: %v", err)
+	}
+	defer store.Stop()
+	if got := store.Archive().EntriesByIDs([]string{"reconcile-sqlite"}); len(got) != 0 {
+		t.Fatalf("sqlite startup reconciliation should remove active/archive duplicate, got %+v", got)
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -226,7 +227,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		ToolExecResults: make([]toolExecutionResult, 0, len(opts.ToolCalls)),
 	}
 	for tcIdx, tc := range opts.ToolCalls {
-		if opts.Context.IsCancelled() {
+		if opts.Context != nil && opts.Context.IsCancelled() {
 			opts.Context.SetLoopState(LoopStateStopped)
 			result.Response = h.cancelledExitResponse(opts.UserID, result.History, opts.UserText)
 			result.Cancelled = true
@@ -236,7 +237,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		toolExecStartedAt := time.Now()
 		execResult := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 			UserID:           opts.UserID,
-			SkipWorkflowGate: opts.Context != nil && opts.Context.SkipNeedsConfirmGate,
+			SkipWorkflowGate: h.shouldSkipWorkflowToolExecutionGate(opts.UserID, opts.Context),
 			ToolCall:         tc,
 			Iteration:        opts.Iteration,
 			Phase:            derefAgentLoopPhase(opts.Phase),
@@ -277,6 +278,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		result.ToolOutcomes = append(result.ToolOutcomes, execResult.Outcome)
 		result.ToolExecResults = append(result.ToolExecResults, execResult)
 		result.PendingArtifacts.ApplyObservation(payloadObservation)
+		h.recordAgentLoopToolUsage(opts.Context, opts.UserText, tc, execResult.Outcome, agentLoopToolUsageFollowUp(tcIdx, opts.ToolCalls, execResult.Outcome))
 
 		h.recordAgentLoopToolTrace(opts.Context, tc, traceResult, rawResult, execResult)
 		h.emitAgentLoopSteeringDocUpdate(opts.UserID, opts.SteeringDetector, tc.Function.Name, tc.Function.Arguments)
@@ -314,6 +316,19 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		}
 	}
 	return result
+}
+
+func agentLoopToolUsageFollowUp(index int, toolCalls []llm.ToolCall, outcome toolOutcome) toolUsageFollowUp {
+	if outcome != toolOutcomeFailed || index < 0 || index >= len(toolCalls) {
+		return toolUsageFollowUpContinue
+	}
+	name := strings.TrimSpace(toolCalls[index].Function.Name)
+	for i := index + 1; i < len(toolCalls); i++ {
+		if strings.TrimSpace(toolCalls[i].Function.Name) == name {
+			return toolUsageFollowUpRetry
+		}
+	}
+	return toolUsageFollowUpContinue
 }
 
 func derefAgentLoopPhase(phase *agentLoopPhase) agentLoopPhase {

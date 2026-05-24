@@ -89,7 +89,7 @@ func (s *Store) syncLoop() {
 
 // syncOnce performs a single sync cycle: poll Since(lastVersion), merge changes.
 func (s *Store) syncOnce() {
-	if s.backend == nil {
+	if s.backend == nil || s.sync == nil {
 		return
 	}
 
@@ -111,47 +111,7 @@ func (s *Store) syncOnce() {
 	}
 
 	s.mu.Lock()
-
-	merged := 0
-	added := 0
-	deleted := 0
-
-	// Process modified entries (new or updated).
-	for _, remote := range modified {
-		if remote.Version <= s.sync.lastVersion {
-			continue // defensive: should not happen with correct Since() impl
-		}
-
-		// Update high-water mark.
-		if remote.Version > s.sync.lastVersion {
-			s.sync.lastVersion = remote.Version
-		}
-
-		// Check if this entry already exists locally.
-		localIdx := s.findEntryIndexByIDLocked(remote.ID)
-		if localIdx >= 0 {
-			// Existing entry: update if remote is newer.
-			local := &s.entries[localIdx]
-			if remote.UpdatedAt.After(local.UpdatedAt) || remote.Version > local.Version {
-				*local = remote
-				s.updateIndicesForEntryLocked(remote)
-				merged++
-			}
-		} else {
-			// New entry from another instance: append.
-			s.entries = append(s.entries, remote)
-			s.addToIndicesLocked(remote)
-			added++
-		}
-	}
-
-	// Process deletions.
-	for _, id := range deletedIDs {
-		if s.removeFromEntriesAndIndicesLocked(id) {
-			deleted++
-		}
-	}
-
+	merged, added, deleted := s.applyRemoteSyncBatchLocked(modified, deletedIDs)
 	s.mu.Unlock()
 
 	// Update watermark from the backend's max version (covers deletions).
@@ -172,7 +132,66 @@ func (s *Store) syncOnce() {
 	}
 }
 
-// --- Index manipulation helpers (must be called under s.mu.Lock) ---
+// --- Remote sync reconciliation helpers (must be called under s.mu.Lock) ---
+
+// applyRemoteSyncBatchLocked reconciles backend changes from another instance
+// into this store's in-memory view. It must not write back to the backend:
+// SQLite sync rows are already authoritative. Derived indexes are rebuilt once
+// after the remote window is applied so graph/project/entity state changes as a
+// single local snapshot.
+func (s *Store) applyRemoteSyncBatchLocked(modified []Entry, deletedIDs []string) (merged, added, deleted int) {
+	entries := append([]Entry(nil), s.entries...)
+	indexByID := make(map[string]int, len(entries)+len(modified))
+	for i := range entries {
+		indexByID[entries[i].ID] = i
+	}
+
+	// Process modified entries (new or updated).
+	for _, remote := range modified {
+		if remote.Version <= s.sync.lastVersion {
+			continue // defensive: should not happen with correct Since() impl
+		}
+
+		// Update high-water mark.
+		if remote.Version > s.sync.lastVersion {
+			s.sync.lastVersion = remote.Version
+		}
+
+		localIdx, exists := indexByID[remote.ID]
+		if exists {
+			local := &entries[localIdx]
+			if remote.UpdatedAt.After(local.UpdatedAt) || remote.Version > local.Version {
+				entries[localIdx] = remote
+				merged++
+			}
+			continue
+		}
+		indexByID[remote.ID] = len(entries)
+		entries = append(entries, remote)
+		added++
+	}
+
+	if len(deletedIDs) > 0 {
+		deleteSet := make(map[string]struct{}, len(deletedIDs))
+		for _, id := range deletedIDs {
+			deleteSet[id] = struct{}{}
+		}
+		kept := make([]Entry, 0, len(entries))
+		for _, entry := range entries {
+			if _, ok := deleteSet[entry.ID]; ok {
+				deleted++
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		entries = kept
+	}
+
+	if merged > 0 || added > 0 || deleted > 0 {
+		s.replaceEntriesAndRebuildLocked(entries, true)
+	}
+	return merged, added, deleted
+}
 
 // findEntryIndexByIDLocked returns the index of the entry with the given ID,
 // or -1 if not found. Must be called under s.mu.Lock or s.mu.RLock.
@@ -183,60 +202,4 @@ func (s *Store) findEntryIndexByIDLocked(id string) int {
 		}
 	}
 	return -1
-}
-
-// addToIndicesLocked adds a single entry to all in-memory indices.
-// Must be called under s.mu.Lock.
-func (s *Store) addToIndicesLocked(e Entry) {
-	s.bm25.addEntry(e)
-	if len(e.Embedding) > 0 {
-		s.vecIndex.add(e.ID, e.Embedding)
-	}
-	s.autoLink(e)
-	if s.entityIndex != nil {
-		s.entityIndex.IndexEntry(&e)
-	}
-	if s.projIndex != nil {
-		s.projIndex.IndexEntry(&e)
-	}
-	if s.semanticGraph != nil {
-		s.semanticGraph.IndexEntry(&e)
-	}
-}
-
-// updateIndicesForEntryLocked updates indices for a modified entry.
-// Must be called under s.mu.Lock.
-func (s *Store) updateIndicesForEntryLocked(e Entry) {
-	s.bm25.updateEntry(e)
-	if len(e.Embedding) > 0 {
-		s.vecIndex.add(e.ID, e.Embedding) // add is upsert
-	}
-	if s.entityIndex != nil {
-		s.entityIndex.IndexEntry(&e)
-	}
-	if s.semanticGraph != nil {
-		s.semanticGraph.IndexEntry(&e)
-	}
-}
-
-// removeFromEntriesAndIndicesLocked removes an entry by ID from the entries
-// slice and all indices. Returns true if the entry was found and removed.
-// Must be called under s.mu.Lock.
-func (s *Store) removeFromEntriesAndIndicesLocked(id string) bool {
-	for i, e := range s.entries {
-		if e.ID == id {
-			s.entries = append(s.entries[:i], s.entries[i+1:]...)
-			s.bm25.removeEntry(id)
-			s.vecIndex.remove(id)
-			s.graph.remove(id)
-			if s.entityIndex != nil {
-				s.entityIndex.RemoveEntry(id)
-			}
-			if s.semanticGraph != nil {
-				s.semanticGraph.RemoveEntry(id)
-			}
-			return true
-		}
-	}
-	return false
 }

@@ -30,6 +30,8 @@
         membersModalPage: 1,
         selectedObjectType: 'global',
         selectedUserEmail: '',
+        defaultGroupId: '',
+        defaultGroupName: '',
         userDirectoryCache: null,
         llmServiceCache: null,
         capabilityCache: null,
@@ -708,6 +710,27 @@
     return (node.name || node.id || '') + (node.id ? ' (' + node.id + ')' : '');
   }
 
+  function groupNameOnly(groupId) {
+    var node = findGroupNode(state().groupTree || [], groupId);
+    return node && node.name ? node.name : String(groupId || '');
+  }
+
+  function defaultGroupLabel() {
+    var sec = state();
+    if (!sec.defaultGroupId) return st('notSet');
+    var label = groupNameOnly(sec.defaultGroupId);
+    return label && label !== sec.defaultGroupId ? label : (sec.defaultGroupName || sec.defaultGroupId);
+  }
+
+  function renderDefaultGroupHint() {
+    var hintEl = document.getElementById('secDefaultGroupHint');
+    if (!hintEl) return;
+    var sec = state();
+    hintEl.textContent = st('defaultGroupPrefix') + defaultGroupLabel();
+    if (sec.defaultGroupId) hintEl.title = sec.defaultGroupId;
+    else hintEl.removeAttribute('title');
+  }
+
   function policyGroupPathLabel(pathItems, fallbackGroupId) {
     var items = Array.isArray(pathItems) ? pathItems : [];
     if (!items.length) return groupPathLabel(fallbackGroupId);
@@ -841,8 +864,9 @@
     if (orgToggle) orgToggle.checked = !!settings.org_structure_enabled;
     _s('secCentralizedHint', 'textContent', settings.centralized_security_enabled ? st('enabled') : st('disabled'));
     _s('secOrgHint', 'textContent', settings.org_structure_enabled ? st('enabled') : st('disabled'));
-    var dgHint = settings.default_group_id || st('notSet');
-    _s('secDefaultGroupHint', 'textContent', st('defaultGroupPrefix') + dgHint);
+    state().defaultGroupId = settings.default_group_id || '';
+    state().defaultGroupName = settings.default_group_name || '';
+    renderDefaultGroupHint();
   }
 
   async function loadGroups() {
@@ -856,11 +880,13 @@
     if (root) {
       sec.expandedGroupIds[root.id] = true;
       await global.loadSecGroupChildren(root.id, true);
+      renderDefaultGroupHint();
       if (!sec.selectedGroupId && sec.selectedObjectType !== 'group' && sec.selectedObjectType !== 'user') {
         global.selectSecGlobal();
         return;
       }
     }
+    renderDefaultGroupHint();
     global._secGroupTree = sec.groupTree;
     global.renderSecGroupTree(sec.groupTree, document.getElementById('secGroupTree'), 0);
   }
@@ -3573,8 +3599,9 @@
         loadCapabilityCache(),
         rootId ? api('/api/admin/security/groups/' + encodeURIComponent(rootId) + '/policy').catch(function() { return null; }) : Promise.resolve(null)
       ]);
-      setCurrentOverviewSnapshot({ object_type: 'global', object_id: rootId || 'global', object_name: st('enterpriseTitle'), default_group: document.getElementById('secDefaultGroupHint') ? document.getElementById('secDefaultGroupHint').textContent.replace(st('defaultGroupPrefix'), '') : '', exported_at: new Date().toISOString() });
-      var overview = '<div class="item" style="padding:12px;margin-bottom:10px"><div class="item-title">' + escapeHtml(st('objectOverview')) + '</div><div class="grid2" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('globalObject')) + '</label><strong style="font-size:18px">' + escapeHtml(st('enterpriseTitle')) + '</strong><span>' + escapeHtml(st('globalObjectDesc')) + '</span></div><div class="metric"><label>' + escapeHtml(st('defaultGroup')) + '</label><strong style="font-size:18px">' + escapeHtml(document.getElementById('secDefaultGroupHint') ? document.getElementById('secDefaultGroupHint').textContent.replace(st('defaultGroupPrefix'), '') : '-') + '</strong><span>' + escapeHtml(st('defaultGroup')) + '</span></div></div></div>';
+      var defaultGroup = defaultGroupLabel();
+      setCurrentOverviewSnapshot({ object_type: 'global', object_id: rootId || 'global', object_name: st('enterpriseTitle'), default_group: defaultGroup, default_group_id: state().defaultGroupId || '', exported_at: new Date().toISOString() });
+      var overview = '<div class="item" style="padding:12px;margin-bottom:10px"><div class="item-title">' + escapeHtml(st('objectOverview')) + '</div><div class="grid2" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('globalObject')) + '</label><strong style="font-size:18px">' + escapeHtml(st('enterpriseTitle')) + '</strong><span>' + escapeHtml(st('globalObjectDesc')) + '</span></div><div class="metric"><label>' + escapeHtml(st('defaultGroup')) + '</label><strong style="font-size:18px">' + escapeHtml(defaultGroup) + '</strong><span>' + escapeHtml(st('defaultGroup')) + '</span></div></div></div>';
       if (results[2]) setCurrentPolicyExport({ object_type: 'global', group_id: rootId, items: results[2].items || {}, exported_at: new Date().toISOString() });
       var globalPolicy = results[2] ? '<div class="item" style="padding:12px;margin-bottom:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('globalSecurityPolicy')) + '</div><div class="item-meta">' + escapeHtml(st('groupIdPrefix') + rootId) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderPolicyExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecGlobalPolicy(\'' + escapeJsString(rootId) + '\')">' + escapeHtml(st('save')) + '</button></div></div>' + renderPolicySourceSummary(results[2].items || {}) + '<div style="margin-top:8px">' + renderPolicyRows(results[2].items || {}, true) + '</div></div>' : '';
       if (panel) panel.innerHTML = overview + globalPolicy + renderModelServiceForGlobal(results[0]) + renderCapabilityPackagesFor('global', '', results[1]) + renderObjectAuditSection();

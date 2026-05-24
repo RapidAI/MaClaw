@@ -31,6 +31,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/needleruntime"
@@ -78,8 +79,11 @@ func runTUI(forceInitialTab ...int) {
 
 func runTUIWithOptions(startup tuiStartupOptions) {
 	logger := NewTUILogger()
+	startupIndicator := startTUIStartupIndicator()
+	defer startupIndicator.Stop()
 
 	// Data directory: ~/.maclaw (shared with GUI).
+	startupIndicator.Stage(12, "准备数据目录")
 	dataDir := commands.ResolveDataDir()
 	logDir := filepath.Join(dataDir, "logs")
 	os.MkdirAll(logDir, 0755)
@@ -99,6 +103,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	logger.Info("%s-tui starting (version %s)", strings.ToLower(brand.Current().DisplayName), version)
 
 	// Load full app config from ~/.maclaw/config.json (shared with GUI).
+	startupIndicator.Stage(22, "加载配置")
 	configStore := commands.NewFileConfigStore(dataDir)
 	appCfg, configLoadErr := configStore.LoadConfig()
 	if configLoadErr != nil {
@@ -116,9 +121,15 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	}
 
 	// Initialize memory store (shared with GUI and MaClawSrv via corelib).
+	startupIndicator.Stage(38, "初始化记忆库")
 	memStore, err := memory.OpenDataDirStore(dataDir, memory.StoreModeAuto)
 	if err != nil {
 		logger.Warn("memory store init failed: %v", err)
+	}
+	experienceEvents := lifecycle.NewEventTrail(512)
+	experienceSink := &lifecycle.AttributingEventSink{Sink: experienceEvents, Provider: memory.NewExperienceProvider(memStore)}
+	if memStore != nil {
+		memStore.SetExperienceEventSink(experienceSink)
 	}
 
 	// Initialize SSH manager.
@@ -143,19 +154,21 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	convMemory := agent.NewPersistentConversationMemory(convPath)
 
 	// Build the TUI app.
+	startupIndicator.Stage(55, "装配运行时")
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go 鈥?no need to create local instances.
 	app := &TUIApp{
-		logger:        logger,
-		llmConfig:     llmCfg,
-		memoryStore:   memStore,
-		sshMgr:        sshMgr,
-		steeringStore: steeringStore,
-		appConfig:     appCfg,
-		history:       convMemory,
-		taskStore:     task.NewStore(),
-		toolRegistry:  agent.NewCoreToolRegistry(),
-		ttsManager:    initTUITTSManager(),
+		logger:           logger,
+		llmConfig:        llmCfg,
+		memoryStore:      memStore,
+		experienceEvents: experienceEvents,
+		sshMgr:           sshMgr,
+		steeringStore:    steeringStore,
+		appConfig:        appCfg,
+		history:          convMemory,
+		taskStore:        task.NewStore(),
+		toolRegistry:     agent.NewCoreToolRegistry(),
+		ttsManager:       initTUITTSManager(),
 	}
 
 	// Initialize scheduled task manager with background ticker.
@@ -170,12 +183,14 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	app.workflowEngine = app.initWorkflowEngine()
 
 	// Initialize knowledge store (shared with GUI 鈥?same ~/.maclaw/knowledge.db).
+	startupIndicator.Stage(68, "加载知识库")
 	app.initKnowledgeStore(dataDir)
 
 	// Initialize WeChat gateway (runs in background if configured).
 	app.weixinGateway = newTUIWeixinGateway(app)
 
 	// Register tools: definition + handler bound together.
+	startupIndicator.Stage(78, "注册工具")
 	sshHandler := func(args map[string]interface{}) string {
 		deps := sshtool.SSHToolDeps{
 			Manager: sshMgr,
@@ -237,10 +252,12 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 
 	// Start the scheduled task manager now that tools are registered.
 	// The executor uses agent.RunLoop with the full tool registry.
+	startupIndicator.Stage(86, "启动后台任务")
 	if app.scheduledTaskManager != nil && llmConfigured {
 		app.scheduledTaskManager.StartWithExecutor(app.buildScheduledTaskExecutor())
 	}
 
+	startupIndicator.Stage(92, "渲染界面")
 	root := views.NewRootModel(lang)
 	root.Chat.FocusInput()
 	// Show current LLM model in status bar.
@@ -310,6 +327,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 
 	p := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	tuiModel.program = p
+	startupIndicator.Stage(98, "进入界面")
 
 	// Start WeChat gateway now that the program is available for UI messages.
 	if app.weixinGateway != nil {
@@ -317,6 +335,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		app.weixinGateway.Start()
 	}
 
+	startupIndicator.Stop()
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
@@ -389,17 +408,18 @@ func tuiAppConfigUsesHubLLMService(cfg corelib.AppConfig) bool {
 
 // TUIApp holds the TUI's agent infrastructure.
 type TUIApp struct {
-	logger         *TUILogger
-	llmConfig      corelib.MaclawLLMConfig
-	memoryStore    *memory.Store
-	knowledgeStore *knowledge.SQLiteStore // cached, nil if DB doesn't exist
-	sshMgr         *remote.SSHSessionManager
-	steeringStore  *steering.Store
-	appConfig      corelib.AppConfig
-	history        *agent.ConversationMemory
-	taskStore      *task.Store
-	toolRegistry   *agent.CoreToolRegistry
-	ttsManager     *tts.Manager
+	logger           *TUILogger
+	llmConfig        corelib.MaclawLLMConfig
+	memoryStore      *memory.Store
+	experienceEvents *lifecycle.EventTrail
+	knowledgeStore   *knowledge.SQLiteStore // cached, nil if DB doesn't exist
+	sshMgr           *remote.SSHSessionManager
+	steeringStore    *steering.Store
+	appConfig        corelib.AppConfig
+	history          *agent.ConversationMemory
+	taskStore        *task.Store
+	toolRegistry     *agent.CoreToolRegistry
+	ttsManager       *tts.Manager
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go 鈥?no fields needed here.
 
@@ -1725,6 +1745,7 @@ func (m *tuiModel) activateRemoteFromTUI(email, hubCenterURL string) tea.Cmd {
 }
 
 func (m *tuiModel) startWeixinFromTUI() tea.Cmd {
+	lang := m.uiLang()
 	return func() tea.Msg {
 		cfg := m.app.appConfig
 		baseURL := strings.TrimSpace(cfg.WeixinBaseURL)
@@ -1735,6 +1756,11 @@ func (m *tuiModel) startWeixinFromTUI() tea.Cmd {
 		if err != nil {
 			return views.OnboardingWeixinQRMsg{Success: false, Message: err.Error()}
 		}
+		qr = strings.TrimSpace(qr)
+		token = strings.TrimSpace(token)
+		if qr == "" || token == "" {
+			return views.OnboardingWeixinQRMsg{Success: false, Message: tuiText(lang, "weixinQREmpty")}
+		}
 		return views.OnboardingWeixinQRMsg{Success: true, QR: qr, Token: token}
 	}
 }
@@ -1742,23 +1768,25 @@ func (m *tuiModel) startWeixinFromTUI() tea.Cmd {
 func (m *tuiModel) pollWeixinFromTUI(token string) tea.Cmd {
 	lang := m.uiLang()
 	return func() tea.Msg {
+		if strings.TrimSpace(token) == "" {
+			return views.OnboardingWeixinPollResultMsg{Status: "error", Message: tuiText(lang, "weixinQREmpty"), Completed: true}
+		}
 		time.Sleep(1 * time.Second)
 		cfg := m.app.appConfig
 		baseURL := strings.TrimSpace(cfg.WeixinBaseURL)
 		if baseURL == "" {
 			baseURL = weixin.DefaultBaseURL
 		}
-		result, status, err := weixin.PollQRStatus(context.Background(), baseURL, token)
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		defer cancel()
+		result, status, err := weixin.PollQRStatus(ctx, baseURL, token)
 		if err != nil {
-			return views.OnboardingWeixinPollResultMsg{Status: "error", Message: err.Error(), Completed: true}
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: "error", Message: err.Error(), Completed: !weixin.IsQRLoginRetryableError(err)}
 		}
-		msg := status.String()
-		if result != nil && result.Message != "" {
-			msg = result.Message
-		}
+		msg := tuiWeixinQRStatusMessage(lang, status, result)
 		if status == weixin.QRLoginStatusConfirmed {
 			if result == nil || !result.Connected {
-				return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: msg, Completed: true}
+				return views.OnboardingWeixinPollResultMsg{Token: token, Status: status.String(), Message: msg, Completed: true}
 			}
 			store := commands.NewFileConfigStore(commands.ResolveDataDir())
 			cfg, _ := store.LoadConfig()
@@ -1773,16 +1801,49 @@ func (m *tuiModel) pollWeixinFromTUI(token string) tea.Cmd {
 				cfg.WeixinLocalMode = &local
 			}
 			if err := store.SaveConfig(cfg); err != nil {
-				return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: tuiFormat(lang, "saveConfigFailed", err.Error()), Completed: true}
+				return views.OnboardingWeixinPollResultMsg{Token: token, Status: status.String(), Message: tuiFormat(lang, "saveConfigFailed", err.Error()), Completed: true}
 			}
 			m.app.appConfig = cfg
-			return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: tuiText(lang, "weixinBoundShort"), Success: true, Completed: true, AccountID: result.AccountID}
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: status.String(), Message: tuiText(lang, "weixinBoundShort"), Success: true, Completed: true, AccountID: result.AccountID}
 		}
 		if status == weixin.QRLoginStatusExpired {
-			return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: msg, Completed: true}
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: status.String(), Message: msg, Completed: true}
 		}
-		return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: msg}
+		statusText := status.String()
+		return views.OnboardingWeixinPollResultMsg{Token: token, Status: statusText, Message: msg, Completed: tuiWeixinQRStatusIsTerminal(statusText)}
 	}
+}
+
+func tuiWeixinQRStatusIsTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "error", "failed", "fail", "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func tuiWeixinQRStatusMessage(lang string, status weixin.QRLoginStatus, result *weixin.QRLoginResult) string {
+	switch status {
+	case weixin.QRLoginStatusWait:
+		return tuiText(lang, "weixinWaitingScan")
+	case weixin.QRLoginStatusScanned:
+		return tuiText(lang, "weixinScannedConfirm")
+	case weixin.QRLoginStatusConfirmed:
+		if result != nil && result.Connected {
+			return tuiText(lang, "weixinBoundShort")
+		}
+	case weixin.QRLoginStatusExpired:
+		return tuiText(lang, "weixinQRExpired")
+	}
+	if result != nil && strings.TrimSpace(result.Message) != "" {
+		return result.Message
+	}
+	statusText := status.String()
+	if tuiWeixinQRStatusIsTerminal(statusText) {
+		return tuiText(lang, "weixinQRFailed")
+	}
+	return statusText
 }
 
 func (m *tuiModel) finishOnboardingFromTUI() tea.Cmd {

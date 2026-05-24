@@ -155,6 +155,55 @@ func TestDebugListMachinesHandlerIncludesRuntimeOnlyMachinesWhenAllRequested(t *
 		t.Fatalf("expected runtime metadata in body=%s", body)
 	}
 }
+
+func TestDebugListMachinesHandlerTenantAdminShowAllToggle(t *testing.T) {
+	identity, deviceSvc, _ := newHTTPAPITestServices(t)
+	_, onlineEnroll := issueViewerToken(t, identity, "tenant-online@example.com")
+	_, offlineEnroll := issueViewerToken(t, identity, "tenant-offline@example.com")
+
+	deviceSvc.BindDesktop(onlineEnroll.MachineID, &ws.ConnContext{TenantID: store.DefaultTenantID, UserID: onlineEnroll.UserID, Role: "machine"})
+	if err := deviceSvc.MarkOnline(context.Background(), onlineEnroll.MachineID, ws.MachineHelloPayload{
+		Name:                 "online-tenant-pc",
+		Platform:             "windows",
+		HeartbeatIntervalSec: 10,
+	}); err != nil {
+		t.Fatalf("MarkOnline: %v", err)
+	}
+
+	request := func(path string) []machineListItem {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "tenant-admin", Scope: "tenant", TenantID: store.DefaultTenantID}))
+		rr := httptest.NewRecorder()
+		DebugListMachinesHandler(deviceSvc, identity.UsersRepo()).ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body=%s", rr.Code, rr.Body.String())
+		}
+		var body struct {
+			Machines []machineListItem `json:"machines"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return body.Machines
+	}
+
+	onlineOnly := request("/api/debug/machines")
+	if len(onlineOnly) != 1 || onlineOnly[0].MachineID != onlineEnroll.MachineID {
+		t.Fatalf("expected only online tenant machine, got %+v", onlineOnly)
+	}
+
+	allMachines := request("/api/debug/machines?all=1")
+	if len(allMachines) != 2 {
+		t.Fatalf("expected online and offline tenant machines, got %+v", allMachines)
+	}
+	ids := map[string]bool{}
+	for _, item := range allMachines {
+		ids[item.MachineID] = true
+	}
+	if !ids[onlineEnroll.MachineID] || !ids[offlineEnroll.MachineID] {
+		t.Fatalf("expected both machines in all response, got %+v", allMachines)
+	}
+}
 func deviceOnlyTestService() *device.Service {
 	return device.NewService(nil, device.NewRuntime())
 }

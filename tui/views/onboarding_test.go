@@ -593,14 +593,132 @@ func TestFitOnboardingRespectsTinyWidths(t *testing.T) {
 func TestOnboardingQRViewEscReturnsToSetupRows(t *testing.T) {
 	m := NewOnboardingModel("en")
 	m.weixinQR = "https://example.com/weixin-login?token=test"
+	m.weixinToken = "token-test"
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	view := stripANSIForTest(m.View())
-	if m.weixinQR != "" {
-		t.Fatalf("QR should be cleared after Esc")
+	if m.weixinQR != "" || m.weixinToken != "" {
+		t.Fatalf("QR state should be cleared after Esc, qr=%q token=%q", m.weixinQR, m.weixinToken)
+	}
+	if m.weixinStatus != onboardingText("en", "notBound") {
+		t.Fatalf("status after Esc = %q, want not bound", m.weixinStatus)
 	}
 	if !strings.Contains(view, "First-run Setup") || !strings.Contains(view, "HubCenter") {
 		t.Fatalf("Esc should return to setup rows:\n%s", view)
+	}
+}
+
+func TestOnboardingQRPollAfterEscIsIgnored(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinQR = "https://example.com/weixin-login?token=test"
+	m.weixinToken = "token-test"
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = m.Update(OnboardingWeixinPollResultMsg{Token: "token-test", Status: "confirmed", Message: "bound", Success: true, Completed: true})
+	if m.weixinDone || m.weixinStatus != onboardingText("en", "notBound") {
+		t.Fatalf("late poll after Esc should be ignored, done=%v status=%q", m.weixinDone, m.weixinStatus)
+	}
+}
+
+func TestOnboardingQRStalePollResultIsIgnored(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinQR = "https://example.com/weixin-login?token=new"
+	m.weixinToken = "new-token"
+	m.weixinStatus = "waiting"
+
+	m, _ = m.Update(OnboardingWeixinPollResultMsg{Token: "old-token", Status: "expired", Message: "expired", Completed: true})
+	if m.weixinQR == "" || m.weixinToken != "new-token" || m.weixinStatus != "waiting" {
+		t.Fatalf("stale poll should not mutate current QR state: qr=%q token=%q status=%q", m.weixinQR, m.weixinToken, m.weixinStatus)
+	}
+}
+
+func TestOnboardingQREmptyTokenPollDuringActiveQRIsIgnored(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinQR = "https://example.com/weixin-login?token=new"
+	m.weixinToken = "new-token"
+	m.weixinStatus = "waiting"
+
+	m, _ = m.Update(OnboardingWeixinPollResultMsg{Status: "error", Message: "empty token", Completed: true})
+	if m.weixinQR == "" || m.weixinToken != "new-token" || m.weixinStatus != "waiting" {
+		t.Fatalf("empty-token poll should not mutate active QR state: qr=%q token=%q status=%q", m.weixinQR, m.weixinToken, m.weixinStatus)
+	}
+}
+
+func TestOnboardingQRMessageTrimsTokenForPolling(t *testing.T) {
+	m := NewOnboardingModel("en")
+
+	m, cmd := m.Update(OnboardingWeixinQRMsg{Success: true, QR: " https://example.com/qr ", Token: " token-test "})
+	if m.weixinQR != "https://example.com/qr" || m.weixinToken != "token-test" {
+		t.Fatalf("QR state not trimmed, qr=%q token=%q", m.weixinQR, m.weixinToken)
+	}
+	msg, ok := onboardingPollMsgFromCmdForTest(cmd)
+	if !ok || msg.Token != "token-test" {
+		t.Fatalf("poll cmd = %#v, want trimmed token", msg)
+	}
+}
+
+func TestOnboardingQRTickShowsProgress(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinQR = "https://example.com/qr"
+	m.weixinToken = "token-test"
+	m.weixinStatus = onboardingText("en", "waitingScan")
+
+	m, cmd := m.Update(OnboardingWeixinTickMsg{Token: "token-test"})
+	if m.weixinElapsed != 1 || cmd == nil {
+		t.Fatalf("tick should advance and keep ticking, elapsed=%d cmdNil=%v", m.weixinElapsed, cmd == nil)
+	}
+	view := stripANSIForTest(m.View())
+	if !strings.Contains(view, "(1s)") {
+		t.Fatalf("view should show elapsed polling progress:\n%s", view)
+	}
+}
+
+func TestOnboardingQRExpiredAutoRefreshes(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinQR = "https://example.com/weixin-login?token=test"
+	m.weixinToken = "token-test"
+
+	m, cmd := m.Update(OnboardingWeixinPollResultMsg{Token: "token-test", Status: "expired", Message: "expired", Completed: true})
+	if cmd == nil {
+		t.Fatal("expired QR should request a fresh QR automatically")
+	}
+	if m.weixinRefreshes != 1 || !m.weixinBusy || m.weixinQR != "" || m.weixinToken != "" {
+		t.Fatalf("refresh state = refreshes=%d busy=%v qr=%q token=%q", m.weixinRefreshes, m.weixinBusy, m.weixinQR, m.weixinToken)
+	}
+	if _, ok := cmd().(OnboardingStartWeixinMsg); !ok {
+		t.Fatalf("command = %#v, want OnboardingStartWeixinMsg", cmd())
+	}
+}
+
+func TestOnboardingQRViewEnterRefreshesPollWhileBusy(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinQR = "https://example.com/qr"
+	m.weixinToken = "token-test"
+	m.weixinBusy = true
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter during active QR should trigger a status refresh")
+	}
+	msg, ok := cmd().(OnboardingPollWeixinMsg)
+	if !ok || msg.Token != "token-test" {
+		t.Fatalf("command = %#v, want poll for token-test", msg)
+	}
+}
+
+func TestOnboardingQRCompletedFailureReturnsToSetupRows(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinQR = "https://example.com/weixin-login?token=test"
+	m.weixinToken = "token-test"
+	m.weixinRefreshes = maxOnboardingWeixinRefreshes
+
+	m, _ = m.Update(OnboardingWeixinPollResultMsg{Token: "token-test", Status: "expired", Message: "expired", Completed: true})
+	if m.weixinQR != "" || m.weixinToken != "" {
+		t.Fatalf("QR state should clear after terminal poll failure, qr=%q token=%q", m.weixinQR, m.weixinToken)
+	}
+	view := stripANSIForTest(m.View())
+	if !strings.Contains(view, "First-run Setup") || !strings.Contains(view, "expired") {
+		t.Fatalf("completed failure should return to setup rows with status:\n%s", view)
 	}
 }
 
@@ -616,6 +734,29 @@ func TestOnboardingQRViewUsesPayloadOnShortTerminal(t *testing.T) {
 	if !strings.Contains(view, "payload:") {
 		t.Fatalf("short terminal should keep payload fallback visible:\n%s", view)
 	}
+}
+
+func onboardingPollMsgFromCmdForTest(cmd tea.Cmd) (OnboardingPollWeixinMsg, bool) {
+	if cmd == nil {
+		return OnboardingPollWeixinMsg{}, false
+	}
+	msg := cmd()
+	if poll, ok := msg.(OnboardingPollWeixinMsg); ok {
+		return poll, true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return OnboardingPollWeixinMsg{}, false
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if poll, ok := item().(OnboardingPollWeixinMsg); ok {
+			return poll, true
+		}
+	}
+	return OnboardingPollWeixinMsg{}, false
 }
 
 func stripANSIForTest(s string) string {

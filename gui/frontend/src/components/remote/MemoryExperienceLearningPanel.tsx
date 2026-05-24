@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { BuildExperienceConflictReconciliationDraft, BuildExperienceEscalationBrief, BuildExperienceMemoryMaintenanceDraft, BuildExperienceRollbackWorkflowDraft, BuildExperienceRoutingAdjustmentDraft, BuildExperienceSkillDraft, BuildExperienceTraceFollowUp, GetExperienceGovernanceSummary, RecordExperienceDraftReview, RecordExperienceTraceFollowUp, ReviewExperienceTrace } from "../../../wailsjs/go/main/App";
+import { BuildExperienceBlockedSkillDraft, BuildExperienceConflictReconciliationDraft, BuildExperienceEscalationBrief, BuildExperienceMemoryMaintenanceDraft, BuildExperienceRollbackWorkflowDraft, BuildExperienceRoutingAdjustmentDraft, BuildExperienceSkillDraft, BuildExperienceTraceFollowUp, ConfirmPreviewedSkillDraftReview, GetExperienceGovernanceSummary, RecordBlockedSkillDraftReview, RecordExperienceDraftReview, RecordExperienceTraceFollowUp, ReviewExperienceTrace } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
@@ -42,6 +42,10 @@ type TraceDetail = {
     follow_up_actor?: string;
     follow_up_note?: string;
     follow_up_count?: number;
+    draft_id?: string;
+    draft_execution_status?: string;
+    draft_execution_note?: string;
+    draft_execution_at?: string;
     triggered_rollback?: boolean;
     updated_at?: string;
 };
@@ -141,6 +145,31 @@ type GovernanceFocusContext = {
     [key: string]: any;
 };
 
+type SkillDraftReviewQueueItem = {
+    trace_id?: string;
+    title?: string;
+    draft_id?: string;
+    execution_status?: string;
+    execution_at?: string;
+    execution_note?: string;
+    stale?: boolean;
+    stale_days?: number;
+    stale_recommendation?: string;
+    latest_status?: string;
+    latest_note?: string;
+    latest_updated_at?: string;
+    execution_affordances?: ReviewAffordance[];
+};
+
+type SkillDraftReviewQueues = {
+    approved_unpreviewed?: SkillDraftReviewQueueItem[];
+    previewed_waiting_confirm?: SkillDraftReviewQueueItem[];
+    applied?: SkillDraftReviewQueueItem[];
+    blocked?: SkillDraftReviewQueueItem[];
+    reopened?: SkillDraftReviewQueueItem[];
+    closed?: SkillDraftReviewQueueItem[];
+};
+
 function experienceTriggeredRollbackDetail(detail: TraceDetail | null | undefined): boolean {
     if (!detail) return false;
     return detail.triggered_rollback === true
@@ -172,6 +201,38 @@ type FollowUpDraft = {
 
 type SkillDraft = {
     suggested_name?: string;
+    draft_markdown?: string;
+    non_executing_boundary?: string;
+    recommended_focus_context?: GovernanceFocusContext | null;
+    recommended_tool_call?: GovernanceToolCall | null;
+};
+
+type ReviewAffordanceInput = {
+    name?: string;
+    label?: string;
+    type?: string;
+    required?: boolean;
+    placeholder?: string;
+};
+
+type ReviewAffordance = {
+    id?: string;
+    label?: string;
+    intent?: string;
+    variant?: string;
+    description?: string;
+    required_inputs?: ReviewAffordanceInput[];
+    tool_call?: GovernanceToolCall | null;
+    non_executing_boundary?: string;
+};
+
+type BlockedSkillDraft = {
+    draft_id?: string;
+    execution_status?: string;
+    execution_note?: string;
+    current_plan_matched?: boolean;
+    current_plan_actions?: Array<Record<string, string>>;
+    review_affordances?: ReviewAffordance[];
     draft_markdown?: string;
     non_executing_boundary?: string;
     recommended_focus_context?: GovernanceFocusContext | null;
@@ -645,6 +706,29 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
                 }
         }
     };
+    const openGovernanceTrace = (traceId: string) => {
+        const normalized = traceId.trim();
+        if (!normalized) return;
+        const target = traceDetails.find((item) => item.id === normalized) || null;
+        setReviewFocusStatus("");
+        setActionFocusKind("");
+        setFollowUpFocusStatus("");
+        setFollowUpFocusActionKind("");
+        setFollowUpTriggeredOnly(false);
+        setFollowUpFocusReason("");
+        setFollowUpRecommendedTraceId("");
+        setPriorityTraceId(normalized);
+        setPriorityTraceReason("");
+        setTraceFilter(traceFilterForDetail(target));
+        setSelectedTraceId(normalized);
+    };
+    const confirmPreviewedSkillDraft = async (traceId: string) => {
+        const normalized = traceId.trim();
+        if (!normalized) return null;
+        const result = await ConfirmPreviewedSkillDraftReview(normalized);
+        await onReviewed?.();
+        return result || null;
+    };
 
     return (
         <div className="memory-learning-panel" style={{ border: "1px solid " + colors.border, borderRadius: radius.lg, padding: "14px 16px", marginBottom: 14, background: colors.surface }}>
@@ -689,6 +773,8 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
                     onPreview={loadGovernancePreview}
                     onClearPreview={clearGovernancePreview}
                     onFocusAction={focusGovernanceAction}
+                    onOpenTrace={openGovernanceTrace}
+                    onConfirmPreviewedSkillDraft={confirmPreviewedSkillDraft}
                     maintenanceDrafting={maintenanceDraftLoading}
                     routingDrafting={routingDraftLoading}
                     onDraftMaintenance={loadMaintenanceDraftFromGovernance}
@@ -922,11 +1008,12 @@ function LearningSignalRow({ title, meta, detail }: { title: string; meta: strin
     );
 }
 
-function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewActive, loading, error, triggeredRollbackFollowUpCount, triggeredRollbackFollowUpReason, recommendedTraceId, recommendedTraceTitle, recommendedTraceReason, maintenanceDrafting, routingDrafting, onTaskTypeChange, onQueryChange, onToolChange, onPreview, onClearPreview, onFocusAction, onDraftMaintenance, onDraftRoutingPreview }: { t: Translate; summary: GovernanceSummary; taskType: string; query: string; tool: string; previewActive: boolean; loading: boolean; error: string; triggeredRollbackFollowUpCount: number; triggeredRollbackFollowUpReason: string; recommendedTraceId: string; recommendedTraceTitle: string; recommendedTraceReason: string; maintenanceDrafting: boolean; routingDrafting: boolean; onTaskTypeChange: (value: string) => void; onQueryChange: (value: string) => void; onToolChange: (value: string) => void; onPreview: () => void; onClearPreview: () => void; onFocusAction?: (action: string, focus?: GovernanceFocus, reason?: string, focusContext?: GovernanceFocusContext | null) => void; onDraftMaintenance?: () => void; onDraftRoutingPreview?: () => void }) {
+function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewActive, loading, error, triggeredRollbackFollowUpCount, triggeredRollbackFollowUpReason, recommendedTraceId, recommendedTraceTitle, recommendedTraceReason, maintenanceDrafting, routingDrafting, onTaskTypeChange, onQueryChange, onToolChange, onPreview, onClearPreview, onFocusAction, onOpenTrace, onConfirmPreviewedSkillDraft, onDraftMaintenance, onDraftRoutingPreview }: { t: Translate; summary: GovernanceSummary; taskType: string; query: string; tool: string; previewActive: boolean; loading: boolean; error: string; triggeredRollbackFollowUpCount: number; triggeredRollbackFollowUpReason: string; recommendedTraceId: string; recommendedTraceTitle: string; recommendedTraceReason: string; maintenanceDrafting: boolean; routingDrafting: boolean; onTaskTypeChange: (value: string) => void; onQueryChange: (value: string) => void; onToolChange: (value: string) => void; onPreview: () => void; onClearPreview: () => void; onFocusAction?: (action: string, focus?: GovernanceFocus, reason?: string, focusContext?: GovernanceFocusContext | null) => void; onOpenTrace?: (traceID: string) => void; onConfirmPreviewedSkillDraft?: (traceID: string) => Promise<any>; onDraftMaintenance?: () => void; onDraftRoutingPreview?: () => void }) {
     const memory = asRecord(summary.memory);
     const routing = asRecord(summary.routing_self_evolution);
     const a2a = asRecord(summary.a2a_discussion);
     const queues = asRecord(summary.queues);
+    const skillDraftQueues = asSkillDraftReviewQueues(queues.skill_draft_review_queues);
     const recommendedAction = String(summary.recommended_next_action || "").trim();
     const reason = String(summary.recommended_next_action_reason || "").trim();
     const boundary = String(summary.non_executing_boundary || "").trim();
@@ -1085,6 +1172,7 @@ function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewAct
                     </div>
                 ))}
             </div>
+            <SkillDraftReviewQueueRows t={t} queues={skillDraftQueues} onOpenTrace={onOpenTrace} onConfirmPreviewedSkillDraft={onConfirmPreviewedSkillDraft} />
             <GovernanceHandoffBlock t={t} title={t("Memory Handoff", "\u8bb0\u5fc6\u4ea4\u63a5", "\u8a18\u61b6\u4ea4\u63a5")} focusContext={memoryFocusContext} recommendedToolCall={memoryRecommendedToolCall} boundary={memoryBoundary} />
             <GovernanceHandoffBlock t={t} title={t("A2A Handoff", "A2A \u4ea4\u63a5", "A2A \u4ea4\u63a5")} focusContext={a2aFocusContext} recommendedToolCall={a2aRecommendedToolCall} boundary={a2aBoundary} />
             {hasRoutingPreview && (
@@ -1124,6 +1212,89 @@ function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewAct
             )}
             {recommendedToolCall && <DetailBlock label={t("Recommended Tool Call", "\u5efa\u8bae\u5de5\u5177\u8c03\u7528", "\u5efa\u8b70\u5de5\u5177\u8abf\u7528")} value={recommendedToolCall} copyValueText={recommendedToolCall} pre {...draftCopyProps(t)} />}
             {boundary && <div style={governanceBoundaryStyle}>{boundary}</div>}
+        </div>
+    );
+}
+
+function SkillDraftReviewQueueRows({ t, queues, onOpenTrace, onConfirmPreviewedSkillDraft }: { t: Translate; queues: SkillDraftReviewQueues; onOpenTrace?: (traceID: string) => void; onConfirmPreviewedSkillDraft?: (traceID: string) => Promise<any> }) {
+    const [confirmingTraceID, setConfirmingTraceID] = useState("");
+    const [confirmError, setConfirmError] = useState("");
+    const [confirmMessage, setConfirmMessage] = useState("");
+    const [confirmReceipt, setConfirmReceipt] = useState<Record<string, any> | null>(null);
+    const groups = [
+        { key: "approved_unpreviewed", label: t("Approved", "\u5df2\u6279\u51c6", "\u5df2\u6279\u51c6"), items: queues.approved_unpreviewed || [], tone: "active" },
+        { key: "previewed_waiting_confirm", label: t("Previewed", "\u5df2\u9884\u89c8", "\u5df2\u9810\u89bd"), items: queues.previewed_waiting_confirm || [], tone: "active" },
+        { key: "blocked", label: t("Blocked", "\u963b\u585e", "\u963b\u585e"), items: queues.blocked || [], tone: "blocked" },
+        { key: "reopened", label: t("Reopened", "\u5df2\u91cd\u5f00", "\u5df2\u91cd\u958b"), items: queues.reopened || [], tone: "history" },
+        { key: "closed", label: t("Closed", "\u5df2\u5173\u95ed", "\u5df2\u95dc\u9589"), items: queues.closed || [], tone: "history" },
+    ];
+    const visible = groups.filter((group) => group.items.length > 0);
+    if (visible.length === 0) return null;
+    return (
+        <div style={governanceSkillQueueStyle}>
+            <div style={{ fontSize: "0.66rem", color: colors.textMuted, fontWeight: 700, marginBottom: 5 }}>{t("Skill draft review queues", "\u6280\u80fd\u8349\u6848\u5ba1\u9605\u961f\u5217", "\u6280\u80fd\u8349\u6848\u5be9\u95b1\u4f47\u5217")}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 6 }}>
+                {visible.map((group) => {
+                    const first = group.items[0];
+                    const status = [first.execution_status, first.stale ? t("stale", "\u8fc7\u671f", "\u904e\u671f") : ""].filter(Boolean).join(" | ");
+                    const confirmAffordance = (first.execution_affordances || []).find((item) => item.id === "confirm_previewed_skill_draft");
+                    const traceID = String(first.trace_id || "");
+                    return (
+                        <div key={group.key} style={skillDraftQueueCardStyle(group.tone, first.stale)} title={first.draft_id || first.title || first.trace_id}>
+                            <button type="button" onClick={() => onOpenTrace?.(traceID)} style={skillDraftQueueInnerButtonStyle}>
+                            <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.label}</span>
+                                <span style={{ color: colors.textMuted, fontVariantNumeric: "tabular-nums" }}>{group.items.length}</span>
+                            </span>
+                            <span style={{ display: "block", marginTop: 2, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{first.title || first.trace_id || "-"}</span>
+                            <span style={{ display: "block", marginTop: 1, color: first.stale ? colors.warning : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{status || first.latest_status || first.draft_id || "-"}</span>
+                            {first.stale_recommendation && <span style={{ display: "block", marginTop: 1, color: colors.warning, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.64rem" }}>{first.stale_recommendation}</span>}
+                            </button>
+                            {confirmAffordance && onConfirmPreviewedSkillDraft && (
+                                <button
+                                    type="button"
+                                    disabled={Boolean(confirmingTraceID)}
+                                    onClick={async (event) => {
+                                        event.stopPropagation();
+                                        setConfirmingTraceID(traceID);
+                                        setConfirmError("");
+                                        setConfirmMessage("");
+                                        setConfirmReceipt(null);
+                                        try {
+                                            const receipt = await onConfirmPreviewedSkillDraft(traceID);
+                                            setConfirmReceipt(asRecord(receipt));
+                                            setConfirmMessage(skillDraftConfirmReceiptLine(t, asRecord(receipt)) || t("Previewed draft confirmed.", "\u5df2\u786e\u8ba4\u9884\u89c8\u8349\u6848\u3002", "\u5df2\u78ba\u8a8d\u9810\u89bd\u8349\u6848\u3002"));
+                                        } catch (err) {
+                                            setConfirmError(String(err));
+                                        } finally {
+                                            setConfirmingTraceID("");
+                                        }
+                                    }}
+                                    style={{ ...followUpButtonStyle(confirmingTraceID === traceID), marginTop: 5 }}
+                                >
+                                    {confirmingTraceID === traceID ? t("Confirming...", "\u786e\u8ba4\u4e2d...", "\u78ba\u8a8d\u4e2d...") : confirmAffordance.label || t("Confirm", "\u786e\u8ba4", "\u78ba\u8a8d")}
+                                </button>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+            {confirmError && <div role="alert" style={{ color: colors.danger, fontSize: "0.66rem", marginTop: 5 }}>{confirmError}</div>}
+            {confirmMessage && <div style={{ color: colors.success, fontSize: "0.66rem", marginTop: 5 }}>{confirmMessage}</div>}
+            {confirmReceipt && <SkillDraftConfirmReceipt t={t} receipt={confirmReceipt} />}
+        </div>
+    );
+}
+
+function SkillDraftConfirmReceipt({ t, receipt }: { t: Translate; receipt: Record<string, any> }) {
+    const result = asRecord(receipt.result);
+    const error = String(receipt.error || result.error || "").trim();
+    return (
+        <div style={skillDraftConfirmReceiptStyle}>
+            <span>{t("Receipt", "\u6267\u884c\u56de\u6267", "\u57f7\u884c\u56de\u6267")}: {receipt.ok === false ? t("blocked", "\u963b\u585e", "\u963b\u585e") : t("applied", "\u5df2\u5e94\u7528", "\u5df2\u61c9\u7528")}</span>
+            <span>{t("Executed", "\u6267\u884c", "\u57f7\u884c")}: {toSafeCount(result.executed_count, 0)}</span>
+            <span>{t("Queued", "\u5165\u961f", "\u5165\u4f47")}: {toSafeCount(result.queued_count, 0)}</span>
+            {error && <span style={{ color: colors.danger }}>{error}</span>}
         </div>
     );
 }
@@ -1455,6 +1626,15 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
     const [skillDraft, setSkillDraft] = useState<SkillDraft | null>(null);
     const [skillDraftLoading, setSkillDraftLoading] = useState(false);
     const [skillDraftError, setSkillDraftError] = useState("");
+    const [blockedSkillDraft, setBlockedSkillDraft] = useState<BlockedSkillDraft | null>(null);
+    const [blockedSkillDraftLoading, setBlockedSkillDraftLoading] = useState(false);
+    const [blockedSkillDraftError, setBlockedSkillDraftError] = useState("");
+    const [blockedSkillDraftReplacementID, setBlockedSkillDraftReplacementID] = useState("");
+    const [blockedSkillDraftNote, setBlockedSkillDraftNote] = useState("");
+    const [blockedSkillDraftRecording, setBlockedSkillDraftRecording] = useState("");
+    const [blockedSkillDraftReviewError, setBlockedSkillDraftReviewError] = useState("");
+    const [blockedSkillDraftReviewMessage, setBlockedSkillDraftReviewMessage] = useState("");
+    const [blockedSkillDraftReviewRecord, setBlockedSkillDraftReviewRecord] = useState<DraftReviewRecord | null>(null);
     const [rollbackDraft, setRollbackDraft] = useState<RollbackDraft | null>(null);
     const [rollbackDraftLoading, setRollbackDraftLoading] = useState(false);
     const [rollbackDraftError, setRollbackDraftError] = useState("");
@@ -1487,6 +1667,15 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
         setSkillDraft(null);
         setSkillDraftLoading(false);
         setSkillDraftError("");
+        setBlockedSkillDraft(null);
+        setBlockedSkillDraftLoading(false);
+        setBlockedSkillDraftError("");
+        setBlockedSkillDraftReplacementID("");
+        setBlockedSkillDraftNote("");
+        setBlockedSkillDraftRecording("");
+        setBlockedSkillDraftReviewError("");
+        setBlockedSkillDraftReviewMessage("");
+        setBlockedSkillDraftReviewRecord(null);
         setRollbackDraft(null);
         setRollbackDraftLoading(false);
         setRollbackDraftError("");
@@ -1512,6 +1701,7 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
     const canReview = Boolean(detail.review_required && detail.id?.startsWith("memory:"));
     const canDraftFollowUp = Boolean(detail.id?.startsWith("memory:") && detail.next_action_kind && detail.next_action_kind !== "review_signal" && !detail.review_required);
     const canDraftSkill = Boolean(canDraftFollowUp && detail.next_action_kind === "draft_skill_manually");
+    const canDraftBlockedSkill = Boolean(detail.id?.startsWith("memory:") && detail.kind === "skill_draft_review" && detail.draft_execution_status === "blocked");
     const canDraftRollback = Boolean(canDraftFollowUp && detail.next_action_kind === "draft_rollback_workflow");
     const canDraftEscalation = Boolean(canDraftFollowUp && detail.next_action_kind === "prepare_escalation_brief");
     const canDraftConflict = Boolean(canDraftFollowUp && detail.next_action_kind === "resolve_a2a_conflict_manually");
@@ -1552,6 +1742,9 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
     const traceDraftError = (kind: string): string => traceDraftReviewKind === kind ? traceDraftReviewError : "";
     const traceDraftMessage = (kind: string): string => traceDraftReviewKind === kind ? traceDraftReviewMessage : "";
     const traceDraftToolCall = (kind: string): GovernanceToolCall | null => traceDraftReviewKind === kind ? traceDraftReviewRecord?.recommended_tool_call || null : null;
+    const blockedSkillDraftClose = (blockedSkillDraft?.review_affordances || []).find((item) => item.id === "close");
+    const blockedSkillDraftReopen = (blockedSkillDraft?.review_affordances || []).find((item) => item.id === "reopen");
+    const blockedSkillDraftReopenInput = (blockedSkillDraftReopen?.required_inputs || []).find((item) => item.name === "replacement_draft_id");
     const recommendedCopyText = (label: string, value: string): string => {
         if (!recommendedRollbackTrace || !recommendedReason) return value;
         return [
@@ -1604,6 +1797,22 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
             setSkillDraftError(String(err));
         } finally {
             setSkillDraftLoading(false);
+        }
+    };
+    const loadBlockedSkillDraft = async () => {
+        if (!detail.id || blockedSkillDraftLoading) return;
+        setBlockedSkillDraftLoading(true);
+        setBlockedSkillDraftError("");
+        setBlockedSkillDraftReviewError("");
+        setBlockedSkillDraftReviewMessage("");
+        setBlockedSkillDraftReviewRecord(null);
+        try {
+            const result = await BuildExperienceBlockedSkillDraft(detail.id);
+            setBlockedSkillDraft(result || null);
+        } catch (err) {
+            setBlockedSkillDraftError(String(err));
+        } finally {
+            setBlockedSkillDraftLoading(false);
         }
     };
     const loadRollbackDraft = async () => {
@@ -1690,6 +1899,30 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
             setTraceDraftReviewing("");
         }
     };
+    const recordBlockedSkillDraftReview = async (resolution: "close" | "reopen") => {
+        if (!detail.id || blockedSkillDraftRecording) return;
+        const replacementDraftID = blockedSkillDraftReplacementID.trim();
+        if (resolution === "reopen" && !replacementDraftID) {
+            setBlockedSkillDraftReviewError(t("Replacement draft id is required.", "replacement_draft_id required", "replacement_draft_id required"));
+            return;
+        }
+        setBlockedSkillDraftRecording(resolution);
+        setBlockedSkillDraftReviewError("");
+        setBlockedSkillDraftReviewMessage("");
+        setBlockedSkillDraftReviewRecord(null);
+        try {
+            const record = await RecordBlockedSkillDraftReview(detail.id, resolution, replacementDraftID, blockedSkillDraftNote.trim(), "operator");
+            setBlockedSkillDraftReviewRecord(record || null);
+            setBlockedSkillDraftNote("");
+            setBlockedSkillDraftReplacementID("");
+            setBlockedSkillDraftReviewMessage(t("Blocked draft review recorded.", "blocked draft review recorded", "blocked draft review recorded"));
+            await onReviewed?.();
+        } catch (err) {
+            setBlockedSkillDraftReviewError(String(err));
+        } finally {
+            setBlockedSkillDraftRecording("");
+        }
+    };
     return (
         <div style={{ minWidth: 0, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
@@ -1724,6 +1957,45 @@ function TraceDetailPanel({ t, detail, recommendedRollbackTrace, recommendedRoll
             {detail.impact && <DetailBlock label={t("Impact", "\u5f71\u54cd", "\u5f71\u97ff")} value={detail.impact} />}
             {detail.review_action && <DetailBlock label={t("Review Action", "\u8bc4\u5ba1\u52a8\u4f5c", "\u8a55\u5be9\u52d5\u4f5c")} value={detail.review_action} />}
             {detail.next_action && <DetailBlock label={t("Next Action", "\u540e\u7eed\u52a8\u4f5c", "\u5f8c\u7e8c\u52d5\u4f5c")} value={(detail.next_action_kind ? formatNextActionKind(t, detail.next_action_kind) + ": " : "") + detail.next_action} />}
+            {detail.draft_id && <DetailBlock label={t("Draft ID", "\u8349\u6848 ID", "\u8349\u6848 ID")} value={detail.draft_id} monospace />}
+            {detail.draft_execution_status && <DetailBlock label={t("Draft execution", "\u8349\u6848\u6267\u884c", "\u8349\u6848\u57f7\u884c")} value={[detail.draft_execution_status, detail.draft_execution_at, detail.draft_execution_note].filter(Boolean).join(" | ")} />}
+            {canDraftBlockedSkill && (
+                <div style={followUpPanelStyle}>
+                    <button type="button" disabled={blockedSkillDraftLoading} onClick={loadBlockedSkillDraft} style={followUpButtonStyle(blockedSkillDraftLoading)}>{blockedSkillDraftLoading ? t("Drafting...", "\u751f\u6210\u4e2d...", "\u751f\u6210\u4e2d...") : t("Repair Draft", "\u4fee\u590d\u8349\u6848", "\u4fee\u5fa9\u8349\u6848")}</button>
+                    {blockedSkillDraftError && <div role="alert" style={{ fontSize: "0.66rem", color: colors.danger, marginTop: 5 }}>{blockedSkillDraftError}</div>}
+                    {blockedSkillDraft?.draft_markdown && <DetailBlock label={recommendedDraftLabel(t("Blocked Skill Draft", "\u963b\u585e\u6280\u80fd\u8349\u6848", "\u963b\u585e\u6280\u80fd\u8349\u6848"))} value={blockedSkillDraft.draft_markdown} copyValueText={recommendedCopyText(t("Blocked Skill Draft", "\u963b\u585e\u6280\u80fd\u8349\u6848", "\u963b\u585e\u6280\u80fd\u8349\u6848"), blockedSkillDraft.draft_markdown)} pre monospace {...draftCopyProps(t)} />}
+                    {blockedSkillDraft?.non_executing_boundary && <DetailBlock label={t("Safety Boundary", "\u5b89\u5168\u8fb9\u754c", "\u5b89\u5168\u908a\u754c")} value={blockedSkillDraft.non_executing_boundary} />}
+                    <RecommendedToolCallBlock t={t} call={blockedSkillDraft?.recommended_tool_call} />
+                    {blockedSkillDraft?.review_affordances && blockedSkillDraft.review_affordances.length > 0 && (
+                        <div style={reviewPanelStyle}>
+                            <div style={{ fontSize: "0.66rem", color: colors.textMuted, fontWeight: 700, marginBottom: 5 }}>{t("Blocked draft decision", "\u963b\u585e\u8349\u6848\u51b3\u5b9a", "\u963b\u585e\u8349\u6848\u6c7a\u5b9a")}</div>
+                            {blockedSkillDraftReopen && (
+                                <input
+                                    value={blockedSkillDraftReplacementID}
+                                    onChange={(event) => setBlockedSkillDraftReplacementID(event.target.value)}
+                                    placeholder={blockedSkillDraftReopenInput?.placeholder || "skill_draft:..."}
+                                    disabled={Boolean(blockedSkillDraftRecording)}
+                                    style={draftQueryInputStyle}
+                                />
+                            )}
+                            <textarea
+                                value={blockedSkillDraftNote}
+                                onChange={(event) => setBlockedSkillDraftNote(event.target.value)}
+                                placeholder={t("Decision note", "\u51b3\u5b9a\u5907\u6ce8", "\u6c7a\u5b9a\u5099\u8a3b")}
+                                disabled={Boolean(blockedSkillDraftRecording)}
+                                style={{ ...reviewTextareaStyle, marginTop: 6 }}
+                            />
+                            <div style={reviewButtonRowStyle}>
+                                {blockedSkillDraftClose && <button type="button" disabled={Boolean(blockedSkillDraftRecording)} onClick={() => recordBlockedSkillDraftReview("close")} style={followUpOutcomeButtonStyle("blocked", blockedSkillDraftRecording === "close")}>{blockedSkillDraftRecording === "close" ? t("Recording...", "\u8bb0\u5f55\u4e2d...", "\u8a18\u9304\u4e2d...") : blockedSkillDraftClose.label || t("Close", "\u5173\u95ed", "\u95dc\u9589")}</button>}
+                                {blockedSkillDraftReopen && <button type="button" disabled={Boolean(blockedSkillDraftRecording)} onClick={() => recordBlockedSkillDraftReview("reopen")} style={followUpOutcomeButtonStyle("completed", blockedSkillDraftRecording === "reopen")}>{blockedSkillDraftRecording === "reopen" ? t("Recording...", "\u8bb0\u5f55\u4e2d...", "\u8a18\u9304\u4e2d...") : blockedSkillDraftReopen.label || t("Reopen", "\u91cd\u5f00", "\u91cd\u958b")}</button>}
+                            </div>
+                            {blockedSkillDraftReviewError && <div role="alert" style={{ color: colors.danger, fontSize: "0.66rem", marginTop: 5 }}>{blockedSkillDraftReviewError}</div>}
+                            {blockedSkillDraftReviewMessage && <div style={{ color: colors.success, fontSize: "0.66rem", marginTop: 5 }}>{blockedSkillDraftReviewMessage}</div>}
+                            <RecommendedToolCallBlock t={t} call={blockedSkillDraftReviewRecord?.recommended_tool_call || null} />
+                        </div>
+                    )}
+                </div>
+            )}
             {canDraftFollowUp && (
                 <div style={followUpPanelStyle}>
                     {recommendedRollbackTrace && recommendedReason && (
@@ -1961,6 +2233,31 @@ function asRecord(value: any): Record<string, any> {
     return value && typeof value === "object" ? value : {};
 }
 
+function asSkillDraftReviewQueues(value: any): SkillDraftReviewQueues {
+    const record = asRecord(value);
+    const queue = (key: keyof SkillDraftReviewQueues): SkillDraftReviewQueueItem[] => Array.isArray(record[key]) ? record[key] : [];
+    return {
+        approved_unpreviewed: queue("approved_unpreviewed"),
+        previewed_waiting_confirm: queue("previewed_waiting_confirm"),
+        applied: queue("applied"),
+        blocked: queue("blocked"),
+        reopened: queue("reopened"),
+        closed: queue("closed"),
+    };
+}
+
+function skillDraftConfirmReceiptLine(t: Translate, receipt: Record<string, any>): string {
+    const result = asRecord(receipt.result);
+    const executed = toSafeCount(result.executed_count, 0);
+    const queued = toSafeCount(result.queued_count, 0);
+    const error = String(receipt.error || result.error || "").trim();
+    const queue = String(receipt.draft_execution_queue || receipt.draft_execution_status || "").trim();
+    if (receipt.ok === false) {
+        return [t("Preview confirmation blocked", "\u9884\u89c8\u786e\u8ba4\u88ab\u963b\u585e", "\u9810\u89bd\u78ba\u8a8d\u88ab\u963b\u585e"), queue ? "Queue: " + queue : "", error].filter(Boolean).join(" | ");
+    }
+    return t("Previewed draft confirmed", "\u5df2\u786e\u8ba4\u9884\u89c8\u8349\u6848", "\u5df2\u78ba\u8a8d\u9810\u89bd\u8349\u6848") + " | " + t("Executed", "\u6267\u884c", "\u57f7\u884c") + ": " + executed + " | " + t("Queued", "\u5165\u961f", "\u5165\u4f47") + ": " + queued + (queue ? " | Queue: " + queue : "");
+}
+
 function governanceTrackLine(parts: { label: string; value: any }[]): string {
     return parts.map((part) => part.label + ": " + toSafeCount(part.value, 0)).join(" | ");
 }
@@ -2164,6 +2461,8 @@ const governanceQueryRowStyle: CSSProperties = { display: "flex", gap: 6, alignI
 const governanceQueryInputStyle: CSSProperties = { flex: "1 1 220px", minWidth: 160, boxSizing: "border-box", border: "1px solid " + colors.borderLight, borderRadius: radius.sm, background: colors.bg, color: colors.text, padding: "5px 7px", fontSize: "0.68rem", lineHeight: 1.4 };
 const governanceToolInputStyle: CSSProperties = { ...governanceQueryInputStyle, flex: "0 1 130px" };
 const governanceRoutingPreviewStyle: CSSProperties = { borderTop: "1px solid " + colors.borderLight, marginTop: 8, paddingTop: 7 };
+const governanceSkillQueueStyle: CSSProperties = { borderTop: "1px solid " + colors.borderLight, marginTop: 8, paddingTop: 7 };
+const skillDraftConfirmReceiptStyle: CSSProperties = { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 5, fontSize: "0.64rem", color: colors.textMuted, lineHeight: 1.35 };
 const maintenanceTextStyle: CSSProperties = { fontSize: "0.7rem", color: colors.textSecondary, lineHeight: 1.45, overflowWrap: "anywhere" };
 const maintenanceMetaStyle: CSSProperties = { ...maintenanceTextStyle, color: colors.textMuted, marginTop: 3 };
 const warningBadgeStyle: CSSProperties = { border: "1px solid " + colors.warning, borderRadius: radius.pill, padding: "1px 7px", fontSize: "0.64rem", fontWeight: 700, color: colors.warning, background: colors.warningBg };
@@ -2188,6 +2487,13 @@ const traceRecommendationReasonStyle: CSSProperties = { display: "block", margin
 const nextActionSummaryStyle: CSSProperties = { border: "1px solid " + colors.borderLight, borderRadius: radius.md, background: colors.bg, color: colors.text, padding: "6px 8px", textAlign: "left", cursor: "pointer", minWidth: 0, fontSize: "0.68rem", fontWeight: 700 };
 const warningSummaryCardStyle: CSSProperties = { ...nextActionSummaryStyle, border: "1px solid " + colors.warning, background: colors.warningBg };
 const protectedMemoryCardStyle: CSSProperties = { ...nextActionSummaryStyle, cursor: "default" };
+const skillDraftQueueInnerButtonStyle: CSSProperties = { width: "100%", border: 0, background: "transparent", color: "inherit", padding: 0, textAlign: "left", cursor: "pointer", font: "inherit" };
+
+function skillDraftQueueCardStyle(tone: string, stale?: boolean): CSSProperties {
+    if (stale || tone === "blocked") return warningSummaryCardStyle;
+    if (tone === "active") return { ...nextActionSummaryStyle, border: "1px solid " + colors.primary, background: colors.primaryLight };
+    return nextActionSummaryStyle;
+}
 
 function nextActionSummaryCardStyle(kind?: string): CSSProperties {
     if (kind === "review_triggered_rollback_signal") {

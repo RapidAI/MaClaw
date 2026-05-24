@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 )
 
 func TestUsageTracker_RecordAndScore(t *testing.T) {
@@ -35,6 +37,43 @@ func TestUsageTracker_RecordAndScore(t *testing.T) {
 	score3 := tracker.ExperienceScore("bash", []string{"database", "query"})
 	if score3 != 0 {
 		t.Errorf("expected zero score for non-overlapping tokens, got %.4f", score3)
+	}
+}
+
+func TestUsageTrackerEmitsExperienceEvent(t *testing.T) {
+	tracker, err := NewUsageTracker("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trail := lifecycle.NewEventTrail(8)
+	tracker.SetExperienceEventSink(trail)
+
+	tracker.RecordExperience(ToolExperience{
+		ToolName:     "bash",
+		QueryTokens:  []string{"go", "test", "sqlite"},
+		Success:      false,
+		FollowUp:     "retry",
+		ErrorClass:   "args",
+		Timestamp:    time.Unix(456, 0).UTC(),
+		EventContext: lifecycle.EventContext{TraceID: "trace-tool", TaskID: "task-tool"},
+	})
+
+	events := trail.List()
+	if len(events) != 1 {
+		t.Fatalf("expected one experience event, got %d", len(events))
+	}
+	event := events[0]
+	if event.EventType != lifecycle.EventToolCallFinished || event.ToolName != "bash" || event.Query != "go test sqlite" {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+	if event.Outcome != "failure" || event.Reason != "retry" || event.ErrorClass != "args" {
+		t.Fatalf("unexpected outcome metadata: %+v", event)
+	}
+	if !event.CreatedAt.Equal(time.Unix(456, 0).UTC()) {
+		t.Fatalf("unexpected timestamp: %s", event.CreatedAt)
+	}
+	if event.TraceID != "trace-tool" || event.TaskID != "task-tool" {
+		t.Fatalf("unexpected event context: %+v", event)
 	}
 }
 

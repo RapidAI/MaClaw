@@ -1,5 +1,13 @@
 package memory
 
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
+)
+
 // ProactiveRecallOptions controls prompt-context recall shared by GUI, TUI,
 // and server agents.
 type ProactiveRecallOptions struct {
@@ -9,12 +17,70 @@ type ProactiveRecallOptions struct {
 	MaxEntries         int
 	EntityLimit        int
 	IncludeUserProfile bool
+	EventContext       lifecycle.EventContext
+	Provider           lifecycle.Provider
 }
 
 // RecallProactive builds the shared proactive recall set for system prompts.
-// It uses the planned LightMem controller first, then supplements with a small
-// entity recall pass when the primary result leaves room.
+// It asks the retrieval policy for a decision, searches through the experience
+// provider, then lets the lifecycle balanced retriever select injected entries.
 func (s *Store) RecallProactive(query string, opts ProactiveRecallOptions) []Entry {
+	decision := lifecycle.DefaultRetrievalPolicy{}.Decide(context.Background(), lifecycle.RetrievalPolicyInput{
+		TraceID:     opts.EventContext.TraceID,
+		TaskID:      opts.EventContext.TaskID,
+		CurrentGoal: query,
+		TokenBudget: 0,
+		Boundary:    proactiveRecallBoundary(opts),
+		MissingSignals: []string{
+			"max_entries:" + strconv.Itoa(defaultPositive(opts.MaxEntries, 12)),
+		},
+	})
+	return s.RecallProactiveWithDecision(decision, opts)
+}
+
+func (s *Store) RecallProactiveWithDecision(decision lifecycle.RetrievalDecision, opts ProactiveRecallOptions) []Entry {
+	return s.entriesForExperienceCandidates(s.RecallProactiveCandidatesWithDecision(decision, opts))
+}
+
+func (s *Store) RecallProactiveCandidatesWithDecision(decision lifecycle.RetrievalDecision, opts ProactiveRecallOptions) []lifecycle.Candidate {
+	if !decision.ShouldRetrieve {
+		return nil
+	}
+	query := strings.TrimSpace(decision.Query)
+	if query == "" {
+		return nil
+	}
+	maxEntries := opts.MaxEntries
+	if decision.Budget.MaxEntries > 0 {
+		maxEntries = decision.Budget.MaxEntries
+	}
+	if maxEntries <= 0 {
+		maxEntries = 12
+	}
+	poolLimit := maxEntries * 4
+	if poolLimit < 12 {
+		poolLimit = 12
+	}
+	provider := s.proactiveExperienceProvider(opts)
+	candidates, err := provider.SearchExperience(context.Background(), lifecycle.Query{Text: query, Types: decision.Types, Boundary: decision.Boundary, Limit: poolLimit})
+	if err != nil || len(candidates) == 0 {
+		return nil
+	}
+	candidates = s.filterProactiveCandidates(candidates, opts)
+	decision.Budget.MaxEntries = maxEntries
+	selected := lifecycle.SelectBalancedCandidates(candidates, decision)
+	s.recordCandidateExperienceEvent(lifecycle.EventExperienceRetrieved, "provider:"+string(decision.Mode), query, selected, 0, opts.EventContext)
+	return selected
+}
+
+func (s *Store) proactiveExperienceProvider(opts ProactiveRecallOptions) lifecycle.Provider {
+	if opts.Provider != nil {
+		return opts.Provider
+	}
+	return lifecycle.NewCompositeProvider(NewExperienceProvider(s))
+}
+
+func (s *Store) recallProactiveCore(query string, opts ProactiveRecallOptions, decision lifecycle.RetrievalDecision) []Entry {
 	if s == nil || query == "" {
 		return nil
 	}
@@ -42,7 +108,66 @@ func (s *Store) RecallProactive(query string, opts ProactiveRecallOptions) []Ent
 			break
 		}
 	}
+	return selectBalancedProactiveEntries(filtered, decision)
+}
+
+func proactiveRecallBoundary(opts ProactiveRecallOptions) lifecycle.Boundary {
+	return lifecycle.Boundary{OwnerID: opts.OwnerID, ProjectPath: opts.ProjectPath}
+}
+
+func (s *Store) filterProactiveCandidates(candidates []lifecycle.Candidate, opts ProactiveRecallOptions) []lifecycle.Candidate {
+	if len(candidates) == 0 || s == nil {
+		return candidates
+	}
+	entries := s.entriesByID(candidates)
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		entry, ok := entries[candidate.Entry.ID]
+		if ok && shouldSkipProactiveRecallEntry(entry, opts) {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
 	return filtered
+}
+
+func (s *Store) entriesForExperienceCandidates(candidates []lifecycle.Candidate) []Entry {
+	if len(candidates) == 0 || s == nil {
+		return nil
+	}
+	entries := s.entriesByID(candidates)
+	out := make([]Entry, 0, len(candidates))
+	for _, candidate := range candidates {
+		if entry, ok := entries[candidate.Entry.ID]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func (s *Store) entriesByID(candidates []lifecycle.Candidate) map[string]Entry {
+	ids := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Entry.ID != "" {
+			ids[candidate.Entry.ID] = struct{}{}
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entries := make(map[string]Entry, len(ids))
+	for _, entry := range s.entries {
+		if _, ok := ids[entry.ID]; ok {
+			entries[entry.ID] = entry
+		}
+	}
+	return entries
+}
+
+func defaultPositive(value int, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func (s *Store) supplementProactiveRecallByEntity(query string, recalled []Entry, opts ProactiveRecallOptions, maxEntries int, entityLimit int) []Entry {
@@ -61,9 +186,9 @@ func (s *Store) supplementProactiveRecallByEntity(query string, recalled []Entry
 	for _, entity := range entities {
 		var extra []Entry
 		if opts.StrictProject && opts.ProjectPath != "" {
-			extra = s.RecallDynamicStrict(entity, "", opts.ProjectPath, opts.OwnerID)
+			extra = s.recallDynamicStrictWithEventContext(entity, "", opts.ProjectPath, opts.EventContext, opts.OwnerID)
 		} else {
-			extra = s.RecallDynamic(entity, "", opts.ProjectPath, opts.OwnerID)
+			extra = s.recallDynamicWithEventContext(entity, "", opts.ProjectPath, opts.EventContext, opts.OwnerID)
 		}
 		for _, entry := range extra {
 			if seen[entry.ID] {

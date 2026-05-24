@@ -76,6 +76,16 @@ func (r *tenantAdminHandlerTestRepo) UpdateDomains(_ context.Context, id string,
 	return nil
 }
 
+func (r *tenantAdminHandlerTestRepo) UpdateSettings(_ context.Context, id string, name string, primaryDomain string, settingsJSON string) error {
+	if item := r.items[id]; item != nil {
+		item.Name = name
+		item.PrimaryDomain = primaryDomain
+		item.SettingsJSON = settingsJSON
+		item.UpdatedAt = time.Now().UTC()
+	}
+	return nil
+}
+
 func (r *tenantAdminHandlerTestRepo) SoftDeleteByID(_ context.Context, id string) error {
 	if item := r.items[id]; item != nil {
 		now := time.Now().UTC()
@@ -177,13 +187,13 @@ func TestTenantLifecycleRejectsTenantAdmin(t *testing.T) {
 	}
 }
 
-func TestTenantLifecycleRejectsDefaultTenant(t *testing.T) {
+func TestTenantLifecycleAllowsDefaultTenantDetailButRejectsLifecycleMutation(t *testing.T) {
 	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{store.DefaultTenantID: {ID: store.DefaultTenantID, Slug: "default", Name: "Default", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
 	admin := &store.AdminUser{Scope: "global", ID: "admin"}
 
 	detailRec := httptest.NewRecorder()
 	AdminTenantDetailHandler(repo)(detailRec, tenantAdminHandlerReqWithScope(http.MethodGet, "/api/admin/tenants/"+store.DefaultTenantID, nil, admin, store.DefaultTenantID))
-	if detailRec.Code != http.StatusBadRequest {
+	if detailRec.Code != http.StatusOK {
 		t.Fatalf("default tenant detail code=%d body=%s", detailRec.Code, detailRec.Body.String())
 	}
 
@@ -197,6 +207,49 @@ func TestTenantLifecycleRejectsDefaultTenant(t *testing.T) {
 	AdminTenantDeleteHandler(repo)(deleteRec, tenantAdminHandlerReqWithScope(http.MethodDelete, "/api/admin/tenants/"+store.DefaultTenantID, nil, admin, store.DefaultTenantID))
 	if deleteRec.Code != http.StatusBadRequest {
 		t.Fatalf("default tenant delete code=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestTenantMergeRejectsInactiveTarget(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{
+		"tenant_a": {ID: "tenant_a", Slug: "a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		"tenant_b": {ID: "tenant_b", Slug: "b", Name: "Tenant B", Status: "inactive", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}}
+	rec := httptest.NewRecorder()
+
+	AdminTenantMergeHandler(openCapabilityTestDB(t), repo, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants/tenant_a/merge", map[string]any{"target_tenant_id": "tenant_b"}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("inactive target merge code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"code":"TARGET_TENANT_INACTIVE"`)) {
+		t.Fatalf("expected inactive target code, body=%s", rec.Body.String())
+	}
+}
+
+func TestTenantMergeConflictReturnsConflict(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{
+		"tenant_a": {ID: "tenant_a", Slug: "a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		"tenant_b": {ID: "tenant_b", Slug: "b", Name: "Tenant B", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}}
+	db := openCapabilityTestDB(t)
+	if _, err := db.ExecContext(context.Background(), `INSERT INTO tenants (id, slug, name, status, settings_json, created_by_admin_id, created_at, updated_at) VALUES ('tenant_a', 'a', 'Tenant A', 'active', '{}', 'test', ?, ?), ('tenant_b', 'b', 'Tenant B', 'active', '{}', 'test', ?, ?)`, now, now, now, now); err != nil {
+		t.Fatalf("insert tenants: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `CREATE TABLE tenant_merge_conflict_probe (tenant_id TEXT NOT NULL, item_key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (tenant_id, item_key))`); err != nil {
+		t.Fatalf("create probe table: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `INSERT INTO tenant_merge_conflict_probe (tenant_id, item_key, value) VALUES ('tenant_a', 'same-key', 'source'), ('tenant_b', 'same-key', 'target')`); err != nil {
+		t.Fatalf("insert probe rows: %v", err)
+	}
+	rec := httptest.NewRecorder()
+
+	AdminTenantMergeHandler(db, repo, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants/tenant_a/merge", map[string]any{"target_tenant_id": "tenant_b"}))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("conflicting merge code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"code":"TENANT_MERGE_CONFLICT"`)) {
+		t.Fatalf("expected merge conflict code, body=%s", rec.Body.String())
 	}
 }
 
@@ -216,6 +269,43 @@ func TestTenantAdminCreateRejectsInvalidEmailAsBadRequest(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte(`"code":"INVALID_TENANT_ADMIN"`)) {
 		t.Fatalf("expected invalid tenant admin code, body=%s", rec.Body.String())
+	}
+}
+
+func TestTenantAdminCreateRejectsWhenAdminServiceMissing(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	admin := &store.AdminUser{Scope: "global", ID: "admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantAdminCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPost, "/api/admin/tenants/tenant_a/admins", map[string]any{
+		"username": "tenant-admin",
+		"password": "StrongPassword123!",
+		"email":    "tenant-admin@example.com",
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing admin service create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"code":"TENANT_ADMIN_UNSUPPORTED"`)) {
+		t.Fatalf("expected unsupported code, body=%s", rec.Body.String())
+	}
+}
+
+func TestTenantAdminCreateAllowsDefaultTenant(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{store.DefaultTenantID: {ID: store.DefaultTenantID, Slug: "default", Name: "Default", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	ctx := newAdminRouterTestContext(t)
+	admin := &store.AdminUser{Scope: "tenant", TenantID: store.DefaultTenantID, ID: "default-owner"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantAdminCreateHandler(repo, ctx.admins, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPost, "/api/admin/tenants/"+store.DefaultTenantID+"/admins", map[string]any{
+		"username": "default-extra",
+		"password": "StrongPassword123!",
+		"email":    "default-extra@example.com",
+	}, admin, store.DefaultTenantID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("default tenant admin create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"tenant_id":"`+store.DefaultTenantID+`"`)) {
+		t.Fatalf("response missing default tenant admin: %s", rec.Body.String())
 	}
 }
 
@@ -277,6 +367,24 @@ func TestTenantCreateRejectsPartialInitialAdmin(t *testing.T) {
 	}
 }
 
+func TestTenantCreateRejectsInitialAdminWhenAdminServiceMissing(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
+	rec := httptest.NewRecorder()
+
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":                   "No Admin Service Corp",
+		"initial_admin_username": "owner",
+		"initial_admin_password": "secret-pass",
+		"initial_admin_email":    "owner@example.com",
+	}))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing admin service tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(repo.items) != 0 {
+		t.Fatalf("tenant should not be created without admin service: %#v", repo.items)
+	}
+}
+
 func TestTenantCreateAcceptsMultipleEmailDomains(t *testing.T) {
 	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
 	rec := httptest.NewRecorder()
@@ -298,6 +406,41 @@ func TestTenantCreateAcceptsMultipleEmailDomains(t *testing.T) {
 	}
 }
 
+func TestTenantCreateCanDisableUserRegistration(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{}}
+	rec := httptest.NewRecorder()
+
+	AdminTenantCreateHandler(repo, nil, nil)(rec, tenantAdminHandlerGlobalReq(http.MethodPost, "/api/admin/tenants", map[string]any{
+		"name":                    "Closed Corp",
+		"allow_user_registration": false,
+	}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("tenant create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	tenant := repo.items["tenant_closed-corp"]
+	if tenant == nil || !strings.Contains(tenant.SettingsJSON, `"allow_user_registration":false`) {
+		t.Fatalf("unexpected tenant settings: %#v", tenant)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"allow_user_registration":false`)) {
+		t.Fatalf("response missing registration setting: %s", rec.Body.String())
+	}
+}
+
+func TestTenantDTORegistrationDefaultsOpen(t *testing.T) {
+	tenant := &store.Tenant{ID: "tenant_open", Slug: "tenant-open", Name: "Open", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	dto := tenantDTO(tenant)
+	if dto["allow_user_registration"] != true {
+		t.Fatalf("expected registration default open, got %#v", dto)
+	}
+}
+
+func TestTenantRegistrationSettingPrefersExplicitAllowFlag(t *testing.T) {
+	tenant := &store.Tenant{ID: "tenant_open", SettingsJSON: `{"allow_user_registration":true,"registration_enabled":false}`}
+	if !tenantAllowsUserRegistration(tenant) {
+		t.Fatal("expected allow_user_registration to override legacy registration_enabled")
+	}
+}
+
 func TestTenantDomainsUpdateAllowsTenantAdminForOwnTenant(t *testing.T) {
 	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
 	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
@@ -312,6 +455,34 @@ func TestTenantDomainsUpdateAllowsTenantAdminForOwnTenant(t *testing.T) {
 	tenant := repo.items["tenant_a"]
 	if tenant.PrimaryDomain != "tenant-a.example.com" || !strings.Contains(tenant.SettingsJSON, "team.example.com") {
 		t.Fatalf("unexpected updated domains: %#v", tenant)
+	}
+}
+
+func TestTenantDomainsUpdateCanToggleUserRegistration(t *testing.T) {
+	repo := &tenantAdminHandlerTestRepo{items: map[string]*store.Tenant{"tenant_a": {ID: "tenant_a", Slug: "tenant-a", Name: "Tenant A", Status: "active", SettingsJSON: `{"email_domains":["old.example.com"],"domains":["legacy.example.com"],"registration_enabled":true}`, CreatedAt: time.Now(), UpdatedAt: time.Now()}}}
+	admin := &store.AdminUser{Scope: "tenant", TenantID: "tenant_a", ID: "tenant-admin"}
+	rec := httptest.NewRecorder()
+
+	AdminTenantDomainsUpdateHandler(repo, nil)(rec, tenantAdminHandlerReqWithScope(http.MethodPatch, "/api/admin/tenants/tenant_a/domains", map[string]any{
+		"name":                    "Tenant A Renamed",
+		"domains":                 []string{"tenant-a.example.com"},
+		"allow_user_registration": false,
+	}, admin, "tenant_a"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant settings update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	tenant := repo.items["tenant_a"]
+	if tenant.Name != "Tenant A Renamed" || tenant.PrimaryDomain != "tenant-a.example.com" || !strings.Contains(tenant.SettingsJSON, `"allow_user_registration":false`) {
+		t.Fatalf("unexpected updated settings: %#v", tenant)
+	}
+	if strings.Contains(tenant.SettingsJSON, "registration_enabled") {
+		t.Fatalf("legacy registration setting should be removed: %s", tenant.SettingsJSON)
+	}
+	if strings.Contains(tenant.SettingsJSON, `"domains"`) {
+		t.Fatalf("legacy domains setting should be removed: %s", tenant.SettingsJSON)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"allow_user_registration":false`)) {
+		t.Fatalf("response missing registration setting: %s", rec.Body.String())
 	}
 }
 

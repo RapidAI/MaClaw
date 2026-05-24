@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
 
 // SessionResult holds the outcome of a single session within an orchestrated
-// parallel execution.
+// queued execution.
 type SessionResult struct {
 	SessionID string                    `json:"session_id"`
 	Tool      string                    `json:"tool"`
@@ -16,15 +17,14 @@ type SessionResult struct {
 	Error     string                    `json:"error,omitempty"`
 }
 
-// TaskRequest describes a single unit of work to be executed in parallel by
-// the Orchestrator.
+// TaskRequest describes a single unit of work to be queued by the Orchestrator.
 type TaskRequest struct {
 	Tool        string `json:"tool"`
 	Description string `json:"description"`
 	ProjectPath string `json:"project_path"`
 }
 
-// OrchestratorTask tracks the lifecycle of a parallel execution batch.
+// OrchestratorTask tracks the lifecycle of a queued execution batch.
 type OrchestratorTask struct {
 	ID        string
 	Sessions  []string // session IDs created for this task
@@ -40,7 +40,7 @@ type OrchestratorResult struct {
 	Summary string
 }
 
-// Orchestrator coordinates parallel execution of multiple programming-tool
+// Orchestrator coordinates queued execution of multiple programming-tool
 // sessions, tracks their status, and aggregates results.
 type Orchestrator struct {
 	app          *App
@@ -49,6 +49,7 @@ type Orchestrator struct {
 	toolSelector *ToolSelector
 	mu           sync.RWMutex
 	activeTasks  map[string]*OrchestratorTask
+	executeTask  func(TaskRequest) SessionResult
 }
 
 // NewOrchestrator creates an Orchestrator wired to the given application
@@ -63,21 +64,23 @@ func NewOrchestrator(app *App, manager *RemoteSessionManager, sharedCtx *SharedC
 	}
 }
 
-// maxParallelSessions is the upper bound on concurrent sessions per
-// ExecuteParallel call (requirement 12.1).
-const maxParallelSessions = 5
+// maxQueuedSessions is the upper bound on sessions per ExecuteParallel call.
+// Tasks are dispatched in bounded batches controlled by SubAgentConcurrency.
+const maxQueuedSessions = 5
 
-// ExecuteParallel launches up to 5 sessions in parallel — one per TaskRequest
-// — waits for all of them to finish, and returns an aggregated result.
+// ExecuteParallel queues up to 5 sessions, runs them with configured bounded
+// concurrency, and returns an aggregated result.
 //
-// If any individual session fails the others continue; the final status is
-// "partial_failure" when at least one session failed, "completed" otherwise.
+// If a session fails the remaining queued sessions continue, except when the
+// failure is a rate limit; rate limits stop the queue to avoid request bursts.
+// The final status is "partial_failure" when at least one session failed,
+// "completed" otherwise.
 func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult, error) {
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no tasks provided")
 	}
-	if len(tasks) > maxParallelSessions {
-		return nil, fmt.Errorf("too many tasks: %d exceeds maximum of %d parallel sessions", len(tasks), maxParallelSessions)
+	if len(tasks) > maxQueuedSessions {
+		return nil, fmt.Errorf("too many tasks: %d exceeds maximum of %d queued sessions", len(tasks), maxQueuedSessions)
 	}
 
 	// Generate a unique task ID based on the current timestamp.
@@ -93,30 +96,49 @@ func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult
 	}
 
 	o.mu.Lock()
+	if o.activeTasks == nil {
+		o.activeTasks = make(map[string]*OrchestratorTask)
+	}
 	o.activeTasks[taskID] = orchTask
 	o.mu.Unlock()
 
-	// results is written to by goroutines; protected by resultsMu.
 	results := make(map[string]SessionResult, len(tasks))
-	var resultsMu sync.Mutex
+	concurrency := o.configuredSubAgentConcurrency()
 
-	var wg sync.WaitGroup
-	wg.Add(len(tasks))
+	for start := 0; start < len(tasks); start += concurrency {
+		end := start + concurrency
+		if end > len(tasks) {
+			end = len(tasks)
+		}
 
-	for i, task := range tasks {
-		go func(idx int, tr TaskRequest) {
-			defer wg.Done()
+		var wg sync.WaitGroup
+		var resultsMu sync.Mutex
+		for i := start; i < end; i++ {
+			i, task := i, tasks[i]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sr := o.runTask(task)
+				resultsMu.Lock()
+				results[fmt.Sprintf("task_%d", i)] = sr
+				resultsMu.Unlock()
+			}()
+		}
+		wg.Wait()
 
-			sr := o.executeOneTask(tr)
-
-			resultsMu.Lock()
-			key := fmt.Sprintf("task_%d", idx)
-			results[key] = sr
-			resultsMu.Unlock()
-		}(i, task)
+		rateLimitIndex := -1
+		for i := start; i < end; i++ {
+			sr := results[fmt.Sprintf("task_%d", i)]
+			if sr.Status.IsFailed() && isSubAgentRateLimitError(sr.Error) {
+				rateLimitIndex = i
+				break
+			}
+		}
+		if rateLimitIndex >= 0 {
+			markQueuedTasksSkippedAfterRateLimit(results, tasks, end)
+			break
+		}
 	}
-
-	wg.Wait()
 
 	// Collect session IDs and determine overall status.
 	hasFailure := false
@@ -132,9 +154,13 @@ func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult
 	}
 
 	if hasFailure {
+		o.mu.Lock()
 		orchTask.Status = orchestratorTaskStatusPartialFailure
+		o.mu.Unlock()
 	} else {
+		o.mu.Lock()
 		orchTask.Status = orchestratorTaskStatusCompleted
+		o.mu.Unlock()
 	}
 
 	// Remove from active tasks now that execution is done.
@@ -151,6 +177,30 @@ func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult
 	}, nil
 }
 
+func (o *Orchestrator) configuredSubAgentConcurrency() int {
+	if o == nil || o.app == nil {
+		return 1
+	}
+	return o.app.GetSubAgentConcurrency()
+}
+
+func (o *Orchestrator) runTask(task TaskRequest) SessionResult {
+	if o != nil && o.executeTask != nil {
+		return o.executeTask(task)
+	}
+	return o.executeOneTask(task)
+}
+
+func markQueuedTasksSkippedAfterRateLimit(results map[string]SessionResult, tasks []TaskRequest, startIndex int) {
+	for i := startIndex; i < len(tasks); i++ {
+		results[fmt.Sprintf("task_%d", i)] = SessionResult{
+			Tool:   tasks[i].Tool,
+			Status: orchestratorSessionStatusFailed,
+			Error:  "skipped: prior queued task hit an LLM rate limit",
+		}
+	}
+}
+
 // executeOneTask creates a remote session for a single TaskRequest, sends the
 // task description as input, and returns a SessionResult.
 func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
@@ -160,7 +210,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 	toolName := normalizeRemoteToolName(tr.Tool)
 	if !remoteToolSupported(toolName) {
 		sr.Status = orchestratorSessionStatusFailed
-		sr.Error = parallelExecuteUnsupportedToolError(toolName)
+		sr.Error = queuedExecuteUnsupportedToolError(toolName)
 		if o.sharedCtx != nil {
 			o.sharedCtx.Put(ContextEntry{
 				Key:       "session_create_failed",
@@ -239,14 +289,14 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 	return sr
 }
 
-func parallelExecuteUnsupportedToolError(toolName string) string {
+func queuedExecuteUnsupportedToolError(toolName string) string {
 	const remoteTools = "claude, codex, opencode, gemini, cursor, codebuddy, iflow, or kilo"
 	switch classifyAgentToolKind(toolName) {
 	case agentToolKindBash, agentToolKindReadFile, agentToolKindWriteFile, agentToolKindEditFile, agentToolKindListDirectory,
 		agentToolKindCraftTool, agentToolKindGeneratePDF, agentToolKindOffice:
-		return fmt.Sprintf("tool %q is a local built-in tool and cannot be used with parallel_execute remote sessions; call it directly, or use a remote coding tool such as %s", toolName, remoteTools)
+		return fmt.Sprintf("tool %q is a local built-in tool and cannot be used with queued remote sessions; call it directly, or use a remote coding tool such as %s", toolName, remoteTools)
 	default:
-		return fmt.Sprintf("tool %q is not a remote coding tool for parallel_execute; use %s", toolName, remoteTools)
+		return fmt.Sprintf("tool %q is not a remote coding tool for queued execution; use %s", toolName, remoteTools)
 	}
 }
 
@@ -270,13 +320,18 @@ func (o *Orchestrator) buildInputWithContext(sessionID, description string) stri
 	return fmt.Sprintf("[Shared Context]\n%s\n%s", ctx, description)
 }
 
-// buildOrchestratorSummary produces a human-readable summary of the parallel
+// buildOrchestratorSummary produces a human-readable summary of the queued
 // execution results.
 func buildOrchestratorSummary(results map[string]SessionResult) string {
 	total := len(results)
 	succeeded := 0
 	failed := 0
+	skipped := 0
 	for _, sr := range results {
+		if isQueuedSessionSkipped(sr) {
+			skipped++
+			continue
+		}
 		switch sr.Status.Normalized() {
 		case orchestratorSessionStatusSuccess:
 			succeeded++
@@ -286,9 +341,19 @@ func buildOrchestratorSummary(results map[string]SessionResult) string {
 	}
 
 	if failed == 0 {
+		if skipped > 0 {
+			return fmt.Sprintf("%d/%d tasks completed, %d skipped", succeeded, total, skipped)
+		}
 		return fmt.Sprintf("all %d tasks completed successfully", total)
 	}
+	if skipped > 0 {
+		return fmt.Sprintf("%d/%d tasks completed, %d failed, %d skipped", succeeded, total, failed, skipped)
+	}
 	return fmt.Sprintf("%d/%d tasks completed, %d failed", succeeded, total, failed)
+}
+
+func isQueuedSessionSkipped(result SessionResult) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(result.Error)), "skipped:")
 }
 
 // GetTask returns the OrchestratorTask for the given ID, if it exists.

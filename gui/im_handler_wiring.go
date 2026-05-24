@@ -210,6 +210,12 @@ type IMMessageHandler struct {
 	// so the workflow can advance via NeedsConfirm.
 	workflowAgentLoopMarker sync.Map
 
+	// workflowReviewExperienceContext carries the trace/task context of the
+	// phase output currently awaiting review. Keyed by userID; consumed by
+	// review-intent events so user feedback can update the same injected
+	// experience candidates that shaped the phase output.
+	workflowReviewExperienceContext sync.Map
+
 	// workflowPendingConfirmOther is set by handlePendingConfirm when the
 	// LLM classifies the user's message as "other" (unrelated to the active
 	// workflow's pending confirmation). Consumed (LoadAndDelete) by the

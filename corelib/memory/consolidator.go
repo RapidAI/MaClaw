@@ -201,7 +201,9 @@ func (c *Consolidator) ConsolidateLevel(ctx context.Context, level TemporalLevel
 				}
 			}
 			// Persist tree links back to entries.
-			c.persistTreeLinks(savedID, childIDs)
+			if err := c.persistTreeLinks(savedID, childIDs); err != nil {
+				log.Printf("[consolidator] persist TMT links: %v", err)
+			}
 		}
 	}
 
@@ -505,28 +507,35 @@ func (c *Consolidator) levelCategory(level TemporalLevel) Category {
 	}
 }
 
-// persistTreeLinks writes ParentID/ChildIDs back to the store entries
-// so the TMT structure survives restarts. Single O(n) pass.
-func (c *Consolidator) persistTreeLinks(parentID string, childIDs []string) {
+// persistTreeLinks writes ParentID/ChildIDs back to the store entries so the
+// TMT structure survives restarts. It routes through the store batch primitive
+// so backend-backed stores persist the parent/child transition atomically.
+func (c *Consolidator) persistTreeLinks(parentID string, childIDs []string) error {
 	childSet := make(map[string]bool, len(childIDs))
 	for _, id := range childIDs {
 		childSet[id] = true
 	}
 
-	c.store.mu.Lock()
-	defer c.store.mu.Unlock()
+	c.store.mu.RLock()
+	updates := make([]Entry, 0, len(childIDs)+1)
 
 	for i := range c.store.entries {
-		id := c.store.entries[i].ID
+		entry := c.store.entries[i]
+		id := entry.ID
 		if id == parentID {
-			c.store.entries[i].ChildIDs = childIDs
-			c.store.dirty = true
+			entry.ChildIDs = append([]string(nil), childIDs...)
+			updates = append(updates, entry)
 		} else if childSet[id] {
-			c.store.entries[i].ParentID = parentID
-			c.store.dirty = true
+			entry.ParentID = parentID
+			updates = append(updates, entry)
 		}
 	}
-	c.store.signalSave()
+	c.store.mu.RUnlock()
+
+	if len(updates) == 0 {
+		return nil
+	}
+	return c.store.UpdateEntriesByID(updates)
 }
 
 // ---------------------------------------------------------------------------

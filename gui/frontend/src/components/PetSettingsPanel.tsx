@@ -19,6 +19,7 @@ const modeOptionIds = ['quiet', 'balanced', 'active'] as const;
 const conversationModeOptionIds = ['text-first', 'voice-turn', 'continuous'] as const;
 const readbackModeOptionIds = ['off', 'summary', 'full', 'done-only'] as const;
 const previewStateOptionIds: PetPreviewState[] = ['idle', 'listening', 'thinking', 'speaking'];
+const defaultEnabledToggleKeys = new Set(['pet_motion_enabled', 'pet_motion_sound_enabled', 'pet_text_interaction_enabled', 'pet_file_drop_enabled']);
 
 function text(lang: Lang, zhHans: string, zhHant: string, en: string): string {
     if (lang === 'zh-Hans') return zhHans;
@@ -94,6 +95,10 @@ function motionSoundPresetDescription(lang: Lang, id: string): string {
         default:
             return text(lang, '当前默认漫画动作音效。', '目前預設漫畫動作音效。', 'The current comic motion sound.');
     }
+}
+
+function optionAriaLabel(label: string, description: string): string {
+    return `${label}: ${description}`;
 }
 
 function playMotionSoundPresetPreview(preset: MotionSoundPreset): void {
@@ -198,6 +203,12 @@ function skinPreviewLine(lang: Lang, id: string): string {
             return text(lang, '抓住问题，把有效信号拎出来。', '抓住問題，把有效訊號拎出來。', 'Catches the problem and pulls out the signal.');
     }
 }
+
+function capabilityLabel(lang: Lang, name: string, ready: boolean): string {
+    if (ready) return text(lang, `${name} 已就绪`, `${name} 已就緒`, `${name} ready`);
+    return text(lang, `${name} 未启用`, `${name} 未啟用`, `${name} not enabled`);
+}
+
 function clampPetSize(value: number): number {
     if (!Number.isFinite(value)) return defaultPetSize;
     return Math.min(120, Math.max(56, Math.round(value)));
@@ -220,9 +231,21 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
     const continuousTimeout = Math.min(120, Math.max(5, Number((config as any).pet_continuous_timeout_sec || 30)));
     const asrReady = !!(config as any).asr_enabled;
     const ttsReady = !!(config as any).tts_enabled;
+    const petEnabled = !!(config as any).pet_enabled;
+    const quietMode = !!(config as any).pet_quiet_mode;
+    const voiceReady = asrReady && ttsReady;
     const selectedSkinOption = getPetSkinOption(selectedSkin);
     const motionEnabled = (config as any).pet_motion_enabled !== false;
     const motionSoundPreviewEnabled = (config as any).pet_motion_sound_enabled !== false && !(config as any).pet_quiet_mode;
+    const toggleOptions = [
+        ['pet_motion_enabled', text(lang, '\u52a8\u4f5c\u52a8\u753b', '\u52d5\u4f5c\u52d5\u756b', 'Motion')],
+        ['pet_motion_sound_enabled', text(lang, '\u52a8\u4f5c\u97f3\u6548', '\u52d5\u4f5c\u97f3\u6548', 'Motion SFX')],
+        ['pet_text_interaction_enabled', text(lang, '\u6587\u5b57\u4ea4\u6d41', '\u6587\u5b57\u4ea4\u6d41', 'Text Chat')],
+        ['pet_voice_input_enabled', text(lang, '\u8bed\u97f3\u8f93\u5165', '\u8a9e\u97f3\u8f38\u5165', 'Voice Input')],
+        ['pet_voice_readback_enabled', text(lang, '\u8bed\u97f3\u64ad\u62a5', '\u8a9e\u97f3\u64ad\u5831', 'Voice Readback')],
+        ['pet_file_drop_enabled', text(lang, '\u6587\u4ef6\u62d6\u62fd', '\u6587\u4ef6\u62d6\u66f3', 'File Drop')],
+        ['pet_quiet_mode', text(lang, '\u52ff\u6270\u6a21\u5f0f', '\u52ff\u64fe\u6a21\u5f0f', 'Do Not Disturb')],
+    ] as const;
     const saveStateLabel = saveState === 'pending'
         ? text(lang, '\u5f85\u4fdd\u5b58', '\u5f85\u5132\u5b58', 'Pending')
         : saveState === 'saving'
@@ -316,21 +339,50 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                 </div>
                 <div className="pet-header-actions">
                     {saveStateLabel && (
-                        <span className="pet-save-state" data-state={saveState}>{saveStateLabel}</span>
+                        <span className="pet-save-state" data-state={saveState} role="status" aria-live="polite">{saveStateLabel}</span>
                     )}
-                    <label className="pet-switch-row">
+                    <label className="pet-switch-row" data-enabled={petEnabled ? 'true' : 'false'}>
                         <input
                             type="checkbox"
-                            checked={!!(config as any).pet_enabled}
+                            checked={petEnabled}
                             onChange={(event) => updatePetConfig({ pet_enabled: event.target.checked })}
                         />
+                        <span className="pet-switch-track" aria-hidden="true"><span /></span>
                         <span>{text(lang, '\u542f\u7528\u684c\u9762\u5ba0\u7269', '\u555f\u7528\u684c\u9762\u5bf5\u7269', 'Enable Desktop Pet')}</span>
                     </label>
                 </div>
             </div>
 
+            <div className="pet-status-strip" role="status" aria-live="polite" aria-label={text(lang, '宠物设置状态', '寵物設定狀態', 'Pet settings status')}>
+                <div className="pet-status-chip" data-tone={petEnabled ? 'ready' : 'muted'}>
+                    <span className="pet-status-dot" aria-hidden="true" />
+                    <div>
+                        <strong>{text(lang, '桌面入口', '桌面入口', 'Desktop Entry')}</strong>
+                        <span>{petEnabled ? text(lang, '已显示，可点击唤起主窗口', '已顯示，可點擊喚起主視窗', 'Visible and opens the main window') : text(lang, '已关闭，不占用桌面空间', '已關閉，不佔用桌面空間', 'Hidden and out of the way')}</span>
+                    </div>
+                </div>
+                <div className="pet-status-chip" data-tone={voiceReady ? 'ready' : 'warn'}>
+                    <span className="pet-status-dot" aria-hidden="true" />
+                    <div>
+                        <strong>{text(lang, '语音能力', '語音能力', 'Voice Stack')}</strong>
+                        <span>{voiceReady ? text(lang, 'ASR/TTS 已就绪', 'ASR/TTS 已就緒', 'ASR/TTS ready') : text(lang, '需要在语音设置中启用 ASR/TTS', '需要在語音設定中啟用 ASR/TTS', 'Enable ASR/TTS in voice settings')}</span>
+                    </div>
+                </div>
+                <div className="pet-status-chip" data-tone={quietMode ? 'quiet' : 'ready'}>
+                    <span className="pet-status-dot" aria-hidden="true" />
+                    <div>
+                        <strong>{text(lang, '打扰级别', '打擾級別', 'Interruption')}</strong>
+                        <span>{quietMode ? text(lang, '勿扰中，动作音效会降低存在感', '勿擾中，動作音效會降低存在感', 'Quiet mode reduces motion sound') : text(lang, '按当前交互风格响应', '按目前互動風格回應', 'Responds by the selected style')}</span>
+                    </div>
+                </div>
+            </div>
+
             <div className="pet-settings-grid">
                 <section className="pet-preview-card" aria-label={text(lang, 'MaClaw 宠物预览', 'MaClaw 寵物預覽', 'MaClaw pet preview')}>
+                    <div className="pet-section-heading">
+                        <strong>{text(lang, '实时预览', '即時預覽', 'Live Preview')}</strong>
+                        <span>{text(lang, '切换状态可检查动作节奏与尺寸。', '切換狀態可檢查動作節奏與尺寸。', 'Switch states to check motion and size.')}</span>
+                    </div>
                     <div
                         className="pet-preview-stage"
                         data-pet-skin={selectedSkinOption.id}
@@ -353,6 +405,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                 key={state}
                                 type="button"
                                 className={previewState === state ? 'active' : ''}
+                                aria-pressed={previewState === state}
                                 onClick={() => setPreviewState(state)}
                             >
                                 {previewStateLabel(lang, state)}
@@ -367,13 +420,17 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
 
                 <section className="pet-config-card">
                     <div className="pet-form-section">
-                        <label className="form-label">{text(lang, '\u5f62\u8c61', '\u5f62\u8c61', 'Skin')}</label>
+                        <div className="pet-section-heading">
+                            <strong>{text(lang, '\u5f62\u8c61', '\u5f62\u8c61', 'Skin')}</strong>
+                            <span>{text(lang, '选择宠物外观与默认行为气质。', '選擇寵物外觀與預設行為氣質。', 'Choose the pet look and baseline behavior.')}</span>
+                        </div>
                         <div className="pet-skin-grid">
                             {petSkinOptions.map((skin) => (
                                 <button
                                     key={skin.id}
                                     type="button"
                                     className={`pet-skin-option ${selectedSkin === skin.id ? 'active' : ''}`}
+                                    aria-pressed={selectedSkin === skin.id}
                                     onClick={() => updatePetConfig({ pet_skin: skin.id })}
                                 >
                                     <img src={skin.image} alt="" className="pet-skin-thumb" aria-hidden="true" />
@@ -388,7 +445,10 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     </div>
 
                     <div className="pet-form-section">
-                        <label className="form-label" htmlFor="pet-size-range">{text(lang, '\u5c3a\u5bf8', '\u5c3a\u5bf8', 'Size')}</label>
+                        <div className="pet-section-heading pet-section-heading--inline">
+                            <label className="form-label" htmlFor="pet-size-range">{text(lang, '\u5c3a\u5bf8', '\u5c3a\u5bf8', 'Size')}</label>
+                            <span>{text(lang, '建议 72-96px，兼顾存在感与遮挡。', '建議 72-96px，兼顧存在感與遮擋。', '72-96px is a comfortable desktop range.')}</span>
+                        </div>
                         <div className="pet-range-row">
                             <input
                                 id="pet-size-range"
@@ -397,6 +457,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                 max={120}
                                 step={4}
                                 value={petSize}
+                                aria-valuetext={`${petSize}px`}
                                 onChange={(event) => updatePetConfig({ pet_size: clampPetSize(Number(event.target.value)) }, 'pet-size')}
                             />
                             <span>{petSize}px</span>
@@ -404,13 +465,17 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     </div>
 
                     <div className="pet-form-section">
-                        <label className="form-label">{text(lang, '\u4ea4\u4e92\u98ce\u683c', '\u4e92\u52d5\u98a8\u683c', 'Interaction Style')}</label>
+                        <div className="pet-section-heading pet-section-heading--inline">
+                            <label className="form-label">{text(lang, '\u4ea4\u4e92\u98ce\u683c', '\u4e92\u52d5\u98a8\u683c', 'Interaction Style')}</label>
+                            <span>{text(lang, '控制动作频率与提示积极性。', '控制動作頻率與提示積極性。', 'Controls motion pace and promptiveness.')}</span>
+                        </div>
                         <div className="pet-segmented-control">
                             {modeOptionIds.map((mode) => (
                                 <button
                                     key={mode}
                                     type="button"
                                     className={interactionMode === mode ? 'active' : ''}
+                                    aria-pressed={interactionMode === mode}
                                     onClick={() => updatePetConfig({ pet_interaction_mode: mode })}
                                 >
                                     {interactionModeLabel(lang, mode)}
@@ -420,13 +485,17 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     </div>
 
                     <div className="pet-form-section">
-                        <label className="form-label">{text(lang, '动作音效', '動作音效', 'Motion Sound')}</label>
+                        <div className="pet-section-heading pet-section-heading--inline">
+                            <label className="form-label">{text(lang, '动作音效', '動作音效', 'Motion Sound')}</label>
+                            <span>{motionSoundPreviewEnabled ? text(lang, '点击即可试听并保存。', '點擊即可試聽並儲存。', 'Click to preview and save.') : text(lang, '勿扰或音效关闭时仅保存选择。', '勿擾或音效關閉時僅儲存選擇。', 'Quiet or SFX off saves without preview.')}</span>
+                        </div>
                         <div className={`pet-sound-grid ${motionSoundPreviewEnabled ? '' : 'pet-sound-grid--muted'}`}>
                             {motionSoundPresetOptionIds.map((preset) => (
                                 <button
                                     key={preset}
                                     type="button"
                                     className={`pet-sound-option ${motionSoundPreset === preset ? 'active' : ''}`}
+                                    aria-label={optionAriaLabel(motionSoundPresetLabel(lang, preset), motionSoundPresetDescription(lang, preset))}
                                     onClick={() => {
                                         updatePetConfig({ pet_motion_sound_preset: preset });
                                         if (motionSoundPreviewEnabled) {
@@ -449,8 +518,8 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                 <span>{text(lang, '\u590d\u7528\u5f53\u524d ASR/TTS \u80fd\u529b\uff0c\u8ba9\u5ba0\u7269\u80fd\u542c\u3001\u80fd\u8bf4\u3001\u80fd\u7ee7\u7eed\u8ffd\u95ee\u3002', '\u8907\u7528\u76ee\u524d ASR/TTS \u80fd\u529b\uff0c\u8b93\u5bf5\u7269\u80fd\u807d\u3001\u80fd\u8aaa\u3001\u80fd\u7e7c\u7e8c\u8ffd\u554f\u3002', 'Uses existing ASR/TTS so the pet can listen, speak, and continue a turn.')}</span>
                             </div>
                             <div className="pet-capability-badges">
-                                <span className={asrReady ? 'ready' : ''}>ASR</span>
-                                <span className={ttsReady ? 'ready' : ''}>TTS</span>
+                                <span className={asrReady ? 'ready' : ''} role="img" aria-label={capabilityLabel(lang, 'ASR', asrReady)} title={capabilityLabel(lang, 'ASR', asrReady)}>ASR</span>
+                                <span className={ttsReady ? 'ready' : ''} role="img" aria-label={capabilityLabel(lang, 'TTS', ttsReady)} title={capabilityLabel(lang, 'TTS', ttsReady)}>TTS</span>
                             </div>
                         </div>
 
@@ -462,6 +531,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                         key={mode}
                                         type="button"
                                         className={conversationMode === mode ? 'active' : ''}
+                                        aria-pressed={conversationMode === mode}
                                         onClick={() => updatePetConfig({ pet_conversation_mode: mode })}
                                     >
                                         {conversationModeLabel(lang, mode)}
@@ -478,6 +548,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                         key={mode}
                                         type="button"
                                         className={readbackMode === mode ? 'active' : ''}
+                                        aria-pressed={readbackMode === mode}
                                         onClick={() => updatePetConfig({
                                             pet_readback_mode: mode,
                                             pet_voice_readback_enabled: mode !== 'off',
@@ -499,6 +570,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                 max={120}
                                 step={5}
                                 value={continuousTimeout}
+                                aria-valuetext={`${continuousTimeout}s`}
                                 onChange={(event) => updatePetConfig({ pet_continuous_timeout_sec: Number(event.target.value) }, 'continuous-timeout')}
                             />
                         </div>
@@ -514,19 +586,11 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     </div>
 
                     <div className="pet-toggle-grid">
-                        {[
-                            ['pet_motion_enabled', text(lang, '\u52a8\u4f5c\u52a8\u753b', '\u52d5\u4f5c\u52d5\u756b', 'Motion')],
-                            ['pet_motion_sound_enabled', text(lang, '\u52a8\u4f5c\u97f3\u6548', '\u52d5\u4f5c\u97f3\u6548', 'Motion SFX')],
-                            ['pet_text_interaction_enabled', text(lang, '\u6587\u5b57\u4ea4\u6d41', '\u6587\u5b57\u4ea4\u6d41', 'Text Chat')],
-                            ['pet_voice_input_enabled', text(lang, '\u8bed\u97f3\u8f93\u5165', '\u8a9e\u97f3\u8f38\u5165', 'Voice Input')],
-                            ['pet_voice_readback_enabled', text(lang, '\u8bed\u97f3\u64ad\u62a5', '\u8a9e\u97f3\u64ad\u5831', 'Voice Readback')],
-                            ['pet_file_drop_enabled', text(lang, '\u6587\u4ef6\u62d6\u62fd', '\u6587\u4ef6\u62d6\u66f3', 'File Drop')],
-                            ['pet_quiet_mode', text(lang, '\u52ff\u6270\u6a21\u5f0f', '\u52ff\u64fe\u6a21\u5f0f', 'Do Not Disturb')],
-                        ].map(([key, label]) => (
+                        {toggleOptions.map(([key, label]) => (
                             <label key={key} className="pet-toggle-item">
                                 <input
                                     type="checkbox"
-                                    checked={key === 'pet_motion_enabled' || key === 'pet_motion_sound_enabled' || key === 'pet_text_interaction_enabled' || key === 'pet_file_drop_enabled'
+                                    checked={defaultEnabledToggleKeys.has(key)
                                         ? (config as any)[key] !== false
                                         : !!(config as any)[key]}
                                     onChange={(event) => {

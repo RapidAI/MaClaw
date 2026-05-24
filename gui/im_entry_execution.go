@@ -50,10 +50,6 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	history := h.memory.Load(msg.UserID)
 	historyElapsed := time.Since(historyStart)
 
-	promptStart := time.Now()
-	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, opts.WorkflowAgentLoop, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
-	promptElapsed := time.Since(promptStart)
-
 	loopCtxStart := time.Now()
 	loopCtx := h.prepareIMLoopContext(
 		opts.ProvidedLoopContext,
@@ -62,7 +58,12 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.SkipNeedsConfirmGate,
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
+	loopCtx.WorkflowAgentLoop = opts.WorkflowAgentLoop
 	loopCtxElapsed := time.Since(loopCtxStart)
+
+	promptStart := time.Now()
+	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
+	promptElapsed := time.Since(promptStart)
 
 	if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
 		return resp

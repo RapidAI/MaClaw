@@ -18,7 +18,7 @@
 
 仍只规划、不自动改写的动作：
 
-- `attempt_repair`：需要走现有 SelfRepair 流。
+- `attempt_repair`：非 file-backed skill 走现有 SelfRepair 流；file-backed skill 不排后台 repair，必须转 review/patch flow。
 - `merge_duplicate`：需要人工确认主 skill 和合并策略。
 - 文件/目录级归档：需要备份、恢复路径和归档位置；当前 `archive_stale` 只做 learned/crafted 元数据软禁用。
 

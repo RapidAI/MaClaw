@@ -81,7 +81,7 @@ func TestTaskOrchestrator2_Cancel_NotFound(t *testing.T) {
 
 func TestTaskOrchestrator2_Execute_NoDeps(t *testing.T) {
 	o := NewTaskOrchestrator2(nil, nil, nil)
-	plan, _ := o.CreatePlan("parallel test", []PlanSubTask{
+	plan, _ := o.CreatePlan("queued test", []PlanSubTask{
 		{Description: "task A", Tool: "claude"},
 		{Description: "task B", Tool: "codex"},
 	})
@@ -97,6 +97,23 @@ func TestTaskOrchestrator2_Execute_NotFound(t *testing.T) {
 	err := o.Execute("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent plan")
+	}
+}
+
+func TestTaskOrchestrator2_Execute_BlockedDependencyFailsFast(t *testing.T) {
+	o := NewTaskOrchestrator2(nil, nil, nil)
+	plan, _ := o.CreatePlan("blocked deps", []PlanSubTask{
+		{ID: "b", Description: "blocked", DependsOn: []string{"missing"}},
+	})
+
+	err := o.Execute(plan.ID)
+	if err == nil {
+		t.Fatal("expected blocked dependency error")
+	}
+	if got, _ := o.GetStatus(plan.ID); got.Status != orchestratorTaskStatusFailed {
+		t.Fatalf("plan status = %s, want failed", got.Status)
+	} else if got.SubTasks[0].Status != orchestratorTaskStatusFailed || got.SubTasks[0].Result == "" {
+		t.Fatalf("blocked subtask should be marked failed with reason, got %#v", got.SubTasks[0])
 	}
 }
 

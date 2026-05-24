@@ -1837,4 +1837,9 @@ if (baseApplyLLMProvidersI18nUpstreamTimeout) {
   applyLLMProvidersI18n();
 }
 
-
+function llmProviderOptionsSnapshot() {
+  return (llmProviderRegistryCache && llmProviderRegistryCache.providers || []).map(function(p) {
+    return { id: String(p && p.id || '').trim(), name: String(p && p.name || '').trim() };
+  }).filter(function(p) { return p.id; });
+}
+window.getLlmProviderOptions = llmProviderOptionsSnapshot;

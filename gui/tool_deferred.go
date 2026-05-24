@@ -34,7 +34,7 @@ var DeferredToolNames = []string{
 	"list_scheduled_tasks",
 	"delete_scheduled_task",
 	"update_scheduled_task",
-	// Parallel execution
+	// Queued remote execution
 	"parallel_execute",
 	// Tool recommendation
 	"recommend_tool",

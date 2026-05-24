@@ -343,7 +343,7 @@ type WorkflowResponse struct {
 	PendingConfirm bool
 
 	// ActivateOrchestrator is true when the workflow has advanced into an
-	// execution phase (ToolFilterFull && !NeedsConfirm). The caller should
+	// execution phase (see IsExecutionOrchestratorPhase). The caller should
 	// attempt to parse the TaskBreakdownText as a task list and activate
 	// the orchestrator if parsing succeeds. If parsing fails (e.g. PPT
 	// workflow's slide_scripting output is not a task list), the caller

@@ -255,6 +255,26 @@ func tenantIDForHubEmail(hub *store.HubInstance, email string) string {
 	return ""
 }
 
+func tenantNameForHubTenant(hub *store.HubInstance, tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if hub == nil || tenantID == "" || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return ""
+	}
+	var caps map[string]any
+	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+		return ""
+	}
+	names, ok := caps["tenant_names"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, ok := names[tenantID]
+	if !ok || name == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(name))
+}
+
 func capabilityStringList(value any) []string {
 	items, ok := value.([]any)
 	if !ok {

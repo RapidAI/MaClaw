@@ -112,6 +112,35 @@ func TestAppRunctlShowIncludesRemoteRegistrationCommand(t *testing.T) {
 	}
 }
 
+func TestAppPassthroughSlashCommandsUseEnglishLanguage(t *testing.T) {
+	dir := t.TempDir()
+	reg := newPassthroughRegistry(filepath.Join(dir, "commands.json"))
+	app := &App{passthroughRegistry: reg, CurrentLanguage: "en"}
+
+	resp, handled := app.TryHandlePassthroughSlashCommandWithSource("/run", "desktop:test")
+	if !handled || resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Usage: /run <name>") {
+		t.Fatalf("unexpected /run response: handled=%v resp=%+v", handled, resp)
+	}
+
+	resp, handled = app.TryHandlePassthroughSlashCommandWithSource("/exec", "desktop:test")
+	if !handled || resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Usage: /exec <program>") {
+		t.Fatalf("unexpected /exec response: handled=%v resp=%+v", handled, resp)
+	}
+
+	resp, handled = app.TryHandlePassthroughSlashCommandWithSource("/runctl list", "desktop:test")
+	if !handled || resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "No passthrough tasks are registered yet") {
+		t.Fatalf("unexpected /runctl list response: handled=%v resp=%+v", handled, resp)
+	}
+
+	if _, err := reg.Upsert(PassthroughCommand{Name: "git-status", ScriptPath: "git", Runtime: "direct", TimeoutSeconds: 60, Enabled: true}); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	resp, handled = app.TryHandlePassthroughSlashCommandWithSource("/runctl show git-status", "desktop:test")
+	if !handled || resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Command: git-status") || strings.Contains(resp.Text, "命令：") {
+		t.Fatalf("unexpected /runctl show response: handled=%v resp=%+v", handled, resp)
+	}
+}
+
 func TestAppRunctlExportReturnsOnlyRemoteRegistrationCommand(t *testing.T) {
 	dir := t.TempDir()
 	reg := newPassthroughRegistry(filepath.Join(dir, "commands.json"))

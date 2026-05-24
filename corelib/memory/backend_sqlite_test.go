@@ -164,6 +164,356 @@ func TestSQLiteBackend_DeleteAndSince(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateEntriesByIDSQLiteBatchPersists(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+
+	if err := store.Save(Entry{ID: "batch-a", Content: "before a", Category: CategoryProjectKnowledge, Tags: []string{"a"}}); err != nil {
+		t.Fatalf("save a: %v", err)
+	}
+	if err := store.Save(Entry{ID: "batch-b", Content: "before b", Category: CategoryProjectKnowledge, Tags: []string{"b"}}); err != nil {
+		t.Fatalf("save b: %v", err)
+	}
+	entries := store.List("", "")
+	for i := range entries {
+		switch entries[i].ID {
+		case "batch-a":
+			entries[i].Content = "after a"
+			entries[i].Tags = append(entries[i].Tags, "updated")
+		case "batch-b":
+			entries[i].Content = "after b"
+			entries[i].Tags = append(entries[i].Tags, "updated")
+		}
+	}
+	if err := store.UpdateEntriesByID(entries); err != nil {
+		t.Fatalf("UpdateEntriesByID: %v", err)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]string{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry.Content
+		if entry.ID == "batch-a" || entry.ID == "batch-b" {
+			if entry.Version == 0 {
+				t.Fatalf("entry %s version was not updated", entry.ID)
+			}
+		}
+	}
+	if seen["batch-a"] != "after a" || seen["batch-b"] != "after b" {
+		t.Fatalf("batch update not persisted: %#v", seen)
+	}
+}
+
+func TestStoreUpsertEntriesByIDSQLiteCreatesAndUpdates(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+
+	if err := store.Save(Entry{ID: "source", Content: "source before", Category: CategoryProjectKnowledge, Tags: []string{"source"}}); err != nil {
+		t.Fatalf("save source: %v", err)
+	}
+	source := store.SearchDirectByID("source")[0]
+	source.Content = "source after"
+	source.Tags = append(source.Tags, "transitioned")
+	review := Entry{ID: "review", Content: "new review", Category: CategoryProjectKnowledge, Tags: []string{"review"}}
+	if err := store.UpsertEntriesByID([]Entry{review, source}); err != nil {
+		t.Fatalf("UpsertEntriesByID: %v", err)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]string{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry.Content
+	}
+	if seen["source"] != "source after" || seen["review"] != "new review" {
+		t.Fatalf("upsert batch not persisted: %#v", seen)
+	}
+}
+
+func TestStoreUpsertEntriesByIDSQLitePreservesInputVersionOrder(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+
+	source := Entry{ID: "source-order", Content: "source transition", Category: CategoryProjectKnowledge, Tags: []string{"source"}}
+	review := Entry{ID: "review-order", Content: "review record", Category: CategoryProjectKnowledge, Tags: []string{"review"}}
+	if err := store.UpsertEntriesByID([]Entry{review, source}); err != nil {
+		t.Fatalf("UpsertEntriesByID: %v", err)
+	}
+
+	modified, deleted, err := backend.Since(0)
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("unexpected deleted entries: %v", deleted)
+	}
+	if len(modified) != 2 {
+		t.Fatalf("expected two modified entries, got %d: %#v", len(modified), modified)
+	}
+	if modified[0].ID != "review-order" || modified[1].ID != "source-order" {
+		t.Fatalf("batch version order should match input order, got %s then %s", modified[0].ID, modified[1].ID)
+	}
+	if modified[0].Version >= modified[1].Version {
+		t.Fatalf("versions should increase in input order, got %d then %d", modified[0].Version, modified[1].Version)
+	}
+}
+
+func TestStoreUpdateEntriesByIDRefreshesGraphAndPersistsRelatedEdges(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+
+	now := time.Now().UTC()
+	left := Entry{ID: "graph-left", Content: "left graph evidence", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, AccessCount: 1, Strength: 1}
+	right := Entry{ID: "graph-right", Content: "right graph evidence", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, AccessCount: 1, Strength: 1}
+	if err := store.Save(left); err != nil {
+		t.Fatalf("save left: %v", err)
+	}
+	if err := store.Save(right); err != nil {
+		t.Fatalf("save right: %v", err)
+	}
+
+	entries := store.List("", "")
+	for i := range entries {
+		if entries[i].ID == "graph-left" {
+			entries[i].RelatedIDs = []string{"graph-right"}
+			entries[i].RelatedEdges = []RelatedEdge{{ID: "graph-right", Strength: 0.7, LinkType: LinkReferences, UpdatedAt: now.Add(time.Minute)}}
+		}
+	}
+	if err := store.UpdateEntriesByID(entries); err != nil {
+		t.Fatalf("UpdateEntriesByID: %v", err)
+	}
+
+	neighbors := store.graph.neighborsTypedOf("graph-left")
+	if edge, ok := neighbors["graph-right"]; !ok || edge.LinkType != LinkReferences || edge.Strength != 0.7 {
+		t.Fatalf("batch update did not refresh graph edges: %#v", neighbors)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, entry := range loaded {
+		if entry.ID == "graph-left" {
+			if len(entry.RelatedEdges) != 1 || entry.RelatedEdges[0].ID != "graph-right" || entry.RelatedEdges[0].LinkType != LinkReferences {
+				t.Fatalf("related edge was not persisted: %+v", entry.RelatedEdges)
+			}
+			return
+		}
+	}
+	t.Fatal("graph-left not loaded from backend")
+}
+
+func TestStoreUpdateEntriesByIDPersistsCompactFormAndEmbedding(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+
+	if err := store.Save(Entry{ID: "maintenance-fields", Content: "long memory content for compact and embedding maintenance", Category: CategoryProjectKnowledge}); err != nil {
+		t.Fatalf("save entry: %v", err)
+	}
+	entry := store.SearchDirectByID("maintenance-fields")[0]
+	entry.CompactForm = "compact maintenance field"
+	entry.Embedding = []float32{0.25, 0.5, 0.75, 1}
+	if err := store.UpdateEntriesByID([]Entry{entry}); err != nil {
+		t.Fatalf("UpdateEntriesByID: %v", err)
+	}
+
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].CompactForm != "compact maintenance field" || len(loaded[0].Embedding) != 4 || loaded[0].Embedding[2] != 0.75 {
+		t.Fatalf("maintenance fields not persisted: %+v", loaded)
+	}
+	if scores := store.vecIndex.score([]float32{0.25, 0.5, 0.75, 1}); scores["maintenance-fields"] == 0 {
+		t.Fatalf("embedding backfill should refresh vector index, scores=%v", scores)
+	}
+}
+
+func TestLifecycleMutationsPersistThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+
+	entry := Entry{ID: "lifecycle-batch", Content: "lifecycle transition target", Category: CategoryProjectKnowledge, Status: StatusActive}
+	if err := store.Save(entry); err != nil {
+		t.Fatalf("save entry: %v", err)
+	}
+	if err := store.PinEntry("lifecycle-batch"); err != nil {
+		t.Fatalf("PinEntry: %v", err)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll pinned: %v", err)
+	}
+	if len(loaded) != 1 || !loaded[0].Pinned {
+		t.Fatalf("pin state not persisted: %+v", loaded)
+	}
+	if _, err := store.SupersedeEntryByID("lifecycle-batch", time.Now().UTC()); err != nil {
+		t.Fatalf("SupersedeEntryByID: %v", err)
+	}
+	loaded, err = backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll superseded: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Status != StatusSuperseded || !loaded[0].Stale || loaded[0].InvalidAt == nil {
+		t.Fatalf("supersede state not persisted: %+v", loaded)
+	}
+	if got := store.FindByEntity("lifecycle"); len(got) != 0 {
+		t.Fatalf("superseded entry should be absent from active entity lookup, got %+v", got)
+	}
+}
+
+func TestTouchAccessPersistsThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend := newTestSQLiteBackend(t)
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+
+	if err := store.Save(Entry{ID: "touch-batch", Content: "touch access target", Category: CategoryProjectKnowledge, AccessCount: 1, Strength: 1}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	store.TouchAccess([]string{"touch-batch"})
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].AccessCount != 2 || loaded[0].Strength <= 1 {
+		t.Fatalf("touch access not persisted through batch path: %+v", loaded)
+	}
+}
+
+func TestSQLiteBackendUpdateEntriesRollsBackOnFailure(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	if _, err := b.db.Exec(`CREATE TRIGGER fail_memory_batch BEFORE INSERT ON memories WHEN NEW.id = 'fail-batch' BEGIN SELECT RAISE(FAIL, 'forced batch failure'); END;`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+	now := time.Now().UTC()
+	first := Entry{ID: "first-batch", Content: "first should rollback", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, AccessCount: 1, Strength: 1}
+	second := Entry{ID: "fail-batch", Content: "force rollback", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, AccessCount: 1, Strength: 1}
+	if err := b.UpdateEntries([]*Entry{&first, &second}); err == nil {
+		t.Fatal("expected UpdateEntries failure")
+	}
+	loaded, err := b.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("failed batch should not persist partial entries: %#v", loaded)
+	}
+	version, err := b.MaxVersion()
+	if err != nil {
+		t.Fatalf("MaxVersion: %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("failed batch should rollback version increments, got %d", version)
+	}
+}
+
+func TestSQLiteBackendUpdateEntriesAndDeleteIDsRollsBackOnDeleteFailure(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	now := time.Now().UTC()
+	keep := Entry{ID: "keep-batch", Content: "keep original", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, AccessCount: 1, Strength: 1}
+	remove := Entry{ID: "delete-fail", Content: "delete original", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, AccessCount: 1, Strength: 1}
+	if err := b.SaveEntry(&keep); err != nil {
+		t.Fatalf("save keep: %v", err)
+	}
+	if err := b.SaveEntry(&remove); err != nil {
+		t.Fatalf("save remove: %v", err)
+	}
+	versionBefore, err := b.MaxVersion()
+	if err != nil {
+		t.Fatalf("MaxVersion before: %v", err)
+	}
+	if _, err := b.db.Exec(`CREATE TRIGGER fail_update_delete_batch BEFORE UPDATE OF deleted_at ON memories WHEN NEW.id = 'delete-fail' AND NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(FAIL, 'forced delete failure'); END;`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	keep.Content = "keep updated should rollback"
+	if err := b.UpdateEntriesAndDeleteIDs([]*Entry{&keep}, []string{"delete-fail"}); err == nil {
+		t.Fatal("expected UpdateEntriesAndDeleteIDs failure")
+	}
+	loaded, err := b.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]Entry{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry
+	}
+	if seen["keep-batch"].Content != "keep original" {
+		t.Fatalf("kept entry update should rollback, got %+v", seen["keep-batch"])
+	}
+	if seen["delete-fail"].Content != "delete original" {
+		t.Fatalf("deleted entry should still be active after rollback, got %+v", seen["delete-fail"])
+	}
+	versionAfter, err := b.MaxVersion()
+	if err != nil {
+		t.Fatalf("MaxVersion after: %v", err)
+	}
+	if versionAfter != versionBefore {
+		t.Fatalf("failed update/delete batch should rollback version increments, before=%d after=%d", versionBefore, versionAfter)
+	}
+}
+
 func TestSQLiteBackend_UpdateEntry(t *testing.T) {
 	b := newTestSQLiteBackend(t)
 	now := time.Now().UTC()
@@ -344,6 +694,50 @@ func TestSQLiteBackend_FTSSearchCJKFallback(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Fatalf("deleted entry should be removed from FTS index, got %v", ids)
+	}
+}
+
+func TestSQLiteBackendFTSStaysAlignedWithBatchWrites(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	now := time.Now().UTC()
+	entry := Entry{ID: "fts-batch", Content: "crimsontext batch evidence", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, AccessCount: 1, Strength: 1}
+	if err := b.SaveEntry(&entry); err != nil {
+		t.Fatalf("SaveEntry: %v", err)
+	}
+	var ftsCount int
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM memories_fts WHERE id = ?`, "fts-batch").Scan(&ftsCount); err != nil {
+		t.Fatalf("count fts rows: %v", err)
+	}
+	if ftsCount != 1 {
+		t.Fatalf("SaveEntry should create one FTS row, got %d", ftsCount)
+	}
+	entry.Content = "azureword batch evidence"
+	entry.UpdatedAt = now.Add(time.Minute)
+	if err := b.UpdateEntries([]*Entry{&entry}); err != nil {
+		t.Fatalf("UpdateEntries: %v", err)
+	}
+	ids, err := b.SearchTextIDs("azureword", 10)
+	if err != nil {
+		t.Fatalf("SearchTextIDs updated: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "fts-batch" {
+		t.Fatalf("updated FTS row missing, got %v", ids)
+	}
+	ids, err = b.SearchTextIDs("crimsontext", 10)
+	if err != nil {
+		t.Fatalf("SearchTextIDs old: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("old FTS text should be removed after batch update, got %v", ids)
+	}
+	if err := b.DeleteEntry("fts-batch"); err != nil {
+		t.Fatalf("DeleteEntry: %v", err)
+	}
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM memories_fts WHERE id = ?`, "fts-batch").Scan(&ftsCount); err != nil {
+		t.Fatalf("count fts rows after delete: %v", err)
+	}
+	if ftsCount != 0 {
+		t.Fatalf("DeleteEntry should remove FTS row, got %d", ftsCount)
 	}
 }
 

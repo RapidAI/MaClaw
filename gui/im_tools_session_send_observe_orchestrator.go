@@ -10,22 +10,24 @@ func (h *IMMessageHandler) enrichSendAndObserveTextForTask(sessionID, text strin
 	if taskOrch == nil || !taskOrch.IsActive() {
 		return text
 	}
-	task := taskOrch.CurrentTask()
-	if task == nil {
+	handles := taskOrch.ReadyTaskHandles(1)
+	if len(handles) == 0 {
 		return text
 	}
+	handle := handles[0]
+	task := handle.Task
 
-	taskOrch.SetCurrentSessionID(sessionID)
+	taskOrch.SetTaskSessionIDForRun(task, handle.RunID, sessionID)
 	if task.Status != TaskExecPending {
 		return text
 	}
 
-	taskPrompt := taskOrch.BuildTaskPrompt()
+	taskPrompt := taskOrch.BuildTaskPromptForTaskRun(task, handle.RunID)
 	if taskPrompt != "" {
 		text = mergeTaskPromptWithSendObserveText(taskPrompt, text)
 		log.Printf("[task-orchestrator] enriched send_and_observe for task %d: %s", task.Index+1, task.Title)
 	}
-	taskOrch.MarkCurrentStatus(TaskExecInProgress, "")
+	taskOrch.MarkTaskStatusForRun(task, handle.RunID, TaskExecInProgress, "")
 	return text
 }
 

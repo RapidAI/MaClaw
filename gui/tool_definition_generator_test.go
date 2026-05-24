@@ -2,7 +2,6 @@ package main
 
 import (
 	"testing"
-
 )
 
 // --- helpers for building test fixtures ---
@@ -26,7 +25,7 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("run_skill", "run skill", nil, nil),
 		toolDef("manage_skill", "manage skills", nil, nil),
 		toolDef("task", "task manager", nil, nil),
-		toolDef("parallel_execute", "并行执行多个工具", nil, nil),
+		toolDef("parallel_execute", "按 SubAgent 并发数执行多个工具", nil, nil),
 		toolDef("recommend_tool", "推荐工具", nil, nil),
 		toolDef("bash", "执行shell命令", nil, nil),
 		toolDef("read_file", "读取文件", nil, nil),

@@ -49,8 +49,11 @@ func tenantAdminScopeActive(ctx context.Context, admin *store.AdminUser, tenantR
 		return true
 	}
 	tenantID := strings.TrimSpace(admin.TenantID)
-	if tenantID == "" || strings.EqualFold(tenantID, store.DefaultTenantID) || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
+	if tenantID == "" || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
 		return false
+	}
+	if strings.EqualFold(tenantID, store.DefaultTenantID) {
+		_, _ = tenantRepos[0].EnsureDefault(ctx)
 	}
 	tenant, err := tenantRepos[0].GetByID(ctx, tenantID)
 	if err != nil || tenant == nil || tenant.DeletedAt != nil {

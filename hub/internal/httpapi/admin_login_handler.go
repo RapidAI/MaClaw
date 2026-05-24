@@ -59,9 +59,27 @@ func AdminLoginHandler(admins *auth.AdminService, tenantRepos ...store.TenantRep
 		writeJSON(w, http.StatusOK, map[string]any{
 			"access_token": token,
 			"expires_in":   7200,
-			"admin":        adminDTO(admin),
+			"admin":        adminLoginDTO(r.Context(), admin, tenantRepos...),
 		})
 	}
+}
+
+func adminLoginDTO(ctx context.Context, admin *store.AdminUser, tenantRepos ...store.TenantRepository) map[string]any {
+	out := adminDTO(admin)
+	if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Scope), "tenant") || len(tenantRepos) == 0 || tenantRepos[0] == nil {
+		return out
+	}
+	tenantID := strings.TrimSpace(admin.TenantID)
+	if tenantID == "" || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
+		return out
+	}
+	tenant, err := tenantRepos[0].GetByID(ctx, tenantID)
+	if err != nil || tenant == nil {
+		return out
+	}
+	out["tenant_name"] = strings.TrimSpace(tenant.Name)
+	out["tenant_slug"] = strings.TrimSpace(tenant.Slug)
+	return out
 }
 
 func requestedTenantLoginAllowed(ctx context.Context, tenantID string, tenantRepos ...store.TenantRepository) bool {
@@ -69,7 +87,7 @@ func requestedTenantLoginAllowed(ctx context.Context, tenantID string, tenantRep
 	if tenantID == "" || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
 		return true
 	}
-	if isReservedTenantID(tenantID) {
+	if strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
 		return false
 	}
 	return tenantLoginScopeActive(ctx, tenantID, tenantRepos...)
@@ -83,7 +101,7 @@ func adminTenantLoginAllowed(ctx context.Context, admin *store.AdminUser, tenant
 		return true
 	}
 	tenantID := strings.TrimSpace(admin.TenantID)
-	if tenantID == "" || isReservedTenantID(tenantID) {
+	if tenantID == "" || strings.EqualFold(tenantID, auth.ExplicitGlobalAdminTenantScope) {
 		return false
 	}
 	return tenantLoginScopeActive(ctx, tenantID, tenantRepos...)
@@ -92,6 +110,9 @@ func adminTenantLoginAllowed(ctx context.Context, admin *store.AdminUser, tenant
 func tenantLoginScopeActive(ctx context.Context, tenantID string, tenantRepos ...store.TenantRepository) bool {
 	if len(tenantRepos) == 0 || tenantRepos[0] == nil {
 		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(tenantID), store.DefaultTenantID) {
+		_, _ = tenantRepos[0].EnsureDefault(ctx)
 	}
 	tenant, err := tenantRepos[0].GetByID(ctx, strings.TrimSpace(tenantID))
 	if err != nil || tenant == nil || tenant.DeletedAt != nil {

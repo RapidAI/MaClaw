@@ -90,9 +90,10 @@ func TestSupersedeEnsuresNonEmptyValidityWindow(t *testing.T) {
 		UpdatedAt: created,
 		Entities:  []string{"entity:alpha", "relation:config_of", "entity:port-22"},
 	}})
-	store.mu.Lock()
-	changed := store.supersedeEntryLocked("instant-old", created)
-	store.mu.Unlock()
+	changed, err := store.SupersedeEntryByID("instant-old", created)
+	if err != nil {
+		t.Fatalf("SupersedeEntryByID: %v", err)
+	}
 	if !changed {
 		t.Fatal("expected supersede to change entry")
 	}
@@ -295,6 +296,50 @@ func TestCompressorDedupKeepsDifferentOwnersSeparate(t *testing.T) {
 	}
 }
 
+func TestCompressorDedupPersistsDuplicateDeleteThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	now := time.Now().UTC()
+	first := Entry{ID: "dedup-keep", Content: "same durable compressor duplicate", Category: CategoryProjectKnowledge, CreatedAt: now, UpdatedAt: now, Strength: 1}
+	second := Entry{ID: "dedup-delete", Content: "same durable compressor duplicate", Category: CategoryProjectKnowledge, CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute), Strength: 1}
+	store.SetEntries([]Entry{first, second})
+	if err := backend.SaveEntry(&first); err != nil {
+		t.Fatalf("persist first: %v", err)
+	}
+	if err := backend.SaveEntry(&second); err != nil {
+		t.Fatalf("persist second: %v", err)
+	}
+
+	compressor := NewCompressor(store, nil, nil)
+	if removed := compressor.dedup(); removed != 1 {
+		t.Fatalf("dedup removed=%d, want 1", removed)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one active backend entry after dedup, got %+v", loaded)
+	}
+	_, deleted, err := backend.Since(0)
+	if err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("expected one deleted sync tombstone, got %v", deleted)
+	}
+}
+
 func TestRebuildDerivedIndexesRefreshesTemporalTree(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
 	if err != nil {
@@ -396,6 +441,64 @@ func TestSubstringDedupUpdatesEmbeddingAndEntities(t *testing.T) {
 	}
 }
 
+func TestSaveDedupPersistsMetadataThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	backend := newTestSQLiteBackend(t)
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+
+	if err := store.Save(Entry{ID: "dedup-sqlite", Content: "alpha config note", Category: CategoryProjectKnowledge, Tags: []string{"old"}, Entities: []string{"entity:alpha"}, AccessCount: 1, Strength: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{Content: "alpha config note", Category: CategoryProjectKnowledge, Tags: []string{"new"}, Entities: []string{"entity:port-2222"}}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one deduped backend row, got %+v", loaded)
+	}
+	if loaded[0].AccessCount != 2 || !hasTag(loaded[0].Tags, "old") || !hasTag(loaded[0].Tags, "new") || len(loaded[0].Entities) != 2 {
+		t.Fatalf("dedup metadata not persisted through batch path: %+v", loaded[0])
+	}
+}
+
+func TestStoreUpdatePersistsThroughSQLiteBatchPath(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	backend := newTestSQLiteBackend(t)
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	if err := store.Save(Entry{ID: "update-sqlite", Content: "old manual text", Category: CategoryProjectKnowledge, Tags: []string{"old"}, AccessCount: 1, Strength: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update("update-sqlite", "new manual text", CategoryInstruction, []string{"new"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one backend row, got %+v", loaded)
+	}
+	if loaded[0].Content != "new manual text" || loaded[0].Category != CategoryInstruction || !hasTag(loaded[0].Tags, "new") || loaded[0].Stale {
+		t.Fatalf("manual update not persisted through batch path: %+v", loaded[0])
+	}
+	if len(loaded[0].Versions) != 1 || loaded[0].Versions[0].Content != "old manual text" {
+		t.Fatalf("manual update should preserve version history, got %+v", loaded[0].Versions)
+	}
+}
+
 func TestProfileUpdateRebuildsTemporalTree(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
 	if err != nil {
@@ -453,6 +556,60 @@ func TestProfileUpdateStoresEvidenceBoundary(t *testing.T) {
 	if got.Boundary == nil || got.Boundary.OwnerID != "owner-1" {
 		t.Fatalf("unexpected boundary: %+v", got.Boundary)
 	}
+}
+
+func TestProfileUpdatePersistsThroughSQLiteBatchPath(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	interval := TimeInterval{Start: time.Now().Add(-time.Hour), End: time.Now().Add(-time.Hour)}
+	if err := store.Save(Entry{
+		ID:          "profile-sqlite",
+		Content:     "old profile",
+		Category:    CategoryProfile,
+		Tags:        []string{"profile"},
+		OwnerID:     "owner-sqlite",
+		Level:       LevelSegment,
+		Interval:    &interval,
+		AccessCount: 1,
+		Strength:    1,
+	}); err != nil {
+		t.Fatalf("save profile: %v", err)
+	}
+	evidence := []Entry{{ID: "week-sqlite", Content: "weekly evidence", Category: CategoryConversationSummary, Level: LevelWeek, OwnerID: "owner-sqlite", Status: StatusActive}}
+	pc := NewProfileConsolidator(store, store.TMT(), nil)
+	if err := pc.upsertProfile("new sqlite profile", "owner-sqlite", evidence); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, entry := range loaded {
+		if entry.ID == "profile-sqlite" {
+			if entry.Content != "new sqlite profile" || entry.Level != LevelProfile || entry.SourceType != "profile_consolidation" {
+				t.Fatalf("profile update not persisted through backend batch path: %+v", entry)
+			}
+			if len(entry.Versions) != 1 || entry.Versions[0].Content != "old profile" {
+				t.Fatalf("profile version snapshot not persisted: %+v", entry.Versions)
+			}
+			if strings.Join(entry.EvidenceIDs, ",") != "week-sqlite" || strings.Join(entry.RelatedIDs, ",") != "week-sqlite" {
+				t.Fatalf("profile evidence links not persisted: evidence=%v related=%v", entry.EvidenceIDs, entry.RelatedIDs)
+			}
+			return
+		}
+	}
+	t.Fatal("profile-sqlite not loaded from backend")
 }
 
 func TestSetEntriesNormalizesMissingTimestamps(t *testing.T) {

@@ -382,6 +382,25 @@ describe("VEConversationView", () => {
             expect(send).toHaveBeenLastCalledWith("test-session-1", "Second turn");
         });
 
+        it("shows a thinking hint after sending until the first response chunk arrives", async () => {
+            const send = vi.fn().mockResolvedValue(undefined);
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Slow reply" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(screen.getByTestId("ve-thinking-indicator").textContent).toContain("思考");
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ session_id: "test-session-1", content: "First chunk" });
+            });
+
+            expect(screen.queryByTestId("ve-thinking-indicator")).toBeNull();
+            expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("First chunk");
+        });
+
         it("shows a visible pre-input queue while waiting for the current reply", async () => {
             const send = vi.fn().mockResolvedValue(undefined);
             renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
@@ -1117,6 +1136,19 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
 
             await act(async () => { await vi.runAllTimersAsync(); });
+            expect(screen.getByTestId("ve-error-banner")).toBeTruthy();
+        });
+
+        it("hides the thinking hint when send fails before any response chunk", async () => {
+            const send = vi.fn().mockRejectedValue(new Error("network error"));
+            renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "Will fail before reply" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(screen.queryByTestId("ve-thinking-indicator")).toBeNull();
             expect(screen.getByTestId("ve-error-banner")).toBeTruthy();
         });
     });

@@ -1,6 +1,12 @@
 package memory
 
-import "strings"
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
+)
 
 // RecallEntriesPromptOptions controls shared prompt rendering for automatic
 // memory recall sections.
@@ -41,10 +47,69 @@ func FormatRecallEntriesForPrompt(entries []Entry, opts RecallEntriesPromptOptio
 	return b.String()
 }
 
+func FormatExperienceCandidatesForPrompt(candidates []lifecycle.Candidate, opts RecallEntriesPromptOptions) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	maxRunes := opts.MaxRunes
+	if maxRunes <= 0 {
+		maxRunes = 200
+	}
+	var b strings.Builder
+	writePromptLine := func(value string) {
+		if value == "" {
+			return
+		}
+		b.WriteString(value)
+		if !strings.HasSuffix(value, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	writePromptLine(opts.Header)
+	writePromptLine(opts.Intro)
+	for _, candidate := range candidates {
+		b.WriteString(FormatExperienceCandidateForPrompt(candidate, maxRunes))
+		b.WriteByte('\n')
+	}
+	writePromptLine(opts.Footer)
+	return b.String()
+}
+
+func FormatExperienceCandidateForPrompt(candidate lifecycle.Candidate, maxRunes int) string {
+	entry := candidate.Entry
+	text := firstNonEmptyString(entry.Content, entry.WhenToUse)
+	if maxRunes > 0 {
+		runes := []rune(text)
+		if len(runes) > maxRunes {
+			text = string(runes[:maxRunes]) + "..."
+		}
+	}
+	entryType := string(entry.EntryType)
+	if entryType == "" {
+		entryType = "experience"
+	}
+	line := "- [" + entryType + "] " + text
+	if entry.WhenToUse != "" && entry.WhenToUse != text {
+		line += " (use: " + entry.WhenToUse + ")"
+	}
+	if entry.SourceURL == "" {
+		return line
+	}
+	line += " (source: " + entry.SourceURL
+	if LooksLikeFilePath(entry.SourceURL) {
+		line += "; full: read_file"
+	}
+	line += ")"
+	return line
+}
+
 // ProactivePromptOptions controls the complete dynamic memory context section
 // injected into prompts by GUI, TUI, VE, and server agents.
 type ProactivePromptOptions struct {
-	Recall ProactiveRecallOptions
+	Recall       ProactiveRecallOptions
+	EventContext lifecycle.EventContext
+	Policy       lifecycle.RetrievalPolicy
+	TokenBudget  int
 
 	IncludeMemoryIndex bool
 	MemoryIndexLabel   string
@@ -112,8 +177,16 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 
 	var recalled []Entry
 	if strings.TrimSpace(query) != "" {
-		recalled = s.RecallProactive(query, opts.Recall)
-		b.WriteString(FormatRecallEntriesForPrompt(recalled, opts.RecallEntries))
+		opts.Recall.EventContext = opts.EventContext
+		decision := decideProactivePromptRetrieval(query, opts)
+		s.recordRetrievalDecisionEvent(decision, opts.EventContext)
+		candidates := s.RecallProactiveCandidatesWithDecision(decision, opts.Recall)
+		recalled = s.entriesForExperienceCandidates(candidates)
+		recallSection := FormatExperienceCandidatesForPrompt(candidates, opts.RecallEntries)
+		b.WriteString(recallSection)
+		if recallSection != "" {
+			s.recordCandidateExperienceEvent(lifecycle.EventExperienceInjected, "proactive_prompt:"+string(decision.Mode), decision.Query, candidates, EstimateTextTokens(recallSection), opts.EventContext)
+		}
 	}
 
 	if opts.IncludeDerivedFacts {
@@ -124,4 +197,19 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		b.WriteString(FormatDerivedFactsForPrompt(s.LastDerivedFacts(), limit))
 	}
 	return b.String(), recalled
+}
+
+func decideProactivePromptRetrieval(query string, opts ProactivePromptOptions) lifecycle.RetrievalDecision {
+	policy := opts.Policy
+	if policy == nil {
+		policy = lifecycle.DefaultRetrievalPolicy{}
+	}
+	return policy.Decide(context.Background(), lifecycle.RetrievalPolicyInput{
+		TraceID:        opts.EventContext.TraceID,
+		TaskID:         opts.EventContext.TaskID,
+		CurrentGoal:    query,
+		TokenBudget:    opts.TokenBudget,
+		Boundary:       proactiveRecallBoundary(opts.Recall),
+		MissingSignals: []string{"max_entries:" + strconv.Itoa(defaultPositive(opts.Recall.MaxEntries, 12))},
+	})
 }

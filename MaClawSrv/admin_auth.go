@@ -126,6 +126,11 @@ type adminRevealSecretRequest struct {
 	Password string `json:"password"`
 }
 
+type adminForceDeleteRequest struct {
+	Password    string `json:"password,omitempty"`
+	AdminSecret string `json:"admin_secret,omitempty"`
+}
+
 func (s *HTTPServer) handleAdminBootstrapStatus(w http.ResponseWriter, r *http.Request) {
 	initialized := adminBootstrapInitialized(s.svc.DataRoot())
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -937,6 +942,34 @@ func (s *HTTPServer) requireAdminOwner(w http.ResponseWriter, r *http.Request) b
 	_ = s.recordAdminAudit(r.Context(), "admin.owner_required_failed", "admin_authorization", strings.TrimSpace(r.URL.Path), map[string]string{"method": r.Method, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin owner is required"})
 	return false
+}
+
+func (s *HTTPServer) requireAdminForceDelete(w http.ResponseWriter, r *http.Request, in adminForceDeleteRequest) bool {
+	token := r.Header.Get("X-MaClaw-Admin-Secret")
+	if s.adminSecretAuthorized(token) {
+		secret := strings.TrimSpace(in.AdminSecret)
+		if secret == "" {
+			secret = strings.TrimSpace(in.Password)
+		}
+		if !s.adminSecretAuthorized(secret) {
+			_ = s.recordAdminAudit(r.Context(), "admin.force_delete_failed", "admin_authorization", strings.TrimSpace(r.URL.Path), map[string]string{"reason": "invalid_admin_secret", "remote_ip": requestClientIP(r)})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin secret"})
+			return false
+		}
+		return true
+	}
+	_, user, err := getAdminSessionUser(s.svc.DataRoot(), token, time.Now().UTC())
+	if err != nil || user == nil || user.Role != "owner" || user.Status != "active" {
+		_ = s.recordAdminAudit(r.Context(), "admin.force_delete_failed", "admin_authorization", strings.TrimSpace(r.URL.Path), map[string]string{"reason": "owner_required", "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin owner is required"})
+		return false
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)) != nil {
+		_ = s.recordAdminAudit(r.Context(), "admin.force_delete_failed", "admin_user", user.ID, map[string]string{"username": user.Username, "reason": "invalid_password", "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin password"})
+		return false
+	}
+	return true
 }
 
 func activeOwnerCount(users []adminUserRecord) int {

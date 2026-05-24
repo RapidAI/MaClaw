@@ -519,6 +519,64 @@ func TestAdminUpdateProfileRejectsInvalidEmailAsBadRequest(t *testing.T) {
 	}
 }
 
+func TestDefaultTenantAdminCanUpdateProfileAndPassword(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	_ = issueHubAdminToken(t, ctx.handler)
+
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "admin",
+		"password": "StrongPassword123!",
+		"tenant":   store.DefaultTenantID,
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("default tenant login status=%d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+
+	profileResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/profile", map[string]any{
+		"email": "default-owner@example.com",
+	}, loginPayload.AccessToken)
+	if profileResp.Code != http.StatusOK {
+		t.Fatalf("default tenant profile status=%d body=%s", profileResp.Code, profileResp.Body.String())
+	}
+	if body := profileResp.Body.String(); !containsAll(body, `"scope":"tenant"`, `"tenant_id":"`+store.DefaultTenantID+`"`, `"email":"default-owner@example.com"`) {
+		t.Fatalf("expected default tenant profile projection, body=%s", body)
+	}
+	var profilePayload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(profileResp.Body.Bytes(), &profilePayload); err != nil {
+		t.Fatalf("decode profile response: %v", err)
+	}
+	if _, err := ctx.admins.Authenticate(context.Background(), profilePayload.AccessToken); err != nil {
+		t.Fatalf("default tenant profile token should authenticate: %v", err)
+	}
+
+	passwordResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/password", map[string]any{
+		"current_password": "StrongPassword123!",
+		"new_password":     "NewStrongPassword123!",
+	}, profilePayload.AccessToken)
+	if passwordResp.Code != http.StatusOK {
+		t.Fatalf("default tenant password status=%d body=%s", passwordResp.Code, passwordResp.Body.String())
+	}
+	if body := passwordResp.Body.String(); !containsAll(body, `"scope":"tenant"`, `"tenant_id":"`+store.DefaultTenantID+`"`) {
+		t.Fatalf("expected default tenant password projection, body=%s", body)
+	}
+	loginNewResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "admin",
+		"password": "NewStrongPassword123!",
+		"tenant":   store.DefaultTenantID,
+	}, "")
+	if loginNewResp.Code != http.StatusOK {
+		t.Fatalf("default tenant new password login status=%d body=%s", loginNewResp.Code, loginNewResp.Body.String())
+	}
+}
+
 func containsAll(body string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(body, part) {

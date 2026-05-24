@@ -64,12 +64,7 @@ func (d *ConflictDetector) Check(newEntry Entry) (*ConflictResult, error) {
 
 // Supersede marks the entry with the given ID as superseded.
 func (d *ConflictDetector) Supersede(id string) {
-	now := time.Now()
-	d.store.mu.Lock()
-	defer d.store.mu.Unlock()
-	if d.store.supersedeEntryLocked(id, now) {
-		d.store.signalSave()
-	}
+	_, _ = d.store.SupersedeEntryByID(id, time.Now())
 }
 
 func (d *ConflictDetector) findCandidates(newEntry Entry) []Entry {

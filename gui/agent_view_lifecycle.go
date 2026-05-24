@@ -23,6 +23,9 @@ func (a *App) emitAgentViewLifecycle(action string, payload map[string]interface
 		payload = map[string]interface{}{}
 	}
 	payload["action"] = action
+	if _, ok := payload["seq"]; !ok {
+		payload["seq"] = a.agentViewSeq()
+	}
 	runtime.EventsEmit(a.ctx, agentViewLifecycleEvent, payload)
 	return true
 }
@@ -32,11 +35,12 @@ func (a *App) emitAgentView(view map[string]interface{}) bool {
 		return false
 	}
 	a.agentViewEmissionSeq.Add(1)
+	seq := a.agentViewSeq()
 	if a.ctx == nil {
 		return false
 	}
 	a.recordAgentViewSchema(view)
-	payload := map[string]interface{}{"view": view}
+	payload := map[string]interface{}{"view": view, "seq": seq}
 	// Single event channel: agent-view:lifecycle is the formal protocol.
 	// The legacy "agent-view" event is retained only for external consumers
 	// (e.g. IM gateway, older Wails bindings) that haven't migrated.
@@ -53,10 +57,22 @@ func (a *App) agentViewSeq() int64 {
 }
 
 func (a *App) clearAgentView(viewID string) bool {
-	if a == nil || a.ctx == nil {
+	return a.clearAgentViewWithPayload(viewID, nil)
+}
+
+func (a *App) clearAgentViewWithPayload(viewID string, extra map[string]interface{}) bool {
+	if a == nil {
 		return false
 	}
-	payload := map[string]interface{}{"view_id": viewID}
+	a.agentViewEmissionSeq.Add(1)
+	seq := a.agentViewSeq()
+	if a.ctx == nil {
+		return false
+	}
+	payload := map[string]interface{}{"view_id": viewID, "seq": seq}
+	for key, value := range extra {
+		payload[key] = value
+	}
 	runtime.EventsEmit(a.ctx, agentViewClearEvent, payload)
 	a.emitAgentViewLifecycle(agentViewLifecycleDismiss, cloneAgentViewPayload(payload))
 	return true

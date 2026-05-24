@@ -18,12 +18,14 @@ const (
 	experienceLearningToolActionTraceDetails                experienceLearningToolAction = "trace_details"
 	experienceLearningToolActionBuildFollowUp               experienceLearningToolAction = "build_followup"
 	experienceLearningToolActionBuildSkillDraft             experienceLearningToolAction = "build_skill_draft"
+	experienceLearningToolActionBuildBlockedSkillDraft      experienceLearningToolAction = "build_blocked_skill_draft"
 	experienceLearningToolActionBuildRollbackDraft          experienceLearningToolAction = "build_rollback_draft"
 	experienceLearningToolActionBuildEscalationBrief        experienceLearningToolAction = "build_escalation_brief"
 	experienceLearningToolActionBuildConflictDraft          experienceLearningToolAction = "build_conflict_draft"
 	experienceLearningToolActionRecordFollowUp              experienceLearningToolAction = "record_followup"
 	experienceLearningToolActionRecordReview                experienceLearningToolAction = "record_review"
 	experienceLearningToolActionRecordDraftReview           experienceLearningToolAction = "record_draft_review"
+	experienceLearningToolActionRecordBlockedSkillDraft     experienceLearningToolAction = "record_blocked_skill_draft_review"
 	experienceLearningToolActionUnknown                     experienceLearningToolAction = ""
 )
 
@@ -55,6 +57,8 @@ func normalizeExperienceLearningToolAction(value string) experienceLearningToolA
 		return experienceLearningToolActionBuildFollowUp
 	case string(experienceLearningToolActionBuildSkillDraft):
 		return experienceLearningToolActionBuildSkillDraft
+	case string(experienceLearningToolActionBuildBlockedSkillDraft), "build_blocked_skill_repair_draft":
+		return experienceLearningToolActionBuildBlockedSkillDraft
 	case string(experienceLearningToolActionBuildRollbackDraft):
 		return experienceLearningToolActionBuildRollbackDraft
 	case string(experienceLearningToolActionBuildEscalationBrief):
@@ -67,6 +71,8 @@ func normalizeExperienceLearningToolAction(value string) experienceLearningToolA
 		return experienceLearningToolActionRecordReview
 	case string(experienceLearningToolActionRecordDraftReview):
 		return experienceLearningToolActionRecordDraftReview
+	case string(experienceLearningToolActionRecordBlockedSkillDraft), "resolve_blocked_skill_draft_review":
+		return experienceLearningToolActionRecordBlockedSkillDraft
 	default:
 		return experienceLearningToolActionUnknown
 	}

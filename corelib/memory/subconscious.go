@@ -72,11 +72,11 @@ type SubconsciousProfileUpdater interface {
 
 // SubconsciousConfig configures the engine behavior.
 type SubconsciousConfig struct {
-	Interval           time.Duration // tick interval (default 30min)
-	ReflectEveryN      int           // reflect every N ticks (default 1)
-	ConsolidateEveryN  int           // consolidate every N ticks (default 2)
-	ProfileEveryN      int           // update profile every N ticks (default 6)
-	ContradictEveryN   int           // scan contradictions every N ticks (default 3)
+	Interval          time.Duration // tick interval (default 30min)
+	ReflectEveryN     int           // reflect every N ticks (default 1)
+	ConsolidateEveryN int           // consolidate every N ticks (default 2)
+	ProfileEveryN     int           // update profile every N ticks (default 6)
+	ContradictEveryN  int           // scan contradictions every N ticks (default 3)
 }
 
 // DefaultSubconsciousConfig returns sensible defaults.
@@ -390,17 +390,28 @@ func (s *Store) MarkVolatile(id string) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.entries {
-		if s.entries[i].ID == id {
-			s.entries[i].Stale = true
-			if s.entries[i].Stability == nil {
-				s.entries[i].Stability = &StabilityMeta{}
-			}
-			s.entries[i].Stability.RecordContradiction()
-			return
+	s.mu.RLock()
+	var updated Entry
+	found := false
+	for _, entry := range s.entries {
+		if entry.ID != id {
+			continue
 		}
+		updated = entry
+		found = true
+		break
+	}
+	s.mu.RUnlock()
+	if !found {
+		return
+	}
+	updated.Stale = true
+	if updated.Stability == nil {
+		updated.Stability = &StabilityMeta{}
+	}
+	updated.Stability.RecordContradiction()
+	if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
+		log.Printf("[subconscious] mark volatile failed: %v", err)
 	}
 }
 
@@ -409,12 +420,7 @@ func (s *Store) Remove(id string) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, e := range s.entries {
-		if e.ID == id {
-			s.entries = append(s.entries[:i], s.entries[i+1:]...)
-			return
-		}
+	if err := s.UpdateEntriesAndDeleteIDs(nil, []string{id}); err != nil {
+		log.Printf("[subconscious] remove failed: %v", err)
 	}
 }

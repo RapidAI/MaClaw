@@ -114,8 +114,11 @@ func (h *IMMessageHandler) truncationFallbackToolCatalog(ctx *LoopContext, userI
 			catalog = filterToolsForSkillPreference(catalog)
 		}
 	}
-	if h.getWorkflowEngine() != nil && (ctx == nil || !ctx.SkipNeedsConfirmGate) {
-		catalog = h.applyWorkflowToolFilter(userID, catalog)
+	if engine := h.getWorkflowEngine(); engine != nil {
+		applyFilter := ctx == nil || shouldApplyWorkflowFilter(ctx.SkipNeedsConfirmGate, engine.IsAwaitingReview(userID), ctx.WorkflowAgentLoop, engine.IsPhaseExecutionBlocked(userID))
+		if applyFilter {
+			catalog = h.applyWorkflowToolFilter(userID, catalog)
+		}
 	}
 	return catalog
 }

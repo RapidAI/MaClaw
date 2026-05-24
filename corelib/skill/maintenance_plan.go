@@ -153,6 +153,9 @@ func failedSkillMaintenanceAction(s corelib.NLSkillEntry, minRuns int) (SkillMai
 }
 
 func repairableFailedSkillMaintenanceAction(s corelib.NLSkillEntry) (SkillMaintenanceAction, bool) {
+	if isFileBackedMaintenanceSkill(s) {
+		return SkillMaintenanceAction{}, false
+	}
 	lastError := strings.TrimSpace(s.LastError)
 	if lastError == "" || s.RepairAttemptCount >= SelfRepairMaxAttempts {
 		return SkillMaintenanceAction{}, false

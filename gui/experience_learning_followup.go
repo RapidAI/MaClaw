@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -23,6 +25,13 @@ const (
 	experienceDraftKindEscalation      = "escalation_brief"
 	experienceDraftKindConflict        = "conflict_reconciliation_draft"
 	experienceLearningSourceType       = "experience_learning"
+	skillDraftExecutionStatusTagPrefix = "skill_draft_execution_status:"
+	skillDraftExecutionAtTagPrefix     = "skill_draft_execution_at:"
+	skillDraftExecutionPreviewed       = "previewed"
+	skillDraftExecutionApplied         = "applied"
+	skillDraftExecutionBlocked         = "blocked"
+	skillDraftExecutionReopened        = "reopened"
+	skillDraftExecutionClosed          = "closed"
 )
 
 type ExperienceTraceFollowUpDraft struct {
@@ -56,6 +65,44 @@ type ExperienceSkillDraft struct {
 	DraftMarkdown           string                 `json:"draft_markdown"`
 	Checks                  []string               `json:"checks"`
 	NonExecutingBoundary    string                 `json:"non_executing_boundary"`
+}
+
+type ExperienceBlockedSkillDraft struct {
+	TraceID                 string                       `json:"trace_id"`
+	Kind                    string                       `json:"kind"`
+	Title                   string                       `json:"title"`
+	SourceTraceID           string                       `json:"source_trace_id,omitempty"`
+	DraftID                 string                       `json:"draft_id"`
+	ExecutionStatus         string                       `json:"execution_status"`
+	ExecutionNote           string                       `json:"execution_note,omitempty"`
+	CurrentPlanMatched      bool                         `json:"current_plan_matched"`
+	CurrentPlanActions      []map[string]string          `json:"current_plan_actions"`
+	ReviewOptions           map[string]interface{}       `json:"review_options,omitempty"`
+	ReviewAffordances       []ExperienceReviewAffordance `json:"review_affordances,omitempty"`
+	RecommendedFocusContext map[string]interface{}       `json:"recommended_focus_context,omitempty"`
+	RecommendedToolCall     map[string]interface{}       `json:"recommended_tool_call,omitempty"`
+	DraftMarkdown           string                       `json:"draft_markdown"`
+	Checks                  []string                     `json:"checks"`
+	NonExecutingBoundary    string                       `json:"non_executing_boundary"`
+}
+
+type ExperienceReviewAffordance struct {
+	ID                   string                            `json:"id"`
+	Label                string                            `json:"label"`
+	Intent               string                            `json:"intent"`
+	Variant              string                            `json:"variant,omitempty"`
+	Description          string                            `json:"description,omitempty"`
+	RequiredInputs       []ExperienceReviewAffordanceInput `json:"required_inputs,omitempty"`
+	ToolCall             map[string]interface{}            `json:"tool_call,omitempty"`
+	NonExecutingBoundary string                            `json:"non_executing_boundary"`
+}
+
+type ExperienceReviewAffordanceInput struct {
+	Name        string `json:"name"`
+	Label       string `json:"label"`
+	Type        string `json:"type"`
+	Required    bool   `json:"required"`
+	Placeholder string `json:"placeholder,omitempty"`
 }
 
 type ExperienceRollbackWorkflowDraft struct {
@@ -126,6 +173,7 @@ type ExperienceDraftReviewRequest struct {
 	Kind                 string `json:"kind"`
 	Status               string `json:"status"`
 	SourceTraceID        string `json:"source_trace_id,omitempty"`
+	DraftID              string `json:"draft_id,omitempty"`
 	Query                string `json:"query,omitempty"`
 	Note                 string `json:"note,omitempty"`
 	Actor                string `json:"actor,omitempty"`
@@ -139,9 +187,15 @@ type ExperienceDraftReviewRecord struct {
 	Kind                    string                 `json:"kind"`
 	Status                  string                 `json:"status"`
 	SourceTraceID           string                 `json:"source_trace_id,omitempty"`
+	DraftID                 string                 `json:"draft_id,omitempty"`
 	RecommendedFocusContext map[string]interface{} `json:"recommended_focus_context,omitempty"`
 	RecommendedToolCall     map[string]interface{} `json:"recommended_tool_call,omitempty"`
 	NonExecutingBoundary    string                 `json:"non_executing_boundary,omitempty"`
+}
+
+type blockedSkillDraftReviewResolutionUpdate struct {
+	Entry    memory.Entry
+	Required bool
 }
 
 func (a *App) BuildExperienceTraceFollowUp(traceID string) (ExperienceTraceFollowUpDraft, error) {
@@ -206,6 +260,119 @@ func (a *App) BuildExperienceSkillDraftFromUsageNudge(req ExperienceRoutingSigna
 		candidate = &result.SkillNudgeCandidates[0]
 	}
 	return finalizeExperienceSkillDraft(buildExperienceSkillDraftFromUsageNudge(result.Query, candidate))
+}
+
+func (a *App) BuildExperienceBlockedSkillDraft(traceID string) (ExperienceBlockedSkillDraft, error) {
+	if a.memoryStore == nil {
+		a.ensureInteractionInfra()
+		a.ensureMemoryStore()
+	}
+	if a.memoryStore == nil {
+		return ExperienceBlockedSkillDraft{}, fmt.Errorf("memory store not initialized")
+	}
+	entry, err := findExperienceMemoryEntryByTraceID(a.memoryStore, traceID)
+	if err != nil {
+		return ExperienceBlockedSkillDraft{}, err
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok {
+		return ExperienceBlockedSkillDraft{}, fmt.Errorf("experience trace %q is not available", traceID)
+	}
+	if detail.Kind != "skill_draft_review" || detail.FollowUpStatus != experienceFollowUpOutcomeCompleted || strings.TrimSpace(detail.DraftID) == "" {
+		return ExperienceBlockedSkillDraft{}, fmt.Errorf("experience trace %q is not a completed skill draft review with draft id", traceID)
+	}
+	if detail.DraftExecutionStatus != skillDraftExecutionBlocked {
+		return ExperienceBlockedSkillDraft{}, fmt.Errorf("experience trace %q is not a blocked skill draft execution", traceID)
+	}
+	return finalizeExperienceBlockedSkillDraft(a.buildExperienceBlockedSkillDraft(detail)), nil
+}
+
+func (a *App) RecordBlockedSkillDraftReview(traceID, resolution, replacementDraftID, note, actor string) (ExperienceDraftReviewRecord, error) {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" {
+		return ExperienceDraftReviewRecord{}, fmt.Errorf("trace_id is required")
+	}
+	if a.memoryStore == nil {
+		a.ensureInteractionInfra()
+		a.ensureMemoryStore()
+	}
+	if a.memoryStore == nil {
+		return ExperienceDraftReviewRecord{}, fmt.Errorf("memory store not initialized")
+	}
+	entry, err := findExperienceMemoryEntryByTraceID(a.memoryStore, traceID)
+	if err != nil {
+		return ExperienceDraftReviewRecord{}, err
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok || detail.Kind != "skill_draft_review" || detail.DraftExecutionStatus != skillDraftExecutionBlocked {
+		return ExperienceDraftReviewRecord{}, fmt.Errorf("experience trace %q is not a blocked skill draft execution", traceID)
+	}
+	resolution = strings.ToLower(strings.TrimSpace(resolution))
+	req := ExperienceDraftReviewRequest{
+		Kind:          experienceDraftKindSkill,
+		SourceTraceID: traceID,
+		Actor:         actor,
+	}
+	switch resolution {
+	case "reopen", "replace", "replacement":
+		replacementDraftID = strings.TrimSpace(replacementDraftID)
+		if replacementDraftID == "" {
+			return ExperienceDraftReviewRecord{}, fmt.Errorf("replacement_draft_id is required when resolution=reopen")
+		}
+		req.Status = experienceFollowUpOutcomeCompleted
+		req.DraftID = replacementDraftID
+		req.Note = firstNonEmptyExperienceString(note, "repair evidence accepted; reopen dry preview with replacement draft")
+	case "close", "closed", "reject", "stale":
+		req.Status = experienceFollowUpOutcomeBlocked
+		req.Note = firstNonEmptyExperienceString(note, "blocked skill draft approval closed as stale or rejected; do not retry without a new governance draft")
+	default:
+		return ExperienceDraftReviewRecord{}, fmt.Errorf("resolution must be reopen or close")
+	}
+	return a.RecordExperienceDraftReview(req)
+}
+
+func (a *App) ConfirmPreviewedSkillDraftReview(traceID string) (map[string]interface{}, error) {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" {
+		return nil, fmt.Errorf("trace_id is required")
+	}
+	if a.memoryStore == nil {
+		a.ensureInteractionInfra()
+		a.ensureMemoryStore()
+	}
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("memory store not initialized")
+	}
+	entry, err := findExperienceMemoryEntryByTraceID(a.memoryStore, traceID)
+	if err != nil {
+		return nil, err
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok || detail.Kind != "skill_draft_review" || detail.FollowUpStatus != experienceFollowUpOutcomeCompleted || strings.TrimSpace(detail.DraftID) == "" {
+		return nil, fmt.Errorf("experience trace %q is not a completed skill draft review with draft id", traceID)
+	}
+	if detail.DraftExecutionStatus != skillDraftExecutionPreviewed {
+		return nil, fmt.Errorf("experience trace %q is not waiting for preview confirmation", traceID)
+	}
+	raw := (&IMMessageHandler{app: a}).toolManageSkill(map[string]interface{}{
+		"action":                    "execute_maintenance_plan",
+		"dry_run":                   false,
+		"confirm":                   true,
+		"approved_review_trace_ids": []interface{}{traceID},
+	}, nil)
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("confirm previewed skill draft review failed: %s", raw)
+	}
+	payload["review_trace_id"] = traceID
+	if refreshed, err := findExperienceMemoryEntryByTraceID(a.memoryStore, traceID); err == nil {
+		if refreshedDetail, ok := traceDetailFromMemoryEntry(refreshed); ok {
+			payload["draft_execution_status"] = refreshedDetail.DraftExecutionStatus
+			payload["draft_execution_queue"] = skillDraftExecutionQueueName(refreshedDetail.DraftExecutionStatus)
+			payload["draft_id"] = refreshedDetail.DraftID
+		}
+	}
+	return payload, nil
 }
 
 func (a *App) BuildExperienceRollbackWorkflowDraft(traceID string) (ExperienceRollbackWorkflowDraft, error) {
@@ -408,18 +575,38 @@ func (a *App) RecordExperienceDraftReview(req ExperienceDraftReviewRequest) (Exp
 		return ExperienceDraftReviewRecord{}, fmt.Errorf("memory store not initialized")
 	}
 	now := time.Now().UTC()
+	sourceTraceID := strings.TrimSpace(req.SourceTraceID)
+	draftID := strings.TrimSpace(req.DraftID)
+	resolutionUpdate, err := a.prepareBlockedSkillDraftReviewResolution(sourceTraceID, status, draftID, req.Note, now)
+	if err != nil {
+		return ExperienceDraftReviewRecord{}, err
+	}
 	memoryID := fmt.Sprintf("experience-draft-%s-%d", strings.ReplaceAll(kind, "_", "-"), now.UnixNano())
 	content := appendExperienceFollowUpRecord(buildExperienceDraftReviewContent(req, kind), status, kind, req.Note, a.defaultExperienceReviewReviewer(req.Actor), now)
 	tags := applyExperienceFollowUpTags([]string{experienceDraftReviewTag, kind, "non_executing_draft_review"}, status, now)
-	if _, err := a.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+	reviewEntry := memory.NewProjectKnowledgeEntry(memory.ProjectKnowledgeUpsertOptions{
 		ID:         memoryID,
 		Title:      "Experience draft review: " + experienceDraftReviewTitle(kind),
 		Content:    content,
 		Tags:       tags,
 		SourceType: experienceLearningSourceType,
 		SourceURL:  "experience://draft/" + kind,
-	}); err != nil {
-		return ExperienceDraftReviewRecord{}, err
+	})
+	if resolutionUpdate.Required {
+		if err := a.memoryStore.UpsertEntriesByID([]memory.Entry{reviewEntry, resolutionUpdate.Entry}); err != nil {
+			return ExperienceDraftReviewRecord{}, err
+		}
+	} else {
+		if _, err := a.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+			ID:         memoryID,
+			Title:      reviewEntry.Title,
+			Content:    content,
+			Tags:       tags,
+			SourceType: experienceLearningSourceType,
+			SourceURL:  reviewEntry.SourceURL,
+		}); err != nil {
+			return ExperienceDraftReviewRecord{}, err
+		}
 	}
 	traceID := "memory:" + memoryID
 	a.emitEvent("memory:experience-draft-reviewed", map[string]string{
@@ -427,17 +614,89 @@ func (a *App) RecordExperienceDraftReview(req ExperienceDraftReviewRequest) (Exp
 		"kind":     kind,
 		"status":   status,
 	})
-	sourceTraceID := strings.TrimSpace(req.SourceTraceID)
 	return finalizeExperienceDraftReviewRecord(ExperienceDraftReviewRecord{
 		TraceID:                 traceID,
 		MemoryID:                memoryID,
 		Kind:                    kind,
 		Status:                  status,
 		SourceTraceID:           sourceTraceID,
+		DraftID:                 draftID,
 		RecommendedFocusContext: a.experienceRecommendedFocusContextForTrace(sourceTraceID, "manual draft review recorded for source experience trace"),
-		RecommendedToolCall:     experienceTraceInspectionRecommendedToolCall("memory:"+memoryID, "Experience draft review: "+experienceDraftReviewTitle(kind), "manual draft review audit record"),
+		RecommendedToolCall:     experienceDraftReviewRecordRecommendedToolCall(kind, status, draftID, "memory:"+memoryID),
 		NonExecutingBoundary:    "draft review audit record only; the reviewed draft was not executed, memory was not rewritten beyond audit evidence, routing was not changed, files were not written, tools were not run, rollback was not executed, notifications were not sent, and skills were not installed",
 	}), nil
+}
+
+func experienceDraftReviewRecordRecommendedToolCall(kind, status, draftID, traceID string) map[string]interface{} {
+	if kind == experienceDraftKindSkill && status == experienceFollowUpOutcomeCompleted && strings.TrimSpace(draftID) != "" {
+		return map[string]interface{}{
+			"tool": "manage_skill",
+			"args": map[string]interface{}{
+				"action":                    "execute_maintenance_plan",
+				"dry_run":                   true,
+				"approved_review_trace_ids": []string{strings.TrimSpace(traceID)},
+			},
+			"recommended_focus_context": map[string]interface{}{
+				"priority_trace_id": traceID,
+				"draft_id":          strings.TrimSpace(draftID),
+				"reason":            "approved skill governance draft is ready for explicit maintenance execution preview",
+			},
+			"non_executing":          true,
+			"non_executing_boundary": "recommended dry-run only; caller must explicitly run manage_skill with confirm=true and approved_review_trace_ids before any skill metadata changes",
+		}
+	}
+	return experienceTraceInspectionRecommendedToolCall(traceID, "Experience draft review: "+experienceDraftReviewTitle(kind), "manual draft review audit record")
+}
+
+func skillDraftExecutionQueueName(status string) string {
+	switch strings.TrimSpace(status) {
+	case skillDraftExecutionPreviewed:
+		return "previewed_waiting_confirm"
+	case skillDraftExecutionApplied:
+		return "applied"
+	case skillDraftExecutionBlocked:
+		return "blocked"
+	case skillDraftExecutionReopened:
+		return "reopened"
+	case skillDraftExecutionClosed:
+		return "closed"
+	default:
+		return "approved_unpreviewed"
+	}
+}
+
+func (a *App) prepareBlockedSkillDraftReviewResolution(sourceTraceID, status, draftID, note string, now time.Time) (blockedSkillDraftReviewResolutionUpdate, error) {
+	sourceTraceID = strings.TrimSpace(sourceTraceID)
+	if sourceTraceID == "" || a == nil || a.memoryStore == nil {
+		return blockedSkillDraftReviewResolutionUpdate{}, nil
+	}
+	entry, err := findExperienceMemoryEntryByTraceID(a.memoryStore, sourceTraceID)
+	if err != nil {
+		return blockedSkillDraftReviewResolutionUpdate{}, nil
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok || detail.Kind != "skill_draft_review" || detail.DraftExecutionStatus != skillDraftExecutionBlocked {
+		return blockedSkillDraftReviewResolutionUpdate{}, nil
+	}
+	executionStatus := ""
+	switch status {
+	case experienceFollowUpOutcomeCompleted:
+		if strings.TrimSpace(draftID) != "" {
+			executionStatus = skillDraftExecutionReopened
+		}
+	case experienceFollowUpOutcomeBlocked:
+		executionStatus = skillDraftExecutionClosed
+	}
+	if executionStatus == "" {
+		return blockedSkillDraftReviewResolutionUpdate{}, nil
+	}
+	auditNote := firstNonEmptyExperienceString(note, "blocked skill draft repair/evidence review recorded")
+	entry.Content = appendSkillDraftExecutionRecord(entry.Content, executionStatus, auditNote, "experience_learning", now)
+	entry.Tags = applySkillDraftExecutionTags(entry.Tags, executionStatus, now)
+	if err := memory.ScanForInjection(entry.Content); err != nil {
+		return blockedSkillDraftReviewResolutionUpdate{}, fmt.Errorf("blocked skill draft source audit rejected: %w", err)
+	}
+	return blockedSkillDraftReviewResolutionUpdate{Entry: entry, Required: true}, nil
 }
 
 func normalizeExperienceFollowUpOutcome(value string) (string, error) {
@@ -502,6 +761,10 @@ func buildExperienceDraftReviewContent(req ExperienceDraftReviewRequest, kind st
 	if sourceTraceID := truncateExperienceText(req.SourceTraceID, 240); sourceTraceID != "" {
 		b.WriteString("\n- Source trace: ")
 		b.WriteString(sourceTraceID)
+	}
+	if draftID := truncateExperienceText(req.DraftID, 240); draftID != "" {
+		b.WriteString("\n- Draft id: ")
+		b.WriteString(draftID)
 	}
 	if query := truncateExperienceText(req.Query, 240); query != "" {
 		b.WriteString("\n- Query: ")
@@ -782,6 +1045,182 @@ func buildExperienceSkillDraft(detail ExperienceTraceDetail) ExperienceSkillDraf
 		Checks:                  checks,
 		NonExecutingBoundary:    boundary,
 	})
+}
+
+func (a *App) buildExperienceBlockedSkillDraft(detail ExperienceTraceDetail) ExperienceBlockedSkillDraft {
+	checks := []string{
+		"Confirm whether the original approved draft is still valid against the current skill maintenance plan.",
+		"Identify why execution was blocked before retrying preview or requesting another approval.",
+		"Collect missing evidence, repair the source skill metadata, or reject the approval as stale.",
+		"Record a new draft review only after the reviewer accepts the repair or evidence plan.",
+	}
+	boundary := "read-only blocked skill draft repair/evidence draft; no skill metadata change, file write, tool execution, retry, or approval was performed"
+	planActions, matched := a.blockedSkillDraftCurrentPlanActions(detail.DraftID)
+	focus := experienceFocusContextFromTraceTarget(detail.ID, detail.Title, "blocked skill draft execution needs repair or additional evidence before re-approval")
+	focus["draft_id"] = detail.DraftID
+	focus["execution_status"] = detail.DraftExecutionStatus
+
+	var b strings.Builder
+	b.WriteString("# Blocked Skill Draft Repair/Evidence Draft\n\n")
+	writeExperienceDraftLine(&b, "Trace", firstNonEmptyExperienceString(detail.Title, detail.ID))
+	writeExperienceDraftLine(&b, "Source trace", detail.SourceTraceID)
+	writeExperienceDraftLine(&b, "Draft id", detail.DraftID)
+	writeExperienceDraftLine(&b, "Execution status", detail.DraftExecutionStatus)
+	writeExperienceDraftLine(&b, "Execution note", detail.DraftExecutionNote)
+	writeExperienceDraftLine(&b, "Current plan match", fmt.Sprintf("%t", matched))
+	b.WriteString("\n## Current Maintenance Plan Diff\n\n")
+	if len(planActions) == 0 {
+		b.WriteString("- Reviewed draft id is not present in the current maintenance plan. Treat the approval as stale until a reviewer accepts a new draft.\n")
+	} else {
+		for _, action := range planActions {
+			writeExperienceDraftLine(&b, "Action", action["action"])
+			writeExperienceDraftLine(&b, "Skill", action["skill"])
+			writeExperienceDraftLine(&b, "Status", action["status"])
+			writeExperienceDraftLine(&b, "Reason", action["reason"])
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("## Reviewer Decision Required\n\n")
+	b.WriteString("- Repair source skill metadata and rerun a dry preview.\n")
+	b.WriteString("- Collect more evidence and keep the approval blocked.\n")
+	b.WriteString("- Reject the stale approval and leave the trace blocked.\n")
+	b.WriteString("- Create a new governance draft if the current plan differs from the reviewed draft id.\n")
+	b.WriteString("\n## Draft Checklist\n\n")
+	for _, check := range checks {
+		b.WriteString("- [ ] ")
+		b.WriteString(check)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Source Evidence\n\n```text\n")
+	b.WriteString(truncateExperienceText(detail.Detail, 2400))
+	b.WriteString("\n```\n")
+	b.WriteString("\n## Safety Boundary\n\n")
+	b.WriteString("This draft is non-executing. It does not retry maintenance execution, approve a draft, alter skills, write files, or run tools automatically.\n")
+
+	reviewOptions := experienceBlockedSkillDraftReviewOptions(detail.ID, focus, boundary)
+	return finalizeExperienceBlockedSkillDraft(ExperienceBlockedSkillDraft{
+		TraceID:                 detail.ID,
+		Kind:                    detail.Kind,
+		Title:                   detail.Title,
+		SourceTraceID:           detail.SourceTraceID,
+		DraftID:                 detail.DraftID,
+		ExecutionStatus:         detail.DraftExecutionStatus,
+		ExecutionNote:           detail.DraftExecutionNote,
+		CurrentPlanMatched:      matched,
+		CurrentPlanActions:      planActions,
+		ReviewOptions:           reviewOptions,
+		ReviewAffordances:       experienceBlockedSkillDraftReviewAffordances(reviewOptions),
+		RecommendedFocusContext: focus,
+		RecommendedToolCall:     experienceBlockedSkillDraftRecommendedToolCall(detail.ID, focus, boundary),
+		DraftMarkdown:           strings.TrimSpace(b.String()),
+		Checks:                  checks,
+		NonExecutingBoundary:    boundary,
+	})
+}
+
+func experienceBlockedSkillDraftReviewOptions(traceID string, focusContext map[string]interface{}, boundary string) map[string]interface{} {
+	return map[string]interface{}{
+		"close": normalizeExperienceLearningRecommendedToolCall(map[string]interface{}{
+			"tool": "experience_learning",
+			"args": map[string]interface{}{
+				"action":     "record_blocked_skill_draft_review",
+				"trace_id":   traceID,
+				"resolution": "close",
+			},
+			"recommended_focus_context": focusContext,
+			"non_executing":             true,
+			"non_executing_boundary":    "blocked skill draft close review template only; records closure audit and must not retry execution, approve a draft, alter skills, write files, or run tools",
+		}, focusContext, boundary),
+		"reopen": normalizeExperienceLearningRecommendedToolCall(map[string]interface{}{
+			"tool": "experience_learning",
+			"args": map[string]interface{}{
+				"action":               "record_blocked_skill_draft_review",
+				"trace_id":             traceID,
+				"resolution":           "reopen",
+				"replacement_draft_id": "REQUIRED_REPLACEMENT_DRAFT_ID",
+			},
+			"recommended_focus_context": focusContext,
+			"non_executing":             true,
+			"non_executing_boundary":    "blocked skill draft reopen review template only; replacement_draft_id is required and no skill metadata changes are applied",
+		}, focusContext, boundary),
+	}
+}
+
+func experienceBlockedSkillDraftReviewAffordances(options map[string]interface{}) []ExperienceReviewAffordance {
+	return []ExperienceReviewAffordance{
+		{
+			ID:                   "close",
+			Label:                "Close blocked draft",
+			Intent:               "close_blocked_skill_draft",
+			Variant:              "secondary",
+			Description:          "Mark the blocked approval stale or rejected and remove it from the blocked repair queue.",
+			ToolCall:             mapFromInterface(options["close"]),
+			NonExecutingBoundary: "records closure audit only; does not retry execution, approve a draft, alter skills, write files, or run tools",
+		},
+		{
+			ID:          "reopen",
+			Label:       "Reopen with replacement draft",
+			Intent:      "reopen_blocked_skill_draft",
+			Variant:     "primary",
+			Description: "Record a replacement draft id and return the repaired approval to the active preview queue.",
+			RequiredInputs: []ExperienceReviewAffordanceInput{
+				{
+					Name:        "replacement_draft_id",
+					Label:       "Replacement draft id",
+					Type:        "text",
+					Required:    true,
+					Placeholder: "skill_draft:...",
+				},
+			},
+			ToolCall:             mapFromInterface(options["reopen"]),
+			NonExecutingBoundary: "records reopen audit only; replacement_draft_id is required and no skill metadata changes are applied",
+		},
+	}
+}
+
+func mapFromInterface(value interface{}) map[string]interface{} {
+	if m, ok := value.(map[string]interface{}); ok {
+		return m
+	}
+	return nil
+}
+
+func (a *App) blockedSkillDraftCurrentPlanActions(draftID string) ([]map[string]string, bool) {
+	draftID = strings.TrimSpace(draftID)
+	if a == nil || draftID == "" || a.skillExecutor == nil {
+		return nil, false
+	}
+	a.skillExecutor.mu.RLock()
+	skills := a.skillExecutor.loadSkills()
+	a.skillExecutor.mu.RUnlock()
+	_, result := cskill.ExecuteReviewedGovernanceDrafts(skills, cskill.GovernanceDraftExecutionOptions{DryRun: true, ReviewedDraftIDs: []string{draftID}})
+	out := make([]map[string]string, 0, len(result.Actions))
+	matched := false
+	for _, action := range result.Actions {
+		if action.Action != "reviewed_draft" {
+			matched = true
+		}
+		out = append(out, map[string]string{
+			"action": strings.TrimSpace(action.Action),
+			"skill":  strings.TrimSpace(action.Skill),
+			"status": strings.TrimSpace(action.Status),
+			"reason": strings.TrimSpace(action.Reason),
+		})
+	}
+	return out, matched
+}
+
+func experienceBlockedSkillDraftRecommendedToolCall(traceID string, focusContext map[string]interface{}, boundary string) map[string]interface{} {
+	return normalizeExperienceLearningRecommendedToolCall(map[string]interface{}{
+		"tool": "experience_learning",
+		"args": map[string]interface{}{
+			"action":   "record_blocked_skill_draft_review",
+			"trace_id": traceID,
+		},
+		"recommended_focus_context": focusContext,
+		"non_executing":             true,
+		"non_executing_boundary":    "draft repair/evidence review template only; caller must add status and note, and it must not retry execution, approve a draft, alter skills, write files, or run tools",
+	}, focusContext, boundary)
 }
 
 func buildExperienceSkillDraftFromUsageNudge(query ExperienceRoutingSignalQuery, candidate *coretool.ToolSkillNudgeCandidate) ExperienceSkillDraft {
@@ -1120,6 +1559,33 @@ func appendExperienceFollowUpRecord(content, status, actionKind, note, actor str
 	return strings.TrimSpace(b.String())
 }
 
+func appendSkillDraftExecutionRecord(content, status, note, actor string, now time.Time) string {
+	content = strings.TrimSpace(content)
+	note = truncateExperienceText(strings.TrimSpace(note), 800)
+	actor = truncateExperienceText(strings.TrimSpace(actor), 160)
+	if actor == "" {
+		actor = "local"
+	}
+	var b strings.Builder
+	if content != "" {
+		b.WriteString(content)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Skill draft execution record:")
+	b.WriteString("\n- Status: ")
+	b.WriteString(status)
+	b.WriteString("\n- Actor: ")
+	b.WriteString(actor)
+	b.WriteString("\n- Recorded at: ")
+	b.WriteString(now.Format(time.RFC3339))
+	if note != "" {
+		b.WriteString("\n- Note: ")
+		b.WriteString(note)
+	}
+	b.WriteString("\n- Safety: records skill governance draft execution state; no extra skill action is implied by this audit line.")
+	return strings.TrimSpace(b.String())
+}
+
 func applyExperienceFollowUpTags(tags []string, status string, now time.Time) []string {
 	result := withoutExperienceFollowUpStateTags(tags)
 	result = append(result, experienceFollowUpStatusTagPrefix+status)
@@ -1150,6 +1616,34 @@ func withoutExperienceFollowUpStateTags(tags []string) []string {
 		result = append(result, tag)
 	}
 	return result
+}
+
+func applySkillDraftExecutionTags(tags []string, status string, now time.Time) []string {
+	result := make([]string, 0, len(tags)+3)
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || tag == "skill_draft_previewed" || tag == "skill_draft_applied" || tag == "skill_draft_blocked" || tag == "skill_draft_reopened" || tag == "skill_draft_closed" {
+			continue
+		}
+		if strings.HasPrefix(tag, skillDraftExecutionStatusTagPrefix) || strings.HasPrefix(tag, skillDraftExecutionAtTagPrefix) {
+			continue
+		}
+		result = append(result, tag)
+	}
+	result = append(result, skillDraftExecutionStatusTagPrefix+status, skillDraftExecutionAtTagPrefix+now.Format("20060102"))
+	switch status {
+	case skillDraftExecutionApplied:
+		result = append(result, "skill_draft_applied")
+	case skillDraftExecutionBlocked:
+		result = append(result, "skill_draft_blocked")
+	case skillDraftExecutionReopened:
+		result = append(result, "skill_draft_reopened")
+	case skillDraftExecutionClosed:
+		result = append(result, "skill_draft_closed")
+	default:
+		result = append(result, "skill_draft_previewed")
+	}
+	return normalizeUsageMemoryTags(result)
 }
 
 func buildExperienceTraceFollowUpDraft(detail ExperienceTraceDetail) ExperienceTraceFollowUpDraft {
@@ -1201,6 +1695,11 @@ func finalizeExperienceTraceFollowUpDraft(draft ExperienceTraceFollowUpDraft) Ex
 }
 
 func finalizeExperienceSkillDraft(draft ExperienceSkillDraft) ExperienceSkillDraft {
+	draft.RecommendedToolCall = normalizeExperienceLearningRecommendedToolCall(draft.RecommendedToolCall, draft.RecommendedFocusContext, draft.NonExecutingBoundary)
+	return draft
+}
+
+func finalizeExperienceBlockedSkillDraft(draft ExperienceBlockedSkillDraft) ExperienceBlockedSkillDraft {
 	draft.RecommendedToolCall = normalizeExperienceLearningRecommendedToolCall(draft.RecommendedToolCall, draft.RecommendedFocusContext, draft.NonExecutingBoundary)
 	return draft
 }

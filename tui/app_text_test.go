@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,6 +54,37 @@ func TestTUIFormatUsesLocalizedTemplate(t *testing.T) {
 	got := tuiFormat("en", "hubActivationFailed", "bad token")
 	if got != "Hub activation failed: bad token" {
 		t.Fatalf("formatted text = %q", got)
+	}
+}
+
+func TestTUIWeixinQRStatusMessageLocalizesScannedState(t *testing.T) {
+	got := tuiWeixinQRStatusMessage("en", weixin.QRLoginStatusScanned, nil)
+	if !strings.Contains(got, "Confirm on your phone") {
+		t.Fatalf("English scanned message = %q", got)
+	}
+	zh := tuiWeixinQRStatusMessage("zh", weixin.QRLoginStatusScanned, nil)
+	if zh == "scaned" || zh == got {
+		t.Fatalf("Chinese scanned message should be localized, got %q", zh)
+	}
+}
+
+func TestTUIWeixinQRStatusTerminalFailures(t *testing.T) {
+	for _, status := range []string{"error", "failed", "cancelled"} {
+		if !tuiWeixinQRStatusIsTerminal(status) {
+			t.Fatalf("status %q should be terminal", status)
+		}
+	}
+	if tuiWeixinQRStatusIsTerminal("wait") {
+		t.Fatal("wait should not be terminal")
+	}
+}
+
+func TestTUIWeixinQREmptyTextIsLocalized(t *testing.T) {
+	if got := tuiText("en", "weixinQREmpty"); !strings.Contains(got, "incomplete") {
+		t.Fatalf("English empty QR text = %q", got)
+	}
+	if got := tuiText("zh", "weixinQREmpty"); got == "weixinQREmpty" || got == tuiText("en", "weixinQREmpty") {
+		t.Fatalf("Chinese empty QR text = %q", got)
 	}
 }
 

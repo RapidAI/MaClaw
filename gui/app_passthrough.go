@@ -122,17 +122,18 @@ func (a *App) TryHandlePassthroughSlashCommandWithSource(text string, source str
 
 func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgentResponse {
 	if a == nil {
-		return &IMAgentResponse{Error: "直通命令执行器未初始化。"}
+		return &IMAgentResponse{Error: localizedPassthroughExecutorMissingMessage("")}
 	}
+	lang := a.CurrentLanguage
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "/help" {
-		return &IMAgentResponse{Text: slashHelpText()}
+		return &IMAgentResponse{Text: slashHelpText(lang)}
 	}
 	if trimmed == "/run" {
-		return &IMAgentResponse{Text: "用法：/run <命令名> [--参数 值] [--confirm]\n查看：/runctl list"}
+		return &IMAgentResponse{Text: localizedPassthroughRunUsageText(lang)}
 	}
 	if trimmed == "/runctl help" {
-		return &IMAgentResponse{Text: passthroughHelpText()}
+		return &IMAgentResponse{Text: passthroughHelpText(lang)}
 	}
 	if strings.HasPrefix(trimmed, "/run ") {
 		name, values, confirmed, err := parsePassthroughRunText(trimmed)
@@ -150,7 +151,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 		return &IMAgentResponse{Text: output}
 	}
 	if trimmed == "/exec" {
-		return &IMAgentResponse{Text: "用法：/exec <程序> [参数...] --confirm\n说明：/exec 只运行系统 PATH 中可找到的程序或绝对路径，不解释管道、重定向、&& 等 shell 语法。如需把字面量 --confirm 传给目标程序，可使用：/exec tool --confirm -- --confirm"}
+		return &IMAgentResponse{Text: localizedPassthroughExecUsageText(lang)}
 	}
 	if strings.HasPrefix(trimmed, "/exec ") {
 		result, err := a.ensurePassthroughRegistry().RunExecWithSource(context.Background(), trimmed, source)
@@ -169,22 +170,9 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 			return &IMAgentResponse{Error: err.Error()}
 		}
 		if len(commands) == 0 {
-			return &IMAgentResponse{Text: "还没有注册直通任务。请在监控 > 直通任务中新建，或让 Maclaw 帮你创建。"}
+			return &IMAgentResponse{Text: localizedPassthroughNoTasksMessage(lang)}
 		}
-		var b strings.Builder
-		b.WriteString("已注册直通任务：")
-		for _, cmd := range commands {
-			status := "启用"
-			if !cmd.Enabled {
-				status = "禁用"
-			}
-			confirm := ""
-			if cmd.ConfirmRequired {
-				confirm = "，需 --confirm"
-			}
-			fmt.Fprintf(&b, "\n- %s：%s%s", cmd.Name, status, confirm)
-		}
-		return &IMAgentResponse{Text: b.String()}
+		return &IMAgentResponse{Text: formatPassthroughCommandList(commands, lang)}
 	}
 	if trimmed == "/runctl status" || trimmed == "/runctl settings" {
 		commands, err := a.ensurePassthroughRegistry().List()
@@ -199,7 +187,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}
 		}
-		return &IMAgentResponse{Text: formatPassthroughStatus(a.ensurePassthroughRegistry().Path(), commands, settings, len(audit))}
+		return &IMAgentResponse{Text: formatPassthroughStatusWithLang(a.ensurePassthroughRegistry().Path(), commands, settings, len(audit), lang)}
 	}
 	if strings.HasPrefix(trimmed, "/runctl save ") {
 		cmd, _, previewOnly, err := parsePassthroughSaveText(trimmed)
@@ -212,13 +200,13 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 		}
 		previewText := formatPassthroughPreviewArgs(previewArgs)
 		if previewOnly {
-			return &IMAgentResponse{Text: fmt.Sprintf("仅预览，未保存直通任务 %s。\n%s", cmd.Name, previewText)}
+			return &IMAgentResponse{Text: localizedPassthroughSavePreviewMessage(lang, cmd.Name, previewText)}
 		}
 		saved, err := a.ensurePassthroughRegistry().UpsertWithAudit(cmd, source)
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}
 		}
-		return &IMAgentResponse{Text: fmt.Sprintf("已保存直通任务 %s。\n%s\n运行示例：%s\n远程注册命令：%s\n预览：/runctl preview %s\n查询：/runctl show %s", saved.Name, previewText, passthroughCommandRunExample(saved), passthroughRunctlSaveExample(saved), saved.Name, saved.Name)}
+		return &IMAgentResponse{Text: localizedPassthroughSavedMessage(lang, saved, previewText)}
 	}
 	if strings.HasPrefix(trimmed, "/runctl exec ") {
 		enabled, err := parsePassthroughExecSettingText(trimmed)
@@ -235,12 +223,8 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 			return &IMAgentResponse{Error: err.Error()}
 		}
 		action := passthroughControlActionForEnabled(enabled)
-		state := "已关闭"
-		if enabled {
-			state = "已开启"
-		}
 		_ = reg.recordControlAudit("runctl", "exec "+string(action), source, passthroughRunStatusSuccess, 0, "")
-		return &IMAgentResponse{Text: fmt.Sprintf("%s /exec 一次性系统命令。", state)}
+		return &IMAgentResponse{Text: localizedPassthroughExecStateMessage(lang, enabled)}
 	}
 	if strings.HasPrefix(trimmed, "/runctl enable ") || strings.HasPrefix(trimmed, "/runctl disable ") {
 		action, name, err := parsePassthroughSetEnabledText(trimmed)
@@ -252,11 +236,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 		if err := reg.SetEnabledWithAudit(name, enabled, source); err != nil {
 			return &IMAgentResponse{Error: err.Error()}
 		}
-		state := "已启用"
-		if !enabled {
-			state = "已禁用"
-		}
-		return &IMAgentResponse{Text: fmt.Sprintf("%s直通任务 %s。", state, name)}
+		return &IMAgentResponse{Text: localizedPassthroughTaskEnabledMessage(lang, enabled, name)}
 	}
 	if strings.HasPrefix(trimmed, "/runctl delete ") {
 		name, _, err := parsePassthroughDeleteText(trimmed)
@@ -266,7 +246,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 		if err := a.ensurePassthroughRegistry().DeleteWithAudit(name, source); err != nil {
 			return &IMAgentResponse{Error: err.Error()}
 		}
-		return &IMAgentResponse{Text: fmt.Sprintf("已删除直通任务 %s。", name)}
+		return &IMAgentResponse{Text: localizedPassthroughTaskDeletedMessage(lang, name)}
 	}
 	if trimmed == "/runctl audit" || strings.HasPrefix(trimmed, "/runctl audit ") {
 		limit, err := parsePassthroughAuditLimit(trimmed, 10, 50)
@@ -277,7 +257,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}
 		}
-		return &IMAgentResponse{Text: formatPassthroughAuditList(entries)}
+		return &IMAgentResponse{Text: formatPassthroughAuditListWithLang(entries, lang)}
 	}
 	if strings.HasPrefix(trimmed, "/runctl preview ") {
 		name, values, err := parsePassthroughPreviewText(trimmed)
@@ -289,7 +269,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 			return &IMAgentResponse{Error: err.Error()}
 		}
 		if !ok {
-			return &IMAgentResponse{Error: fmt.Sprintf("直通任务 %q 不存在。", name)}
+			return &IMAgentResponse{Error: localizedPassthroughTaskNotFoundMessage(lang, name)}
 		}
 		args, err := previewPassthroughProcessArgs(cmd, passthroughPreviewValues(cmd, values))
 		if err != nil {
@@ -304,7 +284,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 			return &IMAgentResponse{Error: err.Error()}
 		}
 		if !ok {
-			return &IMAgentResponse{Error: fmt.Sprintf("直通任务 %q 不存在。", name)}
+			return &IMAgentResponse{Error: localizedPassthroughTaskNotFoundMessage(lang, name)}
 		}
 		return &IMAgentResponse{Text: passthroughRunctlSaveExample(cmd)}
 	}
@@ -315,9 +295,133 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 			return &IMAgentResponse{Error: err.Error()}
 		}
 		if !ok {
-			return &IMAgentResponse{Error: fmt.Sprintf("直通任务 %q 不存在。", name)}
+			return &IMAgentResponse{Error: localizedPassthroughTaskNotFoundMessage(lang, name)}
 		}
-		return &IMAgentResponse{Text: formatPassthroughCommandShow(cmd)}
+		return &IMAgentResponse{Text: formatPassthroughCommandShowWithLang(cmd, lang)}
 	}
-	return &IMAgentResponse{Text: "支持：/run <命令名> [--参数 值] [--confirm]、/exec <程序> [参数...] --confirm、/runctl list、/runctl status、/runctl show <命令名>、/runctl export <命令名>、/runctl save <命令名> --cmd \"命令模板\" [--param ...|--params-json ...] --confirm、/runctl preview <命令名> [--参数 值]、/runctl enable <命令名>、/runctl disable <命令名>、/runctl delete <命令名> --confirm、/runctl exec enable、/runctl exec disable、/runctl audit [数量]"}
+	return &IMAgentResponse{Text: localizedPassthroughSupportedCommandsText(lang)}
+}
+
+func localizedPassthroughExecutorMissingMessage(lang string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return "Passthrough command executor is not initialized."
+	}
+	return "直通命令执行器未初始化。"
+}
+
+func localizedPassthroughRunUsageText(lang string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return "Usage: /run <name> [--param value] [--confirm]\nSee: /runctl list"
+	}
+	return "用法：/run <命令名> [--参数 值] [--confirm]\n查看：/runctl list"
+}
+
+func localizedPassthroughExecUsageText(lang string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return "Usage: /exec <program> [args...] --confirm\nNote: /exec only runs programs found on PATH or absolute paths. It does not interpret pipes, redirects, &&, or other shell syntax. To pass a literal --confirm to the target program, use: /exec tool --confirm -- --confirm"
+	}
+	return "用法：/exec <程序> [参数...] --confirm\n说明：/exec 只运行系统 PATH 中可找到的程序或绝对路径，不解释管道、重定向、&& 等 shell 语法。如需把字面量 --confirm 传给目标程序，可使用：/exec tool --confirm -- --confirm"
+}
+
+func localizedPassthroughNoTasksMessage(lang string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return "No passthrough tasks are registered yet. Create one in Monitor > Passthrough Tasks, or ask Maclaw to create it for you."
+	}
+	return "还没有注册直通任务。请在监控 > 直通任务中新建，或让 Maclaw 帮你创建。"
+}
+
+func formatPassthroughCommandList(commands []PassthroughCommand, lang string) string {
+	var b strings.Builder
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		b.WriteString("Registered passthrough tasks:")
+		for _, cmd := range commands {
+			status := "enabled"
+			if !cmd.Enabled {
+				status = "disabled"
+			}
+			confirm := ""
+			if cmd.ConfirmRequired {
+				confirm = ", requires --confirm"
+			}
+			fmt.Fprintf(&b, "\n- %s: %s%s", cmd.Name, status, confirm)
+		}
+		return b.String()
+	}
+	b.WriteString("已注册直通任务：")
+	for _, cmd := range commands {
+		status := "启用"
+		if !cmd.Enabled {
+			status = "禁用"
+		}
+		confirm := ""
+		if cmd.ConfirmRequired {
+			confirm = "，需 --confirm"
+		}
+		fmt.Fprintf(&b, "\n- %s：%s%s", cmd.Name, status, confirm)
+	}
+	return b.String()
+}
+
+func localizedPassthroughSavePreviewMessage(lang, name, previewText string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return fmt.Sprintf("Preview only; passthrough task %s was not saved.\n%s", name, previewText)
+	}
+	return fmt.Sprintf("仅预览，未保存直通任务 %s。\n%s", name, previewText)
+}
+
+func localizedPassthroughSavedMessage(lang string, saved PassthroughCommand, previewText string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return fmt.Sprintf("Saved passthrough task %s.\n%s\nRun example: %s\nRemote registration command: %s\nPreview: /runctl preview %s\nShow: /runctl show %s", saved.Name, previewText, passthroughCommandRunExample(saved), passthroughRunctlSaveExample(saved), saved.Name, saved.Name)
+	}
+	return fmt.Sprintf("已保存直通任务 %s。\n%s\n运行示例：%s\n远程注册命令：%s\n预览：/runctl preview %s\n查询：/runctl show %s", saved.Name, previewText, passthroughCommandRunExample(saved), passthroughRunctlSaveExample(saved), saved.Name, saved.Name)
+}
+
+func localizedPassthroughExecStateMessage(lang string, enabled bool) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		if enabled {
+			return "Enabled one-off /exec system commands."
+		}
+		return "Disabled one-off /exec system commands."
+	}
+	state := "已关闭"
+	if enabled {
+		state = "已开启"
+	}
+	return fmt.Sprintf("%s /exec 一次性系统命令。", state)
+}
+
+func localizedPassthroughTaskEnabledMessage(lang string, enabled bool, name string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		state := "Enabled"
+		if !enabled {
+			state = "Disabled"
+		}
+		return fmt.Sprintf("%s passthrough task %s.", state, name)
+	}
+	state := "已启用"
+	if !enabled {
+		state = "已禁用"
+	}
+	return fmt.Sprintf("%s直通任务 %s。", state, name)
+}
+
+func localizedPassthroughTaskDeletedMessage(lang, name string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return fmt.Sprintf("Deleted passthrough task %s.", name)
+	}
+	return fmt.Sprintf("已删除直通任务 %s。", name)
+}
+
+func localizedPassthroughTaskNotFoundMessage(lang, name string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return fmt.Sprintf("Passthrough task %q does not exist.", name)
+	}
+	return fmt.Sprintf("直通任务 %q 不存在。", name)
+}
+
+func localizedPassthroughSupportedCommandsText(lang string) string {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return "Supported: /run <name> [--param value] [--confirm], /exec <program> [args...] --confirm, /runctl list, /runctl status, /runctl show <name>, /runctl export <name>, /runctl save <name> --cmd \"command template\" [--param ...|--params-json ...] --confirm, /runctl preview <name> [--param value], /runctl enable <name>, /runctl disable <name>, /runctl delete <name> --confirm, /runctl exec enable, /runctl exec disable, /runctl audit [limit]"
+	}
+	return "支持：/run <命令名> [--参数 值] [--confirm]、/exec <程序> [参数...] --confirm、/runctl list、/runctl status、/runctl show <命令名>、/runctl export <命令名>、/runctl save <命令名> --cmd \"命令模板\" [--param ...|--params-json ...] --confirm、/runctl preview <命令名> [--参数 值]、/runctl enable <命令名>、/runctl disable <命令名>、/runctl delete <命令名> --confirm、/runctl exec enable、/runctl exec disable、/runctl audit [数量]"
 }

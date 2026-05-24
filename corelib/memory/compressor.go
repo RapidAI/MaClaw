@@ -211,7 +211,7 @@ func (mc *Compressor) backfillCompactForms(ctx context.Context) {
 		todo = todo[:30]
 	}
 
-	updated := 0
+	updates := make([]Entry, 0, len(todo))
 	for _, p := range todo {
 		select {
 		case <-ctx.Done():
@@ -228,26 +228,25 @@ func (mc *Compressor) backfillCompactForms(ctx context.Context) {
 			continue
 		}
 
-		mc.store.mu.Lock()
+		mc.store.mu.RLock()
 		for i := range mc.store.entries {
 			if mc.store.entries[i].ID == p.id && mc.store.entries[i].CompactForm == "" {
-				mc.store.entries[i].CompactForm = compact
-				// Refresh BM25 index since entryToDoc now includes CompactForm.
-				mc.store.bm25.updateEntry(mc.store.entries[i])
-				updated++
+				updated := mc.store.entries[i]
+				updated.CompactForm = compact
+				updates = append(updates, updated)
 				break
 			}
 		}
-		mc.store.mu.Unlock()
+		mc.store.mu.RUnlock()
 	}
 done:
 
-	if updated > 0 {
-		mc.store.mu.Lock()
-		mc.store.dirty = true
-		mc.store.mu.Unlock()
-		mc.store.signalSave()
-		log.Printf("[memory_compact] backfilled %d/%d compact forms", updated, len(todo))
+	if len(updates) > 0 {
+		if err := mc.store.UpdateEntriesByID(updates); err != nil {
+			log.Printf("[memory_compact] persist compact forms: %v", err)
+			return
+		}
+		log.Printf("[memory_compact] backfilled %d/%d compact forms", len(updates), len(todo))
 	}
 }
 
@@ -292,33 +291,35 @@ Bad: "服务器→api.rapidai.tech→OmniRoute→Docker; 模型→GLM-5.1; 端�
 const minSubstringLen = 20
 
 func (mc *Compressor) dedup() int {
-	mc.store.mu.Lock()
-	defer mc.store.mu.Unlock()
+	mc.store.mu.RLock()
 
 	n := len(mc.store.entries)
 	if n < 2 {
+		mc.store.mu.RUnlock()
 		return 0
 	}
+	entries := append([]Entry(nil), mc.store.entries...)
+	mc.store.mu.RUnlock()
 
 	lower := make([]string, n)
-	for i, e := range mc.store.entries {
+	for i, e := range entries {
 		lower[i] = strings.TrimSpace(strings.ToLower(e.Content))
 	}
 
 	remove := make(map[int]bool)
 
 	for i := 0; i < n; i++ {
-		if remove[i] || mc.store.entries[i].Pinned {
+		if remove[i] || entries[i].Pinned {
 			continue
 		}
 		for j := i + 1; j < n; j++ {
-			if remove[j] || mc.store.entries[j].Pinned {
+			if remove[j] || entries[j].Pinned {
 				continue
 			}
-			if !isDuplicateLower(mc.store.entries[i], mc.store.entries[j], lower[i], lower[j]) {
+			if !isDuplicateLower(entries[i], entries[j], lower[i], lower[j]) {
 				continue
 			}
-			loser := pickLoser(mc.store.entries, i, j)
+			loser := pickLoser(entries, i, j)
 			remove[loser] = true
 		}
 	}
@@ -327,17 +328,17 @@ func (mc *Compressor) dedup() int {
 		return 0
 	}
 
-	kept := make([]Entry, 0, n-len(remove))
-	for i, e := range mc.store.entries {
-		if !remove[i] {
-			kept = append(kept, e)
+	deleteIDs := make([]string, 0, len(remove))
+	for i := range remove {
+		if entries[i].ID != "" {
+			deleteIDs = append(deleteIDs, entries[i].ID)
 		}
 	}
-	mc.store.entries = kept
-	mc.store.rebuildDerivedIndexesLocked(true)
-	mc.store.dirty = true
-	mc.store.signalSave()
-	return len(remove)
+	if err := mc.store.UpdateEntriesAndDeleteIDs(nil, deleteIDs); err != nil {
+		log.Printf("[memory_compact] persist duplicate removal: %v", err)
+		return 0
+	}
+	return len(deleteIDs)
 }
 
 func isDuplicateLower(a, b Entry, ca, cb string) bool {
@@ -558,34 +559,23 @@ Rules:
 		}
 
 		survivor := batch[bestIdx]
-		_ = mc.store.Update(survivor.ID, inst.Merged, survivor.Category, mergeTags(nil, allTags))
-
+		survivor.Content = inst.Merged
+		survivor.Tags = mergeTags(nil, allTags)
+		deleteIDs := make([]string, 0, len(groupIndices)-1)
 		for _, idx := range groupIndices {
 			if idx != bestIdx {
-				removeIDs[batch[idx].ID] = true
+				deleteIDs = append(deleteIDs, batch[idx].ID)
 			}
+		}
+		if err := mc.store.UpdateEntriesAndDeleteIDs([]Entry{survivor}, deleteIDs); err != nil {
+			return 0, err
+		}
+		for _, id := range deleteIDs {
+			removeIDs[id] = true
 		}
 	}
 
-	removed := 0
-	if len(removeIDs) > 0 {
-		mc.store.mu.Lock()
-		kept := make([]Entry, 0, len(mc.store.entries))
-		for _, e := range mc.store.entries {
-			if removeIDs[e.ID] {
-				removed++
-			} else {
-				kept = append(kept, e)
-			}
-		}
-		mc.store.entries = kept
-		mc.store.rebuildDerivedIndexesLocked(true)
-		mc.store.dirty = true
-		mc.store.mu.Unlock()
-		mc.store.signalSave()
-	}
-
-	return removed, nil
+	return len(removeIDs), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -794,16 +784,19 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 		filterOwner = ownerID[0]
 	}
 
-	mc.store.mu.Lock()
+	mc.store.mu.RLock()
+	snapshot := make([]Entry, len(mc.store.entries))
+	copy(snapshot, mc.store.entries)
+	mc.store.mu.RUnlock()
 
 	result := &GCResult{
-		ActiveBefore: len(mc.store.entries),
+		ActiveBefore: len(snapshot),
 	}
 
 	// Separate protected/pinned from evictable.
 	var protected []Entry
 	var evictable []Entry
-	for _, e := range mc.store.entries {
+	for _, e := range snapshot {
 		// 多租户隔离：只处理属于该用户的记忆（或共享记忆）
 		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
 			protected = append(protected, e) // 其他用户的记忆视为受保护
@@ -832,29 +825,16 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 	}
 
 	var toArchive []Entry
-	var kept []Entry
 	if len(evictable) > target {
 		excess := len(evictable) - target
 		toArchive = evictable[:excess]
-		kept = evictable[excess:]
-	} else {
-		kept = evictable
 	}
 
-	// Rebuild active entries.
-	newEntries := make([]Entry, 0, len(protected)+len(kept))
-	newEntries = append(newEntries, protected...)
-	newEntries = append(newEntries, kept...)
-	mc.store.entries = newEntries
-	mc.store.rebuildDerivedIndexesLocked(false)
-	mc.store.dirty = true
-
-	mc.store.mu.Unlock()
-	mc.store.signalSave()
-
 	// Archive evicted entries.
-	if mc.store.archive != nil && len(toArchive) > 0 {
-		_ = mc.store.archive.Add(toArchive...)
+	if len(toArchive) > 0 {
+		if err := mc.store.ArchiveActiveEntries(toArchive); err != nil {
+			return nil, err
+		}
 	}
 	result.ArchivedCount = len(toArchive)
 
@@ -898,35 +878,25 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 		}
 
 		relevant := mc.store.archive.FindRelevant(tags, cats, 10, filterOwner)
-		var revived []Entry
+		var reviveIDs []string
 		for _, re := range relevant {
-			if len(revived) >= 10 {
+			if len(reviveIDs) >= 10 {
 				break
 			}
 			// Re-check owner isolation before reviving archived entries.
 			if filterOwner != "" && re.OwnerID != "" && re.OwnerID != filterOwner {
 				continue
 			}
-			removed, err := mc.store.archive.Remove(re.ID)
-			if err != nil {
-				continue
-			}
-			removed.UpdatedAt = time.Now()
-			removed.AccessCount = 1
-			revived = append(revived, *removed)
+			reviveIDs = append(reviveIDs, re.ID)
 		}
 
-		if len(revived) > 0 {
-			mc.store.mu.Lock()
-			for _, r := range revived {
-				mc.store.entries = append(mc.store.entries, r)
+		if len(reviveIDs) > 0 {
+			revived, err := mc.store.ReviveArchivedEntries(reviveIDs)
+			if err != nil {
+				return nil, err
 			}
-			mc.store.rebuildDerivedIndexesLocked(true)
-			mc.store.dirty = true
-			mc.store.mu.Unlock()
-			mc.store.signalSave()
+			result.RevivedCount = len(revived)
 		}
-		result.RevivedCount = len(revived)
 	}
 
 	mc.store.mu.RLock()
@@ -1097,14 +1067,9 @@ func (mc *Compressor) RestoreBackup(backupName string) error {
 	if err := json.Unmarshal(data, &restored); err != nil {
 		return fmt.Errorf("parse backup: %w", err)
 	}
-	if err := fileutil.AtomicWriteFile(mc.store.path, data, 0o644); err != nil {
-		return fmt.Errorf("write memory file: %w", err)
+	if err := mc.store.RestoreEntriesSnapshot(restored); err != nil {
+		return fmt.Errorf("restore memory snapshot: %w", err)
 	}
-	mc.store.mu.Lock()
-	mc.store.entries = restored
-	mc.store.rebuildDerivedIndexesLocked(false)
-	mc.store.dirty = false
-	mc.store.mu.Unlock()
 	return nil
 }
 

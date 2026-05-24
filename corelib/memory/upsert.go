@@ -92,6 +92,7 @@ type UpsertByTagsOptions struct {
 	Interval           *TimeInterval
 	EvidenceIDs        []string
 	RelatedIDs         []string
+	RelatedEdges       []RelatedEdge
 	DerivedKind        string
 	Boundary           *MemoryBoundary
 	DefaultDerivedKind string
@@ -135,20 +136,21 @@ func (s *Store) UpsertEntryByTags(opts UpsertByTagsOptions) (UpsertResult, error
 			boundary = opts.DefaultBoundary
 		}
 		desired := Entry{
-			Title:       strings.TrimSpace(opts.Title),
-			Content:     content,
-			Category:    category,
-			Tags:        mergedTags,
-			SourceType:  opts.SourceType,
-			SourceURL:   strings.TrimSpace(opts.SourceURL),
-			Scope:       opts.Scope,
-			OwnerID:     strings.TrimSpace(opts.OwnerID),
-			Level:       opts.Level,
-			Interval:    cloneTimeInterval(opts.Interval),
-			EvidenceIDs: append([]string(nil), opts.EvidenceIDs...),
-			RelatedIDs:  append([]string(nil), opts.RelatedIDs...),
-			DerivedKind: derivedKind,
-			Boundary:    cloneMemoryBoundary(boundary),
+			Title:        strings.TrimSpace(opts.Title),
+			Content:      content,
+			Category:     category,
+			Tags:         mergedTags,
+			SourceType:   opts.SourceType,
+			SourceURL:    strings.TrimSpace(opts.SourceURL),
+			Scope:        opts.Scope,
+			OwnerID:      strings.TrimSpace(opts.OwnerID),
+			Level:        opts.Level,
+			Interval:     cloneTimeInterval(opts.Interval),
+			EvidenceIDs:  append([]string(nil), opts.EvidenceIDs...),
+			RelatedIDs:   append([]string(nil), opts.RelatedIDs...),
+			RelatedEdges: append([]RelatedEdge(nil), opts.RelatedEdges...),
+			DerivedKind:  derivedKind,
+			Boundary:     cloneMemoryBoundary(boundary),
 		}
 		if upsertEntryEquivalent(entry, desired) {
 			s.TouchAccess([]string{entry.ID})
@@ -169,21 +171,22 @@ func (s *Store) UpsertEntryByTags(opts UpsertByTagsOptions) (UpsertResult, error
 		boundary = opts.DefaultBoundary
 	}
 	entry := Entry{
-		ID:          generateID(),
-		Title:       strings.TrimSpace(opts.Title),
-		Content:     content,
-		Category:    category,
-		Tags:        tags,
-		SourceType:  opts.SourceType,
-		SourceURL:   strings.TrimSpace(opts.SourceURL),
-		Scope:       opts.Scope,
-		OwnerID:     strings.TrimSpace(opts.OwnerID),
-		Level:       opts.Level,
-		Interval:    cloneTimeInterval(opts.Interval),
-		EvidenceIDs: append([]string(nil), opts.EvidenceIDs...),
-		RelatedIDs:  append([]string(nil), opts.RelatedIDs...),
-		DerivedKind: derivedKind,
-		Boundary:    cloneMemoryBoundary(boundary),
+		ID:           generateID(),
+		Title:        strings.TrimSpace(opts.Title),
+		Content:      content,
+		Category:     category,
+		Tags:         tags,
+		SourceType:   opts.SourceType,
+		SourceURL:    strings.TrimSpace(opts.SourceURL),
+		Scope:        opts.Scope,
+		OwnerID:      strings.TrimSpace(opts.OwnerID),
+		Level:        opts.Level,
+		Interval:     cloneTimeInterval(opts.Interval),
+		EvidenceIDs:  append([]string(nil), opts.EvidenceIDs...),
+		RelatedIDs:   append([]string(nil), opts.RelatedIDs...),
+		RelatedEdges: append([]RelatedEdge(nil), opts.RelatedEdges...),
+		DerivedKind:  derivedKind,
+		Boundary:     cloneMemoryBoundary(boundary),
 	}
 	if duplicate := s.findUpsertDuplicateByContent(entry); duplicate != nil {
 		entry = upsertDesiredForDuplicate(*duplicate, entry, opts.MergeExistingTags)
@@ -264,11 +267,12 @@ func (s *Store) updateEntryFromUpsert(id string, desired Entry) error {
 	}
 	desired.Content = redactSecretsInMemory(content)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	desiredOwner := strings.TrimSpace(desired.OwnerID)
 	desiredCategory := MapToCanonical(desired.Category)
+	s.mu.RLock()
+	var updated Entry
+	found := false
+	duplicateID := ""
 	for _, e := range s.entries {
 		if e.ID == id || strings.TrimSpace(e.Content) != desired.Content {
 			continue
@@ -279,82 +283,74 @@ func (s *Store) updateEntryFromUpsert(id string, desired Entry) error {
 		if !upsertContentDuplicateOwnerMatches(e.OwnerID, desiredOwner) {
 			continue
 		}
-		return fmt.Errorf("memory_store: duplicate content (matches entry %q)", e.ID)
+		duplicateID = e.ID
+		break
 	}
 
-	for i, e := range s.entries {
-		if e.ID != id {
-			continue
-		}
-		if e.Content != desired.Content {
-			snap := VersionSnapshot{Content: e.Content, Timestamp: e.UpdatedAt}
-			prev := s.entries[i].Versions
-			versions := make([]VersionSnapshot, 0, 3)
-			start := 0
-			if len(prev) > 2 {
-				start = len(prev) - 2
+	if duplicateID == "" {
+		for _, e := range s.entries {
+			if e.ID != id {
+				continue
 			}
-			versions = append(versions, prev[start:]...)
-			versions = append(versions, snap)
-			s.entries[i].Versions = versions
+			updated = e
+			found = true
+			break
 		}
-		s.entries[i].Content = desired.Content
-		s.entries[i].Category = desired.Category
-		s.entries[i].Tags = desired.Tags
-		if title := strings.TrimSpace(desired.Title); title != "" {
-			s.entries[i].Title = title
-		}
-		if sourceType := strings.TrimSpace(desired.SourceType); sourceType != "" {
-			s.entries[i].SourceType = sourceType
-		}
-		if sourceURL := strings.TrimSpace(desired.SourceURL); sourceURL != "" {
-			s.entries[i].SourceURL = sourceURL
-		}
-		if desired.Scope != "" {
-			s.entries[i].Scope = desired.Scope
-		}
-		if ownerID := strings.TrimSpace(desired.OwnerID); ownerID != "" {
-			s.entries[i].OwnerID = ownerID
-		}
-		if desired.Level != LevelNone {
-			s.entries[i].Level = desired.Level
-		}
-		if desired.Interval != nil {
-			s.entries[i].Interval = cloneTimeInterval(desired.Interval)
-		}
-		if len(desired.EvidenceIDs) > 0 {
-			s.entries[i].EvidenceIDs = append([]string(nil), desired.EvidenceIDs...)
-		}
-		if len(desired.RelatedIDs) > 0 {
-			s.entries[i].RelatedIDs = append([]string(nil), desired.RelatedIDs...)
-		}
-		if derivedKind := strings.TrimSpace(desired.DerivedKind); derivedKind != "" {
-			s.entries[i].DerivedKind = derivedKind
-		}
-		if desired.Boundary != nil {
-			s.entries[i].Boundary = cloneMemoryBoundary(desired.Boundary)
-		}
-		s.entries[i].CompactForm = ""
-		s.entries[i].ContentHash = computeContentHash(desired.Content)
-		s.entries[i].UpdatedAt = time.Now()
-		s.entries[i].Stale = false
-		s.bm25.updateEntry(s.entries[i])
-		if s.entityIndex != nil {
-			s.entityIndex.IndexEntry(&s.entries[i])
-		}
-		if s.projIndex != nil {
-			s.projIndex.Rebuild(s.entries)
-		}
-		if s.semanticGraph != nil {
-			s.semanticGraph.IndexEntry(&s.entries[i])
-		}
-		s.rebuildThemeLayerLocked()
-		if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
-			return fmt.Errorf("memory_store: persist updated entry: %w", err)
-		}
-		return nil
 	}
-	return fmt.Errorf("memory_store: entry %q not found", id)
+	s.mu.RUnlock()
+	if duplicateID != "" {
+		return fmt.Errorf("memory_store: duplicate content (matches entry %q)", duplicateID)
+	}
+	if !found {
+		return fmt.Errorf("memory_store: entry %q not found", id)
+	}
+
+	updated.Content = desired.Content
+	updated.Category = desired.Category
+	updated.Tags = append([]string(nil), desired.Tags...)
+	if title := strings.TrimSpace(desired.Title); title != "" {
+		updated.Title = title
+	}
+	if sourceType := strings.TrimSpace(desired.SourceType); sourceType != "" {
+		updated.SourceType = sourceType
+	}
+	if sourceURL := strings.TrimSpace(desired.SourceURL); sourceURL != "" {
+		updated.SourceURL = sourceURL
+	}
+	if desired.Scope != "" {
+		updated.Scope = desired.Scope
+	}
+	if ownerID := strings.TrimSpace(desired.OwnerID); ownerID != "" {
+		updated.OwnerID = ownerID
+	}
+	if desired.Level != LevelNone {
+		updated.Level = desired.Level
+	}
+	if desired.Interval != nil {
+		updated.Interval = cloneTimeInterval(desired.Interval)
+	}
+	if len(desired.EvidenceIDs) > 0 {
+		updated.EvidenceIDs = append([]string(nil), desired.EvidenceIDs...)
+	}
+	if len(desired.RelatedIDs) > 0 {
+		updated.RelatedIDs = append([]string(nil), desired.RelatedIDs...)
+	}
+	if len(desired.RelatedEdges) > 0 {
+		updated.RelatedEdges = append([]RelatedEdge(nil), desired.RelatedEdges...)
+	}
+	if derivedKind := strings.TrimSpace(desired.DerivedKind); derivedKind != "" {
+		updated.DerivedKind = derivedKind
+	}
+	if desired.Boundary != nil {
+		updated.Boundary = cloneMemoryBoundary(desired.Boundary)
+	}
+	updated.CompactForm = ""
+	updated.ContentHash = computeContentHash(desired.Content)
+	updated.Stale = false
+	if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
+		return fmt.Errorf("memory_store: persist updated entry: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) findUpsertDuplicateByContent(desired Entry) *Entry {
@@ -424,6 +420,9 @@ func upsertEntryEquivalent(current, desired Entry) bool {
 	if len(desired.RelatedIDs) > 0 && !sameStringSet(current.RelatedIDs, desired.RelatedIDs) {
 		return false
 	}
+	if len(desired.RelatedEdges) > 0 && !sameRelatedEdges(current.RelatedEdges, desired.RelatedEdges) {
+		return false
+	}
 	if strings.TrimSpace(desired.DerivedKind) != "" && strings.TrimSpace(current.DerivedKind) != strings.TrimSpace(desired.DerivedKind) {
 		return false
 	}
@@ -447,6 +446,60 @@ func cloneMemoryBoundary(in *MemoryBoundary) *MemoryBoundary {
 	}
 	cp := *in
 	return &cp
+}
+
+func cloneTimePtr(in *time.Time) *time.Time {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	return &cp
+}
+
+func cloneStabilityMeta(in *StabilityMeta) *StabilityMeta {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	return &cp
+}
+
+func applyEntryMutationFields(current *Entry, desired Entry, now time.Time) {
+	contentChanged := current.Content != desired.Content
+	current.Content = desired.Content
+	current.Category = desired.Category
+	current.Tags = append([]string(nil), desired.Tags...)
+	current.Entities = append([]string(nil), desired.Entities...)
+	if contentChanged && desired.CompactForm == current.CompactForm {
+		current.CompactForm = ""
+	} else {
+		current.CompactForm = desired.CompactForm
+	}
+	current.ContentHash = computeContentHash(desired.Content)
+	current.Embedding = append([]float32(nil), desired.Embedding...)
+	current.UpdatedAt = now
+	current.AccessCount = desired.AccessCount
+	current.Strength = desired.Strength
+	current.Status = desired.Status
+	current.Pinned = desired.Pinned
+	current.Stale = desired.Stale
+	current.Title = desired.Title
+	current.Scope = desired.Scope
+	current.OwnerID = desired.OwnerID
+	current.SourceType = desired.SourceType
+	current.SourceURL = desired.SourceURL
+	current.EvidenceIDs = append([]string(nil), desired.EvidenceIDs...)
+	current.RelatedIDs = append([]string(nil), desired.RelatedIDs...)
+	current.RelatedEdges = append([]RelatedEdge(nil), desired.RelatedEdges...)
+	current.DerivedKind = desired.DerivedKind
+	current.Boundary = cloneMemoryBoundary(desired.Boundary)
+	current.Level = desired.Level
+	current.Interval = cloneTimeInterval(desired.Interval)
+	current.ParentID = desired.ParentID
+	current.ChildIDs = append([]string(nil), desired.ChildIDs...)
+	current.ValidAt = cloneTimePtr(desired.ValidAt)
+	current.InvalidAt = cloneTimePtr(desired.InvalidAt)
+	current.Stability = cloneStabilityMeta(desired.Stability)
 }
 
 func sameTimeInterval(a, b *TimeInterval) bool {

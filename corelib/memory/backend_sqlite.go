@@ -160,38 +160,23 @@ func (b *sqliteBackend) LoadAll() ([]Entry, error) {
 }
 
 func (b *sqliteBackend) SaveEntry(entry *Entry) error {
-	version, err := b.nextVersion()
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	version, err := sqliteNextVersionTx(tx)
 	if err != nil {
 		return err
 	}
 	entry.Version = version
-
-	tagsJSON, _ := json.Marshal(entry.Tags)
-	entitiesJSON, _ := json.Marshal(entry.Entities)
-	extraJSON := marshalExtra(entry)
-	embBlob := encodeEmbedding(entry.Embedding)
-
-	const q = `INSERT OR REPLACE INTO memories
-		(id, content, compact_form, content_hash, category, owner_id, tags, entities,
-		 embedding, strength, access_count, scope, source_type, source_url, title,
-		 stale, dormant, superseded, pinned, level, version, created_at, updated_at, extra)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-
-	_, err = b.db.Exec(q,
-		entry.ID, entry.Content, entry.CompactForm, entry.ContentHash,
-		string(entry.Category), entry.OwnerID,
-		string(tagsJSON), string(entitiesJSON), embBlob,
-		entry.Strength, entry.AccessCount, string(entry.Scope),
-		entry.SourceType, entry.SourceURL, entry.Title,
-		boolToInt(entry.Stale),
-		boolToInt(entry.Status == StatusDormant),
-		boolToInt(entry.Status == StatusSuperseded),
-		boolToInt(entry.Pinned), int(entry.Level), version,
-		entry.CreatedAt.UTC().Format(time.RFC3339Nano),
-		entry.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		string(extraJSON),
-	)
-	return err
+	if err := sqliteSaveEntryTx(tx, entry); err != nil {
+		return err
+	}
+	if err := sqliteUpsertFTSTx(tx, entry); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (b *sqliteBackend) UpdateEntry(entry *Entry) error {
@@ -199,14 +184,93 @@ func (b *sqliteBackend) UpdateEntry(entry *Entry) error {
 	return b.SaveEntry(entry)
 }
 
+func (b *sqliteBackend) UpdateEntries(entries []*Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, entry := range entries {
+		version, err := sqliteNextVersionTx(tx)
+		if err != nil {
+			return err
+		}
+		entry.Version = version
+		if err := sqliteSaveEntryTx(tx, entry); err != nil {
+			return err
+		}
+		if err := sqliteUpsertFTSTx(tx, entry); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (b *sqliteBackend) UpdateEntriesAndDeleteIDs(entries []*Entry, deleteIDs []string) error {
+	if len(entries) == 0 && len(deleteIDs) == 0 {
+		return nil
+	}
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, entry := range entries {
+		version, err := sqliteNextVersionTx(tx)
+		if err != nil {
+			return err
+		}
+		entry.Version = version
+		if err := sqliteSaveEntryTx(tx, entry); err != nil {
+			return err
+		}
+		if err := sqliteUpsertFTSTx(tx, entry); err != nil {
+			return err
+		}
+	}
+	for _, id := range deleteIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		version, err := sqliteNextVersionTx(tx)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.Exec(`UPDATE memories SET deleted_at = ?, version = ? WHERE id = ?`, now, version, id); err != nil {
+			return err
+		}
+		if err := sqliteDeleteFTSTx(tx, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (b *sqliteBackend) DeleteEntry(id string) error {
-	version, err := b.nextVersion()
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	version, err := sqliteNextVersionTx(tx)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = b.db.Exec(`UPDATE memories SET deleted_at = ?, version = ? WHERE id = ?`, now, version, id)
-	return err
+	if _, err := tx.Exec(`UPDATE memories SET deleted_at = ?, version = ? WHERE id = ?`, now, version, id); err != nil {
+		return err
+	}
+	if err := sqliteDeleteFTSTx(tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (b *sqliteBackend) Since(version int64) ([]Entry, []string, error) {
@@ -400,24 +464,51 @@ func (b *sqliteBackend) upsertFTS(entry *Entry) error {
 	if entry == nil || strings.TrimSpace(entry.ID) == "" {
 		return nil
 	}
-	if err := b.deleteFTS(entry.ID); err != nil {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := sqliteUpsertFTSTx(tx, entry); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (b *sqliteBackend) deleteFTS(id string) error {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := sqliteDeleteFTSTx(tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func sqliteUpsertFTSTx(tx *sql.Tx, entry *Entry) error {
+	if entry == nil || strings.TrimSpace(entry.ID) == "" {
+		return nil
+	}
+	if err := sqliteDeleteFTSTx(tx, entry.ID); err != nil {
 		return err
 	}
 	if !entry.IsActive() {
 		return nil
 	}
-	_, err := b.db.Exec(`INSERT INTO memories_fts(id, text) VALUES (?, ?)`, entry.ID, sqliteFTSText(*entry))
+	_, err := tx.Exec(`INSERT INTO memories_fts(id, text) VALUES (?, ?)`, entry.ID, sqliteFTSText(*entry))
 	if err != nil {
 		return fmt.Errorf("sqlite_backend: fts upsert: %w", err)
 	}
 	return nil
 }
 
-func (b *sqliteBackend) deleteFTS(id string) error {
+func sqliteDeleteFTSTx(tx *sql.Tx, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return nil
 	}
-	_, err := b.db.Exec(`DELETE FROM memories_fts WHERE id = ?`, id)
+	_, err := tx.Exec(`DELETE FROM memories_fts WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("sqlite_backend: fts delete: %w", err)
 	}
@@ -519,6 +610,50 @@ func (b *sqliteBackend) nextVersion() (int64, error) {
 
 	fmt.Sscanf(valStr, "%d", &val)
 	return val, nil
+}
+
+func sqliteNextVersionTx(tx *sql.Tx) (int64, error) {
+	var val int64
+	err := tx.QueryRow(`UPDATE memory_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'max_version' RETURNING CAST(value AS INTEGER)`).Scan(&val)
+	if err == nil {
+		return val, nil
+	}
+	if _, err := tx.Exec(`UPDATE memory_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'max_version'`); err != nil {
+		return 0, err
+	}
+	var valStr string
+	if err := tx.QueryRow(`SELECT value FROM memory_meta WHERE key = 'max_version'`).Scan(&valStr); err != nil {
+		return 0, err
+	}
+	fmt.Sscanf(valStr, "%d", &val)
+	return val, nil
+}
+
+func sqliteSaveEntryTx(tx *sql.Tx, entry *Entry) error {
+	tagsJSON, _ := json.Marshal(entry.Tags)
+	entitiesJSON, _ := json.Marshal(entry.Entities)
+	extraJSON := marshalExtra(entry)
+	embBlob := encodeEmbedding(entry.Embedding)
+	const q = `INSERT OR REPLACE INTO memories
+		(id, content, compact_form, content_hash, category, owner_id, tags, entities,
+		 embedding, strength, access_count, scope, source_type, source_url, title,
+		 stale, dormant, superseded, pinned, level, version, created_at, updated_at, extra)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	_, err := tx.Exec(q,
+		entry.ID, entry.Content, entry.CompactForm, entry.ContentHash,
+		string(entry.Category), entry.OwnerID,
+		string(tagsJSON), string(entitiesJSON), embBlob,
+		entry.Strength, entry.AccessCount, string(entry.Scope),
+		entry.SourceType, entry.SourceURL, entry.Title,
+		boolToInt(entry.Stale),
+		boolToInt(entry.Status == StatusDormant),
+		boolToInt(entry.Status == StatusSuperseded),
+		boolToInt(entry.Pinned), int(entry.Level), entry.Version,
+		entry.CreatedAt.UTC().Format(time.RFC3339Nano),
+		entry.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		string(extraJSON),
+	)
+	return err
 }
 
 // scanEntry reads a row into an Entry. The scanner interface matches both

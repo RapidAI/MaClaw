@@ -119,6 +119,9 @@ func (s *SecurityService) RenameGroup(ctx context.Context, id, name string) erro
 // DeleteGroup deletes a group and all its descendants, moving their users to Root_Group.
 // Refuses to delete the root group.
 func (s *SecurityService) DeleteGroup(ctx context.Context, id string) error {
+	if err := s.ensureRootGroup(ctx); err != nil {
+		return err
+	}
 	root, err := s.store.GetRootGroup(ctx)
 	if err != nil {
 		return fmt.Errorf("get root group: %w", err)
@@ -175,6 +178,9 @@ func collectDescendants(groups []*SecurityGroup, parentID string) []string {
 
 // GetGroupTree builds the complete tree structure starting from the root group.
 func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, error) {
+	if err := s.ensureRootGroup(ctx); err != nil {
+		return nil, err
+	}
 	if tenantIDFromContext(ctx) != store.DefaultTenantID {
 		return s.getGroupTreeUncached(ctx)
 	}
@@ -302,7 +308,10 @@ func (s *SecurityService) invalidateGroupTreeCache() {
 	s.groupTreeCachedUntil = time.Time{}
 }
 
-func (s *SecurityService) cacheSettings(settings *SecuritySettings) {
+func (s *SecurityService) cacheSettings(ctx context.Context, settings *SecuritySettings) {
+	if tenantIDFromContext(ctx) != store.DefaultTenantID {
+		return
+	}
 	if settings == nil {
 		settings = &SecuritySettings{}
 	}
@@ -335,6 +344,9 @@ func (s *SecurityService) AssignUser(ctx context.Context, email, groupID string)
 
 // ListGroupMembers returns the member emails for a given group.
 func (s *SecurityService) ListGroupMembers(ctx context.Context, groupID string) ([]string, error) {
+	if err := s.ensureRootGroup(ctx); err != nil {
+		return nil, err
+	}
 	members, err := s.store.ListGroupMembers(ctx, groupID)
 	if err != nil {
 		return nil, err
@@ -465,6 +477,10 @@ func (s *SecurityService) RemoveUser(ctx context.Context, groupID, email string)
 // GetGroupPolicy returns the policy view for a group, annotating each item
 // with its source ("self" or "inherited").
 func (s *SecurityService) GetGroupPolicy(ctx context.Context, groupID string) (*GroupPolicyView, error) {
+	if err := s.ensureRootGroup(ctx); err != nil {
+		return nil, err
+	}
+
 	// Get the path from root to this group
 	path, err := s.getPathToRoot(ctx, groupID)
 	if err != nil {
@@ -619,6 +635,9 @@ func (s *SecurityService) resolveUserPolicyGroup(ctx context.Context, email stri
 	}
 	if groupID != "" {
 		return groupID, nil
+	}
+	if err := s.ensureRootGroup(ctx); err != nil {
+		return "", err
 	}
 	root, err := s.store.GetRootGroup(ctx)
 	if err != nil {
@@ -818,7 +837,7 @@ func (s *SecurityService) GetSettings(ctx context.Context) (*SecuritySettings, e
 		return nil, err
 	}
 	settingsCopy := *settings
-	s.cacheSettings(&settingsCopy)
+	s.cacheSettings(ctx, &settingsCopy)
 	return settings, nil
 }
 
@@ -826,7 +845,7 @@ func (s *SecurityService) getSettingsUncached(ctx context.Context) (*SecuritySet
 	if s.system == nil {
 		return &SecuritySettings{}, nil
 	}
-	raw, err := s.system.Get(ctx, settingsKey)
+	raw, err := s.system.Get(ctx, settingsStorageKey(ctx))
 	if err != nil || raw == "" {
 		return &SecuritySettings{}, nil
 	}
@@ -849,10 +868,10 @@ func (s *SecurityService) UpdateSettings(ctx context.Context, settings *Security
 	if err != nil {
 		return fmt.Errorf("marshal security settings: %w", err)
 	}
-	if err := s.system.Set(ctx, settingsKey, string(data)); err != nil {
+	if err := s.system.Set(ctx, settingsStorageKey(ctx), string(data)); err != nil {
 		return fmt.Errorf("save security settings: %w", err)
 	}
-	s.cacheSettings(settings)
+	s.cacheSettings(ctx, settings)
 
 	// Audit log for centralized_security_enabled change
 	if old.CentralizedSecurityEnabled != settings.CentralizedSecurityEnabled {
@@ -903,18 +922,29 @@ func (s *SecurityService) SetDefaultGroup(ctx context.Context, groupID string) e
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	if err := s.system.Set(ctx, settingsKey, string(data)); err != nil {
+	if err := s.system.Set(ctx, settingsStorageKey(ctx), string(data)); err != nil {
 		return err
 	}
-	s.cacheSettings(settings)
+	s.cacheSettings(ctx, settings)
 	s.invalidateGroupTreeCache()
 	return nil
+}
+
+func settingsStorageKey(ctx context.Context) string {
+	tenantID := tenantIDFromContext(ctx)
+	if tenantID == store.DefaultTenantID {
+		return settingsKey
+	}
+	return "tenant:" + tenantID + ":" + settingsKey
 }
 
 // --- Root Group Helper ---
 
 // GetRootGroupID returns the ID of the root group.
 func (s *SecurityService) GetRootGroupID(ctx context.Context) (string, error) {
+	if err := s.ensureRootGroup(ctx); err != nil {
+		return "", err
+	}
 	root, err := s.store.GetRootGroup(ctx)
 	if err != nil {
 		return "", fmt.Errorf("get root group: %w", err)
@@ -923,6 +953,16 @@ func (s *SecurityService) GetRootGroupID(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("root group not found")
 	}
 	return root.ID, nil
+}
+
+func (s *SecurityService) ensureRootGroup(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	if err := s.store.InitRootGroup(ctx); err != nil {
+		return fmt.Errorf("init root group: %w", err)
+	}
+	return nil
 }
 
 // AssignNewUser assigns a newly enrolled user to the appropriate group based on

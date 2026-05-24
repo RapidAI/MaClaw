@@ -182,7 +182,6 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	if s.onProgress != nil {
 		emitCodingAgentEvent(s.onProgress, newCodingAgentTaskEvent(codingAgentEventPhaseRunning, task, taskTitle, ""))
-		s.onProgress(fmt.Sprintf("🔧 开始执行任务 T%d: %s", task.Index, taskTitle))
 	}
 
 	cb := &codingSubAgentCallbacks{
@@ -484,11 +483,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		commandResult := executeCodingBash(bashArgs, func(text string) {
-			if c.subagent.onProgress != nil {
-				c.subagent.onProgress(text)
-			}
-		})
+		// Avoid raw bash heartbeat rows in chat; tool_started/tool_finished events
+		// already keep the AI assistant panel updated while the command runs.
+		commandResult := executeCodingBash(bashArgs, nil)
 		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.Kind == codingCommandResultOK)
 		return commandResult.toolResult()
 	case "list_directory":
@@ -2207,9 +2204,8 @@ func (c *codingSubAgentCallbacks) OnProgress(text string) {
 }
 
 func (c *codingSubAgentCallbacks) OnToolCall(name string) {
-	if c.subagent.onProgress != nil {
-		c.subagent.onProgress(fmt.Sprintf("🔧 %s", name))
-	}
+	// Tool start/finish progress is emitted as structured Coding Agent events in
+	// executeToolWithOutcome, which the UI can compact into one live status row.
 }
 
 func (c *codingSubAgentCallbacks) emitToolStartedEvent(name string) {

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
@@ -14,9 +16,11 @@ import (
 type mockLLMCallerGUI struct {
 	Response string
 	Err      error
+	Calls    int
 }
 
 func (m *mockLLMCallerGUI) DoSimpleLLMRequest(messages []interface{}, timeout time.Duration) (string, error) {
+	m.Calls++
 	if m.Err != nil {
 		return "", m.Err
 	}
@@ -25,6 +29,18 @@ func (m *mockLLMCallerGUI) DoSimpleLLMRequest(messages []interface{}, timeout ti
 
 type mockEngineCallbacksGUI struct {
 	SentTexts []string
+}
+
+type failingWorkflowStateStoreGUI struct {
+	workflow.NullStore
+	fail bool
+}
+
+func (s *failingWorkflowStateStoreGUI) SaveWorkflowState(_ *workflow.WorkflowState) error {
+	if s != nil && s.fail {
+		return errors.New("save workflow state failed")
+	}
+	return nil
 }
 
 func (m *mockEngineCallbacksGUI) SendTextToUser(userID, text string) error {
@@ -55,6 +71,26 @@ func setupWorkflowTestHandler(llm workflow.LLMCaller) (*IMMessageHandler, *mockE
 	app := &App{workflowEngine: engine}
 	handler := &IMMessageHandler{app: app, confirmationStore: newAIConfirmationStore("")}
 	return handler, cb
+}
+
+func TestWorkflowInterceptionLowConfidenceUnknownStillReachesUnderstandingConfirmation(t *testing.T) {
+	llm := &mockLLMCallerGUI{
+		Response: `{"intent":{"category":"presentation_design","summary":"Create community anniversary PPT","goals":["Build a polished deck"],"constraints":[],"confidence":0.82,"ready":true},"reply":"Ready to confirm presentation workflow.","ready":true}`,
+	}
+	handler, _ := setupWorkflowTestHandler(llm)
+	handler.unifiedClassifier = intent.New(intent.Config{})
+	userID := "test-low-conf-uic-understanding-confirm"
+
+	resp := handler.handleWorkflowInterception(userID, "create a five year community anniversary ppt", "desktop")
+	if llm.Calls == 0 {
+		t.Fatal("low-confidence unknown UIC result must still call IntentUnderstandingManager")
+	}
+	if resp == nil {
+		t.Fatal("ready workflow from IntentUnderstandingManager should return confirmation response")
+	}
+	if handler.app.workflowEngine.HasActiveWorkflow(userID) {
+		t.Fatal("workflow should wait for confirmation instead of starting immediately")
+	}
 }
 
 func TestBugCondition_CategoryNoneReadyTrue_ShouldNotCallStartWorkflow(t *testing.T) {
@@ -776,6 +812,140 @@ func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
 	}
 }
 
+func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
+	userID := "desktop-user:C:/Users/ma139"
+	registry := workflow.NewWorkflowRegistry()
+	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	handler := NewIMMessageHandlerStandalone(StandaloneConfig{
+		WorkflowEngine:    engine,
+		UnifiedClassifier: intent.New(intent.Config{}),
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://localhost:8080/v1", Model: "test-model", Key: "test-key"}
+		},
+	})
+	defer handler.memory.Stop()
+	app := &App{workflowEngine: engine, remoteSessions: NewRemoteSessionManager(nil)}
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	client.imHandler = handler
+	app.remoteSessions.SetHubClient(client)
+	handler.app = app
+
+	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+		workflowFormUserIDField:     userID,
+		workflowFormWorkflowIDField: engine.GetActiveWorkflow(userID).ID,
+		"project_name":              "snake",
+		"tech_stack":                "cpp",
+		"description":               "graphical game",
+	}, "req-workflow-form")
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("form submit failed: %#v", resp)
+	}
+	if !resp.Deferred || resp.RequestID != "req-workflow-form" {
+		t.Fatalf("form submit continuation should preserve request id and defer response, got %#v", resp)
+	}
+	for i := 0; i < 50; i++ {
+		if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
+		t.Fatal("direct workflow continuation should consume marker for the same user")
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws == nil || !ws.PhaseFormSubmitted {
+		t.Fatalf("form should be submitted on original workflow user, got %#v", ws)
+	}
+	if ws := engine.GetActiveWorkflow(desktopUserID); ws != nil {
+		t.Fatalf("form submit must not fork workflow onto generic desktop user: %#v", ws)
+	}
+}
+
+func TestWorkflowFormSubmitRejectsHiddenPhaseMismatch(t *testing.T) {
+	userID := "desktop-user:C:/Users/ma139"
+	registry := workflow.NewWorkflowRegistry()
+	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
+	engine := workflow.NewWorkflowEngine(registry, understanding, workflow.NullStore{}, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	handler := NewIMMessageHandlerStandalone(StandaloneConfig{WorkflowEngine: engine})
+	defer handler.memory.Stop()
+	app := &App{workflowEngine: engine, remoteSessions: NewRemoteSessionManager(nil)}
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	client.imHandler = handler
+	app.remoteSessions.SetHubClient(client)
+	handler.app = app
+
+	resp := app.handleWorkflowFormAgentViewSubmit(workflow.PhaseCodingRequirements, map[string]interface{}{
+		workflowFormPhaseField:      "stale_phase",
+		workflowFormUserIDField:     userID,
+		workflowFormWorkflowIDField: state.ID,
+		"project_name":              "snake",
+	}, "req-workflow-form")
+	if resp == nil || resp.Error == "" {
+		t.Fatalf("phase mismatch should fail, got %#v", resp)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.PhaseFormSubmitted {
+		t.Fatalf("phase-mismatched submit must not mutate workflow form state, got %#v", ws)
+	}
+}
+
+func TestWorkflowFormLifecyclePayloadWithFallbackPreservesSubmittedIdentity(t *testing.T) {
+	payload := workflowFormLifecyclePayloadWithFallback("wf-new", workflow.PhaseCodingRequirements, "desktop-user:C:/new", map[string]interface{}{
+		workflowFormWorkflowIDField: "wf-old",
+		workflowFormPhaseField:      workflow.PhaseCodingRequirements,
+		workflowFormUserIDField:     "desktop-user:C:/old",
+	})
+	if payload["workflow_id"] != "wf-old" || payload["workflow_user_id"] != "desktop-user:C:/old" {
+		t.Fatalf("submitted workflow identity must win over server fallback, got %#v", payload)
+	}
+}
+
+func TestWorkflowFormDismissDoesNotClearWhenSkipPersistenceFails(t *testing.T) {
+	userID := "desktop-user:C:/Users/ma139"
+	registry := workflow.NewWorkflowRegistry()
+	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, &mockLLMCallerGUI{}, registry)
+	store := &failingWorkflowStateStoreGUI{}
+	engine := workflow.NewWorkflowEngine(registry, understanding, store, &mockEngineCallbacksGUI{})
+	state, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	store.fail = true
+
+	handler := NewIMMessageHandlerStandalone(StandaloneConfig{WorkflowEngine: engine})
+	defer handler.memory.Stop()
+	app := &App{workflowEngine: engine, remoteSessions: NewRemoteSessionManager(nil)}
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	client.imHandler = handler
+	app.remoteSessions.SetHubClient(client)
+	handler.app = app
+	beforeSeq := app.agentViewSeq()
+
+	resp, err := app.DismissAgentView(AgentViewDismissPayload{ViewID: "workflow:form:" + workflow.PhaseCodingRequirements, Data: map[string]interface{}{
+		workflowFormUserIDField:     userID,
+		workflowFormWorkflowIDField: state.ID,
+		workflowFormPhaseField:      workflow.PhaseCodingRequirements,
+	}})
+	if err == nil {
+		t.Fatalf("dismiss should surface skip persistence failure, resp=%#v", resp)
+	}
+	if got := app.agentViewSeq(); got != beforeSeq {
+		t.Fatalf("failed dismiss must not emit a clear lifecycle event, seq=%d want %d", got, beforeSeq)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.PhaseFormSkipped || ws.PhaseFormSubmitted || len(ws.PhaseFormData) != 0 {
+		t.Fatalf("failed dismiss must not mutate workflow form gate, got %#v", ws)
+	}
+}
+
 func TestSubmitWorkflowInputIfWaitingIMUsesTextFormGate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
@@ -860,10 +1030,49 @@ func TestWorkflowFormMatchesActiveWorkflowRejectsStaleDismiss(t *testing.T) {
 	}) {
 		t.Fatal("stale workflow form dismiss should not match active workflow")
 	}
+	if workflowFormMatchesActiveWorkflow(engine, userID, state.CurrentPhase, map[string]interface{}{
+		workflowFormPhaseField:      "stale_phase",
+		workflowFormWorkflowIDField: state.ID,
+	}) {
+		t.Fatal("stale workflow phase dismiss should not match active workflow")
+	}
 	if !workflowFormMatchesActiveWorkflow(engine, userID, state.CurrentPhase, map[string]interface{}{
+		workflowFormPhaseField:      state.CurrentPhase,
 		workflowFormWorkflowIDField: state.ID,
 	}) {
 		t.Fatal("current workflow form dismiss should match active workflow")
+	}
+}
+
+func TestWorkflowFormLifecyclePayloadFallsBackToServerContext(t *testing.T) {
+	userID := "desktop-user:C:/work"
+	payload := workflowFormLifecyclePayloadFor("wf-current", workflow.PhaseCodingRequirements, userID, map[string]interface{}{})
+	if payload["workflow_id"] != "wf-current" {
+		t.Fatalf("workflow_id = %#v", payload["workflow_id"])
+	}
+	if payload["workflow_phase"] != workflow.PhaseCodingRequirements {
+		t.Fatalf("workflow_phase = %#v", payload["workflow_phase"])
+	}
+	if payload["workflow_user_id"] != userID {
+		t.Fatalf("workflow_user_id = %#v", payload["workflow_user_id"])
+	}
+}
+
+func TestWorkflowFormLifecyclePayloadPreservesSubmittedContext(t *testing.T) {
+	userID := "desktop-user:C:/work"
+	payload := workflowFormLifecyclePayloadFor("", "", "", map[string]interface{}{
+		workflowFormWorkflowIDField: "wf-submitted",
+		workflowFormPhaseField:      workflow.PhaseCodingRequirements,
+		workflowFormUserIDField:     userID,
+	})
+	if payload["workflow_id"] != "wf-submitted" {
+		t.Fatalf("workflow_id = %#v", payload["workflow_id"])
+	}
+	if payload["workflow_phase"] != workflow.PhaseCodingRequirements {
+		t.Fatalf("workflow_phase = %#v", payload["workflow_phase"])
+	}
+	if payload["workflow_user_id"] != userID {
+		t.Fatalf("workflow_user_id = %#v", payload["workflow_user_id"])
 	}
 }
 
@@ -986,6 +1195,7 @@ func TestWorkflowFormGateShortNonWorkflowBypassesFormLoop(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine
 	userID := "test-form-short-nonworkflow"
+	handler.workflowAgentLoopMarker.Store(userID, true)
 	if _, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
@@ -993,6 +1203,9 @@ func TestWorkflowFormGateShortNonWorkflowBypassesFormLoop(t *testing.T) {
 	resp := handler.handleWorkflowInterception(userID, "服务器信息", "desktop")
 	if resp != nil {
 		t.Fatalf("short non-workflow input should bypass workflow form, got %#v", resp)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
+		t.Fatal("form-gate chat bypass should clear stale workflow loop marker")
 	}
 	if ws := engine.GetActiveWorkflow(userID); ws == nil || ws.PhaseFormSubmitted || ws.PhaseFormSkipped {
 		t.Fatalf("bypass should leave workflow form gate untouched, got %#v", ws)
@@ -1058,7 +1271,7 @@ func TestCaptureWorkflowDocAfterAgentLoopAutoAdvancesNonConfirmPhase(t *testing.
 		t.Fatalf("expected implementation phase before capture, got %#v", engineState)
 	}
 
-	handler.captureWorkflowDocAfterAgentLoop(IMUserMessage{UserID: userID}, &IMAgentResponse{Text: reviewStateValidContentGUI()}, true)
+	handler.captureWorkflowDocAfterAgentLoop(IMUserMessage{UserID: userID}, nil, &IMAgentResponse{Text: reviewStateValidContentGUI()}, true)
 
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingReview {

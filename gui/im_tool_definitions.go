@@ -26,9 +26,9 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, gemini"},
 			}, []string{"tool"}),
-		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）。适用于服务器登录、远程命令、日志排查、服务重启与文件传输。长命令请优先使用 exec_background。",
+		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close）。适用于服务器登录、远程命令、日志排查、服务重启与文件传输。长命令请优先使用 exec_background。",
 			map[string]interface{}{
-				"action":          map[string]string{"type": "string", "description": "操作: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close"},
+				"action":          map[string]string{"type": "string", "description": "操作: connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close"},
 				"host":            map[string]string{"type": "string", "description": "远程主机地址（connect 时必填）"},
 				"user":            map[string]string{"type": "string", "description": "登录用户名（connect 时必填）"},
 				"port":            map[string]string{"type": "integer", "description": "SSH 端口（默认 22）"},
@@ -40,8 +40,9 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"session_id":      map[string]string{"type": "string", "description": "SSH 会话 ID（exec/exec_background/upload/download/close 时必填）"},
 				"command":         map[string]string{"type": "string", "description": "要执行的命令（exec/exec_background 时必填）"},
 				"wait_seconds":    map[string]string{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 15，最大 600。命令完成后会立即返回不需等满；cp/docker pull 等耗时命令建议设 30-60）"},
-				"task_id":         map[string]string{"type": "string", "description": "后台任务 ID（check_task/kill_task 时必填）"},
-				"tail_lines":      map[string]string{"type": "integer", "description": "查看日志尾部行数（check_task 时可选，默认 50）"},
+				"task_id":         map[string]string{"type": "string", "description": "后台任务 ID（check_task/wait_task/kill_task 时必填）"},
+				"tail_lines":      map[string]string{"type": "integer", "description": "查看日志尾部行数（check_task/wait_task 时可选，默认 50）"},
+				"timeout":         map[string]string{"type": "integer", "description": "wait_task 等待超时秒数（默认 60，最大 600）"},
 				"local_path":      map[string]string{"type": "string", "description": "本地文件/目录路径（upload/download 时必填）"},
 				"remote_path":     map[string]string{"type": "string", "description": "远程文件/目录路径（upload/download 时必填）"},
 			}, []string{"action"}),
@@ -112,11 +113,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填，从 run 返回值中获取）"},
 				"auto_fix":     map[string]string{"type": "boolean", "description": "与 action=validate 配合使用，为 true 时自动修复检测到的可移植性问题（可选，默认 false）"},
 			}, []string{"action"}),
-		toolDef("parallel_execute", "并行执行多个编程任务，每个任务在独立会话中运行（最多5个）",
+		toolDef("parallel_execute", "按 SubAgent 并发数分批执行多个编程任务（最多5个任务，并发上限4），每个任务在独立会话中运行",
 			map[string]interface{}{
 				"tasks": map[string]interface{}{
 					"type":        "array",
-					"description": "任务列表，每个任务包含 tool（工具名）、description（任务描述）、project_path（项目路径）",
+					"description": "任务列表；按数组顺序和 SubAgent 并发数执行，每个任务包含 tool（工具名）、description（任务描述）、project_path（项目路径）",
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{

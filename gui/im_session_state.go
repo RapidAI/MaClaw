@@ -42,6 +42,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	// Workflow ephemeral markers (LoadAndDelete-consumed, but clean up
 	// in case the consumer never ran — e.g. user /new before next message).
 	h.workflowAgentLoopMarker.Delete(userID)
+	h.workflowReviewExperienceContext.Delete(userID)
 	h.stashedPhasePrompt.Delete(userID)
 	h.workflowOriginalRequest.Delete(userID)
 

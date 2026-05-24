@@ -1104,21 +1104,52 @@ func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) stri
 	}
 	result, err := orch.ExecuteParallel(tasks)
 	if err != nil {
-		return fmt.Sprintf("并行执行失败: %s", err.Error())
+		return fmt.Sprintf("队列执行失败: %s", err.Error())
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("任务 %s: %s\n", result.TaskID, result.Summary))
-	for key, sr := range result.Results {
-		b.WriteString(fmt.Sprintf("- %s: tool=%s status=%s", key, sr.Tool, sr.Status))
-		if sr.SessionID != "" {
-			b.WriteString(fmt.Sprintf(" session=%s", sr.SessionID))
+	for i := 0; i < len(tasks); i++ {
+		key := fmt.Sprintf("task_%d", i)
+		sr, ok := result.Results[key]
+		if !ok {
+			continue
 		}
-		if sr.Error != "" {
-			b.WriteString(fmt.Sprintf(" error=%s", sr.Error))
-		}
+		b.WriteString(formatQueuedSessionResultLine(key, sr))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func formatQueuedSessionResultLine(key string, sr SessionResult) string {
+	status := sr.Status.String()
+	skipped := isQueuedSessionSkipped(sr)
+	if skipped {
+		status = "skipped"
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("- %s: tool=%s status=%s", key, sr.Tool, status))
+	if sr.SessionID != "" {
+		b.WriteString(fmt.Sprintf(" session=%s", sr.SessionID))
+	}
+	if sr.Error != "" {
+		label := "error"
+		value := sr.Error
+		if skipped {
+			label = "reason"
+			value = queuedSessionSkipReason(sr)
+		}
+		b.WriteString(fmt.Sprintf(" %s=%s", label, value))
+	}
+	return b.String()
+}
+
+func queuedSessionSkipReason(sr SessionResult) string {
+	const prefix = "skipped:"
+	errorText := strings.TrimSpace(sr.Error)
+	if strings.HasPrefix(strings.ToLower(errorText), prefix) {
+		return strings.TrimSpace(errorText[len(prefix):])
+	}
+	return errorText
 }
 
 func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string {

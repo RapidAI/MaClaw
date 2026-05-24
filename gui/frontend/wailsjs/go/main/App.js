@@ -835,6 +835,14 @@ export function SetMaclawAgentMaxIterations(arg1) {
   return window['go']['main']['App']['SetMaclawAgentMaxIterations'](arg1);
 }
 
+export function GetSubAgentConcurrency() {
+  return window['go']['main']['App']['GetSubAgentConcurrency']();
+}
+
+export function SetSubAgentConcurrency(arg1) {
+  return window['go']['main']['App']['SetSubAgentConcurrency'](arg1);
+}
+
 export function GetLLMTrajectoryLogging() {
   return window['go']['main']['App']['GetLLMTrajectoryLogging']();
 }
@@ -998,6 +1006,10 @@ export function BuildExperienceSkillDraft(arg1) {
   return window['go']['main']['App']['BuildExperienceSkillDraft'](arg1);
 }
 
+export function BuildExperienceBlockedSkillDraft(arg1) {
+  return window['go']['main']['App']['BuildExperienceBlockedSkillDraft'](arg1);
+}
+
 export function BuildExperienceRollbackWorkflowDraft(arg1) {
   return window['go']['main']['App']['BuildExperienceRollbackWorkflowDraft'](arg1);
 }
@@ -1016,6 +1028,14 @@ export function RecordExperienceTraceFollowUp(arg1, arg2) {
 
 export function RecordExperienceDraftReview(arg1) {
   return window['go']['main']['App']['RecordExperienceDraftReview'](arg1);
+}
+
+export function RecordBlockedSkillDraftReview(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['RecordBlockedSkillDraftReview'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ConfirmPreviewedSkillDraftReview(arg1) {
+  return window['go']['main']['App']['ConfirmPreviewedSkillDraftReview'](arg1);
 }
 
 export function GetMemoryMaxBackups() {

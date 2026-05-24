@@ -398,14 +398,23 @@ func TestEngine_DirectPromptAndToolsRespectWorkflowGates(t *testing.T) {
 	if prompt := engine.BuildPhasePrompt("u_direct_form"); prompt != "" {
 		t.Fatalf("direct BuildPhasePrompt must not bypass form gate, got %q", prompt)
 	}
+	if !engine.IsPhaseExecutionBlocked("u_direct_form") {
+		t.Fatal("form gate should block phase execution")
+	}
 	if policy := engine.GetPhaseToolFilter("u_direct_form"); policy != ToolFilterNone {
 		t.Fatalf("direct tool filter must be none while form gate is pending, got %s", policy)
+	}
+	if policy := engine.GetActivePhaseToolFilter("u_direct_form"); policy != ToolFilterDocOnly {
+		t.Fatalf("active phase tool filter should remain available while form gate is pending, got %s", policy)
 	}
 	if err := engine.SkipPhaseForm("u_direct_form"); err != nil {
 		t.Fatalf("SkipPhaseForm: %v", err)
 	}
 	if prompt := engine.BuildPhasePrompt("u_direct_form"); prompt == "" {
 		t.Fatal("prompt should be available after explicit form skip")
+	}
+	if engine.IsPhaseExecutionBlocked("u_direct_form") {
+		t.Fatal("form skip should unblock phase execution")
 	}
 	if policy := engine.GetPhaseToolFilter("u_direct_form"); policy != ToolFilterDocOnly {
 		t.Fatalf("tool filter should be restored after form skip, got %s", policy)
@@ -417,8 +426,14 @@ func TestEngine_DirectPromptAndToolsRespectWorkflowGates(t *testing.T) {
 	if prompt := engine.BuildPhasePrompt("u_direct_input"); prompt != "" {
 		t.Fatalf("direct BuildPhasePrompt must not bypass input gate, got %q", prompt)
 	}
+	if !engine.IsPhaseExecutionBlocked("u_direct_input") {
+		t.Fatal("input gate should block phase execution")
+	}
 	if policy := engine.GetPhaseToolFilter("u_direct_input"); policy != ToolFilterNone {
 		t.Fatalf("direct tool filter must be none while input gate is pending, got %s", policy)
+	}
+	if policy := engine.GetActivePhaseToolFilter("u_direct_input"); policy != ToolFilterDocOnly {
+		t.Fatalf("active phase tool filter should remain available while input gate is pending, got %s", policy)
 	}
 
 	if _, err := engine.StartWorkflow("u_direct_review", StructuredIntent{Category: WorkflowCoding, Summary: "build"}); err != nil {
@@ -428,8 +443,14 @@ func TestEngine_DirectPromptAndToolsRespectWorkflowGates(t *testing.T) {
 	if prompt := engine.BuildPhasePrompt("u_direct_review"); prompt != "" {
 		t.Fatalf("direct BuildPhasePrompt must not bypass review gate, got %q", prompt)
 	}
+	if !engine.IsPhaseExecutionBlocked("u_direct_review") {
+		t.Fatal("review gate should block phase execution")
+	}
 	if policy := engine.GetPhaseToolFilter("u_direct_review"); policy != ToolFilterNone {
 		t.Fatalf("direct tool filter must be none while review gate is pending, got %s", policy)
+	}
+	if policy := engine.GetActivePhaseToolFilter("u_direct_review"); policy != ToolFilterDocOnly {
+		t.Fatalf("active phase tool filter should remain available while review gate is pending, got %s", policy)
 	}
 }
 

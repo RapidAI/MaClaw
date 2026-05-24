@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 )
 
 // UsageRecord records a single tool invocation outcome.
@@ -42,15 +44,17 @@ type ToolExperience struct {
 	RetryCount   int
 	RecoveryTool string
 	FinalOutcome string
+	EventContext lifecycle.EventContext
 }
 
 // UsageTracker maintains a rolling window of tool usage history.
 type UsageTracker struct {
-	mu       sync.RWMutex
-	saveMu   sync.Mutex
-	records  []UsageRecord
-	path     string
-	maxItems int
+	mu        sync.RWMutex
+	saveMu    sync.Mutex
+	records   []UsageRecord
+	path      string
+	maxItems  int
+	eventSink lifecycle.EventSink
 }
 
 // NewUsageTracker creates or loads a UsageTracker from the given path.
@@ -88,6 +92,22 @@ func (t *UsageTracker) RecordOutcome(toolName string, queryTokens []string, succ
 	t.RecordExperience(ToolExperience{ToolName: toolName, QueryTokens: queryTokens, Success: success, FollowUp: followUp})
 }
 
+func (t *UsageTracker) RecordOutcomeWithContext(toolName string, queryTokens []string, success bool, followUp string, eventContext lifecycle.EventContext) {
+	t.RecordExperience(ToolExperience{ToolName: toolName, QueryTokens: queryTokens, Success: success, FollowUp: followUp, EventContext: eventContext})
+}
+
+// SetExperienceEventSink connects tool outcomes to the shared experience
+// lifecycle. The tracker remains usable without a sink; callers can wire one
+// when they want retrieval/tool attribution in the same trace stream.
+func (t *UsageTracker) SetExperienceEventSink(sink lifecycle.EventSink) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.eventSink = sink
+	t.mu.Unlock()
+}
+
 // RecordExperience records a richer tool outcome for later routing and
 // self-evolution distillation.
 func (t *UsageTracker) RecordExperience(exp ToolExperience) {
@@ -117,8 +137,30 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 	}
 	snapshot := make([]UsageRecord, len(t.records))
 	copy(snapshot, t.records)
+	sink := t.eventSink
 	t.mu.Unlock()
-	go t.saveSnapshot(snapshot)
+	if sink != nil {
+		sink.RecordExperienceEvent(exp.EventContext.Apply(lifecycle.Event{
+			EventType:  lifecycle.EventToolCallFinished,
+			ToolName:   r.ToolName,
+			Query:      strings.Join(r.QueryTokens, " "),
+			Reason:     r.FollowUp,
+			Outcome:    usageRecordOutcome(r),
+			ErrorClass: r.ErrorClass,
+			CreatedAt:  r.Timestamp,
+		}))
+	}
+	_ = t.saveSnapshot(snapshot)
+}
+
+func usageRecordOutcome(r UsageRecord) string {
+	if r.FinalOutcome != "" {
+		return r.FinalOutcome
+	}
+	if r.Success {
+		return "success"
+	}
+	return "failure"
 }
 
 func normalizeUsageQueryTokens(queryTokens []string) []string {

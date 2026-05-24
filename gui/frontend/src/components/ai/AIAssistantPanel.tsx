@@ -26,7 +26,7 @@ import { AssistantInputStack } from "./AssistantInputStack";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { AssistantPreviewPane } from "./AssistantPreviewPane";
-import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
+import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
 import { AITabBar } from "./AITabBar";
 import { useAITabManager } from "./useAITabManager";
@@ -39,6 +39,19 @@ import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
+
+function compactCodingAgentProgressMessages(messages: ChatMessage[]): ChatMessage[] {
+    let latestCodingIndex = -1;
+    const isCodingProgress = messages.map(message => !!parseCodingAgentProgress(message.content || ""));
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (isCodingProgress[i]) {
+            latestCodingIndex = i;
+            break;
+        }
+    }
+    if (latestCodingIndex < 0) return messages;
+    return messages.filter((_message, index) => index === latestCodingIndex || !isCodingProgress[index]);
+}
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled } = props;
@@ -734,7 +747,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [cancelPending, cancelSession, draftInputValue, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue]);
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel, lang)), [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel, lang]);
-    const renderedProgressMessages = useMemo(() => displayProgressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang)), [displayProgressMessages, executeAction, t, savedFileLabel, lang]);
+    const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(displayProgressMessages), [displayProgressMessages]);
+    const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang)), [compactProgressMessages, executeAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline
         ? (maximized
             ? maximizedInlineStyle

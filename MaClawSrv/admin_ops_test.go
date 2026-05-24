@@ -742,6 +742,9 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "admin", Action: "admin.service_state_imported", ResourceType: "service_state", ResourceID: "service", Metadata: map[string]string{"dry_run": "false"}}); err != nil {
 		t.Fatalf("RecordAuditEvent import risk: %v", err)
 	}
+	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "user", Action: "web.launch_token.rejected", ResourceType: "web_launch_token", ResourceID: "launch-token", Metadata: map[string]string{"reason": "invalid_or_expired", "launch_token_hash_prefix": "abc123", "launch_token": "clear-launch-token"}}); err != nil {
+		t.Fatalf("RecordAuditEvent launch token rejected risk: %v", err)
+	}
 	for _, event := range []agentservice.AuditEvent{
 		{ActorType: "admin", Action: "admin.credential_created", ResourceType: "credential", ResourceID: "cred-created"},
 		{ActorType: "admin", Action: "admin.credential_secret_rotated", ResourceType: "credential", ResourceID: "cred-rotated"},
@@ -894,6 +897,38 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 		}
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/security/risk-events?kind=WEB_LAUNCH_TOKEN_REJECTED", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("launch-token risk events status = %d body = %s", w.Code, w.Body.String())
+	}
+	var launchRejected struct {
+		Filters    map[string]any   `json:"filters"`
+		Items      []adminRiskEvent `json:"items"`
+		Total      int              `json:"total"`
+		KindCounts map[string]int   `json:"kind_counts"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&launchRejected); err != nil {
+		t.Fatalf("decode launch-token risk events: %v", err)
+	}
+	if launchRejected.Filters["kind"] != "web_launch_token_rejected" || launchRejected.Total == 0 || len(launchRejected.Items) == 0 || launchRejected.KindCounts["web_launch_token_rejected"] == 0 {
+		t.Fatalf("expected web_launch_token_rejected risk events and kind counts, got %#v", launchRejected)
+	}
+	joinedLaunchRejected, err := json.Marshal(launchRejected.Items)
+	if err != nil {
+		t.Fatalf("marshal launch-token risk events: %v", err)
+	}
+	if strings.Contains(string(joinedLaunchRejected), "clear-launch-token") {
+		t.Fatalf("expected launch token metadata to be redacted, got %s", joinedLaunchRejected)
+	}
+	for _, item := range launchRejected.Items {
+		if item.Kind != "web_launch_token_rejected" || item.Severity != "medium" {
+			t.Fatalf("launch-token kind filter returned wrong risk event: %#v", item)
+		}
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/security/risk-events?limit=20", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()
@@ -914,7 +949,7 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 			t.Fatalf("unrelated audit event should not become a risk event: %#v", item)
 		}
 	}
-	for _, kind := range []string{"auth_failed", "admin_authorization_denied", "credential_created", "credential_rotated", "sandbox_admin_changed", "service_config_changed", "knowledge_policy_changed", "skill_source_policy_changed", "diagnostics_bundle_downloaded", "log_rotated", "job_canceled", "runtime_gc"} {
+	for _, kind := range []string{"auth_failed", "web_launch_token_rejected", "admin_authorization_denied", "credential_created", "credential_rotated", "sandbox_admin_changed", "service_config_changed", "knowledge_policy_changed", "skill_source_policy_changed", "diagnostics_bundle_downloaded", "log_rotated", "job_canceled", "runtime_gc"} {
 		if !seenKinds[kind] {
 			t.Fatalf("expected %s risk in unfiltered list, got %#v", kind, all.Items)
 		}

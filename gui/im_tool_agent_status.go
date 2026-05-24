@@ -25,6 +25,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -299,15 +300,7 @@ func formatSSHTaskStatusForBtw(s *remote.BackgroundTaskStatus) string {
 func pendingBackgroundTaskHintFromStatus(rs RuntimeStatus, loopStart time.Time) string {
 	var hints []string
 
-	for _, t := range rs.Tasks {
-		// Only running/pending tasks started in this loop.
-		if !t.Status.IsActive() {
-			continue
-		}
-		if t.StartedAt.Before(loopStart) {
-			continue
-		}
-
+	for _, t := range pendingBackgroundTasksFromStatus(rs, loopStart) {
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
 		cmd := t.Command
 		if len([]rune(cmd)) > 80 {
@@ -317,8 +310,8 @@ func pendingBackgroundTaskHintFromStatus(rs RuntimeStatus, loopStart time.Time) 
 		switch t.Source {
 		case runtimeTaskSourceSSH:
 			hints = append(hints, fmt.Sprintf(
-				"- SSH 后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 ssh(action=\"check_task\", task_id=\"%s\") 查看进度",
-				t.TaskID, elapsed, cmd, t.TaskID))
+				"- SSH 后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 ssh(action=\"check_task\", task_id=\"%s\") 查看进度；若预计很快结束，可调用 ssh(action=\"wait_task\", task_id=\"%s\", timeout=60) 有界等待",
+				t.TaskID, elapsed, cmd, t.TaskID, t.TaskID))
 		case runtimeTaskSourceLocal:
 			hints = append(hints, fmt.Sprintf(
 				"- 本地后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 async_wait(action=\"check\", task_id=\"%s\") 查看进度",
@@ -330,4 +323,60 @@ func pendingBackgroundTaskHintFromStatus(rs RuntimeStatus, loopStart time.Time) 
 		return ""
 	}
 	return "⚠️ 检测到以下后台任务仍在运行，请优先检查其状态：\n" + strings.Join(hints, "\n")
+}
+
+func hasPendingBackgroundTaskFromStatus(rs RuntimeStatus, loopStart time.Time) bool {
+	return len(pendingBackgroundTasksFromStatus(rs, loopStart)) > 0
+}
+
+func pendingBackgroundTaskKeyFromStatus(rs RuntimeStatus, loopStart time.Time) string {
+	tasks := pendingBackgroundTasksFromStatus(rs, loopStart)
+	if len(tasks) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(tasks))
+	seen := make(map[string]struct{}, len(tasks))
+	for _, t := range tasks {
+		id := fmt.Sprintf("%s:%s", t.Source, t.TaskID)
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
+func pendingBackgroundTasksFromStatus(rs RuntimeStatus, loopStart time.Time) []RuntimeTaskInfo {
+	pending := make([]RuntimeTaskInfo, 0, len(rs.Tasks))
+	seen := make(map[string]struct{}, len(rs.Tasks))
+	for _, t := range rs.Tasks {
+		t.TaskID = strings.TrimSpace(t.TaskID)
+		if t.TaskID == "" {
+			continue
+		}
+		key := fmt.Sprintf("%s:%s", t.Source, t.TaskID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if !t.Status.IsActive() {
+			continue
+		}
+		if t.StartedAt.Before(loopStart) {
+			continue
+		}
+		seen[key] = struct{}{}
+		pending = append(pending, t)
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].Source != pending[j].Source {
+			return pending[i].Source < pending[j].Source
+		}
+		if pending[i].TaskID != pending[j].TaskID {
+			return pending[i].TaskID < pending[j].TaskID
+		}
+		return pending[i].StartedAt.Before(pending[j].StartedAt)
+	})
+	return pending
 }

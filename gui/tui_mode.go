@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -448,28 +449,85 @@ func (a *tuiModeApp) startWeixinQR() tea.Cmd {
 
 func (a *tuiModeApp) pollWeixinQR(token string) tea.Cmd {
 	return func() tea.Msg {
+		if strings.TrimSpace(token) == "" {
+			return views.OnboardingWeixinPollResultMsg{Status: "error", Message: guiTUIWeixinQRStatusMessage(a.root.Lang(), "empty"), Completed: true}
+		}
 		time.Sleep(1 * time.Second)
 		if a.app == nil {
-			return views.OnboardingWeixinPollResultMsg{Status: "error", Message: guiTUIAppNotInitializedMsg, Completed: true}
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: "error", Message: guiTUIAppNotInitializedMsg, Completed: true}
 		}
 		result := a.app.PollWeixinQRStatus(token)
-		status := strings.TrimSpace(result["status"])
+		status := guiTUINormalizeWeixinQRStatus(result["status"])
 		message := strings.TrimSpace(result["message"])
+		if message == "" {
+			message = guiTUIWeixinQRStatusMessage(a.root.Lang(), status)
+		}
 		if errText := strings.TrimSpace(result["error"]); errText != "" {
 			if message == "" {
 				message = errText
 			}
-			return views.OnboardingWeixinPollResultMsg{Status: status, Message: message, Completed: true}
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: status, Message: message, Completed: strings.TrimSpace(result["retryable"]) != "true"}
 		}
 		switch status {
 		case "confirmed":
-			return views.OnboardingWeixinPollResultMsg{Status: status, Message: message, Success: true, Completed: true, AccountID: result["account_id"]}
-		case "expired", "error":
-			return views.OnboardingWeixinPollResultMsg{Status: status, Message: message, Completed: true}
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: status, Message: message, Success: true, Completed: true, AccountID: result["account_id"]}
+		case "expired", "error", "failed", "fail", "cancelled", "canceled":
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: status, Message: message, Completed: true}
 		default:
-			return views.OnboardingWeixinPollResultMsg{Status: status, Message: message}
+			return views.OnboardingWeixinPollResultMsg{Token: token, Status: status, Message: message}
 		}
 	}
+}
+
+func guiTUINormalizeWeixinQRStatus(status string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(status))
+	if trimmed == "" || trimmed == "error" {
+		return "error"
+	}
+	normalized := weixin.NormalizeQRLoginStatus(weixin.QRLoginStatus(trimmed)).String()
+	if normalized != "" {
+		return normalized
+	}
+	return trimmed
+}
+
+func guiTUIWeixinQRStatusMessage(lang, status string) string {
+	isEn := strings.EqualFold(strings.TrimSpace(lang), "en")
+	switch weixin.NormalizeQRLoginStatus(weixin.QRLoginStatus(status)) {
+	case weixin.QRLoginStatusWait:
+		if isEn {
+			return "Waiting for WeChat scan..."
+		}
+		return "等待微信扫码..."
+	case weixin.QRLoginStatusScanned:
+		if isEn {
+			return "Scanned. Confirm on your phone."
+		}
+		return "已扫码，请在手机上确认。"
+	case weixin.QRLoginStatusConfirmed:
+		if isEn {
+			return "WeChat bound"
+		}
+		return "微信已绑定"
+	case weixin.QRLoginStatusExpired:
+		if isEn {
+			return "WeChat QR code expired. Press Enter to get a new one."
+		}
+		return "微信二维码已过期，请按 Enter 重新获取。"
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "empty":
+		if isEn {
+			return "WeChat QR response is incomplete. Press Enter to try again."
+		}
+		return "微信二维码响应不完整，请按 Enter 重试。"
+	case "error", "failed", "fail", "cancelled", "canceled":
+		if isEn {
+			return "WeChat binding failed. Press Enter to try again."
+		}
+		return "微信绑定失败，请按 Enter 重试。"
+	}
+	return strings.TrimSpace(status)
 }
 
 func (a *tuiModeApp) refreshServiceStatus() tea.Cmd {

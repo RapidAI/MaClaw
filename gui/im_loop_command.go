@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -41,6 +42,10 @@ import (
 //
 // Returns (config, error). Error is non-nil if parsing fails.
 func parseLoopCommand(text string) (agent.LoopCommandConfig, error) {
+	return parseLoopCommandWithLang(text, "")
+}
+
+func parseLoopCommandWithLang(text, lang string) (agent.LoopCommandConfig, error) {
 	// Strip the /loop prefix.
 	text = strings.TrimSpace(text)
 	if strings.HasPrefix(text, "/loop") {
@@ -48,7 +53,7 @@ func parseLoopCommand(text string) (agent.LoopCommandConfig, error) {
 	}
 
 	if text == "" {
-		return agent.LoopCommandConfig{}, fmt.Errorf("usage: /loop [--max N] [--timeout N] [--dir path] <verify_cmd> <goal>\n\nExamples:\n  /loop go test ./... 让所有测试通过\n  /loop npm test --max 5 fix failing tests\n  /loop make build 修复编译错误")
+		return agent.LoopCommandConfig{}, errors.New(localizedIMLoopUsageText(lang))
 	}
 
 	cfg := agent.LoopCommandConfig{}
@@ -63,14 +68,14 @@ func parseLoopCommand(text string) (agent.LoopCommandConfig, error) {
 			i++
 			n, err := strconv.Atoi(args[i])
 			if err != nil || n <= 0 {
-				return cfg, fmt.Errorf("--max must be a positive integer, got %q", args[i])
+				return cfg, errors.New(localizedIMLoopPositiveIntegerError(lang, "--max", args[i]))
 			}
 			cfg.MaxIterations = n
 		case args[i] == "--timeout" && i+1 < len(args):
 			i++
 			n, err := strconv.Atoi(args[i])
 			if err != nil || n <= 0 {
-				return cfg, fmt.Errorf("--timeout must be a positive integer (seconds), got %q", args[i])
+				return cfg, errors.New(localizedIMLoopPositiveIntegerError(lang, "--timeout", args[i]))
 			}
 			cfg.VerifyTimeout = agent.LoopVerifyTimeoutFromSeconds(n)
 		case args[i] == "--dir" && i+1 < len(args):
@@ -82,7 +87,7 @@ func parseLoopCommand(text string) (agent.LoopCommandConfig, error) {
 	}
 
 	if len(positional) == 0 {
-		return cfg, fmt.Errorf("missing verification command. Usage: /loop <verify_cmd> <goal>")
+		return cfg, errors.New(localizedIMLoopMissingVerifyCommandMessage(lang))
 	}
 
 	// First positional is the verify command. Rest is the goal.
@@ -90,7 +95,7 @@ func parseLoopCommand(text string) (agent.LoopCommandConfig, error) {
 	if len(positional) > 1 {
 		cfg.Goal = strings.Join(positional[1:], " ")
 	} else {
-		cfg.Goal = fmt.Sprintf("Make the following command pass (exit 0): %s", cfg.VerifyCmd)
+		cfg.Goal = localizedIMLoopDefaultGoal(lang, cfg.VerifyCmd)
 	}
 
 	return cfg, nil
@@ -136,9 +141,10 @@ func (h *IMMessageHandler) handleLoopCommand(
 	onProgress coretool.ProgressCallback,
 	onToken llm.TokenCallback,
 ) *IMAgentResponse {
-	cfg, err := parseLoopCommand(text)
+	responseLang := h.imCommandResponseLang(msg.Lang)
+	cfg, err := parseLoopCommandWithLang(text, responseLang)
 	if err != nil {
-		return &IMAgentResponse{Text: fmt.Sprintf("❌ %s", err.Error())}
+		return &IMAgentResponse{Text: err.Error()}
 	}
 
 	// Resolve working directory.
@@ -149,7 +155,7 @@ func (h *IMMessageHandler) handleLoopCommand(
 	// Get LLM config.
 	llmCfg := h.getMaclawLLMConfig()
 	if strings.TrimSpace(llmCfg.URL) == "" || strings.TrimSpace(llmCfg.Model) == "" {
-		return &IMAgentResponse{Error: "LLM is not configured. Cannot run /loop."}
+		return &IMAgentResponse{Error: localizedIMLLMNotConfiguredMessage(responseLang, "/loop")}
 	}
 
 	log.Printf("[loop-command] parsed: verify=%q goal=%q max=%d dir=%q",
@@ -175,11 +181,22 @@ func (h *IMMessageHandler) handleLoopCommand(
 	state := agent.RunLoopCommand(ctx, cfg, cb)
 
 	// Build the response.
-	return buildLoopCommandResponse(state)
+	return buildLoopCommandResponseWithLang(state, responseLang)
 }
 
 // buildLoopCommandResponse formats the final loop state into a user-facing response.
 func buildLoopCommandResponse(state *agent.LoopCommandState) *IMAgentResponse {
+	return buildLoopCommandResponseWithLang(state, "zh-Hans")
+}
+
+func buildLoopCommandResponseWithLang(state *agent.LoopCommandState, lang string) *IMAgentResponse {
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		return buildLoopCommandResponseEnglish(state)
+	}
+	return buildLoopCommandResponseChinese(state, lang)
+}
+
+func buildLoopCommandResponseChinese(state *agent.LoopCommandState, lang string) *IMAgentResponse {
 	var sb strings.Builder
 
 	switch state.Status {
@@ -218,4 +235,81 @@ func buildLoopCommandResponse(state *agent.LoopCommandState) *IMAgentResponse {
 	return &IMAgentResponse{Text: sb.String()}
 }
 
+func buildLoopCommandResponseEnglish(state *agent.LoopCommandState) *IMAgentResponse {
+	var sb strings.Builder
 
+	switch state.Status {
+	case agent.LoopStatusSucceeded:
+		sb.WriteString(fmt.Sprintf("**Loop succeeded** - verification passed on iteration %d\n\n", len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf("- Goal: %s\n", state.Config.Goal))
+		sb.WriteString(fmt.Sprintf("- Verify command: `%s`\n", state.Config.VerifyCmd))
+		sb.WriteString(fmt.Sprintf("- Total time: %v\n", state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
+	case agent.LoopStatusFailed:
+		sb.WriteString(fmt.Sprintf("**Loop failed** - verification still failed after %d iteration(s)\n\n", len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf("- Goal: %s\n", state.Config.Goal))
+		sb.WriteString(fmt.Sprintf("- Verify command: `%s`\n", state.Config.VerifyCmd))
+		sb.WriteString(fmt.Sprintf("- Total time: %v\n", state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
+		if len(state.Iterations) > 0 {
+			last := state.Iterations[len(state.Iterations)-1]
+			output := last.VerifyResult.CombinedOutput()
+			if output != "" {
+				sb.WriteString("\n**Last verification output**\n```\n")
+				if len(output) > 1000 {
+					output = output[len(output)-1000:]
+				}
+				sb.WriteString(output)
+				sb.WriteString("\n```\n")
+			}
+		}
+	case agent.LoopStatusCancelled:
+		sb.WriteString(fmt.Sprintf("**Loop canceled** - interrupted on iteration %d\n", len(state.Iterations)))
+	default:
+		sb.WriteString("Loop finished.\n")
+	}
+
+	return &IMAgentResponse{Text: sb.String()}
+}
+
+func localizedIMLoopUsageText(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "Usage: /loop [--max N] [--timeout N] [--dir path] <verify_cmd> <goal>\n\nExamples:\n  /loop go test ./... make all tests pass\n  /loop npm test --max 5 fix failing tests\n  /loop make build fix compile errors"
+	case appLanguageZhHant:
+		return "用法：/loop [--max N] [--timeout N] [--dir path] <驗證命令> <目標>\n\n示例：\n  /loop go test ./... 讓所有測試通過\n  /loop npm test --max 5 修復失敗測試\n  /loop make build 修復編譯錯誤"
+	default:
+		return "用法：/loop [--max N] [--timeout N] [--dir path] <验证命令> <目标>\n\n示例：\n  /loop go test ./... 让所有测试通过\n  /loop npm test --max 5 修复失败测试\n  /loop make build 修复编译错误"
+	}
+}
+
+func localizedIMLoopPositiveIntegerError(lang, flag, got string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return fmt.Sprintf("%s must be a positive integer, got %q", flag, got)
+	case appLanguageZhHant:
+		return fmt.Sprintf("%s 必須是正整數，收到 %q", flag, got)
+	default:
+		return fmt.Sprintf("%s 必须是正整数，收到 %q", flag, got)
+	}
+}
+
+func localizedIMLoopMissingVerifyCommandMessage(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "Missing verification command. Usage: /loop <verify_cmd> <goal>"
+	case appLanguageZhHant:
+		return "缺少驗證命令。用法：/loop <驗證命令> <目標>"
+	default:
+		return "缺少验证命令。用法：/loop <验证命令> <目标>"
+	}
+}
+
+func localizedIMLoopDefaultGoal(lang, verifyCmd string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return fmt.Sprintf("Make the following command pass (exit 0): %s", verifyCmd)
+	case appLanguageZhHant:
+		return fmt.Sprintf("讓以下命令通過（退出碼 0）：%s", verifyCmd)
+	default:
+		return fmt.Sprintf("让以下命令通过（退出码 0）：%s", verifyCmd)
+	}
+}

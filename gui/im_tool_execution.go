@@ -14,6 +14,19 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
+func (h *IMMessageHandler) shouldSkipWorkflowToolExecutionGate(userID string, ctx *LoopContext) bool {
+	if ctx == nil {
+		return false
+	}
+	awaitingReview := false
+	phaseBlocked := false
+	if engine := h.getWorkflowEngine(); engine != nil {
+		awaitingReview = engine.IsAwaitingReview(userID)
+		phaseBlocked = engine.IsPhaseExecutionBlocked(userID)
+	}
+	return shouldSkipWorkflowToolExecutionGate(ctx.SkipNeedsConfirmGate, awaitingReview, ctx.WorkflowAgentLoop, phaseBlocked)
+}
+
 type agentLoopToolExecutionOptions struct {
 	UserID           string
 	SkipWorkflowGate bool
@@ -30,22 +43,10 @@ type agentLoopToolExecutionOptions struct {
 
 func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionOptions) toolExecutionResult {
 	tc := opts.ToolCall
-	if opts.MilestoneTracker != nil {
-		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
-	}
-	// Always send tool-specific progress to the frontend so users see which
-	// tool is being executed (e.g. "🔍 正在搜索网络..." instead of generic
-	// "正在执行工具..."). Previously gated behind opts.Debug.
-	if opts.SendToolProgress != nil {
-		opts.SendToolProgress(userFacingToolProgressTextWithArgs(tc.Function.Name, tc.Function.Arguments))
-	}
-	if opts.RecordToolCall != nil {
-		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
-	}
 
 	var result toolExecutionResult
 	if !opts.SkipWorkflowGate && !h.isWorkflowToolAllowed(opts.UserID, tc.Function.Name) {
-		text := fmt.Sprintf("[system rejected] %s is not allowed by the current workflow tool policy.", tc.Function.Name)
+		text := workflowPolicyToolRejectedText(tc.Function.Name)
 		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		log.Printf("[agent-loop] rejected execution of workflow-blocked tool %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
 	}
@@ -57,6 +58,19 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			log.Printf("[agent-loop] rejected execution of workflow-blocked tool call %q (iter=%d user=%s reason=%s)", tc.Function.Name, opts.Iteration, opts.UserID, reason)
 		}
 	}
+	if result.Text == "" {
+		if opts.MilestoneTracker != nil {
+			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
+		}
+		if opts.RecordToolCall != nil {
+			opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+		}
+	}
+	// Emit user-facing tool progress only after policy gates pass. Otherwise a
+	// workflow-blocked browser/tool call can still leak confusing progress text.
+	if result.Text == "" && opts.SendToolProgress != nil {
+		opts.SendToolProgress(userFacingToolProgressTextWithArgs(tc.Function.Name, tc.Function.Arguments))
+	}
 	if result.Text == "" && opts.Phase.TruncationBlockedTools[tc.Function.Name] {
 		text := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
 		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailureTruncationBlocked}
@@ -66,7 +80,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		// In agent loop context, intercept missing/invalid parameter errors BEFORE
 		// executeToolDetailed. executeToolDetailed would emit an AgentView panel
 		// (designed for user-manual tool invocations), which is wrong inside an
-		// agent loop — the LLM should receive an error message and self-correct.
+		// agent loop; the LLM should receive an error message and self-correct.
 		if errResult := h.preCheckToolArgsForAgentLoop(tc.Function.Name, tc.Function.Arguments, opts.Iteration); errResult != nil {
 			result = *errResult
 		}
@@ -82,18 +96,36 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	return result
 }
 
+func workflowPolicyToolRejectedText(name string) string {
+	if isRolePrefixRiskToolName(name) {
+		return "[system rejected] requested tool is not allowed by the current workflow tool policy."
+	}
+	return fmt.Sprintf("[system rejected] %s is not allowed by the current workflow tool policy.", name)
+}
+
+func isRolePrefixRiskToolName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "browser" || strings.HasPrefix(name, "browser_")
+}
+
 func (h *IMMessageHandler) isWorkflowToolAllowed(userID, name string) bool {
 	engine := h.getWorkflowEngine()
 	if engine == nil || strings.TrimSpace(userID) == "" {
 		return true
 	}
-	return workflow.IsToolAllowedByPolicy(engine.GetPhaseToolFilter(userID), name)
+	if engine.IsPhaseExecutionBlocked(userID) {
+		return false
+	}
+	return workflow.IsToolAllowedByPolicy(engine.GetActivePhaseToolFilter(userID), name)
 }
 
 func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON string) (bool, string) {
 	engine := h.getWorkflowEngine()
 	if engine == nil || strings.TrimSpace(userID) == "" {
 		return true, ""
+	}
+	if engine.IsPhaseExecutionBlocked(userID) {
+		return false, "current workflow phase is waiting for required input or review; tool execution is paused"
 	}
 	var args map[string]interface{}
 	if strings.TrimSpace(argsJSON) != "" {
@@ -102,7 +134,7 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON stri
 			return false, fmt.Sprintf("invalid tool arguments: %v", err)
 		}
 	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(engine.GetPhaseToolFilter(userID), strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(userID)); err != nil {
+	if err := workflow.ValidateToolCallByPolicyWithApproval(engine.GetActivePhaseToolFilter(userID), strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(userID)); err != nil {
 		return false, err.Error()
 	}
 	return true, ""

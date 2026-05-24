@@ -14,16 +14,24 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
+type archiveTransitionEvent struct {
+	Timestamp time.Time `json:"timestamp"`
+	Action    string    `json:"action"`
+	IDs       []string  `json:"ids"`
+	Count     int       `json:"count"`
+}
+
 // ArchiveStore manages cold storage for evicted memory entries.
 type ArchiveStore struct {
-	mu       sync.RWMutex
-	entries  []Entry
-	path     string
-	dirty    bool
-	saveCh   chan struct{}
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	maxItems int
+	mu        sync.RWMutex
+	entries   []Entry
+	path      string
+	auditPath string
+	dirty     bool
+	saveCh    chan struct{}
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	maxItems  int
 }
 
 // NewArchiveStore creates an ArchiveStore that persists to the given path.
@@ -34,11 +42,12 @@ func NewArchiveStore(path string) (*ArchiveStore, error) {
 	}
 
 	a := &ArchiveStore{
-		entries:  make([]Entry, 0),
-		path:     absPath,
-		saveCh:   make(chan struct{}, 1),
-		stopCh:   make(chan struct{}),
-		maxItems: 1000,
+		entries:   make([]Entry, 0),
+		path:      absPath,
+		auditPath: absPath + ".transitions.jsonl",
+		saveCh:    make(chan struct{}, 1),
+		stopCh:    make(chan struct{}),
+		maxItems:  1000,
 	}
 
 	if err := a.load(); err != nil {
@@ -58,8 +67,47 @@ func (a *ArchiveStore) Add(entries ...Entry) error {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.addLocked(entries)
+	a.dirty = true
+	a.signalSave()
+	return nil
+}
 
-	a.entries = append(a.entries, entries...)
+// AddDurable adds entries and flushes archive storage before returning. Cross
+// store transitions use this so an active tombstone never precedes cold storage.
+func (a *ArchiveStore) AddDurable(entries ...Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.addLocked(entries)
+	if err := a.flushLocked(); err != nil {
+		return err
+	}
+	if err := a.appendTransition("archive_add_durable", entryIDs(entries)); err != nil {
+		log.Printf("[archive_store] WARNING: transition audit add failed: %v", err)
+	}
+	return nil
+}
+
+func (a *ArchiveStore) addLocked(entries []Entry) {
+	byID := make(map[string]int, len(a.entries)+len(entries))
+	for i := range a.entries {
+		if a.entries[i].ID != "" {
+			byID[a.entries[i].ID] = i
+		}
+	}
+	for _, entry := range entries {
+		if entry.ID != "" {
+			if idx, ok := byID[entry.ID]; ok {
+				a.entries[idx] = entry
+				continue
+			}
+			byID[entry.ID] = len(a.entries)
+		}
+		a.entries = append(a.entries, entry)
+	}
 
 	// Enforce capacity: evict oldest entries by UpdatedAt.
 	if len(a.entries) > a.maxItems {
@@ -68,26 +116,129 @@ func (a *ArchiveStore) Add(entries ...Entry) error {
 		})
 		a.entries = a.entries[len(a.entries)-a.maxItems:]
 	}
+}
 
+// RemoveIDs removes and returns all archived entries whose IDs are present.
+// The returned entries follow the requested ID order; missing IDs are skipped.
+func (a *ArchiveStore) RemoveIDs(ids []string) ([]Entry, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	removed := a.removeIDsLocked(ids)
+	if len(removed) == 0 {
+		return nil, nil
+	}
 	a.dirty = true
 	a.signalSave()
-	return nil
+	return removed, nil
+}
+
+// RemoveIDsDurable removes archived entries and flushes archive storage before
+// returning. It is used after active restore succeeds; failure leaves a harmless
+// duplicate in cold storage instead of losing active memory.
+func (a *ArchiveStore) RemoveIDsDurable(ids []string) ([]Entry, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	removed := a.removeIDsLocked(ids)
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	if err := a.flushLocked(); err != nil {
+		return nil, err
+	}
+	if err := a.appendTransition("archive_remove_durable", entryIDs(removed)); err != nil {
+		log.Printf("[archive_store] WARNING: transition audit remove failed: %v", err)
+	}
+	return removed, nil
+}
+
+func (a *ArchiveStore) removeIDsLocked(ids []string) []Entry {
+	requested := make(map[string]int, len(ids))
+	ordered := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := requested[id]; ok {
+			continue
+		}
+		requested[id] = len(ordered)
+		ordered = append(ordered, id)
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+
+	removedByID := make(map[string]Entry, len(ordered))
+	kept := a.entries[:0]
+	for _, entry := range a.entries {
+		if _, ok := requested[entry.ID]; ok {
+			removedByID[entry.ID] = entry
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if len(removedByID) == 0 {
+		return nil
+	}
+	a.entries = kept
+	removed := make([]Entry, 0, len(removedByID))
+	for _, id := range ordered {
+		if entry, ok := removedByID[id]; ok {
+			removed = append(removed, entry)
+		}
+	}
+	return removed
+}
+
+// EntriesByIDs returns archived entries in requested ID order without removing
+// them. Missing IDs and duplicate requests are skipped.
+func (a *ArchiveStore) EntriesByIDs(ids []string) []Entry {
+	if len(ids) == 0 {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	byID := make(map[string]Entry, len(a.entries))
+	for _, entry := range a.entries {
+		if entry.ID != "" {
+			byID[entry.ID] = entry
+		}
+	}
+	seen := make(map[string]struct{}, len(ids))
+	entries := make([]Entry, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if entry, ok := byID[id]; ok {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }
 
 // Remove removes and returns the entry with the given ID from the archive.
 // Used for restoring entries back to active memory.
 func (a *ArchiveStore) Remove(id string) (*Entry, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	for i, e := range a.entries {
-		if e.ID == id {
-			removed := a.entries[i]
-			a.entries = append(a.entries[:i], a.entries[i+1:]...)
-			a.dirty = true
-			a.signalSave()
-			return &removed, nil
-		}
+	removed, err := a.RemoveIDs([]string{id})
+	if err != nil {
+		return nil, err
+	}
+	if len(removed) > 0 {
+		return &removed[0], nil
 	}
 	return nil, fmt.Errorf("archive_store: entry %q not found", id)
 }
@@ -234,6 +385,18 @@ func (a *ArchiveStore) flush() error {
 	return nil
 }
 
+func (a *ArchiveStore) flushLocked() error {
+	data, err := json.MarshalIndent(a.entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("archive_store: marshal: %w", err)
+	}
+	if err := fileutil.AtomicWriteFile(a.path, data, 0o644); err != nil {
+		return fmt.Errorf("archive_store: write file: %w", err)
+	}
+	a.dirty = false
+	return nil
+}
+
 func (a *ArchiveStore) persistLoop() {
 	for {
 		select {
@@ -261,6 +424,54 @@ func (a *ArchiveStore) signalSave() {
 	case a.saveCh <- struct{}{}:
 	default:
 	}
+}
+
+func (a *ArchiveStore) appendTransition(action string, ids []string) error {
+	if a == nil || a.auditPath == "" || action == "" || len(ids) == 0 {
+		return nil
+	}
+	event := archiveTransitionEvent{
+		Timestamp: time.Now().UTC(),
+		Action:    action,
+		IDs:       ids,
+		Count:     len(ids),
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("archive_store: marshal transition: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(a.auditPath), 0o755); err != nil {
+		return fmt.Errorf("archive_store: transition dir: %w", err)
+	}
+	f, err := os.OpenFile(a.auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("archive_store: transition open: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("archive_store: transition write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("archive_store: transition sync: %w", err)
+	}
+	return nil
+}
+
+func entryIDs(entries []Entry) []string {
+	ids := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // Flush writes current entries to disk immediately.

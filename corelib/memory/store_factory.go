@@ -297,6 +297,11 @@ func newStoreFromEntries(dir string, entries []Entry) (*Store, error) {
 		return nil, fmt.Errorf("memory: init archive: %w", err)
 	}
 	s.archive = archive
+	if removed, err := s.ReconcileArchiveDuplicates(); err != nil {
+		fmt.Printf("[memory] WARNING: reconcile archive duplicates: %v\n", err)
+	} else if removed > 0 {
+		fmt.Printf("[memory] reconciled %d active/archive duplicate entries\n", removed)
+	}
 
 	// SQLite stores still use the Store-level dirty/debounce loop for
 	// maintenance paths that update several entries at once. flush() routes

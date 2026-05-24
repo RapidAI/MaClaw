@@ -237,6 +237,114 @@ func TestAssignAndGetUserGroup(t *testing.T) {
 	}
 }
 
+func TestAssignUserSameEmailAcrossTenants(t *testing.T) {
+	s := newTestStore(t)
+	ctxA := WithTenant(context.Background(), "tenant_a")
+	ctxB := WithTenant(context.Background(), "tenant_b")
+	if err := s.InitRootGroup(ctxA); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InitRootGroup(ctxB); err != nil {
+		t.Fatal(err)
+	}
+	rootA, _ := s.GetRootGroup(ctxA)
+	rootB, _ := s.GetRootGroup(ctxB)
+
+	if err := s.AssignUser(ctxA, "same@example.com", rootA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AssignUser(ctxB, "same@example.com", rootB.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	groupA, err := s.GetUserGroup(ctxA, "same@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupB, err := s.GetUserGroup(ctxB, "same@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if groupA != rootA.ID || groupB != rootB.ID {
+		t.Fatalf("expected tenant-scoped memberships, got A=%q B=%q", groupA, groupB)
+	}
+	membersA, _ := s.ListGroupMembers(ctxA, rootA.ID)
+	membersB, _ := s.ListGroupMembers(ctxB, rootB.ID)
+	if len(membersA) != 1 || len(membersB) != 1 {
+		t.Fatalf("expected member in both tenants, got A=%v B=%v", membersA, membersB)
+	}
+}
+
+func TestInitSchemaMigratesLegacySecurityTenantKeys(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE security_groups (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		parent_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT 'tenant_default'
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE security_group_members (
+		email TEXT PRIMARY KEY,
+		group_id TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT 'tenant_default'
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE security_policies (
+		group_id TEXT PRIMARY KEY,
+		policy_json TEXT NOT NULL DEFAULT '{}',
+		updated_at TEXT NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT 'tenant_default'
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO security_group_members (email, group_id, created_at, tenant_id) VALUES ('legacy@example.com', 'legacy-group', '2026-01-01T00:00:00Z', 'tenant_default')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO security_policies (group_id, policy_json, updated_at, tenant_id) VALUES ('legacy-group', '{"gossip_enabled":false}', '2026-01-01T00:00:00Z', 'tenant_default')`); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSecurityStore(db)
+	if err := s.InitSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := tablePrimaryKeyIs(ctx, db, "security_group_members", []string{"tenant_id", "email"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected composite primary key on security_group_members")
+	}
+	ok, err = tablePrimaryKeyIs(ctx, db, "security_policies", []string{"tenant_id", "group_id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected composite primary key on security_policies")
+	}
+	groupID, err := s.GetUserGroup(ctx, "legacy@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if groupID != "legacy-group" {
+		t.Fatalf("expected migrated member group, got %q", groupID)
+	}
+	policy, err := s.GetGroupPolicy(ctx, "legacy-group")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy["gossip_enabled"] != false {
+		t.Fatalf("expected migrated policy, got %#v", policy)
+	}
+}
+
 func TestGetUserGroup_NotAssigned(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -360,9 +468,9 @@ func TestSetAndGetGroupPolicy(t *testing.T) {
 	root, _ := s.GetRootGroup(ctx)
 
 	policy := map[string]interface{}{
-		"gossip_enabled":       false,
+		"gossip_enabled":        false,
 		"file_outbound_enabled": true,
-		"guardrail_mode":       "strict",
+		"guardrail_mode":        "strict",
 	}
 	if err := s.SetGroupPolicy(ctx, root.ID, policy); err != nil {
 		t.Fatal(err)

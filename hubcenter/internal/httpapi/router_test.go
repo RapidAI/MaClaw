@@ -626,6 +626,13 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if tenantResp.Code != http.StatusOK {
 		t.Fatalf("tenant authorization update status=%d body=%s", tenantResp.Code, tenantResp.Body.String())
 	}
+	listResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("list hubs with tenant authorization status=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+	if !bytes.Contains(listResp.Body.Bytes(), []byte("\"tenants\"")) || !bytes.Contains(listResp.Body.Bytes(), []byte("\"tenant_id\":\"tenant_a\"")) || !bytes.Contains(listResp.Body.Bytes(), []byte("\"digital_employee_authorizations\"")) {
+		t.Fatalf("hub list should expose tenant authorization context, body=%s", listResp.Body.String())
+	}
 	tenantHeartbeat := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
 		"hub_secret": hubSecret,
 	}, "")
@@ -1096,6 +1103,64 @@ func TestAdminRouteQueryByDomainReturnsOnlyExactMatches(t *testing.T) {
 	}
 	if len(result.Hubs) != 1 || result.Hubs[0].CorporateEmailDomain != "qianxin.com" {
 		t.Fatalf("expected exact domain route only, got %+v", result.Hubs)
+	}
+}
+
+func TestAdminRouteQueryShowsTenantName(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	namedHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-tenant@example.com",
+		"name":            "Tenant Hub",
+		"base_url":        "https://tenant.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+		"capabilities": map[string]any{
+			"tenant_domains": map[string]any{"tenant_a": []any{"acme.example"}},
+			"tenant_names":   map[string]any{"tenant_a": "研发部"},
+		},
+	})
+	missingNameHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-missing-tenant@example.com",
+		"name":            "Missing Tenant Name Hub",
+		"base_url":        "https://missing-tenant.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+		"capabilities": map[string]any{
+			"tenant_domains": map[string]any{"tenant_b": []any{"beta.example"}},
+			"tenant_names":   map[string]any{"tenant_a": "研发部"},
+		},
+	})
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", map[string]any{
+		"query":      "acme.example",
+		"query_type": "domain",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("query status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var result entry.ResolveResult
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	if len(result.Hubs) != 1 || result.Hubs[0].HubID != namedHub["hub_id"] || result.Hubs[0].TenantID != "tenant_a" || result.Hubs[0].TenantName != "研发部" {
+		t.Fatalf("expected tenant route with tenant name, got %+v", result.Hubs)
+	}
+
+	resp = doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/routing/query", map[string]any{
+		"query":      "beta.example",
+		"query_type": "domain",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("query missing name status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	result = entry.ResolveResult{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode missing name query response: %v", err)
+	}
+	if len(result.Hubs) != 1 || result.Hubs[0].HubID != missingNameHub["hub_id"] || result.Hubs[0].TenantID != "tenant_b" || result.Hubs[0].TenantName != "" {
+		t.Fatalf("expected tenant route without synthetic tenant name, got %+v", result.Hubs)
 	}
 }
 

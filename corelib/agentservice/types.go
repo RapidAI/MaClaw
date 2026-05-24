@@ -869,9 +869,10 @@ type IssueTokenOutput struct {
 }
 
 type CreateInstanceInput struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	Name               string            `json:"name"`
+	Description        string            `json:"description,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
+	AllowInvalidConfig bool              `json:"allow_invalid_config,omitempty"`
 }
 
 type UpdateInstanceInput struct {

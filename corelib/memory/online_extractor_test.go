@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -255,6 +256,56 @@ func TestOnlineExtractor_TemporalAnnotation(t *testing.T) {
 	}
 	if entries[0].ValidAt.Month() != time.April || entries[0].ValidAt.Day() != 1 {
 		t.Fatalf("expected ValidAt to be April 1, got %v", entries[0].ValidAt)
+	}
+}
+
+func TestOnlineExtractorUpdatePersistsMergedMetadataThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	existing := Entry{
+		ID:       "online-update-target",
+		Content:  "Project API endpoint is https://api.example.com",
+		Category: CategoryProjectKnowledge,
+		Tags:     []string{"api"},
+		Entities: []string{"entity:api.example.com"},
+		Status:   StatusActive,
+	}
+	if err := store.Save(existing); err != nil {
+		t.Fatal(err)
+	}
+	llm := &mockLLMForExtraction{
+		extractResponse:  `[{"content":"Project API endpoint is https://api.example.com and timeout is 30 seconds","category":"project_knowledge","entities":["entity:api.example.com","relation:has_timeout","entity:30_seconds"],"valid_at":"2026-04-01T00:00:00Z"}]`,
+		classifyResponse: `{"operation":"update","target_id":"online-update-target","merged_text":"Project API endpoint is https://api.example.com and timeout is 30 seconds","reason":"same API config"}`,
+	}
+	oe := NewOnlineExtractor(store, llm)
+	oe.SetCooldown(0)
+
+	result := oe.ExtractAndIntegrate(context.Background(), []ConversationMessage{
+		{Role: "user", Content: "The project API endpoint is https://api.example.com and timeout is 30 seconds."},
+		{Role: "assistant", Content: "Noted."},
+	}, "", time.Now(), "")
+	if result.Updated != 1 {
+		t.Fatalf("expected one update, got %+v", result)
+	}
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != "online-update-target" || loaded[0].Content != "Project API endpoint is https://api.example.com and timeout is 30 seconds" {
+		t.Fatalf("online update not persisted: %+v", loaded)
+	}
+	if !hasTag(loaded[0].Tags, "30_seconds") || len(loaded[0].Entities) < 3 || loaded[0].ValidAt == nil {
+		t.Fatalf("online update metadata not persisted: %+v", loaded[0])
 	}
 }
 

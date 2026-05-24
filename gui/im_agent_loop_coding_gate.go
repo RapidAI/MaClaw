@@ -9,6 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 type agentLoopCodingGateResult struct {
@@ -44,7 +45,7 @@ func (h *IMMessageHandler) prepareAgentLoopCodingGate(userID, userText string, c
 
 func (h *IMMessageHandler) applyInitialCodingToolGate(tools []map[string]interface{}, gateConfig codingToolGateConfig, skipCodingGate bool, orchestratorActive func() bool) ([]map[string]interface{}, int) {
 	if skipCodingGate && gateConfig.active {
-		log.Printf("[coding-gate] bypassed: SkipNeedsConfirmGate=true intent=%v (not coding)", gateConfig.intent)
+		log.Printf("[coding-gate] bypassed: skipCodingGate=true intent=%v", gateConfig.intent)
 	}
 	if gateConfig.active && !skipCodingGate && !orchestratorActive() {
 		browserBeforeGate := len(browserDiagExtractNames(tools))
@@ -122,7 +123,7 @@ func (h *IMMessageHandler) applyAgentLoopCodingGateAfterAssistantTurn(
 		preservedNames = append(preservedNames, tc.Function.Name)
 	}
 	log.Printf("[coding-gate] activated (iter=%d): stripped=%v preserved=%v reason=%s", iteration, strippedNames, preservedNames, gateConfig.reason)
-	if h.traceService != nil && ctx.RunID != "" {
+	if h.traceService != nil && ctx != nil && ctx.RunID != "" {
 		h.appendTraceEvent(ctx, "gate.coding_tool_stripped", "warn",
 			"Coding tool gate stripped tools",
 			fmt.Sprintf("iteration=%d stripped=%v preserved=%v", iteration, strippedNames, preservedNames), "", "")
@@ -231,7 +232,21 @@ func (h *IMMessageHandler) emitCodingGateForceReturnDocUpdate(userID, platform, 
 }
 
 func shouldSkipCodingGate(ctx *LoopContext, gateConfig codingToolGateConfig) bool {
+	if ctx == nil {
+		return false
+	}
 	return ctx.SkipNeedsConfirmGate && gateConfig.intent != intentCoding
+}
+
+func (h *IMMessageHandler) shouldBypassCodingGateForWorkflowAgentLoop(userID string, ctx *LoopContext) bool {
+	if ctx == nil || !ctx.WorkflowAgentLoop {
+		return false
+	}
+	engine := h.getWorkflowEngine()
+	if engine == nil || engine.GetActiveWorkflow(userID) == nil {
+		return false
+	}
+	return engine.GetPhaseToolFilter(userID) != workflow.ToolFilterNone
 }
 
 func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTools []map[string]interface{}, phase agentLoopPhase, gateConfig codingToolGateConfig, skipCodingGate bool, orchestratorActive func() bool) ([]map[string]interface{}, int, bool) {
@@ -249,9 +264,17 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTool
 	}
 	if orchestratorActive() {
 		orchInst := h.taskOrchestratorRegistry.Get(userID)
-		if orchInst != nil && orchInst.CurrentExecutionMode() == TaskExecModeDirect {
-			tools = filterDirectModeAllowedTools(tools)
-			directModeToolsFiltered = true
+		if orchInst != nil {
+			handles := orchInst.ReadyTaskHandles(1)
+			mode := TaskExecModeExternal
+			ok := false
+			if len(handles) > 0 {
+				mode, ok = orchInst.ResolveExecutionModeForTaskRun(handles[0].Task, handles[0].RunID)
+			}
+			if ok && mode == TaskExecModeDirect {
+				tools = filterDirectModeAllowedTools(tools)
+				directModeToolsFiltered = true
+			}
 		}
 	}
 	if len(phase.TruncationBlockedTools) > 0 {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func TestAdminServiceSetupAndLogin(t *testing.T) {
@@ -91,6 +93,23 @@ func TestAdminServiceTenantAdminRequiresValidEmail(t *testing.T) {
 
 	if _, err := svc.CreateTenantAdmin(ctx, "tenant_a", "admin", "pass123456", "not-an-email", "Tenant Admin", "tenant_admin"); err == nil {
 		t.Fatal("expected tenant admin creation to reject invalid email")
+	}
+}
+
+func TestAdminServiceCanCreateDefaultTenantAdmin(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	admin, err := svc.CreateTenantAdmin(ctx, store.DefaultTenantID, "default-extra", "pass123456", "default-extra@example.com", "Default Extra", "tenant_admin")
+	if err != nil {
+		t.Fatalf("CreateTenantAdmin default tenant: %v", err)
+	}
+	if admin.Scope != "tenant" || admin.TenantID != store.DefaultTenantID {
+		t.Fatalf("unexpected default tenant admin: %#v", admin)
+	}
+	if _, _, err := svc.LoginScoped(ctx, "default-extra", "pass123456", store.DefaultTenantID); err != nil {
+		t.Fatalf("default tenant admin login: %v", err)
 	}
 }
 
@@ -276,6 +295,30 @@ func TestTenantAdminsCanShareUsernameAcrossTenantScopes(t *testing.T) {
 	if _, err := svc.VerifyScopedCredentials(ctx, "shared", "globalpass123", "tenant_a"); !errors.Is(err, ErrInvalidAdminCredentials) {
 		t.Fatalf("global password should not verify as tenant_a credentials, got %v", err)
 	}
+	defaultToken, defaultAdmin, err := svc.LoginScoped(ctx, "shared", "globalpass123", store.DefaultTenantID)
+	if err != nil {
+		t.Fatalf("default tenant login with global admin credentials: %v", err)
+	}
+	if defaultAdmin.Scope != "tenant" || defaultAdmin.TenantID != store.DefaultTenantID || defaultAdmin.Role != "tenant_owner" {
+		t.Fatalf("expected default tenant admin projection, got %#v", defaultAdmin)
+	}
+	authenticatedDefault, err := svc.Authenticate(ctx, defaultToken)
+	if err != nil {
+		t.Fatalf("authenticate default tenant token: %v", err)
+	}
+	if authenticatedDefault.Scope != "tenant" || authenticatedDefault.TenantID != store.DefaultTenantID {
+		t.Fatalf("expected authenticated default tenant projection, got %#v", authenticatedDefault)
+	}
+	defaultEmailToken, defaultEmailAdmin, err := svc.UpdateEmailScoped(ctx, "shared", "default-owner@example.com", "tenant", store.DefaultTenantID)
+	if err != nil {
+		t.Fatalf("default tenant update email: %v", err)
+	}
+	if defaultEmailAdmin.Scope != "tenant" || defaultEmailAdmin.TenantID != store.DefaultTenantID || defaultEmailAdmin.Email != "default-owner@example.com" {
+		t.Fatalf("expected default tenant email projection, got %#v", defaultEmailAdmin)
+	}
+	if authenticatedEmail, err := svc.Authenticate(ctx, defaultEmailToken); err != nil || authenticatedEmail.Scope != "tenant" || authenticatedEmail.TenantID != store.DefaultTenantID {
+		t.Fatalf("authenticate default tenant email token: admin=%#v err=%v", authenticatedEmail, err)
+	}
 
 	if _, _, err := svc.ChangePasswordScoped(ctx, "shared", "tenantpass123", "tenantnew123", "tenant", "tenant_a"); err != nil {
 		t.Fatalf("tenant change password: %v", err)
@@ -291,5 +334,24 @@ func TestTenantAdminsCanShareUsernameAcrossTenantScopes(t *testing.T) {
 	}
 	if _, _, err := svc.Login(ctx, "shared", "globalpass123"); err != nil {
 		t.Fatalf("global password should be unchanged: %v", err)
+	}
+	defaultPasswordToken, defaultPasswordAdmin, err := svc.ChangePasswordScoped(ctx, "shared", "globalpass123", "globalnew123", "tenant", store.DefaultTenantID)
+	if err != nil {
+		t.Fatalf("default tenant change password: %v", err)
+	}
+	if defaultPasswordAdmin.Scope != "tenant" || defaultPasswordAdmin.TenantID != store.DefaultTenantID {
+		t.Fatalf("expected default tenant password projection, got %#v", defaultPasswordAdmin)
+	}
+	if authenticatedPassword, err := svc.Authenticate(ctx, defaultPasswordToken); err != nil || authenticatedPassword.Scope != "tenant" || authenticatedPassword.TenantID != store.DefaultTenantID {
+		t.Fatalf("authenticate default tenant password token: admin=%#v err=%v", authenticatedPassword, err)
+	}
+	if _, _, err := svc.Login(ctx, "shared", "globalpass123"); err != nil {
+		t.Fatalf("global password should remain unchanged after default tenant password change: %v", err)
+	}
+	if _, _, err := svc.LoginScoped(ctx, "shared", "globalnew123", store.DefaultTenantID); err != nil {
+		t.Fatalf("expected default tenant new password to work: %v", err)
+	}
+	if _, _, err := svc.LoginScoped(ctx, "shared", "globalpass123", store.DefaultTenantID); !errors.Is(err, ErrInvalidAdminCredentials) {
+		t.Fatalf("expected old default tenant password to fail, got %v", err)
 	}
 }

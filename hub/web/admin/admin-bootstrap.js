@@ -48,7 +48,7 @@
   }
 
   function reportRefreshFailures(results) {
-    var failed = (results || []).filter(function(result) { return result && result.status === 'rejected'; });
+    var failed = (results || []).filter(function(result) { return result && result.status === 'rejected' && !(result.reason && result.reason.staleAuth); });
     if (!failed.length || typeof global.setOutput !== 'function') return;
     var names = failed.map(function(result) { return result.reason && result.reason.message || String(result.reason || 'refresh failed'); }).join('; ');
     global.setOutput((typeof global.tr === 'function' ? global.tr('requestFailed') : 'Refresh failed') + ': ' + names);

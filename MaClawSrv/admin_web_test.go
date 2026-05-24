@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,44 @@ func TestAdminWebIncludesTenantAuditShortcuts(t *testing.T) {
 	for _, needle := range []string{"data-tenant-audit", "data-user-audit", "showTenantAudit", "/api/v1/admin/audit-events?${q}"} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("admin web missing %s", needle)
+		}
+	}
+}
+
+func TestAdminWebUsesTenantUserSelectors(t *testing.T) {
+	bodyBytes, err := fs.ReadFile(adminWebFS, "admin_web/app.js")
+	if err != nil {
+		t.Fatalf("read admin app: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, needle := range []string{
+		"function tenantSelect(",
+		"function userSelect(",
+		"function adminSelect(",
+		"function tenantUserValue(",
+		"syncTenantFromUser(\"knowledgeUser\",\"knowledgeTenant\")",
+		"syncTenantFromUser(\"jobUser\",\"jobTenant\")",
+		"syncTenantFromUser(\"auditUser\",\"auditTenant\")",
+		"tenantSelect(\"knowledgeTenant\",tenantItems,\"\",true,\"selectTenant\")",
+		"userSelect(\"knowledgeUser\",userItems,\"\",\"tenantUser\",true,\"selectUser\")",
+		"tenantSelect(\"knowledgeScopeTenant\",tenantItems,\"\",true,\"selectTenant\")",
+		"userSelect(\"knowledgeScopeUser\",userItems,\"\",\"tenantUser\",true,\"selectUser\")",
+		"function appendKnowledgeScope()",
+		"tenantSelect(\"skillTenant\",tenantItems,\"\",true,\"selectTenant\")",
+		"userSelect(\"skillUserEmail\",userItems,\"\",\"email\",true,\"selectUser\")",
+		"tenantSelect(\"jobTenant\",tenantItems)",
+		"userSelect(\"jobUser\",userItems,\"\",\"tenantUser\")",
+		"tenantSelect(\"auditTenant\",tenantItems)",
+		"userSelect(\"auditUser\",userItems,\"\",\"tenantUser\")",
+		"adminSelect(\"auditActorUser\",adminItems)",
+		"/api/v1/admin/auth/users",
+		"tenantSelect(\"exportTenant\",tenantItems)",
+		"userSelect(\"exportUser\",userItems,\"\",\"tenantUser\")",
+		"tenantSelect(\"snapshotTenant\",tenantItems)",
+		"userSelect(\"snapshotUser\",userItems,\"\",\"tenantUser\")",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("admin web missing tenant/user selector marker %s", needle)
 		}
 	}
 }
@@ -220,6 +259,12 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 		`<div class="empty-state" role="status">`,
 		`<span aria-hidden="true"></span>`,
 		`function enhanceA11y()`,
+		`function modalDecision`,
+		`function confirmPhrase`,
+		`function forceDeleteSecret`,
+		`confirmPhrase(t("exportSecretPrompt"),"EXPORT SECRETS")`,
+		`forceDeleteTenantPrompt`,
+		`force=true`,
 		`content.setAttribute("role","region")`,
 		`th.setAttribute("scope","col")`,
 		`box.setAttribute("aria-labelledby",h.id)`,
@@ -237,7 +282,7 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	css := w.Body.String()
-	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before"} {
+	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before", ".modal-backdrop", ".modal-actions"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("admin css missing accessibility marker %s", needle)
 		}

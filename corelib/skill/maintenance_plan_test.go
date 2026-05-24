@@ -56,6 +56,30 @@ func TestBuildSkillMaintenancePlanPrefersRepairBeforeReview(t *testing.T) {
 	}
 }
 
+func TestBuildSkillMaintenancePlanDoesNotQueueFileBackedRepair(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	formatted := FormatErrorForLLM(ClassifiedError{Class: ErrCommandNotFound, UserMessage: "command missing", Repairable: true})
+	plan := BuildSkillMaintenancePlan([]corelib.NLSkillEntry{
+		{
+			Name:         "file-repairable",
+			Status:       "active",
+			Source:       "file",
+			SkillDir:     t.TempDir(),
+			UsageCount:   4,
+			SuccessCount: 0,
+			FailureCount: 4,
+			LastError:    formatted,
+		},
+	}, SkillMaintenancePlanOptions{Now: now})
+
+	if hasMaintenanceAction(plan, MaintenanceActionAttemptRepair, "file-repairable") {
+		t.Fatalf("file-backed skill should not queue background repair: %#v", plan.Actions)
+	}
+	if !hasMaintenanceAction(plan, MaintenanceActionMarkNeedsReview, "file-repairable") {
+		t.Fatalf("expected file-backed repairable failure to enter review flow: %#v", plan.Actions)
+	}
+}
+
 func TestBuildSkillMaintenancePlanDetectsDuplicateCraftedSkills(t *testing.T) {
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 	plan := BuildSkillMaintenancePlan([]corelib.NLSkillEntry{

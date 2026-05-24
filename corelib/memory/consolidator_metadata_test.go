@@ -95,3 +95,62 @@ func TestConsolidatorLevelStoresEvidenceAndBoundary(t *testing.T) {
 		t.Fatalf("unexpected boundary time window: %+v", entry.Boundary)
 	}
 }
+
+func TestConsolidatorLevelPersistsTreeLinksThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	defer store.Stop()
+
+	window := TimeInterval{Start: time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC), End: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC)}
+	seg1 := TimeInterval{Start: window.Start.Add(5 * time.Minute), End: window.Start.Add(10 * time.Minute)}
+	seg2 := TimeInterval{Start: window.Start.Add(15 * time.Minute), End: window.Start.Add(20 * time.Minute)}
+	store.mu.Lock()
+	store.SetEntries([]Entry{
+		{ID: "seg-sqlite-1", Content: "first sqlite segment", Category: CategoryConversationSummary, Level: LevelSegment, Interval: &seg1, OwnerID: "owner-a", SourceType: "conversation", Status: StatusActive},
+		{ID: "seg-sqlite-2", Content: "second sqlite segment", Category: CategoryConversationSummary, Level: LevelSegment, Interval: &seg2, OwnerID: "owner-a", SourceType: "conversation", Status: StatusActive},
+	})
+	store.mu.Unlock()
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+
+	consolidator := NewConsolidator(store, store.TMT(), consolidatorMetadataLLM{response: "sqlite session summary"})
+	result, err := consolidator.ConsolidateLevel(context.Background(), LevelSession, window, "owner-a")
+	if err != nil {
+		t.Fatalf("ConsolidateLevel: %v", err)
+	}
+	if result.NodesCreated != 1 || result.ChildrenMerged != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	var parentID string
+	children := map[string]Entry{}
+	for _, entry := range loaded {
+		if entry.Content == "sqlite session summary" {
+			parentID = entry.ID
+			if strings.Join(entry.ChildIDs, ",") != "seg-sqlite-1,seg-sqlite-2" {
+				t.Fatalf("parent child links not persisted: %+v", entry.ChildIDs)
+			}
+		}
+		if strings.HasPrefix(entry.ID, "seg-sqlite-") {
+			children[entry.ID] = entry
+		}
+	}
+	if parentID == "" {
+		t.Fatal("session summary parent not persisted")
+	}
+	for _, id := range []string{"seg-sqlite-1", "seg-sqlite-2"} {
+		if child, ok := children[id]; !ok || child.ParentID != parentID {
+			t.Fatalf("child %s parent link not persisted: %+v", id, child)
+		}
+	}
+}

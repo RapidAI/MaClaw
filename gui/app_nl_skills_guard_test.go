@@ -206,6 +206,23 @@ func TestSkillExecutorExecuteStep_SSHListTasksWithoutTasks(t *testing.T) {
 	}
 }
 
+func TestSkillExecutorExecuteStep_SSHWaitTaskIsRecognized(t *testing.T) {
+	executor := NewSkillExecutor(&App{}, nil, nil)
+	result, err := executor.executeStep(corelib.NLSkillStep{
+		Action: "ssh",
+		Params: map[string]interface{}{
+			"action":  "wait_task",
+			"task_id": "bg_missing",
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("executeStep() error = %v", err)
+	}
+	if !strings.Contains(result, "background task manager is not initialized") {
+		t.Fatalf("wait_task did not route to SSH wait handler: %q", result)
+	}
+}
+
 func TestSkillExecutorExecuteStep_SSHUnknownAction(t *testing.T) {
 	executor := NewSkillExecutor(&App{}, nil, nil)
 	_, err := executor.executeStep(corelib.NLSkillStep{

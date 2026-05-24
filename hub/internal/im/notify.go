@@ -60,7 +60,7 @@ func (b *NotifyBroadcaster) BroadcastVerifyCode(ctx context.Context, email, code
 
 func (b *NotifyBroadcaster) BroadcastVerifyCodeForTenant(ctx context.Context, tenantID, email, code, excludePlatform string) (sentTo string, err error) {
 	tenantID = normalizeTenantID(tenantID)
-	ctx = WithTenant(ctx, tenantID)
+	ctx = store.WithTenant(WithTenant(ctx, tenantID), tenantID)
 	var channels []string
 	var firstErr error
 
@@ -123,7 +123,7 @@ func (b *NotifyBroadcaster) BroadcastLoginLink(ctx context.Context, email, confi
 
 func (b *NotifyBroadcaster) BroadcastLoginLinkForTenant(ctx context.Context, tenantID, email, confirmURL string) []string {
 	tenantID = normalizeTenantID(tenantID)
-	ctx = WithTenant(ctx, tenantID)
+	ctx = store.WithTenant(WithTenant(ctx, tenantID), tenantID)
 	if b.adapter == nil {
 		return nil
 	}
@@ -158,7 +158,7 @@ func (b *NotifyBroadcaster) BroadcastText(ctx context.Context, email, subject, t
 
 func (b *NotifyBroadcaster) BroadcastTextForTenant(ctx context.Context, tenantID, email, subject, text string) {
 	tenantID = normalizeTenantID(tenantID)
-	ctx = WithTenant(ctx, tenantID)
+	ctx = store.WithTenant(WithTenant(ctx, tenantID), tenantID)
 	imSent := false
 
 	// 1. Try all bound IM platforms first.
@@ -197,7 +197,7 @@ func (b *NotifyBroadcaster) BroadcastFile(ctx context.Context, email, b64Data, f
 
 func (b *NotifyBroadcaster) BroadcastFileForTenant(ctx context.Context, tenantID, email, b64Data, fileName, mimeType, message string) {
 	tenantID = normalizeTenantID(tenantID)
-	ctx = WithTenant(ctx, tenantID)
+	ctx = store.WithTenant(WithTenant(ctx, tenantID), tenantID)
 	if b.adapter == nil {
 		return
 	}
@@ -299,7 +299,7 @@ func (b *NotifyBroadcaster) SendToActive(ctx context.Context, userID, email, sub
 
 func (b *NotifyBroadcaster) SendToActiveForTenant(ctx context.Context, tenantID, userID, email, subject, text string) {
 	tenantID = normalizeTenantID(tenantID)
-	ctx = WithTenant(ctx, tenantID)
+	ctx = store.WithTenant(WithTenant(ctx, tenantID), tenantID)
 	if b.activeProvider != nil {
 		platformName, platformUID, ok := b.activeProvider.GetActiveUser(userID)
 		if ok && b.adapter != nil {

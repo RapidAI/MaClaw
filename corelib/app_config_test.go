@@ -76,6 +76,33 @@ func TestAppConfig_UnmarshalIgnoresCompletelyUnknownTopLevelKeys(t *testing.T) {
 	}
 }
 
+func TestAppConfigSubAgentConcurrencyDefaultsAndClamps(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{name: "missing", raw: `{}`, want: DefaultSubAgentConcurrency},
+		{name: "zero", raw: `{"subagent_concurrency":0}`, want: DefaultSubAgentConcurrency},
+		{name: "negative", raw: `{"subagent_concurrency":-3}`, want: DefaultSubAgentConcurrency},
+		{name: "one", raw: `{"subagent_concurrency":1}`, want: 1},
+		{name: "max", raw: `{"subagent_concurrency":4}`, want: 4},
+		{name: "over max", raw: `{"subagent_concurrency":9}`, want: MaxSubAgentConcurrency},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg AppConfig
+			if err := json.Unmarshal([]byte(tt.raw), &cfg); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if cfg.SubAgentConcurrency != tt.want {
+				t.Fatalf("SubAgentConcurrency = %d, want %d", cfg.SubAgentConcurrency, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsWorkflowEnabled verifies the three-state behavior of the workflow toggle:
 // nil (default) → true, explicit true → true, explicit false → false.
 // Also verifies JSON round-trip: *bool with omitempty serializes false correctly.
@@ -282,7 +309,6 @@ func TestCapabilityMarketPolicyExplicitEnterpriseSearchSurvivesUnmarshal(t *test
 		t.Fatalf("enterprise hub update default should be filled, got %q", policy.UpdatePolicy.EnterpriseHub.Default)
 	}
 }
-
 
 // TestProperty7_ConfigSerializationRoundTrip verifies that for any list of
 // valid absolute directory path strings, serializing to JSON via AppConfig

@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
@@ -91,8 +92,11 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 	attachPendingVisibleArtifacts func(*IMAgentResponse),
 ) agentLoopNeedsConfirmGateResult {
 	result := agentLoopNeedsConfirmGateResult{MsgContent: msgContent}
+	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
+	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
 	needsConfirmFromEngine := false
-	if h.getWorkflowEngine() != nil {
+	engine := h.getWorkflowEngine()
+	if engine != nil {
 		semanticBypass := false
 		if !gateConfig.active && gateConfig.intent == intentCoding {
 			semanticBypass = true
@@ -100,21 +104,21 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 		if gateConfig.bugFix {
 			semanticBypass = true
 		}
-		if ctx.SkipNeedsConfirmGate && !gateConfig.active {
+		if shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, gateConfig.active, engine.IsAwaitingReview(userID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(userID)) {
 			semanticBypass = true
 		}
 		if !semanticBypass {
-			needsConfirmFromEngine = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
+			needsConfirmFromEngine = engine.IsPhaseNeedsConfirm(userID)
 		} else {
 			log.Printf("[workflow-gate] NeedsConfirm no-tool engine bypassed: semantic intent=%v active=%v bugFix=%v skipConfirmOther=%v",
-				gateConfig.intent, gateConfig.active, gateConfig.bugFix, ctx.SkipNeedsConfirmGate)
+				gateConfig.intent, gateConfig.active, gateConfig.bugFix, skipNeedsConfirmGate)
 		}
 	}
 
 	needsConfirmFromSteering := false
 	if gateConfig.active && iteration > 0 {
-		if h.getWorkflowEngine() != nil && h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
-			needsConfirmFromSteering = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
+		if engine != nil && engine.GetActiveWorkflow(userID) != nil {
+			needsConfirmFromSteering = engine.IsPhaseNeedsConfirm(userID)
 			if !needsConfirmFromSteering && normalizeIMMessagePlatformKind(platform).IsDesktop() {
 				log.Printf("[agent-loop] NeedsConfirm steering bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
 			}
@@ -138,7 +142,7 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 		msgContent = trimmedForGate
 		result.MsgContent = msgContent
 		log.Printf("NeedsConfirm gate: detected self-confirmation pattern, truncated at confirmation boundary (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedForGate))
-		if h.traceService != nil && ctx.RunID != "" {
+		if h.traceService != nil && ctx != nil && ctx.RunID != "" {
 			h.appendTraceEvent(ctx, "gate.self_confirm_truncated", "warn",
 				fmt.Sprintf("Self-confirmation detected and truncated (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedForGate)),
 				truncateTraceText(trimmedForGate, 220), "", "")
@@ -158,7 +162,7 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 		gateSource = needsConfirmGateSourceSteering
 	}
 	log.Printf("[agent-loop] NeedsConfirm gate (%s): returning response for user confirmation (iteration=%d len=%d)", gateSource, iteration, len(trimmedForGate))
-	if h.traceService != nil && ctx.RunID != "" {
+	if h.traceService != nil && ctx != nil && ctx.RunID != "" {
 		h.appendTraceEvent(ctx, "gate.needs_confirm", "info",
 			fmt.Sprintf("NeedsConfirm phase gate (%s) - pausing for user confirmation", gateSource),
 			truncateTraceText(trimmedForGate, 220), "", "")
@@ -171,10 +175,10 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 	result.PostStreamReturnPrepTime = streamDone
 
 	docPreviewText := strings.TrimSpace(stripThinkingTags(gateText))
-	if normalizeIMMessagePlatformKind(platform).IsDesktop() && h.getWorkflowEngine() != nil {
+	if normalizeIMMessagePlatformKind(platform).IsDesktop() && engine != nil {
 		h.emitNeedsConfirmDocPreview(userID, docPreviewText, engineGateActive, steeringDetector)
 	} else if normalizeIMMessagePlatformKind(platform).IsDesktop() {
-		log.Printf("[agent-loop] NeedsConfirm gate: skipped doc preview emission (workflowEngine=%v)", h.getWorkflowEngine() != nil)
+		log.Printf("[agent-loop] NeedsConfirm gate: skipped doc preview emission (workflowEngine=%v)", engine != nil)
 	}
 	attachLLMTelemetry(finalResp)
 	attachPendingVisibleArtifacts(finalResp)
@@ -237,7 +241,7 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 		msgContent = trimmedAfterTools
 		result.MsgContent = msgContent
 		log.Printf("NeedsConfirm gate (tool branch): detected self-confirmation pattern, truncated at confirmation boundary (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedAfterTools))
-		if h.traceService != nil && ctx.RunID != "" {
+		if h.traceService != nil && ctx != nil && ctx.RunID != "" {
 			h.appendTraceEvent(ctx, "gate.self_confirm_truncated", "warn",
 				fmt.Sprintf("Self-confirmation detected and truncated in tool branch (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedAfterTools)),
 				truncateTraceText(trimmedAfterTools, 220), "", "")
@@ -269,9 +273,12 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 
 func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID string, iteration int, gateConfig codingToolGateConfig) bool {
 	needsConfirm := false
+	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
+	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
+	engine := h.getWorkflowEngine()
 	if gateConfig.active && iteration > 0 {
-		if h.getWorkflowEngine() != nil && h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
-			needsConfirm = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
+		if engine != nil && engine.GetActiveWorkflow(userID) != nil {
+			needsConfirm = engine.IsPhaseNeedsConfirm(userID)
 			if !needsConfirm {
 				log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
 			}
@@ -279,7 +286,7 @@ func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID
 			needsConfirm = true
 		}
 	}
-	if !needsConfirm && iteration > 0 && h.getWorkflowEngine() != nil {
+	if !needsConfirm && iteration > 0 && engine != nil {
 		semanticBypass := false
 		if gateConfig.intent == intentCoding && !gateConfig.active {
 			semanticBypass = true
@@ -288,13 +295,15 @@ func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID
 			semanticBypass = true
 		}
 		if !semanticBypass {
-			needsConfirm = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
+			needsConfirm = engine.IsPhaseNeedsConfirm(userID)
 		} else {
 			log.Printf("[workflow-gate] NeedsConfirm tool-branch fallback bypassed: semantic intent=%v active=%v bugFix=%v reason=%q",
 				gateConfig.intent, gateConfig.active, gateConfig.bugFix, gateConfig.reason)
 		}
 	}
-	if needsConfirm && ctx.SkipNeedsConfirmGate && !gateConfig.active {
+	awaitingReview := engine != nil && engine.IsAwaitingReview(userID)
+	phaseBlocked := engine != nil && engine.IsPhaseExecutionBlocked(userID)
+	if needsConfirm && shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, gateConfig.active, awaitingReview, workflowAgentLoop, phaseBlocked) {
 		log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: pending confirm classified as 'other' (iter=%d user=%s)", iteration, userID)
 		return false
 	}
@@ -715,6 +724,7 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	activeFormGate := workflowHasPendingPhaseForm(engine, userID)
 	formDirectRun := activeFormGate && isWorkflowFormDirectRunCommand(text)
 	if activeFormGate && !formDirectRun && !isWorkflowCancelText(text) && normalizeIMMessagePlatformKind(platform).IsDesktop() {
+		h.workflowAgentLoopMarker.Delete(userID)
 		log.Printf("[WorkflowInterception] bypassing pending desktop workflow form for chat input: user=%s text=%q", userID, truncateRunes(text, 60))
 		return nil
 	}
@@ -857,29 +867,18 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string, cl
 
 	threshold := uic.GetWorkflowRejectThreshold()
 
-	// Fast path: embedding-only classification (<100ms). For non-coding intents
-	// (ssh, bugfix, maintenance, non_coding, search, etc.), embedding alone is
-	// sufficient to bypass the workflow; shouldBypassWorkflowForClassification
-	// returns true unconditionally for these labels without checking Layer.
-	// Only coding intent needs the full fusion (tree channel provides
-	// CreationOriented signal required by the Layer==3||23 check).
+	// Fast path: embedding-only classification (<100ms). It may only reject
+	// labels that cannot trigger a workflow by definition. Workflow-capable
+	// labels such as office must continue to full fusion because embedding-only
+	// does not carry WorkflowType (e.g. presentation_design).
 	embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{
 		Text:   text,
 		UserID: userID,
 	})
-	if embResult.Confidence >= threshold {
-		switch embResult.Primary {
-		case intent.LabelBugFix, intent.LabelMaintenance, intent.LabelSSH,
-			intent.LabelNonCoding, intent.LabelSearch, intent.LabelDocumentDelivery,
-			intent.LabelBrowser, intent.LabelOffice, intent.LabelBusinessData:
-			// Clear non-coding intent from embedding and bypass immediately.
-			// Clear non-coding intent from embedding and bypass immediately.
-			// SSH-like operational requests are clearly non-workflow and can bypass here.
-			// Coding-looking edge cases still fall through because their embedding label is coding.
-			log.Printf("[WorkflowInterception] UIC fast-bypass (embedding-only): user=%s intent=%s conf=%.2f",
-				userID, embResult.Primary, embResult.Confidence)
-			return true
-		}
+	if shouldBypassWorkflowForClassification(embResult, uic.IsWorkflowCandidate(embResult.Primary), threshold) {
+		log.Printf("[WorkflowInterception] UIC fast-bypass (embedding-only): user=%s intent=%s conf=%.2f",
+			userID, embResult.Primary, embResult.Confidence)
+		return true
 	}
 
 	// Slow path: full fusion (embedding + tree LLM) for messages where embedding
@@ -929,6 +928,8 @@ func shouldBypassWorkflowForClassification(result intent.ClassificationResult, i
 		return false
 	case intent.LabelCoding:
 		return !result.CreationOriented && !result.Degraded && (result.Layer == 3 || result.Layer == 23)
+	case intent.LabelOffice:
+		return !result.Degraded && (result.Layer == 3 || result.Layer == 23)
 	case intent.LabelBugFix, intent.LabelMaintenance, intent.LabelSSH:
 		return true
 	default:
@@ -1088,6 +1089,7 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 	// as TaskBreakdownText. If it parses as a task list, use orchestrator +
 	// SubAgent. If not (e.g. PPT's slide_scripting output), fall through
 	// to the normal agent loop which handles execution via tools directly.
+	h.backfillExecutionOrchestratorActivation(engine, userID, resp)
 	if resp.ActivateOrchestrator {
 		taskOrch := h.getTaskOrchestrator(userID)
 		if taskOrch != nil && !taskOrch.IsActive() && resp.TaskBreakdownText != "" {
@@ -1330,10 +1332,44 @@ func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *workflow.WorkflowEn
 		log.Printf("[workflow-review] ApplyReviewIntent error: user=%s intent=%s err=%v", userID, intent, err)
 		return h.reviewBarrierResponse(engine, userID)
 	}
+	h.recordWorkflowReviewFeedbackExperience(userID, intent, feedback)
 	if intent == workflow.ReviewIntentSwitchTask {
 		return h.handleWorkflowInterception(userID, feedback, platform)
 	}
 	return h.handleWorkflowEngineResponse(engine, userID, resp, platform)
+}
+
+func (h *IMMessageHandler) recordWorkflowReviewFeedbackExperience(userID string, intent workflow.ReviewIntent, feedback string) {
+	if h == nil {
+		return
+	}
+	value, ok := h.workflowReviewExperienceContext.Load(userID)
+	if !ok {
+		return
+	}
+	ctx, ok := value.(workflowReviewExperienceContext)
+	if !ok || strings.TrimSpace(ctx.TraceID) == "" {
+		return
+	}
+	if workflowReviewIntentEndsCurrentContext(intent) {
+		h.workflowReviewExperienceContext.Delete(userID)
+	}
+	h.recordExperienceLifecycleEvent(ctx.Apply(lifecycle.Event{
+		EventType: lifecycle.EventUserFeedbackReceived,
+		Outcome:   string(intent),
+		Reason:    ctx.PhaseID,
+		Query:     feedback,
+		CreatedAt: time.Now(),
+	}))
+}
+
+func workflowReviewIntentEndsCurrentContext(intent workflow.ReviewIntent) bool {
+	switch intent {
+	case workflow.ReviewIntentConfirm, workflow.ReviewIntentSkip, workflow.ReviewIntentCancel, workflow.ReviewIntentSwitchTask:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *workflow.WorkflowEngine, userID string, resp *workflow.WorkflowResponse, platform string) *IMAgentResponse {
@@ -1460,13 +1496,11 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 	//
 	// The "accept" power belongs to IUM (deep semantic confirmation) or the
 	// user (via confirmation panel after IUM confirms).
-	var uicTopConf float64
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		uicResult := uic.Classify(intent.MessageContext{
 			Text:   text,
 			UserID: userID,
 		})
-		uicTopConf = uicResult.Confidence
 
 		// UIC says no workflow - check if it's a confident non-workflow signal.
 		//
@@ -1503,23 +1537,6 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 				"not decisive, proceeding to IUM",
 				uicResult.Primary, uicResult.Confidence, uicResult.Layer, uicResult.WorkflowType)
 		}
-	}
-
-	// Short-circuit: when UIC's top confidence is low (< 0.55), it means UIC
-	// itself is uncertain whether this is a workflow task. In this case, IUM
-	// (which uses the same LLM) is also unlikely to classify it as a workflow
-	// task; it will almost certainly reject. Skip the 3-5s IUM LLM call.
-	//
-	// This is NOT a length-based heuristic. It's based on UIC's own judgment:
-	// "I'm not confident this is a workflow task." When UIC is confident
-	// (conf >= 0.55), we still call IUM for deep confirmation.
-	//
-	// Safety: if UIC is unavailable (nil), this variable stays at 0 and the
-	// check is skipped -> IUM is always called as fallback.
-	if uicTopConf > 0 && uicTopConf < 0.55 {
-		log.Printf("[WorkflowInterception] low-confidence bypass (conf=%.2f < 0.55): user=%s text=%q",
-			uicTopConf, userID, text)
-		return nil
 	}
 
 	result, err := understanding.Start(userID, text)
@@ -1614,7 +1631,10 @@ func (h *IMMessageHandler) applyWorkflowToolFilter(userID string, tools []map[st
 	if engine == nil {
 		return tools
 	}
-	policy := engine.GetPhaseToolFilter(userID)
+	policy := engine.GetActivePhaseToolFilter(userID)
+	if policy == workflow.ToolFilterNone && engine.HasActiveWorkflow(userID) && engine.IsPhaseExecutionBlocked(userID) {
+		return nil
+	}
 	return workflow.FilterToolDefinitions(policy, tools)
 }
 

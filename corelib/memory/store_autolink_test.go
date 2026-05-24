@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // deterministicEmbedder returns different vectors based on content keywords,
@@ -680,5 +681,108 @@ func TestDeleteSynchronizesPersistedGraphEdges(t *testing.T) {
 	}
 	if strings.Contains(string(data), deleteID) {
 		t.Fatalf("deleted entry ID %q remained in persisted memory JSON: %s", deleteID, string(data))
+	}
+}
+
+func TestDiscoverMissingLinksPersistsThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	if err := store.UpsertEntriesByID([]Entry{
+		{ID: "dream-link-a", Content: "alpha dream link source", Category: CategoryProjectKnowledge, Tags: []string{"dream-link", "shared-alpha"}},
+		{ID: "dream-link-b", Content: "beta dream link target", Category: CategoryProjectKnowledge, Tags: []string{"dream-link", "shared-alpha"}},
+	}); err != nil {
+		t.Fatalf("UpsertEntriesByID: %v", err)
+	}
+
+	if created := store.discoverMissingLinks(); created == 0 {
+		t.Fatal("discoverMissingLinks did not create graph links")
+	}
+
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]Entry{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry
+	}
+	if len(seen["dream-link-a"].RelatedIDs) == 0 || len(seen["dream-link-b"].RelatedIDs) == 0 {
+		t.Fatalf("discovered links were not persisted: a=%+v b=%+v", seen["dream-link-a"].RelatedIDs, seen["dream-link-b"].RelatedIDs)
+	}
+}
+
+func TestDreamMaintenancePersistsStaleHashAndTagBackfillsThroughSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, SyncConfig{Enabled: false})
+	defer store.Stop()
+
+	if err := store.Save(Entry{ID: "stale-old", Content: "old stale mysql setting", Category: CategoryProjectKnowledge, Tags: []string{"mysql-setting"}}); err != nil {
+		t.Fatalf("save stale old: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := store.Save(Entry{ID: "stale-new", Content: "new stale mysql setting", Category: CategoryProjectKnowledge, Tags: []string{"mysql-setting"}}); err != nil {
+		t.Fatalf("save stale new: %v", err)
+	}
+	if err := store.Save(Entry{ID: "hash-missing", Content: "alpha endpoint uses port 2222", Category: CategoryProjectKnowledge, Tags: []string{"extracted"}}); err != nil {
+		t.Fatalf("save hash missing: %v", err)
+	}
+
+	store.mu.Lock()
+	for i := range store.entries {
+		if store.entries[i].ID == "hash-missing" {
+			store.entries[i].ContentHash = ""
+			if err := backend.UpdateEntry(&store.entries[i]); err != nil {
+				store.mu.Unlock()
+				t.Fatalf("blank backend hash: %v", err)
+			}
+			break
+		}
+	}
+	store.mu.Unlock()
+
+	if got := store.DetectStale(); got != 1 {
+		t.Fatalf("DetectStale = %d, want 1", got)
+	}
+	if got := store.backfillContentHashes(); got != 1 {
+		t.Fatalf("backfillContentHashes = %d, want 1", got)
+	}
+	if got := store.backfillTags(); got != 1 {
+		t.Fatalf("backfillTags = %d, want 1", got)
+	}
+
+	loaded, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	seen := map[string]Entry{}
+	for _, entry := range loaded {
+		seen[entry.ID] = entry
+	}
+	if !seen["stale-old"].Stale {
+		t.Fatalf("stale flag was not persisted: %+v", seen["stale-old"])
+	}
+	if seen["hash-missing"].ContentHash == "" {
+		t.Fatalf("content hash backfill was not persisted: %+v", seen["hash-missing"])
+	}
+	if len(seen["hash-missing"].Tags) <= 1 {
+		t.Fatalf("tag backfill was not persisted: %+v", seen["hash-missing"].Tags)
 	}
 }

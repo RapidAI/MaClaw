@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +57,8 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 		return h.sshExecBackground(args)
 	case sshToolActionCheckTask:
 		return h.sshCheckTask(args)
+	case sshToolActionWaitTask:
+		return h.sshWaitTask(args)
 	case sshToolActionListTasks:
 		return h.sshListTasks()
 	case sshToolActionKillTask:
@@ -72,7 +76,7 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 	case sshToolActionCloseAll:
 		return h.sshCloseAll()
 	default:
-		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close/close_all）", action)
+		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close/close_all）", action)
 	}
 }
 
@@ -392,29 +396,123 @@ func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 		return fmt.Sprintf("检查任务失败: %v", err)
 	}
 
-	statusEmoji := "🔄"
-	switch normalizeLocalBackgroundTaskStatus(result.Status) {
-	case localBackgroundTaskStatusCompleted:
-		statusEmoji = "✅"
-	case localBackgroundTaskStatusFailed:
-		statusEmoji = "❌"
-	case localBackgroundTaskStatusKilled:
-		statusEmoji = "🛑"
-	case localBackgroundTaskStatusUnknownID:
-		statusEmoji = "❓"
+	return formatSSHBackgroundTaskStatus(result)
+}
+
+// sshWaitTask polls a background task until it reaches a terminal state or timeout.
+func (h *IMMessageHandler) sshWaitTask(args map[string]interface{}) string {
+	return waitSSHBackgroundTask(h.bgTaskMgr, args, "error: no SSH background task manager", "error: wait_task requires task_id")
+}
+
+func waitSSHBackgroundTask(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[string]interface{}, noManagerMsg, missingTaskMsg string) string {
+	if bgTaskMgr == nil {
+		return noManagerMsg
+	}
+	taskID, _ := args["task_id"].(string)
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return missingTaskMsg
+	}
+	tailLines := boundedIntArg(args, "tail_lines", 50, 1, 1000)
+	timeout := boundedIntArg(args, "timeout", 60, 5, 600)
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	for checks := 1; ; checks++ {
+		result, err := bgTaskMgr.CheckTask(taskID, tailLines)
+		if err != nil {
+			return fmt.Sprintf("wait_task failed: %v", err)
+		}
+		if result == nil {
+			return "wait_task failed: empty task status"
+		}
+		formatted := formatSSHBackgroundTaskStatus(result)
+		if !normalizeRuntimeTaskStatus(result.Status).IsActive() {
+			return fmt.Sprintf("wait_task reached terminal status %q after %d check(s).\n\n%s", result.Status, checks, formatted)
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Sprintf("wait_task timed out after %ds; task is still active.\n\n%s", timeout, formatted)
+		}
+		sleepFor := 5 * time.Second
+		if remaining < sleepFor {
+			sleepFor = remaining
+		}
+		time.Sleep(sleepFor)
+	}
+}
+
+func boundedIntArg(args map[string]interface{}, key string, defaultValue, minValue, maxValue int) int {
+	value := defaultValue
+	switch raw := args[key].(type) {
+	case int:
+		value = raw
+	case int64:
+		value = int(raw)
+	case float64:
+		value = int(raw)
+	case float32:
+		value = int(raw)
+	case json.Number:
+		if n, err := raw.Int64(); err == nil {
+			value = int(n)
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+			value = n
+		}
+	}
+	if value <= 0 {
+		value = defaultValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	if value < minValue {
+		return minValue
+	}
+	return value
+}
+
+func formatSSHBackgroundTaskStatus(result *remote.BackgroundTaskStatus) string {
+	if result == nil {
+		return ""
+	}
+	statusEmoji := "[running]"
+	switch normalizeRuntimeTaskStatus(result.Status) {
+	case runtimeTaskStatusCompleted:
+		statusEmoji = "[completed]"
+	case runtimeTaskStatusFailed:
+		statusEmoji = "[failed]"
+	case runtimeTaskStatusKilled:
+		statusEmoji = "[killed]"
+	case runtimeTaskStatusUnknown:
+		statusEmoji = "[unknown]"
 	}
 
 	logTail := result.LogTail
 	if logTail == "" {
-		logTail = "(无日志输出)"
+		logTail = "(no log output)"
 	}
-	if len(logTail) > 6000 {
-		logTail = logTail[:3000] + "\n... (截断) ...\n" + logTail[len(logTail)-3000:]
+	if len([]rune(logTail)) > 6000 {
+		logTail = truncateRunesMiddle(logTail, 3000, 3000)
 	}
 
-	return fmt.Sprintf("%s 任务 %s\n命令: %s\n状态: %s\n进程存活: %v\n已运行: %s\n\n--- 最新日志 ---\n%s",
+	return fmt.Sprintf("%s task %s\ncommand: %s\nstatus: %s\nprocess_alive: %v\nelapsed: %s\n\n--- latest log ---\n%s",
 		statusEmoji, result.TaskID, result.Command, result.Status,
 		result.IsAlive, result.Elapsed, logTail)
+}
+
+func truncateRunesMiddle(s string, prefixRunes, suffixRunes int) string {
+	runes := []rune(s)
+	if prefixRunes < 0 {
+		prefixRunes = 0
+	}
+	if suffixRunes < 0 {
+		suffixRunes = 0
+	}
+	if len(runes) <= prefixRunes+suffixRunes {
+		return s
+	}
+	return string(runes[:prefixRunes]) + "\n... (truncated) ...\n" + string(runes[len(runes)-suffixRunes:])
 }
 
 // sshListTasks lists all background tasks.

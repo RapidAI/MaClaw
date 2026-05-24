@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
@@ -21,6 +22,7 @@ type OnboardingActivateRemoteMsg struct {
 }
 type OnboardingStartWeixinMsg struct{}
 type OnboardingPollWeixinMsg struct{ Token string }
+type OnboardingWeixinTickMsg struct{ Token string }
 type OnboardingFinishMsg struct{}
 type OnboardingLanguageChangedMsg struct{ Language string }
 
@@ -41,6 +43,7 @@ type OnboardingWeixinQRMsg struct {
 }
 
 type OnboardingWeixinPollResultMsg struct {
+	Token     string
 	Status    string
 	Message   string
 	Success   bool
@@ -69,9 +72,19 @@ type OnboardingModel struct {
 	weixinStatus     string
 	weixinQR         string
 	weixinToken      string
+	weixinElapsed    int
+	weixinRefreshes  int
 	accountID        string
 	done             bool
 	message          string
+}
+
+const maxOnboardingWeixinRefreshes = 3
+
+func onboardingWeixinTick(token string) tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return OnboardingWeixinTickMsg{Token: token}
+	})
 }
 
 func NewOnboardingModel(lang string) OnboardingModel {
@@ -264,11 +277,18 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 			m.weixinStatus = msg.Message
 			return m, nil
 		}
-		m.weixinQR = msg.QR
-		m.weixinToken = msg.Token
+		m.weixinQR = strings.TrimSpace(msg.QR)
+		m.weixinToken = strings.TrimSpace(msg.Token)
+		m.weixinElapsed = 0
 		m.weixinStatus = onboardingText(m.lang, "waitingScan")
-		return m, func() tea.Msg { return OnboardingPollWeixinMsg{Token: msg.Token} }
+		return m, tea.Batch(
+			func() tea.Msg { return OnboardingPollWeixinMsg{Token: m.weixinToken} },
+			onboardingWeixinTick(m.weixinToken),
+		)
 	case OnboardingWeixinPollResultMsg:
+		if !m.weixinPollTokenMatches(strings.TrimSpace(msg.Token)) {
+			return m, nil
+		}
 		m.weixinStatus = msg.Message
 		if m.weixinStatus == "" {
 			m.weixinStatus = msg.Status
@@ -280,7 +300,21 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 				m.accountID = msg.AccountID
 				m.weixinQR = ""
 				m.weixinToken = ""
+				m.weixinElapsed = 0
+				m.weixinRefreshes = 0
 				m.weixinStatus = onboardingText(m.lang, "bound")
+			} else if strings.EqualFold(strings.TrimSpace(msg.Status), "expired") && m.weixinRefreshes < maxOnboardingWeixinRefreshes {
+				m.weixinRefreshes++
+				m.weixinQR = ""
+				m.weixinToken = ""
+				m.weixinElapsed = 0
+				m.weixinBusy = true
+				m.weixinStatus = onboardingText(m.lang, "refreshingQR")
+				return m, func() tea.Msg { return OnboardingStartWeixinMsg{} }
+			} else {
+				m.weixinQR = ""
+				m.weixinToken = ""
+				m.weixinElapsed = 0
 			}
 			return m, nil
 		}
@@ -288,10 +322,31 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 			return m, func() tea.Msg { return OnboardingPollWeixinMsg{Token: m.weixinToken} }
 		}
 		return m, nil
-	case tea.KeyMsg:
-		if m.weixinQR != "" && msg.String() == "esc" {
-			m.weixinQR = ""
+	case OnboardingWeixinTickMsg:
+		if !m.weixinPollTokenMatches(strings.TrimSpace(msg.Token)) || m.weixinQR == "" {
 			return m, nil
+		}
+		m.weixinElapsed++
+		return m, onboardingWeixinTick(m.weixinToken)
+	case tea.KeyMsg:
+		if m.weixinQR != "" {
+			switch msg.String() {
+			case "esc":
+				m.weixinQR = ""
+				m.weixinToken = ""
+				m.weixinElapsed = 0
+				if !m.weixinDone {
+					m.weixinStatus = onboardingText(m.lang, "notBound")
+				}
+				return m, nil
+			case "enter", "r":
+				token := strings.TrimSpace(m.weixinToken)
+				if token == "" {
+					return m, nil
+				}
+				m.weixinStatus = onboardingText(m.lang, "waitingScan")
+				return m, func() tea.Msg { return OnboardingPollWeixinMsg{Token: token} }
+			}
 		}
 		if m.remoteBusy || m.weixinBusy {
 			return m, nil
@@ -346,6 +401,8 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 				return m.startRemoteActivation()
 			case onboardingRowWeixin:
 				m.weixinBusy = true
+				m.weixinRefreshes = 0
+				m.weixinElapsed = 0
 				m.weixinStatus = onboardingText(m.lang, "requestingQR")
 				m.weixinQR = ""
 				return m, func() tea.Msg { return OnboardingStartWeixinMsg{} }
@@ -375,6 +432,14 @@ func (m OnboardingModel) Update(msg tea.Msg) (OnboardingModel, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m OnboardingModel) weixinPollTokenMatches(token string) bool {
+	token = strings.TrimSpace(token)
+	if m.weixinToken != "" {
+		return token == m.weixinToken
+	}
+	return token == ""
 }
 
 func (m *OnboardingModel) clearRemoteFailureAfterEdit() {
@@ -464,7 +529,11 @@ func (m OnboardingModel) viewWeixinQR() string {
 	var b strings.Builder
 	b.WriteString(onboardingTitle.Render("  "+onboardingText(m.lang, "scan")) + "\n")
 	b.WriteString("  " + onboardingDim.Render(fitOnboarding(onboardingText(m.lang, "scanSubtitle"), max(10, m.width-2))) + "\n")
-	b.WriteString("  " + onboardingDim.Render(fitOnboarding(onboardingText(m.lang, "weixin")+": "+m.weixinStatus, max(10, m.width-2))) + "\n\n")
+	status := m.weixinStatus
+	if m.weixinElapsed > 0 {
+		status = fmt.Sprintf("%s (%ds)", status, m.weixinElapsed)
+	}
+	b.WriteString("  " + onboardingDim.Render(fitOnboarding(onboardingText(m.lang, "weixin")+": "+status, max(10, m.width-2))) + "\n\n")
 	qrRows := 0
 	if m.height > 0 {
 		qrRows = max(1, m.height-10)
@@ -488,7 +557,7 @@ func onboardingRemoteStatusKeys() []string {
 }
 
 func onboardingWeixinStatusKeys() []string {
-	return []string{"notBound", "bound", "waitingScan", "requestingQR"}
+	return []string{"notBound", "bound", "waitingScan", "requestingQR", "refreshingQR"}
 }
 
 func translateOnboardingStatus(status, oldLang, newLang string, keys []string) string {
@@ -922,6 +991,7 @@ func onboardingText(lang, key string) string {
 			"hubCenterInvalid":         "HubCenter must be a valid http(s) URL",
 			"activating":               "activating...",
 			"requestingQR":             "requesting QR code...",
+			"refreshingQR":             "QR expired; refreshing...",
 			"weixin":                   "WeChat binding (optional)",
 			"weixinHint":               "optional; Enter to show QR",
 			"finish":                   "Done",
@@ -945,7 +1015,7 @@ func onboardingText(lang, key string) string {
 			"nextRedeem":               "Next: finish to redeem MaClaw official service.",
 			"scan":                     "Scan with WeChat",
 			"scanSubtitle":             "Scan and confirm on the phone. Polling continues while this screen is open.",
-			"scanFooter":               "Esc returns; F1-F6 switches tabs. Payload appears only when QR cannot fit.",
+			"scanFooter":               "Esc returns; Enter checks now. Payload appears only when QR cannot fit; use phone WeChat, not a desktop browser.",
 			"payloadPrefix":            "payload: ",
 			"qrFailed":                 "QR render failed",
 			"qrTooNarrow":              "Terminal is too narrow for QR. Use the payload below or enlarge the window.",
@@ -975,6 +1045,7 @@ func onboardingText(lang, key string) string {
 		"hubCenterInvalid":         "HubCenter 必须是有效的 http(s) 地址",
 		"activating":               "正在激活...",
 		"requestingQR":             "正在请求二维码...",
+		"refreshingQR":             "二维码已过期，正在刷新...",
 		"weixin":                   "微信绑定（可选）",
 		"weixinHint":               "可选；Enter 显示二维码",
 		"finish":                   "完成",
@@ -998,7 +1069,7 @@ func onboardingText(lang, key string) string {
 		"nextRedeem":               "下一步：完成后去服务兑换。",
 		"scan":                     "用微信扫码",
 		"scanSubtitle":             "扫码后在手机上确认；停留在此页时会自动轮询。",
-		"scanFooter":               "Esc 返回；F1-F6 可切换标签。只有二维码放不下时才显示 payload。",
+		"scanFooter":               "Esc 返回；Enter 立即检查。只有二维码放不下时才显示载荷；请用手机微信打开/扫描。",
 		"payloadPrefix":            "载荷: ",
 		"qrFailed":                 "二维码渲染失败",
 		"qrTooNarrow":              "终端太窄，无法完整显示二维码。请使用下方 payload，或放大窗口。",

@@ -21,6 +21,9 @@ func (s *SecurityService) ResolveUserGroupChain(ctx context.Context, email strin
 		return nil, err
 	}
 	if groupID == "" {
+		if err := s.ensureRootGroup(ctx); err != nil {
+			return nil, err
+		}
 		root, err := s.store.GetRootGroup(ctx)
 		if err != nil || root == nil {
 			return nil, err

@@ -284,7 +284,7 @@ func findMaintenanceSkill(skills []corelib.NLSkillEntry, name string) int {
 }
 
 func isFileBackedMaintenanceSkill(skill corelib.NLSkillEntry) bool {
-	return strings.EqualFold(strings.TrimSpace(skill.Source), "file") && strings.TrimSpace(skill.SkillDir) != ""
+	return IsFileBackedSkill(skill)
 }
 
 func buildContractPatchDraft(skill corelib.NLSkillEntry) *SkillMaintenancePatchDraft {

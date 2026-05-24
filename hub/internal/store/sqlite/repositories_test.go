@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +197,18 @@ func TestTenantRepositoryEnsureDefaultAndRoundTrip(t *testing.T) {
 	if defaultTenant == nil || defaultTenant.ID != store.DefaultTenantID || defaultTenant.Slug != "default" {
 		t.Fatalf("unexpected default tenant: %#v", defaultTenant)
 	}
+	repo := st.Tenants.(*tenantRepo)
+	deletedAt := time.Now().UTC().Format(time.RFC3339)
+	if err := execWrite(ctx, repo.batch, repo.db, `UPDATE tenants SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?`, deletedAt, deletedAt, store.DefaultTenantID); err != nil {
+		t.Fatalf("mark default tenant deleted: %v", err)
+	}
+	defaultTenant, err = st.Tenants.EnsureDefault(ctx)
+	if err != nil {
+		t.Fatalf("repair default tenant: %v", err)
+	}
+	if defaultTenant == nil || defaultTenant.DeletedAt != nil || defaultTenant.Status != "active" {
+		t.Fatalf("default tenant not repaired: %#v", defaultTenant)
+	}
 
 	now := time.Now().UTC().Truncate(time.Second)
 	tenant := &store.Tenant{
@@ -219,6 +232,16 @@ func TestTenantRepositoryEnsureDefaultAndRoundTrip(t *testing.T) {
 	}
 	if got == nil || got.ID != tenant.ID || got.PrimaryDomain != tenant.PrimaryDomain {
 		t.Fatalf("unexpected tenant: %#v", got)
+	}
+	if err := repo.UpdateSettings(ctx, tenant.ID, "Acme Renamed", "team.acme.com", `{"email_domains":["team.acme.com"],"allow_user_registration":false}`); err != nil {
+		t.Fatalf("update tenant settings: %v", err)
+	}
+	got, err = st.Tenants.GetByID(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("get updated tenant: %v", err)
+	}
+	if got == nil || got.Name != "Acme Renamed" || got.PrimaryDomain != "team.acme.com" || !strings.Contains(got.SettingsJSON, `"allow_user_registration":false`) {
+		t.Fatalf("unexpected updated tenant: %#v", got)
 	}
 }
 

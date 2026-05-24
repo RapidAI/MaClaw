@@ -31,6 +31,24 @@ describe("AgentTaskPanel", () => {
         expect(screen.getByText(/Email must be a valid email/)).toBeTruthy();
     });
 
+    it("localizes validation messages in Chinese", () => {
+        const onSubmit = vi.fn();
+        const view: AgentView = {
+            type: "form",
+            id: "format-test-zh",
+            title: "联系信息",
+            fields: [{ name: "email", label: "邮箱", type: "text", format: "email", value: "bad" }],
+            submitLabel: "保存",
+        };
+
+        render(<AgentTaskPanel view={view} onSubmit={onSubmit} theme={lightTheme} lang="zh-Hans" />);
+
+        fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+        expect(onSubmit).not.toHaveBeenCalled();
+        expect(screen.getByText(/邮箱 必须是有效的邮箱地址/)).toBeTruthy();
+    });
+
     it("submits valid formatted values", () => {
         const onSubmit = vi.fn();
         const view: AgentView = {

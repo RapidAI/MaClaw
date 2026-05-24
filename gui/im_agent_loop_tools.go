@@ -34,15 +34,19 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 
 	browserBeforeWF := len(browserDiagExtractNames(tools))
 	workflowFilterPolicy := workflowToolFilterNone
-	if engine := h.getWorkflowEngine(); engine != nil && !ctx.SkipNeedsConfirmGate {
-		if p := engine.GetPhaseToolFilter(userID); p != "" {
+	workflowFilterSkipped := false
+	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
+	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
+	if engine := h.getWorkflowEngine(); engine != nil && shouldApplyWorkflowFilter(skipNeedsConfirmGate, engine.IsAwaitingReview(userID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(userID)) {
+		if p := engine.GetActivePhaseToolFilter(userID); p != "" {
 			workflowFilterPolicy = workflowToolFilterDecision(p)
 		}
 		tools = h.applyWorkflowToolFilter(userID, tools)
-	} else if ctx.SkipNeedsConfirmGate {
+	} else if skipNeedsConfirmGate {
 		workflowFilterPolicy = workflowToolFilterSkippedConfirmBypass
+		workflowFilterSkipped = true
 	}
-	BrowserDiagCP2_WorkflowFilter(browserBeforeWF, tools, workflowFilterPolicy.String(), ctx.SkipNeedsConfirmGate)
+	BrowserDiagCP2_WorkflowFilter(browserBeforeWF, tools, workflowFilterPolicy.String(), workflowFilterSkipped)
 
 	return agentLoopToolSet{
 		Tools:            tools,
@@ -54,4 +58,3 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserPinned:    browserSessionPinned,
 	}
 }
-

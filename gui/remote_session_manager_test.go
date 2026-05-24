@@ -107,6 +107,110 @@ func TestInjectGuideReferenceTargetsOnlyExplicitActiveSession(t *testing.T) {
 	}
 }
 
+func TestInjectGuideReferenceAcceptsRecentLoopEnd(t *testing.T) {
+	h := &IMMessageHandler{}
+	state := h.getSessionLoop(desktopUserID)
+	state.stateMu.Lock()
+	state.endedAt = time.Now()
+	state.stateMu.Unlock()
+
+	if !h.InjectGuideReference(desktopUserID, "late guide") {
+		t.Fatalf("recently finished desktop session should accept guide reference")
+	}
+	raw, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok || !strings.Contains(raw.(string), "late guide") {
+		t.Fatalf("pending guide reference missing: %#v", raw)
+	}
+}
+
+func TestInjectGuideReferenceAcceptsLoopStartingWindow(t *testing.T) {
+	h := &IMMessageHandler{}
+	state := h.getSessionLoop(desktopUserID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if !h.InjectGuideReference(desktopUserID, "starting guide") {
+		t.Fatalf("session entering loop should accept guide reference")
+	}
+	raw, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok || !strings.Contains(raw.(string), "starting guide") {
+		t.Fatalf("pending guide reference missing: %#v", raw)
+	}
+}
+
+func TestInjectGuideReferenceRejectsStaleLoopEnd(t *testing.T) {
+	h := &IMMessageHandler{}
+	state := h.getSessionLoop(desktopUserID)
+	state.stateMu.Lock()
+	state.endedAt = time.Now().Add(-3 * time.Minute)
+	state.stateMu.Unlock()
+
+	if h.InjectGuideReference(desktopUserID, "stale guide") {
+		t.Fatalf("stale finished desktop session should reject guide reference")
+	}
+}
+
+func TestLoopCleanupPreservesLateGuideReference(t *testing.T) {
+	h := &IMMessageHandler{}
+	cleanup := h.beginAgentLoopRuntime(NewLoopContext("late-guide", 1, nil), desktopUserID, "task", desktopPlatform)
+	h.accumulateInjection(desktopUserID, buildGuideLaunchInjection("arrived after final pass"))
+
+	cleanup()
+
+	raw, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok || !strings.Contains(raw.(string), "arrived after final pass") {
+		t.Fatalf("cleanup should preserve late guide reference, got %#v", raw)
+	}
+}
+
+func TestLoopCleanupClearsLateSupplementary(t *testing.T) {
+	h := &IMMessageHandler{}
+	cleanup := h.beginAgentLoopRuntime(NewLoopContext("late-supplement", 1, nil), desktopUserID, "task", desktopPlatform)
+	h.accumulateInjection(desktopUserID, "[用户补充] ordinary late supplement")
+
+	cleanup()
+
+	if raw, ok := h.pendingInjection.Load(desktopUserID); ok {
+		t.Fatalf("cleanup should clear late ordinary supplement, got %#v", raw)
+	}
+}
+
+func TestLoopCleanupKeepsOnlyLateGuideWhenMixedWithSupplementary(t *testing.T) {
+	h := &IMMessageHandler{}
+	cleanup := h.beginAgentLoopRuntime(NewLoopContext("mixed-late-guide", 1, nil), desktopUserID, "task", desktopPlatform)
+	h.accumulateInjection(desktopUserID, "[用户补充] ordinary late supplement")
+	h.accumulateInjection(desktopUserID, buildGuideLaunchInjection("late guide survives"))
+
+	cleanup()
+
+	raw, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok {
+		t.Fatal("cleanup should preserve late guide reference")
+	}
+	text := raw.(string)
+	if !strings.Contains(text, "late guide survives") || strings.Contains(text, "ordinary late supplement") {
+		t.Fatalf("cleanup should keep only guide reference, got %#v", text)
+	}
+}
+
+func TestLoopCleanupDropsSupplementaryAfterLateGuide(t *testing.T) {
+	h := &IMMessageHandler{}
+	cleanup := h.beginAgentLoopRuntime(NewLoopContext("guide-then-supplement", 1, nil), desktopUserID, "task", desktopPlatform)
+	h.accumulateInjection(desktopUserID, buildGuideLaunchInjection("late guide first"))
+	h.accumulateInjection(desktopUserID, "[用户补充] ordinary late supplement")
+
+	cleanup()
+
+	raw, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok {
+		t.Fatal("cleanup should preserve late guide reference")
+	}
+	text := raw.(string)
+	if !strings.Contains(text, "late guide first") || strings.Contains(text, "ordinary late supplement") {
+		t.Fatalf("cleanup should drop supplementary after guide, got %#v", text)
+	}
+}
+
 func TestStripInjectionPrefixKeepsOnlyGuideLaunchUserText(t *testing.T) {
 	injected := buildGuideLaunchInjection("use ssh next")
 	if got := stripInjectionPrefix(injected); got != "use ssh next" {
@@ -133,6 +237,19 @@ func TestGuideLaunchPendingReferenceExtendsFinalizationBoundary(t *testing.T) {
 	}
 	if got := extendEffectiveMaxForPendingGuideReference(3, 3, false); got != 3 {
 		t.Fatalf("without guide reference effective max changed to %d", got)
+	}
+}
+
+func TestGuideLaunchBoundaryExtensionDoesNotPersistToLoopContext(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := NewLoopContext("guide-boundary", 3, nil)
+	h.accumulateInjection(desktopUserID, buildGuideLaunchInjection("steer next round"))
+
+	if got := h.applyAgentLoopBoundaryExtensions(ctx, desktopUserID, 3, 3); got != 4 {
+		t.Fatalf("guide boundary extension = %d, want 4", got)
+	}
+	if got := ctx.MaxIterations(); got != 3 {
+		t.Fatalf("guide extension should stay transient; ctx max = %d, want 3", got)
 	}
 }
 

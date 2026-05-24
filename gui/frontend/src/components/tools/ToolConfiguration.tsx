@@ -58,31 +58,17 @@ export const ToolConfiguration = ({
             color: 'var(--theme-text-primary)',
             boxShadow: '0 10px 26px rgba(15, 23, 42, 0.06)'
         }}>
-            <div className="model-switcher" style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: '8px',
-                width: '100%',
-                paddingTop: '5px',
-                paddingBottom: '5px',
-                overflow: 'visible'
-            }}>
+            <div className="model-switcher">
                 {toolCfg.models.map((model: any) => {
                     const badge = getBadge(model);
                     return (
                         <button
+                            type="button"
                             key={model.model_name}
                             className={`model-btn ${toolCfg.current_model === model.model_name ? 'selected' : ''}`}
                             onClick={() => handleModelSwitch(model.model_name)}
                             style={{
-                                width: '100%',
-                                padding: '8px 8px',
-                                minHeight: 44,
-                                fontSize: '0.86rem',
-                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '2px solid var(--primary-color)' : '1px solid var(--theme-border)',
-                                position: 'relative',
-                                overflow: 'visible',
-                                color: 'var(--theme-text-primary)'
+                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '2px solid var(--primary-color)' : '1px solid var(--theme-border)'
                             }}
                         >
                             {model.model_name === "Original" ? t("original") : getModelDisplayName(model.model_name, lang)}

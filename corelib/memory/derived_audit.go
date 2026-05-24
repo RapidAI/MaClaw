@@ -76,15 +76,16 @@ func (s *Store) SupersedeDerivedMemory(id string, projectPath string, ownerID st
 	}
 	projectLower := semanticNormalizeProjectPath(projectPath)
 
-	s.mu.Lock()
-	changed := false
+	s.mu.RLock()
 	found := false
+	var target Entry
 	var err error
 	for _, entry := range s.entries {
 		if entry.ID != id {
 			continue
 		}
 		found = true
+		target = entry
 		if !isDerivedMemoryEntry(entry) {
 			err = fmt.Errorf("memory_store: entry %q is not a derived memory", id)
 			break
@@ -93,20 +94,20 @@ func (s *Store) SupersedeDerivedMemory(id string, projectPath string, ownerID st
 			err = fmt.Errorf("memory_store: entry %q %w", id, err)
 			break
 		}
-		changed = s.supersedeEntryLocked(id, time.Now())
 		break
 	}
 	if !found {
 		err = fmt.Errorf("memory_store: entry %q not found", id)
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	if changed {
-		s.signalSave()
+	if target.Status == StatusSuperseded && target.InvalidAt != nil && target.Stale {
+		return nil
 	}
-	return nil
+	_, err = s.SupersedeEntryByID(id, time.Now())
+	return err
 }
 
 func derivedAuditBoundaryAllowed(entry Entry, projectLower, ownerID string) bool {

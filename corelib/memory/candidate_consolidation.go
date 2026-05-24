@@ -105,59 +105,49 @@ func (s *Store) ConsolidateMemoryCandidates(ctx context.Context) CandidateConsol
 	}
 
 	now := time.Now()
-	changed := false
-
-	s.mu.Lock()
-	for i := 0; i < len(s.entries); i++ {
+	for _, snapshot := range s.ListMemoryCandidates("", 0) {
 		if ctx != nil && ctx.Err() != nil {
 			break
 		}
-		candidate := s.entries[i]
+		candidate := snapshot.Entry
 		if !isDormantMemoryCandidate(candidate) {
 			continue
 		}
 		result.Scanned++
 
-		if targetIdx := s.findCandidateMergeTargetLocked(i); targetIdx >= 0 {
-			if err := s.mergeCandidateIntoActiveLocked(i, targetIdx, now); err != nil {
-				result.Errors = append(result.Errors, err.Error())
-				continue
-			}
-			result.Merged++
-			changed = true
-			i--
+		if s.consolidateCandidateDuplicate(candidate.ID, now, &result) {
 			continue
 		}
 
 		decision := AssessMemoryCandidate(candidate, "")
 		switch decision.Action {
 		case MemoryGovernanceAccept:
-			s.entries[i].Status = StatusActive
-			s.entries[i].Stale = false
-			s.entries[i].Tags = removeTag(s.entries[i].Tags, memoryCandidateTag)
-			if s.entries[i].SourceType == memoryCandidateTag {
-				s.entries[i].SourceType = "memory_governed"
+			updated := candidate
+			updated.Status = StatusActive
+			updated.Stale = false
+			updated.Tags = removeTag(updated.Tags, memoryCandidateTag)
+			if updated.SourceType == memoryCandidateTag {
+				updated.SourceType = "memory_governed"
 			}
-			if s.entries[i].Strength < 1.0 {
-				s.entries[i].Strength = 1.0
+			if updated.Strength < 1.0 {
+				updated.Strength = 1.0
 			}
-			s.entries[i].UpdatedAt = now
-			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
+			updated.UpdatedAt = now
+			if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
 				result.Errors = append(result.Errors, err.Error())
 				continue
 			}
 			result.Promoted++
-			changed = true
 		case MemoryGovernanceReject:
 			if shouldRejectCandidate(candidate, decision, now) {
-				s.entries[i].Stale = true
-				s.entries[i].UpdatedAt = now
-				if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
+				updated := candidate
+				updated.Stale = true
+				updated.UpdatedAt = now
+				if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
 					result.Errors = append(result.Errors, err.Error())
 					continue
 				}
 				result.Rejected++
-				changed = true
 			} else {
 				result.Kept++
 			}
@@ -165,16 +155,44 @@ func (s *Store) ConsolidateMemoryCandidates(ctx context.Context) CandidateConsol
 			result.Kept++
 		}
 	}
-	if changed {
-		s.rebuildDerivedIndexesLocked(true)
-		s.dirty = true
-	}
-	s.mu.Unlock()
-
-	if changed {
-		s.signalSave()
-	}
 	return result
+}
+
+func (s *Store) consolidateCandidateDuplicate(candidateID string, now time.Time, result *CandidateConsolidationResult) bool {
+	s.mu.RLock()
+	candidateIdx := -1
+	for i := range s.entries {
+		if s.entries[i].ID == candidateID {
+			candidateIdx = i
+			break
+		}
+	}
+	if candidateIdx < 0 || !isDormantMemoryCandidate(s.entries[candidateIdx]) {
+		s.mu.RUnlock()
+		return false
+	}
+	targetIdx := s.findCandidateMergeTargetLocked(candidateIdx)
+	if targetIdx < 0 {
+		s.mu.RUnlock()
+		return false
+	}
+	candidate := s.entries[candidateIdx]
+	target := s.entries[targetIdx]
+	s.mu.RUnlock()
+
+	target.Tags = mergeTags(target.Tags, removeTag(candidate.Tags, memoryCandidateTag))
+	target.Entities = mergeTags(target.Entities, candidate.Entities)
+	target.UpdatedAt = now
+	target.AccessCount++
+	if target.Strength < 1.0 {
+		target.Strength = 1.0
+	}
+	if err := s.UpdateEntriesAndDeleteIDs([]Entry{target}, []string{candidate.ID}); err != nil {
+		result.Errors = append(result.Errors, err.Error())
+		return true
+	}
+	result.Merged++
+	return true
 }
 
 func isDormantMemoryCandidate(entry Entry) bool {
@@ -210,26 +228,6 @@ func (s *Store) findCandidateMergeTargetLocked(candidateIdx int) int {
 		}
 	}
 	return -1
-}
-
-func (s *Store) mergeCandidateIntoActiveLocked(candidateIdx, targetIdx int, now time.Time) error {
-	candidate := s.entries[candidateIdx]
-	target := &s.entries[targetIdx]
-	target.Tags = mergeTags(target.Tags, removeTag(candidate.Tags, memoryCandidateTag))
-	target.Entities = mergeTags(target.Entities, candidate.Entities)
-	target.UpdatedAt = now
-	target.AccessCount++
-	if target.Strength < 1.0 {
-		target.Strength = 1.0
-	}
-	if err := s.persistUpdatedEntryLocked(target); err != nil {
-		return err
-	}
-	if err := s.persistDeletedEntryLocked(candidate.ID); err != nil {
-		return err
-	}
-	s.entries = append(s.entries[:candidateIdx], s.entries[candidateIdx+1:]...)
-	return nil
 }
 
 func memoryCandidateDuplicate(active, candidate Entry) bool {

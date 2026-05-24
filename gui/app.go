@@ -30,6 +30,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -95,6 +96,8 @@ type App struct {
 	classifierOnce        sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
 	embeddingActivated    atomic.Bool                     // ensures activateEmbedderAsync runs at most once
 	usageTracker          *tool.UsageTracker
+	experienceEvents      *lifecycle.EventTrail
+	experienceSink        lifecycle.EventSink
 	experienceExtractor   *ExperienceExtractor
 	orchestrator          *Orchestrator
 	sharedContext         *SharedContextStore
@@ -212,6 +215,59 @@ type App struct {
 	veSessionActiveCache sync.Map // string -> time.Time
 	veDetailRefreshCache sync.Map // sessionID -> *veDetailRefreshState
 	veDiscoverableCache  sync.Map // hubURL/token/localID -> veDiscoverableCacheEntry
+}
+
+func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {
+	if a == nil {
+		return lifecycle.NoopEventSink{}
+	}
+	if a.experienceEvents == nil {
+		a.experienceEvents = lifecycle.NewEventTrail(512)
+	}
+	if a.experienceSink == nil {
+		a.experienceSink = &lifecycle.AttributingEventSink{Sink: a.experienceEvents, Resolve: a.resolveExperienceProviderForAttribution}
+	}
+	if a.usageTracker != nil {
+		a.usageTracker.SetExperienceEventSink(a.experienceSink)
+	}
+	if a.memoryStore != nil {
+		a.memoryStore.SetExperienceEventSink(a.experienceSink)
+	}
+	return a.experienceSink
+}
+
+func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
+	if a == nil || a.memoryStore == nil {
+		return nil
+	}
+	providers := []lifecycle.Provider{memory.NewExperienceProvider(a.memoryStore)}
+	if a.skillExecutor != nil {
+		a.skillExecutor.mu.RLock()
+		skills := a.skillExecutor.loadSkills()
+		a.skillExecutor.mu.RUnlock()
+		if len(skills) > 0 {
+			providers = append(providers, skill.NewExperienceProvider(skills))
+			providers = append(providers, skill.NewGovernanceDraftProvider(skills, skill.SkillMaintenancePlanOptions{MaxActions: 12}))
+		}
+	}
+	if a.workflowEngine != nil {
+		for _, userID := range []string{desktopUserID, a.lastIMUserID()} {
+			if userID == "" {
+				continue
+			}
+			if ws := a.workflowEngine.GetActiveWorkflow(userID); ws != nil {
+				providers = append(providers, workflow.NewExperienceProvider(ws))
+			}
+		}
+	}
+	return lifecycle.NewCompositeProvider(providers...)
+}
+
+func (a *App) lastIMUserID() string {
+	if a == nil || a.imHandler == nil {
+		return ""
+	}
+	return a.imHandler.lastUserID
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -358,6 +414,7 @@ func (a *App) initCoreInfra() {
 				log.Printf("[App] failed to load usage tracker: %v", err)
 			} else {
 				a.usageTracker = tracker
+				a.ensureExperienceLifecycleSink()
 				a.toolRouter.SetUsageTracker(tracker)
 			}
 		}
@@ -480,6 +537,7 @@ func (a *App) ensureMemoryStore() {
 	}
 	if ms != nil {
 		a.memoryStore = ms
+		a.ensureExperienceLifecycleSink()
 
 		// Register ProjectIndex change callback. When any memory entry
 		// updates the project index, notify the frontend and debounce memory
@@ -4202,26 +4260,27 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 							CurrentModel: "Original",
 							Models:       defaultCursorModels,
 						},
-						Projects:           oldConfig.Projects,
-						CurrentProject:     oldConfig.CurrentProj,
-						ActiveTool:         "claude",
-						ShowGemini:         true,
-						ShowCodex:          true,
-						ShowOpenCode:       true,
-						ShowCursor:         true,
-						ShowCodeBuddy:      true,
-						ShowIFlow:          true,
-						ShowKilo:           true,
-						PowerOptimization:  true,
-						RemoteEnabled:      false,
-						RemoteHubURL:       "",
-						RemoteHubCenterURL: defaultRemoteHubCenterURL,
-						RemoteEmail:        "",
-						RemoteSN:           "",
-						RemoteUserID:       "",
-						RemoteMachineID:    "",
-						RemoteMachineToken: "",
-						RemoteHeartbeatSec: 10,
+						Projects:            oldConfig.Projects,
+						CurrentProject:      oldConfig.CurrentProj,
+						ActiveTool:          "claude",
+						ShowGemini:          true,
+						ShowCodex:           true,
+						ShowOpenCode:        true,
+						ShowCursor:          true,
+						ShowCodeBuddy:       true,
+						ShowIFlow:           true,
+						ShowKilo:            true,
+						PowerOptimization:   true,
+						RemoteEnabled:       false,
+						RemoteHubURL:        "",
+						RemoteHubCenterURL:  defaultRemoteHubCenterURL,
+						RemoteEmail:         "",
+						RemoteSN:            "",
+						RemoteUserID:        "",
+						RemoteMachineID:     "",
+						RemoteMachineToken:  "",
+						RemoteHeartbeatSec:  10,
+						SubAgentConcurrency: corelib.DefaultSubAgentConcurrency,
 					}
 					if err := a.saveToPath(path, config); err != nil {
 						return corelib.AppConfig{}, err
@@ -4303,6 +4362,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			GossipEnabled:        true,
 			FileOutboundEnabled:  true,
 			ImageOutboundEnabled: true,
+			SubAgentConcurrency:  corelib.DefaultSubAgentConcurrency,
 			VectorSearchEnabled:  true,
 			ASREnabled:           true,
 			TTSEnabled:           true,
@@ -4985,6 +5045,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	sanitizeCustomNames(config.CodeBuddy.Models)
 	sanitizeCustomNames(config.IFlow.Models)
 	sanitizeCustomNames(config.Kilo.Models)
+	config.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(config.SubAgentConcurrency)
 	sanitizePetConfig(&config)
 	// Load old config to compare for sync logic
 	var oldConfig corelib.AppConfig

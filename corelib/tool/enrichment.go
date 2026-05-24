@@ -358,9 +358,8 @@ Typical usage: Execute an NL skill by name with optional input`,
 Typical usage: Generate and execute a single local script for data processing, API calls, file conversion, or small automation; supports artifact verification and bounded self-repair; avoid for large codebase refactors or long-lived coding tasks`,
 
 	"parallel_execute": `Parameters:
-- tasks (array, required): List of task descriptions to execute in parallel
-- max_concurrent (int, optional): Max concurrent sessions, default 3
-Typical usage: Run multiple coding tasks simultaneously across sessions`,
+- tasks (array, required): List of task descriptions to execute with bounded SubAgent concurrency
+Typical usage: Run multiple coding tasks across isolated sessions, capped by the app's SubAgent concurrency setting`,
 
 	"recommend_tool": `Parameters:
 - task (string, required): Description of the task to accomplish
@@ -602,11 +601,11 @@ var BuiltinEnrichments = map[string][]string{
 		"open browser CDP connection",
 	},
 	"parallel_execute": {
-		"run multiple tasks in parallel",
-		"execute several coding sessions simultaneously",
-		"并行执行多个任务",
-		"do these things at the same time",
-		"concurrent task execution",
+		"run multiple tasks with bounded concurrency",
+		"execute several coding sessions with the SubAgent concurrency limit",
+		"按 SubAgent 并发数执行多个任务",
+		"queue these tasks with limited concurrency",
+		"bounded concurrent task execution",
 	},
 	"recommend_tool": {
 		"which coding tool is best for this",

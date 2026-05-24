@@ -129,7 +129,7 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 
 func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username, password, email, displayName, role string) (*store.AdminUser, error) {
 	tenantID = normalizeTenantIDValue(tenantID)
-	if tenantID == "" || strings.EqualFold(tenantID, store.DefaultTenantID) || strings.EqualFold(tenantID, ExplicitGlobalAdminTenantScope) {
+	if tenantID == "" || strings.EqualFold(tenantID, ExplicitGlobalAdminTenantScope) {
 		return nil, fmt.Errorf("tenant id is required")
 	}
 	username = strings.TrimSpace(username)
@@ -264,8 +264,9 @@ func (s *AdminService) VerifyScopedCredentials(ctx context.Context, username, pa
 	username = strings.TrimSpace(username)
 	tenantID = strings.TrimSpace(tenantID)
 	var (
-		admin *store.AdminUser
-		err   error
+		admin                   *store.AdminUser
+		err                     error
+		defaultTenantFromGlobal bool
 	)
 	if strings.EqualFold(tenantID, ExplicitGlobalAdminTenantScope) {
 		admin, err = s.admins.GetByUsernameScoped(ctx, username, "global", "")
@@ -273,9 +274,14 @@ func (s *AdminService) VerifyScopedCredentials(ctx context.Context, username, pa
 	} else if tenantID != "" {
 		tenantID = normalizeTenantIDValue(tenantID)
 		if strings.EqualFold(tenantID, store.DefaultTenantID) {
-			return nil, ErrInvalidAdminCredentials
+			admin, err = s.admins.GetByUsernameScoped(ctx, username, "tenant", store.DefaultTenantID)
+			if err == nil && admin == nil {
+				admin, err = s.admins.GetByUsernameScoped(ctx, username, "global", "")
+				defaultTenantFromGlobal = true
+			}
+		} else {
+			admin, err = s.admins.GetByUsernameScoped(ctx, username, "tenant", tenantID)
 		}
-		admin, err = s.admins.GetByUsernameScoped(ctx, username, "tenant", tenantID)
 	} else {
 		return nil, ErrInvalidAdminCredentials
 	}
@@ -290,6 +296,9 @@ func (s *AdminService) VerifyScopedCredentials(ctx context.Context, username, pa
 	}
 	if tenantID == "" && normalizedAdminScope(admin) == "tenant" {
 		return nil, ErrInvalidAdminCredentials
+	}
+	if defaultTenantFromGlobal && normalizedAdminScope(admin) == "global" {
+		return s.ensureDefaultTenantAdminFromGlobal(ctx, admin)
 	}
 	if tenantID != "" && (normalizedAdminScope(admin) != "tenant" || normalizeTenantIDValue(admin.TenantID) != tenantID) {
 		return nil, ErrInvalidAdminCredentials
@@ -308,6 +317,16 @@ func (s *AdminService) Authenticate(ctx context.Context, token string) (*store.A
 		return nil, ErrInvalidAdminCredentials
 	}
 	admin, err := s.admins.GetByUsernameScoped(ctx, payload.Username, payload.Scope, payload.TenantID)
+	if admin == nil && payload.Scope == "tenant" && strings.EqualFold(payload.TenantID, store.DefaultTenantID) {
+		globalAdmin, globalErr := s.admins.GetByUsernameScoped(ctx, payload.Username, "global", "")
+		if globalErr != nil {
+			return nil, globalErr
+		}
+		admin, err = s.ensureDefaultTenantAdminFromGlobal(ctx, globalAdmin)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +348,8 @@ func (s *AdminService) ChangePasswordScoped(ctx context.Context, username, curre
 	if strings.TrimSpace(newPassword) == "" {
 		return "", nil, fmt.Errorf("new password is required")
 	}
-	admin, err := s.admins.GetByUsernameScoped(ctx, strings.TrimSpace(username), scope, strings.TrimSpace(tenantID))
+	lookupScope, lookupTenantID := scopedAdminLookup(scope, tenantID)
+	admin, err := s.admins.GetByUsernameScoped(ctx, strings.TrimSpace(username), lookupScope, lookupTenantID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -376,7 +396,8 @@ func (s *AdminService) UpdateEmail(ctx context.Context, username, email string) 
 }
 
 func (s *AdminService) UpdateEmailScoped(ctx context.Context, username, email, scope, tenantID string) (string, *store.AdminUser, error) {
-	admin, err := s.admins.GetByUsernameScoped(ctx, strings.TrimSpace(username), scope, strings.TrimSpace(tenantID))
+	lookupScope, lookupTenantID := scopedAdminLookup(scope, tenantID)
+	admin, err := s.admins.GetByUsernameScoped(ctx, strings.TrimSpace(username), lookupScope, lookupTenantID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -422,6 +443,15 @@ func (s *AdminService) UpdateEmailScoped(ctx context.Context, username, email, s
 		return "", nil, err
 	}
 	return token, admin, nil
+}
+
+func scopedAdminLookup(scope, tenantID string) (string, string) {
+	scope = normalizedAdminScope(&store.AdminUser{Scope: scope})
+	tenantID = strings.TrimSpace(tenantID)
+	if scope == "global" {
+		return "global", ""
+	}
+	return "tenant", tenantID
 }
 
 func normalizeEmail(email string) string {
@@ -574,6 +604,43 @@ func normalizedTenantAdminRole(role string) string {
 	default:
 		return "tenant_owner"
 	}
+}
+
+func defaultTenantAdminFromGlobal(admin *store.AdminUser) *store.AdminUser {
+	if admin == nil || normalizedAdminScope(admin) != "global" {
+		return nil
+	}
+	copy := *admin
+	copy.Scope = "tenant"
+	copy.Role = "tenant_owner"
+	copy.TenantID = store.DefaultTenantID
+	return &copy
+}
+
+func (s *AdminService) ensureDefaultTenantAdminFromGlobal(ctx context.Context, admin *store.AdminUser) (*store.AdminUser, error) {
+	if admin == nil || normalizedAdminScope(admin) != "global" {
+		return admin, nil
+	}
+	existing, err := s.admins.GetByUsernameScoped(ctx, admin.Username, "tenant", store.DefaultTenantID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+	now := time.Now()
+	copy := defaultTenantAdminFromGlobal(admin)
+	copy.ID = newID("adm")
+	copy.CreatedAt = now
+	copy.UpdatedAt = now
+	if err := s.admins.Create(ctx, copy); err != nil {
+		existing, getErr := s.admins.GetByUsernameScoped(ctx, admin.Username, "tenant", store.DefaultTenantID)
+		if getErr == nil && existing != nil {
+			return existing, nil
+		}
+		return nil, err
+	}
+	return copy, nil
 }
 
 func adminTokenSignature(admin *store.AdminUser) string {

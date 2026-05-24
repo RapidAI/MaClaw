@@ -13,6 +13,9 @@ import (
 
 func resetMISTransactionStoreForAgentViewTest(t *testing.T) {
 	t.Helper()
+	previousLang, _ := agentViewCurrentLang.Load().(string)
+	setAgentViewLang("en")
+	t.Cleanup(func() { setAgentViewLang(previousLang) })
 	misTransactionStore.Lock()
 	misTransactionStore.items = map[string]*misBusinessTransaction{}
 	misTransactionStore.next = 0

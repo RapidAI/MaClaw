@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -44,6 +46,46 @@ func TestShouldUseSubAgent_ActiveExternalMode(t *testing.T) {
 
 	if ShouldUseSubAgent(o) {
 		t.Error("active orchestrator with external mode should return false")
+	}
+}
+
+func TestShouldUseSubAgent_UsesNextReadyTaskMode(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{
+		{Index: 0, Title: "blocked external task", Status: TaskExecPending, DependsOn: []int{1}},
+		{Index: 1, Title: "ready direct task", Status: TaskExecPending},
+	}, "req", "design", "/project", "claude")
+	o.Tasks[0].ExecMode = TaskExecModeExternal
+	o.Tasks[1].ExecMode = TaskExecModeDirect
+
+	if !ShouldUseSubAgent(o) {
+		t.Error("ready direct task should route to SubAgent even when current task is blocked external")
+	}
+}
+
+func TestShouldUseSubAgent_DoesNotRouteReadyExternalTask(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{
+		{Index: 0, Title: "blocked direct task", Status: TaskExecPending, DependsOn: []int{1}},
+		{Index: 1, Title: "ready external task", Status: TaskExecPending},
+	}, "req", "design", "/project", "claude")
+	o.Tasks[0].ExecMode = TaskExecModeDirect
+	o.Tasks[1].ExecMode = TaskExecModeExternal
+
+	if ShouldUseSubAgent(o) {
+		t.Error("ready external task should not route to SubAgent")
+	}
+}
+
+func TestShouldUseSubAgent_RoutesDependencyDeadlockForCleanup(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A", DependsOn: []int{1}},
+		{Index: 1, Title: "Task B", DependsOn: []int{0}},
+	}, "req", "design", "/project", "")
+
+	if !ShouldUseSubAgent(o) {
+		t.Error("dependency deadlock should route to SubAgent runner so it can mark tasks skipped")
 	}
 }
 
@@ -325,6 +367,55 @@ func TestRunAllTasksStopsAfterNoProgressAttempts(t *testing.T) {
 	}
 }
 
+func TestRunAllTasksUsesConfiguredSubAgentConcurrency(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SetSubAgentConcurrency(2); err != nil {
+		t.Fatalf("SetSubAgentConcurrency: %v", err)
+	}
+	orch := NewTaskExecutionOrchestrator()
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B"},
+		{Index: 2, Title: "Task C"},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{handler: &IMMessageHandler{app: app}, orchestrator: orch}
+
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: task.Title + " done"}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if maxActive != 2 {
+		t.Fatalf("max active SubAgents = %d, want 2; report=%q", maxActive, report)
+	}
+	for _, task := range orch.Tasks {
+		if task.Status != TaskExecPassed {
+			t.Fatalf("task did not pass: %#v", task)
+		}
+	}
+}
+
 func TestRunCurrentTaskHandlesNilSubAgentResult(t *testing.T) {
 	orch := NewTaskExecutionOrchestrator()
 	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
@@ -491,6 +582,238 @@ func TestRunCurrentTaskRetainsPartialArtifactsDuringRetry(t *testing.T) {
 	}
 	if strings.Join(got.ActualFiles, ",") != "src/a.go" || strings.Join(got.ActualCreatedFiles, ",") != "src/new.go" {
 		t.Fatalf("partial artifacts should be retained for retry, got modified=%#v created=%#v", got.ActualFiles, got.ActualCreatedFiles)
+	}
+}
+
+func TestRunAllTasksPausesOnRateLimitWithoutRetryStorm(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 3
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B"},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+	calls := 0
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: `LLM call failed: HTTP 429: {"code":"LLM_ENDPOINT_USER_RATE_LIMITED","message":"user request rate exceeded, please retry shortly"}`}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if calls != 1 {
+		t.Fatalf("rate limit should stop after one subagent call, got %d", calls)
+	}
+	if !strings.Contains(report, "paused to avoid retry storms") {
+		t.Fatalf("expected paused report, got %q", report)
+	}
+	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInProgress {
+		t.Fatalf("current task should remain retryable/in progress, got %#v", got)
+	}
+	if got := orch.Tasks[1]; got.Status != TaskExecPending || got.RetryCount != 0 {
+		t.Fatalf("next task should not start after rate limit, got %#v", got)
+	}
+}
+
+func TestRunAllTasksPausesFutureBatchesAfterConcurrentRateLimit(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SetSubAgentConcurrency(2); err != nil {
+		t.Fatalf("SetSubAgentConcurrency: %v", err)
+	}
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 3
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B"},
+		{Index: 2, Title: "Task C"},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{handler: &IMMessageHandler{app: app}, orchestrator: orch}
+
+	var mu sync.Mutex
+	started := map[int]bool{}
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		mu.Lock()
+		started[task.Index] = true
+		mu.Unlock()
+
+		if task.Index == 0 {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: `HTTP 429: too many requests`}
+		}
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: task.Title + " done"}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if !strings.Contains(report, "paused to avoid retry storms") {
+		t.Fatalf("expected paused report, got %q", report)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !started[0] || !started[1] {
+		t.Fatalf("first batch should start tasks 0 and 1, got %#v", started)
+	}
+	if started[2] {
+		t.Fatalf("future batch should not start after rate limit, got %#v", started)
+	}
+	if got := orch.Tasks[2]; got.Status != TaskExecPending || got.RetryCount != 0 {
+		t.Fatalf("future task should remain pending, got %#v", got)
+	}
+}
+
+func TestRunAllTasksPausesOnRateLimitWhenRetriesDisabled(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 0
+	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+	calls := 0
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: `HTTP 429: too many requests`}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if calls != 1 {
+		t.Fatalf("rate limit should stop after one subagent call, got %d", calls)
+	}
+	if !strings.Contains(report, "paused to avoid retry storms") {
+		t.Fatalf("expected paused report, got %q", report)
+	}
+	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInProgress {
+		t.Fatalf("current task should stay resumable after rate limit, got %#v", got)
+	}
+}
+
+func TestRunAllTasksSkipsTasksBlockedByFailedDependencies(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SetSubAgentConcurrency(2); err != nil {
+		t.Fatalf("SetSubAgentConcurrency: %v", err)
+	}
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 0
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B", DependsOn: []int{0}},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{handler: &IMMessageHandler{app: app}, orchestrator: orch}
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: `compile failed`}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if !strings.Contains(report, "blocked by failed dependencies") {
+		t.Fatalf("expected blocked dependency report, got %q", report)
+	}
+	if got := orch.Tasks[0]; got.Status != TaskExecFailed {
+		t.Fatalf("dependency task should fail, got %#v", got)
+	}
+	if got := orch.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T0") {
+		t.Fatalf("dependent task should be skipped, got %#v", got)
+	}
+}
+
+func TestRunAllTasksSequentialSkipsTasksBlockedByFailedDependencies(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 0
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B", DependsOn: []int{0}},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+	calls := 0
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: `compile failed`}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if calls != 1 {
+		t.Fatalf("dependent task should not run after failed dependency, calls=%d", calls)
+	}
+	if !strings.Contains(report, "blocked by failed dependencies") {
+		t.Fatalf("expected blocked dependency report, got %q", report)
+	}
+	if got := orch.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T0") {
+		t.Fatalf("dependent task should be skipped, got %#v", got)
+	}
+}
+
+func TestRunAllTasksSequentialWaitsForDependenciesOutOfOrder(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A", DependsOn: []int{1}},
+		{Index: 1, Title: "Task B"},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+	var order []int
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		order = append(order, task.Index)
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: task.Title + " done"}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if strings.Contains(report, "no runnable tasks") {
+		t.Fatalf("dependency-ordered tasks should complete, got %q", report)
+	}
+	if got := fmt.Sprint(order); got != "[1 0]" {
+		t.Fatalf("execution order = %s, want [1 0]", got)
+	}
+	for _, task := range orch.Tasks {
+		if task.Status != TaskExecPassed {
+			t.Fatalf("task should pass after dependency ordering, got %#v", task)
+		}
+	}
+}
+
+func TestRunAllTasksSkipsDependencyCycles(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A", DependsOn: []int{1}},
+		{Index: 1, Title: "Task B", DependsOn: []int{0}},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+	calls := 0
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: task.Title + " done"}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if calls != 0 {
+		t.Fatalf("cyclic dependency tasks should not run, calls=%d", calls)
+	}
+	if !strings.Contains(report, "dependency deadlock") {
+		t.Fatalf("expected dependency deadlock report, got %q", report)
+	}
+	for _, task := range orch.Tasks {
+		if task.Status != TaskExecSkipped || !strings.Contains(task.ErrorSummary, "dependency deadlock") {
+			t.Fatalf("cyclic task should be skipped, got %#v", task)
+		}
 	}
 }
 

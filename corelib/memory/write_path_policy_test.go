@@ -105,6 +105,70 @@ func TestProductionMemoryWritesUseCorelibHelpers(t *testing.T) {
 	}
 }
 
+func TestCoreMemoryDirectEntryWritesStayInAllowedBoundaries(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	allowed := map[string]map[string]bool{
+		filepath.ToSlash(filepath.Join("corelib", "memory", "archive.go")): {
+			"(*ArchiveStore).Add":             true,
+			"(*ArchiveStore).addLocked":       true,
+			"(*ArchiveStore).removeIDsLocked": true,
+			"(*ArchiveStore).GC":              true,
+			"(*ArchiveStore).load":            true,
+		},
+		filepath.ToSlash(filepath.Join("corelib", "memory", "store.go")): {
+			"(*Store).UpdateEntriesAndDeleteIDs":      true,
+			"(*Store).upsertEntriesByID":              true,
+			"(*Store).syncGraphLinksLocked":           true,
+			"(*Store).replaceEntriesAndRebuildLocked": true,
+			"(*Store).insertPreparedEntryLocked":      true,
+		},
+	}
+
+	var findings []string
+	err := filepath.WalkDir(filepath.Join(repoRoot, "corelib", "memory"), func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".go") || strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		currentFunc := ""
+		for lineNo, line := range strings.Split(string(data), "\n") {
+			if fn := policyFunctionName(line); fn != "" {
+				currentFunc = fn
+			}
+			trimmed := strings.TrimSpace(line)
+			if !isDirectEntriesWrite(trimmed) {
+				continue
+			}
+			if allowed[rel][currentFunc] {
+				continue
+			}
+			findings = append(findings, rel+":"+itoaPolicy(lineNo+1)+": direct entries write outside allowed boundary "+currentFunc+": "+trimmed)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) > 0 {
+		t.Fatalf("direct entries writes must stay inside documented store/archive/sync reconstruction boundaries:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
 func TestHostAdaptersUseCorelibMemoryStoreFactory(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -542,6 +606,49 @@ func TestDerivedConsolidatorsUseConsolidationGate(t *testing.T) {
 		t.Fatalf("derived schema/profile consolidation must be gated and evidence-bound:\n%s", strings.Join(findings, "\n"))
 	}
 }
+
+func policyFunctionName(line string) string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "func ") {
+		return ""
+	}
+	method := regexp.MustCompile(`^func \([^)]*\*([A-Za-z0-9_]+)\)\s*([A-Za-z0-9_]+)\s*\(`)
+	if m := method.FindStringSubmatch(line); len(m) == 3 {
+		return "(*" + m[1] + ")." + m[2]
+	}
+	fn := regexp.MustCompile(`^func\s+([A-Za-z0-9_]+)\s*\(`)
+	if m := fn.FindStringSubmatch(line); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func isDirectEntriesWrite(line string) bool {
+	if line == "" || strings.HasPrefix(line, "//") || !strings.Contains(line, ".entries") {
+		return false
+	}
+	if strings.Contains(line, "==") || strings.Contains(line, "!=") || strings.Contains(line, "<=") || strings.Contains(line, ">=") {
+		return false
+	}
+	if strings.HasPrefix(line, "for ") {
+		return false
+	}
+	if strings.Contains(line, "++") || strings.Contains(line, "--") {
+		return strings.Contains(line, ".entries[")
+	}
+	idx := strings.Index(line, "=")
+	if idx < 0 {
+		return false
+	}
+	lhs := strings.TrimSpace(line[:idx])
+	for _, prefix := range []string{"s.entries", "a.entries", "mc.store.entries"} {
+		if lhs == prefix || strings.HasPrefix(lhs, prefix+"[") {
+			return true
+		}
+	}
+	return false
+}
+
 func itoaPolicy(n int) string {
 	if n == 0 {
 		return "0"

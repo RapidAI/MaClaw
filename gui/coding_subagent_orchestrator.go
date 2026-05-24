@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -91,9 +92,13 @@ func (r *SubAgentTaskRunner) RunCurrentTask(
 	if task == nil {
 		return "没有待执行的任务", false
 	}
+	return r.runTaskHandle(task, runID, r.collectPreviousOutputs(), onToken, onProgress)
+}
 
-	// Collect previous task outputs for context.
-	prevOutputs := r.collectPreviousOutputs()
+func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutputs []string, onToken llm.TokenCallback, onProgress func(string)) (summary string, passed bool) {
+	if r == nil || r.orchestrator == nil || task == nil {
+		return "SubAgent runner is not attached to an active task orchestrator", false
+	}
 	taskTitle := compactSubAgentTaskTitle(task.Title)
 	eventRunID := fmt.Sprint(runID)
 	turnCtx := newCodingTurnContext(eventRunID, task, r.orchestrator.ProjectPath)
@@ -136,6 +141,14 @@ func (r *SubAgentTaskRunner) RunCurrentTask(
 		return fmt.Sprintf("✅ T%d: %s — 完成\n%s", task.Index, taskTitle, resultSummary), true
 
 	case TaskExecFailed:
+		if isSubAgentRateLimitError(resultError) {
+			log.Printf("[subagent-runner] T%d paused by rate limit: %s", task.Index, resultError)
+			event := turnCtx.TaskEvent("failed", task, taskTitle)
+			event.Detail = "rate_limited"
+			turnCtx.Emit(onProgress, event)
+			return fmt.Sprintf("T%d: %s - paused by rate limit\nError: %s",
+				task.Index, taskTitle, resultError), false
+		}
 		retryCount, canRetry := r.orchestrator.IncrementTaskRetryForRun(task, runID)
 		if retryCount == 0 && !canRetry {
 			return staleSubAgentRunSummary(task, taskTitle), false
@@ -229,7 +242,7 @@ func staleSubAgentRunSummary(task *TaskItem, taskTitle string) string {
 	return fmt.Sprintf("⏭️ T%d: %s — 结果已忽略：任务执行轮次已过期", index, taskTitle)
 }
 
-// RunAllTasks executes all tasks sequentially via SubAgent.
+// RunAllTasks executes runnable tasks via SubAgent with bounded concurrency.
 // Returns the final report.
 func (r *SubAgentTaskRunner) RunAllTasks(
 	onToken llm.TokenCallback,
@@ -242,6 +255,7 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 	var reports []string
 	attempts := 0
 	maxAttempts := r.maxRunAllTaskAttempts()
+	concurrency := r.configuredConcurrency()
 
 	for !r.orchestrator.AllDone() {
 		attempts++
@@ -257,22 +271,64 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			break
 		}
 
-		task, runID := r.orchestrator.CurrentTaskHandle()
-		if task == nil {
-			break
-		}
-
-		summary, passed := r.RunCurrentTask(onToken, onProgress)
-		reports = append(reports, summary)
-
-		if passed || r.orchestrator.IsTaskTerminalForRun(task, runID) {
-			// Move to next task (AdvanceToNext handles the index).
-			if !r.orchestrator.AdvanceToNext() {
-				break // no more tasks
+		if skipped := r.orchestrator.MarkTasksBlockedByDependencies(); skipped > 0 {
+			reports = append(reports, fmt.Sprintf("SubAgent skipped %d task(s) blocked by failed dependencies", skipped))
+			if r.orchestrator.AllDone() {
+				break
 			}
 		}
-		// If not passed and retry available, RunCurrentTask will be called
-		// again for the same task on the next iteration.
+
+		if concurrency <= 1 {
+			handles := r.orchestrator.ReadyTaskHandles(1)
+			if len(handles) == 0 {
+				if skipped := r.orchestrator.MarkDependencyDeadlockTasks(); skipped > 0 {
+					reports = append(reports, fmt.Sprintf("SubAgent skipped %d task(s) blocked by dependency deadlock", skipped))
+					continue
+				}
+				reports = append(reports, "SubAgent execution stopped: no runnable tasks are ready")
+				break
+			}
+
+			handle := handles[0]
+			summary, _ := r.runTaskHandle(handle.Task, handle.RunID, r.collectPreviousOutputs(), onToken, onProgress)
+			reports = append(reports, summary)
+
+			if isSubAgentRateLimitError(summary) {
+				reports = append(reports, "LLM rate limit reached; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
+				break
+			}
+			continue
+		}
+
+		handles := r.orchestrator.ReadyTaskHandles(concurrency)
+		if len(handles) == 0 {
+			if skipped := r.orchestrator.MarkDependencyDeadlockTasks(); skipped > 0 {
+				reports = append(reports, fmt.Sprintf("SubAgent skipped %d task(s) blocked by dependency deadlock", skipped))
+				continue
+			}
+			reports = append(reports, "SubAgent execution stopped: no runnable tasks are ready")
+			break
+		}
+		prevOutputs := r.collectPreviousOutputs()
+		batchReports := make([]string, len(handles))
+		var wg sync.WaitGroup
+		safeOnProgress := serializedProgressCallback(onProgress)
+		safeOnToken := serializedTokenCallback(onToken)
+		for i, handle := range handles {
+			i, handle := i, handle
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				summary, _ := r.runTaskHandle(handle.Task, handle.RunID, prevOutputs, safeOnToken, safeOnProgress)
+				batchReports[i] = summary
+			}()
+		}
+		wg.Wait()
+		reports = append(reports, batchReports...)
+		if containsSubAgentRateLimitReport(batchReports) {
+			reports = append(reports, "LLM rate limit reached; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
+			break
+		}
 	}
 
 	// Generate final report.
@@ -285,6 +341,46 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 	appendSubAgentExecutionStats(&b, r.orchestrator.SnapshotTasks())
 
 	return b.String()
+}
+
+func serializedProgressCallback(onProgress func(string)) func(string) {
+	if onProgress == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	return func(text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		onProgress(text)
+	}
+}
+
+func serializedTokenCallback(onToken llm.TokenCallback) llm.TokenCallback {
+	if onToken == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	return func(text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		onToken(text)
+	}
+}
+
+func (r *SubAgentTaskRunner) configuredConcurrency() int {
+	if r == nil || r.handler == nil || r.handler.app == nil {
+		return 1
+	}
+	return r.handler.app.GetSubAgentConcurrency()
+}
+
+func containsSubAgentRateLimitReport(reports []string) bool {
+	for _, report := range reports {
+		if isSubAgentRateLimitError(report) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *SubAgentTaskRunner) maxRunAllTaskAttempts() int {
@@ -300,6 +396,19 @@ func (r *SubAgentTaskRunner) maxRunAllTaskAttempts() int {
 		retries = 0
 	}
 	return taskCount*(retries+2) + 5
+}
+
+func isSubAgentRateLimitError(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "http 429") ||
+		strings.Contains(lower, "llm_endpoint_user_rate_limited") ||
+		strings.Contains(lower, "user request rate exceeded") ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "rate_limited") ||
+		strings.Contains(lower, "too many requests")
 }
 
 func appendSubAgentExecutionStats(b *strings.Builder, tasks []*TaskItem) {
@@ -440,13 +549,17 @@ func compactSubAgentRunReport(report string) string {
 //
 // Decision criteria:
 // - Orchestrator must be active
-// - Current task's execution mode must be "direct" (not external tool)
+// - Next ready task's execution mode must be "direct" (not external tool)
 // - External tool mode still uses create_session (existing path)
+// - Dependency deadlocks still route here so RunAllTasks can mark them skipped
 func ShouldUseSubAgent(orchestrator *TaskExecutionOrchestrator) bool {
 	if orchestrator == nil || !orchestrator.IsActive() {
 		return false
 	}
-	task, runID := orchestrator.CurrentTaskHandle()
-	mode, ok := orchestrator.ResolveExecutionModeForTaskRun(task, runID)
+	handles := orchestrator.ReadyTaskHandles(1)
+	if len(handles) == 0 {
+		return orchestrator.HasBlockedRunnableTasks()
+	}
+	mode, ok := orchestrator.ResolveExecutionModeForTaskRun(handles[0].Task, handles[0].RunID)
 	return ok && mode == TaskExecModeDirect
 }

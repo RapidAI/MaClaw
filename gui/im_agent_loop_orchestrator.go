@@ -23,7 +23,13 @@ func (h *IMMessageHandler) applyAgentLoopTaskOrchestratorStep(userID string, ctx
 		return result
 	}
 
-	if orchInst.ResolveExecutionMode() == TaskExecModeDirect && !result.DirectModeToolsFiltered {
+	handles := orchInst.ReadyTaskHandles(1)
+	if len(handles) == 0 {
+		return result
+	}
+	handle := handles[0]
+	mode, ok := orchInst.ResolveExecutionModeForTaskRun(handle.Task, handle.RunID)
+	if ok && mode == TaskExecModeDirect && !result.DirectModeToolsFiltered {
 		directFiltered := filterDirectModeAllowedTools(result.Tools)
 		if len(directFiltered) < len(result.Tools) {
 			log.Printf("[agent-loop] direct-mode: stripped %d session tools from tool list", len(result.Tools)-len(directFiltered))
@@ -32,7 +38,7 @@ func (h *IMMessageHandler) applyAgentLoopTaskOrchestratorStep(userID string, ctx
 		result.DirectModeToolsFiltered = true
 	}
 
-	if taskInjection := orchInst.BuildSystemInjection(); taskInjection != "" {
+	if taskInjection := orchInst.BuildSystemInjectionForTaskRun(handle.Task, handle.RunID); taskInjection != "" {
 		result.Conversation = append(result.Conversation, map[string]string{
 			"role":    "system",
 			"content": taskInjection,

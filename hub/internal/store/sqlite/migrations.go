@@ -540,6 +540,7 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_hub_secret_key ON mcp_hub_secrets(tenant_id, user_id, mcp_server_id, requirement_name);`,
 
 		`CREATE TABLE IF NOT EXISTS security_groups (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			parent_id TEXT NOT NULL DEFAULT '',
@@ -547,16 +548,22 @@ func RunMigrations(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_security_groups_parent ON security_groups(parent_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_security_groups_tenant_parent ON security_groups(tenant_id, parent_id);`,
 		`CREATE TABLE IF NOT EXISTS security_group_members (
-			email TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			email TEXT NOT NULL,
 			group_id TEXT NOT NULL,
-			created_at TEXT NOT NULL
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, email)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_sgm_group ON security_group_members(group_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_sgm_tenant_group ON security_group_members(tenant_id, group_id);`,
 		`CREATE TABLE IF NOT EXISTS security_policies (
-			group_id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			group_id TEXT NOT NULL,
 			policy_json TEXT NOT NULL DEFAULT '{}',
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, group_id)
 		);`,
 
 		// ---------------------------------------------------------------

@@ -980,6 +980,23 @@ func (a *App) SetMaclawAgentMaxIterations(n int) error {
 	return a.SaveConfig(cfg)
 }
 
+func (a *App) GetSubAgentConcurrency() int {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.DefaultSubAgentConcurrency
+	}
+	return corelib.NormalizeSubAgentConcurrency(cfg.SubAgentConcurrency)
+}
+
+func (a *App) SetSubAgentConcurrency(n int) error {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cfg.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(n)
+	return a.SaveConfig(cfg)
+}
+
 // MaclawLLMStatus represents the online/offline status of the MaClaw LLM agent.
 type MaclawLLMStatus struct {
 	Online     bool   `json:"online"`

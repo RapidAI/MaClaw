@@ -1038,7 +1038,37 @@ func formatPassthroughRunResult(result PassthroughRunResult) string {
 	return fmt.Sprintf("直通命令 %s %s，退出码：%d", result.CommandName, result.Status, result.ExitCode)
 }
 
-func passthroughHelpText() string {
+func passthroughHelpText(lang ...string) string {
+	if len(lang) > 0 && normalizeAppLanguageKind(lang[0]) == appLanguageEnglish {
+		return "Passthrough tasks:\n" +
+			"/run <name> [--param value] [--confirm]\n" +
+			"  Run a pre-registered script from Monitor > Passthrough Tasks. Works even when LLM/agent is unavailable.\n" +
+			"/runctl list\n" +
+			"  List registered passthrough tasks and whether they are enabled or require --confirm.\n" +
+			"/runctl status\n" +
+			"  Show task counts, /exec state, registry path, and audit count.\n" +
+			"/runctl show <name>\n" +
+			"  Show script path, runtime, working directory, timeout, and parameter definitions.\n" +
+			"/runctl export <name>\n" +
+			"  Export the /runctl save registration command for copying, migration, or rebuild.\n" +
+			"/runctl save <name> --cmd 'command template' [--runtime direct] [--param \"name:type:required:default:example\"] [--params-json ...] --confirm\n" +
+			"  Create or update a passthrough task remotely. Add --preview to preview argv without saving.\n" +
+			"/runctl preview <name> [--param value]\n" +
+			"  Preview the final argv for a task.\n" +
+			"/runctl enable <name> / /runctl disable <name>\n" +
+			"  Enable or disable a registered task.\n" +
+			"/runctl delete <name> --confirm\n" +
+			"  Delete a registered task and record the operation in audit logs.\n" +
+			"/runctl exec enable / /runctl exec disable\n" +
+			"  Enable or disable one-off /exec system commands. /exec still requires --confirm and does not use a shell.\n" +
+			"/runctl audit [limit]\n" +
+			"  Show recent /run, /exec, and control audit records. Default 10, max 50.\n" +
+			"/runctl help\n" +
+			"  Show passthrough help only.\n" +
+			"/exec <program> [args...] --confirm\n" +
+			"  One-off system command. Must be enabled first in Monitor > Passthrough Tasks.\n" +
+			"Note: /run and /exec stdout/stderr are returned as-is and recorded in recent audit logs."
+	}
 	return "直通任务 / Passthrough:\n" +
 		"/run <任务名> [--参数 值] [--confirm]\n" +
 		"  执行在“监控 > 直通任务”中预先注册的脚本；LLM/agent 不可用时也能运行。\n" +
@@ -1079,11 +1109,22 @@ func passthroughHelpText() string {
 }
 
 func formatPassthroughAuditList(entries []PassthroughAuditEntry) string {
+	return formatPassthroughAuditListWithLang(entries, "zh-Hans")
+}
+
+func formatPassthroughAuditListWithLang(entries []PassthroughAuditEntry, lang string) string {
 	if len(entries) == 0 {
+		if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+			return "No passthrough audit records."
+		}
 		return "暂无直通任务审计记录。"
 	}
 	var b strings.Builder
-	b.WriteString("最近直通任务审计记录：")
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		b.WriteString("Recent passthrough audit records:")
+	} else {
+		b.WriteString("最近直通任务审计记录：")
+	}
 	for _, entry := range entries {
 		when := entry.StartedAt
 		if parsed, err := time.Parse(time.RFC3339, entry.StartedAt); err == nil {
@@ -1106,10 +1147,34 @@ func formatPassthroughAuditList(entries []PassthroughAuditEntry) string {
 }
 
 func formatPassthroughCommandShow(cmd PassthroughCommand) string {
+	return formatPassthroughCommandShowWithLang(cmd, "zh-Hans")
+}
+
+func formatPassthroughCommandShowWithLang(cmd PassthroughCommand, lang string) string {
 	var b strings.Builder
 	title := cmd.Title
 	if title == "" {
 		title = cmd.Name
+	}
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		fmt.Fprintf(&b, "Command: %s\nTitle: %s\nScript: %s\nRuntime: %s\nWorking directory: %s\nTimeout: %ds\nEnabled: %v\nRequires confirmation: %v",
+			cmd.Name, title, cmd.ScriptPath, cmd.Runtime, cmd.Cwd, cmd.TimeoutSeconds, cmd.Enabled, cmd.ConfirmRequired)
+		if len(cmd.TemplateArgs) > 0 {
+			fmt.Fprintf(&b, "\nTemplate args: %s", formatPassthroughArgList(cmd.TemplateArgs))
+		}
+		if len(cmd.Params) > 0 {
+			b.WriteString("\nParameters:")
+			for _, p := range cmd.Params {
+				req := ""
+				if p.Required {
+					req = " required"
+				}
+				fmt.Fprintf(&b, "\n- --%s %s%s", p.Name, p.Type, req)
+			}
+		}
+		fmt.Fprintf(&b, "\nRun example: %s", passthroughCommandRunExample(cmd))
+		fmt.Fprintf(&b, "\nRemote registration command: %s", passthroughRunctlSaveExample(cmd))
+		return b.String()
 	}
 	fmt.Fprintf(&b, "命令：%s\n标题：%s\n脚本：%s\n运行时：%s\n工作目录：%s\n超时：%ds\n状态：%v\n需要确认：%v",
 		cmd.Name, title, cmd.ScriptPath, cmd.Runtime, cmd.Cwd, cmd.TimeoutSeconds, cmd.Enabled, cmd.ConfirmRequired)
@@ -1599,6 +1664,10 @@ func parsePassthroughAuditLimit(text string, defaultLimit int, maxLimit int) (in
 }
 
 func formatPassthroughStatus(registryPath string, commands []PassthroughCommand, settings PassthroughSettings, auditCount int) string {
+	return formatPassthroughStatusWithLang(registryPath, commands, settings, auditCount, "zh-Hans")
+}
+
+func formatPassthroughStatusWithLang(registryPath string, commands []PassthroughCommand, settings PassthroughSettings, auditCount int, lang string) string {
 	enabled := 0
 	confirmRequired := 0
 	for _, cmd := range commands {
@@ -1613,21 +1682,24 @@ func formatPassthroughStatus(registryPath string, commands []PassthroughCommand,
 	if settings.AllowExec {
 		execStatus = "开启"
 	}
+	if normalizeAppLanguageKind(lang) == appLanguageEnglish {
+		execStatus = "off"
+		if settings.AllowExec {
+			execStatus = "on"
+		}
+		return fmt.Sprintf("Passthrough task status:\n- Tasks: %d total, %d enabled, %d require --confirm\n- /exec: %s\n- Audit records: %d\n- Registry: %s",
+			len(commands), enabled, confirmRequired, execStatus, auditCount, registryPath)
+	}
 	return fmt.Sprintf("直通任务状态：\n- 任务：%d 个，启用 %d 个，需 --confirm %d 个\n- /exec：%s\n- 审计记录：%d 条\n- 注册表：%s",
 		len(commands), enabled, confirmRequired, execStatus, auditCount, registryPath)
 }
 
-func slashHelpText() string {
-	return "Available commands:\n" +
-		"/new /reset /clear - reset conversation\n" +
-		"/btw <query> - side query\n" +
-		"/compress - compress conversation history\n" +
-		"/memory - show memory status\n" +
-		"/cancel - cancel current task\n" +
-		"/exit /quit - stop sessions\n" +
-		"/sessions /status - show current sessions\n" +
-		"/help - show this help\n\n" +
-		passthroughHelpText()
+func slashHelpText(lang ...string) string {
+	activeLang := "zh-Hans"
+	if len(lang) > 0 {
+		activeLang = lang[0]
+	}
+	return localizedIMSlashHelpText(activeLang) + "\n\n" + passthroughHelpText(activeLang)
 }
 
 func parsePassthroughRunText(text string) (name string, values map[string]string, confirmed bool, err error) {

@@ -7,6 +7,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func TestCodingGate_BlocklistAndAllowlist(t *testing.T) {
@@ -191,6 +192,70 @@ func TestCodingGate_ApplyStripsAllCodingTools(t *testing.T) {
 	if len(got.stripped) != len(calls) || len(got.remaining) != 0 {
 		t.Fatalf("unexpected partition: %#v", got)
 	}
+}
+
+func TestCodingGate_WorkflowAgentLoopBypassesGate(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "test-coding-gate-workflow-loop-bypass"
+	engine := handler.app.workflowEngine
+
+	_, err := engine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
+		Category:   workflow.WorkflowCoding,
+		Summary:    "build a project",
+		Goals:      []string{"build a project"},
+		Confidence: 0.95,
+		Ready:      true,
+	}, workflow.WorkflowStartOptions{ProjectPath: "/proj"})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	workflowLoopCtx := &LoopContext{WorkflowAgentLoop: true}
+	if handler.shouldBypassCodingGateForWorkflowAgentLoop(userID, workflowLoopCtx) {
+		t.Fatal("form-blocked workflow phase must not bypass coding gate before phase prompt is available")
+	}
+	if err := engine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm(initial) failed: %v", err)
+	}
+	if !handler.shouldBypassCodingGateForWorkflowAgentLoop(userID, workflowLoopCtx) {
+		t.Fatal("workflow agent loop must let workflow tool policy own doc phases")
+	}
+	if handler.shouldBypassCodingGateForWorkflowAgentLoop(userID, &LoopContext{}) {
+		t.Fatal("active workflow must not bypass coding gate outside a workflow agent loop")
+	}
+
+	for _, label := range []string{"requirements", "technical design", "task breakdown"} {
+		if _, _, err := engine.SavePhaseOutputAndMaybeAdvance(userID, substantialWorkflowDoc(label)); err != nil {
+			t.Fatalf("SavePhaseOutputAndMaybeAdvance(%s) failed: %v", label, err)
+		}
+		if _, err := engine.ApplyReviewIntent(userID, workflow.ReviewIntentConfirm, ""); err != nil {
+			t.Fatalf("ApplyReviewIntent(%s) failed: %v", label, err)
+		}
+	}
+
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation {
+		t.Fatalf("expected implementation phase, got %#v", ws)
+	}
+	if !handler.shouldBypassCodingGateForWorkflowAgentLoop(userID, workflowLoopCtx) {
+		t.Fatal("execution phase must bypass the three-phase coding gate")
+	}
+	if handler.shouldBypassCodingGateForWorkflowAgentLoop(userID, &LoopContext{}) {
+		t.Fatal("execution phase must not bypass coding gate outside a workflow agent loop")
+	}
+
+	cfg := codingToolGateConfig{active: true, intent: intentCoding, reason: "test active coding gate"}
+	tools := []map[string]interface{}{toolDef("bash", "bash", nil, nil), toolDef("send_file", "send", nil, nil)}
+	filtered, _ := handler.applyInitialCodingToolGate(tools, cfg, handler.shouldBypassCodingGateForWorkflowAgentLoop(userID, workflowLoopCtx), func() bool { return false })
+	if len(filtered) != len(tools) {
+		t.Fatalf("execution phase must preserve coding tools, got %d want %d", len(filtered), len(tools))
+	}
+}
+
+func substantialWorkflowDoc(label string) string {
+	return "# " + label + "\n\n" +
+		"This phase deliverable contains enough structure to pass the minimum workflow quality gate.\n" +
+		"It intentionally avoids phase-specific keywords so the test verifies state-machine behavior rather than text matching.\n" +
+		"- item one\n- item two\n- item three\n"
 }
 
 func toolCallNamed(name string) llm.ToolCall {

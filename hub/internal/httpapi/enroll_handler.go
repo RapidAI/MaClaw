@@ -77,6 +77,8 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		}(), err)
 		if err != nil {
 			switch {
+			case errors.Is(err, auth.ErrRegistrationDisabled):
+				writeError(w, http.StatusForbidden, "REGISTRATION_DISABLED", err.Error())
 			case errors.Is(err, auth.ErrInvitationExpired):
 				errResp := map[string]any{
 					"ok":      false,
@@ -250,6 +252,8 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 		resp, err := identity.RequestEmailLogin(ctx, req.Email)
 		if err != nil {
 			switch {
+			case errors.Is(err, auth.ErrRegistrationDisabled):
+				writeError(w, http.StatusForbidden, "REGISTRATION_DISABLED", err.Error())
 			case errors.Is(err, auth.ErrEmailBlocked):
 				writeError(w, http.StatusForbidden, "EMAIL_BLOCKED", err.Error())
 			case errors.Is(err, auth.ErrInvalidEmail):

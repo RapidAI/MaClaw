@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 type BlockEmailRequest struct {
@@ -37,6 +39,12 @@ type MigrateHubUserRequest struct {
 	ToHubID   string `json:"to_hub_id"`
 }
 
+type adminHubView struct {
+	*store.HubInstance
+	Tenants                       []hubs.HubUserDashboardItem                      `json:"tenants,omitempty"`
+	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
+}
+
 func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items, err := service.ListHubs(r.Context())
@@ -44,7 +52,46 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "LIST_HUBS_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"hubs": items})
+		dashboard, err := service.ListUserDashboard(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LIST_HUBS_FAILED", err.Error())
+			return
+		}
+		tenantsByHub := map[string][]hubs.HubUserDashboardItem{}
+		for _, item := range dashboard {
+			if strings.TrimSpace(item.TenantID) == "" {
+				continue
+			}
+			tenantsByHub[item.HubID] = append(tenantsByHub[item.HubID], item)
+		}
+		views := make([]adminHubView, 0, len(items))
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			auths, err := service.HubDigitalEmployeeAuthorizations(r.Context(), item.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "LIST_HUBS_FAILED", err.Error())
+				return
+			}
+			tenantItems := append([]hubs.HubUserDashboardItem(nil), tenantsByHub[item.ID]...)
+			seenTenants := map[string]struct{}{}
+			for _, tenant := range tenantItems {
+				seenTenants[strings.TrimSpace(tenant.TenantID)] = struct{}{}
+			}
+			for tenantID := range auths {
+				tenantID = strings.TrimSpace(tenantID)
+				if tenantID == "" {
+					continue
+				}
+				if _, ok := seenTenants[tenantID]; ok {
+					continue
+				}
+				tenantItems = append(tenantItems, hubs.HubUserDashboardItem{HubID: item.ID, TenantID: tenantID, HubName: item.Name, BaseURL: item.BaseURL, Status: item.Status, IsDisabled: item.IsDisabled, AcceptPublicSignup: item.AcceptPublicSignup, SignupMode: item.EnrollmentMode, LastSeenAt: item.LastSeenAt})
+			}
+			views = append(views, adminHubView{HubInstance: item, Tenants: tenantItems, DigitalEmployeeAuthorizations: auths})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"hubs": views})
 	}
 }
 

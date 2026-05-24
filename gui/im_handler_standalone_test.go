@@ -140,6 +140,27 @@ func TestHandleIMMessageHelpIncludesMemoryCommand(t *testing.T) {
 	}
 }
 
+func TestHandleIMMessageClearUsesCurrentChineseLanguage(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
+		},
+	})
+	defer h.memory.Stop()
+	h.app = &App{CurrentLanguage: "zh-Hans"}
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "/clear"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Text != "\u5bf9\u8bdd\u5df2\u91cd\u7f6e\u3002" {
+		t.Fatalf("/clear response = %q", resp.Text)
+	}
+	if !resp.ClearUI {
+		t.Fatalf("expected ClearUI for /clear, got %+v", resp)
+	}
+}
+
 func TestNewIMMessageHandlerStandalone_ShortChitChat(t *testing.T) {
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{
 		LLMConfigFunc: func() corelib.MaclawLLMConfig {

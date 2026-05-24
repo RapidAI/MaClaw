@@ -223,7 +223,7 @@ func TestNewStoreWithMode_SQLite_CrossInstanceSync(t *testing.T) {
 	// Also add to store1's memory (simulating a normal Save flow).
 	store1.mu.Lock()
 	store1.entries = append(store1.entries, entry)
-	store1.addToIndicesLocked(entry)
+	store1.rebuildDerivedIndexesLocked(false)
 	store1.mu.Unlock()
 
 	// Trigger store2's sync.

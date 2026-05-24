@@ -158,3 +158,45 @@ func TestCompressorBackupUsesLoadedPartitionsWhenLegacyFileIsStale(t *testing.T)
 		}
 	}
 }
+
+func TestRestoreBackupReplacesSQLiteBackendSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStoreWithMode(tmpDir, StoreModeSQLite)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	if err := store.Save(Entry{ID: "restore-old", Content: "old sqlite memory", Category: CategoryProjectKnowledge, Strength: 1, AccessCount: 1}); err != nil {
+		t.Fatalf("Save old: %v", err)
+	}
+	restored := []Entry{{ID: "restore-new", Content: "restored sqlite memory", Category: CategoryInstruction, Strength: 1, AccessCount: 3}}
+	data, err := json.MarshalIndent(restored, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal restore snapshot: %v", err)
+	}
+	backupDir := filepath.Join(tmpDir, "memory_backups")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatalf("mkdir backup dir: %v", err)
+	}
+	backupName := "restore_snapshot.json"
+	if err := os.WriteFile(filepath.Join(backupDir, backupName), data, 0o644); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+
+	comp := NewCompressor(store, nil, nil)
+	if err := comp.RestoreBackup(backupName); err != nil {
+		t.Fatalf("RestoreBackup: %v", err)
+	}
+
+	loaded, err := store.backend.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != "restore-new" || loaded[0].Category != CategoryInstruction {
+		t.Fatalf("sqlite backend snapshot not replaced: %+v", loaded)
+	}
+	if store.sync == nil || store.sync.lastVersion == 0 {
+		t.Fatalf("restore should advance sync watermark, sync=%+v", store.sync)
+	}
+}

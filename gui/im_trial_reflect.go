@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type trialReflectState struct {
@@ -154,7 +155,6 @@ func (h *IMMessageHandler) observeAgentLoopTrialIteration(ctx *LoopContext, tria
 		return
 	}
 	trialObservation := trialState.observeIteration(toolCalls, toolResults, toolOutcomes)
-	h.recordTrialToolUsage(userText, toolCalls, toolOutcomes, trialObservation)
 
 	if trialObservation.Outcome == trialReflectOutcomeFailed && phase != nil && phase.Stage != agentStageRecover {
 		enterRecoverPhase(phase, agentRecoverTrialFailed, buildTrialFailureRecoverPrompt(trialObservation.Text, trialObservation.RepeatedFailures))
@@ -185,7 +185,7 @@ func (h *IMMessageHandler) observeAgentLoopTrialIteration(ctx *LoopContext, tria
 	}
 }
 
-func (h *IMMessageHandler) recordTrialToolUsage(userText string, toolCalls []llm.ToolCall, toolOutcomes []toolOutcome, trialObservation trialReflectObservation) {
+func (h *IMMessageHandler) recordAgentLoopToolUsage(ctx *LoopContext, userText string, toolCall llm.ToolCall, outcome toolOutcome, followUp toolUsageFollowUp) {
 	if h.usageTracker == nil {
 		return
 	}
@@ -196,25 +196,13 @@ func (h *IMMessageHandler) recordTrialToolUsage(userText string, toolCalls []llm
 			msgTokens = msgTokens[:5]
 		}
 	}
-	for i, tc := range toolCalls {
-		if i >= len(toolOutcomes) {
-			break
-		}
-		name := strings.TrimSpace(tc.Function.Name)
-		outcome := toolOutcomes[i]
-		success := outcome == toolOutcomeSucceeded
-		followUp := toolUsageFollowUpContinue
-		if outcome == toolOutcomeFailed {
-			for j := i + 1; j < len(toolCalls); j++ {
-				if strings.TrimSpace(toolCalls[j].Function.Name) == name {
-					followUp = toolUsageFollowUpRetry
-					break
-				}
-			}
-			if followUp == toolUsageFollowUpContinue && trialObservation.Outcome == trialReflectOutcomeFailed {
-				followUp = toolUsageFollowUpAbandon
-			}
-		}
-		h.usageTracker.RecordOutcome(name, msgTokens, success, followUp.String())
-	}
+	name := strings.TrimSpace(toolCall.Function.Name)
+	h.usageTracker.RecordExperience(coretool.ToolExperience{
+		ToolName:     name,
+		QueryTokens:  msgTokens,
+		Success:      outcome == toolOutcomeSucceeded,
+		FollowUp:     followUp.String(),
+		FinalOutcome: outcome.String(),
+		EventContext: experienceContextFromLoop(ctx),
+	})
 }

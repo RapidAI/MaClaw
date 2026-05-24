@@ -21,6 +21,49 @@ func TestShouldBypassWorkflowForClassification_DirectExecutionIntents(t *testing
 	}
 }
 
+func TestShouldBypassWorkflowForClassification_EmbeddingPolicyUsesWorkflowCandidateSet(t *testing.T) {
+	defs := intent.DefaultDefinitions()
+	candidates := intent.WorkflowCandidateLabels(defs)
+
+	for label, isCandidate := range candidates {
+		if !isCandidate {
+			continue
+		}
+		t.Run(string(label), func(t *testing.T) {
+			result := intent.ClassificationResult{Primary: label, Confidence: 0.86}
+			if shouldBypassWorkflowForClassification(result, true, 0.70) {
+				t.Fatalf("must not be rejected by embedding-only policy because it can trigger workflows")
+			}
+		})
+	}
+
+	for _, def := range defs {
+		if def.MayTriggerWorkflow || candidates[def.Label] || def.Label == intent.LabelContinuation {
+			continue
+		}
+		t.Run(string(def.Label), func(t *testing.T) {
+			result := intent.ClassificationResult{Primary: def.Label, Confidence: 0.86}
+			if !shouldBypassWorkflowForClassification(result, candidates[def.Label], 0.70) {
+				t.Fatalf("should be rejected by embedding-only policy because it cannot trigger workflows")
+			}
+		})
+	}
+}
+
+func TestShouldBypassWorkflowForClassification_KeepsOfficeWorkflowCandidate(t *testing.T) {
+	result := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.88}
+	if shouldBypassWorkflowForClassification(result, true, 0.70) {
+		t.Fatal("office is workflow-capable and must reach full fusion for presentation_design detection")
+	}
+}
+
+func TestShouldBypassWorkflowForClassification_BypassesOfficeAfterTreeRejectsWorkflow(t *testing.T) {
+	result := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.88, Layer: 23}
+	if !shouldBypassWorkflowForClassification(result, true, 0.70) {
+		t.Fatal("office with full-fusion empty workflow_type should bypass workflow takeover")
+	}
+}
+
 func TestShouldBypassWorkflowForClassification_KeepsCreationWorkflow(t *testing.T) {
 	result := intent.ClassificationResult{
 		Primary:          intent.LabelCoding,
@@ -37,6 +80,13 @@ func TestShouldBypassWorkflowForClassification_KeepsContinuationContextual(t *te
 	result := intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.92}
 	if shouldBypassWorkflowForClassification(result, false, 0.70) {
 		t.Fatalf("continuation must be resolved from recent intent context, not bypassed by itself")
+	}
+}
+
+func TestShouldBypassWorkflowForClassification_KeepsUnknownForUnderstanding(t *testing.T) {
+	result := intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.30}
+	if shouldBypassWorkflowForClassification(result, true, 0.70) {
+		t.Fatalf("unknown/low-confidence UIC results must fall through to IntentUnderstandingManager")
 	}
 }
 

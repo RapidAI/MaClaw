@@ -40,6 +40,37 @@ type TenantUserMigrationResult struct {
 	Users                []TenantUserMigrationUserItem `json:"users"`
 }
 
+type TenantMergeOptions struct {
+	FromTenant   string `json:"from_tenant"`
+	ToTenant     string `json:"to_tenant"`
+	DryRun       bool   `json:"dry_run"`
+	DeleteSource bool   `json:"delete_source"`
+}
+
+type TenantMergeResult struct {
+	DryRun         bool                        `json:"dry_run"`
+	FromTenant     string                      `json:"from_tenant"`
+	ToTenant       string                      `json:"to_tenant"`
+	DeleteSource   bool                        `json:"delete_source"`
+	Tables         map[string]TenantMergeTable `json:"tables"`
+	SystemSettings TenantMergeSystemSettings   `json:"system_settings"`
+	Warnings       []string                    `json:"warnings,omitempty"`
+}
+
+type TenantMergeTable struct {
+	SourceRows int64 `json:"source_rows"`
+	MovedRows  int64 `json:"moved_rows"`
+	MergedRows int64 `json:"merged_rows"`
+}
+
+type TenantMergeSystemSettings struct {
+	SourceKeys int64 `json:"source_keys"`
+	MovedKeys  int64 `json:"moved_keys"`
+	MergedKeys int64 `json:"merged_keys"`
+}
+
+var ErrTenantMergeConflict = errors.New("tenant merge conflict")
+
 type TenantUserMigrationUserItem struct {
 	Email      string           `json:"email"`
 	UserID     string           `json:"user_id,omitempty"`
@@ -179,6 +210,85 @@ func MigrateTenantUsers(ctx context.Context, db *sql.DB, opts TenantUserMigratio
 	return result, nil
 }
 
+func MergeTenants(ctx context.Context, db *sql.DB, opts TenantMergeOptions) (*TenantMergeResult, error) {
+	if db == nil {
+		return nil, errors.New("db is nil")
+	}
+	fromTenant := store.NormalizeTenantID(opts.FromTenant)
+	toTenant := store.NormalizeTenantID(opts.ToTenant)
+	if fromTenant == "" || toTenant == "" || fromTenant == toTenant {
+		return nil, errors.New("source and target tenants must be different")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err := ensureTenantExists(ctx, tx, fromTenant); err != nil {
+		return nil, err
+	}
+	if err := ensureTenantExists(ctx, tx, toTenant); err != nil {
+		return nil, err
+	}
+	if err := ensureTenantMergeUserEmailsDoNotConflict(ctx, tx, fromTenant, toTenant); err != nil {
+		return nil, err
+	}
+	groupIDMap, err := mergeTenantSecurityRoots(ctx, tx, fromTenant, toTenant)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &TenantMergeResult{DryRun: opts.DryRun, FromTenant: fromTenant, ToTenant: toTenant, DeleteSource: opts.DeleteSource, Tables: map[string]TenantMergeTable{}}
+	tables, err := tenantScopedTables(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	for _, table := range tables {
+		summary, err := mergeTenantTable(ctx, tx, table, fromTenant, toTenant)
+		if err != nil {
+			return nil, fmt.Errorf("merge table %s: %w", table, err)
+		}
+		if summary.SourceRows > 0 {
+			result.Tables[table] = summary
+		}
+	}
+	deleteSourceSettings := opts.DeleteSource && fromTenant != store.DefaultTenantID
+	settings, err := mergeTenantSystemSettings(ctx, tx, fromTenant, toTenant, groupIDMap, deleteSourceSettings)
+	if err != nil {
+		return nil, err
+	}
+	result.SystemSettings = settings
+
+	if opts.DeleteSource {
+		if fromTenant == store.DefaultTenantID {
+			result.Warnings = append(result.Warnings, "default tenant cannot be deleted; data was merged but source tenant remains active")
+		} else if _, err := tx.ExecContext(ctx, `UPDATE tenants SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), fromTenant); err != nil {
+			return nil, fmt.Errorf("delete source tenant: %w", err)
+		}
+	}
+	if !opts.DeleteSource || fromTenant == store.DefaultTenantID {
+		if err := ensureTenantMergeRootExists(ctx, tx, fromTenant); err != nil {
+			return nil, err
+		}
+	}
+
+	if opts.DryRun {
+		return result, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	committed = true
+	return result, nil
+}
+
 func readTenantUserMappings(path string) ([]tenantUserMapping, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -229,6 +339,278 @@ func readTenantUserMappings(path string) ([]tenantUserMapping, error) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Email < rows[j].Email })
 	return rows, nil
+}
+
+func tenantScopedTables(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'tenants' ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, err
+		}
+		if tenantMergeSafeIdent(table) {
+			candidates = append(candidates, table)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var tables []string
+	for _, table := range candidates {
+		hasTenantID, err := tenantMergeTableHasTenantID(ctx, tx, table)
+		if err != nil {
+			return nil, err
+		}
+		if hasTenantID {
+			tables = append(tables, table)
+		}
+	}
+	return tables, nil
+}
+
+func tenantMergeTableHasTenantID(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+tenantMergeQuoteIdent(table)+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == "tenant_id" {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func mergeTenantTable(ctx context.Context, tx *sql.Tx, table, fromTenant, toTenant string) (TenantMergeTable, error) {
+	if !tenantMergeSafeIdent(table) {
+		return TenantMergeTable{}, fmt.Errorf("unsafe table name %q", table)
+	}
+	quoted := tenantMergeQuoteIdent(table)
+	var sourceRows int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+quoted+` WHERE tenant_id = ?`, fromTenant).Scan(&sourceRows); err != nil {
+		return TenantMergeTable{}, err
+	}
+	if sourceRows == 0 {
+		return TenantMergeTable{}, nil
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE OR IGNORE `+quoted+` SET tenant_id = ? WHERE tenant_id = ?`, toTenant, fromTenant)
+	if err != nil {
+		return TenantMergeTable{}, err
+	}
+	moved, _ := res.RowsAffected()
+	merged := sourceRows - moved
+	if merged > 0 {
+		return TenantMergeTable{}, fmt.Errorf("%w: table %s has %d source rows that conflict with existing target rows; resolve duplicates before merging", ErrTenantMergeConflict, table, merged)
+	}
+	return TenantMergeTable{SourceRows: sourceRows, MovedRows: moved, MergedRows: merged}, nil
+}
+
+func mergeTenantSystemSettings(ctx context.Context, tx *sql.Tx, fromTenant, toTenant string, groupIDMap map[string]string, deleteSource bool) (TenantMergeSystemSettings, error) {
+	fromPrefix := "tenant:" + fromTenant + ":"
+	toPrefix := "tenant:" + toTenant + ":"
+	type settingRow struct{ key, value string }
+	var settings []settingRow
+	if fromTenant == store.DefaultTenantID {
+		for _, key := range []string{llmservice.RegistryKey, "security_settings"} {
+			raw, err := getSystemSetting(ctx, tx, key)
+			if err != nil {
+				return TenantMergeSystemSettings{}, err
+			}
+			if strings.TrimSpace(raw) != "" {
+				settings = append(settings, settingRow{key: key, value: raw})
+			}
+		}
+	} else {
+		rows, err := tx.QueryContext(ctx, `SELECT key, value_json FROM system_settings WHERE key LIKE ?`, fromPrefix+"%")
+		if err != nil {
+			return TenantMergeSystemSettings{}, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item settingRow
+			if err := rows.Scan(&item.key, &item.value); err != nil {
+				return TenantMergeSystemSettings{}, err
+			}
+			settings = append(settings, item)
+		}
+		if err := rows.Err(); err != nil {
+			return TenantMergeSystemSettings{}, err
+		}
+	}
+	result := TenantMergeSystemSettings{SourceKeys: int64(len(settings))}
+	for _, item := range settings {
+		settingName := strings.TrimPrefix(item.key, fromPrefix)
+		targetKey := toPrefix + settingName
+		if settingName == llmservice.RegistryKey {
+			merged, err := mergeTenantLLMRegistrySetting(ctx, tx, item.key, targetKey, item.value, groupIDMap, deleteSource)
+			if err != nil {
+				return TenantMergeSystemSettings{}, err
+			}
+			if merged {
+				result.MergedKeys++
+			} else {
+				result.MovedKeys++
+			}
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO system_settings (key, value_json, updated_at) VALUES (?, ?, ?)`, targetKey, item.value, time.Now().UTC().Format(time.RFC3339))
+		if err != nil {
+			return TenantMergeSystemSettings{}, err
+		}
+		moved, _ := res.RowsAffected()
+		if moved > 0 {
+			result.MovedKeys++
+		} else {
+			result.MergedKeys++
+		}
+		if deleteSource {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM system_settings WHERE key = ?`, item.key); err != nil {
+				return TenantMergeSystemSettings{}, err
+			}
+		}
+	}
+	return result, nil
+}
+
+func mergeTenantLLMRegistrySetting(ctx context.Context, tx *sql.Tx, sourceKey, targetKey, sourceRaw string, groupIDMap map[string]string, deleteSource bool) (bool, error) {
+	sourceReg, err := decodeLLMRegistry(sourceRaw)
+	if err != nil {
+		return false, fmt.Errorf("decode source llm registry: %w", err)
+	}
+	remapRegistryGroupIDs(sourceReg, groupIDMap)
+	targetRaw, err := getSystemSetting(ctx, tx, targetKey)
+	if err != nil {
+		return false, err
+	}
+	merged := strings.TrimSpace(targetRaw) != ""
+	if !merged {
+		if err := saveLLMRegistrySetting(ctx, tx, targetKey, sourceReg); err != nil {
+			return false, err
+		}
+	} else {
+		targetReg, err := decodeLLMRegistry(targetRaw)
+		if err != nil {
+			return false, fmt.Errorf("decode target llm registry: %w", err)
+		}
+		mergeFullLLMRegistry(targetReg, sourceReg)
+		if err := saveLLMRegistrySetting(ctx, tx, targetKey, targetReg); err != nil {
+			return false, err
+		}
+	}
+	if deleteSource {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM system_settings WHERE key = ?`, sourceKey); err != nil {
+			return false, err
+		}
+	}
+	return merged, nil
+}
+
+func mergeTenantSecurityRoots(ctx context.Context, tx *sql.Tx, fromTenant, toTenant string) (map[string]string, error) {
+	sourceRootID, err := tenantMergeRootGroupID(ctx, tx, fromTenant)
+	if err != nil || sourceRootID == "" {
+		return nil, err
+	}
+	targetRootID, err := tenantMergeRootGroupID(ctx, tx, toTenant)
+	if err != nil || targetRootID == "" {
+		return nil, err
+	}
+	if sourceRootID == targetRootID {
+		return nil, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE security_groups SET parent_id = ? WHERE tenant_id = ? AND parent_id = ?`, targetRootID, fromTenant, sourceRootID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE security_group_members SET group_id = ? WHERE tenant_id = ? AND group_id = ?`, targetRootID, fromTenant, sourceRootID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM security_policies WHERE tenant_id = ? AND group_id = ?`, fromTenant, sourceRootID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM security_groups WHERE tenant_id = ? AND id = ?`, fromTenant, sourceRootID); err != nil {
+		return nil, err
+	}
+	return map[string]string{sourceRootID: targetRootID}, nil
+}
+
+func tenantMergeRootGroupID(ctx context.Context, tx *sql.Tx, tenantID string) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM security_groups WHERE tenant_id = ? AND parent_id = '' LIMIT 1`, tenantID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+func ensureTenantMergeRootExists(ctx context.Context, tx *sql.Tx, tenantID string) error {
+	existing, err := tenantMergeRootGroupID(ctx, tx, tenantID)
+	if err != nil || existing != "" {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	id := "root_" + tenantID + "_" + randomTenantMigrationSuffix()
+	_, err = tx.ExecContext(ctx, `INSERT INTO security_groups (tenant_id, id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?)`, tenantID, id, "Root", now, now)
+	return err
+}
+
+func randomTenantMigrationSuffix() string {
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func ensureTenantMergeUserEmailsDoNotConflict(ctx context.Context, tx *sql.Tx, fromTenant, toTenant string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT s.email FROM users s JOIN users t ON lower(s.email) = lower(t.email) WHERE s.tenant_id = ? AND t.tenant_id = ? AND s.id <> t.id ORDER BY s.email LIMIT 5`, fromTenant, toTenant)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var emails []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return err
+		}
+		emails = append(emails, email)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(emails) > 0 {
+		return fmt.Errorf("target tenant already has users with these emails: %s", strings.Join(emails, ", "))
+	}
+	return nil
+}
+
+func tenantMergeSafeIdent(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func tenantMergeQuoteIdent(name string) string {
+	return `"` + name + `"`
 }
 
 func ensureTenantExists(ctx context.Context, tx *sql.Tx, tenantID string) error {
@@ -1036,6 +1418,77 @@ func mergeCards(existing, incoming []llmservice.RechargeCard) []llmservice.Recha
 		}
 		out = append(out, item)
 		seen[item.ID] = struct{}{}
+	}
+	return out
+}
+
+func remapRegistryGroupIDs(reg *llmservice.Registry, groupIDMap map[string]string) {
+	if reg == nil || len(groupIDMap) == 0 {
+		return
+	}
+	for i := range reg.GroupBindings {
+		if mapped := groupIDMap[strings.TrimSpace(reg.GroupBindings[i].GroupID)]; mapped != "" {
+			reg.GroupBindings[i].GroupID = mapped
+		}
+	}
+}
+
+func mergeFullLLMRegistry(target, source *llmservice.Registry) {
+	if target == nil || source == nil {
+		return
+	}
+	target.ModelServiceGroups = mergeModelServiceGroups(target.ModelServiceGroups, source.ModelServiceGroups)
+	target.GlobalServiceGroupIDs = mergeStringIDs(target.GlobalServiceGroupIDs, source.GlobalServiceGroupIDs)
+	target.GroupBindings = mergeGroupBindings(target.GroupBindings, source.GroupBindings)
+	target.UserBindings = mergeUserBindings(target.UserBindings, source.UserBindings)
+	target.Cards = mergeCards(target.Cards, source.Cards)
+	target.Grants = mergeGrants(target.Grants, source.Grants)
+	target.DefaultNewUserServiceGroups = mergeStringIDs(target.DefaultNewUserServiceGroups, source.DefaultNewUserServiceGroups)
+	if target.DefaultNewUserDurationDays == 0 {
+		target.DefaultNewUserDurationDays = source.DefaultNewUserDurationDays
+	}
+	if target.DefaultNewUserCredits == 0 {
+		target.DefaultNewUserCredits = source.DefaultNewUserCredits
+	}
+	if target.TokensPerCredit == 0 {
+		target.TokensPerCredit = source.TokensPerCredit
+	}
+	target.Normalize()
+}
+
+func mergeModelServiceGroups(existing, incoming []llmservice.ModelServiceGroup) []llmservice.ModelServiceGroup {
+	out := append([]llmservice.ModelServiceGroup(nil), existing...)
+	seen := map[string]struct{}{}
+	for _, item := range existing {
+		seen[strings.TrimSpace(item.ID)] = struct{}{}
+	}
+	for _, item := range incoming {
+		key := strings.TrimSpace(item.ID)
+		if _, ok := seen[key]; ok && key != "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func mergeStringIDs(existing, incoming []string) []string {
+	out := append([]string(nil), existing...)
+	seen := map[string]struct{}{}
+	for _, item := range existing {
+		seen[strings.TrimSpace(item)] = struct{}{}
+	}
+	for _, item := range incoming {
+		key := strings.TrimSpace(item)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
 	}
 	return out
 }

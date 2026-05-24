@@ -979,9 +979,30 @@ func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next coreli
 	if err := saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg); err != nil {
 		return nil, err
 	}
+	if err := s.refreshUserInstanceReadinessCache(p.TenantID, p.UserID, ValidateAppConfig(cfg.AppConfig), cfg.UpdatedAt); err != nil {
+		return nil, err
+	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "config.updated", ResourceType: "user_config", ResourceID: p.UserID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID})
 	cfg.AppConfig = SanitizeAppConfig(cfg.AppConfig)
 	return &cfg, nil
+}
+
+func (s *Service) refreshUserInstanceReadinessCache(tenantID, userID string, validation ConfigValidationResult, updatedAt time.Time) error {
+	items, err := s.store.ListInstances(tenantID, userID)
+	if err != nil {
+		return err
+	}
+	for _, inst := range items {
+		inst.ConfigValidation = validation
+		inst.Readiness = s.buildInstanceReadiness(inst)
+		inst.Ready = inst.Readiness.Ready
+		inst.ReadyReason = inst.Readiness.Reason
+		inst.UpdatedAt = updatedAt
+		if err := s.store.SaveInstance(inst); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) ValidateUserConfig(ctx context.Context, p Principal) (*ConfigValidationResult, error) {
@@ -1025,7 +1046,7 @@ func (s *Service) CreateInstance(ctx context.Context, p Principal, in CreateInst
 	if err != nil {
 		return nil, err
 	}
-	if !validation.Valid {
+	if !validation.Valid && !in.AllowInvalidConfig {
 		return nil, ErrInvalidConfig
 	}
 	name := strings.TrimSpace(in.Name)
@@ -1235,8 +1256,13 @@ func (s *Service) ListInstances(ctx context.Context, p Principal) ([]Instance, e
 	if err != nil {
 		return nil, err
 	}
+	validation, validationErr := s.currentInstanceConfigValidation(p.TenantID, p.UserID)
 	for i := range items {
-		items[i] = s.withInstanceReadiness(items[i])
+		if validationErr == nil {
+			items[i] = s.withInstanceReadinessValidation(items[i], validation)
+		} else {
+			items[i] = s.withInstanceReadiness(items[i])
+		}
 	}
 	return items, nil
 }
@@ -3675,10 +3701,29 @@ func (s *Service) resolveCandidateConfig(p Principal, next *corelib.AppConfig) (
 }
 
 func (s *Service) withInstanceReadiness(inst Instance) Instance {
+	if validation, err := s.currentInstanceConfigValidation(inst.TenantID, inst.UserID); err == nil {
+		return s.withInstanceReadinessValidation(inst, validation)
+	}
 	inst.Readiness = s.buildInstanceReadiness(inst)
 	inst.Ready = inst.Readiness.Ready
 	inst.ReadyReason = inst.Readiness.Reason
 	return inst
+}
+
+func (s *Service) withInstanceReadinessValidation(inst Instance, validation ConfigValidationResult) Instance {
+	inst.ConfigValidation = validation
+	inst.Readiness = s.buildInstanceReadiness(inst)
+	inst.Ready = inst.Readiness.Ready
+	inst.ReadyReason = inst.Readiness.Reason
+	return inst
+}
+
+func (s *Service) currentInstanceConfigValidation(tenantID, userID string) (ConfigValidationResult, error) {
+	cfg, err := s.getOrLoadUserConfig(tenantID, userID)
+	if err != nil {
+		return ConfigValidationResult{}, err
+	}
+	return ValidateAppConfig(cfg.AppConfig), nil
 }
 
 func (s *Service) buildInstanceReadiness(inst Instance) InstanceReadiness {

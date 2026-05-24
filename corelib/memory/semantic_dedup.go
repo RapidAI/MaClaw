@@ -219,37 +219,25 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 
 		switch decision {
 		case dedupDecisionMerge:
-			s.mu.Lock()
-			// Update the candidate (older entry) with merged content.
-			for i := range s.entries {
-				if s.entries[i].ID == candEntry.ID {
-					if mergedText != "" {
-						s.entries[i].Content = mergedText
-						s.entries[i].ContentHash = computeContentHash(mergedText)
-						s.entries[i].CompactForm = ""
-						if mergedText == newEntry.Content && len(newEntry.Embedding) > 0 {
-							s.entries[i].Embedding = append([]float32(nil), newEntry.Embedding...)
-						}
-					}
-					s.entries[i].Tags = mergeTags(s.entries[i].Tags, newEntry.Tags)
-					s.entries[i].Entities = mergeTags(s.entries[i].Entities, newEntry.Entities)
-					s.entries[i].UpdatedAt = time.Now()
-					s.entries[i].AccessCount++
-					break
+			updated := *candEntry
+			if mergedText != "" {
+				updated.Content = mergedText
+				updated.ContentHash = computeContentHash(mergedText)
+				updated.CompactForm = ""
+				if mergedText == newEntry.Content && len(newEntry.Embedding) > 0 {
+					updated.Embedding = append([]float32(nil), newEntry.Embedding...)
 				}
 			}
-			// Remove the new entry.
-			kept := make([]Entry, 0, len(s.entries)-1)
-			for _, e := range s.entries {
-				if e.ID != newEntry.ID {
-					kept = append(kept, e)
-				}
+			updated.Tags = mergeTags(updated.Tags, newEntry.Tags)
+			updated.Entities = mergeTags(updated.Entities, newEntry.Entities)
+			updated.RelatedIDs = removeStringValue(updated.RelatedIDs, newEntry.ID)
+			updated.RelatedEdges = removeRelatedEdgeValue(updated.RelatedEdges, newEntry.ID)
+			updated.UpdatedAt = time.Now()
+			updated.AccessCount++
+			if err := s.UpdateEntriesAndDeleteIDs([]Entry{updated}, []string{newEntry.ID}); err != nil {
+				log.Printf("[semantic_dedup] merge persist error: %v", err)
+				continue
 			}
-			s.entries = kept
-			s.rebuildDerivedIndexesLocked(true)
-			s.dirty = true
-			s.mu.Unlock()
-			s.signalSave()
 			merged++
 			log.Printf("[semantic_dedup] merged: %q into %q",
 				truncStr(newEntry.Content, 40), truncStr(candEntry.Content, 40))
@@ -334,4 +322,32 @@ Return ONLY the JSON object, no markdown, no commentary.`
 	default:
 		return dedupDecisionKeep, "", nil // default to keep (safe)
 	}
+}
+
+func removeStringValue(values []string, target string) []string {
+	if len(values) == 0 || target == "" {
+		return values
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == target {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func removeRelatedEdgeValue(edges []RelatedEdge, target string) []RelatedEdge {
+	if len(edges) == 0 || target == "" {
+		return edges
+	}
+	out := make([]RelatedEdge, 0, len(edges))
+	for _, edge := range edges {
+		if edge.ID == target {
+			continue
+		}
+		out = append(out, edge)
+	}
+	return out
 }

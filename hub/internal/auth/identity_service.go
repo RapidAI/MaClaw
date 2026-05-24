@@ -26,6 +26,7 @@ var (
 	ErrInvitationCodeRequired = errors.New("invitation code is required")
 	ErrInvalidInvitationCode  = errors.New("invalid or used invitation code")
 	ErrInvitationExpired      = errors.New("invitation code has expired")
+	ErrRegistrationDisabled   = errors.New("new user registration is disabled for this tenant")
 	identitySNCounter         atomic.Uint64
 	tenantEmailDomainPattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 )
@@ -271,22 +272,33 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 	}
 
 	// Invitation code validation - only required for new users
+	invitationAccepted := false
 	if user == nil && s.invitationSvc != nil {
 		required, err := s.invitationSvc.IsRequiredForTenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
 		}
-		if required {
-			if strings.TrimSpace(invitationCode) == "" {
-				return nil, ErrInvitationCodeRequired
-			}
-			if err := s.invitationSvc.ValidateAndConsumeForTenant(ctx, tenantID, invitationCode, email); err != nil {
+		code := strings.TrimSpace(invitationCode)
+		if code != "" {
+			if err := s.invitationSvc.ValidateAndConsumeForTenant(ctx, tenantID, code, email); err != nil {
 				return nil, ErrInvalidInvitationCode
 			}
+			invitationAccepted = true
+		} else if required {
+			return nil, ErrInvitationCodeRequired
 		}
 	}
 
 	if user == nil {
+		if !invitationAccepted {
+			allowed, err := s.tenantAllowsNewUserRegistration(ctx, tenantID)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				return nil, ErrRegistrationDisabled
+			}
+		}
 		mode, err := s.enrollmentModeValue(ctx)
 		if err != nil {
 			return nil, err
@@ -336,6 +348,13 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		return nil, err
 	}
 	if user == nil {
+		allowed, err := s.tenantAllowsNewUserRegistration(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, ErrRegistrationDisabled
+		}
 		mode, err := s.enrollmentModeValue(ctx)
 		if err != nil {
 			return nil, err
@@ -449,7 +468,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 
 	// 1. Send via email (best-effort - don't block IM delivery on email failure)
 	if s.mailer != nil {
-		if err := s.mailer.SendLoginConfirmation(ctx, email, confirmURL); err != nil {
+		if err := s.mailer.SendLoginConfirmation(store.WithTenant(ctx, tenantID), email, confirmURL); err != nil {
 			emailErr = err
 		} else {
 			channels = append(channels, "email")
@@ -636,6 +655,36 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 
 func (s *IdentityService) ManualBind(ctx context.Context, email string) (*store.User, error) {
 	return s.ManualBindForTenant(ctx, store.DefaultTenantID, email)
+}
+
+func (s *IdentityService) tenantAllowsNewUserRegistration(ctx context.Context, tenantID string) (bool, error) {
+	if s == nil || s.tenants == nil {
+		return true, nil
+	}
+	tenant, err := s.tenants.GetByID(ctx, normalizeTenantIDValue(tenantID))
+	if err != nil {
+		return false, err
+	}
+	if tenant == nil {
+		return true, nil
+	}
+	return tenantAllowsNewUserRegistration(tenant), nil
+}
+
+func tenantAllowsNewUserRegistration(tenant *store.Tenant) bool {
+	if tenant == nil || strings.TrimSpace(tenant.SettingsJSON) == "" {
+		return true
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(tenant.SettingsJSON)), &settings); err != nil {
+		return true
+	}
+	for _, key := range []string{"allow_user_registration", "registration_enabled"} {
+		if value, ok := settings[key].(bool); ok {
+			return value
+		}
+	}
+	return true
 }
 
 func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {

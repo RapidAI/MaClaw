@@ -53,6 +53,30 @@ func TestEnrichSendAndObserveTextForTaskPendingTask(t *testing.T) {
 	}
 }
 
+func TestEnrichSendAndObserveTextForTaskUsesNextReadyTask(t *testing.T) {
+	registry := NewTaskOrchestratorRegistry()
+	orch := registry.GetOrCreate("u1")
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Blocked task", Description: "wait", DependsOn: []int{1}},
+		{Index: 1, Title: "Ready task", Description: "run first"},
+	}, "requirements", "design", "/proj", "codex")
+	h := &IMMessageHandler{
+		lastUserID:               "u1",
+		taskOrchestratorRegistry: registry,
+	}
+
+	got := h.enrichSendAndObserveTextForTask("s-ready", "extra context")
+	if strings.Contains(got, "Blocked task") || !strings.Contains(got, "Ready task") {
+		t.Fatalf("enriched text should target ready task only:\n%s", got)
+	}
+	if orch.Tasks[0].SessionID != "" || orch.Tasks[0].Status != TaskExecPending {
+		t.Fatalf("blocked task should remain untouched: %#v", orch.Tasks[0])
+	}
+	if orch.Tasks[1].SessionID != "s-ready" || orch.Tasks[1].Status != TaskExecInProgress {
+		t.Fatalf("ready task should be bound and in progress: %#v", orch.Tasks[1])
+	}
+}
+
 func TestEnrichSendAndObserveTextForTaskNonPendingTaskOnlyBindsSession(t *testing.T) {
 	registry := NewTaskOrchestratorRegistry()
 	orch := registry.GetOrCreate("u1")

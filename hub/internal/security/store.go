@@ -67,17 +67,19 @@ func (s *SecurityStore) InitSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_security_groups_tenant_parent ON security_groups(tenant_id, parent_id)`,
 		`CREATE TABLE IF NOT EXISTS security_group_members (
 			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
-			email TEXT PRIMARY KEY,
+			email TEXT NOT NULL,
 			group_id TEXT NOT NULL,
-			created_at TEXT NOT NULL
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, email)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sgm_group ON security_group_members(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sgm_tenant_group ON security_group_members(tenant_id, group_id)`,
 		`CREATE TABLE IF NOT EXISTS security_policies (
 			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
-			group_id TEXT PRIMARY KEY,
+			group_id TEXT NOT NULL,
 			policy_json TEXT NOT NULL DEFAULT '{}',
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, group_id)
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -94,7 +96,123 @@ func (s *SecurityStore) InitSchema(ctx context.Context) error {
 			return fmt.Errorf("migrate security tenant column: %w", err)
 		}
 	}
+	if err := s.migrateCompositeTenantKeys(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *SecurityStore) migrateCompositeTenantKeys(ctx context.Context) error {
+	if ok, err := tablePrimaryKeyIs(ctx, s.db, "security_group_members", []string{"tenant_id", "email"}); err != nil {
+		return err
+	} else if !ok {
+		if err := s.rebuildSecurityGroupMembers(ctx); err != nil {
+			return err
+		}
+	}
+	if ok, err := tablePrimaryKeyIs(ctx, s.db, "security_policies", []string{"tenant_id", "group_id"}); err != nil {
+		return err
+	} else if !ok {
+		if err := s.rebuildSecurityPolicies(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SecurityStore) rebuildSecurityGroupMembers(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_sgm_group`); err != nil {
+		return fmt.Errorf("drop security member group index: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_sgm_tenant_group`); err != nil {
+		return fmt.Errorf("drop security member tenant index: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE security_group_members RENAME TO security_group_members_old`); err != nil {
+		return fmt.Errorf("rename security group members: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE security_group_members (
+		tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+		email TEXT NOT NULL,
+		group_id TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (tenant_id, email)
+	)`); err != nil {
+		return fmt.Errorf("recreate security group members: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO security_group_members (tenant_id, email, group_id, created_at)
+		SELECT COALESCE(NULLIF(tenant_id, ''), 'tenant_default'), email, group_id, created_at
+		FROM security_group_members_old
+		WHERE email <> ''`); err != nil {
+		return fmt.Errorf("copy security group members: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE security_group_members_old`); err != nil {
+		return fmt.Errorf("drop old security group members: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_sgm_group ON security_group_members(group_id)`); err != nil {
+		return fmt.Errorf("create security member group index: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_sgm_tenant_group ON security_group_members(tenant_id, group_id)`); err != nil {
+		return fmt.Errorf("create security member tenant index: %w", err)
+	}
+	return nil
+}
+
+func (s *SecurityStore) rebuildSecurityPolicies(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE security_policies RENAME TO security_policies_old`); err != nil {
+		return fmt.Errorf("rename security policies: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE security_policies (
+		tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+		group_id TEXT NOT NULL,
+		policy_json TEXT NOT NULL DEFAULT '{}',
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (tenant_id, group_id)
+	)`); err != nil {
+		return fmt.Errorf("recreate security policies: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO security_policies (tenant_id, group_id, policy_json, updated_at)
+		SELECT COALESCE(NULLIF(tenant_id, ''), 'tenant_default'), group_id, policy_json, updated_at
+		FROM security_policies_old
+		WHERE group_id <> ''`); err != nil {
+		return fmt.Errorf("copy security policies: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE security_policies_old`); err != nil {
+		return fmt.Errorf("drop old security policies: %w", err)
+	}
+	return nil
+}
+
+func tablePrimaryKeyIs(ctx context.Context, db *sql.DB, table string, want []string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect primary key %s: %w", table, err)
+	}
+	defer rows.Close()
+	pk := map[int]string{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pkIndex int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pkIndex); err != nil {
+			return false, fmt.Errorf("scan primary key %s: %w", table, err)
+		}
+		if pkIndex > 0 {
+			pk[pkIndex] = name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(pk) != len(want) {
+		return false, nil
+	}
+	for i, col := range want {
+		if pk[i+1] != col {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // InitRootGroup creates the root group ("全局") if it doesn't already exist.
@@ -213,7 +331,7 @@ func (s *SecurityStore) GetGroupDepth(ctx context.Context, groupID string) (int,
 
 // --- Group Members ---
 
-// AssignUser assigns a user (by email) to a group. Uses UPSERT since email is PRIMARY KEY.
+// AssignUser assigns a user (by email) to a group within the current tenant.
 func (s *SecurityStore) AssignUser(ctx context.Context, email, groupID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	tenantID := tenantIDFromContext(ctx)
@@ -366,7 +484,7 @@ func (s *SecurityStore) GetGroupPolicy(ctx context.Context, groupID string) (map
 }
 
 // SetGroupPolicy stores the sparse policy JSON for a group.
-// Uses UPSERT (INSERT OR REPLACE) since group_id is PRIMARY KEY.
+// Uses UPSERT since each tenant has at most one policy per group.
 func (s *SecurityStore) SetGroupPolicy(ctx context.Context, groupID string, policy map[string]interface{}) error {
 	data, err := json.Marshal(policy)
 	if err != nil {

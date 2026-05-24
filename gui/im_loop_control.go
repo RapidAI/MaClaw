@@ -50,7 +50,7 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 // causing the current session to finalize by itself.
 func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
 	injection := buildGuideLaunchInjection(text)
-	if injection == "" || !h.hasActiveLoopForUser(userID) {
+	if injection == "" || !h.canAcceptGuideReferenceForUser(userID) {
 		return false
 	}
 	h.accumulateInjection(userID, injection)
@@ -186,8 +186,11 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userText, platform string) func() {
 	// Write to per-session state (primary, race-free).
 	state := h.getSessionLoop(userID)
+	state.stateMu.Lock()
 	state.loopCtx = ctx
 	state.userText = userText
+	state.endedAt = time.Time{}
+	state.stateMu.Unlock()
 
 	// Write to legacy global fields (deprecated, kept for tool functions that
 	// don't have access to userID). Under concurrency these may be overwritten
@@ -205,10 +208,13 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", truncateTraceText(userText, 180), "", "")
 	}
 	return func() {
-		h.pendingInjection.Delete(userID)
+		h.clearNonGuidePendingInjection(userID)
 		// Clear per-session state.
+		state.stateMu.Lock()
 		state.loopCtx = nil
 		state.userText = ""
+		state.endedAt = time.Now()
+		state.stateMu.Unlock()
 		// Clear legacy global fields only if they still point to THIS loop.
 		// Under concurrency another loop may have overwritten them — don't
 		// clobber the other loop's state.
@@ -221,4 +227,54 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		h.globalLoopMu.Unlock()
 		ctx.Done()
 	}
+}
+
+func (h *IMMessageHandler) clearNonGuidePendingInjection(userID string) {
+	for {
+		pending, ok := h.pendingInjection.Load(userID)
+		if !ok {
+			return
+		}
+		text, _ := pending.(string)
+		if guideOnly := trimToGuideLaunchReferenceInjection(text); guideOnly != "" {
+			if guideOnly == text || h.pendingInjection.CompareAndSwap(userID, pending, guideOnly) {
+				return
+			}
+			continue
+		}
+		if h.pendingInjection.CompareAndDelete(userID, pending) {
+			return
+		}
+	}
+}
+
+func trimToGuideLaunchReferenceInjection(text string) string {
+	if !strings.Contains(text, guideLaunchReferenceMarker) {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for i := 0; i+1 < len(lines); i++ {
+		if isGuideLaunchReferenceHeader(lines, i) {
+			kept = append(kept, lines[i], lines[i+1])
+			i++
+			for i+1 < len(lines) && !isGuideLaunchReferenceHeader(lines, i+1) {
+				i++
+				if isLegacyInjectionPrefixLine(lines[i]) {
+					break
+				}
+				kept = append(kept, lines[i])
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+func isLegacyInjectionPrefixLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "[") || strings.HasPrefix(line, guideLaunchReferenceMarker) {
+		return false
+	}
+	idx := strings.Index(line, "] ")
+	return idx > 0 && idx < 80
 }

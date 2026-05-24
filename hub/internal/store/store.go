@@ -24,6 +24,17 @@ func TenantIDFromContext(ctx context.Context) string {
 	return DefaultTenantID
 }
 
+func TenantIDFromContextIfPresent(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return DefaultTenantID, false
+	}
+	tenantID, ok := ctx.Value(tenantContextKey{}).(string)
+	if !ok {
+		return DefaultTenantID, false
+	}
+	return NormalizeTenantID(tenantID), true
+}
+
 func NormalizeTenantID(tenantID string) string {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {

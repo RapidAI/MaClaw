@@ -281,6 +281,19 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     draft.RecommendedToolCall,
 			"non_executing_boundary":    draft.NonExecutingBoundary,
 		}, err)
+	case experienceLearningToolActionBuildBlockedSkillDraft:
+		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
+		if traceID == "" {
+			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
+		}
+		draft, err := h.app.BuildExperienceBlockedSkillDraft(traceID)
+		return experienceLearningToolResult(map[string]interface{}{
+			"blocked_skill_draft":       draft,
+			"trace_id":                  draft.TraceID,
+			"recommended_focus_context": draft.RecommendedFocusContext,
+			"recommended_tool_call":     draft.RecommendedToolCall,
+			"non_executing_boundary":    draft.NonExecutingBoundary,
+		}, err)
 	case experienceLearningToolActionBuildRollbackDraft:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
@@ -380,6 +393,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			Kind:                 strings.TrimSpace(stringVal(args, "draft_kind")),
 			Status:               status,
 			SourceTraceID:        firstNonEmptyExperienceString(stringVal(args, "source_trace_id"), stringVal(args, "trace_id")),
+			DraftID:              strings.TrimSpace(stringVal(args, "draft_id")),
 			Query:                firstNonEmptyExperienceString(stringVal(args, "query"), stringVal(args, "q")),
 			Note:                 strings.TrimSpace(stringVal(args, "note")),
 			Actor:                strings.TrimSpace(stringVal(args, "actor")),
@@ -398,22 +412,37 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     record.RecommendedToolCall,
 			"non_executing_boundary":    record.NonExecutingBoundary,
 		}, err)
+	case experienceLearningToolActionRecordBlockedSkillDraft:
+		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
+		resolution := strings.TrimSpace(stringVal(args, "resolution"))
+		replacementDraftID := firstNonEmptyExperienceString(stringVal(args, "replacement_draft_id"), stringVal(args, "draft_id"))
+		record, err := h.app.RecordBlockedSkillDraftReview(traceID, resolution, replacementDraftID, strings.TrimSpace(stringVal(args, "note")), strings.TrimSpace(stringVal(args, "actor")))
+		return experienceLearningToolResult(map[string]interface{}{
+			"blocked_skill_draft_review": record,
+			"trace_id":                   record.TraceID,
+			"status":                     record.Status,
+			"recommended_focus_context":  record.RecommendedFocusContext,
+			"recommended_tool_call":      record.RecommendedToolCall,
+			"non_executing_boundary":     record.NonExecutingBoundary,
+		}, err)
 	default:
-		return experienceLearningToolResult(nil, fmt.Errorf("unsupported experience_learning action; use snapshot, governance_summary, next_actions, queues, follow_up_actions, routing_signals, tool_recovery/inspect_tool_recovery_governance/recovery_governance/tool_recovery_governance, build_routing_adjustment_draft, memory_candidates, build_memory_maintenance_draft, trace_details, build_followup, build_skill_draft, build_rollback_draft, build_escalation_brief, build_conflict_draft, record_followup, record_review, or record_draft_review"))
+		return experienceLearningToolResult(nil, fmt.Errorf("unsupported experience_learning action; use snapshot, governance_summary, next_actions, queues, follow_up_actions, routing_signals, tool_recovery/inspect_tool_recovery_governance/recovery_governance/tool_recovery_governance, build_routing_adjustment_draft, memory_candidates, build_memory_maintenance_draft, trace_details, build_followup, build_skill_draft, build_blocked_skill_draft, build_rollback_draft, build_escalation_brief, build_conflict_draft, record_followup, record_review, record_draft_review, or record_blocked_skill_draft_review"))
 	}
 }
 
 func (a *App) GetExperienceGovernanceSummary(req ExperienceRoutingSignalQuery) map[string]interface{} {
 	snapshot := ExperienceLearningSnapshot{
-		TraceKindCounts:          map[string]int{},
-		ReviewStatusCounts:       map[string]int{},
-		NextActionKindCounts:     map[string]int{},
-		FollowUpStatusCounts:     map[string]int{},
-		FollowUpActionKindCounts: map[string]int{},
-		ReviewSummaries:          []ExperienceReviewSummary{},
-		NextActionSummaries:      []ExperienceNextActionSummary{},
-		FollowUpSummaries:        []ExperienceFollowUpSummary{},
-		FollowUpActionSummaries:  []ExperienceFollowUpActionSummary{},
+		TraceKindCounts:           map[string]int{},
+		ReviewStatusCounts:        map[string]int{},
+		NextActionKindCounts:      map[string]int{},
+		FollowUpStatusCounts:      map[string]int{},
+		FollowUpActionKindCounts:  map[string]int{},
+		ReviewSummaries:           []ExperienceReviewSummary{},
+		NextActionSummaries:       []ExperienceNextActionSummary{},
+		FollowUpSummaries:         []ExperienceFollowUpSummary{},
+		FollowUpActionSummaries:   []ExperienceFollowUpActionSummary{},
+		ApprovedSkillDraftReviews: []ExperienceApprovedSkillDraftReviewSummary{},
+		SkillDraftReviewQueues:    emptyExperienceSkillDraftReviewQueues(),
 	}
 	var routingSignals *ExperienceRoutingSignalResult
 	if a != nil {
@@ -532,15 +561,22 @@ func experienceGovernanceSummary(snapshot ExperienceLearningSnapshot, routingSig
 		a2aSummary["non_executing_boundary"] = "read-only A2A governance inspection; no discussion was started, no invitations or messages were sent, no result was submitted, no chat injection or memory promotion occurred, no rollback was executed, and no routing change was performed"
 	}
 	queueSummary := map[string]interface{}{
-		"trace_detail_count":         snapshot.TraceDetailCount,
-		"next_action_trace_count":    snapshot.NextActionTraceCount,
-		"next_action_kind_counts":    snapshot.NextActionKindCounts,
-		"next_action_summaries":      snapshot.NextActionSummaries,
-		"follow_up_trace_count":      snapshot.FollowUpTraceCount,
-		"follow_up_status_counts":    snapshot.FollowUpStatusCounts,
-		"follow_up_summaries":        snapshot.FollowUpSummaries,
-		"follow_up_action_counts":    snapshot.FollowUpActionKindCounts,
-		"follow_up_action_summaries": snapshot.FollowUpActionSummaries,
+		"trace_detail_count":                     snapshot.TraceDetailCount,
+		"next_action_trace_count":                snapshot.NextActionTraceCount,
+		"next_action_kind_counts":                snapshot.NextActionKindCounts,
+		"next_action_summaries":                  snapshot.NextActionSummaries,
+		"follow_up_trace_count":                  snapshot.FollowUpTraceCount,
+		"follow_up_status_counts":                snapshot.FollowUpStatusCounts,
+		"follow_up_summaries":                    snapshot.FollowUpSummaries,
+		"follow_up_action_counts":                snapshot.FollowUpActionKindCounts,
+		"follow_up_action_summaries":             snapshot.FollowUpActionSummaries,
+		"approved_skill_draft_review_count":      snapshot.ApprovedSkillDraftReviewCount,
+		"approved_skill_draft_reviews":           snapshot.ApprovedSkillDraftReviews,
+		"skill_draft_review_queues":              snapshot.SkillDraftReviewQueues,
+		"blocked_skill_draft_review_count":       snapshot.BlockedSkillDraftReviewCount,
+		"reopened_skill_draft_review_count":      snapshot.ReopenedSkillDraftReviewCount,
+		"closed_skill_draft_review_count":        snapshot.ClosedSkillDraftReviewCount,
+		"stale_blocked_skill_draft_review_count": snapshot.StaleBlockedSkillDraftReviewCount,
 	}
 	return map[string]interface{}{
 		"recommended_next_action":        recommendedAction,
@@ -609,6 +645,15 @@ func experienceGovernanceRecommendedNextAction(snapshot ExperienceLearningSnapsh
 			return kind, "queued non-executing follow-up guidance is available for the highest-priority action kind"
 		}
 	}
+	if snapshot.ApprovedSkillDraftReviewCount > 0 {
+		return experienceGovernanceActionExecuteApprovedSkillDraftReviews.String(), "approved skill draft reviews are ready for explicit maintenance execution preview by review trace id"
+	}
+	if snapshot.BlockedSkillDraftReviewCount > 0 {
+		if snapshot.StaleBlockedSkillDraftReviewCount > 0 {
+			return experienceGovernanceActionInspectBlockedSkillDraftReviews.String(), "stale blocked skill draft executions should be closed or replaced before another approval attempt"
+		}
+		return experienceGovernanceActionInspectBlockedSkillDraftReviews.String(), "blocked skill draft executions need repair or additional evidence before another approval attempt"
+	}
 	if routingSignals != nil && len(routingSignals.ToolCandidates) > 0 {
 		return experienceGovernanceActionReviewRoutingCandidates.String(), "matching bounded routing evidence is available for the current query"
 	}
@@ -658,6 +703,14 @@ func experienceGovernanceRecommendedFocus(action string) map[string]interface{} 
 		focus["trace_filter"] = "followups"
 		focus["follow_up_action_kind"] = experienceGovernanceActionDraftRollbackWorkflow.String()
 		focus["triggered_rollback_only"] = true
+	case experienceGovernanceActionExecuteApprovedSkillDraftReviews:
+		focus["trace_filter"] = "followups"
+		focus["kind"] = "skill_draft_review"
+		focus["follow_up_status"] = experienceFollowUpOutcomeCompleted
+	case experienceGovernanceActionInspectBlockedSkillDraftReviews:
+		focus["trace_filter"] = "followups"
+		focus["kind"] = "skill_draft_review"
+		focus["query"] = "skill_draft_blocked"
 	case experienceGovernanceActionInspectFollowUpActions:
 		focus["trace_filter"] = "followups"
 	case experienceGovernanceActionReviewRoutingCandidates, experienceGovernanceActionInspectRoutingSignals, experienceGovernanceActionInspectSkillNudgeCandidates, experienceGovernanceActionInspectToolRecoveryGovernance:
@@ -706,6 +759,23 @@ func experienceGovernanceRecommendedToolCall(action string, snapshot ExperienceL
 			args["kind"] = experienceTraceKindA2ARollbackReview.String()
 		}
 		args["limit"] = 20
+	case experienceGovernanceActionExecuteApprovedSkillDraftReviews:
+		args["action"] = "execute_maintenance_plan"
+		args["dry_run"] = true
+		if review := experienceGovernanceTopApprovedSkillDraftReview(snapshot); review.TraceID != "" {
+			args["approved_review_trace_ids"] = []string{review.TraceID}
+		}
+	case experienceGovernanceActionInspectBlockedSkillDraftReviews:
+		if review := experienceGovernanceTopBlockedSkillDraftReview(snapshot); review.TraceID != "" {
+			args["action"] = "build_blocked_skill_draft"
+			args["trace_id"] = review.TraceID
+		} else {
+			args["action"] = "trace_details"
+			args["filter"] = "followups"
+			args["kind"] = "skill_draft_review"
+			args["query"] = "skill_draft_blocked"
+			args["limit"] = 20
+		}
 	case experienceGovernanceActionReviewRoutingCandidates:
 		args["action"] = "build_routing_adjustment_draft"
 		if routingSignals != nil {
@@ -781,9 +851,17 @@ func experienceGovernanceRecommendedToolCall(action string, snapshot ExperienceL
 	boundary := "recommended inspection or draft-building call only; it must not approve reviews, execute rollback, rewrite memory, change routing, write files, send notifications, run tools, or install skills"
 	if actionKind == experienceGovernanceActionInspectToolRecoveryGovernance {
 		boundary = experienceToolRecoveryNonExecutingBoundary
+	} else if actionKind == experienceGovernanceActionExecuteApprovedSkillDraftReviews {
+		boundary = "recommended skill maintenance dry-run only; caller must inspect output and explicitly confirm before any skill metadata changes"
+	} else if actionKind == experienceGovernanceActionInspectBlockedSkillDraftReviews {
+		boundary = "recommended blocked skill draft repair/evidence draft only; it must not retry execution, change skills, write files, or approve another draft"
+	}
+	toolName := "experience_learning"
+	if actionKind == experienceGovernanceActionExecuteApprovedSkillDraftReviews {
+		toolName = "manage_skill"
 	}
 	call := map[string]interface{}{
-		"tool":                   "experience_learning",
+		"tool":                   toolName,
 		"args":                   args,
 		"non_executing":          true,
 		"non_executing_boundary": boundary,
@@ -804,6 +882,28 @@ func experienceGovernanceRecommendedToolCallFocusContext(action string, snapshot
 		traceID, title = experienceGovernanceLatestNextActionTraceTarget(snapshot, action)
 	case actionKind == experienceGovernanceActionInspectTriggeredRollbackFollowups:
 		traceID, title, reason = experienceGovernanceTriggeredRollbackFollowUpTraceTarget(snapshot, reason)
+	case actionKind == experienceGovernanceActionExecuteApprovedSkillDraftReviews:
+		review := experienceGovernanceTopApprovedSkillDraftReview(snapshot)
+		traceID, title = review.TraceID, review.Title
+		if reason == "" {
+			reason = "approved skill draft review is ready for explicit maintenance execution preview"
+		}
+	case actionKind == experienceGovernanceActionInspectBlockedSkillDraftReviews:
+		review := experienceGovernanceTopBlockedSkillDraftReview(snapshot)
+		traceID, title = review.TraceID, review.Title
+		if reason == "" {
+			reason = "blocked skill draft execution needs repair or additional evidence"
+		}
+		if context := experienceFocusContextFromTraceTarget(traceID, title, reason); len(context) > 0 {
+			context["draft_id"] = review.DraftID
+			context["execution_status"] = review.ExecutionStatus
+			if review.Stale {
+				context["stale"] = true
+				context["stale_days"] = review.StaleDays
+				context["stale_recommendation"] = review.StaleRecommendation
+			}
+			return context
+		}
 	case actionKind == experienceGovernanceActionInspectToolRecoveryGovernance:
 		return experienceGovernanceToolRecoveryFocusContext(snapshot, reason)
 	case actionKind.NeedsPriorityTraceTarget():
@@ -908,6 +1008,24 @@ func experienceGovernanceLatestNextActionTraceID(snapshot ExperienceLearningSnap
 		}
 	}
 	return ""
+}
+
+func experienceGovernanceTopApprovedSkillDraftReview(snapshot ExperienceLearningSnapshot) ExperienceApprovedSkillDraftReviewSummary {
+	for _, review := range snapshot.ApprovedSkillDraftReviews {
+		if strings.TrimSpace(review.TraceID) != "" && strings.TrimSpace(review.DraftID) != "" {
+			return review
+		}
+	}
+	return ExperienceApprovedSkillDraftReviewSummary{}
+}
+
+func experienceGovernanceTopBlockedSkillDraftReview(snapshot ExperienceLearningSnapshot) ExperienceApprovedSkillDraftReviewSummary {
+	for _, review := range snapshot.SkillDraftReviewQueues.Blocked {
+		if strings.TrimSpace(review.TraceID) != "" && strings.TrimSpace(review.DraftID) != "" {
+			return review
+		}
+	}
+	return ExperienceApprovedSkillDraftReviewSummary{}
 }
 
 func experienceGovernanceHasNextAction(snapshot ExperienceLearningSnapshot, action string) bool {
@@ -2229,11 +2347,15 @@ func (a *App) QueryExperienceFollowUpActions(req ExperienceTraceDetailQuery) Exp
 	recommendedTraceID := ""
 	recommendedTraceTitle := ""
 	recommendedReason := ""
+	var recommendedDetail *ExperienceTraceDetail
 	if len(details.Details) > 0 {
-		recommendedTraceID = details.Details[0].ID
-		recommendedTraceTitle = details.Details[0].Title
+		recommendedDetail = &details.Details[0]
+		recommendedTraceID = recommendedDetail.ID
+		recommendedTraceTitle = recommendedDetail.Title
 		if req.TriggeredRollbackOnly {
 			recommendedReason = "latest triggered rollback follow-up matching the current filter"
+		} else if strings.TrimSpace(recommendedDetail.Kind) == "skill_draft_review" && strings.TrimSpace(recommendedDetail.DraftID) != "" && strings.TrimSpace(recommendedDetail.FollowUpStatus) == experienceFollowUpOutcomeCompleted {
+			recommendedReason = "approved skill draft review is ready for explicit maintenance execution preview"
 		} else {
 			recommendedReason = "latest follow-up audit record matching the current filter"
 		}
@@ -2247,7 +2369,7 @@ func (a *App) QueryExperienceFollowUpActions(req ExperienceTraceDetailQuery) Exp
 		RecommendedTraceTitle:   recommendedTraceTitle,
 		RecommendedReason:       recommendedReason,
 		RecommendedFocusContext: experienceFocusContextFromTraceTarget(recommendedTraceID, recommendedTraceTitle, recommendedReason),
-		RecommendedToolCall:     experienceFollowUpActionsRecommendedToolCall(req, recommendedTraceID, recommendedTraceTitle, recommendedReason),
+		RecommendedToolCall:     experienceFollowUpActionsRecommendedToolCall(req, recommendedDetail, recommendedTraceID, recommendedTraceTitle, recommendedReason),
 		FollowUpStatusCounts:    snapshot.FollowUpStatusCounts,
 		FollowUpActionCounts:    snapshot.FollowUpActionKindCounts,
 		FollowUpSummaries:       snapshot.FollowUpSummaries,
@@ -2257,10 +2379,25 @@ func (a *App) QueryExperienceFollowUpActions(req ExperienceTraceDetailQuery) Exp
 	})
 }
 
-func experienceFollowUpActionsRecommendedToolCall(req ExperienceTraceDetailQuery, traceID, traceTitle, reason string) map[string]interface{} {
+func experienceFollowUpActionsRecommendedToolCall(req ExperienceTraceDetailQuery, detail *ExperienceTraceDetail, traceID, traceTitle, reason string) map[string]interface{} {
 	traceID = strings.TrimSpace(traceID)
 	if traceID == "" {
 		return nil
+	}
+	focusContext := experienceFocusContextFromTraceTarget(traceID, traceTitle, reason)
+	if detail != nil && strings.TrimSpace(detail.Kind) == "skill_draft_review" && strings.TrimSpace(detail.DraftID) != "" && strings.TrimSpace(detail.FollowUpStatus) == experienceFollowUpOutcomeCompleted {
+		focusContext["draft_id"] = strings.TrimSpace(detail.DraftID)
+		return normalizeExperienceLearningRecommendedToolCall(map[string]interface{}{
+			"tool": "manage_skill",
+			"args": map[string]interface{}{
+				"action":                    "execute_maintenance_plan",
+				"dry_run":                   true,
+				"approved_review_trace_ids": []string{traceID},
+			},
+			"recommended_focus_context": focusContext,
+			"non_executing":             true,
+			"non_executing_boundary":    "recommended skill maintenance dry-run only; caller must inspect output and explicitly confirm before any skill metadata changes",
+		}, focusContext, "")
 	}
 	args := map[string]interface{}{
 		"action":   "trace_details",
@@ -2277,7 +2414,6 @@ func experienceFollowUpActionsRecommendedToolCall(req ExperienceTraceDetailQuery
 	if req.Kind != "" {
 		args["kind"] = req.Kind
 	}
-	focusContext := experienceFocusContextFromTraceTarget(traceID, traceTitle, reason)
 	return normalizeExperienceLearningRecommendedToolCall(map[string]interface{}{
 		"tool":                      "experience_learning",
 		"args":                      args,
@@ -2458,7 +2594,9 @@ func normalizeExperienceLearningRecommendedToolCall(call map[string]interface{},
 			normalized["governance_focus_context"] = focus
 		}
 	}
-	normalized["non_executing"] = true
+	if _, ok := normalized["non_executing"]; !ok {
+		normalized["non_executing"] = true
+	}
 	if boundaryValue, ok := normalized["non_executing_boundary"]; !ok || strings.TrimSpace(fmt.Sprint(boundaryValue)) == "" {
 		if boundaryText := strings.TrimSpace(fmt.Sprint(boundary)); boundaryText != "" && boundaryText != "<nil>" {
 			normalized["non_executing_boundary"] = boundaryText

@@ -28,6 +28,8 @@ export function agentViewStrings(lang: string) {
         effects: t("Effects", "影响"),
         data: t("Data", "数据"),
         kind: t("Kind", "类型"),
+        rows: t("Rows", "行"),
+        resource: t("resource", "资源"),
         pending: t("pending", "待处理"),
         more: (n: number) => t(`+${n} more`, `+${n} 更多`),
         moreFields: (n: number) => t(`+${n} more fields`, `+${n} 更多字段`),

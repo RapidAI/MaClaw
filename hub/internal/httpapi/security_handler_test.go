@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,13 +12,26 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
-func TestSecurityUserEffectivePolicyResponseIncludesGroupPathAndSources(t *testing.T) {
-	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), "security-handler.db")})
+type testSystemSettings struct {
+	data map[string]string
+}
+
+func (m *testSystemSettings) Set(_ context.Context, key, valueJSON string) error {
+	m.data[key] = valueJSON
+	return nil
+}
+
+func (m *testSystemSettings) Get(_ context.Context, key string) (string, error) {
+	return m.data[key], nil
+}
+
+func newSecurityHandlerTestService(t *testing.T, dbName string) (*securitysvc.SecurityService, *securitysvc.SecurityStore) {
+	t.Helper()
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: filepath.Join(t.TempDir(), dbName)})
 	if err != nil {
 		t.Fatalf("new sqlite provider: %v", err)
 	}
 	t.Cleanup(func() { _ = provider.Close() })
-
 	secStore := securitysvc.NewSecurityStore(provider.Write)
 	ctx := t.Context()
 	if err := secStore.InitSchema(ctx); err != nil {
@@ -26,7 +40,12 @@ func TestSecurityUserEffectivePolicyResponseIncludesGroupPathAndSources(t *testi
 	if err := secStore.InitRootGroup(ctx); err != nil {
 		t.Fatalf("init root group: %v", err)
 	}
-	svc := securitysvc.NewSecurityService(secStore, nil, nil)
+	return securitysvc.NewSecurityService(secStore, &testSystemSettings{data: map[string]string{}}, nil), secStore
+}
+
+func TestSecurityUserEffectivePolicyResponseIncludesGroupPathAndSources(t *testing.T) {
+	svc, secStore := newSecurityHandlerTestService(t, "security-handler.db")
+	ctx := t.Context()
 
 	root, err := secStore.GetRootGroup(ctx)
 	if err != nil {
@@ -91,5 +110,38 @@ func TestSecurityUserEffectivePolicyResponseIncludesGroupPathAndSources(t *testi
 	}
 	if payload.GroupPolicy.Items["guardrail_mode"].Source != "self" || payload.GroupPolicy.Items["guardrail_mode"].SourceGroup != child.ID {
 		t.Fatalf("unexpected guardrail source: %#v", payload.GroupPolicy.Items["guardrail_mode"])
+	}
+}
+
+func TestGetSecuritySettingsHandlerIncludesDefaultGroupName(t *testing.T) {
+	svc, secStore := newSecurityHandlerTestService(t, "security-settings-handler.db")
+	ctx := t.Context()
+	root, err := secStore.GetRootGroup(ctx)
+	if err != nil {
+		t.Fatalf("get root: %v", err)
+	}
+	child, err := svc.CreateGroup(ctx, "New Users", root.ID)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := svc.SetDefaultGroup(ctx, child.ID); err != nil {
+		t.Fatalf("set default group: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/security/settings", nil)
+	rr := httptest.NewRecorder()
+	GetSecuritySettingsHandler(svc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("settings status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		DefaultGroupID   string `json:"default_group_id"`
+		DefaultGroupName string `json:"default_group_name"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode settings: %v body=%s", err, rr.Body.String())
+	}
+	if payload.DefaultGroupID != child.ID || payload.DefaultGroupName != "New Users" {
+		t.Fatalf("unexpected default group payload: %#v", payload)
 	}
 }

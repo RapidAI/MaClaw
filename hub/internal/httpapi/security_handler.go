@@ -314,8 +314,36 @@ func GetSecuritySettingsHandler(svc *security.SecurityService) http.HandlerFunc 
 			writeError(w, http.StatusInternalServerError, "SETTINGS_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, settings)
+		resp := map[string]any{
+			"centralized_security_enabled": settings.CentralizedSecurityEnabled,
+			"org_structure_enabled":        settings.OrgStructureEnabled,
+		}
+		if strings.TrimSpace(settings.DefaultGroupID) != "" {
+			resp["default_group_id"] = settings.DefaultGroupID
+			if tree, err := svc.GetGroupTree(ctx); err == nil {
+				if node := findSecurityGroupTreeNode(tree, settings.DefaultGroupID); node != nil {
+					resp["default_group_name"] = node.Name
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+func findSecurityGroupTreeNode(node *security.GroupTreeNode, id string) *security.GroupTreeNode {
+	id = strings.TrimSpace(id)
+	if node == nil || id == "" {
+		return nil
+	}
+	if node.ID == id {
+		return node
+	}
+	for _, child := range node.Children {
+		if found := findSecurityGroupTreeNode(child, id); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 // UpdateSecuritySettingsHandler updates the system security settings.

@@ -18,6 +18,7 @@ var ErrIPBlocked = errors.New("ip blocked")
 type HubAccessView struct {
 	HubID                  string `json:"hub_id"`
 	TenantID               string `json:"tenant_id,omitempty"`
+	TenantName             string `json:"tenant_name,omitempty"`
 	Name                   string `json:"name"`
 	BaseURL                string `json:"base_url"`
 	PWAURL                 string `json:"pwa_url"`
@@ -264,6 +265,7 @@ func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantID
 	return HubAccessView{
 		HubID:                  hub.ID,
 		TenantID:               tenantID,
+		TenantName:             tenantNameForHubTenant(hub, tenantID),
 		Name:                   hub.Name,
 		BaseURL:                hub.BaseURL,
 		PWAURL:                 pwaURL,

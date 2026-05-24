@@ -108,6 +108,63 @@ func TestGUITUIPollWeixinQRReportsEmptyApp(t *testing.T) {
 	}
 }
 
+func TestGUITUIPollWeixinQRReportsEmptyToken(t *testing.T) {
+	app := &tuiModeApp{root: views.NewRootModel("en")}
+
+	msg := app.pollWeixinQR("  ")()
+
+	result, ok := msg.(views.OnboardingWeixinPollResultMsg)
+	if !ok {
+		t.Fatalf("message = %T, want OnboardingWeixinPollResultMsg", msg)
+	}
+	if !result.Completed || result.Status != "error" || !strings.Contains(result.Message, "incomplete") {
+		t.Fatalf("poll result = %#v, want completed empty-token error", result)
+	}
+}
+
+func TestGUITUIWeixinQRStatusMessageFallbacks(t *testing.T) {
+	checks := map[string]string{
+		"wait":    "等待微信扫码",
+		"scanned": "已扫码",
+		"scaned":  "已扫码",
+		"expired": "已过期",
+	}
+	for status, want := range checks {
+		if got := guiTUIWeixinQRStatusMessage("zh", status); !strings.Contains(got, want) {
+			t.Fatalf("status %q message = %q, want %q", status, got, want)
+		}
+	}
+}
+
+func TestGUITUIWeixinQRStatusMessageFollowsLanguage(t *testing.T) {
+	got := guiTUIWeixinQRStatusMessage("en", "scanned")
+	if !strings.Contains(got, "Confirm on your phone") {
+		t.Fatalf("English scanned status = %q", got)
+	}
+}
+
+func TestGUITUINormalizeWeixinQRStatusKeepsError(t *testing.T) {
+	if got := guiTUINormalizeWeixinQRStatus(" "); got != "error" {
+		t.Fatalf("normalized empty status = %q", got)
+	}
+	if got := guiTUINormalizeWeixinQRStatus(" error "); got != "error" {
+		t.Fatalf("normalized error status = %q", got)
+	}
+	if got := guiTUINormalizeWeixinQRStatus("scanned"); got != "scaned" {
+		t.Fatalf("normalized scanned status = %q", got)
+	}
+	if got := guiTUINormalizeWeixinQRStatus("failed"); got != "failed" {
+		t.Fatalf("normalized failed status = %q", got)
+	}
+}
+
+func TestGUITUIWeixinQRStatusMessageHandlesFailure(t *testing.T) {
+	got := guiTUIWeixinQRStatusMessage("en", "failed")
+	if !strings.Contains(got, "failed") || !strings.Contains(got, "try again") {
+		t.Fatalf("English failed status = %q", got)
+	}
+}
+
 func TestGUITUIFinishOnboardingUsesMessage(t *testing.T) {
 	app := &tuiModeApp{}
 

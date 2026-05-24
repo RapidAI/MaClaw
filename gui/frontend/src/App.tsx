@@ -35,9 +35,10 @@ import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCreditsURL } from './utils/hubCredits';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
+import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
 import { translations } from './i18n/appTranslations';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
-import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, sidebarProviderAliases, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
+import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, isToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, type SettingsTabId } from './config/settingsTabs';
 import { SettingsTabsRail } from './components/settings/SettingsTabsRail';
@@ -94,6 +95,13 @@ type SensitivePermissionRequest = {
     query: string;
     timeout_seconds?: number;
 };
+
+type SidebarProviderStateWire = {
+    providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
+    Providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
+    current?: string;
+    Current?: string;
+} | null;
 
 function virtualEmployeeIdForMachine(machineId: string): string {
     const cleaned = String(machineId || '').trim().replace(/[\\/ ]/g, '_');
@@ -400,6 +408,7 @@ function App() {
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
     const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
+    const sidebarTokenUsageSeqRef = useRef(0);
     const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
 
     useEffect(() => {
@@ -1542,101 +1551,59 @@ function App() {
         }
     }, [refreshRecentProjects, switchTool]);
 
-    useEffect(() => {
-        let cancelled = false;
-        const normalizeUsage = (stat?: SidebarTokenUsageStat | null) => {
-            const input = stat?.input_tokens ?? stat?.InputTokens ?? 0;
-            const output = stat?.output_tokens ?? stat?.OutputTokens ?? 0;
-            const total = stat?.total_tokens ?? stat?.TotalTokens ?? input + output;
-            const cachedInput = stat?.cached_input_tokens ?? stat?.CachedInputTokens ?? 0;
-            const cacheWrite = stat?.cache_write_tokens ?? stat?.CacheWriteTokens ?? 0;
-            const requests = stat?.requests ?? stat?.Requests ?? 0;
-            const cachedRequests = stat?.cached_requests ?? stat?.CachedRequests ?? 0;
-            return { input, output, total, cachedInput, cacheWrite, requests, cachedRequests };
-        };
-        const normalizeProviderState = (data?: {
-            providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
-            Providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
-            current?: string;
-            Current?: string;
-        } | null) => {
-            const list = (data?.providers ?? data?.Providers ?? [])
-                .map((provider): SidebarLLMProviderSummary => ({
-                    name: provider?.name ?? provider?.Name ?? '',
-                    url: provider?.url ?? provider?.URL ?? '',
-                    isHubService: !!(provider?.is_hub_service ?? provider?.IsHubService),
-                }))
-                .filter((provider) => !!provider.name);
-            const current = data?.current ?? data?.Current ?? '';
-            return { providers: list, current };
-        };
-        const getUsageForProvider = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {
-            if (!provider) return { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 };
-            const direct = usageMap[provider];
-            if (direct) return normalizeUsage(direct);
-            for (const alias of sidebarProviderAliases[provider] || []) {
-                const stat = usageMap[alias];
-                if (stat) return normalizeUsage(stat);
-            }
-            return { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 };
-        };
-        const hasUsage = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {
-            return getUsageForProvider(usageMap, provider).total > 0;
-        };
-        const getPreferredProvider = (providerSummaries: SidebarLLMProviderSummary[], currentProviderName: string, usageMap: Record<string, SidebarTokenUsageStat>) => {
-            const providerNames = providerSummaries.map((provider) => provider.name);
-            if (currentProviderName && providerSummaries.some((provider) => provider.name === currentProviderName && provider.isHubService)) return currentProviderName;
-            const providerWithUsage = providerNames.find((provider) => hasUsage(usageMap, provider));
-            if (currentProviderName && providerNames.includes(currentProviderName) && (hasUsage(usageMap, currentProviderName) || !providerWithUsage)) {
-                return currentProviderName;
-            }
-            return providerWithUsage || currentProviderName || providerNames[0] || '';
-        };
+    const normalizeSidebarProviderState = useCallback((data?: SidebarProviderStateWire) => {
+        const list = (data?.providers ?? data?.Providers ?? [])
+            .map((provider): SidebarLLMProviderSummary => ({
+                name: provider?.name ?? provider?.Name ?? '',
+                url: provider?.url ?? provider?.URL ?? '',
+                isHubService: !!(provider?.is_hub_service ?? provider?.IsHubService),
+            }))
+            .filter((provider) => !!provider.name);
+        const current = data?.current ?? data?.Current ?? '';
+        return { providers: list, current };
+    }, []);
+
+    const refreshSidebarTokenUsage = useCallback(async () => {
+        const refreshSeq = ++sidebarTokenUsageSeqRef.current;
         const normalizeProviderURL = (value?: string) => String(value || '').trim().replace(/\/+$/, '');
-        const refreshSidebarTokenUsage = async () => {
+        try {
+            const [usageMap, providerState] = await Promise.all([
+                GetAllLLMTokenUsage() as Promise<Record<string, SidebarTokenUsageStat> | null>,
+                GetMaclawLLMProviders() as Promise<SidebarProviderStateWire>,
+            ]);
+            const normalizedMap = usageMap || {};
+            const normalizedProviderState = normalizeSidebarProviderState(providerState);
+            const providerSummaries = normalizedProviderState.providers.length > 0
+                ? normalizedProviderState.providers
+                : providers.map((provider) => ({ name: provider.name, url: (provider as any).url || (provider as any).URL || '', isHubService: !!(provider as any).is_hub_service || !!(provider as any).IsHubService })).filter((provider) => !!provider.name);
+            const currentProviderName = selectSidebarCurrentProvider(
+                providerSummaries,
+                normalizedProviderState.current || selectedProvider || providers[0]?.name || '',
+                normalizedMap,
+            );
+            const currentProviderUsage = getSidebarUsageForProvider(normalizedMap, currentProviderName);
+            const currentProvider = providerSummaries.find((provider) => provider.name === currentProviderName);
+            let hubStatus: Awaited<ReturnType<typeof GetHubLLMServiceStatus>> | null = null;
             try {
-                const [usageMap, providerState] = await Promise.all([
-                    GetAllLLMTokenUsage() as Promise<Record<string, SidebarTokenUsageStat> | null>,
-                    GetMaclawLLMProviders() as Promise<{
-                        providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
-                        Providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
-                        current?: string;
-                        Current?: string;
-                    } | null>,
-                ]);
-                const normalizedMap = usageMap || {};
-                const normalizedProviderState = normalizeProviderState(providerState);
-                const providerSummaries = normalizedProviderState.providers.length > 0
-                    ? normalizedProviderState.providers
-                    : providers.map((provider) => ({ name: provider.name, url: (provider as any).url || (provider as any).URL || '', isHubService: !!(provider as any).is_hub_service || !!(provider as any).IsHubService })).filter((provider) => !!provider.name);
-                const currentProviderName = getPreferredProvider(
-                    providerSummaries,
-                    normalizedProviderState.current || selectedProvider || providers[0]?.name || '',
-                    normalizedMap,
-                );
-                const currentProviderUsage = getUsageForProvider(normalizedMap, currentProviderName);
-                const currentProvider = providerSummaries.find((provider) => provider.name === currentProviderName);
-                let hubStatus: Awaited<ReturnType<typeof GetHubLLMServiceStatus>> | null = null;
-                try {
-                    hubStatus = await GetHubLLMServiceStatus();
-                } catch {
-                    hubStatus = null;
-                }
-                const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url ?? hubStatus?.HubLLMBaseURL);
-                const currentProviderURL = normalizeProviderURL(currentProvider?.url);
-                const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
-                const hubCredits = currentProviderIsHubService ? normalizeSidebarHubCredits(hubStatus) : null;
-                if (!cancelled) {
-                    setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, isHubService: currentProviderIsHubService, ...currentProviderUsage });
-                    setSidebarHubCredits(hubCredits);
-                }
+                hubStatus = await GetHubLLMServiceStatus();
             } catch {
-                if (!cancelled) {
-                    setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 });
-                    setSidebarHubCredits(null);
-                }
+                hubStatus = null;
             }
-        };
+            const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url ?? hubStatus?.HubLLMBaseURL);
+            const currentProviderURL = normalizeProviderURL(currentProvider?.url);
+            const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
+            const hubCredits = currentProviderIsHubService ? normalizeSidebarHubCredits(hubStatus) : null;
+            if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
+            setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, isHubService: currentProviderIsHubService, ...currentProviderUsage });
+            setSidebarHubCredits(hubCredits);
+        } catch {
+            if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
+            setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 });
+            setSidebarHubCredits(null);
+        }
+    }, [normalizeSidebarProviderState, providers, selectedProvider]);
+
+    useEffect(() => {
         const delayedRefreshTimers = new Set<number>();
         const queueDelayedRefresh = (delayMs: number) => {
             const timer = window.setTimeout(() => {
@@ -1650,17 +1617,17 @@ function App() {
             void refreshSidebarTokenUsage();
             queueDelayedRefresh(2500);
         };
-        EventsOn("llm-token-usage-changed", onTokenUsageChanged);
-        EventsOn("hub-llm-service-changed", onTokenUsageChanged);
+        const offTokenUsageChanged = EventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        const offHubLLMServiceChanged = EventsOn("hub-llm-service-changed", onTokenUsageChanged);
         const usageRefreshTimer = window.setInterval(() => { void refreshSidebarTokenUsage(); }, 10 * 60 * 1000);
         return () => {
-            cancelled = true;
+            sidebarTokenUsageSeqRef.current += 1;
             window.clearInterval(usageRefreshTimer);
             delayedRefreshTimers.forEach((timer) => window.clearTimeout(timer));
-            EventsOff("llm-token-usage-changed");
-            EventsOff("hub-llm-service-changed");
+            if (typeof offTokenUsageChanged === 'function') offTokenUsageChanged(); else EventsOff("llm-token-usage-changed");
+            if (typeof offHubLLMServiceChanged === 'function') offHubLLMServiceChanged(); else EventsOff("hub-llm-service-changed");
         };
-    }, [providers, selectedProvider]);
+    }, [refreshSidebarTokenUsage]);
 
     const openHubCreditsPage = useCallback(() => {
         const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token);
@@ -2645,13 +2612,22 @@ ${instruction}`;
                                 activeTab={settingsTab}
                                 onChange={setSettingsTab}
                             />
-                            <div className="settings-content" hidden={settingsTab !== 'general'}>
+                            <div className="settings-content settings-content--stacked" hidden={settingsTab !== 'general'}>
                                 <GeneralSettingsPanel
                                     config={config}
                                     setConfig={setConfig}
                                     lang={lang}
                                     t={t}
                                     onLanguageChange={handleLangChange}
+                                />
+                                <GeneralAdvancedSettingsPanel
+                                    config={config}
+                                    setConfig={setConfig}
+                                    lang={lang}
+                                    t={t}
+                                    hasWindowsTerminal={hasWindowsTerminal}
+                                    envCheckInterval={envCheckInterval}
+                                    setEnvCheckInterval={setEnvCheckInterval}
                                 />
                             </div>
 
@@ -2695,7 +2671,12 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'llm'}>
-                                <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
+                                <LLMConfigPanel
+                                    lang={lang}
+                                    codexModels={config?.codex?.models}
+                                    onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }}
+                                    onProviderChanged={() => { void refreshSidebarTokenUsage(); }}
+                                />
                             </div>
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'redeem'}>
@@ -2815,18 +2796,6 @@ ${instruction}`;
                                     lang={lang}
                                     remoteToolMetadata={remoteToolMetadata}
                                     toolProviders={toolProviders}
-                                />
-                            </div>
-
-                            <div className="settings-content" hidden={settingsTab !== 'general'}>
-                                <GeneralAdvancedSettingsPanel
-                                    config={config}
-                                    setConfig={setConfig}
-                                    lang={lang}
-                                    t={t}
-                                    hasWindowsTerminal={hasWindowsTerminal}
-                                    envCheckInterval={envCheckInterval}
-                                    setEnvCheckInterval={setEnvCheckInterval}
                                 />
                             </div>
                         </div>

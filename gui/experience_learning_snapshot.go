@@ -12,44 +12,49 @@ import (
 )
 
 const (
-	experienceSnapshotRoutingHintLimit  = 8
-	experienceSnapshotSkillNudgeLimit   = 8
-	experienceSnapshotRecoveryLimit     = 8
-	experienceSnapshotUsagePatternLimit = 8
-	experienceSnapshotTraceDetailLimit  = 20
-	experienceSnapshotSessionTraceLimit = 6
+	experienceSnapshotRoutingHintLimit   = 8
+	experienceSnapshotSkillNudgeLimit    = 8
+	experienceSnapshotRecoveryLimit      = 8
+	experienceSnapshotUsagePatternLimit  = 8
+	experienceSnapshotTraceDetailLimit   = 20
+	experienceSnapshotSessionTraceLimit  = 6
+	experienceBlockedSkillDraftStaleDays = 14
 )
 
 // ExperienceTraceDetail is a read-only detail row for a distilled learning signal.
 type ExperienceTraceDetail struct {
-	ID                 string   `json:"id"`
-	Kind               string   `json:"kind"`
-	Title              string   `json:"title"`
-	Summary            string   `json:"summary,omitempty"`
-	Detail             string   `json:"detail,omitempty"`
-	SourceType         string   `json:"source_type,omitempty"`
-	SourceURL          string   `json:"source_url,omitempty"`
-	SourceTraceID      string   `json:"source_trace_id,omitempty"`
-	Tags               []string `json:"tags,omitempty"`
-	Evidence           int      `json:"evidence,omitempty"`
-	Confidence         float64  `json:"confidence,omitempty"`
-	Impact             string   `json:"impact,omitempty"`
-	ReviewRequired     bool     `json:"review_required,omitempty"`
-	ReviewAction       string   `json:"review_action,omitempty"`
-	ReviewStatus       string   `json:"review_status,omitempty"`
-	NextActionKind     string   `json:"next_action_kind,omitempty"`
-	NextAction         string   `json:"next_action,omitempty"`
-	ReviewedAt         string   `json:"reviewed_at,omitempty"`
-	Reviewer           string   `json:"reviewer,omitempty"`
-	ReviewNote         string   `json:"review_note,omitempty"`
-	ReviewCount        int      `json:"review_count,omitempty"`
-	FollowUpStatus     string   `json:"follow_up_status,omitempty"`
-	FollowUpActionKind string   `json:"follow_up_action_kind,omitempty"`
-	FollowUpAt         string   `json:"follow_up_at,omitempty"`
-	FollowUpActor      string   `json:"follow_up_actor,omitempty"`
-	FollowUpNote       string   `json:"follow_up_note,omitempty"`
-	FollowUpCount      int      `json:"follow_up_count,omitempty"`
-	UpdatedAt          string   `json:"updated_at,omitempty"`
+	ID                   string   `json:"id"`
+	Kind                 string   `json:"kind"`
+	Title                string   `json:"title"`
+	Summary              string   `json:"summary,omitempty"`
+	Detail               string   `json:"detail,omitempty"`
+	SourceType           string   `json:"source_type,omitempty"`
+	SourceURL            string   `json:"source_url,omitempty"`
+	SourceTraceID        string   `json:"source_trace_id,omitempty"`
+	DraftID              string   `json:"draft_id,omitempty"`
+	DraftExecutionStatus string   `json:"draft_execution_status,omitempty"`
+	DraftExecutionAt     string   `json:"draft_execution_at,omitempty"`
+	DraftExecutionNote   string   `json:"draft_execution_note,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+	Evidence             int      `json:"evidence,omitempty"`
+	Confidence           float64  `json:"confidence,omitempty"`
+	Impact               string   `json:"impact,omitempty"`
+	ReviewRequired       bool     `json:"review_required,omitempty"`
+	ReviewAction         string   `json:"review_action,omitempty"`
+	ReviewStatus         string   `json:"review_status,omitempty"`
+	NextActionKind       string   `json:"next_action_kind,omitempty"`
+	NextAction           string   `json:"next_action,omitempty"`
+	ReviewedAt           string   `json:"reviewed_at,omitempty"`
+	Reviewer             string   `json:"reviewer,omitempty"`
+	ReviewNote           string   `json:"review_note,omitempty"`
+	ReviewCount          int      `json:"review_count,omitempty"`
+	FollowUpStatus       string   `json:"follow_up_status,omitempty"`
+	FollowUpActionKind   string   `json:"follow_up_action_kind,omitempty"`
+	FollowUpAt           string   `json:"follow_up_at,omitempty"`
+	FollowUpActor        string   `json:"follow_up_actor,omitempty"`
+	FollowUpNote         string   `json:"follow_up_note,omitempty"`
+	FollowUpCount        int      `json:"follow_up_count,omitempty"`
+	UpdatedAt            string   `json:"updated_at,omitempty"`
 }
 
 // ExperienceNextActionSummary groups read-only manual follow-up guidance by kind.
@@ -111,6 +116,34 @@ type ExperienceFollowUpActionSummary struct {
 	LatestUpdatedAt    string         `json:"latest_updated_at,omitempty"`
 }
 
+// ExperienceApprovedSkillDraftReviewSummary groups completed skill draft
+// reviews that can be handed to the skill governance executor by review trace.
+type ExperienceApprovedSkillDraftReviewSummary struct {
+	TraceID              string                       `json:"trace_id"`
+	Title                string                       `json:"title,omitempty"`
+	DraftID              string                       `json:"draft_id"`
+	ExecutionStatus      string                       `json:"execution_status,omitempty"`
+	ExecutionAt          string                       `json:"execution_at,omitempty"`
+	ExecutionNote        string                       `json:"execution_note,omitempty"`
+	Stale                bool                         `json:"stale,omitempty"`
+	StaleDays            int                          `json:"stale_days,omitempty"`
+	StaleRecommendation  string                       `json:"stale_recommendation,omitempty"`
+	SourceTraceID        string                       `json:"source_trace_id,omitempty"`
+	LatestStatus         string                       `json:"latest_status,omitempty"`
+	LatestNote           string                       `json:"latest_note,omitempty"`
+	LatestUpdated        string                       `json:"latest_updated_at,omitempty"`
+	ExecutionAffordances []ExperienceReviewAffordance `json:"execution_affordances,omitempty"`
+}
+
+type ExperienceSkillDraftReviewQueues struct {
+	ApprovedUnpreviewed     []ExperienceApprovedSkillDraftReviewSummary `json:"approved_unpreviewed"`
+	PreviewedWaitingConfirm []ExperienceApprovedSkillDraftReviewSummary `json:"previewed_waiting_confirm"`
+	Applied                 []ExperienceApprovedSkillDraftReviewSummary `json:"applied"`
+	Blocked                 []ExperienceApprovedSkillDraftReviewSummary `json:"blocked"`
+	Reopened                []ExperienceApprovedSkillDraftReviewSummary `json:"reopened"`
+	Closed                  []ExperienceApprovedSkillDraftReviewSummary `json:"closed"`
+}
+
 // ExperienceToolRecoverySummary groups adaptive retry failure evidence by tool/category.
 type ExperienceToolRecoverySummary struct {
 	ToolName             string   `json:"tool_name"`
@@ -135,36 +168,43 @@ type ExperienceToolRecoverySummary struct {
 // ExperienceLearningSnapshot is a read-only view of the conservative signals
 // MaClaw has distilled from memory maintenance and tool usage traces.
 type ExperienceLearningSnapshot struct {
-	RoutingHints                    []coretool.ToolRoutingHint         `json:"routing_hints"`
-	SkillNudgeCandidates            []coretool.ToolSkillNudgeCandidate `json:"skill_nudge_candidates"`
-	RecoveryPatterns                []coretool.ToolRecoveryPattern     `json:"recovery_patterns"`
-	UsagePatterns                   []coretool.UsagePattern            `json:"usage_patterns"`
-	TraceDetails                    []ExperienceTraceDetail            `json:"trace_details"`
-	MemoryExperience                *memory.ExperienceDistillResult    `json:"memory_experience,omitempty"`
-	TraceKindCounts                 map[string]int                     `json:"trace_kind_counts"`
-	TraceSourceCounts               map[string]int                     `json:"trace_source_counts"`
-	ReviewStatusCounts              map[string]int                     `json:"review_status_counts"`
-	NextActionKindCounts            map[string]int                     `json:"next_action_kind_counts"`
-	FollowUpStatusCounts            map[string]int                     `json:"follow_up_status_counts"`
-	FollowUpActionKindCounts        map[string]int                     `json:"follow_up_action_kind_counts"`
-	ReviewSummaries                 []ExperienceReviewSummary          `json:"review_summaries"`
-	NextActionSummaries             []ExperienceNextActionSummary      `json:"next_action_summaries"`
-	FollowUpSummaries               []ExperienceFollowUpSummary        `json:"follow_up_summaries"`
-	FollowUpActionSummaries         []ExperienceFollowUpActionSummary  `json:"follow_up_action_summaries"`
-	ToolRecoverySummaries           []ExperienceToolRecoverySummary    `json:"tool_recovery_summaries"`
-	TraceDetailCount                int                                `json:"trace_detail_count"`
-	RoutingHintCount                int                                `json:"routing_hint_count"`
-	SkillNudgeCount                 int                                `json:"skill_nudge_count"`
-	RecoveryPatternCount            int                                `json:"recovery_pattern_count"`
-	UsagePatternCount               int                                `json:"usage_pattern_count"`
-	ProtectedMemoryCount            int                                `json:"protected_memory_count"`
-	ReviewRequiredTraceCount        int                                `json:"review_required_trace_count"`
-	NextActionTraceCount            int                                `json:"next_action_trace_count"`
-	FollowUpTraceCount              int                                `json:"follow_up_trace_count"`
-	LayeredMemoryRecommended        bool                               `json:"layered_memory_recommended"`
-	LayeredMemoryReason             string                             `json:"layered_memory_reason,omitempty"`
-	MemoryMaintenanceRecommendation string                             `json:"memory_maintenance_recommendation,omitempty"`
-	MemoryMaintenanceBoundary       string                             `json:"memory_maintenance_boundary,omitempty"`
+	RoutingHints                      []coretool.ToolRoutingHint                  `json:"routing_hints"`
+	SkillNudgeCandidates              []coretool.ToolSkillNudgeCandidate          `json:"skill_nudge_candidates"`
+	RecoveryPatterns                  []coretool.ToolRecoveryPattern              `json:"recovery_patterns"`
+	UsagePatterns                     []coretool.UsagePattern                     `json:"usage_patterns"`
+	TraceDetails                      []ExperienceTraceDetail                     `json:"trace_details"`
+	MemoryExperience                  *memory.ExperienceDistillResult             `json:"memory_experience,omitempty"`
+	TraceKindCounts                   map[string]int                              `json:"trace_kind_counts"`
+	TraceSourceCounts                 map[string]int                              `json:"trace_source_counts"`
+	ReviewStatusCounts                map[string]int                              `json:"review_status_counts"`
+	NextActionKindCounts              map[string]int                              `json:"next_action_kind_counts"`
+	FollowUpStatusCounts              map[string]int                              `json:"follow_up_status_counts"`
+	FollowUpActionKindCounts          map[string]int                              `json:"follow_up_action_kind_counts"`
+	ReviewSummaries                   []ExperienceReviewSummary                   `json:"review_summaries"`
+	NextActionSummaries               []ExperienceNextActionSummary               `json:"next_action_summaries"`
+	FollowUpSummaries                 []ExperienceFollowUpSummary                 `json:"follow_up_summaries"`
+	FollowUpActionSummaries           []ExperienceFollowUpActionSummary           `json:"follow_up_action_summaries"`
+	ApprovedSkillDraftReviews         []ExperienceApprovedSkillDraftReviewSummary `json:"approved_skill_draft_reviews"`
+	SkillDraftReviewQueues            ExperienceSkillDraftReviewQueues            `json:"skill_draft_review_queues"`
+	ToolRecoverySummaries             []ExperienceToolRecoverySummary             `json:"tool_recovery_summaries"`
+	TraceDetailCount                  int                                         `json:"trace_detail_count"`
+	RoutingHintCount                  int                                         `json:"routing_hint_count"`
+	SkillNudgeCount                   int                                         `json:"skill_nudge_count"`
+	RecoveryPatternCount              int                                         `json:"recovery_pattern_count"`
+	UsagePatternCount                 int                                         `json:"usage_pattern_count"`
+	ProtectedMemoryCount              int                                         `json:"protected_memory_count"`
+	ReviewRequiredTraceCount          int                                         `json:"review_required_trace_count"`
+	NextActionTraceCount              int                                         `json:"next_action_trace_count"`
+	FollowUpTraceCount                int                                         `json:"follow_up_trace_count"`
+	ApprovedSkillDraftReviewCount     int                                         `json:"approved_skill_draft_review_count"`
+	BlockedSkillDraftReviewCount      int                                         `json:"blocked_skill_draft_review_count"`
+	ReopenedSkillDraftReviewCount     int                                         `json:"reopened_skill_draft_review_count"`
+	ClosedSkillDraftReviewCount       int                                         `json:"closed_skill_draft_review_count"`
+	StaleBlockedSkillDraftReviewCount int                                         `json:"stale_blocked_skill_draft_review_count"`
+	LayeredMemoryRecommended          bool                                        `json:"layered_memory_recommended"`
+	LayeredMemoryReason               string                                      `json:"layered_memory_reason,omitempty"`
+	MemoryMaintenanceRecommendation   string                                      `json:"memory_maintenance_recommendation,omitempty"`
+	MemoryMaintenanceBoundary         string                                      `json:"memory_maintenance_boundary,omitempty"`
 }
 
 // GetExperienceLearningSnapshot returns the current learning signals for UI
@@ -201,22 +241,24 @@ func buildExperienceLearningSnapshot(tracker *coretool.UsageTracker, mem *memory
 
 func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracker, mem *memory.Store, traceDetailLimit int) ExperienceLearningSnapshot {
 	snapshot := ExperienceLearningSnapshot{
-		RoutingHints:             []coretool.ToolRoutingHint{},
-		SkillNudgeCandidates:     []coretool.ToolSkillNudgeCandidate{},
-		RecoveryPatterns:         []coretool.ToolRecoveryPattern{},
-		UsagePatterns:            []coretool.UsagePattern{},
-		TraceDetails:             []ExperienceTraceDetail{},
-		TraceKindCounts:          map[string]int{},
-		TraceSourceCounts:        map[string]int{},
-		ReviewStatusCounts:       map[string]int{},
-		NextActionKindCounts:     map[string]int{},
-		FollowUpStatusCounts:     map[string]int{},
-		FollowUpActionKindCounts: map[string]int{},
-		ReviewSummaries:          []ExperienceReviewSummary{},
-		NextActionSummaries:      []ExperienceNextActionSummary{},
-		FollowUpSummaries:        []ExperienceFollowUpSummary{},
-		FollowUpActionSummaries:  []ExperienceFollowUpActionSummary{},
-		ToolRecoverySummaries:    []ExperienceToolRecoverySummary{},
+		RoutingHints:              []coretool.ToolRoutingHint{},
+		SkillNudgeCandidates:      []coretool.ToolSkillNudgeCandidate{},
+		RecoveryPatterns:          []coretool.ToolRecoveryPattern{},
+		UsagePatterns:             []coretool.UsagePattern{},
+		TraceDetails:              []ExperienceTraceDetail{},
+		TraceKindCounts:           map[string]int{},
+		TraceSourceCounts:         map[string]int{},
+		ReviewStatusCounts:        map[string]int{},
+		NextActionKindCounts:      map[string]int{},
+		FollowUpStatusCounts:      map[string]int{},
+		FollowUpActionKindCounts:  map[string]int{},
+		ReviewSummaries:           []ExperienceReviewSummary{},
+		NextActionSummaries:       []ExperienceNextActionSummary{},
+		FollowUpSummaries:         []ExperienceFollowUpSummary{},
+		FollowUpActionSummaries:   []ExperienceFollowUpActionSummary{},
+		ApprovedSkillDraftReviews: []ExperienceApprovedSkillDraftReviewSummary{},
+		SkillDraftReviewQueues:    emptyExperienceSkillDraftReviewQueues(),
+		ToolRecoverySummaries:     []ExperienceToolRecoverySummary{},
 	}
 
 	if tracker != nil {
@@ -269,6 +311,13 @@ func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracke
 	snapshot.NextActionSummaries = buildExperienceNextActionSummaries(traceDetails)
 	snapshot.FollowUpSummaries = buildExperienceFollowUpSummaries(traceDetails)
 	snapshot.FollowUpActionSummaries = buildExperienceFollowUpActionSummaries(traceDetails)
+	snapshot.SkillDraftReviewQueues = buildExperienceSkillDraftReviewQueues(traceDetails)
+	snapshot.ApprovedSkillDraftReviews = append(append([]ExperienceApprovedSkillDraftReviewSummary{}, snapshot.SkillDraftReviewQueues.ApprovedUnpreviewed...), snapshot.SkillDraftReviewQueues.PreviewedWaitingConfirm...)
+	snapshot.ApprovedSkillDraftReviewCount = len(snapshot.ApprovedSkillDraftReviews)
+	snapshot.BlockedSkillDraftReviewCount = len(snapshot.SkillDraftReviewQueues.Blocked)
+	snapshot.ReopenedSkillDraftReviewCount = len(snapshot.SkillDraftReviewQueues.Reopened)
+	snapshot.ClosedSkillDraftReviewCount = len(snapshot.SkillDraftReviewQueues.Closed)
+	snapshot.StaleBlockedSkillDraftReviewCount = countStaleBlockedSkillDraftReviews(snapshot.SkillDraftReviewQueues.Blocked)
 	snapshot.ToolRecoverySummaries = buildExperienceToolRecoverySummariesFromMemory(mem, traceDetails)
 	snapshot.ReviewRequiredTraceCount = countReviewRequiredExperienceTraces(traceDetails)
 	snapshot.NextActionTraceCount = countNextActionExperienceTraces(traceDetails)
@@ -664,6 +713,148 @@ func buildExperienceFollowUpActionSummaries(details []ExperienceTraceDetail) []E
 	return summaries
 }
 
+func emptyExperienceSkillDraftReviewQueues() ExperienceSkillDraftReviewQueues {
+	return ExperienceSkillDraftReviewQueues{
+		ApprovedUnpreviewed:     []ExperienceApprovedSkillDraftReviewSummary{},
+		PreviewedWaitingConfirm: []ExperienceApprovedSkillDraftReviewSummary{},
+		Applied:                 []ExperienceApprovedSkillDraftReviewSummary{},
+		Blocked:                 []ExperienceApprovedSkillDraftReviewSummary{},
+		Reopened:                []ExperienceApprovedSkillDraftReviewSummary{},
+		Closed:                  []ExperienceApprovedSkillDraftReviewSummary{},
+	}
+}
+
+func buildExperienceSkillDraftReviewQueues(details []ExperienceTraceDetail) ExperienceSkillDraftReviewQueues {
+	queues := emptyExperienceSkillDraftReviewQueues()
+	for _, detail := range details {
+		if strings.TrimSpace(detail.Kind) != "skill_draft_review" || strings.TrimSpace(detail.FollowUpStatus) != experienceFollowUpOutcomeCompleted || strings.TrimSpace(detail.DraftID) == "" {
+			continue
+		}
+		summary := markExperienceSkillDraftReviewStale(ExperienceApprovedSkillDraftReviewSummary{
+			TraceID:         strings.TrimSpace(detail.ID),
+			Title:           strings.TrimSpace(detail.Title),
+			DraftID:         strings.TrimSpace(detail.DraftID),
+			ExecutionStatus: strings.TrimSpace(detail.DraftExecutionStatus),
+			ExecutionAt:     strings.TrimSpace(detail.DraftExecutionAt),
+			ExecutionNote:   strings.TrimSpace(detail.DraftExecutionNote),
+			SourceTraceID:   strings.TrimSpace(detail.SourceTraceID),
+			LatestStatus:    strings.TrimSpace(detail.FollowUpStatus),
+			LatestNote:      strings.TrimSpace(detail.FollowUpNote),
+			LatestUpdated:   firstNonEmptyExperienceString(detail.FollowUpAt, detail.UpdatedAt),
+		})
+		switch strings.TrimSpace(detail.DraftExecutionStatus) {
+		case skillDraftExecutionPreviewed:
+			summary.ExecutionAffordances = experienceSkillDraftReviewExecutionAffordances(summary)
+			queues.PreviewedWaitingConfirm = append(queues.PreviewedWaitingConfirm, summary)
+		case skillDraftExecutionApplied:
+			queues.Applied = append(queues.Applied, summary)
+		case skillDraftExecutionBlocked:
+			queues.Blocked = append(queues.Blocked, summary)
+		case skillDraftExecutionReopened:
+			queues.Reopened = append(queues.Reopened, summary)
+		case skillDraftExecutionClosed:
+			queues.Closed = append(queues.Closed, summary)
+		default:
+			queues.ApprovedUnpreviewed = append(queues.ApprovedUnpreviewed, summary)
+		}
+	}
+	sortExperienceSkillDraftReviewQueue(queues.ApprovedUnpreviewed)
+	sortExperienceSkillDraftReviewQueue(queues.PreviewedWaitingConfirm)
+	sortExperienceSkillDraftReviewQueue(queues.Applied)
+	sortExperienceSkillDraftReviewQueue(queues.Blocked)
+	sortExperienceSkillDraftReviewQueue(queues.Reopened)
+	sortExperienceSkillDraftReviewQueue(queues.Closed)
+	return queues
+}
+
+func experienceSkillDraftReviewExecutionAffordances(summary ExperienceApprovedSkillDraftReviewSummary) []ExperienceReviewAffordance {
+	traceID := strings.TrimSpace(summary.TraceID)
+	if traceID == "" || strings.TrimSpace(summary.ExecutionStatus) != skillDraftExecutionPreviewed {
+		return nil
+	}
+	boundary := "confirm reviewed skill draft maintenance after successful dry-run preview; requires explicit operator click and confirm=true"
+	return []ExperienceReviewAffordance{{
+		ID:          "confirm_previewed_skill_draft",
+		Label:       "Confirm previewed draft",
+		Intent:      "confirm_previewed_skill_draft_review",
+		Variant:     "primary",
+		Description: "Apply the already-previewed reviewed skill draft through approved_review_trace_ids.",
+		ToolCall: normalizeExperienceLearningRecommendedToolCall(map[string]interface{}{
+			"tool": "manage_skill",
+			"args": map[string]interface{}{
+				"action":                    "execute_maintenance_plan",
+				"dry_run":                   false,
+				"confirm":                   true,
+				"approved_review_trace_ids": []string{traceID},
+			},
+			"recommended_focus_context": map[string]interface{}{
+				"priority_trace_id": summary.TraceID,
+				"draft_id":          summary.DraftID,
+				"reason":            "previewed skill draft review is waiting for explicit confirmation",
+			},
+			"non_executing":          false,
+			"non_executing_boundary": boundary,
+		}, map[string]interface{}{
+			"priority_trace_id": summary.TraceID,
+			"draft_id":          summary.DraftID,
+			"reason":            "previewed skill draft review is waiting for explicit confirmation",
+		}, boundary),
+		NonExecutingBoundary: boundary,
+	}}
+}
+
+func markExperienceSkillDraftReviewStale(summary ExperienceApprovedSkillDraftReviewSummary) ExperienceApprovedSkillDraftReviewSummary {
+	if strings.TrimSpace(summary.ExecutionStatus) != skillDraftExecutionBlocked {
+		return summary
+	}
+	ageDays := experienceSkillDraftReviewAgeDays(firstNonEmptyExperienceString(summary.ExecutionAt, summary.LatestUpdated))
+	if ageDays < experienceBlockedSkillDraftStaleDays {
+		return summary
+	}
+	summary.Stale = true
+	summary.StaleDays = ageDays
+	summary.StaleRecommendation = "blocked skill draft is stale; build a repair/evidence draft and prefer closing or replacing the approval before retrying preview"
+	return summary
+}
+
+func experienceSkillDraftReviewAgeDays(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil && len(value) == 10 {
+		parsed, err = time.Parse("2006-01-02", value)
+	}
+	if err != nil {
+		return 0
+	}
+	days := int(time.Since(parsed.UTC()).Hours() / 24)
+	if days < 0 {
+		return 0
+	}
+	return days
+}
+
+func countStaleBlockedSkillDraftReviews(values []ExperienceApprovedSkillDraftReviewSummary) int {
+	count := 0
+	for _, value := range values {
+		if value.Stale {
+			count++
+		}
+	}
+	return count
+}
+
+func sortExperienceSkillDraftReviewQueue(queue []ExperienceApprovedSkillDraftReviewSummary) {
+	sort.SliceStable(queue, func(i, j int) bool {
+		if queue[i].LatestUpdated != queue[j].LatestUpdated {
+			return queue[i].LatestUpdated > queue[j].LatestUpdated
+		}
+		return queue[i].TraceID < queue[j].TraceID
+	})
+}
+
 func newerExperienceTrace(candidate, current string) bool {
 	candidate = strings.TrimSpace(candidate)
 	current = strings.TrimSpace(current)
@@ -970,32 +1161,36 @@ func traceDetailFromMemoryEntry(entry memory.Entry) (ExperienceTraceDetail, bool
 		nextAction = ""
 	}
 	return ExperienceTraceDetail{
-		ID:                 "memory:" + firstNonEmptyExperienceString(entry.ID, shortGroupDiscussionHash(entry.Content)),
-		Kind:               kind,
-		Title:              firstNonEmptyExperienceString(entry.Title, memoryTraceTitle(entry), "Experience memory"),
-		Summary:            firstLineExperienceText(entry.Content, 220),
-		Detail:             strings.TrimSpace(entry.Content),
-		SourceType:         entry.SourceType,
-		SourceURL:          entry.SourceURL,
-		SourceTraceID:      experienceDraftReviewSourceTraceID(entry.Content),
-		Tags:               append([]string(nil), entry.Tags...),
-		Impact:             impact,
-		ReviewRequired:     reviewRequired,
-		ReviewAction:       reviewActionForExperienceTrace(kind, reviewRequired),
-		ReviewStatus:       reviewStatus,
-		NextActionKind:     nextActionKind,
-		NextAction:         nextAction,
-		ReviewedAt:         firstNonEmptyExperienceString(reviewAudit.ReviewedAt, experienceTraceReviewedAt(entry.Tags)),
-		Reviewer:           reviewAudit.Reviewer,
-		ReviewNote:         reviewAudit.Note,
-		ReviewCount:        reviewAudit.Count,
-		FollowUpStatus:     followUpStatus,
-		FollowUpActionKind: followUpAudit.ActionKind,
-		FollowUpAt:         firstNonEmptyExperienceString(followUpAudit.At, experienceFollowUpAt(entry.Tags)),
-		FollowUpActor:      followUpAudit.Actor,
-		FollowUpNote:       followUpAudit.Note,
-		FollowUpCount:      followUpAudit.Count,
-		UpdatedAt:          formatExperienceTime(entry.UpdatedAt),
+		ID:                   "memory:" + firstNonEmptyExperienceString(entry.ID, shortGroupDiscussionHash(entry.Content)),
+		Kind:                 kind,
+		Title:                firstNonEmptyExperienceString(entry.Title, memoryTraceTitle(entry), "Experience memory"),
+		Summary:              firstLineExperienceText(entry.Content, 220),
+		Detail:               strings.TrimSpace(entry.Content),
+		SourceType:           entry.SourceType,
+		SourceURL:            entry.SourceURL,
+		SourceTraceID:        experienceDraftReviewSourceTraceID(entry.Content),
+		DraftID:              experienceDraftReviewDraftID(entry.Content),
+		DraftExecutionStatus: skillDraftExecutionStatusFromTags(entry.Tags),
+		DraftExecutionAt:     firstNonEmptyExperienceString(skillDraftExecutionAuditFromContent(entry.Content).At, skillDraftExecutionAt(entry.Tags)),
+		DraftExecutionNote:   skillDraftExecutionAuditFromContent(entry.Content).Note,
+		Tags:                 append([]string(nil), entry.Tags...),
+		Impact:               impact,
+		ReviewRequired:       reviewRequired,
+		ReviewAction:         reviewActionForExperienceTrace(kind, reviewRequired),
+		ReviewStatus:         reviewStatus,
+		NextActionKind:       nextActionKind,
+		NextAction:           nextAction,
+		ReviewedAt:           firstNonEmptyExperienceString(reviewAudit.ReviewedAt, experienceTraceReviewedAt(entry.Tags)),
+		Reviewer:             reviewAudit.Reviewer,
+		ReviewNote:           reviewAudit.Note,
+		ReviewCount:          reviewAudit.Count,
+		FollowUpStatus:       followUpStatus,
+		FollowUpActionKind:   followUpAudit.ActionKind,
+		FollowUpAt:           firstNonEmptyExperienceString(followUpAudit.At, experienceFollowUpAt(entry.Tags)),
+		FollowUpActor:        followUpAudit.Actor,
+		FollowUpNote:         followUpAudit.Note,
+		FollowUpCount:        followUpAudit.Count,
+		UpdatedAt:            formatExperienceTime(entry.UpdatedAt),
 	}, true
 }
 
@@ -1019,10 +1214,18 @@ func experienceDraftReviewTraceKind(tags []string) string {
 }
 
 func experienceDraftReviewSourceTraceID(content string) string {
+	return experienceDraftReviewContentField(content, "- Source trace:")
+}
+
+func experienceDraftReviewDraftID(content string) string {
+	return experienceDraftReviewContentField(content, "- Draft id:")
+}
+
+func experienceDraftReviewContentField(content, prefix string) string {
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if strings.HasPrefix(trimmed, "- Source trace:") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "- Source trace:"))
+		if strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
 		}
 	}
 	return ""
@@ -1179,6 +1382,14 @@ type experienceFollowUpAudit struct {
 	Count      int
 }
 
+type skillDraftExecutionAudit struct {
+	Status string
+	Actor  string
+	Note   string
+	At     string
+	Count  int
+}
+
 func experienceReviewAuditFromContent(content string) experienceReviewAudit {
 	const marker = "Experience review record:"
 	audit := experienceReviewAudit{Count: strings.Count(content, marker)}
@@ -1250,6 +1461,73 @@ func experienceFollowUpAuditFromContent(content string) experienceFollowUpAudit 
 			case experienceAuditFieldRecordedAt:
 				audit.At = formatExperienceReviewAuditTime(value)
 			case experienceAuditFieldNote:
+				noteLines = append(noteLines[:0], strings.TrimSpace(value))
+				capturingNote = true
+			}
+			continue
+		}
+		if capturingNote {
+			noteLines = append(noteLines, strings.TrimSpace(line))
+		}
+	}
+	audit.Note = strings.TrimSpace(strings.Join(noteLines, "\n"))
+	return audit
+}
+
+func skillDraftExecutionStatusFromTags(tags []string) string {
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag, skillDraftExecutionStatusTagPrefix) {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimPrefix(tag, skillDraftExecutionStatusTagPrefix))
+	}
+	return ""
+}
+
+func skillDraftExecutionAt(tags []string) string {
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, skillDraftExecutionAtTagPrefix) {
+			return formatExperienceReviewAuditTime(strings.TrimPrefix(tag, skillDraftExecutionAtTagPrefix))
+		}
+	}
+	return ""
+}
+
+func skillDraftExecutionConsumed(status string) bool {
+	status = strings.TrimSpace(status)
+	return status == skillDraftExecutionApplied || status == skillDraftExecutionReopened || status == skillDraftExecutionClosed
+}
+
+func skillDraftExecutionAuditFromContent(content string) skillDraftExecutionAudit {
+	const marker = "Skill draft execution record:"
+	audit := skillDraftExecutionAudit{Count: strings.Count(content, marker)}
+	if audit.Count == 0 {
+		return audit
+	}
+	idx := strings.LastIndex(content, marker)
+	if idx < 0 {
+		return audit
+	}
+	lines := strings.Split(content[idx+len(marker):], "\n")
+	noteLines := make([]string, 0, 2)
+	capturingNote := false
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") {
+			capturingNote = false
+			key, value, ok := strings.Cut(strings.TrimPrefix(trimmed, "- "), ":")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "status":
+				audit.Status = strings.TrimSpace(value)
+			case "actor":
+				audit.Actor = strings.TrimSpace(value)
+			case "recorded at":
+				audit.At = formatExperienceReviewAuditTime(value)
+			case "note":
 				noteLines = append(noteLines[:0], strings.TrimSpace(value))
 				capturingNote = true
 			}

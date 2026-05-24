@@ -619,6 +619,249 @@ func TestRecordExperienceDraftReviewSupportsTraceDraftKinds(t *testing.T) {
 	}
 }
 
+func TestRecordExperienceDraftReviewReturnsSkillDraftExecutionPreview(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	app := &App{memoryStore: store}
+	draftID := "skill_draft:mark_needs_review:broken:"
+
+	record, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
+		Kind:          experienceDraftKindSkill,
+		Status:        "completed",
+		DraftID:       draftID,
+		DraftMarkdown: "# Skill governance draft\n\nMark broken as needs_review.",
+	})
+	if err != nil {
+		t.Fatalf("RecordExperienceDraftReview: %v", err)
+	}
+	if record.DraftID != draftID {
+		t.Fatalf("draft id = %q, want %q", record.DraftID, draftID)
+	}
+	args, ok := record.RecommendedToolCall["args"].(map[string]interface{})
+	if !ok || record.RecommendedToolCall["tool"] != "manage_skill" || args["action"] != "execute_maintenance_plan" || args["dry_run"] != true {
+		t.Fatalf("unexpected recommended tool call: %#v", record.RecommendedToolCall)
+	}
+	reviewIDs, ok := args["approved_review_trace_ids"].([]string)
+	if !ok || len(reviewIDs) != 1 || reviewIDs[0] != record.TraceID {
+		t.Fatalf("approved review trace ids = %#v", args["approved_review_trace_ids"])
+	}
+
+	entry, err := findExperienceMemoryEntryByTraceID(store, record.TraceID)
+	if err != nil {
+		t.Fatalf("find review entry: %v", err)
+	}
+	detail, ok := traceDetailFromMemoryEntry(entry)
+	if !ok || detail.DraftID != draftID || detail.Kind != "skill_draft_review" {
+		t.Fatalf("draft review detail = %#v ok=%v", detail, ok)
+	}
+
+	snapshot := buildExperienceLearningSnapshot(nil, store)
+	if snapshot.ApprovedSkillDraftReviewCount != 1 || len(snapshot.ApprovedSkillDraftReviews) != 1 || snapshot.ApprovedSkillDraftReviews[0].TraceID != record.TraceID || snapshot.ApprovedSkillDraftReviews[0].DraftID != draftID {
+		t.Fatalf("approved skill draft review queue = %#v", snapshot.ApprovedSkillDraftReviews)
+	}
+	action, reason := experienceGovernanceRecommendedNextAction(snapshot, nil)
+	if action != experienceGovernanceActionExecuteApprovedSkillDraftReviews.String() || !strings.Contains(reason, "execution preview") {
+		t.Fatalf("recommended action = %q reason=%q", action, reason)
+	}
+	call := experienceGovernanceRecommendedToolCall(action, snapshot, nil, reason)
+	callArgs, ok := call["args"].(map[string]interface{})
+	if !ok || call["tool"] != "manage_skill" || callArgs["action"] != "execute_maintenance_plan" || callArgs["dry_run"] != true {
+		t.Fatalf("governance recommended tool call = %#v", call)
+	}
+	governanceReviewIDs, ok := callArgs["approved_review_trace_ids"].([]string)
+	if !ok || len(governanceReviewIDs) != 1 || governanceReviewIDs[0] != record.TraceID {
+		t.Fatalf("approved review trace ids = %#v", callArgs["approved_review_trace_ids"])
+	}
+
+	followUps := app.QueryExperienceFollowUpActions(ExperienceTraceDetailQuery{Kind: "skill_draft_review", FollowUpStatus: experienceFollowUpOutcomeCompleted})
+	followUpArgs, ok := followUps.RecommendedToolCall["args"].(map[string]interface{})
+	if !ok || followUps.RecommendedToolCall["tool"] != "manage_skill" || followUpArgs["action"] != "execute_maintenance_plan" || followUpArgs["dry_run"] != true {
+		t.Fatalf("follow-up recommended tool call = %#v", followUps.RecommendedToolCall)
+	}
+	followUpReviewIDs, ok := followUpArgs["approved_review_trace_ids"].([]string)
+	if !ok || len(followUpReviewIDs) != 1 || followUpReviewIDs[0] != record.TraceID {
+		t.Fatalf("follow-up approved review trace ids = %#v", followUpArgs["approved_review_trace_ids"])
+	}
+
+	governance := app.GetExperienceGovernanceSummary(ExperienceRoutingSignalQuery{})
+	if governance["recommended_next_action"] != experienceGovernanceActionExecuteApprovedSkillDraftReviews.String() {
+		t.Fatalf("governance summary action = %#v", governance)
+	}
+	governanceCall, ok := governance["recommended_tool_call"].(map[string]interface{})
+	if !ok || governanceCall["tool"] != "manage_skill" {
+		t.Fatalf("governance summary tool call = %#v", governance["recommended_tool_call"])
+	}
+	queues, ok := governance["queues"].(map[string]interface{})
+	if !ok || queues["approved_skill_draft_review_count"] != 1 {
+		t.Fatalf("governance queues = %#v", governance["queues"])
+	}
+	queueBlock, ok := queues["skill_draft_review_queues"].(ExperienceSkillDraftReviewQueues)
+	if !ok || len(queueBlock.ApprovedUnpreviewed) != 1 || len(queueBlock.PreviewedWaitingConfirm) != 0 {
+		t.Fatalf("expected explicit unpreviewed queue: %#v", queues["skill_draft_review_queues"])
+	}
+
+	if err := (&IMMessageHandler{app: app}).recordSkillDraftExecutionAudit([]string{record.TraceID}, skillDraftExecutionBlocked, "current plan no longer contains reviewed draft"); err != nil {
+		t.Fatalf("record blocked execution audit: %v", err)
+	}
+	blockedSnapshot := buildExperienceLearningSnapshot(nil, store)
+	if blockedSnapshot.ApprovedSkillDraftReviewCount != 0 || blockedSnapshot.BlockedSkillDraftReviewCount != 1 || len(blockedSnapshot.SkillDraftReviewQueues.Blocked) != 1 {
+		t.Fatalf("blocked skill draft queues = %#v", blockedSnapshot.SkillDraftReviewQueues)
+	}
+	blockedAction, blockedReason := experienceGovernanceRecommendedNextAction(blockedSnapshot, nil)
+	if blockedAction != experienceGovernanceActionInspectBlockedSkillDraftReviews.String() || !strings.Contains(blockedReason, "repair") {
+		t.Fatalf("blocked recommended action = %q reason=%q", blockedAction, blockedReason)
+	}
+	blockedCall := experienceGovernanceRecommendedToolCall(blockedAction, blockedSnapshot, nil, blockedReason)
+	blockedArgs, ok := blockedCall["args"].(map[string]interface{})
+	if !ok || blockedCall["tool"] != "experience_learning" || blockedArgs["action"] != "build_blocked_skill_draft" || blockedArgs["trace_id"] != record.TraceID {
+		t.Fatalf("blocked recommended tool call = %#v", blockedCall)
+	}
+	blockedDraft, err := app.BuildExperienceBlockedSkillDraft(record.TraceID)
+	if err != nil {
+		t.Fatalf("BuildExperienceBlockedSkillDraft: %v", err)
+	}
+	if blockedDraft.DraftID != draftID || blockedDraft.ExecutionStatus != skillDraftExecutionBlocked || !strings.Contains(blockedDraft.DraftMarkdown, "Reviewer Decision Required") || len(blockedDraft.Checks) == 0 || blockedDraft.ReviewOptions["close"] == nil || blockedDraft.ReviewOptions["reopen"] == nil {
+		t.Fatalf("blocked draft = %#v", blockedDraft)
+	}
+	if len(blockedDraft.ReviewAffordances) != 2 {
+		t.Fatalf("blocked draft review affordances = %#v", blockedDraft.ReviewAffordances)
+	}
+	var closeAffordance, reopenAffordance ExperienceReviewAffordance
+	for _, affordance := range blockedDraft.ReviewAffordances {
+		switch affordance.ID {
+		case "close":
+			closeAffordance = affordance
+		case "reopen":
+			reopenAffordance = affordance
+		}
+	}
+	closeArgs, closeOK := closeAffordance.ToolCall["args"].(map[string]interface{})
+	reopenArgs, reopenOK := reopenAffordance.ToolCall["args"].(map[string]interface{})
+	if closeAffordance.Intent != "close_blocked_skill_draft" || len(closeAffordance.RequiredInputs) != 0 || !closeOK || closeArgs["action"] != "record_blocked_skill_draft_review" || closeArgs["resolution"] != "close" {
+		t.Fatalf("close affordance = %#v args=%#v", closeAffordance, closeArgs)
+	}
+	if reopenAffordance.Intent != "reopen_blocked_skill_draft" || len(reopenAffordance.RequiredInputs) != 1 || reopenAffordance.RequiredInputs[0].Name != "replacement_draft_id" || !reopenAffordance.RequiredInputs[0].Required || !reopenOK || reopenArgs["action"] != "record_blocked_skill_draft_review" || reopenArgs["resolution"] != "reopen" {
+		t.Fatalf("reopen affordance = %#v args=%#v", reopenAffordance, reopenArgs)
+	}
+	toolRaw := (&IMMessageHandler{app: app}).toolExperienceLearning(map[string]interface{}{"action": "build_blocked_skill_draft", "trace_id": record.TraceID})
+	if !strings.Contains(toolRaw, "blocked_skill_draft") || !strings.Contains(toolRaw, "Current Maintenance Plan Diff") {
+		t.Fatalf("blocked skill draft tool output missing draft: %s", toolRaw)
+	}
+	reopenedDraftID := "skill_draft:mark_needs_review:fixed-review-skill:"
+	reopened, err := app.RecordBlockedSkillDraftReview(record.TraceID, "reopen", reopenedDraftID, "", "reviewer")
+	if err != nil {
+		t.Fatalf("record reopened draft review: %v", err)
+	}
+	reopenedSource, err := findExperienceMemoryEntryByTraceID(store, record.TraceID)
+	if err != nil {
+		t.Fatalf("find reopened source trace: %v", err)
+	}
+	reopenedSourceDetail, ok := traceDetailFromMemoryEntry(reopenedSource)
+	if !ok || reopenedSourceDetail.DraftExecutionStatus != skillDraftExecutionReopened {
+		t.Fatalf("source trace should be reopened after repair review: %#v ok=%v", reopenedSourceDetail, ok)
+	}
+	reopenedSnapshot := buildExperienceLearningSnapshot(nil, store)
+	if reopenedSnapshot.BlockedSkillDraftReviewCount != 0 || reopenedSnapshot.ApprovedSkillDraftReviewCount != 1 || reopenedSnapshot.ApprovedSkillDraftReviews[0].TraceID != reopened.TraceID || reopenedSnapshot.ApprovedSkillDraftReviews[0].DraftID != reopenedDraftID {
+		t.Fatalf("reopened queues = active:%#v blocked:%#v", reopenedSnapshot.ApprovedSkillDraftReviews, reopenedSnapshot.SkillDraftReviewQueues.Blocked)
+	}
+	if len(reopenedSnapshot.SkillDraftReviewQueues.Reopened) != 1 || reopenedSnapshot.ReopenedSkillDraftReviewCount != 1 {
+		t.Fatalf("reopened history queue = %#v", reopenedSnapshot.SkillDraftReviewQueues.Reopened)
+	}
+	closedDraftID := "skill_draft:mark_needs_review:closed-review-skill:"
+	closedSource, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{Kind: experienceDraftKindSkill, Status: experienceFollowUpOutcomeCompleted, DraftID: closedDraftID})
+	if err != nil {
+		t.Fatalf("record closed source review: %v", err)
+	}
+	if err := (&IMMessageHandler{app: app}).recordSkillDraftExecutionAudit([]string{closedSource.TraceID}, skillDraftExecutionBlocked, "stale approval"); err != nil {
+		t.Fatalf("record closed source blocked audit: %v", err)
+	}
+	toolCloseRaw := (&IMMessageHandler{app: app}).toolExperienceLearning(map[string]interface{}{"action": "record_blocked_skill_draft_review", "trace_id": closedSource.TraceID, "resolution": "close"})
+	if !strings.Contains(toolCloseRaw, "blocked_skill_draft_review") || !strings.Contains(toolCloseRaw, `"status":"blocked"`) {
+		t.Fatalf("blocked skill close tool output missing review: %s", toolCloseRaw)
+	}
+	closedSnapshot := buildExperienceLearningSnapshot(nil, store)
+	if closedSnapshot.ClosedSkillDraftReviewCount != 1 || len(closedSnapshot.SkillDraftReviewQueues.Closed) != 1 {
+		t.Fatalf("closed queues = %#v", closedSnapshot.SkillDraftReviewQueues)
+	}
+}
+
+func TestExperienceSkillDraftReviewQueuesTrackHistoryAndStaleBlocked(t *testing.T) {
+	old := time.Now().UTC().AddDate(0, 0, -experienceBlockedSkillDraftStaleDays-1).Format(time.RFC3339)
+	queues := buildExperienceSkillDraftReviewQueues([]ExperienceTraceDetail{
+		{ID: "active", Kind: "skill_draft_review", FollowUpStatus: experienceFollowUpOutcomeCompleted, DraftID: "draft:active"},
+		{ID: "blocked", Kind: "skill_draft_review", FollowUpStatus: experienceFollowUpOutcomeCompleted, DraftID: "draft:blocked", DraftExecutionStatus: skillDraftExecutionBlocked, DraftExecutionAt: old},
+		{ID: "reopened", Kind: "skill_draft_review", FollowUpStatus: experienceFollowUpOutcomeCompleted, DraftID: "draft:reopened", DraftExecutionStatus: skillDraftExecutionReopened},
+		{ID: "closed", Kind: "skill_draft_review", FollowUpStatus: experienceFollowUpOutcomeCompleted, DraftID: "draft:closed", DraftExecutionStatus: skillDraftExecutionClosed},
+	})
+	if len(queues.ApprovedUnpreviewed) != 1 || len(queues.Blocked) != 1 || len(queues.Reopened) != 1 || len(queues.Closed) != 1 {
+		t.Fatalf("unexpected skill draft review queues: %#v", queues)
+	}
+	if !queues.Blocked[0].Stale || queues.Blocked[0].StaleDays < experienceBlockedSkillDraftStaleDays || queues.Blocked[0].StaleRecommendation == "" {
+		t.Fatalf("blocked queue should carry stale policy: %#v", queues.Blocked[0])
+	}
+}
+
+func TestRecordBlockedSkillDraftReviewPersistsReviewAndSourceTransitionInSQLiteBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := memory.NewStore(filepath.Join(dir, "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	backend, err := memory.NewSQLiteBackend(filepath.Join(dir, "memory.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteBackend: %v", err)
+	}
+	store.SetBackend(backend, memory.SyncConfig{Enabled: false})
+	t.Cleanup(store.Stop)
+	app := &App{memoryStore: store}
+	source, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
+		Kind:    experienceDraftKindSkill,
+		Status:  experienceFollowUpOutcomeCompleted,
+		DraftID: "skill_draft:mark_needs_review:blocked-sqlite:",
+	})
+	if err != nil {
+		t.Fatalf("record source review: %v", err)
+	}
+	if err := (&IMMessageHandler{app: app}).recordSkillDraftExecutionAudit([]string{source.TraceID}, skillDraftExecutionBlocked, "sqlite blocked source"); err != nil {
+		t.Fatalf("record blocked audit: %v", err)
+	}
+	reopened, err := app.RecordBlockedSkillDraftReview(source.TraceID, "reopen", "skill_draft:mark_needs_review:replacement-sqlite:", "sqlite repair accepted", "reviewer")
+	if err != nil {
+		t.Fatalf("RecordBlockedSkillDraftReview: %v", err)
+	}
+	entries, err := backend.LoadAll()
+	if err != nil {
+		t.Fatalf("backend LoadAll: %v", err)
+	}
+	seen := map[string]memory.Entry{}
+	for _, entry := range entries {
+		seen[entry.ID] = entry
+	}
+	if _, ok := seen[reopened.MemoryID]; !ok {
+		t.Fatalf("new repair review was not persisted in sqlite batch: ids=%v", memoryEntryMapKeys(seen))
+	}
+	sourceID := strings.TrimPrefix(source.TraceID, "memory:")
+	sourceEntry, ok := seen[sourceID]
+	if !ok {
+		t.Fatalf("source review missing from sqlite backend: ids=%v", memoryEntryMapKeys(seen))
+	}
+	detail, ok := traceDetailFromMemoryEntry(sourceEntry)
+	if !ok || detail.DraftExecutionStatus != skillDraftExecutionReopened {
+		t.Fatalf("source transition not persisted atomically: %#v ok=%v", detail, ok)
+	}
+}
+
+func memoryEntryMapKeys(values map[string]memory.Entry) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 func TestRecordExperienceTraceFollowUpDeferredKeepsNextAction(t *testing.T) {
 	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {

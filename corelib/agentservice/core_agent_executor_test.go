@@ -314,6 +314,126 @@ func TestPostMessagePropagatesToolPolicyMetadata(t *testing.T) {
 	}
 }
 
+func TestPostMessageUsesUpdatedUserConfigForExistingInstance(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "old-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig old: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "new-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig new: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "Session"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "hello"}); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	if executor.req.Config.MaclawLLMModel != "new-model" {
+		t.Fatalf("executor config model = %q, want new-model", executor.req.Config.MaclawLLMModel)
+	}
+}
+
+func TestPostMessageRefreshesExistingInstanceReadinessAfterConfigFix(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance", AllowInvalidConfig: true})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if inst.Ready {
+		t.Fatalf("instance should start not ready with empty config")
+	}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "fixed-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	refreshed, err := svc.GetInstance(context.Background(), principal, inst.ID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if !refreshed.Ready || !refreshed.ConfigValidation.Valid {
+		t.Fatalf("expected readiness to reflect updated config, got %#v", refreshed.Readiness)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "Session"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "hello"}); err != nil {
+		t.Fatalf("PostMessage after config fix: %v", err)
+	}
+}
+
+func TestUpdateUserConfigRefreshesStoredInstanceReadiness(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance", AllowInvalidConfig: true})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	storedBefore, err := svc.store.GetInstance(tenant.ID, user.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("GetInstance before: %v", err)
+	}
+	if storedBefore.ConfigValidation.Valid {
+		t.Fatalf("stored instance config should start invalid")
+	}
+
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "fixed-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+
+	storedAfter, err := svc.store.GetInstance(tenant.ID, user.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("GetInstance after: %v", err)
+	}
+	if !storedAfter.ConfigValidation.Valid || !storedAfter.Ready {
+		t.Fatalf("stored readiness was not refreshed: %#v", storedAfter.Readiness)
+	}
+}
+
 func TestPostMessageFallsBackToSessionToolPolicyMetadata(t *testing.T) {
 	executor := &captureExecutor{}
 	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)

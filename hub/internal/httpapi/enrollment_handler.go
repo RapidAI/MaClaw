@@ -96,7 +96,7 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, securitySvc *secur
 		// Admin approval doesn't include a group selection, so selectedGroupID is empty.
 		// The user will be assigned based on org_structure_enabled and default_group_id.
 		if securitySvc != nil && user != nil {
-			if err := securitySvc.AssignNewUser(ctx, user.Email, ""); err != nil {
+			if err := securitySvc.AssignNewUser(security.WithTenant(r.Context(), user.TenantID), user.Email, ""); err != nil {
 				log.Printf("[enroll/approve] security group assignment failed for %s: %v", user.Email, err)
 			}
 		}

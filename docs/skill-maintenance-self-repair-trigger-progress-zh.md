@@ -17,7 +17,7 @@ GUI/TUI 接入层在满足 `dry_run=false`、`confirm=true`、action 已批准�
 - 核心执行器只做资格判断和排队信号，不依赖 provider。
 - 真正修复仍由已有 SelfRepair 负责，包括 LLM、`ApplyRepair`、repair history 和持久化。
 - 如果 SelfRepair LLM 未配置，GUI/TUI repairer 会跳过，不破坏 skill。
-- file-backed skill 不进入后台自修复；修复必须走 reviewed patch flow，避免把 `skill.yaml` 管理的 steps 写进 config overlay。
+- maintenance-triggered file-backed skill 不进入后台自修复，也不会在 `maintenance_plan` 中生成 `attempt_repair`；失败治理会转为 review/patch flow，避免把 `skill.yaml` 管理的 steps 写进 config overlay。
 
 ## 结果字段
 
@@ -28,4 +28,3 @@ GUI/TUI 接入层在满足 `dry_run=false`、`confirm=true`、action 已批准�
 - `self_repair_triggers_started`
 
 TUI 的 `self_repair_triggers_started` 只统计实际启动的后台 repair；LLM 未配置、skill 不符合条件或 file-backed patch-only 情况不计入。
-

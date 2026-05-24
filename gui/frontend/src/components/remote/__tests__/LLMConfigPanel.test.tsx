@@ -28,7 +28,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn(),
+    EventsOn: vi.fn(() => vi.fn()),
     EventsOff: vi.fn(),
     BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
 }));
@@ -159,6 +159,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
     });
 
     it('refreshes providers after saving the fallback MaClaw Official button', async () => {
+        const onProviderChanged = vi.fn();
         GetMaclawLLMProvidersMock
             .mockResolvedValueOnce({
                 providers: [
@@ -179,7 +180,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             credit_grants: [{ service_group_id: 'coding-basic', active: false, status: 'period_limited', retry_after_seconds: 3600 }],
         });
 
-        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} onProviderChanged={onProviderChanged} />);
 
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
         fireEvent.click(await screen.findByRole('button', { name: /MaClaw Official/i }));
@@ -194,6 +195,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         await waitFor(() => {
             expect(GetMaclawLLMProvidersMock).toHaveBeenCalledTimes(2);
         });
+        expect(onProviderChanged).toHaveBeenCalledTimes(1);
     });
 
     it('allows repairing MaClaw Official when current is official but provider is missing', async () => {

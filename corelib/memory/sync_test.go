@@ -139,6 +139,158 @@ func TestSyncLoop_DeleteSync(t *testing.T) {
 	}
 }
 
+func TestSyncLoop_DeleteRebuildsDerivedProjectIndex(t *testing.T) {
+	store1, store2, _ := newSyncTestStores(t)
+
+	now := time.Now().UTC()
+	projectPath := filepath.Join(t.TempDir(), "project-alpha")
+	entry := Entry{
+		ID:          "sync-project-delete",
+		Content:     "Project Alpha shipped a workflow output",
+		Category:    CategoryTaskArtifact,
+		Tags:        []string{projectPath, "tangible_output"},
+		SourceType:  "task_artifact",
+		Strength:    1.0,
+		AccessCount: 1,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := store1.Save(entry); err != nil {
+		t.Fatalf("store1 Save: %v", err)
+	}
+
+	store2.syncOnce()
+	if _, ok := store2.ProjectRecordForHost(projectPath); !ok {
+		t.Fatal("project record not synced to store2")
+	}
+
+	if err := store1.Delete("sync-project-delete"); err != nil {
+		t.Fatalf("store1 Delete: %v", err)
+	}
+	store2.syncOnce()
+
+	if _, ok := store2.ProjectRecordForHost(projectPath); ok {
+		t.Fatal("deleted remote project entry left stale project index record")
+	}
+}
+
+func TestSyncLoop_DeleteCleansInMemoryGraphLinks(t *testing.T) {
+	store1, store2, _ := newSyncTestStores(t)
+
+	now := time.Now().UTC()
+	keep := Entry{
+		ID:           "sync-graph-keep",
+		Content:      "sync graph keep",
+		Category:     CategoryProjectKnowledge,
+		RelatedIDs:   []string{"sync-graph-delete"},
+		RelatedEdges: []RelatedEdge{{ID: "sync-graph-delete", Strength: 0.9}},
+		Strength:     1,
+		AccessCount:  1,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	remove := Entry{
+		ID:          "sync-graph-delete",
+		Content:     "sync graph delete",
+		Category:    CategoryProjectKnowledge,
+		Strength:    1,
+		AccessCount: 1,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := store1.backend.SaveEntry(&keep); err != nil {
+		t.Fatalf("save keep: %v", err)
+	}
+	if err := store1.backend.SaveEntry(&remove); err != nil {
+		t.Fatalf("save remove: %v", err)
+	}
+
+	store2.syncOnce()
+	store2.mu.RLock()
+	idx := store2.findEntryIndexByIDLocked("sync-graph-keep")
+	if idx < 0 || len(store2.entries[idx].RelatedIDs) == 0 || len(store2.entries[idx].RelatedEdges) == 0 {
+		store2.mu.RUnlock()
+		t.Fatalf("expected graph link before remote delete, idx=%d", idx)
+	}
+	store2.mu.RUnlock()
+
+	if err := store1.backend.DeleteEntry("sync-graph-delete"); err != nil {
+		t.Fatalf("delete remove: %v", err)
+	}
+	store2.syncOnce()
+
+	store2.mu.RLock()
+	idx = store2.findEntryIndexByIDLocked("sync-graph-keep")
+	if idx < 0 {
+		store2.mu.RUnlock()
+		t.Fatal("keep entry missing after remote delete sync")
+	}
+	if len(store2.entries[idx].RelatedIDs) != 0 || len(store2.entries[idx].RelatedEdges) != 0 {
+		links := append([]string(nil), store2.entries[idx].RelatedIDs...)
+		edges := append([]RelatedEdge(nil), store2.entries[idx].RelatedEdges...)
+		store2.mu.RUnlock()
+		t.Fatalf("remote delete left stale in-memory graph links: ids=%v edges=%+v", links, edges)
+	}
+	store2.mu.RUnlock()
+}
+
+func TestSyncLoop_MixedWindowAdvancesWatermarkThroughDelete(t *testing.T) {
+	store1, store2, _ := newSyncTestStores(t)
+
+	now := time.Now().UTC()
+	keep := Entry{
+		ID:          "sync-mixed-keep",
+		Content:     "mixed window keep",
+		Category:    CategoryUserFact,
+		Strength:    1.0,
+		AccessCount: 1,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	remove := Entry{
+		ID:          "sync-mixed-delete",
+		Content:     "mixed window delete",
+		Category:    CategoryUserFact,
+		Strength:    1.0,
+		AccessCount: 1,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := store1.backend.SaveEntry(&keep); err != nil {
+		t.Fatalf("save keep: %v", err)
+	}
+	if err := store1.backend.SaveEntry(&remove); err != nil {
+		t.Fatalf("save remove: %v", err)
+	}
+	if err := store1.backend.DeleteEntry("sync-mixed-delete"); err != nil {
+		t.Fatalf("delete remove: %v", err)
+	}
+	maxVersion, err := store1.backend.MaxVersion()
+	if err != nil {
+		t.Fatalf("MaxVersion: %v", err)
+	}
+	if maxVersion <= keep.Version {
+		t.Fatalf("delete should own highest version, keep=%d max=%d", keep.Version, maxVersion)
+	}
+
+	store2.syncOnce()
+
+	store2.mu.RLock()
+	keepIdx := store2.findEntryIndexByIDLocked("sync-mixed-keep")
+	deleteIdx := store2.findEntryIndexByIDLocked("sync-mixed-delete")
+	lastVersion := store2.sync.lastVersion
+	store2.mu.RUnlock()
+	if keepIdx < 0 {
+		t.Fatal("modified entry from mixed sync window was not merged")
+	}
+	if deleteIdx >= 0 {
+		t.Fatal("deleted entry from mixed sync window was left in memory")
+	}
+	if lastVersion != maxVersion {
+		t.Fatalf("sync watermark should advance through highest delete version, got %d want %d", lastVersion, maxVersion)
+	}
+}
+
 func TestSyncLoop_UpdateSync(t *testing.T) {
 	store1, store2, _ := newSyncTestStores(t)
 

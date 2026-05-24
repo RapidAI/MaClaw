@@ -80,6 +80,7 @@ type AppConfig struct {
 	WebSearchProviders       []WebSearchProvider `json:"web_search_providers,omitempty"`
 	WebSearchCurrentProvider string              `json:"web_search_current_provider,omitempty"`
 	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"`
+	SubAgentConcurrency      int                 `json:"subagent_concurrency,omitempty"`
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
@@ -276,6 +277,25 @@ type AppConfig struct {
 	// VEApprovalConfigJSON stores the VE approval capability configuration as raw JSON.
 	// Parsed by the gui package into VEApprovalConfig struct.
 	VEApprovalConfigJSON string `json:"ve_approval_config,omitempty"`
+}
+
+const (
+	DefaultSubAgentConcurrency = 2
+	MinSubAgentConcurrency     = 1
+	MaxSubAgentConcurrency     = 4
+)
+
+func NormalizeSubAgentConcurrency(n int) int {
+	if n <= 0 {
+		return DefaultSubAgentConcurrency
+	}
+	if n < MinSubAgentConcurrency {
+		return MinSubAgentConcurrency
+	}
+	if n > MaxSubAgentConcurrency {
+		return MaxSubAgentConcurrency
+	}
+	return n
 }
 
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
@@ -505,6 +525,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*c = AppConfig(raw.appConfigAlias)
+	c.SubAgentConcurrency = NormalizeSubAgentConcurrency(c.SubAgentConcurrency)
 	if raw.ShowAssistantEntry == nil {
 		c.ShowAssistantEntry = true
 	} else {

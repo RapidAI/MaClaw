@@ -79,6 +79,19 @@ func TestRunctlHelpIncludesPassthroughOnly(t *testing.T) {
 	}
 }
 
+func TestSlashAndRunctlHelpEnglish(t *testing.T) {
+	help := slashHelpText("en")
+	for _, want := range []string{"Available commands:", "/new /reset /clear - reset conversation", "Passthrough tasks:", "/runctl audit [limit]"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("English slash help missing %q:\n%s", want, help)
+		}
+	}
+	runctl := passthroughHelpText("en")
+	if !strings.Contains(runctl, "Passthrough tasks:") || strings.Contains(runctl, "直通任务") || strings.Contains(runctl, "/new /reset") {
+		t.Fatalf("unexpected English runctl help:\n%s", runctl)
+	}
+}
+
 func TestParsePassthroughAuditLimit(t *testing.T) {
 	limit, err := parsePassthroughAuditLimit("/runctl audit", 10, 50)
 	if err != nil || limit != 10 {
@@ -106,6 +119,24 @@ func TestFormatPassthroughStatus(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("status missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestPassthroughFormattersEnglish(t *testing.T) {
+	commands := []PassthroughCommand{{Name: "repair", Enabled: true, ConfirmRequired: true}}
+	status := formatPassthroughStatusWithLang("commands.json", commands, PassthroughSettings{AllowExec: true}, 3, "en")
+	for _, want := range []string{"Passthrough task status", "Tasks: 1 total", "/exec: on", "Audit records: 3"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("English status missing %q:\n%s", want, status)
+		}
+	}
+	list := formatPassthroughCommandList(commands, "en")
+	if !strings.Contains(list, "Registered passthrough tasks:") || !strings.Contains(list, "requires --confirm") {
+		t.Fatalf("unexpected English list:\n%s", list)
+	}
+	show := formatPassthroughCommandShowWithLang(PassthroughCommand{Name: "repair", ScriptPath: "repair.ps1", Runtime: "powershell", TimeoutSeconds: 60, Enabled: true}, "en")
+	if !strings.Contains(show, "Command: repair") || !strings.Contains(show, "Run example:") || strings.Contains(show, "命令：") {
+		t.Fatalf("unexpected English show:\n%s", show)
 	}
 }
 

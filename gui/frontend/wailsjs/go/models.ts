@@ -367,6 +367,7 @@ export namespace main {
 	    web_search_providers: any[];
 	    web_search_current_provider: string;
 	    maclaw_agent_max_iterations: number;
+	    subagent_concurrency: number;
 	    mcp_servers: any[];
 	    local_mcp_servers: any[];
 	    nl_skills: any[];
@@ -526,6 +527,7 @@ export namespace main {
 	        this.web_search_providers = source["web_search_providers"];
 	        this.web_search_current_provider = source["web_search_current_provider"];
 	        this.maclaw_agent_max_iterations = source["maclaw_agent_max_iterations"];
+	        this.subagent_concurrency = source["subagent_concurrency"];
 	        this.mcp_servers = source["mcp_servers"];
 	        this.local_mcp_servers = source["local_mcp_servers"];
 	        this.nl_skills = source["nl_skills"];

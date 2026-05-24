@@ -9,21 +9,23 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
+	cworkflow "github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func (h *IMMessageHandler) buildSystemPrompt() string {
 	return h.buildSystemPromptBase(false)
 }
 
-func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, workflowAgentLoop bool, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
+func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, loopCtx *LoopContext, workflowAgentLoop bool, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
 	promptBuildStart := time.Now()
 
 	var systemPrompt string
 	if h.memoryStore != nil {
-		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0)
+		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0, loopCtx)
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
@@ -70,6 +72,10 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 }
 
 func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMessage ...string) string {
+	return h.buildSystemPromptBaseWithExperienceContext(includeMemoryGuide, lifecycle.EventContext{}, userMessage...)
+}
+
+func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMemoryGuide bool, eventContext lifecycle.EventContext, userMessage ...string) string {
 	// Load config once for all decisions.
 	roleName := "MaClaw"
 	roleDesc := "一个尽心尽责无所不能的软件开发管家"
@@ -151,7 +157,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 
 	// Epilogue: memory section + knowledge auto-recall + knowledge skills + repairs + bundle + profile.
 	deps.Epilogue = func(b *strings.Builder) {
-		h.appendGUIEpilogue(b, includeMemoryGuide, msg)
+		h.appendGUIEpilogue(b, includeMemoryGuide, msg, eventContext)
 	}
 
 	// User profile
@@ -254,9 +260,9 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 // buildSystemPromptWithMemory builds the system prompt with the lightweight
 // memory section (user_fact summary + proactive recall + dynamic recall hint).
 // The isFirstTurn flag controls whether the full memory management guide is included.
-func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFirstTurn bool) string {
+func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFirstTurn bool, loopCtx ...*LoopContext) string {
 	start := time.Now()
-	base := h.buildSystemPromptBase(isFirstTurn, userMessage)
+	base := h.buildSystemPromptBaseWithExperienceContext(isFirstTurn, experienceContextFromLoop(loopCtx...), userMessage)
 	baseElapsed := time.Since(start)
 	if !isFirstTurn {
 		if baseElapsed > 200*time.Millisecond {
@@ -272,6 +278,13 @@ func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFir
 		log.Printf("[buildSystemPromptWithMemory] base_prompt=%v total=%v (first turn)", baseElapsed, totalElapsed)
 	}
 	return b.String()
+}
+
+func experienceContextFromLoop(loopCtx ...*LoopContext) lifecycle.EventContext {
+	if len(loopCtx) == 0 || loopCtx[0] == nil {
+		return lifecycle.EventContext{}
+	}
+	return lifecycle.EventContext{TraceID: loopCtx[0].RunID, TaskID: loopCtx[0].ID}
 }
 
 // buildNicknameInstruction returns a system-prompt snippet that instructs the
@@ -311,7 +324,7 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 // snapshot instead of regenerating, keeping the LLM's KV cache prefix stable.
 // Mid-session memory writes update persistent storage but do NOT invalidate
 // the cached snapshot (Requirement 5.3).
-func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool, userMessage ...string) {
+func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool, eventContext lifecycle.EventContext, userMessage ...string) {
 	if h.memoryStore == nil {
 		return
 	}
@@ -355,7 +368,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 	// signals that proactive recall should use RecallDynamicStrict to
 	// exclude other projects' entries.
 	strictProject := isProjectTabUserID(userID)
-	h.appendProactiveRecall(b, msg, strictProject)
+	h.appendProactiveRecall(b, msg, strictProject, eventContext)
 }
 
 // generateStaticMemorySection builds the frozen part of the memory section:
@@ -381,7 +394,7 @@ func isProjectTabUserID(userID string) bool {
 // results to the system prompt. Unlike the static section, this is NOT frozen
 // — each user message triggers a fresh recall so the LLM always sees memories
 // relevant to the current query.
-func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string, strictProject bool) {
+func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string, strictProject bool, eventContext ...lifecycle.EventContext) {
 	if h.memoryStore == nil || msg == "" {
 		return
 	}
@@ -399,7 +412,10 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string,
 		projectPath, _ = h.contextResolver.ResolveProject()
 	}
 
-	promptContext, relevant := h.memoryStore.ProactiveContextForPrompt(msg, corememory.IMProactivePromptOptions(projectPath, strictProject))
+	opts := corememory.IMProactivePromptOptions(projectPath, strictProject)
+	opts.EventContext = firstLifecycleEventContext(eventContext)
+	opts.Recall.Provider = h.proactiveExperienceProvider()
+	promptContext, relevant := h.memoryStore.ProactiveContextForPrompt(msg, opts)
 	primaryRecallElapsed := time.Since(recallStart)
 	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, strictProject=%v, recalled=%d entries took=%v", len(msg), projectPath, strictProject, len(relevant), primaryRecallElapsed)
 	b.WriteString(promptContext)
@@ -411,6 +427,35 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string,
 	if totalRecallElapsed > 200*time.Millisecond {
 		log.Printf("[proactive_recall] total_elapsed=%v (primary_recall=%v)", totalRecallElapsed, primaryRecallElapsed)
 	}
+}
+
+func (h *IMMessageHandler) proactiveExperienceProvider() lifecycle.Provider {
+	if h == nil || h.memoryStore == nil {
+		return nil
+	}
+	providers := []lifecycle.Provider{corememory.NewExperienceProvider(h.memoryStore)}
+	if exec := h.getSkillExecutor(); exec != nil {
+		exec.mu.RLock()
+		skills := exec.loadSkills()
+		exec.mu.RUnlock()
+		if len(skills) > 0 {
+			providers = append(providers, cskill.NewExperienceProvider(skills))
+			providers = append(providers, cskill.NewGovernanceDraftProvider(skills, cskill.SkillMaintenancePlanOptions{MaxActions: 12}))
+		}
+	}
+	if engine := h.getWorkflowEngine(); engine != nil {
+		if ws := engine.GetActiveWorkflow(h.lastUserID); ws != nil {
+			providers = append(providers, cworkflow.NewExperienceProvider(ws))
+		}
+	}
+	return lifecycle.NewCompositeProvider(providers...)
+}
+
+func firstLifecycleEventContext(values []lifecycle.EventContext) lifecycle.EventContext {
+	if len(values) == 0 {
+		return lifecycle.EventContext{}
+	}
+	return values[0]
 }
 
 // RefreshMemorySnapshot regenerates the cached memory snapshot for the given

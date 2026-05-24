@@ -10,6 +10,7 @@ const (
 	sshToolActionExec           sshToolAction = "exec"
 	sshToolActionExecBackground sshToolAction = "exec_background"
 	sshToolActionCheckTask      sshToolAction = "check_task"
+	sshToolActionWaitTask       sshToolAction = "wait_task"
 	sshToolActionListTasks      sshToolAction = "list_tasks"
 	sshToolActionKillTask       sshToolAction = "kill_task"
 	sshToolActionSudoPrepare    sshToolAction = "sudo_prepare"
@@ -30,6 +31,8 @@ func classifySSHToolAction(action string) sshToolAction {
 		return sshToolActionExecBackground
 	case sshToolActionCheckTask:
 		return sshToolActionCheckTask
+	case sshToolActionWaitTask:
+		return sshToolActionWaitTask
 	case sshToolActionListTasks:
 		return sshToolActionListTasks
 	case sshToolActionKillTask:

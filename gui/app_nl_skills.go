@@ -1427,6 +1427,8 @@ func (e *SkillExecutor) executeSSHStep(args map[string]interface{}) (string, err
 		return e.sshExecBackground(args), nil
 	case sshToolActionCheckTask:
 		return e.sshCheckTask(args), nil
+	case sshToolActionWaitTask:
+		return e.sshWaitTask(args), nil
 	case sshToolActionListTasks:
 		return e.sshListTasks(), nil
 	case sshToolActionKillTask:
@@ -1440,7 +1442,7 @@ func (e *SkillExecutor) executeSSHStep(args map[string]interface{}) (string, err
 	case sshToolActionClose:
 		return e.sshClose(args), nil
 	default:
-		return "", fmt.Errorf("未知 SSH 操作 %s; supported: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close", action)
+		return "", fmt.Errorf("未知 SSH 操作 %s; supported: connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close", action)
 	}
 }
 
@@ -1565,14 +1567,11 @@ func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("check task failed: %v", err)
 	}
-	logTail := result.LogTail
-	if logTail == "" {
-		logTail = "(no log output)"
-	}
-	if len(logTail) > 6000 {
-		logTail = logTail[:3000] + "\n... (truncated) ...\n" + logTail[len(logTail)-3000:]
-	}
-	return fmt.Sprintf("task_id: %s\ncommand: %s\nstatus: %s\nalive: %v\nelapsed: %s\n\n--- log tail ---\n%s", result.TaskID, result.Command, result.Status, result.IsAlive, result.Elapsed, logTail)
+	return formatSSHBackgroundTaskStatus(result)
+}
+
+func (e *SkillExecutor) sshWaitTask(args map[string]interface{}) string {
+	return waitSSHBackgroundTask(e.bgTaskMgr, args, "background task manager is not initialized", "ssh wait_task requires task_id")
 }
 
 func (e *SkillExecutor) sshListTasks() string {

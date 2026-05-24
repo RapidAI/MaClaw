@@ -47,6 +47,36 @@ func TestParseTaskListFromText(t *testing.T) {
 	}
 }
 
+func TestParseTaskListFromTextMarkdownTHeaders(t *testing.T) {
+	input := `## 贪吃蛇游戏 — 任务拆分
+
+### T1: 初始化 CMake 构建环境和依赖配置
+- **描述**: 创建项目目录结构，编写 CMakeLists.txt 和 vcpkg.json
+- **涉及文件**: CMakeLists.txt, vcpkg.json
+
+### T2：实现 Snake 类
+- **描述**: 实现 Snake.h 和 Snake.cpp
+- **涉及文件**: src/Snake.h, src/Snake.cpp
+
+### T3. 实现 Game 类
+- **描述**: 实现 Game.h 和 Game.cpp
+- **涉及文件**: src/Game.h, src/Game.cpp`
+
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(tasks))
+	}
+	if tasks[0].Title != "初始化 CMake 构建环境和依赖配置" {
+		t.Fatalf("task 0 title = %q", tasks[0].Title)
+	}
+	if tasks[1].Title != "实现 Snake 类" {
+		t.Fatalf("task 1 title = %q", tasks[1].Title)
+	}
+	if tasks[2].Title != "实现 Game 类" {
+		t.Fatalf("task 2 title = %q", tasks[2].Title)
+	}
+}
+
 func TestOrchestratorLifecycle(t *testing.T) {
 	o := NewTaskExecutionOrchestrator()
 
@@ -112,6 +142,70 @@ func TestOrchestratorLifecycle(t *testing.T) {
 	o.Deactivate()
 	if o.IsActive() {
 		t.Fatal("should not be active after Deactivate()")
+	}
+}
+
+func TestReadyTaskHandlesHonorsDependenciesAndLimit(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B", DependsOn: []int{0}},
+		{Index: 2, Title: "Task C"},
+	}, "", "", "/project", "")
+
+	handles := o.ReadyTaskHandles(2)
+	if len(handles) != 2 || handles[0].Task.Title != "Task A" || handles[1].Task.Title != "Task C" {
+		t.Fatalf("ready handles should include independent pending tasks only, got %#v", handles)
+	}
+
+	o.MarkTaskStatus(handles[0].Task, TaskExecPassed, "")
+	handles = o.ReadyTaskHandles(2)
+	if len(handles) != 2 || handles[0].Task.Title != "Task B" || handles[1].Task.Title != "Task C" {
+		t.Fatalf("dependency should become ready after prerequisite passes, got %#v", handles)
+	}
+}
+
+func TestMarkTasksBlockedByDependenciesSkipsFailedDependents(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B", DependsOn: []int{0}},
+		{Index: 2, Title: "Task C", DependsOn: []int{99}},
+		{Index: 3, Title: "Task D"},
+	}, "", "", "/project", "")
+	o.MarkTaskStatus(o.Tasks[0], TaskExecFailed, "boom")
+
+	if skipped := o.MarkTasksBlockedByDependencies(); skipped != 2 {
+		t.Fatalf("skipped blocked tasks = %d, want 2", skipped)
+	}
+	if got := o.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T0") {
+		t.Fatalf("dependent on failed task should be skipped, got %#v", got)
+	}
+	if got := o.Tasks[2]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "invalid dependency") {
+		t.Fatalf("dependent on invalid task should be skipped, got %#v", got)
+	}
+	if got := o.Tasks[3]; got.Status != TaskExecPending {
+		t.Fatalf("independent task should remain pending, got %#v", got)
+	}
+}
+
+func TestMarkDependencyDeadlockTasksSkipsCycles(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A", DependsOn: []int{1}},
+		{Index: 1, Title: "Task B", DependsOn: []int{0}},
+	}, "", "", "/project", "")
+
+	if handles := o.ReadyTaskHandles(2); len(handles) != 0 {
+		t.Fatalf("cycle should have no ready handles, got %#v", handles)
+	}
+	if skipped := o.MarkDependencyDeadlockTasks(); skipped != 2 {
+		t.Fatalf("deadlock skipped tasks = %d, want 2", skipped)
+	}
+	for _, task := range o.Tasks {
+		if task.Status != TaskExecSkipped || !strings.Contains(task.ErrorSummary, "dependency deadlock") {
+			t.Fatalf("cyclic task should be skipped with deadlock reason, got %#v", task)
+		}
 	}
 }
 

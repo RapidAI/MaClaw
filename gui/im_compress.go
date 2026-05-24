@@ -8,11 +8,11 @@ package main
 //   - autoCompressConversation: auto-compression check before each LLM call
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"log"
 	"net/http"
 	"strings"
@@ -25,9 +25,13 @@ import (
 // It loads the current conversation history, compresses it using the
 // corelib/context.Compressor, and saves the compressed history back.
 func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse {
+	return h.handleCompressCommandWithLang(userID, "zh-Hans")
+}
+
+func (h *IMMessageHandler) handleCompressCommandWithLang(userID, lang string) *IMAgentResponse {
 	history := h.memory.Load(userID)
 	if len(history) == 0 {
-		return &IMAgentResponse{Text: "当前没有对话历史可压缩。"}
+		return &IMAgentResponse{Text: localizedIMCompressNoHistoryMessage(lang)}
 	}
 
 	cfg := h.getMaclawLLMConfig()
@@ -36,7 +40,7 @@ func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse
 	// Convert conversation entries to context.Message format.
 	messages := conversationToContextMessages(history)
 	if len(messages) == 0 {
-		return &IMAgentResponse{Text: "当前没有对话历史可压缩。"}
+		return &IMAgentResponse{Text: localizedIMCompressNoHistoryMessage(lang)}
 	}
 
 	// Create compressor with LLM summarization callback.
@@ -50,7 +54,7 @@ func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse
 	result, err := compressor.Compress(messages)
 	if err != nil {
 		log.Printf("[/compress] compression failed: %v", err)
-		return &IMAgentResponse{Text: fmt.Sprintf("压缩失败: %v", err)}
+		return &IMAgentResponse{Text: localizedIMCompressFailedMessage(lang, err)}
 	}
 
 	// Convert compressed messages back to conversation entries.
@@ -58,7 +62,40 @@ func (h *IMMessageHandler) handleCompressCommand(userID string) *IMAgentResponse
 	h.memory.Save(userID, compressed)
 
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("✅ 对话历史已压缩。%s", result.MarkerText),
+		Text: localizedIMCompressSuccessMessage(lang, result.MarkerText),
+	}
+}
+
+func localizedIMCompressNoHistoryMessage(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "There is no conversation history to compress."
+	case appLanguageZhHant:
+		return "目前沒有可壓縮的對話歷史。"
+	default:
+		return "当前没有可压缩的对话历史。"
+	}
+}
+
+func localizedIMCompressFailedMessage(lang string, err error) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return fmt.Sprintf("Compression failed: %v", err)
+	case appLanguageZhHant:
+		return fmt.Sprintf("壓縮失敗：%v", err)
+	default:
+		return fmt.Sprintf("压缩失败：%v", err)
+	}
+}
+
+func localizedIMCompressSuccessMessage(lang, marker string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return fmt.Sprintf("Conversation history compressed. %s", marker)
+	case appLanguageZhHant:
+		return fmt.Sprintf("對話歷史已壓縮。%s", marker)
+	default:
+		return fmt.Sprintf("对话历史已压缩。%s", marker)
 	}
 }
 

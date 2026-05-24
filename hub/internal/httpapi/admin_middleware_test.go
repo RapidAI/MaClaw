@@ -408,15 +408,15 @@ func TestAdminLoginTenantsExposeOnlyActiveTenantsAndGlobalLoginScope(t *testing.
 	if bytes.Contains(resp.Body.Bytes(), []byte("tenant_inactive")) || bytes.Contains(resp.Body.Bytes(), []byte("tenant_deleted")) {
 		t.Fatalf("inactive or deleted tenant leaked into login choices, body=%s", resp.Body.String())
 	}
-	if bytes.Contains(resp.Body.Bytes(), []byte(store.DefaultTenantID)) {
-		t.Fatalf("default tenant leaked into login choices, body=%s", resp.Body.String())
+	if !bytes.Contains(resp.Body.Bytes(), []byte(store.DefaultTenantID)) {
+		t.Fatalf("expected default tenant in login choices, body=%s", resp.Body.String())
 	}
 	listResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/tenants", nil, token)
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("tenant list status=%d body=%s", listResp.Code, listResp.Body.String())
 	}
-	if bytes.Contains(listResp.Body.Bytes(), []byte(store.DefaultTenantID)) {
-		t.Fatalf("default tenant leaked into admin tenant list, body=%s", listResp.Body.String())
+	if !bytes.Contains(listResp.Body.Bytes(), []byte(store.DefaultTenantID)) {
+		t.Fatalf("expected default tenant in admin tenant list, body=%s", listResp.Body.String())
 	}
 
 	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
@@ -427,11 +427,50 @@ func TestAdminLoginTenantsExposeOnlyActiveTenantsAndGlobalLoginScope(t *testing.
 	if loginResp.Code != http.StatusOK {
 		t.Fatalf("global login scope status=%d body=%s", loginResp.Code, loginResp.Body.String())
 	}
-	if requestedTenantLoginAllowed(context.Background(), store.DefaultTenantID, ctx.store.Tenants) {
-		t.Fatal("default tenant login scope should be rejected")
+	defaultLoginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "admin",
+		"password": "StrongPassword123!",
+		"tenant":   store.DefaultTenantID,
+	}, "")
+	if defaultLoginResp.Code != http.StatusOK {
+		t.Fatalf("default tenant login scope status=%d body=%s", defaultLoginResp.Code, defaultLoginResp.Body.String())
 	}
-	if adminTenantLoginAllowed(context.Background(), &store.AdminUser{Scope: "tenant", TenantID: store.DefaultTenantID}, ctx.store.Tenants) {
-		t.Fatal("default tenant admin login should be rejected")
+	var defaultLoginPayload struct {
+		AccessToken string `json:"access_token"`
+		Admin       struct {
+			TenantID   string `json:"tenant_id"`
+			TenantName string `json:"tenant_name"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(defaultLoginResp.Body.Bytes(), &defaultLoginPayload); err != nil {
+		t.Fatalf("decode default tenant login: %v", err)
+	}
+	if defaultLoginPayload.Admin.TenantID != store.DefaultTenantID || defaultLoginPayload.Admin.TenantName == "" {
+		t.Fatalf("default tenant login missing tenant context: %#v", defaultLoginPayload.Admin)
+	}
+	defaultDetailResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/tenants/"+store.DefaultTenantID, nil, defaultLoginPayload.AccessToken)
+	if defaultDetailResp.Code != http.StatusOK {
+		t.Fatalf("default tenant token detail status=%d body=%s", defaultDetailResp.Code, defaultDetailResp.Body.String())
+	}
+	for _, target := range []string{
+		"/api/admin/users",
+		"/api/admin/blocklist",
+		"/api/admin/invites",
+		"/api/admin/enrollments/all",
+		"/api/admin/llm/providers",
+		"/api/admin/llm/services?include_cards=false",
+		"/api/admin/failure-logs",
+	} {
+		refreshResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, target, nil, defaultLoginPayload.AccessToken)
+		if refreshResp.Code == http.StatusUnauthorized {
+			t.Fatalf("default tenant refresh endpoint %s unauthorized body=%s", target, refreshResp.Body.String())
+		}
+	}
+	if !requestedTenantLoginAllowed(context.Background(), store.DefaultTenantID, ctx.store.Tenants) {
+		t.Fatal("default tenant login scope should be allowed")
+	}
+	if !adminTenantLoginAllowed(context.Background(), &store.AdminUser{Scope: "tenant", TenantID: store.DefaultTenantID}, ctx.store.Tenants) {
+		t.Fatal("default tenant admin login should be allowed")
 	}
 }
 
@@ -688,7 +727,7 @@ func TestTenantAdminRoutesRequireGlobalAdminForTenantCreate(t *testing.T) {
 		"password": "StrongPassword123!",
 		"email":    "default-admin@example.com",
 	}, token)
-	if defaultAdmin.Code != http.StatusBadRequest {
+	if defaultAdmin.Code != http.StatusCreated {
 		t.Fatalf("global admin create default tenant admin status = %d body=%s", defaultAdmin.Code, defaultAdmin.Body.String())
 	}
 
@@ -963,6 +1002,15 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 	if tenantSmart.Code != http.StatusOK {
 		t.Fatalf("tenant smart route status = %d body=%s", tenantSmart.Code, tenantSmart.Body.String())
 	}
+	tenantSenderSave := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/mail/sender-name", map[string]any{"from_name": "Acme Mail"}, loginPayload.AccessToken)
+	if tenantSenderSave.Code != http.StatusOK {
+		t.Fatalf("tenant mail sender-name save status = %d body=%s", tenantSenderSave.Code, tenantSenderSave.Body.String())
+	}
+	tenantSenderGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/mail/sender-name", nil, loginPayload.AccessToken)
+	if tenantSenderGet.Code != http.StatusOK || !bytes.Contains(tenantSenderGet.Body.Bytes(), []byte(`"from_name":"Acme Mail"`)) {
+		t.Fatalf("tenant mail sender-name get status = %d body=%s", tenantSenderGet.Code, tenantSenderGet.Body.String())
+	}
+	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", "mail_sender_name", "Acme Mail")
 	globalGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, globalToken)
 	tenantGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, loginPayload.AccessToken)
 	if !bytes.Contains(globalGet.Body.Bytes(), []byte(`"enabled":true`)) {
@@ -985,6 +1033,9 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		body   any
 	}{
 		{http.MethodGet, "/api/admin/center/status", nil},
+		{http.MethodGet, "/api/admin/mail/config", nil},
+		{http.MethodPost, "/api/admin/mail/config", map[string]any{"enabled": true}},
+		{http.MethodPost, "/api/admin/mail/test", map[string]any{"email": "ops@example.com"}},
 		{http.MethodGet, "/api/admin/hub_llm_config", nil},
 		{http.MethodPut, "/api/admin/hub_llm_config", map[string]any{"enabled": true, "api_url": "https://tenant.example/v1", "api_key": "tenant-key", "model": "tenant-model"}},
 		{http.MethodGet, "/api/admin/hub_llm_prompt_cache_config", nil},
@@ -1011,6 +1062,8 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 		target string
 		body   any
 	}{
+		{http.MethodGet, "/api/admin/mail/sender-name", nil},
+		{http.MethodPost, "/api/admin/mail/sender-name", map[string]any{"from_name": "Global Mail"}},
 		{http.MethodGet, "/api/admin/billing/customer-account", nil},
 		{http.MethodGet, "/api/admin/billing/licenses", nil},
 		{http.MethodPost, "/api/admin/capabilities", map[string]any{"capability_id": "global-cap", "display_name": "Global Cap"}},

@@ -72,3 +72,20 @@ func batchDecayAndMark(entries []Entry, now time.Time) int {
 	}
 	return count
 }
+
+func dormantDecayUpdates(entries []Entry, now time.Time) []Entry {
+	updates := make([]Entry, 0)
+	for i := range entries {
+		if entries[i].Category.IsProtected() || entries[i].Status == StatusSuperseded {
+			continue
+		}
+		cur := decayStrength(entries[i], now)
+		if cur < dormantThreshold && entries[i].Status != StatusDormant {
+			updated := entries[i]
+			updated.Status = StatusDormant
+			updated.Strength = cur
+			updates = append(updates, updated)
+		}
+	}
+	return updates
+}

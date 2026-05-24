@@ -44,10 +44,8 @@ func (h *IMMessageHandler) commitAgentLoopToolResult(opts agentLoopToolCommitOpt
 	tc := opts.ToolCall
 	conversation := opts.Conversation
 	history := opts.History
+	recordToolResultID := tc.ID
 
-	if opts.RecordToolResult != nil {
-		opts.RecordToolResult(tc.ID, opts.TruncatedResult)
-	}
 	conversation = append(conversation, map[string]interface{}{
 		"role":         "tool",
 		"tool_call_id": tc.ID,
@@ -59,6 +57,15 @@ func (h *IMMessageHandler) commitAgentLoopToolResult(opts agentLoopToolCommitOpt
 		ToolCallID:  tc.ID,
 		ToolOutcome: opts.Execution.Outcome.String(),
 	})
+	if opts.Execution.FailureKind == toolFailurePolicyRejected && isRolePrefixRiskToolName(tc.Function.Name) {
+		redactedID := redactedRolePrefixRiskToolCallID(tc.ID)
+		conversation = redactRolePrefixRiskToolCallInConversation(conversation, tc.ID, redactedID)
+		history = redactRolePrefixRiskToolCallInHistory(history, tc.ID, redactedID)
+		recordToolResultID = redactedID
+	}
+	if opts.RecordToolResult != nil {
+		opts.RecordToolResult(recordToolResultID, opts.TruncatedResult)
+	}
 
 	if opts.InFlightLifecycle != nil {
 		opts.InFlightLifecycle.SetOnce()
@@ -86,6 +93,117 @@ func (h *IMMessageHandler) commitAgentLoopToolResult(opts agentLoopToolCommitOpt
 	}
 
 	return agentLoopToolCommitResult{Conversation: conversation, History: history}
+}
+
+func redactedRolePrefixRiskToolCallID(toolCallID string) string {
+	if toolCallID == "" {
+		return "blocked_tool_call"
+	}
+	sum := sha256.Sum256([]byte(toolCallID))
+	return fmt.Sprintf("blocked_tool_call_%x", sum[:4])
+}
+
+func redactRolePrefixRiskToolCallInConversation(conversation []interface{}, toolCallID, redactedID string) []interface{} {
+	if toolCallID == "" {
+		return conversation
+	}
+	for i := len(conversation) - 1; i >= 0; i-- {
+		msg, ok := conversation[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch msg["role"] {
+		case "assistant":
+			if redactToolCallInValue(msg["tool_calls"], toolCallID, redactedID) {
+				return conversation
+			}
+		case "tool":
+			if msg["tool_call_id"] == toolCallID {
+				msg["tool_call_id"] = redactedID
+			}
+		}
+	}
+	return conversation
+}
+
+func redactRolePrefixRiskToolCallInHistory(history []agent.ConversationEntry, toolCallID, redactedID string) []agent.ConversationEntry {
+	if toolCallID == "" {
+		return history
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "tool" && history[i].ToolCallID == toolCallID {
+			history[i].ToolCallID = redactedID
+			continue
+		}
+		if history[i].Role != "assistant" {
+			continue
+		}
+		if calls, ok := history[i].ToolCalls.([]llm.ToolCall); ok {
+			changed := false
+			for j := range calls {
+				if calls[j].ID == toolCallID && isRolePrefixRiskToolName(calls[j].Function.Name) {
+					calls[j].ID = redactedID
+					calls[j].Function.Name = "blocked_tool"
+					changed = true
+				}
+			}
+			if changed {
+				history[i].ToolCalls = calls
+				return history
+			}
+		}
+		if redactToolCallInValue(history[i].ToolCalls, toolCallID, redactedID) {
+			return history
+		}
+	}
+	return history
+}
+
+func redactToolCallInValue(value interface{}, toolCallID, redactedID string) bool {
+	switch calls := value.(type) {
+	case []llm.ToolCall:
+		for i := range calls {
+			if calls[i].ID == toolCallID && isRolePrefixRiskToolName(calls[i].Function.Name) {
+				calls[i].ID = redactedID
+				calls[i].Function.Name = "blocked_tool"
+				return true
+			}
+		}
+	case []interface{}:
+		for _, raw := range calls {
+			m, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if redactToolCallMap(m, toolCallID, redactedID) {
+				return true
+			}
+		}
+	case []map[string]interface{}:
+		for _, m := range calls {
+			if redactToolCallMap(m, toolCallID, redactedID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func redactToolCallMap(m map[string]interface{}, toolCallID, redactedID string) bool {
+	if m == nil || m["id"] != toolCallID {
+		return false
+	}
+	fn, ok := m["function"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	name, _ := fn["name"].(string)
+	if !isRolePrefixRiskToolName(name) {
+		return false
+	}
+	m["id"] = redactedID
+	fn["name"] = "blocked_tool"
+	return true
 }
 
 func (h *IMMessageHandler) pinConditionalToolAfterSuccess(toolName string, execResult toolExecutionResult) {

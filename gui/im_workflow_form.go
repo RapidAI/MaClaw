@@ -115,7 +115,8 @@ func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, schema *workflow
 // handleWorkflowFormAgentViewSubmit processes the user's form submission from
 // the AG UI task panel. It delegates to the workflow engine's SubmitPhaseForm
 // and triggers the agent loop with the form data injected into the phase prompt.
-func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]interface{}) *IMAgentResponse {
+func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]interface{}, requestID string) *IMAgentResponse {
+	phaseID = strings.TrimSpace(phaseID)
 	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return &IMAgentResponse{
@@ -130,6 +131,14 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		return &IMAgentResponse{
 			Text:           avTr("Workflow engine is not available.", "工作流引擎不可用。"),
 			Error:          "no workflow engine",
+			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+
+	if submittedPhaseID := workflowFormStringField(data, workflowFormPhaseField); submittedPhaseID != "" && submittedPhaseID != phaseID {
+		return &IMAgentResponse{
+			Text:           avTr("The workflow form phase is no longer current. Please reopen the current workflow form.", "该工作流表单阶段已不是当前版本，请重新打开当前工作流表单。"),
+			Error:          fmt.Sprintf("workflow phase field mismatch: expected %s, got %s", phaseID, submittedPhaseID),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
@@ -175,22 +184,29 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 		}
 	}
 
-	a.clearAgentView("workflow:form:" + phaseID)
+	a.clearAgentViewWithPayload("workflow:form:"+phaseID, workflowFormLifecyclePayloadFor(ws.ID, phaseID, userID, data))
 
 	if resp.RunAgentLoop && resp.PhasePrompt != "" {
-		log.Printf("[workflow-form] form submitted: user=%s phase=%s fields=%d; triggering agent loop via synthetic message",
+		log.Printf("[workflow-form] form submitted: user=%s phase=%s fields=%d; triggering agent loop via workflow continuation",
 			userID, phaseID, len(cleanData))
 
 		handler.stashedPhasePrompt.Store(userID, resp.PhasePrompt)
 		handler.workflowAgentLoopMarker.Store(userID, true)
 
-		summaryText := buildFormSubmissionSummary(cleanData)
-		projectPath := projectPathFromUserID(userID)
-		go func() {
-			_, _ = a.SendAIAssistantMessage(AIAssistantSendRequest{Text: summaryText, ProjectPath: projectPath})
-		}()
+		requestID, err := a.continueAIAssistantWorkflowMessage(userID, buildFormSubmissionSummary(cleanData), requestID)
+		if err != nil {
+			handler.stashedPhasePrompt.Delete(userID)
+			handler.workflowAgentLoopMarker.Delete(userID)
+			return &IMAgentResponse{
+				Text:           avTr("Workflow continuation failed.", "工作流继续执行失败。"),
+				Error:          err.Error(),
+				ResponseSource: imResponseSourceAgentViewSubmit.String(),
+			}
+		}
 
 		return &IMAgentResponse{
+			RequestID:      requestID,
+			Deferred:       true,
 			Text:           avTr("Information submitted. Generating the workflow output now...", "信息已提交，正在生成工作流输出..."),
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
@@ -245,12 +261,66 @@ func workflowFormStringField(data map[string]interface{}, key string) string {
 	return text
 }
 
+func workflowFormLifecyclePayload(data map[string]interface{}) map[string]interface{} {
+	return workflowFormLifecyclePayloadFor("", "", "", data)
+}
+
+func workflowFormLifecyclePayloadFor(workflowID, phaseID, userID string, data map[string]interface{}) map[string]interface{} {
+	payload := map[string]interface{}{}
+	workflowID = strings.TrimSpace(workflowID)
+	if workflowID == "" {
+		workflowID = workflowFormStringField(data, workflowFormWorkflowIDField)
+	}
+	phaseID = strings.TrimSpace(phaseID)
+	if phaseID == "" {
+		phaseID = workflowFormStringField(data, workflowFormPhaseField)
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = workflowFormStringField(data, workflowFormUserIDField)
+	}
+	if workflowID != "" {
+		payload["workflow_id"] = workflowID
+	}
+	if phaseID != "" {
+		payload["workflow_phase"] = phaseID
+	}
+	if userID != "" {
+		payload["workflow_user_id"] = userID
+	}
+	return payload
+}
+
+func workflowFormLifecyclePayloadWithFallback(workflowID, phaseID, userID string, data map[string]interface{}) map[string]interface{} {
+	payload := workflowFormLifecyclePayload(data)
+	if _, ok := payload["workflow_id"]; !ok {
+		if workflowID = strings.TrimSpace(workflowID); workflowID != "" {
+			payload["workflow_id"] = workflowID
+		}
+	}
+	if _, ok := payload["workflow_phase"]; !ok {
+		if phaseID = strings.TrimSpace(phaseID); phaseID != "" {
+			payload["workflow_phase"] = phaseID
+		}
+	}
+	if _, ok := payload["workflow_user_id"]; !ok {
+		if userID = strings.TrimSpace(userID); userID != "" {
+			payload["workflow_user_id"] = userID
+		}
+	}
+	return payload
+}
+
 func workflowFormMatchesActiveWorkflow(engine *workflow.WorkflowEngine, userID, phaseID string, data map[string]interface{}) bool {
 	if engine == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(phaseID) == "" {
 		return false
 	}
+	phaseID = strings.TrimSpace(phaseID)
+	if submittedPhaseID := workflowFormStringField(data, workflowFormPhaseField); submittedPhaseID != "" && submittedPhaseID != phaseID {
+		return false
+	}
 	ws := engine.GetActiveWorkflow(userID)
-	if ws == nil || ws.CurrentPhase != strings.TrimSpace(phaseID) {
+	if ws == nil || ws.CurrentPhase != phaseID {
 		return false
 	}
 	if submittedWorkflowID := workflowFormStringField(data, workflowFormWorkflowIDField); submittedWorkflowID != "" && ws.ID != submittedWorkflowID {

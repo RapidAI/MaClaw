@@ -48,6 +48,17 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if _, ok := doc.Paths["/api/v1/instances"]; !ok {
 		t.Fatalf("expected instance path in openapi doc")
 	}
+	for _, path := range []string{
+		"/api/platform/source-users/runtime-status",
+		"/api/platform/source-users/{sourceUserId}/runtime-status",
+		"/api/platform/source-users/{sourceUserId}/assistant-instances",
+		"/api/platform/source-users/{sourceUserId}/assistant-link",
+		"/api/platform/source-users/{sourceUserId}/settings-link",
+	} {
+		if _, ok := doc.Paths[path]; !ok {
+			t.Fatalf("expected source-user platform path %s in openapi doc", path)
+		}
+	}
 	if _, ok := doc.Components.SecuritySchemes["bearerAuth"]; !ok {
 		t.Fatalf("expected bearerAuth security scheme")
 	}
@@ -418,16 +429,18 @@ func TestOpenAPICoversRegisteredAdminRoutes(t *testing.T) {
 }
 func TestOpenAPIAdminMutationsAreOwnerOnlyUnlessExplicitlyAllowed(t *testing.T) {
 	allowedOperatorOrPublic := map[string]bool{
-		http.MethodPost + " /api/v1/admin/bootstrap/initialize":                    true,
-		http.MethodPost + " /api/v1/admin/auth/login":                              true,
-		http.MethodPost + " /api/v1/admin/auth/logout":                             true,
-		http.MethodPost + " /api/v1/admin/auth/change-password":                    true,
-		http.MethodPost + " /api/v1/admin/logs/search":                             true,
-		http.MethodPost + " /api/v1/admin/service-config/validate":                 true,
-		http.MethodPost + " /api/v1/admin/sandbox/detect":                          true,
-		http.MethodPost + " /api/v1/admin/sandbox/smoke-test":                      true,
-		http.MethodPost + " /api/v1/admin/sandbox/diagnose":                        true,
-		http.MethodPost + " /api/v1/admin/sandbox/profiles/{profileName}/validate": true,
+		http.MethodPost + " /api/v1/admin/bootstrap/initialize":                              true,
+		http.MethodPost + " /api/v1/admin/auth/login":                                        true,
+		http.MethodPost + " /api/v1/admin/auth/logout":                                       true,
+		http.MethodPost + " /api/v1/admin/auth/change-password":                              true,
+		http.MethodPost + " /api/v1/admin/logs/search":                                       true,
+		http.MethodPost + " /api/v1/admin/service-config/validate":                           true,
+		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate": true,
+		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test":     true,
+		http.MethodPost + " /api/v1/admin/sandbox/detect":                                    true,
+		http.MethodPost + " /api/v1/admin/sandbox/smoke-test":                                true,
+		http.MethodPost + " /api/v1/admin/sandbox/diagnose":                                  true,
+		http.MethodPost + " /api/v1/admin/sandbox/profiles/{profileName}/validate":           true,
 	}
 	for _, route := range openAPIRoutes {
 		if !strings.HasPrefix(route.Path, "/api/v1/admin/") {
@@ -490,6 +503,7 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/pause", "owner"},
 		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/resume", "owner"},
 		{http.MethodDelete, "/api/v1/admin/tenants/{tenantId}/users/{userId}", "owner"},
+		{http.MethodPut, "/api/v1/admin/tenants/{tenantId}/users/{userId}/config", "owner"},
 		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", "owner"},
 		{http.MethodPatch, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", "owner"},
 		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-secret", "owner"},
@@ -1544,6 +1558,85 @@ func TestProtectedUserBlocksUserAndTenantDelete(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409 for tenant delete blocked by protected user, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestForceDeleteProtectedUserRequiresAdminSecretConfirmation(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Legacy User", DeleteProtected: true, DeleteProtectionReason: "legacy platform binding"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"?confirm=true&force=true", strings.NewReader(`{"admin_secret":"wrong"}`))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong force secret, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetUser(context.Background(), tenant.ID, user.ID); err != nil {
+		t.Fatalf("user should still exist after wrong force secret: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"?confirm=true&force=true", strings.NewReader(`{"admin_secret":"admin-secret"}`))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for force delete, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetUser(context.Background(), tenant.ID, user.ID); err == nil {
+		t.Fatalf("expected protected user deleted after force confirmation")
+	}
+}
+
+func TestForceDeleteProtectedTenantDeletesProtectedUsers(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Protected Tenant", DeleteProtected: true, DeleteProtectionReason: "legacy platform tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Protected User", DeleteProtected: true, DeleteProtectionReason: "legacy platform user"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"?confirm=true&force=true", strings.NewReader(`{"admin_secret":"wrong"}`))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong tenant force secret, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetTenant(context.Background(), tenant.ID); err != nil {
+		t.Fatalf("tenant should still exist after wrong force secret: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"?confirm=true&force=true", strings.NewReader(`{"admin_secret":"admin-secret"}`))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for force tenant delete, got %d body = %s", w.Code, w.Body.String())
+	}
+	if _, err := svc.GetUser(context.Background(), tenant.ID, user.ID); err == nil {
+		t.Fatalf("expected protected user deleted with tenant")
+	}
+	if _, err := svc.GetTenant(context.Background(), tenant.ID); err == nil {
+		t.Fatalf("expected protected tenant deleted after force confirmation")
 	}
 }
 

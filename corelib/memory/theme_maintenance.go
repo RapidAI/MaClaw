@@ -114,10 +114,10 @@ func (s *Store) backfillThemeMaintenanceEmbeddings() (int, error) {
 		return 0, nil
 	}
 
-	updated := 0
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	updates := make([]Entry, 0, len(computedEmbeddings))
+	s.mu.RLock()
 	if s.embedderGen != gen {
+		s.mu.RUnlock()
 		return 0, fmt.Errorf("embedder changed during maintenance")
 	}
 	for _, item := range computedEmbeddings {
@@ -125,17 +125,17 @@ func (s *Store) backfillThemeMaintenanceEmbeddings() (int, error) {
 			if s.entries[i].ID != item.id || len(s.entries[i].Embedding) > 0 {
 				continue
 			}
-			s.entries[i].Embedding = append([]float32(nil), item.vec...)
-			if s.entries[i].IsActive() {
-				s.vecIndex.add(item.id, item.vec)
-			}
-			updated++
+			updated := s.entries[i]
+			updated.Embedding = append([]float32(nil), item.vec...)
+			updates = append(updates, updated)
 			break
 		}
 	}
-	if updated > 0 {
-		s.dirty = true
-		s.signalSave()
+	s.mu.RUnlock()
+	if len(updates) > 0 {
+		if err := s.UpdateEntriesByID(updates); err != nil {
+			return 0, err
+		}
 	}
-	return updated, nil
+	return len(updates), nil
 }

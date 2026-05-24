@@ -5,19 +5,119 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func DefaultParameterDefinitions() []ParameterDefinition {
-	return []ParameterDefinition{
+	defs := []ParameterDefinition{
 		{Key: "maclaw_llm_url", Title: "LLM URL", Description: "Legacy flat LLM endpoint URL.", Required: false, Type: "string", Example: "https://api.openai.com/v1"},
 		{Key: "maclaw_llm_key", Title: "LLM API Key", Description: "Legacy flat API key or bearer token.", Required: false, Secret: true, Type: "string", Example: "sk-***"},
 		{Key: "maclaw_llm_model", Title: "LLM Model", Description: "Legacy flat default model.", Required: false, Type: "string", Example: "gpt-5.4"},
 		{Key: "maclaw_llm_current_provider", Title: "Current Provider", Description: "Selected provider name from maclaw_llm_providers.", Required: false, Type: "string", Example: "openai-prod"},
 		{Key: "maclaw_llm_providers", Title: "LLM Providers", Description: "Provider list. When configured, MaClawSrv prefers the selected provider over legacy flat fields.", Required: false, Type: "array", Example: `[{"name":"openai-prod","url":"https://api.openai.com/v1","key":"sk-***","model":"gpt-5.4","wire_api":"responses"}]`},
+		{Key: "mcp_servers", Title: "Remote MCP Servers", Description: "Remote MCP server registry shared by all user assistant instances.", Required: false, Type: "array", Example: `[{"id":"docs","name":"Docs","endpoint_url":"https://mcp.example/sse","auth_type":"bearer","auth_secret":"token"}]`},
+		{Key: "local_mcp_servers", Title: "Local MCP Servers", Description: "Local MCP stdio server registry shared by all user assistant instances.", Required: false, Type: "array", Example: `[{"id":"local-tools","name":"Local Tools","command":"node","args":["server.js"],"env":{"TOKEN":"***"}}]`},
+		{Key: "nl_skills", Title: "Installed Skills", Description: "User-level skill entries available to assistant instances.", Required: false, Type: "array", Example: `[{"name":"summarize","description":"Summarize documents","status":"active"}]`},
+		{Key: "skill_hub_urls", Title: "Skill Hubs", Description: "Skill discovery sources for this user.", Required: false, Type: "array", Example: `[{"name":"default","url":"https://hub.example"}]`},
+		{Key: "external_skill_dirs", Title: "External Skill Directories", Description: "Additional user skill directories.", Required: false, Type: "array", Example: `["D:/skills"]`},
+		{Key: "skill_sources_allowed", Title: "Allowed Skill Sources", Description: "Optional allow-list for skill sources. Empty allows all configured sources.", Required: false, Type: "array", Example: `["skillhub","clawhub","github"]`},
+		{Key: "memory_auto_compress", Title: "Memory Auto Compress", Description: "Enable automatic conversation and memory compression.", Required: false, Type: "bool", Example: "true"},
+		{Key: "memory_max_backups", Title: "Memory Max Backups", Description: "Maximum memory backup count. Zero uses service default.", Required: false, Type: "integer", Example: "20"},
+		{Key: "knowledge_skill_token_budget", Title: "Knowledge Skill Token Budget", Description: "Token budget for knowledge skill context packs. Zero uses service default.", Required: false, Type: "integer", Example: "12000"},
+		{Key: "web_search_providers", Title: "Web Search Providers", Description: "Search provider configuration shared by user assistant instances.", Required: false, Type: "array", Example: `[{"name":"serpapi","type":"serpapi","key":"***"}]`},
+		{Key: "web_search_current_provider", Title: "Current Web Search Provider", Description: "Selected provider name from web_search_providers.", Required: false, Type: "string", Example: "serpapi"},
+		{Key: "security_policy_mode", Title: "Security Policy Mode", Description: "User-level security policy mode for tool and agent execution.", Required: false, Type: "string", Example: "standard"},
+		{Key: "sandbox_mode", Title: "Sandbox Mode", Description: "Execution sandbox preference for this user.", Required: false, Type: "string", Example: "os"},
+		{Key: "network_level", Title: "Network Level", Description: "Network access level for user tools and agents.", Required: false, Type: "string", Example: "intranet"},
+		{Key: "yolo_mode_allowed", Title: "YOLO Mode Allowed", Description: "Allow this user to enable broad tool execution mode.", Required: false, Type: "bool", Example: "false"},
 	}
+	return appendMissingAppConfigDefinitions(defs)
+}
+
+func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDefinition {
+	seen := make(map[string]bool, len(defs))
+	for _, def := range defs {
+		seen[def.Key] = true
+	}
+	t := reflect.TypeOf(corelib.AppConfig{})
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		key := jsonFieldName(field)
+		if key == "" || seen[key] {
+			continue
+		}
+		defs = append(defs, ParameterDefinition{Key: key, Title: titleFromConfigKey(key), Description: "AppConfig field " + key + ".", Required: false, Secret: configKeyLooksSecret(key), Type: appConfigFieldType(field.Type)})
+		seen[key] = true
+	}
+	return defs
+}
+
+func jsonFieldName(field reflect.StructField) string {
+	if field.PkgPath != "" {
+		return ""
+	}
+	tag := field.Tag.Get("json")
+	if tag == "-" {
+		return ""
+	}
+	name := strings.Split(tag, ",")[0]
+	if name != "" {
+		return name
+	}
+	return field.Name
+}
+
+func appConfigFieldType(t reflect.Type) string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Bool:
+		return "bool"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "integer"
+	case reflect.Float32, reflect.Float64:
+		return "number"
+	case reflect.Slice, reflect.Array:
+		return "array"
+	case reflect.Map, reflect.Struct:
+		return "object"
+	default:
+		return "string"
+	}
+}
+
+func titleFromConfigKey(key string) string {
+	parts := strings.Split(key, "_")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		upper := strings.ToUpper(part)
+		switch upper {
+		case "LLM", "MCP", "MIS", "QQ", "ASR", "TTS", "UI", "URL", "ID", "API", "CDN", "WSS", "YOLO", "IM", "VAD":
+			parts[i] = upper
+		default:
+			parts[i] = strings.ToUpper(part[:1]) + part[1:]
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func configKeyLooksSecret(key string) bool {
+	key = strings.ToLower(key)
+	if strings.Contains(key, "token_usage") || strings.Contains(key, "token_budget") {
+		return false
+	}
+	for _, marker := range []string{"key", "secret", "token", "password", "credential"} {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func SanitizeAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
@@ -173,6 +273,9 @@ func ValidateAppConfig(cfg corelib.AppConfig) ConfigValidationResult {
 func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 	if provider, err := resolveSelectedProvider(cfg); err == nil {
 		key := resolveProviderSecret(provider)
+		if isManagedByHubPlaceholder(strings.TrimSpace(provider.URL), key, strings.TrimSpace(provider.Model)) {
+			return corelib.MaclawLLMConfig{}, fmt.Errorf("llm config still uses unresolved VE Platform managed-by-hub placeholder")
+		}
 		protocol := strings.TrimSpace(provider.Protocol)
 		if protocol == "" && corelib.IsAnthropicWireAPI(provider.WireAPI) {
 			protocol = "anthropic"
@@ -197,6 +300,9 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 	if url == "" || key == "" || model == "" {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("llm config is incomplete")
 	}
+	if isManagedByHubPlaceholder(url, key, model) {
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("llm config still uses unresolved VE Platform managed-by-hub placeholder")
+	}
 	return corelib.MaclawLLMConfig{
 		URL:           url,
 		Key:           key,
@@ -205,6 +311,13 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
 	}, nil
+}
+
+func isManagedByHubPlaceholder(url, key, model string) bool {
+	url = strings.ToLower(strings.TrimSpace(url))
+	key = strings.ToLower(strings.TrimSpace(key))
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(url, "managed-by-hub") || key == "managed-by-hub" || model == "managed-by-hub"
 }
 
 func resolveSelectedProvider(cfg corelib.AppConfig) (corelib.MaclawLLMProvider, error) {
@@ -254,23 +367,36 @@ func validateLLMConfig(cfg corelib.AppConfig) []ConfigValidationIssue {
 		}
 		if strings.TrimSpace(provider.URL) == "" {
 			issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_providers.url", Message: "Selected provider URL is required."})
+		} else if isManagedByHubPlaceholder(provider.URL, "", "") {
+			issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_providers.url", Message: "Selected provider URL still uses unresolved VE Platform managed-by-hub placeholder."})
 		}
 		if strings.TrimSpace(provider.Model) == "" {
 			issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_providers.model", Message: "Selected provider model is required."})
+		} else if isManagedByHubPlaceholder("", "", provider.Model) {
+			issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_providers.model", Message: "Selected provider model still uses unresolved VE Platform managed-by-hub placeholder."})
 		}
-		if strings.TrimSpace(resolveProviderSecret(provider)) == "" {
+		providerSecret := resolveProviderSecret(provider)
+		if strings.TrimSpace(providerSecret) == "" {
 			issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_providers.key", Message: "Selected provider credential is required."})
+		} else if isManagedByHubPlaceholder("", providerSecret, "") {
+			issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_providers.key", Message: "Selected provider credential still uses unresolved VE Platform managed-by-hub placeholder."})
 		}
 		return issues
 	}
 	if strings.TrimSpace(cfg.MaclawLLMUrl) == "" {
 		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_url", Message: "LLM URL is required."})
+	} else if isManagedByHubPlaceholder(cfg.MaclawLLMUrl, "", "") {
+		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_url", Message: "LLM URL still uses unresolved VE Platform managed-by-hub placeholder."})
 	}
 	if strings.TrimSpace(cfg.MaclawLLMKey) == "" {
 		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_key", Message: "LLM API key is required."})
+	} else if isManagedByHubPlaceholder("", cfg.MaclawLLMKey, "") {
+		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_key", Message: "LLM API key still uses unresolved VE Platform managed-by-hub placeholder."})
 	}
 	if strings.TrimSpace(cfg.MaclawLLMModel) == "" {
 		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_model", Message: "LLM model is required."})
+	} else if isManagedByHubPlaceholder("", "", cfg.MaclawLLMModel) {
+		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_model", Message: "LLM model still uses unresolved VE Platform managed-by-hub placeholder."})
 	}
 	return issues
 }

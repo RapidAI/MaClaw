@@ -87,15 +87,15 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	result := &PipelineResult{}
 
 	// Step 0: Decay strengths and mark dormant entries.
-	p.store.mu.Lock()
-	result.Dormant = batchDecayAndMark(p.store.entries, time.Now())
-	if result.Dormant > 0 {
-		p.store.rebuildDerivedIndexesLocked(true)
-		p.store.dirty = true
-	}
-	p.store.mu.Unlock()
-	if result.Dormant > 0 {
-		p.store.signalSave()
+	p.store.mu.RLock()
+	dormantUpdates := dormantDecayUpdates(p.store.entries, time.Now())
+	p.store.mu.RUnlock()
+	if len(dormantUpdates) > 0 {
+		if err := p.store.updateMetadataEntriesByID(dormantUpdates); err != nil {
+			log.Printf("[pipeline] persist dormant decay: %v", err)
+		} else {
+			result.Dormant = len(dormantUpdates)
+		}
 	}
 
 	// Step 1: Process pending semantic dedup pairs (embedding recall -> LLM judgment).

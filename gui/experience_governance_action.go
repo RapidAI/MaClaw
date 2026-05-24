@@ -11,6 +11,8 @@ const (
 	experienceGovernanceActionReviewSignal                      experienceGovernanceActionKind = "review_signal"
 	experienceGovernanceActionInspectTriggeredRollbackFollowups experienceGovernanceActionKind = "inspect_triggered_rollback_followups"
 	experienceGovernanceActionInspectFollowUpActions            experienceGovernanceActionKind = "inspect_follow_up_actions"
+	experienceGovernanceActionExecuteApprovedSkillDraftReviews  experienceGovernanceActionKind = "execute_approved_skill_draft_reviews"
+	experienceGovernanceActionInspectBlockedSkillDraftReviews   experienceGovernanceActionKind = "inspect_blocked_skill_draft_reviews"
 	experienceGovernanceActionReviewRoutingCandidates           experienceGovernanceActionKind = "review_routing_candidates"
 	experienceGovernanceActionInspectRoutingSignals             experienceGovernanceActionKind = "inspect_routing_signals"
 	experienceGovernanceActionInspectToolRecoveryGovernance     experienceGovernanceActionKind = "inspect_tool_recovery_governance"
@@ -43,6 +45,10 @@ func normalizeExperienceGovernanceActionKind(action string) experienceGovernance
 		return experienceGovernanceActionInspectTriggeredRollbackFollowups
 	case experienceGovernanceActionInspectFollowUpActions:
 		return experienceGovernanceActionInspectFollowUpActions
+	case experienceGovernanceActionExecuteApprovedSkillDraftReviews:
+		return experienceGovernanceActionExecuteApprovedSkillDraftReviews
+	case experienceGovernanceActionInspectBlockedSkillDraftReviews:
+		return experienceGovernanceActionInspectBlockedSkillDraftReviews
 	case experienceGovernanceActionReviewRoutingCandidates:
 		return experienceGovernanceActionReviewRoutingCandidates
 	case experienceGovernanceActionInspectRoutingSignals:

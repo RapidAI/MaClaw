@@ -9,9 +9,11 @@ import (
 
 	coremail "github.com/RapidAI/CodeClaw/corelib/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 const systemKeyMailConfig = "mail_config"
+const systemKeyTenantMailSenderName = "mail_sender_name"
 
 type Mailer interface {
 	Send(ctx context.Context, to []string, subject string, body string) error
@@ -35,6 +37,10 @@ type ConfigState struct {
 	FromEmail  string `json:"from_email"`
 	Tested     bool   `json:"tested"`
 	TestedAt   int64  `json:"tested_at"`
+}
+
+type tenantMailSenderNameState struct {
+	FromName string `json:"from_name"`
 }
 
 type Service struct {
@@ -126,7 +132,7 @@ func (s *Service) Send(ctx context.Context, to []string, subject string, body st
 		ctx, cancel = context.WithTimeout(ctx, coremail.DefaultSendTimeout)
 		defer cancel()
 	}
-	cfg, err := s.CurrentConfig(ctx)
+	cfg, err := s.configForSend(ctx)
 	if err != nil {
 		return err
 	}
@@ -134,6 +140,39 @@ func (s *Service) Send(ctx context.Context, to []string, subject string, body st
 		return fmt.Errorf("mail delivery is not configured")
 	}
 	return coremail.Send(ctx, toCoreConfig(cfg), to, subject, body)
+}
+
+func (s *Service) configForSend(ctx context.Context) (ConfigState, error) {
+	cfg, err := s.CurrentConfig(ctx)
+	if err != nil {
+		return ConfigState{}, err
+	}
+	if s == nil || s.settings == nil {
+		return cfg, nil
+	}
+	tenantID, hasTenant := store.TenantIDFromContextIfPresent(ctx)
+	if !hasTenant || tenantID == "" {
+		return cfg, nil
+	}
+	key := systemKeyTenantMailSenderName
+	if tenantID != store.DefaultTenantID {
+		key = "tenant:" + tenantID + ":" + systemKeyTenantMailSenderName
+	}
+	raw, err := s.settings.Get(ctx, key)
+	if err != nil {
+		return ConfigState{}, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return cfg, nil
+	}
+	var state tenantMailSenderNameState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return ConfigState{}, err
+	}
+	if fromName := strings.TrimSpace(state.FromName); fromName != "" {
+		cfg.FromName = fromName
+	}
+	return cfg, nil
 }
 
 func toCoreConfig(cfg ConfigState) coremail.Config {
