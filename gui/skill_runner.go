@@ -2507,7 +2507,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	// GBK/CP936 mojibake when scripts output non-ASCII text.
 	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(os.Environ()), params)
 	hideCommandWindow(cmd)
-	prepareCommandForTreeKill(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -2516,7 +2516,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	log.Printf("[skill-runner] bash exec: shell=%s workDir=%s timeout=%ds", filepath.Base(shellName), workDir, timeout)
 	err := cmd.Start()
 	if err == nil {
-		err = waitCommandWithContext(stepCtx, cmd)
+		err = coretool.WaitCommandWithContext(stepCtx, cmd)
 	}
 	elapsed := time.Since(startTime)
 

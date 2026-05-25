@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // guiReplayActivityAdapter wraps AgentActivityStore to satisfy guiautomation.GUIActivityUpdater.
@@ -624,13 +625,16 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 		shellArgs = []string{"-c", cmdStr}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("screenshot failed to start: %w", err)
+	} else if err := coretool.WaitCommandWithContext(ctx, cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot timed out after 15s")
 		}

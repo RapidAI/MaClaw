@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type PassthroughParam struct {
@@ -859,7 +860,7 @@ func executePassthroughProcess(ctx context.Context, start time.Time, commandName
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	execCmd := exec.CommandContext(runCtx, program, args...)
+	execCmd := exec.Command(program, args...)
 	if strings.TrimSpace(cwd) != "" {
 		execCmd.Dir = cwd
 	}
@@ -867,7 +868,11 @@ func executePassthroughProcess(ctx context.Context, start time.Time, commandName
 	execCmd.Stdout = &out
 	execCmd.Stderr = &out
 	hideCommandWindow(execCmd)
-	err := execCmd.Run()
+	coretool.PrepareCommandForTreeKill(execCmd)
+	err := execCmd.Start()
+	if err == nil {
+		err = coretool.WaitCommandWithContext(runCtx, execCmd)
+	}
 	finished := time.Now()
 	exitCode := 0
 	status := passthroughRunStatusSuccess

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestWaitCommandWithContextKillsProcessTree(t *testing.T) {
@@ -19,7 +21,7 @@ func TestWaitCommandWithContextKillsProcessTree(t *testing.T) {
 		"Write-Output $child.Id",
 		"Start-Sleep -Seconds 30",
 	}, "; "))
-	prepareCommandForTreeKill(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("StdoutPipe: %v", err)
@@ -48,7 +50,7 @@ func TestWaitCommandWithContextKillsProcessTree(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	waitErrCh := make(chan error, 1)
 	go func() {
-		waitErrCh <- waitCommandWithContext(ctx, cmd)
+		waitErrCh <- coretool.WaitCommandWithContext(ctx, cmd)
 	}()
 	cancel()
 	if err := <-waitErrCh; err != context.Canceled {
@@ -57,7 +59,7 @@ func TestWaitCommandWithContextKillsProcessTree(t *testing.T) {
 
 	for i := 0; i < 20; i++ {
 		probe := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "if (Get-Process -Id "+childID+" -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }")
-		prepareCommandForTreeKill(probe)
+		coretool.PrepareCommandForTreeKill(probe)
 		if err := probe.Run(); err == nil {
 			return
 		}

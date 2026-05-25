@@ -70,7 +70,7 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
-	prepareCommandForTreeKill(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return codingCommandExecutionResult{
@@ -102,7 +102,7 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 		}
 	}()
 
-	err := waitCommandWithContext(ctx, cmd)
+	err := coretool.WaitCommandWithContext(ctx, cmd)
 	close(done)
 
 	output := formatCodingCommandOutput(stdout.String(), stderr.String())

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestToolBashTimeoutKillsProcessTree(t *testing.T) {
@@ -20,7 +22,7 @@ func TestToolBashTimeoutKillsProcessTree(t *testing.T) {
 		"Start-Sleep -Seconds 30",
 	}, "; "))
 	HideCommandWindow(cmd)
-	prepareCommandForTreeKill(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -41,7 +43,7 @@ func TestToolBashTimeoutKillsProcessTree(t *testing.T) {
 	defer cancel()
 	waitErrCh := make(chan error, 1)
 	go func() {
-		waitErrCh <- waitCommandWithContext(ctx, cmd)
+		waitErrCh <- coretool.WaitCommandWithContext(ctx, cmd)
 	}()
 
 	var childID string
@@ -55,7 +57,7 @@ func TestToolBashTimeoutKillsProcessTree(t *testing.T) {
 	}
 	cancel()
 	if err = <-waitErrCh; err != context.Canceled {
-		t.Fatalf("waitCommandWithContext error = %v, want Canceled", err)
+		t.Fatalf("WaitCommandWithContext error = %v, want Canceled", err)
 	}
 
 	for i := 0; i < 20; i++ {

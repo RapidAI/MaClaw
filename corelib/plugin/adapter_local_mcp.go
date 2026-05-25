@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // LocalMCPPluginAdapter wraps a local stdio MCP Server as a Plugin implementation.
@@ -86,6 +88,11 @@ func (a *LocalMCPPluginAdapter) Init(cfg PluginConfig) error {
 
 func (a *LocalMCPPluginAdapter) Start(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, a.command, a.args...)
+	coretool.PrepareCommandForTreeKill(cmd)
+	cmd.Cancel = func() error {
+		coretool.TerminateCommandTree(cmd)
+		return nil
+	}
 
 	// Inherit current env + overlay plugin env.
 	cmd.Env = os.Environ()
@@ -110,7 +117,6 @@ func (a *LocalMCPPluginAdapter) Start(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start process: %w", err)
 	}
-
 	a.mu.Lock()
 	a.cmd = cmd
 	a.stdin = stdin
@@ -294,7 +300,7 @@ func (a *LocalMCPPluginAdapter) killProcess() {
 		a.stdin = nil
 	}
 	if a.cmd != nil && a.cmd.Process != nil {
-		a.cmd.Process.Kill()
+		coretool.TerminateCommandTree(a.cmd)
 		a.cmd.Wait()
 		a.cmd = nil
 	}

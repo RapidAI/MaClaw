@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // TaskVerifier uses an LLM to check whether an agent's output actually
@@ -163,17 +165,21 @@ func RunTestShellCommand(workDir, cmd string, timeout time.Duration) (string, in
 
 	var c *exec.Cmd
 	if runtime.GOOS == "windows" {
-		c = exec.CommandContext(ctx, "cmd", "/C", cmd)
+		c = exec.Command("cmd", "/C", cmd)
 	} else {
-		c = exec.CommandContext(ctx, "sh", "-c", cmd)
+		c = exec.Command("sh", "-c", cmd)
 	}
 	c.Dir = workDir
+	coretool.PrepareCommandForTreeKill(c)
 
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf
 
-	err := c.Run()
+	err := c.Start()
+	if err == nil {
+		err = coretool.WaitCommandWithContext(ctx, c)
+	}
 	output := buf.String()
 
 	if err != nil {

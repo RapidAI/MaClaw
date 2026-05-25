@@ -913,6 +913,11 @@ func (c *localMCPClient) Start(ctx context.Context) error {
 	}
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, c.entry.Command, c.entry.Args...)
+	coretool.PrepareCommandForTreeKill(cmd)
+	cmd.Cancel = func() error {
+		coretool.TerminateCommandTree(cmd)
+		return nil
+	}
 	cmd.Dir = safeLocalMCPDir(c.entry)
 	cmd.Env = os.Environ()
 	for k, v := range c.entry.Env {
@@ -1083,6 +1088,6 @@ func (c *localMCPClient) Stop() {
 		_ = c.stdin.Close()
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
+		coretool.TerminateCommandTree(c.cmd)
 	}
 }

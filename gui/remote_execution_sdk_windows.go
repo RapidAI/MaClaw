@@ -3,7 +3,6 @@
 package main
 
 import (
-	"fmt"
 	"os/exec"
 	"syscall"
 )
@@ -16,12 +15,4 @@ func hideCommandWindow(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: _CREATE_NO_WINDOW,
 	}
-}
-
-func prepareCommandForTreeKill(_ *exec.Cmd) {}
-
-func terminateCommandTreeImpl(cmd *exec.Cmd) {
-	killer := exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", cmd.Process.Pid))
-	hideCommandWindow(killer)
-	_ = killer.Run()
 }

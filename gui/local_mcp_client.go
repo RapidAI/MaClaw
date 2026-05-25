@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -14,6 +13,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // LocalMCPClient manages a single local (stdio) MCP server process.
@@ -24,7 +26,7 @@ type LocalMCPClient struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	stdout  *bufio.Reader
-	mu      sync.Mutex // guards sendRequest (serializes JSON-RPC I/O)
+	mu      sync.Mutex   // guards sendRequest (serializes JSON-RPC I/O)
 	stateMu sync.RWMutex // guards running, tools
 	nextID  atomic.Int64
 	tools   []MCPToolView
@@ -107,6 +109,11 @@ func (c *LocalMCPClient) tryStart(ctx context.Context) error {
 	childCtx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(childCtx, c.entry.Command, c.entry.Args...)
+	coretool.PrepareCommandForTreeKill(cmd)
+	cmd.Cancel = func() error {
+		coretool.TerminateCommandTree(cmd)
+		return nil
+	}
 
 	// Inherit current environment, then overlay custom env vars.
 	cmd.Env = os.Environ()
@@ -135,7 +142,6 @@ func (c *LocalMCPClient) tryStart(ctx context.Context) error {
 		cancel()
 		return fmt.Errorf("start command %q: %w", c.entry.Command, err)
 	}
-
 	c.cmd = cmd
 	c.stdin = stdinPipe
 	c.stdout = bufio.NewReaderSize(stdoutPipe, 256*1024)
@@ -364,6 +370,6 @@ func (c *LocalMCPClient) Stop() {
 	// Kill the process; don't call Wait() here because watchProcess
 	// already does that. Killing is idempotent.
 	if c.cmd != nil && c.cmd.Process != nil {
-		c.cmd.Process.Kill()
+		coretool.TerminateCommandTree(c.cmd)
 	}
 }

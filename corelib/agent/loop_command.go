@@ -23,6 +23,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // LoopCommandConfig defines the parameters for a /loop execution.
@@ -290,12 +292,12 @@ func ExecuteVerifyCommand(ctx context.Context, command, workDir string, timeout 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	HideCommandWindow(cmd)
-	prepareCommandForTreeKill(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
 	startTime := time.Now()
 	err := cmd.Start()
 	if err == nil {
-		err = waitCommandWithContext(cmdCtx, cmd)
+		err = coretool.WaitCommandWithContext(cmdCtx, cmd)
 	}
 	elapsed := time.Since(startTime)
 

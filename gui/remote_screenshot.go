@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 var screenshotCommandTimeout = 45 * time.Second
@@ -111,15 +112,18 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 			shellArgs = []string{"-c", cmdStr}
 		}
 
-		cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+		cmd := exec.Command(shellName, shellArgs...)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 		hideCommandWindow(cmd)
+		coretool.PrepareCommandForTreeKill(cmd)
 
 		m.app.log(fmt.Sprintf("[screenshot] capturing %s for session=%s via shell", logLabel, sessionID))
 
-		if err := cmd.Run(); err != nil {
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("screenshot command failed to start: %w", err)
+		} else if err := coretool.WaitCommandWithContext(ctx, cmd); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 			}
@@ -233,15 +237,18 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 		shellArgs = []string{"-c", cmdStr}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
 	m.app.log("[screenshot-direct] capturing fullscreen (all monitors) via command-line")
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("screenshot command failed to start: %w", err)
+	} else if err := coretool.WaitCommandWithContext(ctx, cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
@@ -305,15 +312,18 @@ func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex in
 		shellArgs = []string{"-c", cmdStr}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
 	m.app.log(fmt.Sprintf("[screenshot-display] capturing display %d", displayIndex))
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("screenshot command failed to start: %w", err)
+	} else if err := coretool.WaitCommandWithContext(ctx, cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
@@ -398,14 +408,17 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 		shellArgs = []string{"-c", cmdStr}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
 	m.app.log(fmt.Sprintf("[screenshot-b64] capturing for session=%s", sessionID))
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("screenshot command failed to start: %w", err)
+	} else if err := coretool.WaitCommandWithContext(ctx, cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}

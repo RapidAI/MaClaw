@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // SkillToolProvider enables the agent loop to discover and execute Skills.
@@ -183,7 +184,7 @@ func executeBashCommand(ctx context.Context, command, workDir string, extraEnv m
 		env = append(env, k+"="+v)
 	}
 	cmd.Env = env
-	prepareCommandForTreeKill(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
 
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -191,7 +192,7 @@ func executeBashCommand(ctx context.Context, command, workDir string, extraEnv m
 
 	err := cmd.Start()
 	if err == nil {
-		err = waitCommandWithContext(ctx, cmd)
+		err = coretool.WaitCommandWithContext(ctx, cmd)
 	}
 	return output.String(), err
 }

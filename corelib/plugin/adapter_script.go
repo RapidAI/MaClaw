@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ScriptPluginAdapter wraps a shell/python script as a Plugin implementation.
@@ -149,7 +151,7 @@ func (a *ScriptPluginAdapter) execute(args map[string]interface{}) (string, erro
 	defer cancel()
 
 	cmdArgs := append(a.scriptArgs[:len(a.scriptArgs):len(a.scriptArgs)])
-	cmd := exec.CommandContext(ctx, a.command, cmdArgs...)
+	cmd := exec.Command(a.command, cmdArgs...)
 
 	// Set working directory to plugin dir if available.
 	if a.manifest.Dir != "" {
@@ -174,8 +176,11 @@ func (a *ScriptPluginAdapter) execute(args map[string]interface{}) (string, erro
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	coretool.PrepareCommandForTreeKill(cmd)
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("script start error: %w", err)
+	} else if err := coretool.WaitCommandWithContext(ctx, cmd); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg == "" {
 			errMsg = err.Error()
