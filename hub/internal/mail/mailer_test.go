@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
@@ -22,8 +23,8 @@ func (m memorySettings) Get(ctx context.Context, key string) (string, error) {
 func TestConfigForSendUsesTenantSenderName(t *testing.T) {
 	settings := memorySettings{
 		systemKeyMailConfig: `{"enabled":true,"smtp_host":"smtp.example.com","smtp_port":587,"smtp_username":"user","smtp_password":"pass","from_name":"Global Hub","from_email":"noreply@example.com"}`,
-		"tenant:tenant_acme:" + systemKeyTenantMailSenderName: `{"from_name":"Acme Mail"}`,
-		systemKeyTenantMailSenderName:                         `{"from_name":"Default Tenant Mail"}`,
+		"tenant:tenant_acme:" + TenantSenderNameSettingKey: `{"from_name":"Acme Mail"}`,
+		TenantSenderNameSettingKey:                         `{"from_name":"Default Tenant Mail"}`,
 	}
 	svc := New(config.Config{}, settings)
 
@@ -49,5 +50,37 @@ func TestConfigForSendUsesTenantSenderName(t *testing.T) {
 	}
 	if defaultTenantCfg.FromName != "Default Tenant Mail" {
 		t.Fatalf("default tenant from name = %q, want Default Tenant Mail", defaultTenantCfg.FromName)
+	}
+}
+
+func TestConfigForSendIgnoresInvalidTenantSenderName(t *testing.T) {
+	settings := memorySettings{
+		systemKeyMailConfig: `{"enabled":true,"smtp_host":"smtp.example.com","smtp_port":587,"smtp_username":"user","smtp_password":"pass","from_name":"Global Hub","from_email":"noreply@example.com"}`,
+		"tenant:tenant_acme:" + TenantSenderNameSettingKey: `{bad-json`,
+	}
+	svc := New(config.Config{}, settings)
+
+	cfg, err := svc.configForSend(store.WithTenant(context.Background(), "tenant_acme"))
+	if err != nil {
+		t.Fatalf("tenant send config: %v", err)
+	}
+	if cfg.FromName != "Global Hub" {
+		t.Fatalf("tenant from name = %q, want Global Hub fallback", cfg.FromName)
+	}
+}
+
+func TestConfigForSendTruncatesLegacyLongTenantSenderName(t *testing.T) {
+	settings := memorySettings{
+		systemKeyMailConfig: `{"enabled":true,"smtp_host":"smtp.example.com","smtp_port":587,"smtp_username":"user","smtp_password":"pass","from_name":"Global Hub","from_email":"noreply@example.com"}`,
+		"tenant:tenant_acme:" + TenantSenderNameSettingKey: `{"from_name":"` + strings.Repeat("界", TenantSenderNameMaxRunes+1) + `"}`,
+	}
+	svc := New(config.Config{}, settings)
+
+	cfg, err := svc.configForSend(store.WithTenant(context.Background(), "tenant_acme"))
+	if err != nil {
+		t.Fatalf("tenant send config: %v", err)
+	}
+	if len([]rune(cfg.FromName)) != TenantSenderNameMaxRunes {
+		t.Fatalf("tenant from name length = %d, want %d", len([]rune(cfg.FromName)), TenantSenderNameMaxRunes)
 	}
 }

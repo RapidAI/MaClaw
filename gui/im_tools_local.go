@@ -51,7 +51,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 		shellArgs = []string{"-c", command}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	cmd.Dir = workDir
 	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
 	// GBK/CP936 mojibake when commands output non-ASCII text.
@@ -60,6 +60,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
+	prepareCommandForTreeKill(cmd)
 
 	// Start the command and send periodic heartbeats for long-running ops.
 	err := cmd.Start()
@@ -91,7 +92,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 		}
 	}()
 
-	err = cmd.Wait()
+	err = waitCommandWithContext(ctx, cmd)
 	close(done)
 
 	var b strings.Builder
@@ -126,6 +127,37 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 		return "(命令执行完成，无输出)"
 	}
 	return b.String()
+}
+
+func waitCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		terminateCommandTree(cmd)
+		select {
+		case err := <-done:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		case <-time.After(5 * time.Second):
+			return ctx.Err()
+		}
+	}
+}
+
+func terminateCommandTree(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	terminateCommandTreeImpl(cmd)
+	_ = cmd.Process.Kill()
 }
 
 func resolveFileToolPath(path string) (string, error) {

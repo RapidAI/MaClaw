@@ -111,9 +111,9 @@ const (
 	// beginning (tail is preserved — errors are usually at the end).
 	MaxVerifyOutputLen = 4000
 
-	defaultLoopMaxIterations         = 10
-	defaultLoopVerifyTimeout         = 120 * time.Second
-	defaultLoopMaxLLMItersPerCycle   = 30
+	defaultLoopMaxIterations       = 10
+	defaultLoopVerifyTimeout       = 120 * time.Second
+	defaultLoopMaxLLMItersPerCycle = 30
 )
 
 // LoopVerifyTimeoutFromSeconds converts seconds to a Duration for VerifyTimeout.
@@ -277,9 +277,9 @@ func ExecuteVerifyCommand(ctx context.Context, command, workDir string, timeout 
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(cmdCtx, "cmd", "/c", command)
+		cmd = exec.Command("cmd", "/c", command)
 	} else {
-		cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
+		cmd = exec.Command("sh", "-c", command)
 	}
 
 	if workDir != "" {
@@ -289,9 +289,14 @@ func ExecuteVerifyCommand(ctx context.Context, command, workDir string, timeout 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	HideCommandWindow(cmd)
+	prepareCommandForTreeKill(cmd)
 
 	startTime := time.Now()
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		err = waitCommandWithContext(cmdCtx, cmd)
+	}
 	elapsed := time.Since(startTime)
 
 	result := VerifyCommandResult{

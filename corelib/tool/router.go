@@ -160,6 +160,7 @@ func FilterCodingTools(tools []map[string]interface{}) []map[string]interface{} 
 // to duplicate entries that already appear in CoreToolNames.
 var BuiltinToolNames = map[string]bool{
 	"list_providers":    true,
+	"ssh":               true,
 	"send_input":        true,
 	"interrupt_session": true, "kill_session": true,
 	"list_mcp_tools": true,
@@ -920,6 +921,13 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 				r.ActivateSessionTool(name)
 			}
 		}
+	}
+
+	if condKeep["ssh"] || r.sessionTools["ssh"] {
+		// SSH is a first-class builtin execution surface. When it is selected,
+		// hide the generic MCP gateway so the model cannot route the same action
+		// through call_mcp_tool(server_id="ssh", tool_name="ssh").
+		suppressedTools["call_mcp_tool"] = true
 	}
 
 	// --- Browser diagnostic: log how browser tools entered condKeep ---

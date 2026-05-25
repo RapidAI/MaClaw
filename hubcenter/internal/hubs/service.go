@@ -2528,6 +2528,9 @@ func hubCorporateDomains(hub *store.HubInstance) []string {
 	if hub == nil {
 		return nil
 	}
+	if strings.TrimSpace(hub.CorporateEmailDomain) == "" {
+		return nil
+	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, 2)
 	add := func(value string) {

@@ -10,8 +10,6 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
-const tenantMailSenderNameKey = "mail_sender_name"
-
 type AdminSendTestMailRequest struct {
 	Email string `json:"email"`
 }
@@ -27,7 +25,7 @@ func GetTenantMailSenderNameHandler(system store.SystemSettingsRepository) http.
 			return
 		}
 		scoped := scopedSystemSettingsForRequest(r, system)
-		raw, err := scoped.Get(r.Context(), tenantMailSenderNameKey)
+		raw, err := scoped.Get(r.Context(), mail.TenantSenderNameSettingKey)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_LOAD_FAILED", err.Error())
 			return
@@ -35,11 +33,10 @@ func GetTenantMailSenderNameHandler(system store.SystemSettingsRepository) http.
 		state := TenantMailSenderNameState{}
 		if strings.TrimSpace(raw) != "" {
 			if err := json.Unmarshal([]byte(raw), &state); err != nil {
-				writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_INVALID", err.Error())
-				return
+				state = TenantMailSenderNameState{}
 			}
 		}
-		state.FromName = strings.TrimSpace(state.FromName)
+		state.FromName = mail.NormalizeTenantSenderName(state.FromName)
 		writeJSON(w, http.StatusOK, state)
 	}
 }
@@ -56,7 +53,7 @@ func UpdateTenantMailSenderNameHandler(system store.SystemSettingsRepository) ht
 			return
 		}
 		state.FromName = strings.TrimSpace(state.FromName)
-		if len([]rune(state.FromName)) > 80 {
+		if len([]rune(state.FromName)) > mail.TenantSenderNameMaxRunes {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "From name must be 80 characters or fewer")
 			return
 		}
@@ -66,7 +63,7 @@ func UpdateTenantMailSenderNameHandler(system store.SystemSettingsRepository) ht
 			writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_SAVE_FAILED", err.Error())
 			return
 		}
-		if err := scoped.Set(r.Context(), tenantMailSenderNameKey, string(data)); err != nil {
+		if err := scoped.Set(r.Context(), mail.TenantSenderNameSettingKey, string(data)); err != nil {
 			writeError(w, http.StatusInternalServerError, "MAIL_SENDER_NAME_SAVE_FAILED", err.Error())
 			return
 		}

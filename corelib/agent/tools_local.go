@@ -66,13 +66,14 @@ func ToolBash(args map[string]interface{}, onProgress func(string)) string {
 		shellArgs = []string{"-c", command}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	cmd.Dir = workDir
 	cmd.Env = tool.AppendUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	HideCommandWindow(cmd)
+	prepareCommandForTreeKill(cmd)
 
 	err := cmd.Start()
 	if err != nil {
@@ -102,7 +103,7 @@ func ToolBash(args map[string]interface{}, onProgress func(string)) string {
 		}
 	}()
 
-	err = cmd.Wait()
+	err = waitCommandWithContext(ctx, cmd)
 	close(done)
 
 	var b strings.Builder
@@ -1574,4 +1575,35 @@ func ResolveBashTimeout(args map[string]interface{}, command string) int {
 // window on Windows. No-op on other platforms.
 func HideCommandWindow(cmd *exec.Cmd) {
 	hideCommandWindowImpl(cmd)
+}
+
+func waitCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		terminateCommandTree(cmd)
+		select {
+		case err := <-done:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		case <-time.After(5 * time.Second):
+			return ctx.Err()
+		}
+	}
+}
+
+func terminateCommandTree(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	terminateCommandTreeImpl(cmd)
+	_ = cmd.Process.Kill()
 }

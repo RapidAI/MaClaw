@@ -791,10 +791,13 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 	runCase := func(message string, wantSSH bool) {
 		routed := handler.routeTools(message, tools)
 		foundSSH := false
+		foundCallMCPTool := false
 		for _, tool := range routed {
-			if extractToolName(tool) == "ssh" {
+			switch extractToolName(tool) {
+			case "ssh":
 				foundSSH = true
-				break
+			case "call_mcp_tool":
+				foundCallMCPTool = true
 			}
 		}
 		if foundSSH != wantSSH {
@@ -803,6 +806,9 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 				names[i] = extractToolName(tool)
 			}
 			t.Fatalf("ssh presence for %q = %v, want %v; got: %v", message, foundSSH, wantSSH, names)
+		}
+		if wantSSH && foundCallMCPTool {
+			t.Fatalf("call_mcp_tool should be hidden when ssh is routed for %q", message)
 		}
 	}
 
@@ -813,6 +819,42 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 	// follow-up SSH operations), but these are independent test scenarios.
 	router.ResetSession()
 	runCase("我要查询数据库", false)
+}
+
+func TestToolCallMCPToolRejectsBuiltinToolRefs(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	if err := handler.registry.Register(RegisteredTool{
+		Name:     "ssh",
+		Category: ToolCategoryBuiltin,
+		Status:   RegToolAvailable,
+		Handler: func(map[string]interface{}) string {
+			return "builtin executed"
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	out := handler.toolCallMCPTool(map[string]interface{}{
+		"server_id": "ssh",
+		"tool_name": "ssh",
+		"arguments": map[string]interface{}{"action": "list"},
+	})
+	if strings.Contains(out, "builtin executed") {
+		t.Fatalf("call_mcp_tool must not forward to builtin tools: %q", out)
+	}
+	if !strings.Contains(out, "MCP 调用被拒绝") || !strings.Contains(out, "直接调用 ssh") {
+		t.Fatalf("unexpected rejection text: %q", out)
+	}
+}
+
+func TestBuiltinToolServerRefIgnoresExternalToolName(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	if got := handler.builtinToolServerRef("external-mcp"); got != "" {
+		t.Fatalf("builtinToolServerRef(external-mcp) = %q, want empty", got)
+	}
+	if got := handler.builtinToolServerRef("ssh"); got != "ssh" {
+		t.Fatalf("builtinToolServerRef(ssh) = %q, want ssh", got)
+	}
 }
 
 func TestRouteTools_WithRouterKeepsMISDataForBusinessTransactionIntent(t *testing.T) {

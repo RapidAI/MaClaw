@@ -13,7 +13,8 @@ import (
 )
 
 const systemKeyMailConfig = "mail_config"
-const systemKeyTenantMailSenderName = "mail_sender_name"
+const TenantSenderNameSettingKey = "mail_sender_name"
+const TenantSenderNameMaxRunes = 80
 
 type Mailer interface {
 	Send(ctx context.Context, to []string, subject string, body string) error
@@ -154,9 +155,9 @@ func (s *Service) configForSend(ctx context.Context) (ConfigState, error) {
 	if !hasTenant || tenantID == "" {
 		return cfg, nil
 	}
-	key := systemKeyTenantMailSenderName
+	key := TenantSenderNameSettingKey
 	if tenantID != store.DefaultTenantID {
-		key = "tenant:" + tenantID + ":" + systemKeyTenantMailSenderName
+		key = "tenant:" + tenantID + ":" + TenantSenderNameSettingKey
 	}
 	raw, err := s.settings.Get(ctx, key)
 	if err != nil {
@@ -167,12 +168,21 @@ func (s *Service) configForSend(ctx context.Context) (ConfigState, error) {
 	}
 	var state tenantMailSenderNameState
 	if err := json.Unmarshal([]byte(raw), &state); err != nil {
-		return ConfigState{}, err
+		return cfg, nil
 	}
-	if fromName := strings.TrimSpace(state.FromName); fromName != "" {
+	if fromName := NormalizeTenantSenderName(state.FromName); fromName != "" {
 		cfg.FromName = fromName
 	}
 	return cfg, nil
+}
+
+func NormalizeTenantSenderName(name string) string {
+	name = strings.TrimSpace(name)
+	runes := []rune(name)
+	if len(runes) > TenantSenderNameMaxRunes {
+		return string(runes[:TenantSenderNameMaxRunes])
+	}
+	return name
 }
 
 func toCoreConfig(cfg ConfigState) coremail.Config {

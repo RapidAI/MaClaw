@@ -190,7 +190,7 @@ function assertTenantAdminUIHooks() {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
     }
   });
-  ['loadTenantMailSenderName', 'saveTenantMailSenderName', '/api/admin/mail/sender-name'].forEach(function(marker) {
+  ['loadTenantMailSenderName', 'saveTenantMailSenderName', 'TENANT_MAIL_SENDER_MAX_RUNES', 'normalizeTenantMailSenderName', '/api/admin/mail/sender-name'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant sender-name marker: ' + marker);
     }

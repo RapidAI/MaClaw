@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 type testMailer struct {
@@ -130,5 +132,74 @@ func TestMailConfigHandlersSaveAndLoad(t *testing.T) {
 	}
 	if loaded.Provider != "gmail" || loaded.Username != "admin@gmail.com" || loaded.FromEmail != "admin@gmail.com" {
 		t.Fatalf("unexpected loaded config: %#v", loaded)
+	}
+}
+
+func TestTenantMailSenderNameHandlersAreScoped(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	payload, _ := json.Marshal(map[string]string{"from_name": "  Acme Mail  "})
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/mail/sender-name", bytes.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant_acme"}))
+	rr := httptest.NewRecorder()
+
+	UpdateTenantMailSenderNameHandler(settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected save 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := settings.values["tenant:tenant_acme:"+mail.TenantSenderNameSettingKey]; got != `{"from_name":"Acme Mail"}` {
+		t.Fatalf("stored tenant sender name = %s", got)
+	}
+
+	loadReq := httptest.NewRequest(http.MethodGet, "/api/admin/mail/sender-name", nil)
+	loadReq = loadReq.WithContext(context.WithValue(loadReq.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant_acme"}))
+	loadRR := httptest.NewRecorder()
+	GetTenantMailSenderNameHandler(settings).ServeHTTP(loadRR, loadReq)
+	if loadRR.Code != http.StatusOK || !bytes.Contains(loadRR.Body.Bytes(), []byte(`"from_name":"Acme Mail"`)) {
+		t.Fatalf("expected scoped sender name, got %d body=%s", loadRR.Code, loadRR.Body.String())
+	}
+}
+
+func TestTenantMailSenderNameHandlerRejectsTooLongName(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	payload, _ := json.Marshal(map[string]string{"from_name": strings.Repeat("x", 81)})
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/mail/sender-name", bytes.NewReader(payload))
+	rr := httptest.NewRecorder()
+
+	UpdateTenantMailSenderNameHandler(settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestTenantMailSenderNameHandlerIgnoresInvalidStoredJSON(t *testing.T) {
+	settings := &testSystemSettingsRepo{values: map[string]string{mail.TenantSenderNameSettingKey: `{bad-json`}}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/mail/sender-name", nil)
+	rr := httptest.NewRecorder()
+
+	GetTenantMailSenderNameHandler(settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"from_name":""`)) {
+		t.Fatalf("expected empty sender name fallback, body=%s", rr.Body.String())
+	}
+}
+
+func TestTenantMailSenderNameHandlerTruncatesLegacyLongStoredName(t *testing.T) {
+	longName := strings.Repeat("界", mail.TenantSenderNameMaxRunes+1)
+	settings := &testSystemSettingsRepo{values: map[string]string{mail.TenantSenderNameSettingKey: `{"from_name":"` + longName + `"}`}}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/mail/sender-name", nil)
+	rr := httptest.NewRecorder()
+
+	GetTenantMailSenderNameHandler(settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var state TenantMailSenderNameState
+	if err := json.Unmarshal(rr.Body.Bytes(), &state); err != nil {
+		t.Fatalf("decode sender name state: %v", err)
+	}
+	if len([]rune(state.FromName)) != mail.TenantSenderNameMaxRunes {
+		t.Fatalf("sender name length = %d, want %d", len([]rune(state.FromName)), mail.TenantSenderNameMaxRunes)
 	}
 }

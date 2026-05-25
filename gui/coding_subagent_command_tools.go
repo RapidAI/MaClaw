@@ -63,13 +63,14 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 		shellArgs = []string{"-c", command}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	cmd.Dir = workDir
 	cmd.Env = coretool.AppendUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	hideCommandWindow(cmd)
+	prepareCommandForTreeKill(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return codingCommandExecutionResult{
@@ -101,7 +102,7 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 		}
 	}()
 
-	err := cmd.Wait()
+	err := waitCommandWithContext(ctx, cmd)
 	close(done)
 
 	output := formatCodingCommandOutput(stdout.String(), stderr.String())

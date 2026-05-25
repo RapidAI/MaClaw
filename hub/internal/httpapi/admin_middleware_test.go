@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
+	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -1010,7 +1011,7 @@ func TestTenantAdminSystemSettingsAreTenantScoped(t *testing.T) {
 	if tenantSenderGet.Code != http.StatusOK || !bytes.Contains(tenantSenderGet.Body.Bytes(), []byte(`"from_name":"Acme Mail"`)) {
 		t.Fatalf("tenant mail sender-name get status = %d body=%s", tenantSenderGet.Code, tenantSenderGet.Body.String())
 	}
-	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", "mail_sender_name", "Acme Mail")
+	assertTenantSettingOnly(t, ctx.store.System, "tenant_acme", mail.TenantSenderNameSettingKey, "Acme Mail")
 	globalGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, globalToken)
 	tenantGet := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/smart_route_all", nil, loginPayload.AccessToken)
 	if !bytes.Contains(globalGet.Body.Bytes(), []byte(`"enabled":true`)) {

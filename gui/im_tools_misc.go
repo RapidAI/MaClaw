@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
 	"net/http"
 	"os"
@@ -109,35 +110,16 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		toolArgs = map[string]interface{}{}
 	}
 
+	if builtin := h.builtinToolServerRef(serverRef); builtin != "" {
+		return fmt.Sprintf("MCP 调用被拒绝: %q 是 MaClaw 内置工具，不是 MCP Server。请直接调用 %s 工具；call_mcp_tool 只允许调用外部 MCP Server。", builtin, builtin)
+	}
+
 	if h.getLocalMCPManager() == nil {
 		_ = h.getLocalMCPManager() // ensure
 	}
 
 	resolvedID, isLocal, err := h.resolveMCPServerRef(serverRef)
 	if err != nil {
-		// Fallback: LLM 可能把内置工具（如 ssh）误当作 MCP 工具调用。
-		// 检查 server_id 或 tool_name 是否匹配已注册的内置工具，
-		// 如果匹配则直接转发到内置工具执行，避免 LLM 陷入反复重试循环。
-		builtinName := toolName
-		if builtinName == "" {
-			builtinName = serverRef
-		}
-		if h.registry != nil {
-			for _, candidate := range []string{builtinName, serverRef} {
-				if candidate == "" {
-					continue
-				}
-				if tool, ok := h.registry.Get(candidate); ok {
-					log.Printf("[call_mcp_tool] builtin fallback: LLM called call_mcp_tool(server_id=%q, tool_name=%q) but %q is a builtin tool — forwarding directly", serverRef, toolName, candidate)
-					if tool.Handler != nil {
-						return tool.Handler(toolArgs)
-					}
-					if tool.HandlerProg != nil {
-						return tool.HandlerProg(toolArgs, nil)
-					}
-				}
-			}
-		}
 		return fmt.Sprintf("MCP 调用失败: %s。可先用 list_mcp_tools 查看 Name (ID)", err.Error())
 	}
 
@@ -195,6 +177,22 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		return mcputil.FormatForLLM(nil, stdErr)
 	}
 	return mcputil.FormatForLLM(resp, nil)
+}
+
+func (h *IMMessageHandler) builtinToolServerRef(serverRef string) string {
+	candidate := strings.TrimSpace(serverRef)
+	if candidate == "" {
+		return ""
+	}
+	if h.registry != nil {
+		if registered, ok := h.registry.Get(candidate); ok && registered != nil && (registered.Category == ToolCategoryBuiltin || registered.Category == ToolCategoryNonCode) {
+			return candidate
+		}
+	}
+	if coretool.IsBuiltinToolName(candidate) {
+		return candidate
+	}
+	return ""
 }
 
 func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) string {

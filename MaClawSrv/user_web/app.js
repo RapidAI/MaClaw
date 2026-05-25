@@ -56,7 +56,7 @@ function fieldMeta(def = {}) { const tr = FIELD_I18N[locale]?.[def.key]; return 
 function configTypeName(type) { if (locale !== "zh") return type; return type === "integer" ? "整数" : type === "number" ? "数字" : type; }
 function configIssueLabel(issue = {}) { const key = String(issue.key || ""); const base = key.split(".")[0]; const meta = fieldMeta({ key: base, title: base }); const suffix = key.includes(".") ? ` / ${key.split(".").slice(1).join(".")}` : ""; return `${meta.title || key}${suffix}`; }
 function configIssueMessage(issue = {}) { const msg = String(issue.message || ""); if (locale !== "zh") return msg; const key = issue.key || ""; if (msg.includes("managed-by-hub")) return "仍然使用 VE Platform managed-by-hub 占位符，请从 VE Platform 重新打开并传入 Hub LLM 地址和 viewer token。"; if (msg.includes("Selected provider URL is required") || msg.includes("URL is required")) return "必须填写 LLM 服务地址。"; if (msg.includes("API key is required") || msg.includes("credential is required")) return "必须填写 LLM 访问令牌。"; if (msg.includes("Selected provider model is required") || msg.includes("model is required")) return "必须填写 LLM 模型；接入 VE Platform Hub 时填写 auto。"; if (msg.includes("selected provider") && msg.includes("was not found")) return "当前服务商不在 LLM 服务商列表中。"; if (key === "maclaw_llm_current_provider") return msg.replace("maclaw_llm_current_provider is required when multiple providers are configured", "配置多个服务商时必须选择当前服务商"); return msg; }
-const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [] };
+const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const launchToken = params.get("launch_token") || "";
 const hasLaunchToken = params.has("launch_token");
@@ -113,6 +113,10 @@ async function exchangeLaunchToken() {
 function items(resp) { return Array.isArray(resp?.items) ? resp.items : Array.isArray(resp) ? resp : []; }
 function activeInstance() { return state.instanceId ? (state.instances.find((x) => x.id === state.instanceId) || null) : (state.instances[0] || null); }
 function selectedInstanceMissing() { return !!state.instanceId && !state.instances.some((x) => x.id === state.instanceId); }
+function panelMessageKey() { return `${state.instanceId || "default"}:${state.sessionId || "new"}`; }
+function messageIdentity(m) { return String(m?.id || "").trim(); }
+function hiddenMessageSet(key = panelMessageKey()) { return state.hiddenMessages[key] || (state.hiddenMessages[key] = new Set()); }
+function visibleMessages(messages) { const hidden = hiddenMessageSet(); return items(messages).filter((m) => !hidden.has(messageIdentity(m))); }
 function setTitle(title, hint) { $("pageTitle").textContent = title; $("pageHint").textContent = hint; document.title = `${title} - MaClawSrv`; }
 function initChrome() { document.documentElement.lang = locale === "zh" ? "zh-CN" : "en"; document.querySelector(".skip-link").textContent = t("skipToMain"); document.querySelector(".sidebar").setAttribute("aria-label", t("appSections")); document.querySelector(".nav").setAttribute("aria-label", t("userViews")); $("brandSubtitle").textContent = t("userWorkspace"); document.querySelector('[data-view="assistant"]').textContent = t("assistantNav"); document.querySelector('[data-view="settings"]').textContent = t("settingsNav"); $("logoutBtn").textContent = t("logout"); if (!state.me) $("identity").textContent = t("notSignedIn"); setBusy(state.busy); }
 function updateNav() { document.querySelectorAll("[data-view]").forEach((b) => { const on = b.dataset.view === state.view; b.classList.toggle("active", on); b.setAttribute("aria-current", on ? "page" : "false"); }); }
@@ -207,22 +211,29 @@ async function loadSessionsAndMessages() {
     renderSessions();
     if (state.sessionId) {
       const msgs = await api(`/api/v1/instances/${encodeURIComponent(inst.id)}/sessions/${encodeURIComponent(state.sessionId)}/messages?limit=100`);
-      state.messages = items(msgs); renderMessages();
+      state.messages = visibleMessages(msgs); renderMessages();
     } else { renderEmptyChat(t("firstMessage")); }
   } catch (e) { if (!handleAPIError(e)) renderEmptyChat(e.message, true); }
 }
 function renderSessions() {
   const box = $("sessionList");
   box.innerHTML = `<h3>${t("sessions")}</h3>` + (state.sessions.map((s) => `<button type="button" class="instance ${s.id === state.sessionId ? "active" : ""}" data-session="${esc(s.id)}"><strong>${esc(s.title || s.id)}</strong><span class="muted">${esc(s.status || "active")}</span></button>`).join("") || `<div class="muted">${t("noSessions")}</div>`);
-  box.querySelectorAll("[data-session]").forEach((b) => b.onclick = async () => { state.sessionId = b.dataset.session; await loadSessionsAndMessages(); });
+  box.querySelectorAll("[data-session]").forEach((b) => b.onclick = async () => { if (state.sessionId !== b.dataset.session) resetRunState(); state.sessionId = b.dataset.session; await loadSessionsAndMessages(); });
+}
+function upsertSession(session) {
+  if (!session?.id) return;
+  const idx = state.sessions.findIndex((s) => s.id === session.id);
+  if (idx >= 0) state.sessions[idx] = session; else state.sessions.unshift(session);
+  renderSessions();
 }
 function renderEmptyChat(text, isError = false) { state.messages = []; state.copySnippets = []; updateJumpLatestButton(false); $("messages").innerHTML = `<div class="message assistant ${isError ? "error" : ""}">${esc(text)}</div>`; }
 function clearPanelContent() {
   resetRunState();
+  const hidden = hiddenMessageSet();
+  state.messages.map(messageIdentity).filter(Boolean).forEach((id) => hidden.add(id));
   state.messages = [];
   state.copySnippets = [];
-  const panel = $("runPanel");
-  if (panel) { panel.classList.add("hidden"); panel.innerHTML = ""; }
+  renderRunPanel(null);
   updateJumpLatestButton(false);
   const box = $("messages");
   if (box) box.innerHTML = `<div class="message assistant">${t("noMessages")}</div>`;
@@ -231,10 +242,15 @@ function clearPanelContent() {
 function addThinkingPlaceholder(runId = "") {
   removeThinkingPlaceholders();
   state.messages.push({ id: `local-thinking-${Date.now()}`, role: "assistant", content: thinkingLabel(), created_at: new Date().toISOString(), local_thinking: true, run_id: runId });
-  renderMessages();
+  renderMessages(true);
 }
 function removeThinkingPlaceholders() {
   state.messages = state.messages.filter((m) => !m.local_thinking);
+}
+function removeThinkingPlaceholdersAndRender() {
+  const before = state.messages.length;
+  removeThinkingPlaceholders();
+  if (state.messages.length !== before) renderMessages();
 }
 function replaceLocalMessage(localId, message) {
   if (!message?.id) return;
@@ -392,7 +408,7 @@ function latestLabel() { return locale === "en" ? "Latest" : "最新消息"; }
 function clearContentLabel() { return locale === "en" ? "Clear" : "清空内容"; }
 function contentClearedLabel() { return locale === "en" ? "Panel cleared" : "面板内容已清空"; }
 function sendingLabel() { return locale === "en" ? "Sending..." : "发送中..."; }
-function thinkingLabel() { return locale === "en" ? "Thinking..." : "思考中..."; }
+function thinkingLabel() { return locale === "en" ? "Thinking" : "思考中"; }
 function copyFailedLabel() { return locale === "en" ? "Copy failed" : "复制失败"; }
 function fallbackCopyText(value) {
   const area = document.createElement("textarea");
@@ -433,10 +449,11 @@ function bindMessageCopyButtons(msgs) {
 function shouldStickMessagesToBottom(el) { return !el || el.scrollHeight <= el.clientHeight || el.scrollHeight - el.scrollTop - el.clientHeight < 80; }
 function updateJumpLatestButton(show) { const btn = $("jumpLatest"); if (btn) btn.classList.toggle("hidden", !show); }
 function bindJumpLatestButton() { const btn = $("jumpLatest"); const box = $("messages"); if (!btn || !box) return; btn.onclick = () => { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); }; box.onscroll = () => { if (shouldStickMessagesToBottom(box)) updateJumpLatestButton(false); }; }
-function renderMessages() { const box = $("messages"); const stick = shouldStickMessagesToBottom(box); const msgs = orderedMessages(); state.copySnippets = []; box.innerHTML = msgs.map((m, idx) => `<article class="message ${messageRoleClass(m.role || "assistant")} ${m.local_pending || m.local_thinking ? "pending" : ""}"><div class="message-head"><div class="message-meta"><strong>${esc(m.role || "assistant")}</strong>${messageMetaHTML(m)}${m.local_pending ? `<span class="message-time">${sendingLabel()}</span>` : ""}</div><button type="button" class="copy-btn" data-copy-message="${idx}" aria-label="${esc(copyLabel())}">${esc(copyLabel())}</button></div><div class="md-content ${m.local_thinking ? "thinking" : ""}">${renderMarkdown(m.content || m.text || "", state.copySnippets)}</div>${messageDetails(m)}</article>`).join("") || `<div class="message assistant">${t("noMessages")}</div>`; bindMessageCopyButtons(msgs); bindJumpLatestButton(); if (stick) { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); } else { updateJumpLatestButton(true); } }
+function messageCopyButtonHTML(m, idx) { return m.local_thinking || !String(m.content || m.text || "").trim() ? "" : `<button type="button" class="copy-btn" data-copy-message="${idx}" aria-label="${esc(copyLabel())}">${esc(copyLabel())}</button>`; }
+function renderMessages(forceStick = false) { const box = $("messages"); const stick = forceStick || shouldStickMessagesToBottom(box); const msgs = orderedMessages(); state.copySnippets = []; box.innerHTML = msgs.map((m, idx) => `<article class="message ${messageRoleClass(m.role || "assistant")} ${m.local_pending || m.local_thinking ? "pending" : ""}"><div class="message-head"><div class="message-meta"><strong>${esc(m.role || "assistant")}</strong>${messageMetaHTML(m)}${m.local_pending ? `<span class="message-time">${sendingLabel()}</span>` : ""}</div>${messageCopyButtonHTML(m, idx)}</div><div class="md-content ${m.local_thinking ? "thinking" : ""}">${renderMarkdown(m.content || m.text || "", state.copySnippets)}</div>${messageDetails(m)}</article>`).join("") || `<div class="message assistant">${t("noMessages")}</div>`; bindMessageCopyButtons(msgs); bindJumpLatestButton(); if (stick) { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); } else { updateJumpLatestButton(true); } }
 function renderRunPanel(run) {
   const panel = $("runPanel"); if (!panel) return;
-  state.currentRun = run || state.currentRun;
+  if (run === null) state.currentRun = null; else state.currentRun = run || state.currentRun;
   const r = state.currentRun;
   if (!r || !r.id) { panel.classList.add("hidden"); panel.innerHTML = ""; return; }
   const running = r.status === "running";
@@ -463,9 +480,30 @@ function parseSSEFrame(part) {
   const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
   return { event, data };
 }
+function splitSSEBuffer(buffer) {
+  const frames = [];
+  let rest = String(buffer || "");
+  while (rest) {
+    const lf = rest.indexOf("\n\n");
+    const crlf = rest.indexOf("\r\n\r\n");
+    const useCRLF = crlf >= 0 && (lf < 0 || crlf < lf);
+    const idx = useCRLF ? crlf : lf;
+    if (idx < 0) break;
+    frames.push(rest.slice(0, idx));
+    rest = rest.slice(idx + (useCRLF ? 4 : 2));
+  }
+  return { frames, rest };
+}
 function parseSSEJSON(frame) {
   if (!frame.data) return null;
   try { return JSON.parse(frame.data); } catch { return null; }
+}
+function handleRunFrame(part) {
+  const frame = parseSSEFrame(part);
+  const payload = parseSSEJSON(frame);
+  if (frame.event === "error") throw new Error(payload?.error || "stream error");
+  if (payload) handleRunEvent(payload);
+  if (frame.event === "done" && !payload?.snapshot?.assistant_message) removeThinkingPlaceholdersAndRender();
 }
 async function watchRun(run) {
   if (!run?.id) return;
@@ -480,14 +518,11 @@ async function watchRun(run) {
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n"); buf = parts.pop() || "";
-      for (const part of parts) {
-        const frame = parseSSEFrame(part);
-        const payload = parseSSEJSON(frame);
-        if (frame.event === "error") throw new Error(payload?.error || "stream error");
-        if (payload) handleRunEvent(payload);
-      }
+      const split = splitSSEBuffer(buf); buf = split.rest;
+      split.frames.forEach(handleRunFrame);
     }
+    buf += decoder.decode();
+    if (buf.trim()) handleRunFrame(buf);
     await loadSessionsAndMessages();
   } catch (e) { if (e.name !== "AbortError") { removeThinkingPlaceholders(); renderMessages(); if (!handleAPIError(e)) toast(e.message); } }
   finally { if (state.runStream === controller) state.runStream = null; }
@@ -513,13 +548,14 @@ async function sendMessage(e) {
   promptEl.value = "";
   autoResizePrompt();
   state.messages.push({ id: optimisticId, role: "user", content, created_at: new Date().toISOString(), local_pending: true });
-  renderMessages();
+  addThinkingPlaceholder();
   try {
     setBusy(true);
     const body = { content, input_type: "text", title: t("webSession") };
     if (state.sessionId) body.session_id = state.sessionId;
     const out = await api(`/api/v1/instances/${encodeURIComponent(inst.id)}/messages`, { method: "POST", body: JSON.stringify(body) });
     state.sessionId = out.session?.id || state.sessionId;
+    upsertSession(out.session);
     replaceLocalMessage(optimisticId, out.message);
     updateSendButtonState();
     renderRunPanel(out.run);

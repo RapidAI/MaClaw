@@ -1,6 +1,7 @@
 package agentservice
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -169,9 +170,9 @@ func (d *srvExecDeps) OnStepProgress(stepIndex, totalSteps int, stepAction, stat
 func executeBashCommand(ctx context.Context, command, workDir string, extraEnv map[string]string) (string, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+		cmd = exec.Command("cmd", "/c", command)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		cmd = exec.Command("sh", "-c", command)
 	}
 	if workDir != "" {
 		cmd.Dir = workDir
@@ -182,9 +183,17 @@ func executeBashCommand(ctx context.Context, command, workDir string, extraEnv m
 		env = append(env, k+"="+v)
 	}
 	cmd.Env = env
+	prepareCommandForTreeKill(cmd)
 
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	err := cmd.Start()
+	if err == nil {
+		err = waitCommandWithContext(ctx, cmd)
+	}
+	return output.String(), err
 }
 
 // SetSkillToolProvider wires the skill tool provider into the executor.

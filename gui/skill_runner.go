@@ -2499,7 +2499,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 		defer os.Remove(tmpScript)
 	}
 
-	cmd := exec.CommandContext(stepCtx, shellName, shellArgs...)
+	cmd := exec.Command(shellName, shellArgs...)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -2507,13 +2507,17 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	// GBK/CP936 mojibake when scripts output non-ASCII text.
 	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(os.Environ()), params)
 	hideCommandWindow(cmd)
+	prepareCommandForTreeKill(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	startTime := time.Now()
 	log.Printf("[skill-runner] bash exec: shell=%s workDir=%s timeout=%ds", filepath.Base(shellName), workDir, timeout)
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		err = waitCommandWithContext(stepCtx, cmd)
+	}
 	elapsed := time.Since(startTime)
 
 	// Sanitize invalid UTF-8 sequences (e.g. GBK remnants from cmd.exe on

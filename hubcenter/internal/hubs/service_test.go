@@ -463,6 +463,50 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 	}
 }
 
+func TestListUserDashboardDoesNotExposeTenantDomainsOnOpenHubRow(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	hub := &store.HubInstance{
+		ID:                 "hub_open_signup",
+		OwnerEmail:         "owner@example.com",
+		Name:               "Open Hub",
+		BaseURL:            "https://open.example.com",
+		Status:             "online",
+		AcceptPublicSignup: true,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		LastSeenAt:         &now,
+		CapabilitiesJSON: mustJSON(map[string]any{
+			"corporate_email_domains": []any{"tenant-a.example", "tenant-b.example"},
+			"tenant_domains":          map[string]any{"tenant_a": []any{"tenant-a.example"}},
+		}),
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("seed hub: %v", err)
+	}
+
+	items, err := svc.ListUserDashboard(ctx)
+	if err != nil {
+		t.Fatalf("ListUserDashboard: %v", err)
+	}
+	byTenant := map[string]HubUserDashboardItem{}
+	for _, item := range items {
+		byTenant[item.TenantID] = item
+	}
+	if got := byTenant[""].CorporateEmailDomains; len(got) != 0 {
+		t.Fatalf("physical hub row should not expose tenant domains, got %#v", got)
+	}
+	if byTenant[""].SignupMode != "public_signup" {
+		t.Fatalf("physical hub signup mode = %q", byTenant[""].SignupMode)
+	}
+	if got := byTenant["tenant_a"].CorporateEmailDomains; !reflect.DeepEqual(got, []string{"tenant-a.example"}) {
+		t.Fatalf("tenant row domains = %#v", got)
+	}
+}
+
 func TestDashboardTenantCapabilitiesAcceptTypedMaps(t *testing.T) {
 	caps := map[string]any{
 		"tenant_user_emails":    map[string][]any{"": []any{"default@example.com"}, "tenant_a": []any{"alice@example.com", "bob@example.com"}},
