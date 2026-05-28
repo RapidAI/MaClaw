@@ -191,6 +191,10 @@ export function GroupDiscussionDownloadAttachment(arg1, arg2, arg3) {
   return window['go']['main']['App']['GroupDiscussionDownloadAttachment'](arg1, arg2, arg3);
 }
 
+export function GroupDiscussionAttachmentPreviewDataURL(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionAttachmentPreviewDataURL'](arg1, arg2);
+}
+
 export function GroupDiscussionGetReadiness(arg1) {
   return window['go']['main']['App']['GroupDiscussionGetReadiness'](arg1);
 }
@@ -1157,6 +1161,10 @@ export function CancelAIAssistantSession() {
   return window['go']['main']['App']['CancelAIAssistantSession']();
 }
 
+export function CancelAIAssistantSessionForSession(arg1) {
+  return window['go']['main']['App']['CancelAIAssistantSessionForSession'](arg1);
+}
+
 export function InjectAIAssistantSupplementary(arg1) {
   return window['go']['main']['App']['InjectAIAssistantSupplementary'](arg1);
 }
@@ -1199,6 +1207,10 @@ export function GetAIAssistantTrace(arg1) {
 
 export function ListBackgroundLoops() {
   return window['go']['main']['App']['ListBackgroundLoops']();
+}
+
+export function ListSSHBackgroundTasks() {
+  return window['go']['main']['App']['ListSSHBackgroundTasks']();
 }
 
 export function StopBackgroundLoop(arg1) {

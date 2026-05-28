@@ -1,4 +1,4 @@
-﻿server:
+server:
   listen_host: 0.0.0.0
   listen_port: 9388
   public_base_url: https://hubs.maclaw.top
@@ -9,9 +9,14 @@ ha:
   node_name: hubcenter-2
   advertise_url: https://hubs.maclaw.top
   cluster_secret: replace-with-a-long-random-shared-secret
-  sync_interval_seconds: 3
+  sync_interval_seconds: 180
+  push_debounce_seconds: 180
   pull_batch_size: 200
-  heartbeat_sync_min_interval_seconds: 10
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  history_max_retained_ops: 50000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
   peers:
     - node_id: hc-1
       name: hubcenter-1
@@ -26,8 +31,8 @@ database:
   driver: sqlite
   dsn: './data/hubcenter-hc-2.db'
   wal: true
-  busy_timeout_ms: 5000
-  max_read_open_conns: 8
+  busy_timeout_ms: 10000
+  max_read_open_conns: 4
   max_read_idle_conns: 4
   max_write_open_conns: 1
   max_write_idle_conns: 1

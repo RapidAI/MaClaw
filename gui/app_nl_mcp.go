@@ -71,17 +71,17 @@ type MCPServerView struct {
 
 // LocalMCPServerView is the Wails-facing view of a local MCP server including managed status.
 type LocalMCPServerView struct {
-	ID        string                          `json:"id"`
-	Name      string                          `json:"name"`
-	Command   string                          `json:"command"`
-	Args      []string                        `json:"args,omitempty"`
-	Env       map[string]string               `json:"env,omitempty"`
-	Disabled  bool                            `json:"disabled,omitempty"`
-	AutoStart bool                            `json:"auto_start,omitempty"`
-	CreatedAt string                          `json:"created_at"`
-	Source    corelib.MCPServerSource         `json:"source,omitempty"`
+	ID         string                          `json:"id"`
+	Name       string                          `json:"name"`
+	Command    string                          `json:"command"`
+	Args       []string                        `json:"args,omitempty"`
+	Env        map[string]string               `json:"env,omitempty"`
+	Disabled   bool                            `json:"disabled,omitempty"`
+	AutoStart  bool                            `json:"auto_start,omitempty"`
+	CreatedAt  string                          `json:"created_at"`
+	Source     corelib.MCPServerSource         `json:"source,omitempty"`
 	Capability *corelib.MCPServerCapabilityRef `json:"capability,omitempty"`
-	Managed   bool                            `json:"managed"`
+	Managed    bool                            `json:"managed"`
 }
 
 // MCPRegistry manages locally-registered MCP Servers on the MaClaw client.
@@ -801,6 +801,9 @@ func (a *App) RegisterMCPServer(server corelib.MCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("web_fetch", map[string]interface{}{"url": server.EndpointURL}); !ok {
+		return fmt.Errorf("%s", reason)
+	}
 	return a.mcpRegistry.Register(server)
 }
 
@@ -808,6 +811,9 @@ func (a *App) RegisterMCPServer(server corelib.MCPServerEntry) error {
 func (a *App) UpdateMCPServer(server corelib.MCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
+	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("web_fetch", map[string]interface{}{"url": server.EndpointURL}); !ok {
+		return fmt.Errorf("%s", reason)
 	}
 	if err := a.mcpRegistry.Update(server); err != nil {
 		return err
@@ -843,15 +849,20 @@ func (a *App) CheckMCPServerHealth(serverID string) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
+	if entry, err := a.mcpRegistry.findServer(serverID); err == nil && entry != nil {
+		if ok, reason := a.enforceHubSecurityAppPolicy("web_fetch", map[string]interface{}{"url": entry.EndpointURL}); !ok {
+			return fmt.Errorf("%s", reason)
+		}
+	}
 	return a.mcpRegistry.HealthCheck(serverID)
 }
 
 // MCPEndpointTestResult holds the result of probing an arbitrary MCP endpoint.
 type MCPEndpointTestResult struct {
-	Success  bool          `json:"success"`
-	Message  string        `json:"message"`
-	Tools    []MCPToolView `json:"tools"`
-	Latency  int64         `json:"latency_ms"`
+	Success bool          `json:"success"`
+	Message string        `json:"message"`
+	Tools   []MCPToolView `json:"tools"`
+	Latency int64         `json:"latency_ms"`
 }
 
 // TestMCPEndpoint probes an arbitrary MCP endpoint (without requiring registration)
@@ -862,6 +873,9 @@ func (a *App) TestMCPEndpoint(endpointURL string, authType string, authSecret st
 	}
 	if endpointURL == "" {
 		return MCPEndpointTestResult{Message: "Endpoint URL is required"}
+	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("web_fetch", map[string]interface{}{"url": endpointURL}); !ok {
+		return MCPEndpointTestResult{Message: reason}
 	}
 
 	// Build a temporary MCPServerEntry for the probe.
@@ -1138,6 +1152,9 @@ func (a *App) RegisterLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("bash", map[string]interface{}{"command": strings.Join(append([]string{server.Command}, server.Args...), " ")}); !ok {
+		return fmt.Errorf("%s", reason)
+	}
 	return a.mcpRegistry.RegisterLocal(server)
 }
 
@@ -1145,6 +1162,9 @@ func (a *App) RegisterLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 func (a *App) UpdateLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
+	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("bash", map[string]interface{}{"command": strings.Join(append([]string{server.Command}, server.Args...), " ")}); !ok {
+		return fmt.Errorf("%s", reason)
 	}
 	return a.mcpRegistry.UpdateLocal(server)
 }

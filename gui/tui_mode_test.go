@@ -215,6 +215,63 @@ func TestGUITUIConfigSaveReportsEmptyApp(t *testing.T) {
 	}
 }
 
+func TestGUITUIConfigSaveRejectsHubManagedSecurityKey(t *testing.T) {
+	backend := &App{testHomeDir: t.TempDir()}
+	cfg := corelib.AppConfig{Language: "en", HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: true, ImageOutboundEnabled: true}
+	if err := backend.SaveConfig(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app := &tuiModeApp{app: backend}
+
+	msg := app.saveConfig(views.ConfigSaveMsg{Key: "security_policy_mode", Value: "developer"})()
+	failed, ok := msg.(views.ConfigSaveFailedMsg)
+	if !ok {
+		t.Fatalf("message = %T, want ConfigSaveFailedMsg", msg)
+	}
+	if !strings.Contains(failed.Error, "Hub") {
+		t.Fatalf("failure = %#v, want Hub-managed reason", failed)
+	}
+	loaded, err := backend.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.SecurityPolicyMode != "strict" || loaded.SandboxMode != "os" || loaded.NetworkLevel != "none" {
+		t.Fatalf("managed security config changed: %#v", loaded)
+	}
+}
+
+func TestGUITUIConfigSnapshotPreservesHubManagedSecurity(t *testing.T) {
+	backend := &App{testHomeDir: t.TempDir()}
+	current := corelib.AppConfig{Language: "zh", HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: false, ImageOutboundEnabled: false}
+	if err := backend.SaveConfig(current); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app := &tuiModeApp{app: backend}
+	snapshot := current
+	snapshot.Language = "en"
+	snapshot.HubSecurityCentralized = false
+	snapshot.SecurityPolicyMode = "developer"
+	snapshot.SandboxMode = "none"
+	snapshot.NetworkLevel = "full"
+	snapshot.FileOutboundEnabled = true
+	snapshot.ImageOutboundEnabled = true
+
+	msg := app.saveConfig(views.ConfigSaveMsg{Key: "language", Value: "en", Config: snapshot, HasConfig: true})()
+	if _, ok := msg.(views.ConfigSavedMsg); !ok {
+		t.Fatalf("message = %T, want ConfigSavedMsg", msg)
+	}
+	loaded, err := backend.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.Language != "en" {
+		t.Fatalf("language = %q, want en", loaded.Language)
+	}
+	if !loaded.HubSecurityCentralized || loaded.SecurityPolicyMode != "strict" || loaded.SandboxMode != "os" || loaded.NetworkLevel != "none" || loaded.FileOutboundEnabled || loaded.ImageOutboundEnabled {
+		t.Fatalf("managed security config was overwritten: %#v", loaded)
+	}
+}
+
 func TestGUITUIConfigSavedLanguageUpdatesRoot(t *testing.T) {
 	app := &tuiModeApp{root: views.NewRootModel("zh")}
 
@@ -347,5 +404,40 @@ func TestGUITUIAddMCPRejectsMissingFieldsBeforeAppUse(t *testing.T) {
 	}
 	if remoteResult.Success || remoteResult.Message == "" {
 		t.Fatalf("remote result = %#v, want validation failure", remoteResult)
+	}
+}
+
+func TestGUITUIAddMCPHonorsHubSecurityPolicy(t *testing.T) {
+	tmpHome := t.TempDir()
+	backend := &App{testHomeDir: tmpHome}
+	if err := backend.SaveConfig(corelib.AppConfig{HubSecurityCentralized: true, SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: true, ImageOutboundEnabled: true}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app := &tuiModeApp{app: backend}
+
+	localMsg := app.addLocalMCP(corelib.LocalMCPServerEntry{Name: "local", Command: "node", Args: []string{"server.js"}})()
+	localResult, ok := localMsg.(views.ToolOperationResultMsg)
+	if !ok {
+		t.Fatalf("local message = %T, want ToolOperationResultMsg", localMsg)
+	}
+	if localResult.Success || !strings.Contains(localResult.Message, "sandbox") {
+		t.Fatalf("local result = %#v, want sandbox rejection", localResult)
+	}
+
+	remoteMsg := app.addRemoteMCP(corelib.MCPServerEntry{Name: "remote", EndpointURL: "https://mcp.example/rpc"})()
+	remoteResult, ok := remoteMsg.(views.ToolOperationResultMsg)
+	if !ok {
+		t.Fatalf("remote message = %T, want ToolOperationResultMsg", remoteMsg)
+	}
+	if remoteResult.Success || !strings.Contains(remoteResult.Message, "network") {
+		t.Fatalf("remote result = %#v, want network rejection", remoteResult)
+	}
+
+	loaded, err := backend.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.LocalMCPServers) != 0 || len(loaded.MCPServers) != 0 {
+		t.Fatalf("blocked MCP entries persisted: local=%d remote=%d", len(loaded.LocalMCPServers), len(loaded.MCPServers))
 	}
 }

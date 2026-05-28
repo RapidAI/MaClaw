@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -39,13 +40,16 @@ type LLMIntentClassification struct {
 	Evidence   []string `json:"evidence"`
 }
 
-// UnifiedClassifier is the package-level UIC instance. When non-nil,
-// ClassifyTaskIntent delegates to it. Local keyword routing is disabled.
-var UnifiedClassifier *intent.UnifiedIntentClassifier
+var unifiedClassifierPtr atomic.Pointer[intent.UnifiedIntentClassifier]
 
 // SetUnifiedClassifier sets the package-level UIC used by ClassifyTaskIntent.
 func SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
-	UnifiedClassifier = uic
+	unifiedClassifierPtr.Store(uic)
+}
+
+// GetUnifiedClassifier returns the package-level UIC used by ClassifyTaskIntent.
+func GetUnifiedClassifier() *intent.UnifiedIntentClassifier {
+	return unifiedClassifierPtr.Load()
 }
 
 // IntentClassifierJSONSchema is the JSON schema for the LLM intent classifier.
@@ -78,7 +82,7 @@ Classify by the action required, not by isolated words. Return only JSON matchin
 // decisive high-risk routes and tool/action execution, not to the absence of a
 // workflow classification.
 func ClassifyTaskIntent(text string) TaskIntentResult {
-	if uic := UnifiedClassifier; uic != nil {
+	if uic := GetUnifiedClassifier(); uic != nil {
 		result := uic.Classify(intent.MessageContext{Text: text})
 		intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
 		return TaskIntentResult{

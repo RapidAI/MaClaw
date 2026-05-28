@@ -18,7 +18,7 @@ const (
 func classifyCraftAPIError(message string) craftAPIErrorKind {
 	payload, hasPayload := parseCraftAPIErrorPayload(message)
 	if hasPayload && payload.Code == "1234" {
-		if strings.Contains(message, "缂冩垹绮堕柨娆掝嚖") {
+		if strings.Contains(message, "网络错误") {
 			return craftAPIErrorCode1234Transient
 		}
 		return craftAPIErrorCode1234
@@ -44,6 +44,10 @@ type craftAPIErrorPayload struct {
 }
 
 func parseCraftAPIErrorPayload(message string) (craftAPIErrorPayload, bool) {
+	message = strings.TrimSpace(message)
+	if start, end := strings.Index(message, "{"), strings.LastIndex(message, "}"); start >= 0 && end > start {
+		message = message[start : end+1]
+	}
 	var wire struct {
 		Type  string `json:"type"`
 		Code  string `json:"code"`

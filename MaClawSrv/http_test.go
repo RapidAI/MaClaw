@@ -49,6 +49,7 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 		t.Fatalf("expected instance path in openapi doc")
 	}
 	for _, path := range []string{
+		"/api/platform/virtual-employees/{employeeId}/config",
 		"/api/platform/source-users/runtime-status",
 		"/api/platform/source-users/{sourceUserId}/runtime-status",
 		"/api/platform/source-users/{sourceUserId}/assistant-instances",
@@ -394,6 +395,59 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 }
 
+func TestOpenAPIKnowledgeFileImportsUseMultipart(t *testing.T) {
+	doc := buildOpenAPISpec()
+	paths, ok := doc["paths"].(map[string]map[string]any)
+	if !ok {
+		t.Fatalf("expected typed OpenAPI paths map")
+	}
+	for _, path := range []string{
+		"/api/v1/knowledge/import/file",
+		"/api/v1/admin/public-knowledge-libraries/{libraryId}/import/file",
+	} {
+		pathItem, ok := paths[path]
+		if !ok {
+			t.Fatalf("missing OpenAPI path %s", path)
+		}
+		op, ok := pathItem["post"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing POST operation %s", path)
+		}
+		description, _ := op["description"].(string)
+		if !strings.Contains(description, "one or more") || !strings.Contains(description, "async job") {
+			t.Fatalf("file import description does not describe batch async import: %q", description)
+		}
+		requestBody, ok := op["requestBody"].(map[string]any)
+		if !ok || requestBody["required"] != true {
+			t.Fatalf("missing required request body for %s: %#v", path, op["requestBody"])
+		}
+		content, ok := requestBody["content"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing request content for %s: %#v", path, requestBody)
+		}
+		multipart, ok := content["multipart/form-data"].(map[string]any)
+		if !ok {
+			t.Fatalf("file import must use multipart/form-data, got %#v", content)
+		}
+		schema, ok := multipart["schema"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing multipart schema for %s: %#v", path, multipart)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing multipart properties for %s: %#v", path, schema)
+		}
+		fileProp, ok := properties["file"].(map[string]any)
+		if !ok || fileProp["type"] != "array" || fileProp["maxItems"] != maxKnowledgeUploadFiles {
+			t.Fatalf("file property should be bounded binary array for %s: %#v", path, fileProp)
+		}
+		items, ok := fileProp["items"].(map[string]any)
+		if !ok || items["format"] != "binary" {
+			t.Fatalf("file items should be binary for %s: %#v", path, fileProp)
+		}
+	}
+}
+
 func TestOpenAPICoversRegisteredAdminRoutes(t *testing.T) {
 	source, err := os.ReadFile("http.go")
 	if err != nil {
@@ -477,6 +531,7 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/admin/runtime/status", "operator"},
 		{http.MethodPost, "/api/v1/admin/runtime/gc", "owner"},
+		{http.MethodGet, "/api/v1/admin/jobs/{jobId}", "operator"},
 		{http.MethodPost, "/api/v1/admin/jobs/{jobId}/cancel", "owner"},
 		{http.MethodPost, "/api/v1/admin/logs/{sourceId}/rotate", "owner"},
 		{http.MethodPatch, "/api/v1/admin/service-config/draft", "owner"},
@@ -515,10 +570,19 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/snapshots/prune", "owner"},
 		{http.MethodPost, "/api/v1/admin/snapshots/{snapshotId}/restore", "owner"},
 		{http.MethodDelete, "/api/v1/admin/snapshots/{snapshotId}", "owner"},
+		{http.MethodGet, "/api/v1/admin/public-knowledge-libraries", "operator"},
+		{http.MethodPost, "/api/v1/admin/public-knowledge-libraries", "owner"},
+		{http.MethodGet, "/api/v1/admin/public-knowledge-libraries/{libraryId}/sources", "operator"},
+		{http.MethodDelete, "/api/v1/admin/public-knowledge-libraries/{libraryId}", "owner"},
+		{http.MethodPost, "/api/v1/admin/public-knowledge-libraries/{libraryId}/import/text", "owner"},
+		{http.MethodPost, "/api/v1/admin/public-knowledge-libraries/{libraryId}/import/file", "owner"},
+		{http.MethodPost, "/api/v1/admin/public-knowledge-libraries/{libraryId}/import/urls", "owner"},
 		{http.MethodDelete, "/api/v1/admin/tenants/{tenantId}/knowledge", "owner"},
 		{http.MethodPut, "/api/v1/admin/knowledge-access/cross-tenant", "owner"},
 		{http.MethodPut, "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", "owner"},
 		{http.MethodDelete, "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", "owner"},
+		{http.MethodPost, "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", "owner"},
 		{http.MethodPut, "/api/v1/admin/skill-sources/global", "owner"},
 		{http.MethodPut, "/api/v1/admin/skill-sources/tenant/{id}", "owner"},
 		{http.MethodDelete, "/api/v1/admin/skill-sources/tenant/{id}", "owner"},
@@ -3818,6 +3882,9 @@ func TestMCPRemoteServerCRUDAndTools(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer remote-secret" {
 			t.Fatalf("authorization = %q", got)
 		}
+		if got := r.Header.Get("X-MCP-Token"); got != "header-secret" {
+			t.Fatalf("x-mcp-token = %q", got)
+		}
 		if got := r.Header.Get("Mcp-Session-Id"); got != "session-1" {
 			t.Fatalf("session id = %q", got)
 		}
@@ -3826,7 +3893,7 @@ func TestMCPRemoteServerCRUDAndTools(t *testing.T) {
 	}))
 	defer remoteMCP.Close()
 
-	body := fmt.Sprintf(`{"kind":"remote","name":"Docs MCP","endpoint_url":%q,"auth_type":"bearer","auth_secret":"remote-secret"}`, remoteMCP.URL)
+	body := fmt.Sprintf(`{"kind":"remote","name":"Docs MCP","endpoint_url":%q,"auth_type":"bearer","auth_secret":"remote-secret","headers":{"X-MCP-Token":"header-secret"}}`, remoteMCP.URL)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -3843,6 +3910,14 @@ func TestMCPRemoteServerCRUDAndTools(t *testing.T) {
 	}
 	if created.HasAuthSecret != true {
 		t.Fatalf("expected auth secret marker on created remote MCP server: %#v", created)
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/api/v1/mcp/servers/"+created.ID, bytes.NewBufferString(`{"auth_secret":"******","headers":{"X-MCP-Token":"******"}}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("masked remote MCP update status = %d body = %s", w.Code, w.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers/"+created.ID+"/health-check", nil)
@@ -3929,6 +4004,124 @@ func TestMCPServerViewsRedactLocalPathsAndSecrets(t *testing.T) {
 		t.Fatalf("expected local command path basename, got %#v", localView)
 	}
 }
+
+func TestMCPMarketplaceSearchAndInstall(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	marketPayload := `{"items":[{"id":"jira-mcp","capability_id":"jira-mcp","display_name":"Jira MCP","description":"Jira tools","version":"1.0.0","mcp":{"id":"jira-mcp","name":"Jira MCP","endpoint_url":"https://mcp.example/mcp","auth_type":"none"}}]}`
+	market := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/api/capability-market/mcp?q=jira" && r.URL.RequestURI() != "/api/capability-market/mcp?q=jira-mcp" {
+			t.Fatalf("unexpected marketplace request %s", r.URL.RequestURI())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(marketPayload))
+	}))
+	defer market.Close()
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{RemoteHubCenterURL: market.URL}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	tamperedDirect := agentservice.MCPCapabilitySummary{ID: "evil-mcp", CapabilityID: "evil-mcp", MetadataJSON: `{"mcp":{"id":"evil-mcp","name":"Evil MCP","endpoint_url":"https://evil.example/mcp","auth_type":"none"}}`}
+	body, err := json.Marshal(tamperedDirect)
+	if err != nil {
+		t.Fatalf("marshal direct tampered item: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/market/install", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code == http.StatusCreated {
+		t.Fatalf("direct tampered MCP market install should be rejected, body = %s", w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/mcp/market?q=jira", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("search mcp market status = %d body = %s", w.Code, w.Body.String())
+	}
+	var search struct {
+		Items []agentservice.MCPCapabilitySummary `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&search); err != nil {
+		t.Fatalf("decode market search: %v", err)
+	}
+	if len(search.Items) != 1 || search.Items[0].CapabilityID != "jira-mcp" || search.Items[0].Source != corelib.CapabilitySourceHubCenter {
+		t.Fatalf("unexpected market search items: %#v", search.Items)
+	}
+
+	installItem := search.Items[0]
+	installItem.MetadataJSON = `{"mcp":{"id":"jira-mcp","name":"Tampered MCP","endpoint_url":"https://evil.example/mcp","auth_type":"none"}}`
+	body, err = json.Marshal(installItem)
+	if err != nil {
+		t.Fatalf("marshal market item: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/market/install", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("install mcp market status = %d body = %s", w.Code, w.Body.String())
+	}
+	var created agentservice.MCPServerView
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode installed MCP: %v", err)
+	}
+	if created.Name != "Jira MCP" || created.EndpointURL != "https://mcp.example/mcp" || created.Source != corelib.MCPSourceMarket || created.Capability == nil || created.Capability.CapabilityID != "jira-mcp" {
+		t.Fatalf("unexpected installed MCP: %#v", created)
+	}
+
+	marketPayload = `{"items":[{"id":"jira-mcp","capability_id":"jira-mcp","display_name":"Jira MCP","description":"Jira tools","version":"1.0.1","mcp":{"id":"jira-mcp","name":"Jira MCP","command":"npx","args":["-y","@example/jira-mcp"]}}]}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/market/install", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("reinstall changed transport MCP status = %d body = %s", w.Code, w.Body.String())
+	}
+	var changed agentservice.MCPServerView
+	if err := json.NewDecoder(w.Body).Decode(&changed); err != nil {
+		t.Fatalf("decode changed MCP: %v", err)
+	}
+	if changed.Kind != "local" || changed.Command != "npx" || changed.Capability == nil || changed.Capability.CapabilityID != "jira-mcp" {
+		t.Fatalf("unexpected changed transport MCP: %#v", changed)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/mcp/servers", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Jira MCP") || !strings.Contains(w.Body.String(), string(corelib.MCPSourceMarket)) {
+		t.Fatalf("list installed MCP status = %d body = %s", w.Code, w.Body.String())
+	}
+	var listed struct {
+		Items []agentservice.MCPServerView `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode listed MCP: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].Kind != "local" {
+		t.Fatalf("expected changed transport to replace prior MCP entry, got %#v", listed.Items)
+	}
+}
+
 func TestListMCPServersSupportsPagination(t *testing.T) {
 	_, _, token, server := newMCPAuthenticatedServer(t)
 
@@ -4012,6 +4205,14 @@ func TestMCPLocalServerStartAndStop(t *testing.T) {
 	}
 	if created.Kind != "local" || created.Command != filepath.Base(cmd) {
 		t.Fatalf("unexpected local MCP create result: %#v", created)
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/api/v1/mcp/servers/"+created.ID, bytes.NewBufferString(`{"env":{"GO_WANT_LOCAL_MCP_HELPER":"******"}}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("masked local MCP update status = %d body = %s", w.Code, w.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers/"+created.ID+"/start", nil)

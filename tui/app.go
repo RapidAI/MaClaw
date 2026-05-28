@@ -203,7 +203,10 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
-		SSHHandler:  sshHandler,
+		SecurityGuard: tuiSecurityGuard(func() corelib.AppConfig {
+			return app.appConfig
+		}),
+		SSHHandler: sshHandler,
 		ExtraHandlers: map[string]agent.ToolHandler{
 			"manage_skill":           newManageSkillHandler(app),
 			"manage_schedule":        newManageScheduleHandler(app),
@@ -380,6 +383,9 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 		if p.Name == cfg.MaclawLLMCurrentProvider {
 			if strings.TrimSpace(llm.Key) == "" {
 				llm.Key = strings.TrimSpace(p.Key)
+			}
+			if p.TimeoutSec > 0 {
+				llm.TimeoutSec = p.TimeoutSec
 			}
 			llm.AgentType = p.AgentType
 			llm.SupportsVision = p.SupportsVision
@@ -1441,7 +1447,11 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 		defer cancel()
 
 		client := skill.DefaultHubClient()
-		hubResults := client.SearchAll(ctx, hubURL, query)
+		allowedSources, err := tuiAllowedSkillSearchSourcesForPolicy(m.app.appConfig, query)
+		if err != nil {
+			return views.ToolSkillSearchResultMsg{Error: err.Error()}
+		}
+		hubResults := client.SearchAllFiltered(ctx, hubURL, query, allowedSources)
 
 		if len(hubResults) == 0 {
 			return views.ToolSkillSearchResultMsg{Error: tuiText(lang, "skillNoMatch")}
@@ -1467,6 +1477,17 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRef string) tea.Cmd {
 	lang := m.uiLang()
 	return func() tea.Msg {
+		if m != nil && m.app != nil {
+			guardArgs := map[string]interface{}{"action": "install", "skill_id": skillID, "source": source, "hub_url": hubURL, "install_ref": installRef}
+			if ok, reason := enforceClientSecurityPolicy(m.app.appConfig, "manage_skill", guardArgs); !ok {
+				return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: false, Message: reason}
+			}
+			effectiveSource := source
+			if effectiveSource == "" {
+				effectiveSource = "skillhub"
+			}
+			recordTUIDeveloperSkillRisk(m.app.appConfig, effectiveSource, "install", guardArgs)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -1561,6 +1582,9 @@ func (m *tuiModel) addLocalMCP(entry corelib.LocalMCPServerEntry) tea.Cmd {
 		if err != nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configLoadFailed", err.Error())}
 		}
+		if ok, reason := enforceClientSecurityPolicy(cfg, "bash", map[string]interface{}{"command": strings.Join(append([]string{entry.Command}, entry.Args...), " ")}); !ok {
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: reason}
+		}
 		cfg.LocalMCPServers = append(cfg.LocalMCPServers, entry)
 		if err := store.SaveConfig(cfg); err != nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configSaveFailedPlain", err.Error())}
@@ -1581,6 +1605,9 @@ func (m *tuiModel) addRemoteMCP(entry corelib.MCPServerEntry) tea.Cmd {
 		cfg, err := store.LoadConfig()
 		if err != nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configLoadFailed", err.Error())}
+		}
+		if ok, reason := enforceClientSecurityPolicy(cfg, "web_fetch", map[string]interface{}{"url": entry.EndpointURL}); !ok {
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: reason}
 		}
 		cfg.MCPServers = append(cfg.MCPServers, entry)
 		if err := store.SaveConfig(cfg); err != nil {
@@ -1658,11 +1685,16 @@ func (m *tuiModel) saveConfig(msg views.ConfigSaveMsg) tea.Cmd {
 		if err != nil {
 			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
 		}
+		if blocked, reason := rejectHubManagedSecurityConfigChange(cfg, msg.Key); blocked {
+			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: reason}
+		}
+		current := cfg
 		if msg.HasConfig {
 			cfg = msg.Config
 		} else {
 			applyConfigValue(&cfg, msg.Key, msg.Value)
 		}
+		preserveHubManagedSecurityConfig(current, &cfg)
 		if err := store.SaveConfig(cfg); err != nil {
 			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
 		}

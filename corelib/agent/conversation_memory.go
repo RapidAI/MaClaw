@@ -13,9 +13,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 const (
@@ -837,8 +840,7 @@ func (cm *ConversationMemory) saveToDisk() error {
 			if session == nil {
 				continue
 			}
-			entries := make([]ConversationEntry, len(session.entries))
-			copy(entries, session.entries)
+			entries := sanitizeConversationEntriesForPersistence(session.entries)
 			snapshot.Sessions[userID] = persistedSession{
 				Entries:             entries,
 				LastAccess:          session.lastAccess,
@@ -902,6 +904,11 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		}
 		entries := make([]ConversationEntry, len(session.Entries))
 		copy(entries, session.Entries)
+		sanitized := sanitizeConversationEntriesForPersistence(entries)
+		if !reflect.DeepEqual(sanitized, entries) {
+			entries = sanitized
+			needsRewrite = true
+		}
 
 		// Enforce structural invariant: no orphaned tool messages.
 		// A tool entry is orphaned if no preceding assistant entry declares
@@ -946,11 +953,49 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		needsRewrite = true
 	}
 	if needsRewrite {
-		cm.persistStateMu.Lock()
-		cm.dirty = true
-		cm.persistStateMu.Unlock()
+		cm.markDirtyAndScheduleFlush()
 	}
 	return nil
+}
+
+func sanitizeConversationEntriesForPersistence(entries []ConversationEntry) []ConversationEntry {
+	out := make([]ConversationEntry, len(entries))
+	for i, entry := range entries {
+		out[i] = sanitizeConversationEntryForPersistence(entry)
+	}
+	return out
+}
+
+func sanitizeConversationEntryForPersistence(entry ConversationEntry) ConversationEntry {
+	entry.Content = sanitizeConversationPersistenceValue("content", entry.Content)
+	entry.ReasoningContent = security.RedactSensitiveString(entry.ReasoningContent)
+	if entry.ToolCalls != nil {
+		entry.ToolCalls = sanitizeConversationPersistenceValue("tool_calls", entry.ToolCalls)
+	}
+	entry.ToolCallID = security.RedactSensitiveString(entry.ToolCallID)
+	entry.ToolName = security.RedactSensitiveString(entry.ToolName)
+	entry.ToolOutcome = security.RedactSensitiveString(entry.ToolOutcome)
+	return entry
+}
+
+func sanitizeConversationPersistenceValue(key string, value interface{}) interface{} {
+	sanitized := security.SanitizeSensitiveValue(key, value)
+	if !reflect.DeepEqual(sanitized, value) {
+		return sanitized
+	}
+	switch value.(type) {
+	case nil, string, map[string]interface{}, map[string]string, []interface{}, []string:
+		return sanitized
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return sanitized
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return sanitized
+	}
+	return security.SanitizeSensitiveValue(key, decoded)
 }
 
 // repairOrphanedToolEntries removes tool entries whose tool_call_id has no

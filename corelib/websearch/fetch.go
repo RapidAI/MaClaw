@@ -35,7 +35,7 @@ type FetchOptions struct {
 	MaxBytes int64  // max response body size (default 2MB, max 10MB)
 	RenderJS bool   // attempt headless Chrome rendering
 	SavePath string // if set, save raw content to this file path instead of returning text
-	TimeoutS int    // timeout in seconds (default 30)
+	TimeoutS int    // timeout in seconds (default 30, max 600)
 	Offset   int    // rune offset for continued reading
 	MaxChars int    // max characters to return in Content (0 = full content)
 }
@@ -88,8 +88,8 @@ func FetchWithClient(rawURL string, opts *FetchOptions, client *http.Client) (*F
 	if opts.TimeoutS <= 0 {
 		opts.TimeoutS = 30
 	}
-	if opts.TimeoutS > 120 {
-		opts.TimeoutS = 120
+	if opts.TimeoutS > 600 {
+		opts.TimeoutS = 600
 	}
 	if opts.Offset < 0 {
 		opts.Offset = 0

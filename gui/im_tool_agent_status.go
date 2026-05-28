@@ -42,6 +42,7 @@ type RuntimeTaskInfo struct {
 	Source    runtimeTaskSource
 	Status    runtimeTaskStatus
 	Command   string
+	TaskRole  string
 	StartedAt time.Time
 	ExitCode  int    // only meaningful for local tasks when completed/failed
 	PID       string // SSH tasks use string PID
@@ -96,6 +97,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 				Source:    runtimeTaskSourceLocal,
 				Status:    normalizeRuntimeTaskStatus(t.Status),
 				Command:   t.Command,
+				TaskRole:  t.TaskRole,
 				StartedAt: t.StartedAt,
 				ExitCode:  t.ExitCode,
 			})
@@ -111,6 +113,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 				Source:    runtimeTaskSourceSSH,
 				Status:    normalizeRuntimeTaskStatus(t.Status),
 				Command:   t.Command,
+				TaskRole:  t.TaskRole,
 				StartedAt: t.StartedAt,
 				PID:       t.PID,
 			})
@@ -247,7 +250,11 @@ func formatTaskSection(header string, tasks []RuntimeTaskInfo, source runtimeTas
 		icon := t.Status.Icon()
 		cmdShort := truncateRunesForSubAgent(t.Command, 60)
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
-		fmt.Fprintf(&b, "%s %s [%s] 已运行=%s 命令=%s", icon, t.TaskID, t.Status, elapsed, cmdShort)
+		role := strings.TrimSpace(t.TaskRole)
+		if role == "" {
+			role = "command"
+		}
+		fmt.Fprintf(&b, "%s %s [%s role=%s] 已运行=%s 命令=%s", icon, t.TaskID, t.Status, role, elapsed, cmdShort)
 		if t.Status.HasExitCode() && t.Source == runtimeTaskSourceLocal {
 			fmt.Fprintf(&b, " 退出码=%d", t.ExitCode)
 		}
@@ -356,6 +363,9 @@ func pendingBackgroundTasksFromStatus(rs RuntimeStatus, loopStart time.Time) []R
 		if t.TaskID == "" {
 			continue
 		}
+		if !isCommandRuntimeTaskRole(t.TaskRole) {
+			continue
+		}
 		key := fmt.Sprintf("%s:%s", t.Source, t.TaskID)
 		if _, ok := seen[key]; ok {
 			continue
@@ -379,4 +389,15 @@ func pendingBackgroundTasksFromStatus(rs RuntimeStatus, loopStart time.Time) []R
 		return pending[i].StartedAt.Before(pending[j].StartedAt)
 	})
 	return pending
+}
+
+func isCommandRuntimeTaskRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "command":
+		return true
+	case "monitor", "poll":
+		return false
+	default:
+		return true
+	}
 }

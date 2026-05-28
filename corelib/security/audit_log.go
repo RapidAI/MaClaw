@@ -40,6 +40,12 @@ func (l *AuditLog) Log(entry AuditEntry) error {
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()
 	}
+	categories := RedactedAuditCategories(entry)
+	entry = SanitizeAuditEntry(entry)
+	if len(categories) > 0 {
+		entry.SensitiveDetected = true
+		entry.SensitiveCategories = categories
+	}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("audit log: marshal: %w", err)

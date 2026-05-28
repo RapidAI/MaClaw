@@ -1467,6 +1467,14 @@ func TestRunAgentLoop_NoToolStallEntersRecoverPhase(t *testing.T) {
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
+	stallClassifications := 0
+	h.noToolReplyClassifier = func(text string) (agentNoToolReplyIntent, error) {
+		stallClassifications++
+		if stallClassifications > 2 {
+			return agentNoToolReplyComplete, nil
+		}
+		return agentNoToolReplyStall, nil
+	}
 	loopCtx := NewLoopContext("chat-no-tool-stall", 4, server.Client())
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "stall recover", "desktop", "u1", "/project")
 	loopCtx.RunID = run.RunID
@@ -1903,6 +1911,56 @@ func TestHandleIMMessage_DismissRecoverableSessionSuppressesResumeContext(t *tes
 	}
 }
 
+func TestHandleIMMessage_ResumeRecoverableSessionDisabled(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := NewApp()
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Name: "project", Path: "D:/work/project"}}
+	cfg.CurrentProject = "p1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	manager := NewRemoteSessionManager(app)
+	session := &RemoteSession{
+		ID:          "sess-resume",
+		ProjectPath: "D:/work/project",
+		Tool:        "claude",
+		Status:      SessionExited,
+		ResumeContext: &SessionResumeContext{
+			ProjectPath:     "D:/work/project",
+			Tool:            "claude",
+			ResumeSessionID: "resume-123",
+		},
+	}
+	manager.sessions[session.ID] = session
+	h := NewIMMessageHandler(app, manager)
+	defer h.memory.Stop()
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "继续恢复会话", ResumeRecoverableSessionID: "sess-resume"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if !strings.Contains(resp.Text, "disabled") || !strings.Contains(resp.Text, "CodingSubAgent") {
+		t.Fatalf("expected disabled CodingSubAgent guidance, got: %q", resp.Text)
+	}
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+	if session.ResumeContext != nil {
+		t.Fatalf("ResumeContext = %#v, want nil", session.ResumeContext)
+	}
+}
+
 func TestFinalizeTraceResult_PersistsRecoveredTrialReflectSummary(t *testing.T) {
 	h := &IMMessageHandler{traceService: NewAITraceService()}
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "finalize recovered summary", "desktop", "u1", "/project")
@@ -2290,35 +2348,6 @@ func TestFinalizeTraceResult_PreservesVisibleFileOnlyResult(t *testing.T) {
 	}
 	if len(resp.Actions) != 0 {
 		t.Fatalf("Actions = %#v, want none", resp.Actions)
-	}
-}
-
-func TestLooksLikePromiseOnlyDeliverableReply(t *testing.T) {
-	tests := []struct {
-		name string
-		text string
-		want bool
-	}{
-		{name: "promise only chinese", text: "好的，我马上整理一份报告并发给你。", want: true},
-		{name: "completed summary chinese", text: "已完成，以下是总结：本周趋势聚焦多模态与小模型。", want: false},
-		{name: "completed summary english", text: "Here is the summary of the report.", want: false},
-		{name: "results below english", text: "Completed. Results below: multimodal agents and compact models.", want: false},
-		{name: "organized for user chinese", text: "我已经为你整理好了，结果如下：重点是 Agent 与多模态。", want: false},
-		{name: "summary first then continue generate", text: "我会先给你总结，再继续生成 PDF 文件。", want: true},
-		{name: "completed but still promises send", text: "报告已生成，马上发你。", want: true},
-		{name: "english future send promise", text: "I will prepare the document and send you the PDF shortly.", want: true},
-		{name: "continuation fragment chinese", text: "继续添加第7-8节和参考文献：", want: true},
-		{name: "explicit failure chinese", text: "无法继续添加第7-8节，原因是源文件缺失。", want: false},
-		{name: "self intro chinese", text: "我是安妮，平时我会帮你查资料、写文档、做整理、跑工具、处理文件和各种电脑任务。", want: false},
-		{name: "self intro english", text: "I'm Annie, your AI assistant. I can help you write documents, organize files, and run tools.", want: false},
-		{name: "capability listing chinese", text: "我可以帮你整理文档、生成报告、处理文件等任务。", want: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := looksLikePromiseOnlyDeliverableReply(tc.text); got != tc.want {
-				t.Fatalf("looksLikePromiseOnlyDeliverableReply(%q) = %v, want %v", tc.text, got, tc.want)
-			}
-		})
 	}
 }
 

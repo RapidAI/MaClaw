@@ -26,6 +26,7 @@ func (h *IMMessageHandler) startAgentLoopToolBranch(opts agentLoopToolBranchStar
 	if opts.Phase != nil {
 		opts.Phase.Stage = agentStageExecute
 		opts.Phase.ConsecutiveNoTool = 0
+		resetAgentLoopTruncationRecoveryAfterToolCalls(opts.Phase, opts.Choice)
 	}
 	logAgentLoopPartialTruncation(opts.Choice)
 	h.emitAgentLoopSteeringSuggestMaximize(opts.UserID, opts.SteeringDetector, opts.GateConfig)
@@ -236,7 +237,9 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 
 		toolExecStartedAt := time.Now()
 		execResult := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+			Context:          opts.Context,
 			UserID:           opts.UserID,
+			UserText:         opts.UserText,
 			SkipWorkflowGate: h.shouldSkipWorkflowToolExecutionGate(opts.UserID, opts.Context),
 			ToolCall:         tc,
 			Iteration:        opts.Iteration,

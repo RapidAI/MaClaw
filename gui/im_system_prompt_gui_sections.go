@@ -191,8 +191,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	// Advanced capabilities (pro mode)
 	if isProMode {
 		b.WriteString("\n## 高级能力\n")
-		b.WriteString("- tool=auto: 创建会话时自动选择最适合的编程工具\n")
-		b.WriteString("- orchestrate_task: 将复杂任务拆分为多个子任务按队列逐个执行\n")
+		b.WriteString("- orchestrate_task: 将复杂任务拆分为多个子任务按队列逐个执行；编程执行走内部 CodingSubAgent\n")
 		b.WriteString("- add_context_note: 记录项目上下文备注，跨会话共享\n")
 	}
 
@@ -211,53 +210,33 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 // appendGUIPostCodingWorkflow injects the full 9-step coding workflow (pro mode).
 // This is the detailed GUI version with session management, PDF generation, etc.
 func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg corelib.AppConfig) {
-	// The full pro-mode coding workflow is already in the old buildSystemPromptBase.
-	// For now, inject coding provider info + active sessions here.
-	if h.manager != nil {
-		// Coding tool provider info
-		type toolProviderInfo struct {
-			tool     string
-			provider string
-		}
-		var provInfos []toolProviderInfo
-		for toolName, meta := range remoteToolCatalog {
-			if meta.ConfigSelector == nil {
-				continue
-			}
-			tc := meta.ConfigSelector(cfg)
-			cur := strings.TrimSpace(tc.CurrentModel)
-			if cur != "" && len(tc.Models) > 0 {
-				provInfos = append(provInfos, toolProviderInfo{tool: toolName, provider: cur})
-			}
-		}
-		if len(provInfos) > 0 {
-			b.WriteString("\n## 编程工具当前服务商\n")
-			for _, pi := range provInfos {
-				b.WriteString(fmt.Sprintf("- %s: %s\n", pi.tool, pi.provider))
-			}
-			b.WriteString("创建编程会话时，如果用户没有指定服务商，使用上述当前选中的服务商。\n")
-		}
+	if h == nil || h.manager == nil {
+		return
+	}
 
-		// Active sessions
-		sessions := h.manager.List()
-		if len(sessions) > 0 {
-			b.WriteString(fmt.Sprintf("\n## 当前会话列表（%d 个活跃）\n", len(sessions)))
-			for _, s := range sessions {
-				s.mu.RLock()
-				status := s.Status
-				task := s.Summary.CurrentTask
-				lastResult := s.Summary.LastResult
-				s.mu.RUnlock()
-				b.WriteString(fmt.Sprintf("- [%s] 工具=%s 标题=%s 状态=%s", s.ID, s.Tool, s.Title, status))
-				if task != "" {
-					b.WriteString(fmt.Sprintf(" 当前任务=%s", task))
-				}
-				if lastResult != "" {
-					b.WriteString(fmt.Sprintf(" 最近结果=%s", lastResult))
-				}
-				b.WriteString("\n")
-			}
+	// External coding sessions are legacy-only. Do not expose provider creation
+	// guidance to the agent; only summarize existing sessions so the agent can
+	// avoid disrupting active work.
+	sessions := h.manager.List()
+	if len(sessions) == 0 {
+		return
+	}
+	b.WriteString(fmt.Sprintf("\n## Legacy Coding Sessions (%d active)\n", len(sessions)))
+	b.WriteString("- External coding sessions are disabled for new agent work; route coding tasks through internal CodingSubAgent.\n")
+	for _, s := range sessions {
+		s.mu.RLock()
+		status := s.Status
+		task := s.Summary.CurrentTask
+		lastResult := s.Summary.LastResult
+		s.mu.RUnlock()
+		b.WriteString(fmt.Sprintf("- [%s] tool=%s title=%s status=%s", s.ID, s.Tool, s.Title, status))
+		if task != "" {
+			b.WriteString(fmt.Sprintf(" current_task=%s", task))
 		}
+		if lastResult != "" {
+			b.WriteString(fmt.Sprintf(" last_result=%s", lastResult))
+		}
+		b.WriteString("\n")
 	}
 }
 

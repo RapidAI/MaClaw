@@ -255,16 +255,9 @@ Typical usage: Fetch webpage content, read documentation, download text resource
 - region (string, optional): Screen region to capture (x,y,w,h)
 Typical usage: Capture screen state, verify UI changes, document visual output`,
 
-	"send_and_observe": `Parameters:
-- session_id (string, required): Target coding session ID
-- message (string, required): Message to send to the session
-- timeout (int, optional): Wait timeout in seconds, default 120
-Typical usage: Send instructions to coding agent and wait for results`,
+	"send_and_observe": `Disabled for agent coding work. External coding-session follow-up is legacy-only; coding tasks must use the internal CodingSubAgent.`,
 
-	"create_session": `Parameters:
-- tool (string, required): Coding tool to launch (e.g. claude, cursor)
-- project_dir (string, optional): Working directory for the session
-Typical usage: Start a new coding session with a specific tool and project`,
+	"create_session": `Disabled for agent coding work. Do not start external coding sessions; route coding tasks to the internal CodingSubAgent.`,
 
 	"call_mcp_tool": `Parameters:
 - server_id (string, required): MCP server id or name; if names are duplicated, use the id
@@ -357,9 +350,7 @@ Typical usage: Execute an NL skill by name with optional input`,
 - timeout (int, optional): Execution timeout in seconds
 Typical usage: Generate and execute a single local script for data processing, API calls, file conversion, or small automation; supports artifact verification and bounded self-repair; avoid for large codebase refactors or long-lived coding tasks`,
 
-	"parallel_execute": `Parameters:
-- tasks (array, required): List of task descriptions to execute with bounded SubAgent concurrency
-Typical usage: Run multiple coding tasks across isolated sessions, capped by the app's SubAgent concurrency setting`,
+	"parallel_execute": `Disabled for external coding sessions. Split or route coding work through the internal CodingSubAgent instead.`,
 
 	"recommend_tool": `Parameters:
 - task (string, required): Description of the task to accomplish
@@ -489,18 +480,18 @@ var BuiltinEnrichments = map[string][]string{
 		"grab a screenshot of the desktop",
 	},
 	"send_and_observe": {
-		"send a message to the coding session and wait",
-		"execute in coding tool and observe",
+		"disabled external coding session follow-up",
+		"legacy coding session observe disabled",
 		"发送到编程工具并等待结果",
-		"run this in the coding session",
-		"ask the coding agent to do something",
+		"use internal CodingSubAgent instead",
+		"external coding session follow-up is disabled",
 	},
 	"create_session": {
-		"start a new coding session",
-		"open a coding tool",
+		"disabled external coding session creation",
+		"do not start external coding tools",
 		"创建编程会话",
-		"launch claude session",
-		"begin a new coding task",
+		"use internal CodingSubAgent instead",
+		"external coding session creation is disabled",
 	},
 	"call_mcp_tool": {
 		"call an MCP server tool",
@@ -601,11 +592,11 @@ var BuiltinEnrichments = map[string][]string{
 		"open browser CDP connection",
 	},
 	"parallel_execute": {
-		"run multiple tasks with bounded concurrency",
-		"execute several coding sessions with the SubAgent concurrency limit",
+		"disabled external queued coding sessions",
+		"do not queue external coding tasks",
 		"按 SubAgent 并发数执行多个任务",
-		"queue these tasks with limited concurrency",
-		"bounded concurrent task execution",
+		"use internal CodingSubAgent instead",
+		"external queued coding execution is disabled",
 	},
 	"recommend_tool": {
 		"which coding tool is best for this",

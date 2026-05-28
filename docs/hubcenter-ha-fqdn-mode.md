@@ -1,4 +1,4 @@
-﻿# HubCenter FQDN HA Mode
+# HubCenter FQDN HA Mode
 
 This rollout now supports a simpler HubCenter HA configuration model for multi-node deployments.
 
@@ -20,9 +20,14 @@ ha:
   self_fqdn: hubs.maclaw.top
   private_key_path: ./data/ha_node_key.pem
   cluster_secret: replace-with-a-long-random-shared-secret
-  sync_interval_seconds: 3
+  sync_interval_seconds: 180
+  push_debounce_seconds: 180
   pull_batch_size: 200
-  heartbeat_sync_min_interval_seconds: 10
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  history_max_retained_ops: 50000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
   nodes:
     - fqdn: hubs.mypapers.top
       node_id: hc-1

@@ -26,3 +26,41 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 @media (max-width:1100px){.tenant-list-shell{grid-template-columns:1fr}.tenant-settings{grid-template-columns:1fr 1fr}}
 @media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;border-right:0;border-bottom:1px solid var(--line)}.nav{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}.main{padding:16px}.metrics,.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3,.grid2{grid-template-columns:1fr}.top{display:grid}.tenant-settings{grid-template-columns:1fr}}
 @media (max-width:620px){.shell{padding:16px}.login-card{grid-template-columns:1fr}.metrics,.grid4{grid-template-columns:1fr}.nav{grid-template-columns:1fr}.topbar{justify-content:flex-start}.admin-chip{width:100%}.tenant-summary{grid-template-columns:1fr}.tenant-actions{justify-content:flex-start}.tenant-actions button{flex:1 1 auto}.tenant-settings{padding:12px}.tenant-save{width:100%}.tenant-pager{justify-content:flex-start;flex-wrap:wrap}}
+
+/* Enterprise management control surface */
+#tab-security{--sec-sidebar:320px;--sec-surface:#fff;--sec-soft:#f8fafc;--sec-line:#e4e9f2;--sec-text:#243044;--sec-muted:#657386;--sec-primary:#2563eb;--sec-danger:#c2413a}
+#tab-security .head{align-items:center;margin-bottom:14px;padding-bottom:14px}
+#tab-security .head .desc{max-width:760px;line-height:1.55}
+#tab-security #secSubTabs{display:inline-flex!important;gap:4px!important;margin:0 0 14px!important;padding:3px;border:1px solid var(--sec-line);border-radius:10px;background:var(--sec-soft)}
+#tab-security #secSubTabs button{height:34px;min-height:34px;border-radius:8px;padding:0 14px;font-size:12px;border-color:transparent;box-shadow:none}
+#tab-security #secSubTabs .btn-secondary{background:#fff;color:var(--sec-primary);border-color:#d7e3ff}
+#tab-security #secManagementPane{display:grid;gap:14px}
+#tab-security #secTopBar{display:grid!important;grid-template-columns:minmax(240px,.72fr) minmax(360px,1fr)!important;gap:12px!important;margin-bottom:0!important}
+#tab-security #secTopBar>div:first-child{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px!important}
+#tab-security #secTopBar .item{padding:14px 16px!important;border-radius:10px;border-color:var(--sec-line);box-shadow:none;background:linear-gradient(180deg,#fff 0%,#fbfcfe 100%)}
+#tab-security #secTopBar .item>div{gap:12px}
+#tab-security #secTopBar input[type="checkbox"]{width:34px;height:20px;border-radius:999px;appearance:none;background:#d7dee9;border:0;position:relative;cursor:pointer;transition:background .16s ease}
+#tab-security #secTopBar input[type="checkbox"]::after{content:"";position:absolute;width:16px;height:16px;border-radius:999px;left:2px;top:2px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.2);transition:transform .16s ease}
+#tab-security #secTopBar input[type="checkbox"]:checked{background:var(--sec-primary)}
+#tab-security #secTopBar input[type="checkbox"]:checked::after{transform:translateX(14px)}
+#tab-security #secManagementPane>div:nth-of-type(2){display:grid!important;grid-template-columns:var(--sec-sidebar) minmax(0,1fr)!important;gap:14px!important;align-items:start!important}
+#tab-security #secManagementPane>div:nth-of-type(2)>.item{padding:14px 16px!important;border-radius:10px;border-color:var(--sec-line);box-shadow:none}
+#tab-security #secGroupTreeTitle,#tab-security #secPolicyTitle,#tab-security #secMembersTitle,#tab-security #secAuditTitle{font-size:14px!important;color:var(--sec-text)}
+#tab-security #secGlobalBtn{height:38px!important;min-height:38px!important;text-align:left;justify-content:flex-start;border-radius:8px;background:#f8fbff;border-color:#dbe7ff;color:#1d4ed8}
+#tab-security #secGroupTree{max-height:560px;overflow:auto;padding-right:4px}
+#tab-security #secGroupTree>div{min-height:30px}
+#tab-security #secPolicyPanel{display:grid;gap:12px}
+#tab-security #secPolicyPanel>.item{margin-top:0!important;padding:14px 16px!important;border-radius:10px;border-color:var(--sec-line);box-shadow:none;background:var(--sec-surface)}
+#tab-security #secPolicyPanel .item-head{padding-bottom:10px;border-bottom:1px solid #eef2f7;margin-bottom:10px}
+#tab-security #secPolicyPanel .grid2,#tab-security #secPolicyPanel .grid3,#tab-security #secPolicyPanel .grid4{gap:10px}
+#tab-security #secPolicyPanel .metric{padding:12px 14px;border-radius:9px;background:var(--sec-soft);box-shadow:none;border-color:#e8edf5}
+#tab-security #secPolicyPanel .metric strong{font-size:20px;color:var(--sec-text)}
+#tab-security #secPolicyPanel .metric strong[style*="font-size:18px"]{font-size:15px!important;line-height:1.35}
+#tab-security #secPolicyPanel .row{border-radius:9px;border-color:#e7ecf4;box-shadow:none;background:#fff}
+#tab-security #secPolicyPanel .item-meta.mono{white-space:normal;overflow-wrap:anywhere;line-height:1.55;color:#53647b}
+#tab-security #secPolicyPanel .actions button,#tab-security #secPolicyActions button,#tab-security #secMembersReloadBtn,#tab-security #secAuditReloadBtn{height:34px!important;min-height:34px!important;border-radius:8px;font-size:12px!important;padding:0 12px!important}
+#tab-security #secCapabilitySelect,#tab-security #secCapabilityVersion{height:38px!important;border-radius:8px;font-size:13px}
+#tab-security #secGroupMembers,#tab-security #secAuditPanel{padding:14px 16px!important;border-radius:10px;border-color:var(--sec-line);box-shadow:none}
+#tab-security #secContextMenu{border-radius:10px!important;box-shadow:0 14px 36px rgba(15,23,42,.15)!important}
+@media (max-width:1180px){#tab-security{--sec-sidebar:280px}#tab-security #secTopBar{grid-template-columns:1fr!important}#tab-security #secManagementPane>div:nth-of-type(2){grid-template-columns:280px minmax(0,1fr)!important}}
+@media (max-width:860px){#tab-security #secTopBar>div:first-child,#tab-security #secManagementPane>div:nth-of-type(2){grid-template-columns:1fr!important}#tab-security #secSubTabs{width:100%}#tab-security #secSubTabs button{flex:1}}

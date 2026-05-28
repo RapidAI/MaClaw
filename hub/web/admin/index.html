@@ -74,6 +74,7 @@
     /* Softer text hierarchy */
     body{color:#59636f}.brand h1,.top h2,.head h3,.item-title,.metric strong,.usage-rank-value,.form h2,.stage-card h3,.session-modal h3{color:#5b6470}.hero h1{color:#5f6874}.brand p,.nav button .nav-copy small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.usage-rank-label,.session-label{color:#98a1ab}.hero p,.hero li{color:rgba(95,104,116,.6)}.metric label,label{color:#9aa3ad}.nav button{color:#6c7581}.nav button.active{color:#5b6470}.btn-secondary,.btn-ghost{color:#68717d}.console{color:#7f8894}.page-kicker,.mini{color:#98a1ab}.head h3::after,.page-tab-icon::before{background:#98a1ab}
     #systemRoutingCard{padding:12px 14px!important;box-shadow:none!important;border-color:#e7eaf0!important}#systemRoutingCard .system-routing-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #eef1f5}#systemRoutingCard .system-routing-title{display:grid;gap:2px;min-width:0}#systemRoutingCard .item-title{font-size:14px;line-height:1.25}#systemRoutingCard .item-meta{font-size:11px;line-height:1.4}#systemRoutingCard .system-routing-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}#systemRoutingCard .system-routing-grid{display:grid;grid-template-columns:minmax(220px,.9fr) minmax(260px,1.1fr);gap:10px;align-items:start}#systemRoutingCard label{margin-bottom:5px;font-size:11px}#systemRoutingCard input,#systemRoutingCard select{height:34px;font-size:13px;border-radius:10px}#systemRoutingCard textarea{min-height:72px;font-size:13px;border-radius:10px;line-height:1.45;resize:vertical}#systemRoutingCard .system-routing-domains{grid-column:1 / -1}#systemRoutingCard .system-routing-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}#systemRoutingCard .system-routing-footer .hint{flex:1;margin:0!important;padding:9px 12px;font-size:11px;line-height:1.4}#systemRoutingCard .system-routing-footer .actions{margin:0!important;padding:0;flex-shrink:0}#systemRoutingCard button{height:34px;padding:0 12px;font-size:12px;border-radius:10px}#systemRoutingSaveBtn{min-width:112px}#tab-failurelogs .failure-log-filter{padding:10px 12px!important;border-radius:12px;gap:0}#tab-failurelogs .failure-log-filter-grid{display:grid;grid-template-columns:minmax(260px,1.35fr) minmax(180px,.7fr) auto;gap:8px;align-items:end;max-width:760px}#tab-failurelogs .failure-log-filter label{margin-bottom:5px;font-size:11px}#tab-failurelogs .failure-log-filter input,#tab-failurelogs .failure-log-filter select{height:34px;border-radius:10px;font-size:13px}#tab-failurelogs .failure-log-filter-actions{display:flex;align-items:end;gap:6px;white-space:nowrap}#tab-failurelogs .failure-log-filter-actions button{height:34px;min-width:58px;padding:0 12px;border-radius:10px;font-size:12px}@media (max-width:760px){#systemRoutingCard .system-routing-head,#systemRoutingCard .system-routing-footer{align-items:stretch;flex-direction:column}#systemRoutingCard .system-routing-actions{justify-content:flex-start}#systemRoutingCard .system-routing-grid{grid-template-columns:1fr}#tab-failurelogs .failure-log-filter-grid{grid-template-columns:1fr;max-width:none}#tab-failurelogs .failure-log-filter-actions{justify-content:flex-start}}
+  #tab-virtualemployees{--ve-list-grid:minmax(110px,1fr) minmax(90px,.8fr) minmax(150px,1.15fr) minmax(150px,1fr) minmax(78px,.7fr) minmax(78px,.7fr) minmax(130px,.9fr) minmax(118px,1fr)}@media (max-width:760px){#tab-virtualemployees{--ve-list-grid:1fr}}
   #marketplaceCapabilitiesList .item:hover,#marketplaceSearchResults .item:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(31,34,48,.08);border-color:rgba(239,106,124,.18)}</style>
   <link rel="stylesheet" href="/admin/professional.css">
 </head>
@@ -458,6 +459,7 @@
         <!-- Sub-tab navigation -->
         <div class="subtab-bar" style="display:flex;gap:0;border-bottom:2px solid var(--border,#e0e0e0);margin-bottom:16px">
           <button class="subtab active" id="subtab-market" type="button" onclick="switchMarketplaceSubtab('market')" data-i18n="marketplaceSubtabMarket"></button>
+          <button class="subtab" id="subtab-workflows" type="button" onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"></button>
           <button class="subtab" id="subtab-settings" type="button" onclick="switchMarketplaceSubtab('settings')" data-i18n="marketplaceSubtabSettings"></button>
         </div>
         <!-- Sub-tab: Enterprise Capability Market -->
@@ -465,7 +467,7 @@
           <!-- Search External Markets (top, full width) -->
           <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceSearchTitle"></div><div class="item-meta" data-i18n="marketplaceSearchDesc"></div></div></div><div style="display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceSource"></label><select id="marketplaceSearchSource"><option value="">All</option><option value="hubcenter">hubcenter</option><option value="clawhub">clawhub</option><option value="github">github</option></select></div><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceSearchType"><option value="skill">skill</option><option value="mcp">mcp</option></select></div><div><label data-i18n="marketplaceQuery"></label><input id="marketplaceSearchQuery"></div></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="searchMarketplaceExternal()" data-i18n="marketplaceSearch"></button><button class="btn-secondary" type="button" onclick="openMCPEditorDialog(true)" data-i18n="marketplaceMCPNew" style="white-space:nowrap">+ MCP</button></div><div id="marketplaceSearchResults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px"></div></div>
           <!-- Enterprise Capabilities (bottom, full width) -->
-          <div class="item" style="margin-top:10px"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceCapabilityType" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option></select></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div id="marketplaceCapabilitiesList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px"></div></div>
+          <div class="item" style="margin-top:10px"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceCapabilityType" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option><option value="approval_workflow">approval_workflow</option></select></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div id="marketplaceCapabilitiesList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px"></div></div>
           <!-- MCP Editor Dialog (modal popup) -->
           <div id="mcpEditorOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center" onclick="if(event.target===this)closeMCPEditorDialog()">
             <div style="background:#fff;border-radius:16px;padding:24px 28px;width:min(620px,92vw);max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.18)">
@@ -488,6 +490,20 @@
               <div class="actions" style="margin-top:14px"><button class="btn-primary" type="button" onclick="saveMarketplaceMCP()" data-i18n="marketplaceSaveMCP"></button><button class="btn-ghost" type="button" onclick="testMarketplaceMCP()" data-i18n="marketplaceTestMCP"></button></div>
               <div id="marketplaceMCPTestResult" style="margin-top:10px"></div>
             </div>
+          </div>
+        </div>
+        <!-- Sub-tab: Approval Workflow Reviews -->
+        <div id="marketplace-subtab-workflows" style="display:none">
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="workflowReviewsTitle"></div><div class="item-meta" data-i18n="workflowReviewsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadWorkflowReviews()" data-i18n="marketplaceReload"></button></div><div id="marketplaceWorkflowReviewsList" style="display:grid;gap:8px;margin-top:10px"></div><div id="marketplaceWorkflowReviewDetail" style="display:grid;gap:8px;margin-top:10px"></div></div>
+        </div>
+        <div id="workflowRejectOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeWorkflowRejectDialog()">
+          <div class="session-modal" style="width:min(520px,calc(100% - 40px))" role="dialog" aria-modal="true" aria-labelledby="workflowRejectTitle">
+            <button class="close-btn" type="button" onclick="closeWorkflowRejectDialog()">&times;</button>
+            <h3 id="workflowRejectTitle" data-i18n="workflowReviewRejectTitle"></h3>
+            <div class="desc" data-i18n="workflowReviewRejectDesc"></div>
+            <div style="margin-top:12px"><label for="workflowRejectReason" data-i18n="workflowReviewRejectReason"></label><textarea id="workflowRejectReason" maxlength="2000" style="min-height:120px;resize:vertical"></textarea></div>
+            <div id="workflowRejectReasonError" class="hint" role="alert" style="display:none;margin-top:8px;color:#c44e4e"></div>
+            <div class="actions" style="margin-top:14px;justify-content:flex-end"><button class="btn-ghost" type="button" onclick="closeWorkflowRejectDialog()" data-i18n="marketplaceCancel"></button><button class="btn-danger" type="button" onclick="submitWorkflowRejectDialog()" data-i18n="workflowReviewReject"></button></div>
           </div>
         </div>
         <!-- Sub-tab: Marketplace Settings -->
@@ -933,6 +949,19 @@
             <span class="item-meta" id="veQuotaInfo"></span>
             <button class="btn-ghost" onclick="loadVEList()" id="veRefreshBtn"></button>
           </div>
+        </div>
+        <div class="item" style="margin-bottom:12px">
+          <div class="item-head" style="align-items:center;margin-bottom:8px">
+            <div>
+              <div class="item-title" id="veAutoApproveTitle"></div>
+              <div class="item-meta" id="veAutoApproveDesc"></div>
+            </div>
+            <span class="badge warn" id="veAutoApproveBadge"></span>
+          </div>
+          <label class="toggle-label" for="veAutoApproveInput" style="width:max-content;max-width:100%;font-size:13px;color:var(--text)">
+            <input type="checkbox" id="veAutoApproveInput" onchange="veSaveAutoApproveConfig()">
+            <span id="veAutoApproveLabel"></span>
+          </label>
         </div>
         <div class="item" style="margin-bottom:12px">
           <div class="item-title" id="veGroupConfigTitle"></div>

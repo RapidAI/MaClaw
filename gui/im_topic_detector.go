@@ -1,8 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
 	"log"
@@ -11,6 +9,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -76,7 +76,7 @@ func newTopicSwitchDetector(llmClient func() (*http.Client, corelib.MaclawLLMCon
 		activeConversationMinutes: 2,
 		minTurnsForDetection:      3,
 		shortMessageWords:         4,
-		llmTimeout:                5 * time.Second,
+		llmTimeout:                30 * time.Second,
 		llmClient:                 llmClient,
 	}
 }
@@ -157,9 +157,9 @@ type signalVote int
 
 const (
 	voteSame    signalVote = iota // signal says same topic
-	voteNew                      // signal says new topic
-	voteUnsure                   // signal is in the ambiguous zone
-	voteAbstain                  // signal unavailable (e.g. no embedder)
+	voteNew                       // signal says new topic
+	voteUnsure                    // signal is in the ambiguous zone
+	voteAbstain                   // signal unavailable (e.g. no embedder)
 )
 
 // scoreBM25 returns the BM25 signal vote with time decay applied.
@@ -419,4 +419,3 @@ func buildQuickSummary(entries []agent.ConversationEntry) string {
 	}
 	return "对话话题: " + lastUserText
 }
-

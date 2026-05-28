@@ -225,8 +225,8 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 	b.WriteString(`
 ## 编程与非编程任务路由契约
 - 编程任务 / Coding_Task：明确要求修改项目代码、修 bug、重构、实现功能、补测试或运行代码级验证时，才进入编程任务工作流。
-- 非编程任务：信息检索、翻译、文档生成、文件操作、通信、日常助手、配置查看、截屏/screenshot、简单问答等，优先用现有工具直接完成，不要调用 create_session。
-- SSH/服务器操作任务：登录服务器、查看远程日志、重启服务、上传下载服务器文件等，优先使用 SSH/服务器工具；如果不能确定是编程任务，不要调用 create_session。
+- 非编程任务：信息检索、翻译、文档生成、文件操作、通信、日常助手、配置查看、截屏/screenshot、简单问答等，优先用现有工具直接完成，不要创建外部编程会话。
+- SSH/服务器操作任务：登录服务器、查看远程日志、重启服务、上传下载服务器文件等，优先使用 SSH/服务器工具；如果不能确定是编程任务，不要创建外部编程会话。
 - 文件与命令类非编程操作可用 bash、read_file、write_file、edit_file、craft_tool、send_file 等直接处理。
 
 ## Spec 驱动编程任务工作流
@@ -235,7 +235,7 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 第三步：需求确认。生成需求文档并等待用户明确确认后才进入下一阶段；内容必须包括需求背景与目标、功能需求列表、非功能需求、约束与假设。若 PDF 生成失败，发送 Markdown 纯文本并说明 PDF 生成失败。
 第四步：技术设计。基于确认的需求文档生成设计文档，内容必须包括架构设计、接口设计、数据模型变更、实现方案概述。
 第五步：任务分解（任务拆分）。基于确认的需求和设计文档生成编号的任务列表、任务的描述和涉及的文件、TDD 验收测试用例。
-第六步：任务执行。只有在确认任务列表或收到跳过确认信号后才调用 create_session / send_and_observe；向执行会话传入需求和设计上下文。
+第六步：任务执行。只有在确认任务列表或收到跳过确认信号后才进入内部 CodingSubAgent 执行；向 CodingSubAgent 传入需求和设计上下文，不要调用外部编程工具会话。
 
 ## 文档交付契约
 - 需求文档、设计文档、任务列表优先生成 PDF，可使用 craft_tool、bash、pandoc、wkhtmltopdf 或等价工具。
@@ -287,11 +287,9 @@ func experienceContextFromLoop(loopCtx ...*LoopContext) lifecycle.EventContext {
 	return lifecycle.EventContext{TraceID: loopCtx[0].RunID, TaskID: loopCtx[0].ID}
 }
 
-// buildNicknameInstruction returns a system-prompt snippet that instructs the
-// agent to proactively call set_nickname on its first turn so the Hub knows
-// who it is. If the client already has a configured nickname it tells the
-// agent to report that name; otherwise it asks the agent to pick one based
-// on its own self-identity.
+// buildNicknameInstruction keeps the Hub nickname in sync without asking the
+// LLM to invent one. Empty nicknames are intentionally left to Hub-side
+// auto-assignment; set_nickname is only for explicit user rename requests.
 func (h *IMMessageHandler) buildNicknameInstruction() string {
 	currentNickname := ""
 	if cfg, err := h.loadConfig(); err == nil {
@@ -308,8 +306,7 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 		}()
 		return "" // no instruction needed
 	}
-	return "\n## ⚠️ 上线昵称报告（仅首次对话执行一次）\n" +
-		"你还没有昵称。请根据你的自我认知（角色名/身份），在回复用户之前先调用 set_nickname 工具给自己起一个昵称并上报给 Hub。如果没有特别的自我认知，可以用一个你喜欢的中文名字。\n"
+	return ""
 }
 
 // appendMemorySection appends a lightweight "## 用户记忆" section containing:

@@ -18,6 +18,7 @@ var (
 	ErrNotWorkflowOwner        = errors.New("user is not the workflow owner")
 	ErrNoNodes                 = errors.New("workflow graph has no nodes")
 	ErrDisconnectedNodes       = errors.New("workflow graph has disconnected nodes")
+	ErrTriggerHasIncoming      = errors.New("trigger node cannot have incoming edges")
 	ErrEmptyVersionNumber      = errors.New("version number is empty")
 )
 
@@ -333,16 +334,20 @@ func (vm *VersionManager) WithdrawReview(ctx context.Context, versionID string, 
 // for submission. It verifies:
 // 1. The graph has at least one node
 // 2. There is exactly one trigger node
-// 3. All nodes are reachable (no disconnected nodes)
+// 3. Trigger has no incoming edges
+// 4. All nodes are reachable (no disconnected nodes)
 func ValidateGraphStructure(graph WorkflowGraph) error {
 	if len(graph.Nodes) == 0 {
 		return ErrNoNodes
 	}
 
 	// Check exactly one trigger node
-	_, err := findSingleTriggerNode(graph)
+	trigger, err := findSingleTriggerNode(graph)
 	if err != nil {
 		return err
+	}
+	if triggerHasIncomingEdge(graph, trigger.ID) {
+		return ErrTriggerHasIncoming
 	}
 
 	// Check for disconnected nodes — every non-trigger node must have at
@@ -353,6 +358,15 @@ func ValidateGraphStructure(graph WorkflowGraph) error {
 	}
 
 	return nil
+}
+
+func triggerHasIncomingEdge(graph WorkflowGraph, triggerID string) bool {
+	for _, e := range graph.Edges {
+		if e.TargetID == triggerID {
+			return true
+		}
+	}
+	return false
 }
 
 // hasDisconnectedNodes checks if any node in the graph is unreachable from

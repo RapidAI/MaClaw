@@ -25,13 +25,14 @@ export const InstallSkillList = ({
             <div className="install-skill-list__items">
                 {filteredSkills.map((skill, idx) => (
                     <label
-                        key={idx}
+                        key={skill.name || idx}
                         className="install-skill-list__item"
                         data-selected={selectedSkillsToInstall.includes(skill.name) ? 'true' : 'false'}
                         data-installed={skill.installed ? 'true' : 'false'}
                     >
                         <input
                             type="checkbox"
+                            aria-label={skill.installed ? `${skill.name} ${t("installed")}` : skill.name}
                             checked={selectedSkillsToInstall.includes(skill.name)}
                             disabled={skill.installed}
                             onChange={(e) => {
@@ -51,6 +52,11 @@ export const InstallSkillList = ({
                                     </span>
                                 )}
                             </div>
+                            {skill.description && (
+                                <div className="install-skill-list__description">
+                                    {skill.description}
+                                </div>
+                            )}
                         </div>
                     </label>
                 ))}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ type agentLoopNoToolRecoverOptions struct {
 	History                []agent.ConversationEntry
 	Iteration              int
 	TotalToolCallsInLoop   int
+	RequiresExecution      bool
 	RecordSystemMessages   func(int, []interface{})
 	AttachLLMTelemetry     func(*IMAgentResponse)
 	AttachVisibleArtifacts func(*IMAgentResponse)
@@ -342,6 +344,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 		History:                opts.History,
 		Iteration:              opts.Iteration,
 		TotalToolCallsInLoop:   opts.TotalToolCallsInLoop,
+		RequiresExecution:      noToolBranchRequiresExecution(opts.Context, opts.GateConfig, phase),
 		RecordSystemMessages:   opts.RecordSystemMessages,
 		AttachLLMTelemetry:     opts.AttachLLMTelemetry,
 		AttachVisibleArtifacts: opts.AttachVisibleArtifacts,
@@ -396,9 +399,10 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	emptyVisibleResult := opts.TrimmedVisibleContent == ""
-	promiseOnlyDeliverable := shouldForceAnotherRoundForDeliverable(opts.MessageContent, len(opts.ToolCalls), 0)
+	intent, intentOK := h.classifyAgentNoToolReply(context.Background(), opts.MessageContent)
+	promiseOnlyDeliverable := intentOK && intent == agentNoToolReplyPromise && len(opts.ToolCalls) == 0
 	promiseOnlyDeliverable = suppressPostToolPromiseOnlyDeliverable(promiseOnlyDeliverable, *phase, opts.TotalToolCallsInLoop, opts.Iteration)
-	noToolStall := looksLikeNoToolStallReply(opts.MessageContent) || emptyVisibleResult || promiseOnlyDeliverable
+	noToolStall := emptyVisibleResult || promiseOnlyDeliverable || (intentOK && intent == agentNoToolReplyStall)
 	hasPendingSkillRun := strings.TrimSpace(phase.PreferredSkillRunID) != ""
 	preferSkill := phase.ForceSkillPreference && phase.PreferredSkillName != ""
 	effectiveNoToolRecoverThreshold := stalledNoToolRecoverThreshold
@@ -406,7 +410,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 		effectiveNoToolRecoverThreshold = 1
 	}
 
-	if shouldRecoverForPendingSkillRunNoToolReply(opts.MessageContent, phase.PreferredSkillRunID) {
+	if hasPendingSkillRun {
 		enterRecoverPhase(phase, agentRecoverPendingSkillRunNoTool, buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
 		result.ContinueLoop = true
 		return result
@@ -447,7 +451,8 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	if shouldRestrictToSkillSearch(*phase) {
 		noToolPrompt = buildRemoteSkillSearchPrompt()
 	}
-	if phase.ConsecutiveNoTool == 1 && (looksLikeNoToolStallReply(opts.MessageContent) || hasPendingSkillRun || (phase.ForceSkillPreference && !phase.SkillAttempted)) {
+	shouldPromptForAction := opts.RequiresExecution && !phase.NoToolActionPrompted
+	if phase.ConsecutiveNoTool == 1 && ((intentOK && intent == agentNoToolReplyStall) || hasPendingSkillRun || (phase.ForceSkillPreference && !phase.SkillAttempted) || shouldPromptForAction) {
 		systemMessagesStart := len(result.Conversation)
 		result.Conversation = append(result.Conversation, map[string]string{
 			"role":    "system",
@@ -459,6 +464,9 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 		if phase.ForceSkillPreference {
 			phase.SkillAttempted = true
 		}
+		if shouldPromptForAction {
+			phase.NoToolActionPrompted = true
+		}
 		result.ContinueLoop = true
 		return result
 	}
@@ -469,6 +477,23 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	return result
+}
+
+func noToolBranchRequiresExecution(ctx *LoopContext, gateConfig codingToolGateConfig, phase *agentLoopPhase) bool {
+	if phase != nil && phase.ForceSkillPreference {
+		return true
+	}
+	if ctx != nil && ctx.WorkflowAgentLoop {
+		return true
+	}
+	switch gateConfig.intent {
+	case intentSSH:
+		return true
+	case intentCoding:
+		return !gateConfig.active
+	default:
+		return false
+	}
 }
 
 func (h *IMMessageHandler) handleAgentLoopEmptyNoToolResponse(

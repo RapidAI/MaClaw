@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -96,8 +95,8 @@ func AdminCreateNewsHandler(repo store.NewsRepository, syncers ...newsSyncRecord
 			Category string `json:"category"`
 			Pinned   bool   `json:"pinned"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid JSON")
+		if err := decodeLimitedJSON(w, r, &req, largeJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "BAD_REQUEST", "Invalid JSON")
 			return
 		}
 		title := strings.TrimSpace(req.Title)
@@ -163,8 +162,8 @@ func AdminUpdateNewsHandler(repo store.NewsRepository, syncers ...newsSyncRecord
 			Category *string `json:"category"`
 			Pinned   *bool   `json:"pinned"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid JSON")
+		if err := decodeLimitedJSON(w, r, &req, largeJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "BAD_REQUEST", "Invalid JSON")
 			return
 		}
 		if req.Title != nil {

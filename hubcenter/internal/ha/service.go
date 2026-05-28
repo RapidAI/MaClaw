@@ -39,9 +39,13 @@ const (
 	OpDelete = "delete"
 
 	maxPendingPushOpsPerPeer = 4000
+	haOpsFallbackPageSize    = 1000
 )
 
-var opIDCounter uint64
+var (
+	opIDCounter          uint64
+	fallbackHAHTTPClient = &http.Client{Timeout: 8 * time.Second}
+)
 
 type InvalidRemoteOpError struct {
 	Reason string
@@ -87,6 +91,9 @@ type Service struct {
 	pushMu         sync.Mutex
 	pushPending    map[string][]*store.HASyncOp
 	pushRunning    map[string]bool
+	pushDebounce   time.Duration
+	snapshotMu     sync.Mutex
+	snapshotHashes map[string]string
 	refresher      interface{ Rebuild(context.Context) error }
 	recorder       *diagnostics.FailureEventRecorder
 }
@@ -121,6 +128,14 @@ type remoteOpRecorder interface {
 	AppendRemoteIfMissing(ctx context.Context, op *store.HASyncOp) error
 }
 
+type hubInstanceConflictReplacer interface {
+	ReplaceConflictingHubInstance(ctx context.Context, hub *store.HubInstance) error
+}
+
+type historyPruner interface {
+	PruneHistory(ctx context.Context, cutoff time.Time, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error)
+}
+
 func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []StaticPeer) *Service {
 	peerMap := make(map[string]*PeerRuntimeState, len(peers))
 	peerKeys := make(map[string]*rsa.PublicKey, len(peers))
@@ -153,8 +168,22 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 		pushSem:                  make(chan struct{}, 16),
 		pushPending:              make(map[string][]*store.HASyncOp),
 		pushRunning:              make(map[string]bool),
+		pushDebounce:             50 * time.Millisecond,
+		snapshotHashes:           make(map[string]string),
 		heartbeatSyncMinInterval: 10 * time.Second,
 	}
+}
+
+func (s *Service) SetPushDebounceInterval(d time.Duration) {
+	if s == nil {
+		return
+	}
+	if d < 0 {
+		d = 0
+	}
+	s.pushMu.Lock()
+	s.pushDebounce = d
+	s.pushMu.Unlock()
 }
 
 func (s *Service) AttachStore(st *store.Store) {
@@ -461,7 +490,19 @@ type entityTypeOpsChecker interface {
 	HasEntityTypeOps(ctx context.Context, entityTypes []string) (bool, error)
 }
 
+type localRecordCounter interface {
+	Count(ctx context.Context) (int64, error)
+}
+
 type skillMarketRecordCounter interface {
+	CountSnapshotRecords(ctx context.Context) (int64, error)
+}
+
+type skillHubRecordCounter interface {
+	CountSnapshotRecords() int64
+}
+
+type gossipRecordCounter interface {
 	CountSnapshotRecords(ctx context.Context) (int64, error)
 }
 
@@ -489,32 +530,65 @@ func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
 		return counts
 	}
 	if s.hubs != nil {
-		if items, err := s.hubs.ListAll(ctx); err == nil {
+		if counter, ok := s.hubs.(localRecordCounter); ok {
+			if count, err := counter.Count(ctx); err == nil {
+				counts["routing"] += count
+			}
+		} else if items, err := s.hubs.ListAll(ctx); err == nil {
 			counts["routing"] += int64(len(items))
 		}
 	}
 	if s.routes != nil {
-		if items, err := s.routes.ListAll(ctx); err == nil {
+		if counter, ok := s.routes.(localRecordCounter); ok {
+			if count, err := counter.Count(ctx); err == nil {
+				counts["routing"] += count
+			}
+		} else if items, err := s.routes.ListAll(ctx); err == nil {
 			counts["routing"] += int64(len(items))
 		}
 	}
 	if s.links != nil {
-		if items, err := s.links.ListAll(ctx); err == nil {
+		if counter, ok := s.links.(localRecordCounter); ok {
+			if count, err := counter.Count(ctx); err == nil {
+				counts["routing"] += count
+			}
+		} else if items, err := s.links.ListAll(ctx); err == nil {
 			counts["routing"] += int64(len(items))
 		}
 	}
 	if s.blockedEmails != nil {
-		if items, err := s.blockedEmails.List(ctx); err == nil {
+		if counter, ok := s.blockedEmails.(localRecordCounter); ok {
+			if count, err := counter.Count(ctx); err == nil {
+				counts["system"] += count
+			}
+		} else if items, err := s.blockedEmails.List(ctx); err == nil {
 			counts["system"] += int64(len(items))
 		}
 	}
 	if s.blockedIPs != nil {
-		if items, err := s.blockedIPs.List(ctx); err == nil {
+		if counter, ok := s.blockedIPs.(localRecordCounter); ok {
+			if count, err := counter.Count(ctx); err == nil {
+				counts["system"] += count
+			}
+		} else if items, err := s.blockedIPs.List(ctx); err == nil {
+			counts["system"] += int64(len(items))
+		}
+	}
+	if s.settings != nil {
+		if counter, ok := s.settings.(localRecordCounter); ok {
+			if count, err := counter.Count(ctx); err == nil {
+				counts["system"] += count
+			}
+		} else if items, err := s.settings.List(ctx); err == nil {
 			counts["system"] += int64(len(items))
 		}
 	}
 	if s.gossip != nil {
-		if posts, total, err := s.gossip.ListAllPosts(ctx, 0, 1); err == nil {
+		if counter, ok := s.gossip.(gossipRecordCounter); ok {
+			if count, err := counter.CountSnapshotRecords(ctx); err == nil {
+				counts["gossip"] += count
+			}
+		} else if posts, total, err := s.gossip.ListAllPosts(ctx, 0, 1); err == nil {
 			if total > 0 {
 				counts["gossip"] += int64(total)
 			} else {
@@ -523,7 +597,9 @@ func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
 		}
 	}
 	if s.skillStore != nil {
-		if snap, err := s.skillStore.DumpSnapshot(); err == nil {
+		if counter, ok := any(s.skillStore).(skillHubRecordCounter); ok {
+			counts["skillhub"] += counter.CountSnapshotRecords()
+		} else if snap, err := s.skillStore.DumpSnapshot(); err == nil {
 			counts["skillhub"] += int64(len(snap.Skills))
 		}
 	}
@@ -638,7 +714,52 @@ func (s *Service) listAdminSyncDetailOps(ctx context.Context) ([]*store.HASyncOp
 	if lister, ok := s.ops.(latestEntityTypeOpsLister); ok {
 		return lister.ListLatestByEntityTypes(ctx, adminSyncDetailEntityTypes())
 	}
-	return s.ops.ListAfterSeq(ctx, 0, 0)
+	return s.listLatestAdminSyncDetailOpsFallback(ctx)
+}
+
+func (s *Service) listLatestAdminSyncDetailOpsFallback(ctx context.Context) ([]*store.HASyncOp, error) {
+	want := map[string]struct{}{}
+	for _, entityType := range adminSyncDetailEntityTypes() {
+		want[entityType] = struct{}{}
+	}
+	latest := map[string]*store.HASyncOp{}
+	afterSeq := int64(0)
+	for {
+		ops, err := s.ops.ListAfterSeq(ctx, afterSeq, haOpsFallbackPageSize)
+		if err != nil {
+			return nil, err
+		}
+		if len(ops) == 0 {
+			break
+		}
+		maxSeq := afterSeq
+		for _, op := range ops {
+			if op == nil {
+				continue
+			}
+			if op.Seq > maxSeq {
+				maxSeq = op.Seq
+			}
+			if _, ok := want[op.EntityType]; !ok {
+				continue
+			}
+			current := latest[op.EntityType]
+			if current == nil || op.Seq > current.Seq || (op.Seq == current.Seq && op.OccurredAt.After(current.OccurredAt)) {
+				cp := *op
+				latest[op.EntityType] = &cp
+			}
+		}
+		if len(ops) < haOpsFallbackPageSize || maxSeq <= afterSeq {
+			break
+		}
+		afterSeq = maxSeq
+	}
+	out := make([]*store.HASyncOp, 0, len(latest))
+	for _, op := range latest {
+		out = append(out, op)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
 }
 
 func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) {
@@ -685,6 +806,7 @@ func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) 
 	view.Sync = AdminSyncView{
 		Enabled:                         len(peers) > 0,
 		MaxOpSeq:                        maxSeq,
+		PushDebounceSeconds:             int64(s.currentPushDebounce().Seconds()),
 		HeartbeatSyncMinIntervalSeconds: int64(s.heartbeatSyncMinInterval.Seconds()),
 		LastSuccessAt:                   quality.Sync.LastSuccessAt,
 	}
@@ -780,19 +902,47 @@ func (s *Service) HasEntityTypeOps(ctx context.Context, entityTypes ...string) (
 	if checker, ok := s.ops.(entityTypeOpsChecker); ok {
 		return checker.HasEntityTypeOps(ctx, cleaned)
 	}
-	ops, err := s.ops.ListAfterSeq(ctx, 0, 0)
-	if err != nil {
-		return false, err
-	}
-	for _, op := range ops {
-		if op == nil {
-			continue
+	afterSeq := int64(0)
+	for {
+		ops, err := s.ops.ListAfterSeq(ctx, afterSeq, haOpsFallbackPageSize)
+		if err != nil {
+			return false, err
 		}
-		if _, ok := want[op.EntityType]; ok {
-			return true, nil
+		if len(ops) == 0 {
+			return false, nil
 		}
+		maxSeq := afterSeq
+		for _, op := range ops {
+			if op == nil {
+				continue
+			}
+			if op.Seq > maxSeq {
+				maxSeq = op.Seq
+			}
+			if _, ok := want[op.EntityType]; ok {
+				return true, nil
+			}
+		}
+		if len(ops) < haOpsFallbackPageSize || maxSeq <= afterSeq {
+			return false, nil
+		}
+		afterSeq = maxSeq
 	}
-	return false, nil
+}
+
+func (s *Service) PruneHistory(ctx context.Context, retention time.Duration, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error) {
+	if s == nil || s.ops == nil {
+		return &store.HAPruneResult{}, nil
+	}
+	pruner, ok := s.ops.(historyPruner)
+	if !ok {
+		return &store.HAPruneResult{}, nil
+	}
+	var cutoff time.Time
+	if retention > 0 {
+		cutoff = time.Now().UTC().Add(-retention)
+	}
+	return pruner.PruneHistory(ctx, cutoff, maxRetainedOps, batchSize)
 }
 
 func (s *Service) AppendUpsert(ctx context.Context, entityType, entityID string, payload any, updatedAt time.Time) error {
@@ -818,10 +968,15 @@ func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType str
 		return err
 	}
 	op := &store.HASyncOp{OpID: newOpID(s.nodeID, entityType, entityID, updatedAt), SourceNodeID: s.nodeID, EntityType: entityType, EntityID: entityID, OpType: opType, OccurredAt: updatedAt, PayloadJSON: payloadJSON, PayloadHash: payloadHash}
+	if err := validateLocalOp(op); err != nil {
+		return err
+	}
 	if appender, ok := s.ops.(localOpAppender); ok {
-		_, err := appender.AppendLocalWithVersion(ctx, op)
+		version, err := appender.AppendLocalWithVersion(ctx, op)
 		if err == nil {
-			s.broadcastLocalOp(op)
+			if version > 0 {
+				s.broadcastLocalOp(op)
+			}
 		}
 		return err
 	}
@@ -934,16 +1089,31 @@ func shouldReplaceQueuedPushOp(existing, incoming *store.HASyncOp) bool {
 }
 
 func (s *Service) runPeerPushQueue(peer PeerRuntimeState) {
-	timer := time.NewTimer(50 * time.Millisecond)
-	defer timer.Stop()
-	<-timer.C
+	delay := s.currentPushDebounce()
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		<-timer.C
+		timer.Stop()
+	}
 	for {
 		ops := s.takePeerPushBatch(peer.NodeID, 2000)
 		if len(ops) == 0 {
 			return
 		}
-		s.pushOpsToPeer(&peer, ops)
+		if !s.pushOpsToPeer(&peer, ops) {
+			s.deferPeerPushBatch(peer.NodeID, ops, "push failed; waiting for pull sync")
+			return
+		}
 	}
+}
+
+func (s *Service) currentPushDebounce() time.Duration {
+	if s == nil {
+		return 0
+	}
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	return s.pushDebounce
 }
 
 func (s *Service) takePeerPushBatch(nodeID string, limit int) []*store.HASyncOp {
@@ -972,29 +1142,28 @@ func (s *Service) takePeerPushBatch(nodeID string, limit int) []*store.HASyncOp 
 	return out
 }
 
-func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) {
+func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) bool {
 	if s == nil || peer == nil || len(ops) == 0 {
-		return
+		return false
 	}
 	if s.pushSem != nil {
 		select {
 		case s.pushSem <- struct{}{}:
 			defer func() { <-s.pushSem }()
 		default:
-			s.markPeerPushDeferred(peer.NodeID, "push queue saturated; waiting for pull sync")
-			return
+			return false
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	payload, err := json.Marshal(map[string]any{"ops": ops})
 	if err != nil {
-		return
+		return false
 	}
 	url := strings.TrimRight(peer.BaseURL, "/") + "/api/internal/ha/ops/apply"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if secret := strings.TrimSpace(s.ClusterSecret()); secret != "" {
@@ -1002,23 +1171,45 @@ func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) {
 	}
 	if err := s.SignPeerRequest(req); err != nil {
 		log.Printf("[hubcenter][ha] sign push ops to %s: %v", peer.NodeID, err)
-		return
+		return false
 	}
 	client := s.client
 	if client == nil {
-		client = http.DefaultClient
+		client = fallbackHAHTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
 		s.markPeerError(peer.NodeID, err.Error())
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		s.markPeerError(peer.NodeID, fmt.Sprintf("push ops failed: %s", resp.Status))
-		return
+		return false
 	}
 	s.updatePeerPushSuccess(peer.NodeID)
+	return true
+}
+
+func (s *Service) deferPeerPushBatch(nodeID string, ops []*store.HASyncOp, msg string) {
+	if s == nil || strings.TrimSpace(nodeID) == "" || len(ops) == 0 {
+		return
+	}
+	s.pushMu.Lock()
+	if s.pushPending == nil {
+		s.pushPending = make(map[string][]*store.HASyncOp)
+	}
+	combined := append([]*store.HASyncOp(nil), ops...)
+	combined = append(combined, s.pushPending[nodeID]...)
+	if len(combined) > maxPendingPushOpsPerPeer {
+		combined = combined[:maxPendingPushOpsPerPeer]
+	}
+	s.pushPending[nodeID] = combined
+	if s.pushRunning != nil {
+		delete(s.pushRunning, nodeID)
+	}
+	s.pushMu.Unlock()
+	s.markPeerPushDeferred(nodeID, msg)
 }
 
 func (s *Service) markPeerPushDeferred(nodeID, msg string) {
@@ -1080,50 +1271,70 @@ func (s *Service) ApplyRemoteOps(ctx context.Context, ops []*store.HASyncOp) err
 			return err
 		}
 	}
+	needsRouteRebuild := false
 	for _, op := range ops {
-		if err := s.ApplyRemoteOp(ctx, op); err != nil {
+		applied, err := s.applyRemoteOp(ctx, op, false)
+		if err != nil {
 			return err
 		}
+		needsRouteRebuild = needsRouteRebuild || (applied && entityAffectsRouteSnapshot(op.EntityType))
+	}
+	if needsRouteRebuild && s.refresher != nil {
+		_ = s.refresher.Rebuild(ctx)
 	}
 	return nil
 }
 
 func (s *Service) ApplyRemoteOp(ctx context.Context, op *store.HASyncOp) error {
+	_, err := s.applyRemoteOp(ctx, op, true)
+	return err
+}
+
+func (s *Service) applyRemoteOp(ctx context.Context, op *store.HASyncOp, rebuildRouteSnapshot bool) (bool, error) {
 	if s == nil || op == nil || s.ops == nil || s.versions == nil {
-		return nil
+		return false, nil
 	}
 	if err := validateRemoteOp(op); err != nil {
-		return err
+		return false, err
 	}
 	if recorder, ok := s.ops.(remoteOpRecorder); ok {
 		if err := recorder.AppendRemoteIfMissing(ctx, op); err != nil {
-			return err
+			return false, err
 		}
 	}
 	applied, err := s.ops.HasApplied(ctx, op.OpID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if applied {
-		return nil
+		return false, nil
 	}
 	current, err := s.versions.Get(ctx, op.EntityType, op.EntityID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if current != nil && !shouldApplyRemoteVersion(current, op) {
-		return s.markApplied(ctx, op)
+		return false, s.markApplied(ctx, op)
 	}
 	if err := s.applyEntityOp(ctx, op); err != nil {
-		return err
+		return false, err
 	}
-	if s.refresher != nil {
+	if rebuildRouteSnapshot && entityAffectsRouteSnapshot(op.EntityType) && s.refresher != nil {
 		_ = s.refresher.Rebuild(ctx)
 	}
 	if err := s.versions.Upsert(ctx, &store.HAEntityVersion{EntityType: op.EntityType, EntityID: op.EntityID, Version: op.EntityVersion, UpdatedAt: op.OccurredAt, UpdatedByNodeID: op.SourceNodeID}); err != nil {
-		return err
+		return false, err
 	}
-	return s.markApplied(ctx, op)
+	return true, s.markApplied(ctx, op)
+}
+
+func entityAffectsRouteSnapshot(entityType string) bool {
+	switch entityType {
+	case EntityBlockedEmail, EntityBlockedIP, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateRemoteOp(op *store.HASyncOp) error {
@@ -1139,8 +1350,14 @@ func validateRemoteOp(op *store.HASyncOp) error {
 	if strings.TrimSpace(op.EntityType) == "" || strings.TrimSpace(op.EntityID) == "" {
 		return InvalidRemoteOpError{Reason: "missing entity identity"}
 	}
+	if !isSupportedEntityType(op.EntityType) {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("unsupported entity type: %s", op.EntityType)}
+	}
 	if op.OpType != OpUpsert && op.OpType != OpDelete {
 		return InvalidRemoteOpError{Reason: fmt.Sprintf("unsupported op type: %s", op.OpType)}
+	}
+	if !isSupportedEntityOpType(op.EntityType, op.OpType) {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("unsupported %s op for entity type: %s", op.OpType, op.EntityType)}
 	}
 	if op.EntityVersion <= 0 {
 		return InvalidRemoteOpError{Reason: "invalid entity version"}
@@ -1152,7 +1369,176 @@ func validateRemoteOp(op *store.HASyncOp) error {
 	if !strings.EqualFold(strings.TrimSpace(op.PayloadHash), hex.EncodeToString(sum[:])) {
 		return InvalidRemoteOpError{Reason: "payload hash mismatch"}
 	}
+	if err := validateRemoteOpPayloadIdentity(op); err != nil {
+		return err
+	}
 	return nil
+}
+
+func isSupportedEntityType(entityType string) bool {
+	switch entityType {
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedEntityOpType(entityType, opType string) bool {
+	if opType == OpUpsert {
+		return true
+	}
+	switch entityType {
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+		return opType == OpDelete
+	default:
+		return false
+	}
+}
+
+func validateLocalOp(op *store.HASyncOp) error {
+	if op == nil {
+		return InvalidRemoteOpError{Reason: "missing op"}
+	}
+	if !isSupportedEntityType(op.EntityType) {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("unsupported entity type: %s", op.EntityType)}
+	}
+	if op.OpType != OpUpsert && op.OpType != OpDelete {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("unsupported op type: %s", op.OpType)}
+	}
+	if !isSupportedEntityOpType(op.EntityType, op.OpType) {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("unsupported %s op for entity type: %s", op.OpType, op.EntityType)}
+	}
+	return validateRemoteOpPayloadIdentity(op)
+}
+
+func validateRemoteOpPayloadIdentity(op *store.HASyncOp) error {
+	if op == nil {
+		return nil
+	}
+	entityID := strings.TrimSpace(op.EntityID)
+	switch op.OpType {
+	case OpUpsert:
+		return validateUpsertPayloadIdentity(op, entityID)
+	case OpDelete:
+		return validateDeletePayloadIdentity(op, entityID)
+	}
+	return nil
+}
+
+func validateUpsertPayloadIdentity(op *store.HASyncOp, entityID string) error {
+	field, value, err := remoteOpPayloadIdentity(op)
+	if err != nil || field == "" {
+		return err
+	}
+	if strings.TrimSpace(value) == "" {
+		if op.EntityType == EntityHubInstance {
+			return nil
+		}
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("%s payload %s is missing", op.EntityType, field)}
+	}
+	if !remotePayloadIdentityEqual(op.EntityType, value, entityID) {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("%s payload %s does not match op entity id", op.EntityType, field)}
+	}
+	return nil
+}
+
+func validateDeletePayloadIdentity(op *store.HASyncOp, entityID string) error {
+	field, value, err := remoteOpDeletePayloadIdentity(op)
+	if err != nil || field == "" {
+		return err
+	}
+	if strings.TrimSpace(value) == "" {
+		if op.EntityType == EntityHubInstance {
+			return nil
+		}
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("%s delete payload %s is missing", op.EntityType, field)}
+	}
+	if !remotePayloadIdentityEqual(op.EntityType, value, entityID) {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("%s delete payload %s does not match op entity id", op.EntityType, field)}
+	}
+	return nil
+}
+
+func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
+	switch op.EntityType {
+	case EntityBlockedEmail:
+		var payload struct {
+			Email string `json:"email"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "email", payload.Email, nil
+	case EntityBlockedIP:
+		var payload struct {
+			IP string `json:"ip"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "ip", payload.IP, nil
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "id", payload.ID, nil
+	case EntitySystemSetting:
+		var payload struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "key", payload.Key, nil
+	default:
+		return "", "", nil
+	}
+}
+
+func remoteOpDeletePayloadIdentity(op *store.HASyncOp) (string, string, error) {
+	switch op.EntityType {
+	case EntityBlockedEmail:
+		var payload struct {
+			Email string `json:"email"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "email", payload.Email, nil
+	case EntityBlockedIP:
+		var payload struct {
+			IP string `json:"ip"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "ip", payload.IP, nil
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "id", payload.ID, nil
+	default:
+		return "", "", nil
+	}
+}
+
+func remotePayloadIdentityEqual(entityType, payloadID, entityID string) bool {
+	payloadID = strings.TrimSpace(payloadID)
+	entityID = strings.TrimSpace(entityID)
+	switch entityType {
+	case EntityBlockedEmail:
+		return strings.EqualFold(payloadID, entityID)
+	default:
+		return payloadID == entityID
+	}
 }
 
 func shouldApplyRemoteVersion(current *store.HAEntityVersion, op *store.HASyncOp) bool {
@@ -1305,6 +1691,12 @@ func (s *Service) applyHubInstanceOp(ctx context.Context, op *store.HASyncOp) er
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
 			return err
 		}
+		if err := normalizeHubPayloadID(&item, op.EntityID); err != nil {
+			return err
+		}
+		if replacer, ok := s.hubs.(hubInstanceConflictReplacer); ok {
+			return replacer.ReplaceConflictingHubInstance(ctx, &item)
+		}
 		var existing *store.HubInstance
 		var err error
 		if strings.TrimSpace(item.InstallationID) != "" {
@@ -1320,8 +1712,15 @@ func (s *Service) applyHubInstanceOp(ctx context.Context, op *store.HASyncOp) er
 			}
 		}
 		if existing == nil {
+			existing, err = s.hubs.GetByEndpoint(ctx, item.Host, item.Port, item.BaseURL)
+			if err != nil {
+				return err
+			}
+		}
+		if existing == nil {
 			return s.hubs.Create(ctx, &item)
 		}
+		item.ID = existing.ID
 		return s.hubs.UpdateRegistration(ctx, &item)
 	case OpDelete:
 		var payload struct {
@@ -1330,10 +1729,31 @@ func (s *Service) applyHubInstanceOp(ctx context.Context, op *store.HASyncOp) er
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
 			return err
 		}
+		if strings.TrimSpace(payload.ID) == "" {
+			payload.ID = op.EntityID
+		} else if strings.TrimSpace(payload.ID) != strings.TrimSpace(op.EntityID) {
+			return InvalidRemoteOpError{Reason: "hub payload id does not match op entity id"}
+		}
 		return s.hubs.DeleteByID(ctx, payload.ID)
 	default:
 		return fmt.Errorf("unsupported hub instance op: %s", op.OpType)
 	}
+}
+
+func normalizeHubPayloadID(item *store.HubInstance, entityID string) error {
+	if item == nil {
+		return InvalidRemoteOpError{Reason: "missing hub payload"}
+	}
+	item.ID = strings.TrimSpace(item.ID)
+	entityID = strings.TrimSpace(entityID)
+	if item.ID == "" {
+		item.ID = entityID
+		return nil
+	}
+	if item.ID != entityID {
+		return InvalidRemoteOpError{Reason: "hub payload id does not match op entity id"}
+	}
+	return nil
 }
 
 func (s *Service) applyHubUserLinkOp(ctx context.Context, op *store.HASyncOp) error {
@@ -1346,6 +1766,7 @@ func (s *Service) applyHubUserLinkOp(ctx context.Context, op *store.HASyncOp) er
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
 			return err
 		}
+		normalizeRoutingTenantIDs(&item)
 		return s.links.Upsert(ctx, &item)
 	case OpDelete:
 		var payload struct {
@@ -1370,6 +1791,7 @@ func (s *Service) applyHubDomainRouteOp(ctx context.Context, op *store.HASyncOp)
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
 			return err
 		}
+		normalizeRoutingTenantIDs(&item)
 		return s.routes.Upsert(ctx, &item)
 	case OpDelete:
 		var payload struct {
@@ -1512,9 +1934,11 @@ func (s *Service) AppendHubUserLink(ctx context.Context, item *store.HubUserLink
 	if item == nil {
 		return
 	}
-	if err := s.AppendUpsert(ctx, EntityHubUserLink, item.ID, item, item.UpdatedAt); err != nil {
+	link := *item
+	normalizeRoutingTenantIDs(&link)
+	if err := s.AppendUpsert(ctx, EntityHubUserLink, link.ID, &link, link.UpdatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append hub user link: %v", err)
-		s.recordFailure(ctx, "ha_sync", "append_hub_user_link_failed", err.Error(), item.ID, nil)
+		s.recordFailure(ctx, "ha_sync", "append_hub_user_link_failed", err.Error(), link.ID, nil)
 	}
 }
 
@@ -1529,10 +1953,33 @@ func (s *Service) AppendHubDomainRoute(ctx context.Context, item *store.HubDomai
 	if item == nil {
 		return
 	}
-	if err := s.AppendUpsert(ctx, EntityHubDomainRoute, item.ID, item, item.UpdatedAt); err != nil {
+	route := *item
+	normalizeRoutingTenantIDs(&route)
+	if err := s.AppendUpsert(ctx, EntityHubDomainRoute, route.ID, &route, route.UpdatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append hub domain route: %v", err)
-		s.recordFailure(ctx, "ha_sync", "append_hub_domain_route_failed", err.Error(), item.ID, nil)
+		s.recordFailure(ctx, "ha_sync", "append_hub_domain_route_failed", err.Error(), route.ID, nil)
 	}
+}
+
+func normalizeRoutingTenantIDs(item any) {
+	switch v := item.(type) {
+	case *store.HubUserLink:
+		if v != nil {
+			v.TenantID = normalizeRoutingTenantID(v.TenantID)
+		}
+	case *store.HubDomainRoute:
+		if v != nil {
+			v.TenantID = normalizeRoutingTenantID(v.TenantID)
+		}
+	}
+}
+
+func normalizeRoutingTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "tenant_default" {
+		return ""
+	}
+	return tenantID
 }
 
 func (s *Service) DeleteHubDomainRoute(ctx context.Context, routeID string) {
@@ -1551,11 +1998,40 @@ func (s *Service) AppendSystemSetting(ctx context.Context, key, valueJSON string
 	}
 }
 
+func (s *Service) appendSnapshotUpsertIfChanged(ctx context.Context, entityType, entityID string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	key := entityType + ":" + entityID
+	s.snapshotMu.Lock()
+	if s.snapshotHashes == nil {
+		s.snapshotHashes = make(map[string]string)
+	}
+	if s.snapshotHashes[key] == hash {
+		s.snapshotMu.Unlock()
+		return nil
+	}
+	s.snapshotHashes[key] = hash
+	s.snapshotMu.Unlock()
+	if err := s.AppendUpsert(ctx, entityType, entityID, payload, time.Now().UTC()); err != nil {
+		s.snapshotMu.Lock()
+		if s.snapshotHashes[key] == hash {
+			delete(s.snapshotHashes, key)
+		}
+		s.snapshotMu.Unlock()
+		return err
+	}
+	return nil
+}
+
 func (s *Service) AppendGossipSnapshot(ctx context.Context, snap *GossipSnapshot) {
 	if snap == nil {
 		return
 	}
-	if err := s.AppendUpsert(ctx, EntityGossipSnapshot, "gossip", snap, time.Now().UTC()); err != nil {
+	if err := s.appendSnapshotUpsertIfChanged(ctx, EntityGossipSnapshot, "gossip", snap); err != nil {
 		log.Printf("[hubcenter][ha] append gossip snapshot: %v", err)
 	}
 }
@@ -1564,7 +2040,7 @@ func (s *Service) AppendSkillHubSnapshot(ctx context.Context, snap *skill.Snapsh
 	if snap == nil {
 		return
 	}
-	if err := s.AppendUpsert(ctx, EntitySkillHubSnapshot, "skillhub", snap, time.Now().UTC()); err != nil {
+	if err := s.appendSnapshotUpsertIfChanged(ctx, EntitySkillHubSnapshot, "skillhub", snap); err != nil {
 		log.Printf("[hubcenter][ha] append skillhub snapshot: %v", err)
 	}
 }
@@ -1573,7 +2049,7 @@ func (s *Service) AppendSkillMarketSnapshot(ctx context.Context, snap *skillmark
 	if snap == nil {
 		return
 	}
-	if err := s.AppendUpsert(ctx, EntitySkillMarketSnapshot, "skillmarket", snap, time.Now().UTC()); err != nil {
+	if err := s.appendSnapshotUpsertIfChanged(ctx, EntitySkillMarketSnapshot, "skillmarket", snap); err != nil {
 		log.Printf("[hubcenter][ha] append skillmarket snapshot: %v", err)
 	}
 }

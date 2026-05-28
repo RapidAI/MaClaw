@@ -2,17 +2,21 @@ package workflow
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/capability"
+	_ "modernc.org/sqlite"
 )
 
 // mockWorkflowStoreForAdmin implements WorkflowStore for admin review tests.
 type mockWorkflowStoreForAdmin struct {
-	versions   map[string]*WorkflowVersion
-	workflows  map[string]*WorkflowDefinition
-	statusLog  []statusUpdate
+	versions  map[string]*WorkflowVersion
+	workflows map[string]*WorkflowDefinition
+	statusLog []statusUpdate
 }
 
 type statusUpdate struct {
@@ -26,6 +30,64 @@ func newMockStoreForAdmin() *mockWorkflowStoreForAdmin {
 		versions:  make(map[string]*WorkflowVersion),
 		workflows: make(map[string]*WorkflowDefinition),
 	}
+}
+
+func newAdminReviewCapabilityDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	schema := `
+		CREATE TABLE capabilities (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			id TEXT NOT NULL,
+			capability_type TEXT NOT NULL,
+			publisher TEXT NOT NULL DEFAULT '',
+			capability_id TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT '',
+			managed_by TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active',
+			relation_to_origin TEXT NOT NULL DEFAULT '',
+			global_key TEXT NOT NULL DEFAULT '',
+			current_version_key TEXT NOT NULL DEFAULT '',
+			origin_key TEXT NOT NULL DEFAULT '',
+			origin_json TEXT NOT NULL DEFAULT '',
+			provenance_json TEXT NOT NULL DEFAULT '',
+			metadata_json TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, id)
+		);
+		CREATE TABLE capability_versions (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			id TEXT NOT NULL,
+			capability_ref TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '',
+			version_key TEXT NOT NULL DEFAULT '',
+			package_url TEXT NOT NULL DEFAULT '',
+			package_checksum TEXT NOT NULL DEFAULT '',
+			package_signature TEXT NOT NULL DEFAULT '',
+			manifest_json TEXT NOT NULL DEFAULT '',
+			type_config_json TEXT NOT NULL DEFAULT '',
+			permissions_json TEXT NOT NULL DEFAULT '',
+			pricing_json TEXT NOT NULL DEFAULT '',
+			license_json TEXT NOT NULL DEFAULT '',
+			compatibility_json TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, id)
+		);
+		CREATE UNIQUE INDEX idx_capability_versions_key ON capability_versions(tenant_id, version_key);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("create capability schema: %v", err)
+	}
+	return db
 }
 
 func (m *mockWorkflowStoreForAdmin) CreateWorkflow(_ context.Context, def *WorkflowDefinition) error {
@@ -271,6 +333,45 @@ func TestAdminReview_ApproveSubmission(t *testing.T) {
 	}
 }
 
+func TestAdminReview_ApproveSubmission_SetsCapabilityCurrentVersion(t *testing.T) {
+	store := newMockStoreForAdmin()
+	db := newAdminReviewCapabilityDB(t)
+	svc := NewAdminReviewService(store, capability.NewService(db))
+	ctx := context.Background()
+
+	store.workflows["wf1"] = &WorkflowDefinition{
+		ID:          "wf1",
+		OwnerID:     "user_alice",
+		Name:        "Workflow",
+		Description: "Review me",
+	}
+
+	now := time.Now().UTC()
+	store.versions["v1"] = &WorkflowVersion{
+		ID:            "v1",
+		WorkflowID:    "wf1",
+		VersionNumber: "1.0.0",
+		Status:        VersionPendingReview,
+		SubmittedAt:   &now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Graph:         WorkflowGraph{Nodes: []WorkflowNode{{ID: "n1", Type: NodeTrigger}}},
+	}
+
+	if err := svc.ApproveSubmission(ctx, "v1"); err != nil {
+		t.Fatalf("ApproveSubmission: %v", err)
+	}
+
+	capabilityID := workflowCapabilityID("wf1")
+	cap, err := capability.NewService(db).Get(ctx, capabilityID)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	if cap.CurrentVersionKey != "approval_workflow:wf1:1.0.0" {
+		t.Fatalf("current_version_key = %q", cap.CurrentVersionKey)
+	}
+}
+
 func TestAdminReview_ApproveSubmission_SupersedesPrevious(t *testing.T) {
 	store := newMockStoreForAdmin()
 	svc := NewAdminReviewService(store, nil)
@@ -337,6 +438,41 @@ func TestAdminReview_ApproveSubmission_NotPending(t *testing.T) {
 	err := svc.ApproveSubmission(ctx, "v1")
 	if err == nil {
 		t.Fatal("expected error for non-pending version")
+	}
+}
+
+func TestAdminReview_ApproveSubmission_MarketRegistrationFailureKeepsPending(t *testing.T) {
+	store := newMockStoreForAdmin()
+	svc := NewAdminReviewService(store, &capability.Service{})
+	ctx := context.Background()
+
+	store.workflows["wf1"] = &WorkflowDefinition{
+		ID:      "wf1",
+		OwnerID: "user_alice",
+		Name:    "Workflow",
+	}
+
+	now := time.Now().UTC()
+	store.versions["v1"] = &WorkflowVersion{
+		ID:            "v1",
+		WorkflowID:    "wf1",
+		VersionNumber: "1.0.0",
+		Status:        VersionPendingReview,
+		SubmittedAt:   &now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Graph:         WorkflowGraph{Nodes: []WorkflowNode{{ID: "n1", Type: NodeTrigger}}},
+	}
+
+	err := svc.ApproveSubmission(ctx, "v1")
+	if err == nil {
+		t.Fatal("expected market registration error")
+	}
+	if store.versions["v1"].Status != VersionPendingReview {
+		t.Fatalf("status = %q, want pending_review", store.versions["v1"].Status)
+	}
+	if len(store.statusLog) != 0 {
+		t.Fatalf("status log = %+v, want no status mutation", store.statusLog)
 	}
 }
 

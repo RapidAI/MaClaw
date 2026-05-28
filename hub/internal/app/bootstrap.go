@@ -397,6 +397,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		return nil, fmt.Errorf("security root group: %w", err)
 	}
 	securitySvc := security.NewSecurityService(securityStore, st.System, st.AdminAudit, st.Users)
+	smartRouteChecker.SetSecurityPolicyProvider(&smartRouteSecurityPolicyAdapter{svc: securitySvc})
 
 	// Inject SecurityProvider into ws.Gateway for heartbeat policy delivery.
 	gateway.SecurityProvider = securitySvc
@@ -557,6 +558,34 @@ func (a *smartRouteUserAdapter) GetSmartRouteByUserID(ctx context.Context, userI
 		return false, nil
 	}
 	return user.SmartRoute, nil
+}
+
+type smartRouteSecurityPolicyAdapter struct {
+	svc *security.SecurityService
+}
+
+func (a *smartRouteSecurityPolicyAdapter) IsSmartRouteAllowedBySecurityPolicy(ctx context.Context, userID string) (bool, bool) {
+	if a == nil || a.svc == nil {
+		return true, false
+	}
+	ctx = security.WithTenant(ctx, im.TenantIDFromContext(ctx))
+	enabled, err := a.svc.IsCentralizedEnabled(ctx)
+	if err != nil {
+		log.Printf("[SmartRouteChecker] security settings lookup error for %s: %v", userID, err)
+		return false, true
+	}
+	if !enabled {
+		return true, false
+	}
+	policy, err := a.svc.GetEffectivePolicyByUserID(ctx, userID)
+	if err != nil {
+		log.Printf("[SmartRouteChecker] security policy lookup error for %s: %v", userID, err)
+		return false, true
+	}
+	if policy == nil {
+		return false, true
+	}
+	return policy.SmartRouteEnabled, true
 }
 
 type heartbeatConfigProvider struct {

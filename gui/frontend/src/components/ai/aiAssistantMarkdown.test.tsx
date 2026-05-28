@@ -77,6 +77,26 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("Clear")).toBeTruthy();
     });
 
+    it.each([
+        ["real newline", "####\n\u{1f4ca} Resource usage", "\u{1f4ca} Resource usage", "####"],
+        ["escaped newline", "####\\n\u{1f4ca} Resource usage", "\u{1f4ca} Resource usage", "####"],
+        ["escaped CRLF", "####\\r\\nSummary", "Summary", "####"],
+        ["trailing spaces", "###   \nSummary", "Summary", "###"],
+        ["CRLF line ending", "####\r\nSummary", "Summary", "####"],
+    ])("attaches bare markdown heading markers with %s", (_label, input, renderedText, marker) => {
+        const { container } = render(<div>{renderContentWithCodeBlocks(input, lightTheme)}</div>);
+
+        expect(screen.getByText(renderedText)).toBeTruthy();
+        expect(container.textContent).not.toContain(marker);
+    });
+
+    it("does not attach bare markdown heading markers inside fenced code blocks", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("```md\n####\nTitle\n```", lightTheme)}</div>);
+
+        const code = container.querySelector("code");
+        expect(code?.textContent).toBe("####\nTitle");
+    });
+
     it("splits compact emoji headings even when the previous text has no punctuation", () => {
         render(<div>{renderContentWithCodeBlocks("晴天###\u{1f4c5}明天\n多云", lightTheme)}</div>);
 

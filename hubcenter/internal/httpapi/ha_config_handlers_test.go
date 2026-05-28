@@ -24,6 +24,7 @@ func TestHAConfigEndpointsRoundTrip(t *testing.T) {
 		"self_fqdn":                           "hubs.maclaw.top",
 		"cluster_secret":                      "shared-secret",
 		"sync_interval_seconds":               4,
+		"push_debounce_seconds":               7,
 		"pull_batch_size":                     180,
 		"heartbeat_sync_min_interval_seconds": 8,
 		"nodes": []map[string]any{
@@ -47,6 +48,9 @@ func TestHAConfigEndpointsRoundTrip(t *testing.T) {
 	if body["node_id"] != "hc-2" {
 		t.Fatalf("node_id = %v", body["node_id"])
 	}
+	if body["push_debounce_seconds"] != float64(7) {
+		t.Fatalf("push_debounce_seconds = %v", body["push_debounce_seconds"])
+	}
 	peers, _ := body["peers"].([]any)
 	if len(peers) != 2 {
 		t.Fatalf("peer count = %d", len(peers))
@@ -67,6 +71,7 @@ func TestHAConfigEndpointExpandsLegacyPeersWhenSelfFQDNIsPosted(t *testing.T) {
 		"advertise_url":                       "https://hubs.maclaw.top",
 		"cluster_secret":                      "shared-secret",
 		"sync_interval_seconds":               4,
+		"push_debounce_seconds":               7,
 		"pull_batch_size":                     180,
 		"heartbeat_sync_min_interval_seconds": 8,
 		"peers": []map[string]any{

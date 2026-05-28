@@ -15,6 +15,8 @@ import (
 
 var haPublicKeyHTTPClient = &http.Client{Timeout: 3 * time.Second}
 
+const haPublicKeyResponseBodyLimit = 1 << 20
+
 type haConfigRequest struct {
 	Enabled                         bool            `json:"enabled"`
 	SelfFQDN                        string          `json:"self_fqdn,omitempty"`
@@ -25,8 +27,13 @@ type haConfigRequest struct {
 	AdvertiseURL                    string          `json:"advertise_url"`
 	ClusterSecret                   string          `json:"cluster_secret"`
 	SyncIntervalSeconds             int             `json:"sync_interval_seconds"`
+	PushDebounceSeconds             int             `json:"push_debounce_seconds"`
 	PullBatchSize                   int             `json:"pull_batch_size"`
 	HeartbeatSyncMinIntervalSeconds int             `json:"heartbeat_sync_min_interval_seconds"`
+	HistoryRetentionDays            float64         `json:"history_retention_days"`
+	HistoryMaxRetainedOps           int             `json:"history_max_retained_ops"`
+	HistoryPruneIntervalMinutes     int             `json:"history_prune_interval_minutes"`
+	HistoryPruneBatchSize           int             `json:"history_prune_batch_size"`
 	Nodes                           []haNodeRequest `json:"nodes,omitempty"`
 	Peers                           []haPeerRequest `json:"peers"`
 }
@@ -112,8 +119,8 @@ func UpdateHAConfigHandler(svc *ha.ConfigService, keySvc haKeyProvider) http.Han
 			return
 		}
 		var req haConfigRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		req = expandLegacyHAPeersToNodes(req)
@@ -325,7 +332,7 @@ func fetchRemoteHAPublicKey(ctx context.Context, baseURL string, peerSvc haPeerK
 		return haPublicKeyView{}, fmt.Errorf("remote status %d: %s", resp.StatusCode, msg)
 	}
 	var view haPublicKeyView
-	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, haPublicKeyResponseBodyLimit)).Decode(&view); err != nil {
 		return haPublicKeyView{}, err
 	}
 	return view, nil
@@ -415,8 +422,13 @@ func (r haConfigRequest) toConfig() config.HAConfig {
 		AdvertiseURL:                    r.AdvertiseURL,
 		ClusterSecret:                   r.ClusterSecret,
 		SyncIntervalSeconds:             r.SyncIntervalSeconds,
+		PushDebounceSeconds:             r.PushDebounceSeconds,
 		PullBatchSize:                   r.PullBatchSize,
 		HeartbeatSyncMinIntervalSeconds: r.HeartbeatSyncMinIntervalSeconds,
+		HistoryRetentionDays:            r.HistoryRetentionDays,
+		HistoryMaxRetainedOps:           r.HistoryMaxRetainedOps,
+		HistoryPruneIntervalMinutes:     r.HistoryPruneIntervalMinutes,
+		HistoryPruneBatchSize:           r.HistoryPruneBatchSize,
 		Nodes:                           nodes,
 		Peers:                           peers,
 	}
@@ -453,8 +465,13 @@ func fromHAConfig(cfg config.HAConfig) haConfigRequest {
 		AdvertiseURL:                    cfg.AdvertiseURL,
 		ClusterSecret:                   cfg.ClusterSecret,
 		SyncIntervalSeconds:             cfg.SyncIntervalSeconds,
+		PushDebounceSeconds:             cfg.PushDebounceSeconds,
 		PullBatchSize:                   cfg.PullBatchSize,
 		HeartbeatSyncMinIntervalSeconds: cfg.HeartbeatSyncMinIntervalSeconds,
+		HistoryRetentionDays:            cfg.HistoryRetentionDays,
+		HistoryMaxRetainedOps:           cfg.HistoryMaxRetainedOps,
+		HistoryPruneIntervalMinutes:     cfg.HistoryPruneIntervalMinutes,
+		HistoryPruneBatchSize:           cfg.HistoryPruneBatchSize,
 		Nodes:                           nodes,
 		Peers:                           peers,
 	}

@@ -1,14 +1,14 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 )
+
+const skillMarketAuthJSONBodyLimit = 4096
 
 // ── Auth Handlers ───────────────────────────────────────────────────────
 
@@ -18,8 +18,7 @@ func (h *SkillMarketHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	user, err := h.authSvc.Register(r.Context(), req.Email, req.Password)
@@ -65,8 +64,7 @@ func (h *SkillMarketHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	sess, err := h.authSvc.Login(r.Context(), req.Email, req.Password)
@@ -112,8 +110,7 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 		MachineID   string `json:"machine_id"`
 		ViewerToken string `json:"viewer_token"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	email := strings.TrimSpace(req.Email)
@@ -169,8 +166,7 @@ func (h *SkillMarketHandlers) SendLookupVerification(w http.ResponseWriter, r *h
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	// Always return success to prevent email enumeration attacks.
@@ -244,8 +240,7 @@ func (h *SkillMarketHandlers) ChangePassword(w http.ResponseWriter, r *http.Requ
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if err := h.authSvc.ChangePassword(r.Context(), token, req.CurrentPassword, req.NewPassword); err != nil {
@@ -266,8 +261,7 @@ func (h *SkillMarketHandlers) ResendActivation(w http.ResponseWriter, r *http.Re
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if err := h.authSvc.ResendActivation(r.Context(), req.Email); err != nil {
@@ -282,8 +276,7 @@ func (h *SkillMarketHandlers) SendPasswordReset(w http.ResponseWriter, r *http.R
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if err := h.authSvc.SendPasswordReset(r.Context(), strings.TrimSpace(req.Email)); err != nil {
@@ -303,8 +296,7 @@ func (h *SkillMarketHandlers) ResetPassword(w http.ResponseWriter, r *http.Reque
 		Token    string `json:"token"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	sess, err := h.authSvc.ResetPassword(r.Context(), req.Token, req.Password)
@@ -322,6 +314,18 @@ func (h *SkillMarketHandlers) ResetPassword(w http.ResponseWriter, r *http.Reque
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
+
+func decodeSkillMarketJSON(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	if err := decodeLimitedJSON(w, r, dst, limit); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			smError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
+		smError(w, http.StatusBadRequest, "invalid JSON")
+		return false
+	}
+	return true
+}
 
 func extractSessionToken(r *http.Request) string {
 	// Check Authorization header first

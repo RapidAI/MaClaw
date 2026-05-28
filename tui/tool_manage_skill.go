@@ -434,6 +434,10 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 		return "缺少 query 参数"
 	}
 	hubURL := app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
+	allowedSources, policyErr := tuiAllowedSkillSearchSourcesForPolicy(app.appConfig, query)
+	if policyErr != nil {
+		return policyErr.Error()
+	}
 
 	// Multi-node failover using shared infrastructure from tui/commands.
 	// This is the single source of truth for failover logic.
@@ -443,8 +447,6 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 	defer cancel()
 
 	client := skill.DefaultHubClient()
-	// Filter by allowed sources from local config (Hub push not available in TUI yet).
-	allowedSources := app.appConfig.SkillSourcesAllowed
 	results := client.SearchAllFiltered(ctx, hubURL, query, allowedSources)
 
 	// Rerank by local execution history: demote skills with poor local
@@ -501,11 +503,17 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	if effectiveSource == "" {
 		effectiveSource = "skillhub"
 	}
+	guardArgs := map[string]interface{}{"action": "install", "skill_id": skillID, "source": effectiveSource, "hub_url": hubURL, "install_ref": sval(args, "install_ref")}
+	if ok, reason := enforceClientSecurityPolicy(app.appConfig, "manage_skill", guardArgs); !ok {
+		return reason
+	}
 
 	// Check if source is allowed by policy/config.
-	if !skill.IsSourceAllowed(effectiveSource, app.appConfig.SkillSourcesAllowed) {
+	if !tuiSkillSourceAllowedByPolicy(app.appConfig, effectiveSource) {
 		return fmt.Sprintf("❌ 来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, app.appConfig.SkillSourcesAllowed)
 	}
+
+	recordTUIDeveloperSkillRisk(app.appConfig, effectiveSource, "install", guardArgs)
 
 	if hubURL == "" {
 		hubURL = app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
@@ -1034,7 +1042,7 @@ func execStepWithContext(parentCtx context.Context, step corelib.NLSkillStep, di
 	if strings.TrimSpace(cmd) == "" {
 		return "", fmt.Errorf("bash step missing command parameter")
 	}
-	timeout := skill.RunnerStepTimeoutSeconds(step.Params, 120, 600)
+	timeout := skill.RunnerStepTimeoutSeconds(step.Params, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
 	wd, _ := step.Params["working_dir"].(string)
 	if wd == "" {
 		wd = dir

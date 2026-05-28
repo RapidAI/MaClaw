@@ -549,8 +549,8 @@ func compactSubAgentRunReport(report string) string {
 //
 // Decision criteria:
 // - Orchestrator must be active
-// - Next ready task's execution mode must be "direct" (not external tool)
-// - External tool mode still uses create_session (existing path)
+// - Next ready task's execution mode must be "direct"
+// - Coding tasks use CodingSubAgent; external coding sessions are disabled
 // - Dependency deadlocks still route here so RunAllTasks can mark them skipped
 func ShouldUseSubAgent(orchestrator *TaskExecutionOrchestrator) bool {
 	if orchestrator == nil || !orchestrator.IsActive() {
@@ -561,5 +561,5 @@ func ShouldUseSubAgent(orchestrator *TaskExecutionOrchestrator) bool {
 		return orchestrator.HasBlockedRunnableTasks()
 	}
 	mode, ok := orchestrator.ResolveExecutionModeForTaskRun(handles[0].Task, handles[0].RunID)
-	return ok && mode == TaskExecModeDirect
+	return ok && (mode == TaskExecModeDirect || mode == TaskExecModeExternal)
 }

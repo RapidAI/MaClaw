@@ -275,8 +275,7 @@ func (h *SkillMarketHandlers) EnsureAccount(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if strings.TrimSpace(req.Email) == "" {
@@ -312,8 +311,7 @@ func (h *SkillMarketHandlers) VerifyAccount(w http.ResponseWriter, r *http.Reque
 		Email  string `json:"email"`
 		Method string `json:"method"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if req.Email == "" {
@@ -371,8 +369,7 @@ func (h *SkillMarketHandlers) TopUpCredits(w http.ResponseWriter, r *http.Reques
 		UserID string `json:"user_id"`
 		Amount int64  `json:"amount"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if err := h.creditsSvc.TopUp(r.Context(), req.UserID, req.Amount); err != nil {
@@ -392,8 +389,7 @@ func (h *SkillMarketHandlers) WithdrawCredits(w http.ResponseWriter, r *http.Req
 		UserID string `json:"user_id"`
 		Amount int64  `json:"amount"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if err := h.creditsSvc.Withdraw(r.Context(), req.UserID, req.Amount); err != nil {
@@ -532,6 +528,12 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 	}
 
 	// 加密下载
+	if skillMarketWantsAgentSkillDownload(r) {
+		_ = h.skillStore.IncrementDownloadCount(skillID)
+		writeJSON(w, http.StatusOK, sk)
+		return
+	}
+
 	encPkg, err := skillmarket.EncryptForDownload([]byte(sk.AgentSkillMD), buyer.ID, h.rsaPrivKey)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, "encrypt failed: "+err.Error())
@@ -546,6 +548,15 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 		"skill_id":       skillID,
 		"amount_paid":    amountPaid,
 	})
+}
+
+func skillMarketWantsAgentSkillDownload(r *http.Request) bool {
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "agent_skill" || format == "agent-skill" {
+		return true
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return strings.Contains(accept, "application/vnd.codeclaw.agent-skill+json")
 }
 
 func (h *SkillMarketHandlers) getSkillPrice(ctx context.Context, skillID string) int64 {
@@ -700,8 +711,7 @@ func (h *SkillMarketHandlers) RateSkill(w http.ResponseWriter, r *http.Request) 
 		Score         int    `json:"score"`
 		UploaderEmail string `json:"uploader_email"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if req.Email == "" {
@@ -822,8 +832,7 @@ func (h *SkillMarketHandlers) UpdateTrialConfig(w http.ResponseWriter, r *http.R
 		AutoPublishThreshold *int `json:"auto_publish_threshold,omitempty"`
 		MaxUploadsPerHour    *int `json:"max_uploads_per_hour,omitempty"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	ctx := r.Context()
@@ -874,8 +883,7 @@ func (h *SkillMarketHandlers) UpdateUploadAuthConfig(w http.ResponseWriter, r *h
 	var req struct {
 		Mode string `json:"mode"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
@@ -925,8 +933,7 @@ func (h *SkillMarketHandlers) WithdrawSkill(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if req.Email == "" {
@@ -996,8 +1003,7 @@ func (h *SkillMarketHandlers) UploadAPIKeys(w http.ResponseWriter, r *http.Reque
 		EnvName string   `json:"env_name"`
 		Keys    []string `json:"keys"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, largeJSONBodyLimit) {
 		return
 	}
 	if len(req.Keys) == 0 {
@@ -1035,8 +1041,7 @@ func (h *SkillMarketHandlers) AdminRefund(w http.ResponseWriter, r *http.Request
 		AdminEmail       string `json:"admin_email"`
 		Reason           string `json:"reason"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		smError(w, http.StatusBadRequest, "invalid JSON")
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
 		return
 	}
 	if req.PurchaseRecordID == "" {

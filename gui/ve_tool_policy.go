@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -15,10 +17,10 @@ import (
 // This ensures VE sessions inherit new read-only tools without code changes.
 // ---------------------------------------------------------------------------
 
-// veBlockedTools is the single source of truth for tools that are NOT available
-// in VE (digital employee) mode. These tools can modify the local filesystem,
-// execute arbitrary commands, or perform operations that should only be done
-// by the machine owner.
+// veBlockedTools lists VE-specific tools that are NOT available in digital
+// employee mode. External coding-session tools are blocked from
+// corelib/tool.CodingSessionToolNames so the VE policy cannot drift from the
+// main agent tool-list policy.
 //
 // Adding a new tool to the main agent: if it modifies local state, add it here.
 // If it's read-only (search, query, fetch), it's automatically available to VE.
@@ -177,7 +179,8 @@ func veSkillMCPOnlyGuard(skillName string, app *App) (bool, string) {
 
 // isVEToolBlocked checks if a tool is blocked in VE mode.
 func isVEToolBlocked(toolName string) bool {
-	return veBlockedTools[toolName]
+	name := strings.TrimSpace(toolName)
+	return coretool.IsCodingSessionTool(name) || veBlockedTools[name]
 }
 
 // isVEToolActionBlocked checks if a specific action of a tool is blocked in VE mode.

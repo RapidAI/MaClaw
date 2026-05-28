@@ -353,12 +353,14 @@ func TestLoadLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 		MaclawLLMUrl:             "https://llm.example/v1",
 		MaclawLLMModel:           "cloud-model",
 		MaclawLLMCurrentProvider: "Corp Gateway",
+		MaclawLLMTimeoutSec:      300,
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
-			Name:     "Corp Gateway",
-			URL:      "https://llm.example/v1",
-			Key:      "sk-provider",
-			Model:    "cloud-model",
-			AuthType: "apikey",
+			Name:       "Corp Gateway",
+			URL:        "https://llm.example/v1",
+			Key:        "sk-provider",
+			Model:      "cloud-model",
+			AuthType:   "apikey",
+			TimeoutSec: 510,
 		}},
 	}); err != nil {
 		t.Fatalf("save config: %v", err)
@@ -370,6 +372,9 @@ func TestLoadLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 	}
 	if llm.Key != "sk-provider" {
 		t.Fatalf("LLM key = %q, want provider key fallback", llm.Key)
+	}
+	if llm.TimeoutSec != 510 {
+		t.Fatalf("LLM timeout = %d, want current provider timeout", llm.TimeoutSec)
 	}
 
 	jsonOut, err := captureLLMStdout(t, func() error {

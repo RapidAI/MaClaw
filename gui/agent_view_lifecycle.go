@@ -1,6 +1,10 @@
 package main
 
-import "github.com/wailsapp/wails/v2/pkg/runtime"
+import (
+	"log"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+)
 
 const (
 	agentViewEvent          = "agent-view"
@@ -16,7 +20,7 @@ const (
 )
 
 func (a *App) emitAgentViewLifecycle(action string, payload map[string]interface{}) bool {
-	if a == nil || a.ctx == nil {
+	if a == nil {
 		return false
 	}
 	if payload == nil {
@@ -24,18 +28,19 @@ func (a *App) emitAgentViewLifecycle(action string, payload map[string]interface
 	}
 	payload["action"] = action
 	if _, ok := payload["seq"]; !ok {
-		payload["seq"] = a.agentViewSeq()
+		payload["seq"] = a.nextAgentViewSeq()
 	}
-	runtime.EventsEmit(a.ctx, agentViewLifecycleEvent, payload)
-	return true
+	if a.ctx == nil {
+		return false
+	}
+	return a.emitAgentViewEvent(agentViewLifecycleEvent, payload)
 }
 
 func (a *App) emitAgentView(view map[string]interface{}) bool {
 	if a == nil || view == nil {
 		return false
 	}
-	a.agentViewEmissionSeq.Add(1)
-	seq := a.agentViewSeq()
+	seq := a.nextAgentViewSeq()
 	if a.ctx == nil {
 		return false
 	}
@@ -44,8 +49,11 @@ func (a *App) emitAgentView(view map[string]interface{}) bool {
 	// Single event channel: agent-view:lifecycle is the formal protocol.
 	// The legacy "agent-view" event is retained only for external consumers
 	// (e.g. IM gateway, older Wails bindings) that haven't migrated.
-	runtime.EventsEmit(a.ctx, agentViewEvent, payload)
-	a.emitAgentViewLifecycle(agentViewLifecycleOpen, cloneAgentViewPayload(payload))
+	legacyOK := a.emitAgentViewEvent(agentViewEvent, payload)
+	lifecycleOK := a.emitAgentViewLifecycle(agentViewLifecycleOpen, cloneAgentViewPayload(payload))
+	if !legacyOK && !lifecycleOK {
+		return false
+	}
 	return true
 }
 
@@ -56,6 +64,13 @@ func (a *App) agentViewSeq() int64 {
 	return a.agentViewEmissionSeq.Load()
 }
 
+func (a *App) nextAgentViewSeq() int64 {
+	if a == nil {
+		return 0
+	}
+	return a.agentViewEmissionSeq.Add(1)
+}
+
 func (a *App) clearAgentView(viewID string) bool {
 	return a.clearAgentViewWithPayload(viewID, nil)
 }
@@ -64,8 +79,7 @@ func (a *App) clearAgentViewWithPayload(viewID string, extra map[string]interfac
 	if a == nil {
 		return false
 	}
-	a.agentViewEmissionSeq.Add(1)
-	seq := a.agentViewSeq()
+	seq := a.nextAgentViewSeq()
 	if a.ctx == nil {
 		return false
 	}
@@ -73,8 +87,25 @@ func (a *App) clearAgentViewWithPayload(viewID string, extra map[string]interfac
 	for key, value := range extra {
 		payload[key] = value
 	}
-	runtime.EventsEmit(a.ctx, agentViewClearEvent, payload)
-	a.emitAgentViewLifecycle(agentViewLifecycleDismiss, cloneAgentViewPayload(payload))
+	legacyOK := a.emitAgentViewEvent(agentViewClearEvent, payload)
+	lifecycleOK := a.emitAgentViewLifecycle(agentViewLifecycleDismiss, cloneAgentViewPayload(payload))
+	if !legacyOK && !lifecycleOK {
+		return false
+	}
+	return true
+}
+
+func (a *App) emitAgentViewEvent(name string, payload map[string]interface{}) (ok bool) {
+	if a == nil || a.ctx == nil {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[agent-view] emit %s panic: %v", name, r)
+			ok = false
+		}
+	}()
+	runtime.EventsEmit(a.ctx, name, payload)
 	return true
 }
 

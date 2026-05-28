@@ -126,8 +126,9 @@ type IMMessageHandler struct {
 	sessionMonitor *SessionMonitor
 
 	// SSH session manager (lazily initialized on first SSH tool call).
-	sshMgr    *remote.SSHSessionManager
-	bgTaskMgr *remote.SSHBackgroundTaskManager
+	sshMgrOnce sync.Once
+	sshMgr     *remote.SSHSessionManager
+	bgTaskMgr  *remote.SSHBackgroundTaskManager
 
 	// Local background task manager for long-running local processes.
 	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
@@ -270,6 +271,7 @@ type IMMessageHandler struct {
 	// matching hidden in the implementation.
 	pendingReplyPromptClassifier func(assistantText string) (bool, error)
 	pendingReplyAnswerClassifier func(question, answer string) (bool, error)
+	noToolReplyClassifier        func(text string) (agentNoToolReplyIntent, error)
 
 	// pendingCapabilityGap stores the result of an async capability gap
 	// resolution (skill search + install) that completed after the response
@@ -315,8 +317,8 @@ type IMMessageHandler struct {
 
 	// taskOrchestrator manages per-task execution during the coding
 	// workflow's Execution Phase. When active, it injects per-task system
-	// messages and constructs focused prompts for send_and_observe instead
-	// of letting the LLM dump the entire project description at once.
+	// messages and constructs focused prompts for the internal CodingSubAgent
+	// instead of letting the LLM dump the entire project description at once.
 	// Uses a per-user registry to isolate concurrent workflows in maclawsrv.
 	taskOrchestratorRegistry *TaskOrchestratorRegistry
 
@@ -349,6 +351,13 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is string.
 	pendingInjection sync.Map
 
+	// cancelledTaskBoundary records that a user explicitly cancelled the
+	// current task. The next normal user message must start a new task instead
+	// of being merged into or classified as a continuation of the cancelled
+	// task's history.
+	// Keyed by userID, value is time.Time.
+	cancelledTaskBoundary sync.Map
+
 	// interruptHandler bridges IM gateways to the running agent loop's
 	// cancel/merge/status mechanisms. Set during construction.
 	interruptHandler *imInterruptHandler
@@ -370,8 +379,8 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	// Response-header timeout: how long to wait for the FIRST byte from the
 	// LLM API after sending the request. This is NOT the total streaming
 	// duration 鈥?once headers arrive, SSE streaming continues without this
-	// limit. 120s is sufficient for even the slowest models (deepseek-reasoner
-	// thinking phase). If no byte arrives in 120s, the API is down.
+	// limit. The value follows the configured LLM timeout (default 240s,
+	// clamped to 240-600s).
 	//
 	// This is a fixed value rather than reading from LLM config because the
 	// transport outlives any single LLM provider configuration. The user may
@@ -468,8 +477,12 @@ func imResponseHeaderTimeout(app *App) time.Duration {
 
 // SetToolRegistry replaces the tool registry (for testing or late reconfiguration).
 func (h *IMMessageHandler) SetToolRegistry(r *ToolRegistry) {
+	h.toolsMu.Lock()
+	defer h.toolsMu.Unlock()
 	h.registry = r
 	h.toolBuilder = NewDynamicToolBuilder(r)
+	h.cachedTools = nil
+	h.toolsCacheTime = time.Time{}
 }
 
 // SetSecurityFirewall configures the security firewall for tool execution checks.
@@ -526,6 +539,11 @@ func (h *IMMessageHandler) SetToolRouter(router *ToolRouter) {
 	// builtin tool names and use tags for TF-IDF scoring.
 	if router != nil && h.registry != nil {
 		router.SetRegistry(h.registry)
+	}
+	if router != nil {
+		if uic := h.getUnifiedClassifier(); uic != nil {
+			router.SetUnifiedClassifier(uic)
+		}
 	}
 }
 
@@ -670,6 +688,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 			h.syncSkillHubTools()
 
 			tools = h.toolBuilder.BuildAll()
+			tools = h.filterInactiveDeferredTools(tools)
 
 			h.toolsMu.Lock()
 			h.cachedTools = tools
@@ -701,15 +720,30 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 		}
 	}
 
-	// In lite/simple mode (UIMode != "pro"), filter out coding session tools
-	// since the user has not configured coding LLM providers. This removes
-	// the tool definitions entirely so they are never sent to the LLM,
-	// saving tokens and preventing the agent from attempting coding sessions.
-	if !h.isProMode() {
-		tools = filterCodingTools(tools)
-	}
+	// Agent coding now runs through the internal CodingSubAgent. External
+	// coding-session tools stay out of the agent tool list in every UI mode.
+	tools = filterCodingTools(tools)
 
 	return tools
+}
+
+func (h *IMMessageHandler) filterInactiveDeferredTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 || h == nil || h.toolDefGen == nil {
+		return tools
+	}
+	deferred := make(map[string]bool, len(DeferredToolNames))
+	for _, name := range DeferredToolNames {
+		deferred[name] = true
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, item := range tools {
+		name := extractToolName(item)
+		if deferred[name] && !h.toolDefGen.IsDeferredToolActivated(name) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 // routeTools applies the ToolRouter to filter tools based on user message.
@@ -724,12 +758,33 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 	if router == nil {
 		filtered := make([]map[string]interface{}, 0, len(allTools))
 		for _, item := range allTools {
-			if tool.IsConditionalTool(extractToolName(item)) {
+			name := extractToolName(item)
+			if name == "set_nickname" {
+				if isExplicitNicknameRequest(userMessage) {
+					filtered = append(filtered, item)
+				}
+				continue
+			}
+			if tool.IsConditionalTool(name) {
 				continue
 			}
 			filtered = append(filtered, item)
 		}
 		return filtered
 	}
-	return router.Route(userMessage, allTools)
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		router.SetUnifiedClassifier(uic)
+	}
+	routed := router.Route(userMessage, allTools)
+	if isExplicitNicknameRequest(userMessage) {
+		return routed
+	}
+	filtered := make([]map[string]interface{}, 0, len(routed))
+	for _, item := range routed {
+		if extractToolName(item) == "set_nickname" {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }

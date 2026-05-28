@@ -42,9 +42,10 @@ type EffectivePolicy struct {
 	GuardrailMode        string   `json:"guardrail_mode"`
 	SandboxMode          string   `json:"sandbox_mode"`
 	NetworkLevel         string   `json:"network_level"`
+	NetworkAllowlist     []string `json:"network_allowlist,omitempty"`
 	YoloModeAllowed      bool     `json:"yolo_mode_allowed"`
 	SmartRouteEnabled    bool     `json:"smart_route_enabled"`
-	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed; values: "skillhub","clawhub","github"
+	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed; values: "skillhub","clawhub","github","enterprise_hub"
 }
 
 // DefaultPolicy 根组默认策略
@@ -55,14 +56,15 @@ var DefaultPolicy = EffectivePolicy{
 	GuardrailMode:        "standard",
 	SandboxMode:          "none",
 	NetworkLevel:         "full",
+	NetworkAllowlist:     nil,
 	YoloModeAllowed:      true,
 	SmartRouteEnabled:    true,
-	SkillSourcesAllowed:  nil, // nil = all sources allowed (skillhub, clawhub, github)
+	SkillSourcesAllowed:  nil, // nil = all sources allowed (skillhub, clawhub, github, enterprise_hub)
 }
 
 // AllSkillSources re-exports the canonical list from corelib/skill.
 // Kept here for admin UI reference when displaying policy options.
-var AllSkillSources = []string{"skillhub", "clawhub", "github"}
+var AllSkillSources = []string{"skillhub", "clawhub", "github", "enterprise_hub"}
 
 // GroupPolicyView 组策略视图（含继承信息）
 type GroupPolicyView struct {

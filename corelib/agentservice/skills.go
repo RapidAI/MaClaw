@@ -67,6 +67,7 @@ type SkillInstallInput struct {
 	DefinitionType string `json:"definition_type,omitempty"`
 	ZipBase64      string `json:"zip_base64,omitempty"`
 	SkillHubURL    string `json:"skill_hub_url,omitempty"`
+	SkillMarketURL string `json:"skill_market_url,omitempty"`
 	SkillID        string `json:"skill_id,omitempty"`
 	Overwrite      bool   `json:"overwrite,omitempty"`
 	GitHubToken    string `json:"github_token,omitempty"`
@@ -142,16 +143,17 @@ type skillHubSearchResponse struct {
 }
 
 type skillHubDownloadEnvelope struct {
-	ID          string                `json:"id"`
-	Name        string                `json:"name"`
-	Description string                `json:"description"`
-	Triggers    []string              `json:"triggers"`
-	Version     string                `json:"version"`
-	TrustLevel  string                `json:"trust_level"`
-	Source      string                `json:"source,omitempty"`
-	Steps       []corelib.NLSkillStep `json:"steps,omitempty"`
-	Type        string                `json:"type,omitempty"`
-	Content     string                `json:"content,omitempty"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"`
+	Triggers     []string              `json:"triggers"`
+	Version      string                `json:"version"`
+	TrustLevel   string                `json:"trust_level"`
+	Source       string                `json:"source,omitempty"`
+	Steps        []corelib.NLSkillStep `json:"steps,omitempty"`
+	Type         string                `json:"type,omitempty"`
+	Content      string                `json:"content,omitempty"`
+	AgentSkillMD string                `json:"agent_skill_md,omitempty"`
 }
 
 type skillMarketSearchResponse struct {
@@ -217,7 +219,6 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 }
 
 func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchInput) ([]SkillSearchResult, error) {
-	_ = ctx
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
@@ -289,7 +290,8 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 		case "skillmarket":
 			baseURL := strings.TrimRight(strings.TrimSpace(in.SkillMarketURL), "/")
 			if baseURL == "" {
-				baseURL = strings.TrimRight(remote.DefaultRemoteHubCenterURL, "/")
+				cfg, _ := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+				baseURL = cfg.AppConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
 			}
 			found, err := searchSkillMarket(ctx, baseURL, query, topN)
 			if err != nil {
@@ -359,9 +361,49 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 			return nil, err
 		}
 		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
+	case "skillmarket", "market", "hubcenter", "hub_center":
+		cfg, _ := s.getOrLoadUserConfig(p.TenantID, p.UserID)
+		user, err := s.store.GetUser(p.TenantID, p.UserID)
+		if err != nil {
+			return nil, err
+		}
+		baseURL := strings.TrimSpace(in.SkillMarketURL)
+		if baseURL == "" {
+			baseURL = cfg.AppConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+		}
+		email := firstNonEmpty(user.Email, cfg.AppConfig.RemoteEmail)
+		authToken := s.skillMarketAuthToken(ctx, p, cfg, baseURL, email)
+		entry, err := downloadSkillMarketEntry(ctx, baseURL, strings.TrimSpace(in.SkillID), email, authToken)
+		if err != nil {
+			return nil, err
+		}
+		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	default:
 		return nil, fmt.Errorf("unsupported skill install source %q", source)
 	}
+}
+
+func (s *Service) skillMarketAuthToken(ctx context.Context, p Principal, cfg UserConfig, baseURL, email string) string {
+	if token := strings.TrimSpace(cfg.AppConfig.SkillMarketSessionToken); token != "" {
+		return token
+	}
+	if strings.TrimSpace(email) == "" || strings.TrimSpace(cfg.AppConfig.RemoteMachineID) == "" || strings.TrimSpace(cfg.AppConfig.RemoteViewerToken) == "" {
+		return ""
+	}
+	result, err := remote.NewSkillMarketAuthClient().MachineLogin(ctx, strings.TrimRight(strings.TrimSpace(baseURL), "/"), email, cfg.AppConfig.RemoteMachineID, cfg.AppConfig.RemoteViewerToken)
+	if err != nil || result == nil || strings.TrimSpace(result.SessionToken) == "" {
+		return ""
+	}
+	cfg.AppConfig.SkillMarketSessionToken = strings.TrimSpace(result.SessionToken)
+	if cfg.TenantID == "" {
+		cfg.TenantID = p.TenantID
+	}
+	if cfg.UserID == "" {
+		cfg.UserID = p.UserID
+	}
+	_ = s.store.SaveUserConfig(cfg)
+	_ = saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
+	return cfg.AppConfig.SkillMarketSessionToken
 }
 
 func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*SkillExportResult, error) {
@@ -758,6 +800,12 @@ func normalizeSkillSearchSources(sources []string) []string {
 	out := make([]string, 0, len(sources))
 	for _, source := range sources {
 		normalized := strings.ToLower(strings.TrimSpace(source))
+		switch normalized {
+		case "market", "hubcenter", "hub_center":
+			normalized = "skillmarket"
+		case "skill_hub":
+			normalized = "skillhub"
+		}
 		if normalized == "" || seen[normalized] {
 			continue
 		}
@@ -844,11 +892,73 @@ func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corel
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(payload.Name) == "" {
-		return nil, fmt.Errorf("skill hub response missing name")
+	return skillEntryFromHubDownloadPayload(payload, baseURL, "skillhub")
+}
+
+func downloadSkillMarketEntry(ctx context.Context, baseURL, skillID, email, authToken string) (*corelib.NLSkillEntry, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	skillID = strings.TrimSpace(skillID)
+	email = strings.TrimSpace(email)
+	if baseURL == "" || skillID == "" || email == "" {
+		return nil, fmt.Errorf("skill_market_url, skill_id, and email are required")
 	}
-	entry := &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, "skillhub"), SourceProject: baseURL, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content}
-	return entry, nil
+	headers := map[string]string{}
+	if authToken != "" {
+		headers["Authorization"] = "Bearer " + authToken
+	}
+	endpoints := []string{
+		fmt.Sprintf("%s/api/v1/skillmarket/%s/download?email=%s&format=agent_skill", baseURL, url.PathEscape(skillID), url.QueryEscape(email)),
+		fmt.Sprintf("%s/api/v1/skillmarket/skills/%s/download?email=%s&format=agent_skill", baseURL, url.PathEscape(skillID), url.QueryEscape(email)),
+		fmt.Sprintf("%s/api/capability-market/capabilities/%s/download?email=%s&format=agent_skill", baseURL, url.PathEscape(skillID), url.QueryEscape(email)),
+	}
+	var lastErr error
+	var encryptedResponse bool
+	for _, endpoint := range endpoints {
+		body, err := doJSONRequest(ctx, http.MethodGet, endpoint, nil, headers, skillHubJSONMaxBytes)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var encrypted struct {
+			EncryptedData any `json:"encrypted_data"`
+		}
+		if err := json.Unmarshal(body, &encrypted); err == nil && encrypted.EncryptedData != nil {
+			encryptedResponse = true
+			lastErr = fmt.Errorf("skill market returned encrypted package without installable agent skill payload")
+			continue
+		}
+		var payload skillHubDownloadEnvelope
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+		entry, err := skillEntryFromHubDownloadPayload(payload, baseURL, "skillmarket")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return entry, nil
+	}
+	if encryptedResponse {
+		return nil, fmt.Errorf("skill market download endpoint does not expose format=agent_skill")
+	}
+	return nil, lastErr
+}
+
+func skillEntryFromHubDownloadPayload(payload skillHubDownloadEnvelope, sourceProject, defaultSource string) (*corelib.NLSkillEntry, error) {
+	if strings.TrimSpace(payload.AgentSkillMD) != "" {
+		entry, err := skill.ParseMarkdownSkill(payload.AgentSkillMD, skill.MarkdownSkillOptions{NameFallback: payload.Name, DescriptionFallback: payload.Description, Source: firstNonEmpty(payload.Source, defaultSource), SourceProject: sourceProject, TrustLevel: payload.TrustLevel, Triggers: payload.Triggers})
+		if err != nil {
+			return nil, fmt.Errorf("parse agent skill markdown: %w", err)
+		}
+		entry.HubSkillID = payload.ID
+		entry.HubVersion = payload.Version
+		entry.TrustLevel = firstNonEmpty(entry.TrustLevel, payload.TrustLevel)
+		return entry, nil
+	}
+	if strings.TrimSpace(payload.Name) == "" {
+		return nil, fmt.Errorf("skill download response missing name")
+	}
+	return &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, defaultSource), SourceProject: sourceProject, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content}, nil
 }
 
 func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, archive []byte, authToken string) (string, error) {
@@ -1296,14 +1406,10 @@ func firstNonEmpty(values ...string) string {
 // Maps search source names (github, skillmarket, skillhub) to canonical names
 // (github, skillhub, skillhub) for comparison.
 func filterAllowedSources(requested, allowed []string) []string {
-	allowedSet := make(map[string]bool, len(allowed))
-	for _, s := range allowed {
-		allowedSet[s] = true
-	}
 	var result []string
-	for _, src := range requested {
+	for _, src := range normalizeSkillSearchSources(requested) {
 		canonical := searchSourceToCanonical(src)
-		if canonical == "" || allowedSet[canonical] {
+		if canonical == "" || skill.IsSourceAllowed(canonical, allowed) {
 			result = append(result, src)
 		}
 	}
@@ -1316,7 +1422,7 @@ func searchSourceToCanonical(source string) string {
 	switch source {
 	case "github":
 		return "github"
-	case "skillhub", "skillmarket":
+	case "skillhub", "skill_hub", "skillmarket", "market", "hubcenter", "hub_center":
 		return "skillhub"
 	case "clawhub":
 		return "clawhub"
@@ -1330,7 +1436,7 @@ func installSourceToCanonical(source string) string {
 	switch source {
 	case "github", "github_repo", "github_candidate":
 		return "github"
-	case "skillhub":
+	case "skillhub", "skillmarket", "market", "hubcenter", "hub_center":
 		return "skillhub"
 	case "clawhub":
 		return "clawhub"
@@ -1342,10 +1448,5 @@ func installSourceToCanonical(source string) string {
 }
 
 func isInSlice(s string, slice []string) bool {
-	for _, item := range slice {
-		if item == s {
-			return true
-		}
-	}
-	return false
+	return skill.IsSourceAllowed(s, slice)
 }

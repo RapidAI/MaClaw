@@ -13,7 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
 
-const groupDiscussionHubTimeout = 30 * time.Second
+const groupDiscussionHubTimeout = time.Duration(corelib.DefaultAgentTimeoutSec) * time.Second
 
 func (a *App) groupDiscussionClient() (*a2a.HubClient, corelib.AppConfig, error) {
 	cfg, err := a.LoadConfig()

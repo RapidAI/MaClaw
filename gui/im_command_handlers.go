@@ -93,11 +93,20 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 			loop.Cancel()
 			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "loop", "")}, true
 		}
-		ctx := h.currentLoopCtx
+		ctx := h.getSessionLoopCtx(msg.UserID)
+		taskText := h.sessionLoopTaskText(msg.UserID)
+		if ctx == nil {
+			h.globalLoopMu.RLock()
+			if h.lastUserID == msg.UserID {
+				ctx = h.currentLoopCtx
+				taskText = h.lastUserText
+			}
+			h.globalLoopMu.RUnlock()
+		}
 		if ctx == nil {
 			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "none", "")}, true
 		}
-		taskText := h.lastUserText
+		h.markTaskCancelledByUser(msg.UserID)
 		ctx.Cancel()
 		cancelMsg := localizedIMCancelMessage(responseLang, "task", truncateRunes(taskText, 30))
 		return &IMAgentResponse{Text: cancelMsg}, true

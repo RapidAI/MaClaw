@@ -52,6 +52,8 @@ func configDisplayNameForLang(key, lang string) string {
 		"security_profile": "Security profile", "security_policy_mode": "Security mode", "sandbox_mode": "Sandbox", "network_level": "Network level", "yolo_mode_allowed": "YOLO mode", "file_outbound_enabled": "File outbound", "image_outbound_enabled": "Image outbound",
 		"skill_purchase_mode": "Skill purchase", "ui_mode": "UI mode", "memory_auto_compress": "Memory compress", "log_detail_enabled": "Detail logs", "llm_trajectory_logging": "LLM trajectory", "maclaw_debug_tool_calls": "Debug tools", "gossip_enabled": "Gossip", "trial_reflect_enabled": "Trial reflect",
 	}
+	zh["smart_route_enabled"] = "智能路由"
+	en["smart_route_enabled"] = "Smart route"
 	if lang == "en" {
 		if label, ok := en[key]; ok {
 			return label

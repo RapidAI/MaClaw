@@ -121,21 +121,29 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	}
 
 	if isEnterpriseHubSkillSourceAllowed(allowedSources) {
-		hubResults, err := s.searchEnterpriseHubSkills(ctx, query)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("enterprise_hub: %v", err))
+		if ok, reason := s.allowSearchSource(corelib.CapabilitySourceEnterpriseHub, s.enterpriseHubURL(), query); !ok {
+			errs = append(errs, fmt.Sprintf("enterprise_hub: %s", reason))
 		} else {
-			results = append(results, hubResults...)
+			hubResults, err := s.searchEnterpriseHubSkills(ctx, query)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("enterprise_hub: %v", err))
+			} else {
+				results = append(results, hubResults...)
+			}
 		}
 	}
 
 	if cskill.IsSourceAllowed("skillhub", allowedSources) {
-		marketResults, err := s.Search(ctx, query, nil, 10)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("skillmarket: %v", err))
+		if ok, reason := s.allowSearchSource("skillhub", s.skillHubSearchURL(), query); !ok {
+			errs = append(errs, fmt.Sprintf("skillmarket: %s", reason))
 		} else {
-			for _, r := range marketResults {
-				results = append(results, s.toMixedSkillSearchResult(r))
+			marketResults, err := s.Search(ctx, query, nil, 10)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("skillmarket: %v", err))
+			} else {
+				for _, r := range marketResults {
+					results = append(results, s.toMixedSkillSearchResult(r))
+				}
 			}
 		}
 	}
@@ -143,13 +151,21 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	// ClawHub + GitHub via shared HubClient (single implementation).
 	hubClient := cskill.DefaultHubClient()
 	if cskill.IsSourceAllowed("clawhub", allowedSources) {
-		for _, r := range hubClient.SearchClawHub(ctx, query) {
-			results = append(results, hubSearchResultToMixed(r))
+		if ok, reason := s.allowSearchSource("clawhub", cskill.ClawHubMirrorURL, query); !ok {
+			errs = append(errs, fmt.Sprintf("clawhub: %s", reason))
+		} else {
+			for _, r := range hubClient.SearchClawHub(ctx, query) {
+				results = append(results, hubSearchResultToMixed(r))
+			}
 		}
 	}
 	if cskill.IsSourceAllowed("github", allowedSources) && ctx.Err() == nil {
-		for _, r := range hubClient.SearchGitHub(query) {
-			results = append(results, hubSearchResultToMixed(r))
+		if ok, reason := s.allowSearchSource("github", "https://github.com", query); !ok {
+			errs = append(errs, fmt.Sprintf("github: %s", reason))
+		} else {
+			for _, r := range hubClient.SearchGitHub(query) {
+				results = append(results, hubSearchResultToMixed(r))
+			}
 		}
 	}
 
@@ -194,6 +210,35 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	}
 
 	return results, nil
+}
+
+func (s *SkillSearcher) allowSearchSource(source, endpoint, query string) (bool, string) {
+	if s == nil || s.app == nil {
+		return true, ""
+	}
+	args := map[string]interface{}{"query": query, "source": source}
+	if strings.TrimSpace(endpoint) != "" {
+		args["url"] = endpoint
+	}
+	return s.app.enforceHubSecurityAppPolicy("search_and_install_skill", args)
+}
+
+func (s *SkillSearcher) skillHubSearchURL() string {
+	if s == nil || s.client == nil {
+		return ""
+	}
+	return s.client.baseURL()
+}
+
+func (s *SkillSearcher) enterpriseHubURL() string {
+	if s == nil || s.app == nil {
+		return ""
+	}
+	cfg, err := s.app.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.RemoteHubURL)
 }
 
 // localSearchPenalty returns a penalty for a search result based on local
@@ -396,19 +441,46 @@ func mixedResultMatchesSkill(result MixedSkillSearchResult, skill corelib.NLSkil
 // SearchAndInstall searches and auto-installs the best matching skill.
 // Search order: SkillMarket, then ClawHub mirror, then GitHub.
 func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*SkillSearchResult, error) {
-	results, err := s.Search(ctx, query, nil, 5)
-	if err != nil {
-		log.Printf("[skill-search] skillmarket search error: %v", err)
+	allowedSources := []string(nil)
+	if s.app != nil {
+		allowedSources = s.app.GetAllowedSkillSources()
+	}
+	var results []SkillSearchResult
+	var blocked []string
+	if cskill.IsSourceAllowed("skillhub", allowedSources) {
+		if ok, reason := s.allowSearchSource("skillhub", s.skillHubSearchURL(), query); !ok {
+			blocked = append(blocked, "skillhub: "+reason)
+		} else {
+			var err error
+			results, err = s.Search(ctx, query, nil, 5)
+			if err != nil {
+				log.Printf("[skill-search] skillmarket search error: %v", err)
+			}
+		}
+	}
+	if len(results) == 0 && cskill.IsSourceAllowed("clawhub", allowedSources) {
+		if ok, reason := s.allowSearchSource("clawhub", cskill.ClawHubMirrorURL, query); !ok {
+			blocked = append(blocked, "clawhub: "+reason)
+		} else {
+			// Step 2: try ClawHub mirror.
+			log.Printf("[skill-search] no skillmarket results for: %s, trying ClawHub mirror...", query)
+			results = s.searchClawHubMirror(ctx, query)
+		}
+	}
+	if len(results) == 0 && cskill.IsSourceAllowed("github", allowedSources) {
+		if ok, reason := s.allowSearchSource("github", "https://github.com", query); !ok {
+			blocked = append(blocked, "github: "+reason)
+		} else {
+			// Step 3: GitHub fallback
+			log.Printf("[skill-search] no ClawHub results for: %s, trying GitHub fallback...", query)
+			return s.searchGitHubFallback(ctx, query)
+		}
 	}
 	if len(results) == 0 {
-		// Step 2: try ClawHub mirror.
-		log.Printf("[skill-search] no skillmarket results for: %s, trying ClawHub mirror...", query)
-		results = s.searchClawHubMirror(ctx, query)
-	}
-	if len(results) == 0 {
-		// Step 3: GitHub fallback
-		log.Printf("[skill-search] no ClawHub results for: %s, trying GitHub fallback...", query)
-		return s.searchGitHubFallback(ctx, query)
+		if len(blocked) > 0 {
+			return nil, fmt.Errorf("skill search blocked by security policy: %s", strings.Join(blocked, "; "))
+		}
+		return nil, nil
 	}
 
 	// Apply configured purchase mode filter.

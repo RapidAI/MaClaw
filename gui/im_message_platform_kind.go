@@ -20,6 +20,7 @@ const (
 	imMessagePlatformLansenger       imMessagePlatformKind = "lansenger"
 	imMessagePlatformLansengerLocal  imMessagePlatformKind = "lansenger_local"
 	imMessagePlatformVEGroupExecutor imMessagePlatformKind = "ve_group_executor"
+	imMessagePlatformScheduler       imMessagePlatformKind = "scheduler"
 )
 
 func normalizeIMMessagePlatformKind(value string) imMessagePlatformKind {
@@ -52,6 +53,8 @@ func normalizeIMMessagePlatformKind(value string) imMessagePlatformKind {
 		return imMessagePlatformLansengerLocal
 	case imMessagePlatformVEGroupExecutor:
 		return imMessagePlatformVEGroupExecutor
+	case imMessagePlatformScheduler:
+		return imMessagePlatformScheduler
 	default:
 		return imMessagePlatformUnknown
 	}

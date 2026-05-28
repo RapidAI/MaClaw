@@ -555,11 +555,77 @@ func (s *SecurityService) GetGroupPolicy(ctx context.Context, groupID string) (*
 // UpdateGroupPolicy updates the sparse policy for a group and invalidates
 // the cache for the subtree.
 func (s *SecurityService) UpdateGroupPolicy(ctx context.Context, groupID string, policy map[string]interface{}) error {
+	if err := validatePolicyOverrides(policy); err != nil {
+		return err
+	}
 	if err := s.store.SetGroupPolicy(ctx, groupID, policy); err != nil {
 		return fmt.Errorf("set group policy: %w", err)
 	}
 	s.InvalidateCacheForSubtree(ctx, groupID)
 	return nil
+}
+
+func validatePolicyOverrides(policy map[string]interface{}) error {
+	for key, value := range policy {
+		switch key {
+		case "file_outbound_enabled", "image_outbound_enabled", "gossip_enabled", "yolo_mode_allowed", "smart_route_enabled":
+			if _, ok := toBool(value); !ok {
+				return fmt.Errorf("%s must be boolean", key)
+			}
+		case "guardrail_mode":
+			if !stringIn(value, "none", "standard", "relaxed", "strict", "developer") {
+				return fmt.Errorf("%s has invalid value", key)
+			}
+		case "sandbox_mode":
+			if !stringIn(value, "none", "os", "docker") {
+				return fmt.Errorf("%s has invalid value", key)
+			}
+		case "network_level":
+			if !stringIn(value, "none", "intranet", "allowlist", "full") {
+				return fmt.Errorf("%s has invalid value", key)
+			}
+		case "network_allowlist":
+			if _, ok := toStringSlice(value); !ok {
+				return fmt.Errorf("%s must be a string array", key)
+			}
+		case "skill_sources_allowed":
+			arr, ok := toStringSlice(value)
+			if !ok {
+				return fmt.Errorf("%s must be a string array", key)
+			}
+			for _, source := range arr {
+				if !isAllowedSkillSourceValue(source) {
+					return fmt.Errorf("%s contains invalid source %q", key, source)
+				}
+			}
+		default:
+			return fmt.Errorf("unknown policy field %s", key)
+		}
+	}
+	return nil
+}
+
+func isAllowedSkillSourceValue(source string) bool {
+	switch canonicalSource(source) {
+	case "skillhub", "clawhub", "github", "enterprise_hub":
+		return true
+	default:
+		return false
+	}
+}
+
+func stringIn(value interface{}, allowed ...string) bool {
+	s, ok := value.(string)
+	if !ok {
+		return false
+	}
+	s = strings.TrimSpace(strings.ToLower(s))
+	for _, item := range allowed {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Effective Policy Computation ---
@@ -731,6 +797,10 @@ func applyPolicyOverrides(p *EffectivePolicy, overrides map[string]interface{}) 
 			if s, ok := v.(string); ok {
 				p.NetworkLevel = s
 			}
+		case "network_allowlist":
+			if arr, ok := toStringSlice(v); ok {
+				p.NetworkAllowlist = arr
+			}
 		case "yolo_mode_allowed":
 			if b, ok := toBool(v); ok {
 				p.YoloModeAllowed = b
@@ -764,13 +834,25 @@ func toStringSlice(v interface{}) ([]string, bool) {
 	case []interface{}:
 		result := make([]string, 0, len(arr))
 		for _, item := range arr {
-			if s, ok := item.(string); ok {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
 				result = append(result, s)
 			}
 		}
 		return result, true
 	case []string:
-		return arr, true
+		result := make([]string, 0, len(arr))
+		for _, item := range arr {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				result = append(result, item)
+			}
+		}
+		return result, true
 	}
 	return nil, false
 }
@@ -812,6 +894,13 @@ func policyToMap(p EffectivePolicy) map[string]interface{} {
 			arr[i] = s
 		}
 		m["skill_sources_allowed"] = arr
+	}
+	if len(p.NetworkAllowlist) > 0 {
+		arr := make([]interface{}, len(p.NetworkAllowlist))
+		for i, s := range p.NetworkAllowlist {
+			arr[i] = s
+		}
+		m["network_allowlist"] = arr
 	}
 	return m
 }
@@ -1061,13 +1150,14 @@ func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string)
 	if err != nil {
 		return nil, fmt.Errorf("get settings: %w", err)
 	}
+	policyUser := s.resolvePolicyUserIdentifier(ctx, userID)
 
 	if !settings.CentralizedSecurityEnabled {
 		// Even when centralized security is off, we still merge skill source
 		// control if configured (it's an independent control plane).
 		if s.skillSourcesProvider != nil {
 			tenantID := s.resolveUserTenantID(ctx, userID)
-			srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, userID, tenantID)
+			srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, policyUser, tenantID)
 			if srcAllowed != nil {
 				// Push skill source restriction even without centralized security.
 				return &HeartbeatSecurityPayload{
@@ -1081,7 +1171,7 @@ func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string)
 		}, nil
 	}
 
-	policy, err := s.GetEffectivePolicy(ctx, userID)
+	policy, err := s.GetEffectivePolicy(ctx, policyUser)
 	if err != nil {
 		return nil, fmt.Errorf("get effective policy: %w", err)
 	}
@@ -1095,7 +1185,7 @@ func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string)
 	// EffectivePolicy cache (sync.Map stores pointers).
 	if s.skillSourcesProvider != nil {
 		tenantID := s.resolveUserTenantID(ctx, userID)
-		srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, userID, tenantID)
+		srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, policyUser, tenantID)
 		if srcAllowed != nil || len(policy.SkillSourcesAllowed) > 0 {
 			policyCopy := *policy
 			policyCopy.SkillSourcesAllowed = intersectSources(policy.SkillSourcesAllowed, srcAllowed)
@@ -1124,33 +1214,78 @@ func (s *SecurityService) resolveUserTenantID(ctx context.Context, email string)
 	return tenantIDFromContext(ctx)
 }
 
+func (s *SecurityService) resolvePolicyUserIdentifier(ctx context.Context, userID string) string {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || strings.Contains(userID, "@") || s.users == nil {
+		return userID
+	}
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil || user == nil || strings.TrimSpace(user.Email) == "" {
+		return userID
+	}
+	return strings.TrimSpace(strings.ToLower(user.Email))
+}
+
 // intersectSources computes the intersection of two allowed-sources lists.
 // nil/empty means "all allowed". The intersection of nil with X is X.
 // NOTE: duplicated from hub/internal/skill.IntersectSources to avoid import cycle.
 func intersectSources(a, b []string) []string {
 	if len(a) == 0 {
-		return b
+		return canonicalSourceList(b)
 	}
 	if len(b) == 0 {
-		return a
+		return canonicalSourceList(a)
 	}
 	set := make(map[string]bool, len(b))
 	for _, s := range b {
-		set[s] = true
+		set[canonicalSource(s)] = true
 	}
 	var result []string
 	for _, s := range a {
-		if set[s] {
-			result = append(result, s)
+		canon := canonicalSource(s)
+		if set[canon] {
+			result = append(result, canon)
 		}
 	}
 	return result
 }
 
+func canonicalSourceList(sources []string) []string {
+	if len(sources) == 0 {
+		return sources
+	}
+	result := make([]string, 0, len(sources))
+	seen := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		canon := canonicalSource(source)
+		if canon == "" || seen[canon] {
+			continue
+		}
+		seen[canon] = true
+		result = append(result, canon)
+	}
+	return result
+}
+
+func canonicalSource(source string) string {
+	switch strings.TrimSpace(strings.ToLower(source)) {
+	case "skillmarket", "market", "hubcenter", "hub_center", "skill_hub":
+		return "skillhub"
+	case "enterprise", "hub", "enterprisehub", "enterprise_hub":
+		return "enterprise_hub"
+	case "claw_hub":
+		return "clawhub"
+	case "git_hub":
+		return "github"
+	default:
+		return strings.TrimSpace(strings.ToLower(source))
+	}
+}
+
 // GetEffectivePolicyByUserID is an alias for GetEffectivePolicy,
 // satisfying the SecurityPolicyProvider interface.
 func (s *SecurityService) GetEffectivePolicyByUserID(ctx context.Context, userID string) (*EffectivePolicy, error) {
-	return s.GetEffectivePolicy(ctx, userID)
+	return s.GetEffectivePolicy(ctx, s.resolvePolicyUserIdentifier(ctx, userID))
 }
 
 // --- Helpers ---

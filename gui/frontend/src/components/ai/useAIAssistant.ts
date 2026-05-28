@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -2007,6 +2007,17 @@ function inferCriticalConfirmLangFromMessage(message: ChatMessage): string {
     return 'zh-Hans';
 }
 
+const MIN_AGENT_TIMEOUT_SEC = 240;
+const DEFAULT_AGENT_TIMEOUT_SEC = 240;
+const MAX_AGENT_TIMEOUT_SEC = 600;
+const LOCAL_CONFIG_CHANGED_EVENT = 'maclaw-config-changed';
+
+function normalizeAgentTimeoutSeconds(value: unknown): number {
+    const seconds = Number(value || 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_AGENT_TIMEOUT_SEC;
+    return Math.min(MAX_AGENT_TIMEOUT_SEC, Math.max(MIN_AGENT_TIMEOUT_SEC, Math.floor(seconds)));
+}
+
 export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void>; activeSessionKey?: string }) {
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
@@ -2016,6 +2027,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
     const [trialReflectEnabled, setTrialReflectEnabled] = useState(false);
     const [preferences, setPreferences] = useState<AIAssistantPreferences>({ showTraceEntry: false });
+    const [responseActivityTimeoutSec, setResponseActivityTimeoutSec] = useState(DEFAULT_AGENT_TIMEOUT_SEC);
     const [initStatus, setInitStatus] = useState<AIAssistantInitStatus>("connecting");
     const [scrollToTopSeq, setScrollToTopSeq] = useState(0);
     const [activeRound, setActiveRound] = useState<ActiveRound>(IDLE_ROUND);
@@ -2099,22 +2111,29 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                     const appConfig = new main.AppConfig(config || {});
                     setPreferences({ showTraceEntry: !!appConfig?.show_ai_trace_entry });
                     setTrialReflectEnabled(!!appConfig?.trial_reflect_enabled);
+                    setResponseActivityTimeoutSec(normalizeAgentTimeoutSeconds(appConfig?.agent_response_timeout_sec));
                 }
             })
             .catch(() => {
                 if (!cancelled) {
                     setPreferences({ showTraceEntry: false });
+                    setResponseActivityTimeoutSec(DEFAULT_AGENT_TIMEOUT_SEC);
                 }
             });
-        const cleanup = subscribeEvent("config-changed", (cfg?: unknown) => {
+        const handleConfigChanged = (cfg?: unknown) => {
             if (cancelled) return;
             const appConfig = new main.AppConfig(cfg || {});
             setPreferences({ showTraceEntry: !!appConfig?.show_ai_trace_entry });
             setTrialReflectEnabled(!!appConfig?.trial_reflect_enabled);
-        });
+            setResponseActivityTimeoutSec(normalizeAgentTimeoutSeconds(appConfig?.agent_response_timeout_sec));
+        };
+        const cleanup = subscribeEvent("config-changed", handleConfigChanged);
+        const handleLocalConfigChanged = (event: Event) => handleConfigChanged((event as CustomEvent).detail);
+        window.addEventListener(LOCAL_CONFIG_CHANGED_EVENT, handleLocalConfigChanged);
         return () => {
             cancelled = true;
             cleanup();
+            window.removeEventListener(LOCAL_CONFIG_CHANGED_EVENT, handleLocalConfigChanged);
         };
     }, []);
 
@@ -2268,7 +2287,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const startResponseTimeout = useCallback((round: { generation: number; assistantMessageId: string; requestId: string; source: string }) => {
         stopResponseTimeout();
-        const ACTIVITY_TIMEOUT_MS = 120_000;
+        const activityTimeoutMs = responseActivityTimeoutSec * 1000;
         let activityTimer: ReturnType<typeof setTimeout> | null = null;
 
         const stopController = () => {
@@ -2289,7 +2308,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (pendingTaskRef.current?.requestId === activeRequestId) return;
             responseTimeoutControllerRef.current = null;
             setMessages(prev => replaceRoundWithError(prev, round.assistantMessageId, activeRequestId,
-                '⏱️ 请求超时（120秒无响应），请重试。'));
+                `⏱️ 请求超时（${responseActivityTimeoutSec}秒无响应），请重试。`));
             clearTransientProgress();
             resetActiveRound(round.generation);
             emitPetStateForAssistant('idle', `${round.source}:timeout`);
@@ -2298,7 +2317,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const resetController = () => {
             if (responseTimeoutControllerRef.current !== controller) return;
             stopController();
-            activityTimer = setTimeout(fireActivityTimeout, ACTIVITY_TIMEOUT_MS);
+            activityTimer = setTimeout(fireActivityTimeout, activityTimeoutMs);
         };
 
         const controller: ResponseTimeoutController = {
@@ -2311,7 +2330,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         responseTimeoutControllerRef.current = controller;
         controller.reset();
         return controller;
-    }, [clearTransientProgress, emitPetStateForAssistant, resetActiveRound, stopResponseTimeout]);
+    }, [clearTransientProgress, emitPetStateForAssistant, resetActiveRound, responseActivityTimeoutSec, stopResponseTimeout]);
 
     const resetResponseTimeoutForActiveRound = useCallback(() => {
         const controller = responseTimeoutControllerRef.current;
@@ -2683,7 +2702,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
         // Sliding-window activity timeout: reset whenever the backend shows signs
         // of life (token, progress, new-round). Only fires when the backend is
-        // completely silent for 120s - not from the initial send time.
+        // completely silent for the configured timeout window - not from the initial send time.
         const responseTimeoutController = startResponseTimeout({ generation, assistantMessageId, requestId, source: 'ai' });
         const clearResponseTimeout = () => {
             if (responseTimeoutControllerRef.current !== responseTimeoutController) return;
@@ -3179,6 +3198,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const cancelSession = useCallback(async (): Promise<CancelAIAssistantResult> => {
         const canceledRound = activeRoundRef.current;
         const pendingTaskAtCancel = pendingTaskRef.current;
+        const sessionKeyAtCancel = activeSessionKeyForEvents();
         const nextGeneration = canceledRound.generation + 1;
         if (!canceledRound.assistantMessageId && isRoundIdle(canceledRound) && !pendingTaskAtCancel) {
             return { canceledText: "" };
@@ -3188,35 +3208,40 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             resetStreamTokenBuffer();
             setMessages(prev => markRoundCancelled(prev, canceledRound.assistantMessageId, canceledRound.requestId));
         }
-        foregroundSendTailRef.current = Promise.resolve(true);
         stopResponseTimeout();
         resetActiveRound(nextGeneration);
         clearTransientProgress();
         setPendingTaskState(null);
         emitPetStateForAssistant('idle', 'ai:cancel');
-        try {
-            if (pendingTaskAtCancel?.sessionID) {
-                await CancelAIAssistantTask(pendingTaskAtCancel.sessionID);
-                return { canceledText: "" };
-            }
-            if (!canceledRound.assistantMessageId) {
-                const lastSessionMessage = [...latestMessagesRef.current]
-                    .reverse()
-                    .find((message) => message.role === 'system' && /session_id:\s*/i.test(message.content));
-                const sessionIDMatch = lastSessionMessage?.content.match(/session_id:\s*(\S+)/i);
-                const sessionID = sessionIDMatch?.[1]?.trim() || "";
-                if (sessionID) {
-                    await CancelAIAssistantTask(sessionID);
+        const cancelBackend = (async (): Promise<CancelAIAssistantResult> => {
+            try {
+                if (pendingTaskAtCancel?.sessionID) {
+                    await CancelAIAssistantTask(pendingTaskAtCancel.sessionID);
                     return { canceledText: "" };
                 }
+                if (!canceledRound.assistantMessageId) {
+                    const lastSessionMessage = [...latestMessagesRef.current]
+                        .reverse()
+                        .find((message) => message.role === 'system' && /session_id:\s*/i.test(message.content));
+                    const sessionIDMatch = lastSessionMessage?.content.match(/session_id:\s*(\S+)/i);
+                    const sessionID = sessionIDMatch?.[1]?.trim() || "";
+                    if (sessionID) {
+                        await CancelAIAssistantTask(sessionID);
+                        return { canceledText: "" };
+                    }
+                }
+                return {
+                    canceledText: sessionKeyAtCancel && sessionKeyAtCancel !== 'desktop-user'
+                        ? (await CancelAIAssistantSessionForSession(sessionKeyAtCancel)) || ""
+                        : (await CancelAIAssistantSession()) || "",
+                };
+            } catch {
+                return { canceledText: "" };
             }
-            return {
-                canceledText: (await CancelAIAssistantSession()) || "",
-            };
-        } catch {
-            return { canceledText: "" };
-        }
-    }, [clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, resetActiveRound, resetStreamTokenBuffer, setPendingTaskState, stopResponseTimeout]);
+        })();
+        foregroundSendTailRef.current = cancelBackend.then(() => true).catch(() => true);
+        return await cancelBackend;
+    }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, resetActiveRound, resetStreamTokenBuffer, setPendingTaskState, stopResponseTimeout]);
 
     // injectSupplementary sends a supplementary message into the running
     // agent loop without cancelling it. Returns true if the injection was

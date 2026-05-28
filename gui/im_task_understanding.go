@@ -19,7 +19,7 @@ import (
 // After user confirms, the structured instruction replaces the raw text as
 // the agent loop input, giving the LLM a clearer directive.
 //
-// Token budget: ~400 input + ~200 output. Timeout: 20s (attempt 1) + 15s (retry).
+// Token budget: ~400 input + ~200 output. Timeout: 30s per attempt.
 // On failure: falls back to raw-text summary (current behavior).
 // ---------------------------------------------------------------------------
 
@@ -105,12 +105,12 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 		userMsg += fmt.Sprintf("\n初步分类：%s", label)
 	}
 
-	// --- Attempt 1: full prompt, 20s timeout ---
+	// --- Attempt 1: full prompt, 30s timeout ---
 	ctx := context.Background()
 	result, err := h.LLMClassify(ctx, LLMClassifyRequest{
 		SystemPrompt: taskUnderstandingSystemPrompt,
 		UserMessage:  userMsg,
-		TimeoutSec:   20,
+		TimeoutSec:   30,
 		Tag:          "task-understanding",
 	})
 	if err == nil {
@@ -126,15 +126,14 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 		log.Printf("[task-understanding] attempt 1 LLM call failed for user %s: %v", userID, err)
 	}
 
-	// --- Attempt 2: simplified prompt, 15s timeout ---
-	// Simplified prompt is much shorter (~100 chars vs ~600 chars), so the
-	// model needs less time to process it. If the API is genuinely down,
-	// 15s is enough to confirm that without making the user wait 45s.
+	// --- Attempt 2: simplified prompt, 30s timeout ---
+	// Keep the retry timeout aligned with other workflow classifiers; remote LLM
+	// routing jitter should not decide whether a workflow can continue.
 	log.Printf("[task-understanding] retrying with simplified prompt for user %s", userID)
 	result2, err2 := h.LLMClassify(ctx, LLMClassifyRequest{
 		SystemPrompt: taskUnderstandingSimplifiedPrompt,
 		UserMessage:  userMsg,
-		TimeoutSec:   15,
+		TimeoutSec:   30,
 		Tag:          "task-understanding-retry",
 	})
 	if err2 != nil {

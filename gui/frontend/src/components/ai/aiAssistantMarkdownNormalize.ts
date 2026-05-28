@@ -5,6 +5,7 @@ const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])\\
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])\\s+(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
 const windowsPathEscapeProtectPattern = /[A-Za-z]:\\[^\n\r\s*?"<>|]+/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
+const bareHeadingMarkerBeforeTextPattern = /(^|\n)(#{1,4})[ \t\r]*\n(?=[^\n\s])/g;
 
 function hasMultipleCapabilityIcons(text: string): boolean {
     const matches = text.match(digitalEmployeeCapabilityIconScanPattern);
@@ -59,6 +60,7 @@ export function normalizeInlineListMarkers(content: string): string {
         let normalized = withWindowsPathsProtected(parts[i], (segment) => segment
             .replace(escapedNewlinePattern, "\n")
             .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
+            .replace(bareHeadingMarkerBeforeTextPattern, "$1$2 ")
             .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,4}\s+)/g, "$1\n$2")
             .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,4})(?=[^#\s])/g, "$1\n$2 ")
             .replace(/([^#\n\s])\s*(#{2,4})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")

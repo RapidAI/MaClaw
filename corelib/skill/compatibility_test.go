@@ -46,8 +46,8 @@ func TestNormalizeStepForRunner_IgnoresInvalidNumericStrings(t *testing.T) {
 	if got.Params["timeout"] != "30s" || got.Params["timeout_seconds"] != "30s" {
 		t.Fatalf("invalid timeout string was parsed unexpectedly: %#v", got.Params)
 	}
-	if timeout := RunnerStepTimeoutSeconds(got.Params, 120, 600); timeout != 120 {
-		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want default 120 for invalid timeout", timeout)
+	if timeout := RunnerStepTimeoutSeconds(got.Params, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec); timeout != corelib.DefaultAgentTimeoutSec {
+		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want default %d for invalid timeout", timeout, corelib.DefaultAgentTimeoutSec)
 	}
 }
 

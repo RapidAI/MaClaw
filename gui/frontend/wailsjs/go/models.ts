@@ -346,7 +346,10 @@ export namespace main {
 	    remote_mobile: string;
 	    remote_sn: string;
 	    remote_user_id: string;
+	    remote_tenant_id: string;
+	    remote_tenant_name: string;
 	    remote_machine_id: string;
+	    remote_machine_name: string;
 	    remote_machine_token: string;
 	    remote_heartbeat_sec: number;
 	    remote_nickname: string;
@@ -362,6 +365,7 @@ export namespace main {
 	    maclaw_llm_protocol: string;
 	    maclaw_llm_context_length: number;
 	    maclaw_llm_timeout_sec: number;
+	    agent_response_timeout_sec: number;
 	    maclaw_llm_providers: any[];
 	    maclaw_llm_current_provider: string;
 	    web_search_providers: any[];
@@ -380,7 +384,10 @@ export namespace main {
 	    security_policy_mode: string;
 	    sandbox_mode: string;
 	    network_level: string;
+	    network_allowlist?: string[];
+	    skill_sources_allowed?: string[];
 	    yolo_mode_allowed: boolean;
+	    smart_route_enabled: boolean;
 	    gossip_enabled: boolean;
 	    file_outbound_enabled: boolean;
 	    image_outbound_enabled: boolean;
@@ -506,7 +513,10 @@ export namespace main {
 	        this.remote_mobile = source["remote_mobile"];
 	        this.remote_sn = source["remote_sn"];
 	        this.remote_user_id = source["remote_user_id"];
+	        this.remote_tenant_id = source["remote_tenant_id"];
+	        this.remote_tenant_name = source["remote_tenant_name"];
 	        this.remote_machine_id = source["remote_machine_id"];
+	        this.remote_machine_name = source["remote_machine_name"];
 	        this.remote_machine_token = source["remote_machine_token"];
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	        this.remote_nickname = source["remote_nickname"];
@@ -522,6 +532,7 @@ export namespace main {
 	        this.maclaw_llm_protocol = source["maclaw_llm_protocol"];
 	        this.maclaw_llm_context_length = source["maclaw_llm_context_length"];
 	        this.maclaw_llm_timeout_sec = source["maclaw_llm_timeout_sec"];
+	        this.agent_response_timeout_sec = source["agent_response_timeout_sec"];
 	        this.maclaw_llm_providers = source["maclaw_llm_providers"];
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
 	        this.web_search_providers = source["web_search_providers"];
@@ -537,7 +548,10 @@ export namespace main {
 	        this.security_policy_mode = source["security_policy_mode"];
 	        this.sandbox_mode = source["sandbox_mode"];
 	        this.network_level = source["network_level"];
+	        this.network_allowlist = source["network_allowlist"];
+	        this.skill_sources_allowed = source["skill_sources_allowed"];
 	        this.yolo_mode_allowed = source["yolo_mode_allowed"];
+	        this.smart_route_enabled = source["smart_route_enabled"];
 	        this.gossip_enabled = source["gossip_enabled"];
 	        this.file_outbound_enabled = source["file_outbound_enabled"];
 	        this.image_outbound_enabled = source["image_outbound_enabled"];

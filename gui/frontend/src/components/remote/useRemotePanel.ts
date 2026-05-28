@@ -517,7 +517,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
     };
 
-    const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
+const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
         // Always reload config from backend before merging to avoid overwriting
         // concurrent backend changes (e.g. SSO login sets maclaw_llm_current_provider
         // but the frontend config state is stale).
@@ -540,6 +540,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         setConfig(newConfig);
         try {
             await SaveConfig(newConfig);
+            window.dispatchEvent(new CustomEvent("maclaw-config-changed", { detail: newConfig }));
         } catch (err) {
             console.error("Failed to save remote config:", err);
             showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);

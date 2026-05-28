@@ -410,6 +410,32 @@ func TestUsersAllowSameEmailAcrossTenants(t *testing.T) {
 	}
 }
 
+func TestUsersTenantEmailLookupAndDeleteAreCaseInsensitive(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	user := &store.User{ID: "u_mixed_case", TenantID: "tenant_case", Email: "Mixed.User@Example.com", SN: "SN-CASE", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	got, err := st.Users.GetByTenantEmail(ctx, "tenant_case", "mixed.user@example.com")
+	if err != nil {
+		t.Fatalf("get mixed-case user: %v", err)
+	}
+	if got == nil || got.ID != user.ID {
+		t.Fatalf("got user = %#v, want %s", got, user.ID)
+	}
+
+	if err := st.Users.DeleteByTenantEmail(ctx, "tenant_case", "MIXED.USER@example.com"); err != nil {
+		t.Fatalf("delete mixed-case user: %v", err)
+	}
+	got, err = st.Users.GetByTenantEmail(ctx, "tenant_case", "mixed.user@example.com")
+	if err != nil || got != nil {
+		t.Fatalf("deleted user = %#v err=%v, want nil", got, err)
+	}
+}
+
 func TestSessionRepositoryRuntimeUpdatesAreTenantScoped(t *testing.T) {
 	st := newTestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)

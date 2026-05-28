@@ -269,6 +269,45 @@ func TestDeleteWorkflow(t *testing.T) {
 	}
 }
 
+func TestDeleteWorkflow_RejectsPublishedVersion(t *testing.T) {
+	_, mux, store := setupTestAPI()
+
+	store.workflows["wf-mine"] = &WorkflowDefinition{ID: "wf-mine", OwnerID: "user-001", Name: "Published"}
+	store.versions["ver-pub"] = &WorkflowVersion{ID: "ver-pub", WorkflowID: "wf-mine", VersionNumber: "1.0.0", Status: VersionPublished}
+
+	req := httptest.NewRequest("DELETE", "/api/v1/workflows/wf-mine", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, exists := store.workflows["wf-mine"]; !exists {
+		t.Error("published workflow should not have been deleted")
+	}
+}
+
+func TestDeleteWorkflow_RejectsPreviouslyPublishedVersion(t *testing.T) {
+	_, mux, store := setupTestAPI()
+
+	for _, status := range []VersionStatus{VersionSuperseded, VersionUnpublished} {
+		workflowID := "wf-" + string(status)
+		store.workflows[workflowID] = &WorkflowDefinition{ID: workflowID, OwnerID: "user-001", Name: "Previously Published"}
+		store.versions["ver-"+string(status)] = &WorkflowVersion{ID: "ver-" + string(status), WorkflowID: workflowID, VersionNumber: "1.0.0", Status: status}
+
+		req := httptest.NewRequest("DELETE", "/api/v1/workflows/"+workflowID, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status %s: expected 409, got %d: %s", status, w.Code, w.Body.String())
+		}
+		if _, exists := store.workflows[workflowID]; !exists {
+			t.Fatalf("status %s: previously published workflow should not have been deleted", status)
+		}
+	}
+}
+
 func TestDeleteWorkflow_OwnerIsolation(t *testing.T) {
 	_, mux, store := setupTestAPI()
 
@@ -406,6 +445,48 @@ func TestSubmitForReview_NotDraft(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitForReview_ValidationError(t *testing.T) {
+	_, mux, store := setupTestAPI()
+
+	store.workflows["wf-mine"] = &WorkflowDefinition{ID: "wf-mine", OwnerID: "user-001", Name: "Mine"}
+	store.versions["ver-1"] = &WorkflowVersion{
+		ID:            "ver-1",
+		WorkflowID:    "wf-mine",
+		VersionNumber: "0.1.0",
+		Status:        VersionDraft,
+		Graph: WorkflowGraph{
+			Nodes: []WorkflowNode{
+				{ID: "n1", Type: NodeTrigger, Label: "Start"},
+				{ID: "n2", Type: NodeApproval, Label: "Approve"},
+			},
+			Edges: []WorkflowEdge{
+				{ID: "e1", SourceID: "n1", TargetID: "n2"},
+				{ID: "e2", SourceID: "n2", TargetID: "n1"},
+			},
+		},
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/workflows/wf-mine/versions/ver-1/submit", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Code != "VALIDATION_FAILED" {
+		t.Fatalf("code = %q, want VALIDATION_FAILED", body.Code)
+	}
+	if store.versions["ver-1"].Status != VersionDraft {
+		t.Fatalf("status = %q, want draft", store.versions["ver-1"].Status)
 	}
 }
 

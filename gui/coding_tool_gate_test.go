@@ -268,3 +268,20 @@ func toolCallNamed(name string) llm.ToolCall {
 		},
 	}
 }
+
+func TestExecuteAgentLoopRejectsCodingSessionToolBeforeArgValidation(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	registerBuiltinTools(handler.registry, handler)
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		SkipWorkflowGate: true,
+		ToolCall:         toolCallNamed(" send_and_observe "),
+	})
+
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("send_and_observe should be policy-rejected before parameter validation, got %#v", result)
+	}
+	if strings.Contains(result.Text, "requires parameter") {
+		t.Fatalf("coding-session tool reached missing-parameter validation: %q", result.Text)
+	}
+}

@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +19,9 @@ import (
 	"strings"
 	"time"
 )
+
+const veImageAttachmentPreviewMaxSize = 10 * 1024 * 1024
+const veImageAttachmentThumbnailMaxSide = 240
 
 type GroupDiscussionAttachmentDownloadResult struct {
 	DiscussionID string `json:"discussion_id"`
@@ -79,24 +89,26 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 	if attachmentID != "" {
 		localName = safeGroupDiscussionFilename(attachmentID + "-" + filename)
 	}
-	localPath := filepath.Join(dir, localName)
-	out, err := os.Create(localPath)
+	tmp, err := os.CreateTemp(dir, ".download-*")
 	if err != nil {
-		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("create local attachment: %w", err)
+		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("create local attachment temp file: %w", err)
 	}
-	size, copyErr := io.Copy(out, io.LimitReader(resp.Body, veFileAttachmentMaxSize+1))
-	closeErr := out.Close()
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	size, copyErr := io.Copy(tmp, io.LimitReader(resp.Body, veFileAttachmentMaxSize+1))
+	closeErr := tmp.Close()
 	if copyErr != nil {
-		_ = os.Remove(localPath)
 		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("write attachment: %w", copyErr)
 	}
 	if closeErr != nil {
-		_ = os.Remove(localPath)
 		return GroupDiscussionAttachmentDownloadResult{}, closeErr
 	}
 	if size > veFileAttachmentMaxSize {
-		_ = os.Remove(localPath)
 		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("attachment is too large: %d bytes; VE mode limit is 50 MB", size)
+	}
+	localPath, localName, err := groupDiscussionCommitTempAttachment(tmpPath, dir, localName)
+	if err != nil {
+		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("store local attachment: %w", err)
 	}
 
 	result := GroupDiscussionAttachmentDownloadResult{DiscussionID: discussionID, AttachmentID: attachmentID, Filename: filename, LocalPath: localPath, SizeBytes: size}
@@ -105,6 +117,57 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 		_ = store.Close()
 	}
 	return result, nil
+}
+
+func (a *App) GroupDiscussionAttachmentPreviewDataURL(discussionID, localPath string) (string, error) {
+	discussionID = strings.TrimSpace(discussionID)
+	localPath = strings.TrimSpace(localPath)
+	if discussionID == "" {
+		return "", fmt.Errorf("discussion id is required")
+	}
+	if localPath == "" {
+		return "", fmt.Errorf("local path is required")
+	}
+	attachmentRoot := a.groupDiscussionAttachmentRoot(discussionID)
+	if !groupDiscussionPathWithinDir(localPath, attachmentRoot) {
+		return "", fmt.Errorf("attachment preview path must stay within the discussion attachment directory")
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(attachmentRoot)
+	if err != nil {
+		return "", err
+	}
+	resolvedPath, err := filepath.EvalSymlinks(localPath)
+	if err != nil {
+		return "", err
+	}
+	if !groupDiscussionPathWithinDir(resolvedPath, resolvedRoot) {
+		return "", fmt.Errorf("attachment preview path must stay within the discussion attachment directory")
+	}
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("attachment preview path is a directory")
+	}
+	if info.Size() > veImageAttachmentPreviewMaxSize {
+		return "", fmt.Errorf("image attachment preview is too large: %d bytes", info.Size())
+	}
+	mimeType := groupDiscussionPreviewImageMimeType(localPath)
+	if mimeType == "" {
+		return "", fmt.Errorf("attachment is not a supported preview image")
+	}
+	data, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return "", err
+	}
+	if thumb, ok := thumbnailImageDataURL(data); ok {
+		return thumb, nil
+	}
+	if !previewImageBytesMatch(mimeType, data) {
+		return "", fmt.Errorf("attachment preview image bytes are invalid")
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func (a *App) cachedGroupDiscussionDownloadedAttachment(ctx context.Context, discussionID, fileURL, attachmentID, filename string) (GroupDiscussionAttachmentDownloadResult, bool) {
@@ -122,7 +185,7 @@ func (a *App) cachedGroupDiscussionDownloadedAttachment(ctx context.Context, dis
 			continue
 		}
 		localPath := strings.TrimSpace(record.LocalPath)
-		if localPath == "" || !groupDiscussionPathWithinDir(localPath, a.groupDiscussionAttachmentRoot(discussionID)) {
+		if localPath == "" || !groupDiscussionResolvedPathWithinDir(localPath, a.groupDiscussionAttachmentRoot(discussionID)) {
 			continue
 		}
 		info, err := os.Stat(localPath)
@@ -154,6 +217,105 @@ func downloadedAttachmentRecordMatches(record GroupDiscussionAttachmentRecord, f
 		return true
 	}
 	return fileURL != "" && strings.TrimSpace(record.HubURL) == fileURL
+}
+
+func ensureGroupDiscussionAttachmentWritableTarget(localPath string) error {
+	existing, err := os.Lstat(localPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect local attachment: %w", err)
+	}
+	if existing.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("local attachment path is a symlink")
+	}
+	if existing.IsDir() {
+		return fmt.Errorf("local attachment path is a directory")
+	}
+	return nil
+}
+
+func groupDiscussionAvailableAttachmentTarget(dir, localName string) (string, string, error) {
+	localName = firstNonEmptyGroupString(safeGroupDiscussionFilename(localName), "attachment")
+	ext := filepath.Ext(localName)
+	base := strings.TrimSuffix(localName, ext)
+	if base == "" {
+		base = "attachment"
+	}
+	for i := 0; i < 1000; i++ {
+		candidateName := localName
+		if i > 0 {
+			candidateName = safeGroupDiscussionFilename(fmt.Sprintf("%s (%d)%s", base, i, ext))
+		}
+		candidatePath := filepath.Join(dir, candidateName)
+		existing, err := os.Lstat(candidatePath)
+		if os.IsNotExist(err) {
+			return candidatePath, candidateName, nil
+		}
+		if err != nil {
+			return "", "", fmt.Errorf("inspect local attachment: %w", err)
+		}
+		if existing.Mode()&os.ModeSymlink != 0 {
+			return "", "", fmt.Errorf("local attachment path is a symlink")
+		}
+		if existing.IsDir() {
+			return "", "", fmt.Errorf("local attachment path is a directory")
+		}
+	}
+	return "", "", fmt.Errorf("no available local attachment filename")
+}
+
+func groupDiscussionCommitTempAttachment(tmpPath, dir, localName string) (string, string, error) {
+	for i := 0; i < 1000; i++ {
+		localPath, candidateName, err := groupDiscussionAvailableAttachmentTarget(dir, localName)
+		if err != nil {
+			return "", "", err
+		}
+		if err := ensureGroupDiscussionAttachmentWritableTarget(localPath); err != nil {
+			return "", "", err
+		}
+		if err := os.Link(tmpPath, localPath); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			if err := copyTempAttachmentNoOverwrite(tmpPath, localPath); err != nil {
+				if os.IsExist(err) {
+					continue
+				}
+				return "", "", err
+			}
+		}
+		return localPath, candidateName, nil
+	}
+	return "", "", fmt.Errorf("no available local attachment filename")
+}
+
+func copyTempAttachmentNoOverwrite(tmpPath, localPath string) error {
+	in, err := os.Open(tmpPath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(localPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	removeOnError := true
+	defer func() {
+		_ = out.Close()
+		if removeOnError {
+			_ = os.Remove(localPath)
+		}
+	}()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	removeOnError = false
+	return nil
 }
 
 func groupDiscussionAttachmentDownloadURL(hubURL, rawURL, discussionID, participantID string) (string, string, error) {
@@ -249,6 +411,21 @@ func groupDiscussionPathWithinDir(pathValue, dir string) bool {
 	return rel == "." || (rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
+func groupDiscussionResolvedPathWithinDir(pathValue, dir string) bool {
+	if !groupDiscussionPathWithinDir(pathValue, dir) {
+		return false
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	resolvedPath, err := filepath.EvalSymlinks(pathValue)
+	if err != nil {
+		return false
+	}
+	return groupDiscussionPathWithinDir(resolvedPath, resolvedDir)
+}
+
 func pathBaseNoQuery(path string) string {
 	path = strings.TrimRight(path, "/")
 	base := filepath.Base(path)
@@ -292,4 +469,91 @@ func groupDiscussionAttachmentKind(filename string) string {
 	default:
 		return "file"
 	}
+}
+
+func groupDiscussionPreviewImageMimeType(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif":
+		if mimeType := mime.TypeByExtension(ext); mimeType != "" {
+			return strings.Split(mimeType, ";")[0]
+		}
+	}
+	switch ext {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	case ".avif":
+		return "image/avif"
+	default:
+		return ""
+	}
+}
+
+func thumbnailImageDataURL(data []byte) (string, bool) {
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", false
+	}
+	bounds := src.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return "", false
+	}
+	thumbWidth, thumbHeight := scaledImageSize(width, height, veImageAttachmentThumbnailMaxSide)
+	dst := image.NewRGBA(image.Rect(0, 0, thumbWidth, thumbHeight))
+	for y := 0; y < thumbHeight; y++ {
+		srcY := bounds.Min.Y + y*height/thumbHeight
+		for x := 0; x < thumbWidth; x++ {
+			srcX := bounds.Min.X + x*width/thumbWidth
+			dst.Set(x, y, src.At(srcX, srcY))
+		}
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: 82}); err != nil {
+		return "", false
+	}
+	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), true
+}
+
+func previewImageBytesMatch(mimeType string, data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/webp":
+		return len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP"
+	case "image/bmp":
+		return len(data) >= 2 && data[0] == 'B' && data[1] == 'M'
+	case "image/avif":
+		return len(data) >= 12 && string(data[4:8]) == "ftyp" && (string(data[8:12]) == "avif" || string(data[8:12]) == "avis")
+	default:
+		return strings.EqualFold(strings.Split(http.DetectContentType(data), ";")[0], mimeType)
+	}
+}
+
+func scaledImageSize(width, height, maxSide int) (int, int) {
+	if maxSide <= 0 || (width <= maxSide && height <= maxSide) {
+		return width, height
+	}
+	if width >= height {
+		scaledHeight := height * maxSide / width
+		if scaledHeight < 1 {
+			scaledHeight = 1
+		}
+		return maxSide, scaledHeight
+	}
+	scaledWidth := width * maxSide / height
+	if scaledWidth < 1 {
+		scaledWidth = 1
+	}
+	return scaledWidth, maxSide
 }

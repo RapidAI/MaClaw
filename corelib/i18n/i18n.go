@@ -242,6 +242,7 @@ const (
 	MsgTUIConfigDescSandbox                  = "msg.tui_config_desc_sandbox"
 	MsgTUIConfigDescNetworkLevel             = "msg.tui_config_desc_network_level"
 	MsgTUIConfigDescYoloMode                 = "msg.tui_config_desc_yolo_mode"
+	MsgTUIConfigDescSmartRoute               = "msg.tui_config_desc_smart_route"
 	MsgTUIConfigDescFileOutbound             = "msg.tui_config_desc_file_outbound"
 	MsgTUIConfigDescImageOutbound            = "msg.tui_config_desc_image_outbound"
 	MsgTUIConfigDescUIMode                   = "msg.tui_config_desc_ui_mode"
@@ -553,6 +554,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescSandbox:                  "沙箱模式",
 		MsgTUIConfigDescNetworkLevel:             "网络访问级别",
 		MsgTUIConfigDescYoloMode:                 "允许 YOLO 模式",
+		MsgTUIConfigDescSmartRoute:               "允许 Hub LLM 智能路由 IM 消息",
 		MsgTUIConfigDescFileOutbound:             "允许文件外发",
 		MsgTUIConfigDescImageOutbound:            "允许图片外发",
 		MsgTUIConfigDescUIMode:                   "界面复杂度：简洁适合日常使用，专业显示更多调试选项",
@@ -847,6 +849,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescSandbox:                  "Sandbox mode",
 		MsgTUIConfigDescNetworkLevel:             "Network access level",
 		MsgTUIConfigDescYoloMode:                 "Allow YOLO mode",
+		MsgTUIConfigDescSmartRoute:               "Allow Hub LLM smart routing for IM messages",
 		MsgTUIConfigDescFileOutbound:             "Allow file outbound",
 		MsgTUIConfigDescImageOutbound:            "Allow image outbound",
 		MsgTUIConfigDescUIMode:                   "UI complexity: Lite for daily use, Pro shows more diagnostics",

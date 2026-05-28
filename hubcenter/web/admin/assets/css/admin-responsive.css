@@ -1,0 +1,49 @@
+/* Responsive layout and viewport-specific adjustments. */
+#tab-ha{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 8.5h14'/%3E%3Cpath d='M5 15.5h14'/%3E%3Ccircle cx='5' cy='8.5' r='2'/%3E%3Ccircle cx='19' cy='8.5' r='2'/%3E%3Ccircle cx='12' cy='15.5' r='2'/%3E%3Cpath d='M7 8.5h10'/%3E%3Cpath d='M7 15.5h3'/%3E%3Cpath d='M14 15.5h3'/%3E%3C/svg%3E")}
+    .ha-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .ha-sync-section{margin-top:18px}
+    .ha-sync-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .ha-sync-card{padding:16px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);border:1px solid rgba(31,34,48,.06);box-shadow:var(--shadow-soft)}
+    .ha-sync-meta{display:flex;flex-wrap:wrap;gap:8px 12px;color:var(--muted);font-size:12px;margin-top:10px}
+    .ha-sync-peer-list{display:grid;gap:8px;margin-top:12px}
+    .ha-sync-peer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border-radius:12px;background:rgba(255,255,255,.76);border:1px solid rgba(31,34,48,.05);font-size:12px}
+    .ha-sync-peer-main{min-width:0}
+    .ha-sync-peer-name{font-weight:700;color:var(--text)}
+    .ha-sync-peer-meta{color:var(--muted);font-size:11px;margin-top:2px}
+    .ha-peer-list{display:grid;gap:12px}
+    .ha-peer-card{padding:16px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);border:1px solid rgba(31,34,48,.06);box-shadow:var(--shadow-soft)}
+    .ha-peer-meta{display:flex;flex-wrap:wrap;gap:8px 12px;color:var(--muted);font-size:12px}
+    .ha-peer-error{color:var(--danger);font-size:12px;line-height:1.6;word-break:break-word}
+    .ha-secret-card{padding:16px;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#fff8f7 100%);border:1px solid rgba(31,34,48,.06);box-shadow:var(--shadow-soft)}
+    .ha-secret-actions{display:flex;gap:10px;flex-wrap:wrap}
+    .ha-peer-config-list{display:grid;gap:14px}
+    .ha-peer-config-card{padding:16px 18px}
+    .ha-overview-grid,.ha-node-plan-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}
+    .ha-overview-card,.ha-node-plan-card{padding:16px 18px;border-radius:20px;border:1px solid rgba(31,34,48,.08);background:linear-gradient(180deg,rgba(255,255,255,.96) 0%,rgba(255,248,247,.98) 100%);box-shadow:var(--shadow-soft)}
+    .ha-overview-card strong,.ha-node-plan-card strong{display:block;font-size:26px;line-height:1.05;letter-spacing:-.03em}
+    .ha-overview-card .item-meta,.ha-node-plan-card .item-meta{margin-top:4px}
+    .ha-overview-card .badge,.ha-node-plan-card .badge{margin-top:10px}
+    .ha-node-plan-card{display:grid;gap:12px}
+    .ha-node-plan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+    .ha-node-plan-fields{display:grid;gap:10px}
+    .ha-node-plan-field{padding:12px 13px;border-radius:16px;background:rgba(255,255,255,.82);border:1px solid rgba(31,34,48,.06)}
+    .ha-node-plan-field label{margin-bottom:5px;font-size:11px;letter-spacing:.11em}
+    .ha-node-plan-field .mono{font-size:12px;line-height:1.7}
+    .ha-node-plan-peers{display:grid;gap:8px}
+    .ha-node-plan-peer{padding:10px 12px;border-radius:14px;background:rgba(239,106,124,.06);border:1px solid rgba(239,106,124,.12)}
+    .ha-node-plan-actions{display:flex;gap:10px;flex-wrap:wrap}
+    .ha-peer-config-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+    .ha-peer-config-top .actions{margin-left:auto}
+    @media (max-width:900px){#tab-ha .grid3{grid-template-columns:repeat(2,minmax(0,1fr))}.ha-overview-grid,.ha-node-plan-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width:760px){.ha-summary-grid,.ha-overview-grid,.ha-node-plan-grid,.ha-sync-list{grid-template-columns:1fr}#tab-ha .grid3{grid-template-columns:1fr}.ha-peer-config-top{align-items:flex-start}.ha-node-plan-actions button{flex:1}}
+  
+    /* Softer text hierarchy */
+    body{color:#4b5563}.brand h1,.top h2,.head h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.route-query-summary .item strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong,.form h2,.stage-card h3,.session-modal h3{color:#4b5563}.hero h1{color:#4f5865}.brand p,.nav small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.status-card p,.sm-stat label,.hub-route-meta,.data-row-meta,.muted-result,.ha-sync-meta,.ha-peer-meta{color:#8a93a0}.hero p,.hero li{color:rgba(79,88,101,.62)}.metric label,label{color:#8d96a3}.nav button{color:#626b78}.nav button.active{color:#4b5563}.btn-secondary,.btn-ghost{color:#596170}.console{color:#727b89}.page-kicker,.mini{color:#8a93a0}.head h3::after{background-color:#8a93a0}.page-tab-icon{color:#8a93a0}
+    /* Softer text hierarchy */
+    body{color:#59636f}.brand h1,.top h2,.head h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.route-query-summary .item strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong,.form h2,.stage-card h3,.session-modal h3{color:#5b6470}.hero h1{color:#5f6874}.brand p,.nav small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.status-card p,.sm-stat label,.hub-route-meta,.data-row-meta,.muted-result,.ha-sync-meta,.ha-peer-meta{color:#9aa3ad}.hero p,.hero li{color:rgba(95,104,116,.58)}.metric label,label{color:#9da6af}.nav button{color:#6c7581}.nav button.active{color:#5b6470}.btn-secondary,.btn-ghost{color:#68717d}.console{color:#7f8894}.page-kicker,.mini{color:#9aa3ad}.head h3::after{background-color:#9aa3ad}.page-tab-icon{color:#9aa3ad}
+    /* Softer text hierarchy */
+    body{color:#626c78}.brand h1,.top h2,.head h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.route-query-summary .item strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong,.form h2,.stage-card h3,.session-modal h3{color:#66707c}.hero h1{color:#6a7480}.brand p,.nav small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.status-card p,.sm-stat label,.hub-route-meta,.data-row-meta,.muted-result,.ha-sync-meta,.ha-peer-meta{color:#a5adb6}.hero p,.hero li{color:rgba(106,116,128,.56)}.metric label,label{color:#a8b0b9}.nav button{color:#747e8a}.nav button.active{color:#66707c}.btn-secondary,.btn-ghost{color:#707a86}.console{color:#87919d}.page-kicker,.mini{color:#a5adb6}.head h3::after{background-color:#a5adb6}.page-tab-icon{color:#a5adb6}
+    /* Professional density polish */
+    h1,h2,h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong{font-weight:650;letter-spacing:0}.top h2,.head h3,.brand h1,.hero h1{letter-spacing:0}.head h3{line-height:1.25}.metric strong{line-height:1.08}.panel,.metric,.item,.card,.status-card,.sm-section,.sm-config-card{box-shadow:0 6px 18px rgba(35,41,55,.028)}.panel{border-color:#e8ebf1}.head{border-bottom-color:#edf0f4}.page-tab-icon,.head h3::before{background:#fafbfc;border-color:#e8ebf1}.head h3::after,.page-tab-icon{opacity:.92}.btn-primary{box-shadow:0 8px 18px rgba(239,106,124,.14)}button{font-weight:650}.nav button>span:not(.nav-icon){font-weight:650;letter-spacing:0}.nav small{font-weight:500}.metric label,label{font-weight:650;letter-spacing:.03em}.item-title::before{opacity:.72}.row{border-color:#e8ebf1}.hint{border-style:solid;background:#fbfcfd}.console{box-shadow:inset 0 1px 0 rgba(255,255,255,.72)}
+    /* Softer text hierarchy */
+    body{color:#59636f}.brand h1,.top h2,.head h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.route-query-summary .item strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong,.form h2,.stage-card h3,.session-modal h3{color:#5b6470}.hero h1{color:#5f6874}.brand p,.nav small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.status-card p,.sm-stat label,.hub-route-meta,.data-row-meta,.muted-result,.ha-sync-meta,.ha-peer-meta{color:#98a1ab}.hero p,.hero li{color:rgba(95,104,116,.6)}.metric label,label{color:#9aa3ad}.nav button{color:#6c7581}.nav button.active{color:#5b6470}.btn-secondary,.btn-ghost{color:#68717d}.console{color:#7f8894}.page-kicker,.mini{color:#98a1ab}.head h3::after{background-color:#98a1ab}.page-tab-icon{color:#98a1ab}

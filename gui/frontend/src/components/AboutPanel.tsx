@@ -4,7 +4,8 @@ import { useState, useEffect } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL } from '../../wailsjs/runtime';
-import { ReadErrorLog } from '../../wailsjs/go/main/App';
+import { ProbeRemoteHub, ReadErrorLog } from '../../wailsjs/go/main/App';
+import type { main } from '../../wailsjs/go/models';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
@@ -30,12 +31,18 @@ type BrandInfo = {
     iconPath: string;
 };
 
+type RemoteProbeIdentity = {
+    tenant_id?: string;
+    tenant_name?: string;
+};
+
 type AboutPanelProps = {
     currentIcon: string;
     brandInfo: BrandInfo | null;
     appVersion: string;
     buildNumber: string;
     thanksContent: string;
+    config?: Partial<main.AppConfig> | null;
     t: (key: string) => string;
     onOpenWebsite: () => void;
     onCheckUpdate: () => void;
@@ -61,6 +68,7 @@ export function AboutPanel({
     appVersion,
     buildNumber,
     thanksContent,
+    config,
     t,
     onOpenWebsite,
     onCheckUpdate,
@@ -72,6 +80,41 @@ export function AboutPanel({
     const author = brandInfo?.author || 'Dr. Daniel';
     const businessContact = brandInfo?.businessContact || t("businessCooperation");
     const showGithubActions = Boolean(brandInfo?.githubURL) || brandInfo?.id !== 'qianxin';
+    const emptyValue = t("aboutUnsetValue");
+    const [remoteTenant, setRemoteTenant] = useState<{ id?: string; name?: string }>({
+        id: String(config?.remote_tenant_id || ''),
+        name: String(config?.remote_tenant_name || ''),
+    });
+
+    useEffect(() => {
+        setRemoteTenant({
+            id: String(config?.remote_tenant_id || ''),
+            name: String(config?.remote_tenant_name || ''),
+        });
+    }, [config?.remote_hub_url, config?.remote_email, config?.remote_tenant_id, config?.remote_tenant_name]);
+
+    useEffect(() => {
+        const hubURL = String(config?.remote_hub_url || '').trim();
+        const email = String(config?.remote_email || '').trim();
+        if (!hubURL || !email || remoteTenant.id || remoteTenant.name) return;
+        let cancelled = false;
+        ProbeRemoteHub(hubURL, email)
+            .then((result: RemoteProbeIdentity) => {
+                if (cancelled) return;
+                const id = String(result?.tenant_id || '').trim();
+                const name = String(result?.tenant_name || '').trim();
+                if (id || name) setRemoteTenant({ id, name });
+            })
+            .catch(() => undefined);
+        return () => { cancelled = true; };
+    }, [config?.remote_hub_url, config?.remote_email, remoteTenant.id, remoteTenant.name]);
+
+    const hasRegisteredMachine = String(config?.remote_machine_id || '').trim() !== '' && String(config?.remote_machine_token || '').trim() !== '';
+    const tenantLabel = remoteTenant.name || remoteTenant.id || emptyValue;
+    const registeredName = hasRegisteredMachine ? (String(config?.remote_nickname || '').trim() || String(config?.remote_machine_name || '').trim() || String(config?.remote_machine_id || '').trim() || emptyValue) : emptyValue;
+    const hubURL = String(config?.remote_hub_url || '').trim() || emptyValue;
+    const remoteEmail = String(config?.remote_email || '').trim() || emptyValue;
+    const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
 
     // Override product name for TigerClaw brand on About panel
     const productName = brandInfo?.id === 'qianxin'
@@ -146,8 +189,54 @@ export function AboutPanel({
                     </div>
                 </section>
 
+                <section className="about-identity-card" style={remoteCardStyle}>
+                    <div className="about-card-heading">
+                        <div>
+                            <div style={remoteSectionTitleStyle}>{t("aboutIdentityTitle")}</div>
+                            <p className="about-actions-card__desc" style={remoteBodyTextStyle}>
+                                {t("aboutIdentityDesc")}
+                            </p>
+                        </div>
+                        <span className={`about-status-pill ${hasRegisteredMachine ? 'is-online' : ''}`}>
+                            {hasRegisteredMachine ? t("remoteActivated") : t("aboutNotRegistered")}
+                        </span>
+                    </div>
+                    <dl className="about-identity-table">
+                        <div className="about-identity-row">
+                            <div className="about-identity-item about-identity-item--strong">
+                                <dt className="about-kv-label">{t("aboutTenantName")}</dt>
+                                <dd className="about-identity-value about-identity-value--strong">{tenantLabel}</dd>
+                            </div>
+                            <div className="about-identity-item about-identity-item--strong">
+                                <dt className="about-kv-label">{t("aboutRegisteredName")}</dt>
+                                <dd className="about-identity-value about-identity-value--strong">{registeredName}</dd>
+                            </div>
+                        </div>
+                        <div className="about-identity-row">
+                            <div className="about-identity-item">
+                                <dt className="about-kv-label">{t("aboutHubUrl")}</dt>
+                                <dd className="about-identity-value about-identity-value--muted">{hubURL}</dd>
+                            </div>
+                            <div className="about-identity-item">
+                                <dt className="about-kv-label">{t("aboutAccountEmail")}</dt>
+                                <dd className="about-identity-value about-identity-value--muted">{remoteEmail}</dd>
+                            </div>
+                        </div>
+                        <div className="about-identity-row">
+                            <div className="about-identity-item">
+                                <dt className="about-kv-label">{t("aboutMachineId")}</dt>
+                                <dd className="about-identity-value about-identity-value--mono">{machineID}</dd>
+                            </div>
+                            <div className="about-identity-item">
+                                <dt className="about-kv-label">{t("remoteActivation")}</dt>
+                                <dd className="about-identity-value about-identity-value--muted">{hasRegisteredMachine ? t("remoteActivated") : t("aboutNotRegistered")}</dd>
+                            </div>
+                        </div>
+                    </dl>
+                </section>
+
                 <section className="about-actions-card" style={remoteCardStyle}>
-                    <div className="about-actions-card__header">
+                    <div className="about-card-heading">
                         <div>
                             <div style={remoteSectionTitleStyle}>{t("quickActionsTitle")}</div>
                             <p className="about-actions-card__desc" style={remoteBodyTextStyle}>

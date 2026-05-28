@@ -83,6 +83,9 @@ func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
 	if registerRR.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
 	}
+	if !bytes.Contains(registerRR.Body.Bytes(), []byte(`"employee_type":"physical"`)) {
+		t.Fatalf("registered GUI digital employee should be physical: %s", registerRR.Body.String())
+	}
 
 	statusRR := doVEMachineJSON(t, VEStatusHandler(settings, authn), http.MethodGet, "/api/ve/status", nil, "machine-a", "machine-token")
 	if statusRR.Code != http.StatusOK || !bytes.Contains(statusRR.Body.Bytes(), []byte(`"registered":true`)) || !bytes.Contains(statusRR.Body.Bytes(), []byte(`"status":"pending"`)) {
@@ -101,6 +104,91 @@ func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
 	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "machine-b", "machine-token")
 	if discoverRR.Code != http.StatusOK || !bytes.Contains(discoverRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) {
 		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeRegisterAutoApprove(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	if err := scopedSystemSettingsForTenant("tenant-a", settings).Set(context.Background(), veGroupConfigKey, `{"max_group_participants":5,"auto_approve":true}`); err != nil {
+		t.Fatalf("set ve config: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":              "Auto Worker",
+		"skill_description": "Auto approval",
+		"access_policy":     "public",
+	}, "machine-a", "machine-token")
+	if registerRR.Code != http.StatusOK || !bytes.Contains(registerRR.Body.Bytes(), []byte(`"status":"active"`)) {
+		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+
+	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "machine-b", "machine-token")
+	if discoverRR.Code != http.StatusOK || !bytes.Contains(discoverRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) {
+		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeRegisterAutoApproveRespectsQuota(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 1)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := tenantSystem.Set(context.Background(), veGroupConfigKey, `{"max_group_participants":5,"auto_approve":true}`); err != nil {
+		t.Fatalf("set ve config: %v", err)
+	}
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_machine-a", MachineID: "machine-a", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-b": {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Overflow Worker"}, "machine-b", "machine-token")
+	if registerRR.Code != http.StatusOK || !bytes.Contains(registerRR.Body.Bytes(), []byte(`"status":"pending"`)) {
+		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeRegisterAutoApproveDoesNotBypassDisabledEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := tenantSystem.Set(context.Background(), veGroupConfigKey, `{"max_group_participants":5,"auto_approve":true}`); err != nil {
+		t.Fatalf("set ve config: %v", err)
+	}
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_machine-a", MachineID: "machine-a", Status: veStatusDisabled, OnlineStatus: veOnlineStatusOffline}}}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+		},
+	}
+
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Disabled Worker"}, "machine-a", "machine-token")
+	if registerRR.Code != http.StatusOK || !bytes.Contains(registerRR.Body.Bytes(), []byte(`"status":"pending"`)) {
+		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
 	}
 }
 
@@ -139,6 +227,115 @@ func TestDigitalEmployeeDiscoverableExcludesOwnMachineCaseInsensitive(t *testing
 	}
 	if bytes.Contains(discoverRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) {
 		t.Fatalf("own digital employee leaked in discover response: %s", discoverRR.Body.String())
+	}
+}
+
+func TestDiscoverableShowsActiveMaClawSrvRuntimeEmployeeOnline(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_srv", MachineID: "ve_srv", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "srv-user-1", Name: "Srv Employee", Status: veStatusActive},
+		{ID: "ve_physical", MachineID: "machine-offline", Name: "Physical Offline", Status: veStatusActive},
+	}}
+	data, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-gui": {TenantID: "tenant-a", UserID: "user-gui", MachineID: "machine-gui"},
+		},
+	}
+
+	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "machine-gui", "machine-token")
+	if discoverRR.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(discoverRR.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode discover: %v", err)
+	}
+	byID := map[string]digitalEmployeeEntry{}
+	for _, emp := range out.Employees {
+		byID[emp.ID] = emp
+	}
+	if byID["ve_srv"].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("MaClawSrv runtime employee online_status = %q, want online; body=%s", byID["ve_srv"].OnlineStatus, discoverRR.Body.String())
+	}
+	if byID["ve_physical"].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("physical employee without heartbeat online_status = %q, want offline", byID["ve_physical"].OnlineStatus)
+	}
+}
+
+func TestVEAdminListIncludesEmployeeTypes(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 3)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_gui", MachineID: "machine-gui", Name: "GUI Employee", Status: veStatusPending, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_stale_platform", MachineID: "ve_stale_platform", PlatformID: "platform-1", Name: "Stale Platform Field", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_srv", MachineID: "ve_srv", PlatformID: "maclawsrv", PlatformEmployeeID: "srv-user-1", Name: "Srv Employee", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_runtime", MachineID: "ve_runtime", RuntimeProviderID: "maclawsrv", Name: "Runtime Employee", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_other_runtime", MachineID: "ve_other_runtime", RuntimeProviderID: "other-runtime", Name: "Other Runtime Employee", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_bad", MachineID: "machine-bad", EmployeeType: "legacy", Name: "Legacy Employee", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_conflict", MachineID: "ve_conflict", EmployeeType: veEmployeeTypePhysical, PlatformID: "maclawsrv", PlatformEmployeeID: "srv-user-2", Name: "Conflict Employee", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	seed, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(seed)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	rec := httptest.NewRecorder()
+	VEAdminListHandler(settings).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Employees []digitalEmployeeEntry `json:"employees"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	typesByID := map[string]string{}
+	for _, employee := range out.Employees {
+		typesByID[employee.ID] = employee.EmployeeType
+	}
+	if typesByID["ve_gui"] != veEmployeeTypePhysical || typesByID["ve_stale_platform"] != veEmployeeTypePhysical || typesByID["ve_bad"] != veEmployeeTypePhysical || typesByID["ve_other_runtime"] != veEmployeeTypePhysical || typesByID["ve_srv"] != veEmployeeTypeVirtual || typesByID["ve_runtime"] != veEmployeeTypePhysical || typesByID["ve_conflict"] != veEmployeeTypePhysical {
+		t.Fatalf("unexpected employee types: %#v", typesByID)
+	}
+	raw, err := tenantSystem.Get(context.Background(), veRegistryKey)
+	if err != nil {
+		t.Fatalf("load repaired registry: %v", err)
+	}
+	var repaired digitalEmployeeRegistry
+	if err := json.Unmarshal([]byte(raw), &repaired); err != nil {
+		t.Fatalf("decode repaired registry: %v", err)
+	}
+	repairedTypesByID := map[string]string{}
+	for _, employee := range repaired.Employees {
+		repairedTypesByID[employee.ID] = employee.EmployeeType
+	}
+	if repairedTypesByID["ve_bad"] != veEmployeeTypePhysical || repairedTypesByID["ve_stale_platform"] != veEmployeeTypePhysical || repairedTypesByID["ve_other_runtime"] != veEmployeeTypePhysical || repairedTypesByID["ve_conflict"] != veEmployeeTypePhysical || repairedTypesByID["ve_runtime"] != veEmployeeTypePhysical {
+		t.Fatalf("registry employee types were not repaired in storage: %s", raw)
+	}
+}
+
+func TestExplicitPhysicalEmployeeTypeWinsOverLegacyPlatformFields(t *testing.T) {
+	entry := digitalEmployeeEntry{EmployeeType: veEmployeeTypePhysical, PlatformID: "maclawsrv", PlatformEmployeeID: "srv-user-2", RuntimeProviderID: maclawSrvRuntimePlatformID}
+	if got := inferVEEmployeeType(entry); got != veEmployeeTypePhysical {
+		t.Fatalf("explicit physical employee type should win over stale platform fields, got %q", got)
 	}
 }
 
@@ -207,6 +404,68 @@ func TestDigitalEmployeeInitiateCreatesMachineIDDiscussion(t *testing.T) {
 	invited, err := groupSvc.ListDiscussionSummaries("tenant-a", ListSessionsFilter{ParticipantID: "machine-a"})
 	if err != nil || len(invited) != 1 || invited[0].LocalRelation != "owned_ve_invited" || !invited[0].Readonly {
 		t.Fatalf("target summaries err=%v items=%+v", err, invited)
+	}
+}
+
+func TestDigitalEmployeeInitiateAcceptsPlatformEmployeeID(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_platform-employee-1", MachineID: "ve_platform-employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, Name: "Runtime Worker", SkillDescription: "Runtime", AccessPolicy: "public", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	authn := fakeVEMachineAuth{token: "machine-token", principals: map[string]*auth.MachinePrincipal{"machine-gui": {TenantID: "tenant-a", UserID: "user-gui", MachineID: "machine-gui"}}}
+	groupSvc := NewGroupDiscussionService()
+	req := httptest.NewRequest(http.MethodPost, "/api/ve/platform-employee-1/initiate", nil)
+	req.Header.Set("X-Machine-ID", "machine-gui")
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.SetPathValue("id", "platform-employee-1")
+	rec := httptest.NewRecorder()
+	VEInitiateHandler(settings, groupSvc, authn).ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("initiate by platform_employee_id status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		VEID       string                       `json:"ve_id"`
+		Discussion corea2a.HubDiscussionSummary `json:"discussion"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode initiate response: %v body=%s", err, rec.Body.String())
+	}
+	if out.VEID != "ve_platform-employee-1" || len(out.Discussion.ParticipantIDs) != 2 || out.Discussion.ParticipantIDs[1] != "ve_platform-employee-1" {
+		t.Fatalf("unexpected platform employee initiate response: %#v", out)
+	}
+}
+
+func TestDigitalEmployeeHistoryAcceptsPlatformEmployeeIDCaseInsensitive(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_platform-employee-1", MachineID: "ve_platform-employee-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, Name: "Runtime Worker", SkillDescription: "Runtime", AccessPolicy: "public", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	if _, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{
+		Topic: "Runtime conversation",
+		Goal:  "Talk to runtime worker",
+		Participants: []corea2a.Participant{
+			{ID: "machine-gui", RoleCode: "initiator"},
+			{ID: "ve_platform-employee-1", RoleCode: "speak", Name: "Runtime Worker"},
+		},
+		DecisionPolicy: corea2a.PolicyMajority,
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/platform-employee-1/history?limit=5", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant-a"))
+	req.SetPathValue("id", "PLATFORM-EMPLOYEE-1")
+	rec := httptest.NewRecorder()
+	VEHistoryHandler(settings, groupSvc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("Runtime conversation")) {
+		t.Fatalf("history by platform employee id status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -305,7 +564,7 @@ func TestVEAdminActionPostsPlatformEmployeeCallback(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusPending, OnlineStatus: "platform"}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusPending, OnlineStatus: veOnlineStatusOnline}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -718,6 +977,64 @@ func TestDigitalEmployeeConfigValidation(t *testing.T) {
 	}
 }
 
+func TestDigitalEmployeeConfigSavesAutoApprove(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	rr := doPlainJSON(t, VEAdminConfigHandler(settings), http.MethodPut, "/api/ve/config", map[string]any{"max_group_participants": 6, "auto_approve": true})
+	if rr.Code != http.StatusOK || !bytes.Contains(rr.Body.Bytes(), []byte(`"auto_approve":true`)) {
+		t.Fatalf("save config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	getRR := doPlainJSON(t, VEAdminConfigHandler(settings), http.MethodGet, "/api/ve/config", nil)
+	if getRR.Code != http.StatusOK || !bytes.Contains(getRR.Body.Bytes(), []byte(`"auto_approve":true`)) || !bytes.Contains(getRR.Body.Bytes(), []byte(`"max_group_participants":6`)) {
+		t.Fatalf("get config status=%d body=%s", getRR.Code, getRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeConfigPreservesAutoApproveWhenOmitted(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	if err := settings.Set(context.Background(), veGroupConfigKey, `{"max_group_participants":5,"auto_approve":true}`); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	rr := doPlainJSON(t, VEAdminConfigHandler(settings), http.MethodPut, "/api/ve/config", map[string]any{"max_group_participants": 7})
+	if rr.Code != http.StatusOK || !bytes.Contains(rr.Body.Bytes(), []byte(`"auto_approve":true`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"max_group_participants":7`)) {
+		t.Fatalf("save config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestDigitalEmployeeConfigAutoApprovesPendingWithinQuota(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_active", MachineID: "machine-active", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_pending_a", MachineID: "machine-pending-a", Status: veStatusPending, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_pending_b", MachineID: "machine-pending-b", Status: veStatusPending, OnlineStatus: veOnlineStatusOnline},
+	}}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := tenantSystem.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	sender := &fakeVEMachineEventSender{}
+	rr := doPlainJSON(t, VEAdminConfigHandler(tenantSystem, sender), http.MethodPut, "/api/ve/config", map[string]any{"max_group_participants": 5, "auto_approve": true})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), tenantSystem)
+	statuses := map[string]string{}
+	for _, employee := range updated.Employees {
+		statuses[employee.ID] = employee.Status
+	}
+	if statuses["ve_pending_a"] != veStatusActive || statuses["ve_pending_b"] != veStatusPending {
+		t.Fatalf("auto approve should fill remaining quota only, got %#v", statuses)
+	}
+	if len(sender.messages) != 3 || sender.messages[0].machineID != "machine-pending-a" {
+		t.Fatalf("auto approve should emit status events to approved machine, got %#v", sender.messages)
+	}
+}
+
 func TestDigitalEmployeeFileRelayRoutesRequireAuthenticatedParticipant(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
 	globalToken := issueHubAdminToken(t, router)
@@ -1048,5 +1365,28 @@ func setVERegistrationRecord(t *testing.T, settings *testSystemSettingsRepo, aut
 	}
 	if err := settings.Set(context.Background(), "center_registration", string(data)); err != nil {
 		t.Fatalf("set auth payload: %v", err)
+	}
+}
+
+func TestLoadVERegistryNormalizesLegacyPlatformOnlineStatus(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	data, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := settings.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	loaded := loadVERegistry(context.Background(), settings)
+	if len(loaded.Employees) != 1 || loaded.Employees[0].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("legacy online status was not normalized: %#v", loaded.Employees)
+	}
+	raw, err := settings.Get(context.Background(), veRegistryKey)
+	if err != nil {
+		t.Fatalf("load repaired registry: %v", err)
+	}
+	if strings.Contains(raw, `"online_status":"platform"`) {
+		t.Fatalf("legacy online status was not repaired in storage: %s", raw)
 	}
 }

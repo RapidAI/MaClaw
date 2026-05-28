@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -52,25 +54,77 @@ func cloneRequestWithHeader(r *http.Request, key, value string) *http.Request {
 }
 
 type platformVirtualEmployeeRequest struct {
-	EmployeeID        string            `json:"employee_id"`
-	TenantID          string            `json:"tenant_id"`
-	PlatformTenantID  string            `json:"platform_tenant_id"`
-	TenantName        string            `json:"tenant_name"`
-	TenantCode        string            `json:"tenant_code"`
-	HubTenantCode     string            `json:"hub_tenant_code"`
-	Name              string            `json:"name"`
-	Handle            string            `json:"handle"`
-	VirtualEmail      string            `json:"virtual_email"`
-	SkillDescription  string            `json:"skill_description"`
-	SkillTags         platformSkillTags `json:"skill_tags"`
-	DefaultLLM        string            `json:"default_llm"`
-	LLMServiceGroupID string            `json:"llm_service_group_id"`
-	HubLLMEndpoint    string            `json:"hub_llm_endpoint"`
-	HubLLMAPIKey      string            `json:"hub_llm_api_key"`
-	LLMModel          string            `json:"llm_model"`
-	HubLLMViewerToken string            `json:"hub_llm_viewer_token"`
-	ViewerToken       string            `json:"viewer_token"`
-	AccessToken       string            `json:"access_token"`
+	EmployeeID        string                  `json:"employee_id"`
+	TenantID          string                  `json:"tenant_id"`
+	PlatformTenantID  string                  `json:"platform_tenant_id"`
+	TenantName        string                  `json:"tenant_name"`
+	TenantCode        string                  `json:"tenant_code"`
+	HubTenantCode     string                  `json:"hub_tenant_code"`
+	Name              string                  `json:"name"`
+	Handle            string                  `json:"handle"`
+	VirtualEmail      string                  `json:"virtual_email"`
+	SkillDescription  string                  `json:"skill_description"`
+	SkillTags         platformSkillTags       `json:"skill_tags"`
+	DefaultLLM        string                  `json:"default_llm"`
+	LLMServiceGroupID string                  `json:"llm_service_group_id"`
+	HubLLMEndpoint    string                  `json:"hub_llm_endpoint"`
+	HubLLMAPIKey      string                  `json:"hub_llm_api_key"`
+	LLMModel          string                  `json:"llm_model"`
+	HubLLMViewerToken string                  `json:"hub_llm_viewer_token"`
+	ViewerToken       string                  `json:"viewer_token"`
+	AccessToken       string                  `json:"access_token"`
+	SSHHosts          []corelib.SSHHostEntry  `json:"ssh_hosts,omitempty"`
+	MaclawSrvConfig   platformMaclawSrvConfig `json:"maclawsrv_config,omitempty"`
+}
+
+type platformMaclawSrvConfig struct {
+	QQBotEnabled               *bool                `json:"qqbot_enabled,omitempty"`
+	QQBotAppID                 *string              `json:"qqbot_app_id,omitempty"`
+	QQBotAppSecret             *string              `json:"qqbot_app_secret,omitempty"`
+	QQBotLocalMode             platformOptionalBool `json:"qqbot_local_mode,omitempty"`
+	TelegramBotEnabled         *bool                `json:"telegram_bot_enabled,omitempty"`
+	TelegramBotToken           *string              `json:"telegram_bot_token,omitempty"`
+	TelegramLocalMode          platformOptionalBool `json:"telegram_local_mode,omitempty"`
+	WeixinEnabled              *bool                `json:"weixin_enabled,omitempty"`
+	WeixinToken                *string              `json:"weixin_token,omitempty"`
+	WeixinBaseURL              *string              `json:"weixin_base_url,omitempty"`
+	WeixinCDNURL               *string              `json:"weixin_cdn_url,omitempty"`
+	WeixinAccountID            *string              `json:"weixin_account_id,omitempty"`
+	WeixinLocalMode            platformOptionalBool `json:"weixin_local_mode,omitempty"`
+	LansengerEnabled           *bool                `json:"lansenger_enabled,omitempty"`
+	LansengerAppID             *string              `json:"lansenger_app_id,omitempty"`
+	LansengerAppSecret         *string              `json:"lansenger_app_secret,omitempty"`
+	LansengerGatewayURL        *string              `json:"lansenger_gateway_url,omitempty"`
+	LansengerWSSURL            *string              `json:"lansenger_wss_url,omitempty"`
+	LansengerLocalMode         platformOptionalBool `json:"lansenger_local_mode,omitempty"`
+	ThirdPartyGatewayEnabled   *bool                `json:"thirdparty_gateway_enabled,omitempty"`
+	ThirdPartyGatewayToken     *string              `json:"thirdparty_gateway_token,omitempty"`
+	ThirdPartyGatewayHost      *string              `json:"thirdparty_gateway_host,omitempty"`
+	ThirdPartyGatewayPort      *int                 `json:"thirdparty_gateway_port,omitempty"`
+	ThirdPartyGatewayLocalMode platformOptionalBool `json:"thirdparty_gateway_local_mode,omitempty"`
+}
+
+type platformOptionalBool struct {
+	Set   bool
+	Value *bool
+}
+
+func (b *platformOptionalBool) UnmarshalJSON(data []byte) error {
+	b.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		b.Value = nil
+		return nil
+	}
+	var value bool
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	b.Value = &value
+	return nil
+}
+
+func (c platformMaclawSrvConfig) isZero() bool {
+	return c.QQBotEnabled == nil && c.QQBotAppID == nil && c.QQBotAppSecret == nil && !c.QQBotLocalMode.Set && c.TelegramBotEnabled == nil && c.TelegramBotToken == nil && !c.TelegramLocalMode.Set && c.WeixinEnabled == nil && c.WeixinToken == nil && c.WeixinBaseURL == nil && c.WeixinCDNURL == nil && c.WeixinAccountID == nil && !c.WeixinLocalMode.Set && c.LansengerEnabled == nil && c.LansengerAppID == nil && c.LansengerAppSecret == nil && c.LansengerGatewayURL == nil && c.LansengerWSSURL == nil && !c.LansengerLocalMode.Set && c.ThirdPartyGatewayEnabled == nil && c.ThirdPartyGatewayToken == nil && c.ThirdPartyGatewayHost == nil && c.ThirdPartyGatewayPort == nil && !c.ThirdPartyGatewayLocalMode.Set
 }
 
 type platformSkillTags []string
@@ -112,21 +166,22 @@ type platformRuntimeBinding struct {
 }
 
 type platformSourceUserRequest struct {
-	TenantID          string               `json:"tenant_id"`
-	SourceUser        platformSourceUser   `json:"source_user"`
-	SourceUsers       []platformSourceUser `json:"source_users,omitempty"`
-	Name              string               `json:"name,omitempty"`
-	Description       string               `json:"description,omitempty"`
-	InstanceID        string               `json:"instance_id,omitempty"`
-	Target            string               `json:"target,omitempty"`
-	DefaultLLM        string               `json:"default_llm,omitempty"`
-	LLMServiceGroupID string               `json:"llm_service_group_id,omitempty"`
-	LLMModel          string               `json:"llm_model,omitempty"`
-	HubLLMEndpoint    string               `json:"hub_llm_endpoint,omitempty"`
-	HubLLMAPIKey      string               `json:"hub_llm_api_key,omitempty"`
-	HubLLMViewerToken string               `json:"hub_llm_viewer_token,omitempty"`
-	ViewerToken       string               `json:"viewer_token,omitempty"`
-	AccessToken       string               `json:"access_token,omitempty"`
+	TenantID          string                 `json:"tenant_id"`
+	SourceUser        platformSourceUser     `json:"source_user"`
+	SourceUsers       []platformSourceUser   `json:"source_users,omitempty"`
+	Name              string                 `json:"name,omitempty"`
+	Description       string                 `json:"description,omitempty"`
+	InstanceID        string                 `json:"instance_id,omitempty"`
+	Target            string                 `json:"target,omitempty"`
+	DefaultLLM        string                 `json:"default_llm,omitempty"`
+	LLMServiceGroupID string                 `json:"llm_service_group_id,omitempty"`
+	LLMModel          string                 `json:"llm_model,omitempty"`
+	HubLLMEndpoint    string                 `json:"hub_llm_endpoint,omitempty"`
+	HubLLMAPIKey      string                 `json:"hub_llm_api_key,omitempty"`
+	HubLLMViewerToken string                 `json:"hub_llm_viewer_token,omitempty"`
+	ViewerToken       string                 `json:"viewer_token,omitempty"`
+	AccessToken       string                 `json:"access_token,omitempty"`
+	SSHHosts          []corelib.SSHHostEntry `json:"ssh_hosts,omitempty"`
 }
 
 type platformSourceUser struct {
@@ -137,16 +192,49 @@ type platformSourceUser struct {
 	DisplayName       string `json:"display_name"`
 	Department        string `json:"department"`
 	Title             string `json:"title"`
+	SkillTags         string `json:"skill_tags,omitempty"`
+	SkillTagsSet      bool   `json:"-"`
 	Status            string `json:"status"`
 	AccountType       string `json:"account_type,omitempty"`
 	Provider          string `json:"provider,omitempty"`
 	IsVirtualEmployee bool   `json:"is_virtual_employee,omitempty"`
 }
 
+func (u *platformSourceUser) UnmarshalJSON(data []byte) error {
+	type alias platformSourceUser
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	out.SkillTagsSet = false
+	for key := range raw {
+		if strings.EqualFold(key, "skill_tags") {
+			out.SkillTagsSet = true
+			break
+		}
+	}
+	*u = platformSourceUser(out)
+	return nil
+}
+
 type platformSourceUserBinding struct {
 	Tenant agentservice.Tenant
 	User   agentservice.User
 	Source platformSourceUser
+}
+
+type platformVirtualEmployeeMessageRequest struct {
+	EmployeeID      string          `json:"employee_id"`
+	TenantID        string          `json:"tenant_id"`
+	HubDiscussionID string          `json:"hub_discussion_id"`
+	HubMessageID    string          `json:"hub_message_id"`
+	RequestID       string          `json:"request_id"`
+	Content         string          `json:"content"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
 }
 
 func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +266,16 @@ func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, 
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	if err := s.updatePlatformUserSSHHosts(r, principal, in.SSHHosts); err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	if !in.MaclawSrvConfig.isZero() {
+		if err := s.updatePlatformUserMaclawSrvConfig(r, principal, in.MaclawSrvConfig); err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+	}
 	inst, created, err := s.findOrCreatePlatformInstance(r, principal, in)
 	if err != nil {
 		if errors.Is(err, agentservice.ErrInvalidConfig) {
@@ -195,6 +293,171 @@ func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, map[string]any{"status": status, "created": created, "tenant_id": tenant.ID, "user_id": user.ID, "instance_id": inst.ID, "employee_id": employeeID, "readiness": inst.Readiness})
 }
 
+func (s *HTTPServer) handleRuntimeVirtualEmployeeDiscussionMessage(w http.ResponseWriter, r *http.Request) {
+	s.handleVirtualEmployeeMessage(w, r, "hub_runtime_a2a", "Hub Discussion")
+}
+
+func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http.Request, source, title string) {
+	started := time.Now()
+	employeeID := strings.TrimSpace(r.PathValue("employeeId"))
+	if employeeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "employeeId is required"})
+		return
+	}
+	logEmployeeID := platformRuntimeLogID(employeeID)
+	log.Printf("[platform-runtime] discussion message received employee=%s hub_tenant=%s source=%s", logEmployeeID, platformRuntimeRequestHubTenantID(r), source)
+	var in platformVirtualEmployeeMessageRequest
+	if !decodePlatformJSON(w, r, &in) {
+		log.Printf("[platform-runtime] discussion message invalid json employee=%s duration=%s", logEmployeeID, time.Since(started))
+		return
+	}
+	if err := normalizePlatformVirtualEmployeeMessageRequest(&in); err != nil {
+		log.Printf("[platform-runtime] discussion message invalid payload employee=%s err=%v duration=%s", logEmployeeID, err, time.Since(started))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payload", "detail": err.Error()})
+		return
+	}
+	content := strings.TrimSpace(in.Content)
+	if content == "" {
+		log.Printf("[platform-runtime] discussion message empty content employee=%s request_id=%s hub_discussion=%s hub_message=%s duration=%s", logEmployeeID, in.RequestID, in.HubDiscussionID, in.HubMessageID, time.Since(started))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content is required"})
+		return
+	}
+	if platformRuntimeRequestHubTenantID(r) == "" && strings.TrimSpace(in.TenantID) != "" {
+		r = cloneRequestWithHeader(r, "X-VE-Hub-Tenant-ID", strings.TrimSpace(in.TenantID))
+	}
+	binding, ok, err := s.findPlatformMessageRuntimeBinding(r, employeeID)
+	if err != nil {
+		log.Printf("[platform-runtime] discussion binding lookup failed employee=%s request_id=%s hub_discussion=%s hub_message=%s err=%v duration=%s", logEmployeeID, in.RequestID, in.HubDiscussionID, in.HubMessageID, err, time.Since(started))
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	if !ok {
+		log.Printf("[platform-runtime] discussion binding not found employee=%s request_id=%s hub_discussion=%s hub_message=%s hub_tenant=%s duration=%s", logEmployeeID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformRuntimeRequestHubTenantID(r), time.Since(started))
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "platform virtual employee runtime not found"})
+		return
+	}
+	metadata := map[string]string{"source": strings.TrimSpace(source)}
+	if value := strings.TrimSpace(in.RequestID); value != "" {
+		metadata["ve_a2a_request_id"] = value
+	}
+	if value := strings.TrimSpace(in.HubDiscussionID); value != "" {
+		metadata["ve_hub_discussion_id"] = value
+	}
+	if value := strings.TrimSpace(in.HubMessageID); value != "" {
+		metadata["ve_hub_message_id"] = value
+	}
+	log.Printf("[platform-runtime] discussion send start employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s content_chars=%d", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, len([]rune(content)))
+	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata})
+	if err != nil {
+		log.Printf("[platform-runtime] discussion send failed employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s run_id=%s duration=%s err=%v", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformRunID(run), time.Since(started), err)
+		if run != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+			return
+		}
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	log.Printf("[platform-runtime] discussion send ok employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s session=%s message=%s run_id=%s duration=%s", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformSessionID(sess), platformMessageID(msg), platformRunID(run), time.Since(started))
+	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "employee_id": employeeID})
+}
+
+func platformRuntimeLogID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:8])
+}
+
+func platformSessionID(session *agentservice.Session) string {
+	if session == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.ID)
+}
+
+func platformMessageID(message *agentservice.Message) string {
+	if message == nil {
+		return ""
+	}
+	return strings.TrimSpace(message.ID)
+}
+
+func platformRunID(run *agentservice.Run) string {
+	if run == nil {
+		return ""
+	}
+	return strings.TrimSpace(run.ID)
+}
+
+func normalizePlatformVirtualEmployeeMessageRequest(in *platformVirtualEmployeeMessageRequest) error {
+	if in == nil || len(bytes.TrimSpace(in.Payload)) == 0 {
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal(in.Payload, &payload); err != nil {
+		return err
+	}
+	if strings.TrimSpace(in.RequestID) == "" {
+		in.RequestID = platformEnvelopeStringField(payload, "request_id", "id")
+	}
+	if strings.TrimSpace(in.HubDiscussionID) == "" {
+		in.HubDiscussionID = platformEnvelopeStringField(payload, "hub_discussion_id", "session_id")
+	}
+	if strings.TrimSpace(in.HubMessageID) == "" {
+		in.HubMessageID = platformEnvelopeStringField(payload, "hub_message_id")
+	}
+	if strings.TrimSpace(in.Content) == "" {
+		in.Content = platformEnvelopeStringField(payload, "content")
+	}
+	if env := platformEnvelopeField(payload, "envelope"); env != nil {
+		if strings.TrimSpace(in.RequestID) == "" {
+			in.RequestID = platformEnvelopeStringField(env, "id", "ID")
+		}
+		if strings.TrimSpace(in.HubDiscussionID) == "" {
+			in.HubDiscussionID = platformEnvelopeStringField(env, "session_id", "SessionID")
+		}
+		if message := platformEnvelopeField(env, "message", "Message"); message != nil {
+			if strings.TrimSpace(in.HubMessageID) == "" {
+				in.HubMessageID = platformEnvelopeStringField(message, "id", "ID")
+			}
+			if strings.TrimSpace(in.Content) == "" {
+				in.Content = platformEnvelopeStringField(message, "content", "Content")
+			}
+		}
+	}
+	return nil
+}
+
+func platformEnvelopeStringField(v any, names ...string) string {
+	value := platformEnvelopeField(v, names...)
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func platformEnvelopeField(v any, names ...string) any {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	for _, name := range names {
+		if value, ok := m[name]; ok {
+			return value
+		}
+		if value, ok := m[strings.ToLower(name)]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
 func platformLLMModelFromRequest(in platformVirtualEmployeeRequest) string {
 	if model := strings.TrimSpace(in.LLMModel); model != "" {
 		return model
@@ -207,6 +470,48 @@ func platformLLMModelFromRequest(in platformVirtualEmployeeRequest) string {
 
 func platformLLMCredential(in platformVirtualEmployeeRequest) string {
 	return firstPlatformNonEmpty(in.HubLLMViewerToken, in.ViewerToken, in.AccessToken, in.HubLLMAPIKey)
+}
+
+func (s *HTTPServer) handlePlatformUpdateVirtualEmployeeConfig(w http.ResponseWriter, r *http.Request) {
+	employeeID := strings.TrimSpace(r.PathValue("employeeId"))
+	if employeeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "employeeId is required"})
+		return
+	}
+	var in struct {
+		TenantID         string                  `json:"tenant_id"`
+		PlatformTenantID string                  `json:"platform_tenant_id"`
+		VirtualEmail     string                  `json:"virtual_email"`
+		MaclawSrvConfig  platformMaclawSrvConfig `json:"maclawsrv_config"`
+	}
+	if !decodePlatformJSON(w, r, &in) {
+		return
+	}
+	if platformRuntimeRequestHubTenantID(r) == "" && strings.TrimSpace(in.TenantID) != "" {
+		r = cloneRequestWithHeader(r, "X-VE-Hub-Tenant-ID", strings.TrimSpace(in.TenantID))
+	}
+	binding, ok, err := s.findPlatformRuntimeBinding(r, employeeID)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	if !ok {
+		binding, ok, err = s.findPlatformRuntimeUserBindingFromDeletePayload(r, employeeID, platformVirtualEmployeeDeletePayload{TenantID: in.TenantID, PlatformTenantID: in.PlatformTenantID, VirtualEmail: in.VirtualEmail})
+		if err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "virtual employee runtime not found"})
+		return
+	}
+	principal := agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}
+	if err := s.updatePlatformUserMaclawSrvConfig(r, principal, in.MaclawSrvConfig); err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "employee_id": employeeID, "tenant_id": binding.Tenant.ID, "user_id": binding.User.ID})
 }
 
 func (s *HTTPServer) updatePlatformUserLLMConfig(r *http.Request, p agentservice.Principal, llmURL, llmKey, llmModel string) error {
@@ -251,8 +556,14 @@ func platformSourceUserLLMCredential(in platformSourceUserRequest) string {
 }
 
 func (s *HTTPServer) handlePlatformSourceUserAssistantInstances(w http.ResponseWriter, r *http.Request) {
-	binding, ok := s.requirePlatformSourceUserBinding(w, r, platformSourceUserRequest{TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id"))})
+	binding, found, ok := s.requireExistingPlatformSourceUserBinding(w, r, platformSourceUserRequest{TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id"))})
 	if !ok {
+		return
+	}
+	if !found {
+		item := platformSourceUserNotProvisionedStatus(strings.TrimSpace(r.URL.Query().Get("tenant_id")), strings.TrimSpace(r.PathValue("sourceUserId")))
+		item["items"] = []agentservice.Instance{}
+		writeJSON(w, http.StatusOK, item)
 		return
 	}
 	instances, err := s.platformSourceUserInstances(r, binding)
@@ -264,8 +575,12 @@ func (s *HTTPServer) handlePlatformSourceUserAssistantInstances(w http.ResponseW
 }
 
 func (s *HTTPServer) handlePlatformSourceUserRuntimeStatus(w http.ResponseWriter, r *http.Request) {
-	binding, ok := s.requirePlatformSourceUserBinding(w, r, platformSourceUserRequest{TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id"))})
+	binding, found, ok := s.requireExistingPlatformSourceUserBinding(w, r, platformSourceUserRequest{TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id"))})
 	if !ok {
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusOK, platformSourceUserNotProvisionedStatus(strings.TrimSpace(r.URL.Query().Get("tenant_id")), strings.TrimSpace(r.PathValue("sourceUserId"))))
 		return
 	}
 	item, err := s.platformSourceUserRuntimeStatus(r, binding)
@@ -290,10 +605,14 @@ func (s *HTTPServer) handlePlatformSourceUsersRuntimeStatus(w http.ResponseWrite
 		if strings.TrimSpace(source.ID) == "" {
 			continue
 		}
-		binding, err := s.platformSourceUserBindingFromRequest(r, platformSourceUserRequest{TenantID: in.TenantID, SourceUser: source})
+		binding, found, err := s.platformSourceUserBindingFromRequest(r, platformSourceUserRequest{TenantID: in.TenantID, SourceUser: source}, false)
 		if err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
 			return
+		}
+		if !found {
+			items = append(items, platformSourceUserNotProvisionedStatus(in.TenantID, source.ID))
+			continue
 		}
 		item, err := s.platformSourceUserRuntimeStatus(r, binding)
 		if err != nil {
@@ -469,29 +788,52 @@ func (s *HTTPServer) platformSourceUserInstances(r *http.Request, binding platfo
 	return filtered, nil
 }
 
+func platformSourceUserNotProvisionedStatus(tenantID, sourceUserID string) map[string]any {
+	return map[string]any{
+		"status":          "not_provisioned",
+		"tenant_id":       strings.TrimSpace(tenantID),
+		"source_user_id":  strings.TrimSpace(sourceUserID),
+		"instance_count":  0,
+		"ready_instances": 0,
+		"config_status": map[string]any{
+			"valid":   false,
+			"reason":  "not_provisioned",
+			"message": "source user runtime has not been provisioned",
+		},
+	}
+}
+
 func platformSourceUserInstanceMatches(source platformSourceUser, inst agentservice.Instance) bool {
 	sourceID := strings.TrimSpace(source.ID)
 	if sourceID == "" {
 		return false
 	}
-	if platformSourceUserIsVirtualEmployee(source) && strings.TrimSpace(inst.Metadata["ve_employee_id"]) == sourceID {
+	if platformSourceUserIsVirtualEmployee(source) && strings.EqualFold(strings.TrimSpace(inst.Metadata["ve_employee_id"]), sourceID) {
 		return true
 	}
-	if strings.TrimSpace(inst.Metadata["ve_source_user_id"]) == "" && strings.TrimSpace(inst.Metadata["ve_employee_id"]) == sourceID {
+	if strings.TrimSpace(inst.Metadata["ve_source_user_id"]) == "" && strings.EqualFold(strings.TrimSpace(inst.Metadata["ve_employee_id"]), sourceID) {
 		return true
 	}
-	return strings.TrimSpace(inst.Metadata["ve_source_user_id"]) == sourceID
+	return strings.EqualFold(strings.TrimSpace(inst.Metadata["ve_source_user_id"]), sourceID)
 }
 
 func (s *HTTPServer) handlePlatformDeleteVirtualEmployee(w http.ResponseWriter, r *http.Request) {
 	employeeID := strings.TrimSpace(r.PathValue("employeeId"))
+	deletePayload, err := readPlatformVirtualEmployeeDeletePayload(r)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	if platformRuntimeRequestHubTenantID(r) == "" && strings.TrimSpace(deletePayload.TenantID) != "" {
+		r = cloneRequestWithHeader(r, "X-VE-Hub-Tenant-ID", strings.TrimSpace(deletePayload.TenantID))
+	}
 	binding, ok, err := s.findPlatformRuntimeBinding(r, employeeID)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	if !ok {
-		binding, ok, err = s.findPlatformRuntimeUserBindingFromDeletePayload(r, employeeID)
+		binding, ok, err = s.findPlatformRuntimeUserBindingFromDeletePayload(r, employeeID, deletePayload)
 		if err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
 			return
@@ -511,7 +853,7 @@ func (s *HTTPServer) handlePlatformDeleteVirtualEmployee(w http.ResponseWriter, 
 	managedUser := platformManagedUser(binding.User)
 	deletedInstanceIDs := make([]string, 0, len(instances))
 	for _, inst := range instances {
-		if !managedUser && inst.Metadata["ve_employee_id"] != employeeID && inst.Metadata["ve_source_user_id"] != employeeID {
+		if !managedUser && !strings.EqualFold(strings.TrimSpace(inst.Metadata["ve_employee_id"]), employeeID) && !strings.EqualFold(strings.TrimSpace(inst.Metadata["ve_source_user_id"]), employeeID) {
 			continue
 		}
 		if err := s.svc.DeleteInstance(r.Context(), principal, inst.ID); err != nil {
@@ -527,16 +869,20 @@ func (s *HTTPServer) handlePlatformDeleteVirtualEmployee(w http.ResponseWriter, 
 	}
 	userDeleted := false
 	userDeleteWarning := ""
-	if len(remaining) == 0 && managedUser {
+	if len(remaining) == 0 && (managedUser || len(deletedInstanceIDs) > 0) {
 		unprotected := false
-		if _, err := s.svc.UpdateUser(r.Context(), binding.Tenant.ID, userID, agentservice.UpdateUserInput{DeleteProtected: &unprotected}); err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
+		if managedUser {
+			if _, err := s.svc.UpdateUser(r.Context(), binding.Tenant.ID, userID, agentservice.UpdateUserInput{DeleteProtected: &unprotected}); err != nil {
+				writeRedactedError(w, err, s.svc.DataRoot())
+				return
+			}
 		}
 		if err := s.svc.DeleteUser(r.Context(), binding.Tenant.ID, userID); err != nil {
-			protected := true
-			reason := binding.User.DeleteProtectionReason
-			_, _ = s.svc.UpdateUser(r.Context(), binding.Tenant.ID, userID, agentservice.UpdateUserInput{DeleteProtected: &protected, DeleteProtectionReason: &reason})
+			if managedUser {
+				protected := true
+				reason := binding.User.DeleteProtectionReason
+				_, _ = s.svc.UpdateUser(r.Context(), binding.Tenant.ID, userID, agentservice.UpdateUserInput{DeleteProtected: &protected, DeleteProtectionReason: &reason})
+			}
 			userDeleteWarning = err.Error()
 		} else {
 			userDeleted = true
@@ -545,30 +891,36 @@ func (s *HTTPServer) handlePlatformDeleteVirtualEmployee(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "employee_id": employeeID, "tenant_id": binding.Tenant.ID, "user_id": userID, "instance_id": binding.Instance.ID, "deleted_instance_ids": deletedInstanceIDs, "deleted_instances": len(deletedInstanceIDs), "user_deleted": userDeleted, "remaining_instances": len(remaining), "user_delete_warning": userDeleteWarning})
 }
 
+type platformVirtualEmployeeDeletePayload struct {
+	TenantID         string `json:"tenant_id"`
+	PlatformTenantID string `json:"platform_tenant_id"`
+	VirtualEmail     string `json:"virtual_email"`
+	HubAccountID     string `json:"hub_account_id"`
+}
+
+func readPlatformVirtualEmployeeDeletePayload(r *http.Request) (platformVirtualEmployeeDeletePayload, error) {
+	var payload platformVirtualEmployeeDeletePayload
+	if r == nil || r.Body == nil {
+		return payload, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return payload, err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return payload, nil
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return payload, err
+	}
+	return payload, nil
+}
+
 func platformManagedUser(user agentservice.User) bool {
 	return user.DeleteProtected && strings.EqualFold(strings.TrimSpace(user.DeleteProtectionReason), "Managed by VE Platform")
 }
 
-func (s *HTTPServer) findPlatformRuntimeUserBindingFromDeletePayload(r *http.Request, employeeID string) (platformRuntimeBinding, bool, error) {
-	var payload struct {
-		TenantID         string `json:"tenant_id"`
-		PlatformTenantID string `json:"platform_tenant_id"`
-		VirtualEmail     string `json:"virtual_email"`
-		HubAccountID     string `json:"hub_account_id"`
-	}
-	if r.Body == nil {
-		return platformRuntimeBinding{}, false, nil
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		return platformRuntimeBinding{}, false, err
-	}
-	if len(bytes.TrimSpace(body)) == 0 {
-		return platformRuntimeBinding{}, false, nil
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return platformRuntimeBinding{}, false, err
-	}
+func (s *HTTPServer) findPlatformRuntimeUserBindingFromDeletePayload(r *http.Request, employeeID string, payload platformVirtualEmployeeDeletePayload) (platformRuntimeBinding, bool, error) {
 	email := strings.ToLower(strings.TrimSpace(payload.VirtualEmail))
 	hubAccountID := strings.TrimSpace(payload.HubAccountID)
 	if email == "" && hubAccountID == "" {
@@ -577,7 +929,7 @@ func (s *HTTPServer) findPlatformRuntimeUserBindingFromDeletePayload(r *http.Req
 	tenantKeys := map[string]bool{}
 	for _, key := range []string{payload.TenantID, payload.PlatformTenantID} {
 		if key = strings.TrimSpace(key); key != "" {
-			tenantKeys[key] = true
+			tenantKeys[strings.ToLower(key)] = true
 		}
 	}
 	targetTenantScoped := len(tenantKeys) > 0
@@ -586,7 +938,7 @@ func (s *HTTPServer) findPlatformRuntimeUserBindingFromDeletePayload(r *http.Req
 		return platformRuntimeBinding{}, false, err
 	}
 	for _, tenant := range tenants {
-		if targetTenantScoped && !tenantKeys[tenant.ID] && !strings.Contains(strings.ToLower(tenant.Name), strings.ToLower(payload.TenantID)) && !strings.Contains(strings.ToLower(tenant.Name), strings.ToLower(payload.PlatformTenantID)) {
+		if targetTenantScoped && !tenantKeys[strings.ToLower(strings.TrimSpace(tenant.ID))] && !strings.Contains(strings.ToLower(tenant.Name), strings.ToLower(payload.TenantID)) && !strings.Contains(strings.ToLower(tenant.Name), strings.ToLower(payload.PlatformTenantID)) {
 			continue
 		}
 		users, err := s.svc.ListUsers(r.Context(), tenant.ID, agentservice.ListUsersAdminInput{})
@@ -600,7 +952,7 @@ func (s *HTTPServer) findPlatformRuntimeUserBindingFromDeletePayload(r *http.Req
 			if email != "" && !strings.EqualFold(strings.TrimSpace(user.Email), email) {
 				continue
 			}
-			if hubAccountID != "" && strings.TrimSpace(user.ID) != hubAccountID {
+			if hubAccountID != "" && !strings.EqualFold(strings.TrimSpace(user.ID), hubAccountID) {
 				continue
 			}
 			return platformRuntimeBinding{Tenant: tenant, User: user}, true, nil
@@ -664,49 +1016,124 @@ func platformRuntimeStatusFor(tenant agentservice.Tenant, user agentservice.User
 }
 
 func (s *HTTPServer) requirePlatformSourceUserBinding(w http.ResponseWriter, r *http.Request, in platformSourceUserRequest) (platformSourceUserBinding, bool) {
+	binding, _, ok := s.requirePlatformSourceUserBindingWithCreate(w, r, in, true)
+	return binding, ok
+}
+
+func (s *HTTPServer) requireExistingPlatformSourceUserBinding(w http.ResponseWriter, r *http.Request, in platformSourceUserRequest) (platformSourceUserBinding, bool, bool) {
+	return s.requirePlatformSourceUserBindingWithCreate(w, r, in, false)
+}
+
+func (s *HTTPServer) requirePlatformSourceUserBindingWithCreate(w http.ResponseWriter, r *http.Request, in platformSourceUserRequest, create bool) (platformSourceUserBinding, bool, bool) {
 	sourceID := strings.TrimSpace(r.PathValue("sourceUserId"))
 	if sourceID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source user id is required"})
-		return platformSourceUserBinding{}, false
+		return platformSourceUserBinding{}, false, false
 	}
 	if strings.TrimSpace(in.TenantID) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tenant_id is required"})
-		return platformSourceUserBinding{}, false
+		return platformSourceUserBinding{}, false, false
 	}
-	if strings.TrimSpace(in.SourceUser.ID) == "" {
+	in.SourceUser.ID = strings.TrimSpace(in.SourceUser.ID)
+	if in.SourceUser.ID == "" {
 		in.SourceUser.ID = sourceID
 	}
-	if in.SourceUser.ID != sourceID {
+	if !strings.EqualFold(in.SourceUser.ID, sourceID) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source user id mismatch"})
-		return platformSourceUserBinding{}, false
+		return platformSourceUserBinding{}, false, false
 	}
-	binding, err := s.platformSourceUserBindingFromRequest(r, in)
+	binding, found, err := s.platformSourceUserBindingFromRequest(r, in, create)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
-		return platformSourceUserBinding{}, false
+		return platformSourceUserBinding{}, false, false
 	}
-	return binding, true
+	return binding, found, true
 }
 
-func (s *HTTPServer) platformSourceUserBindingFromRequest(r *http.Request, in platformSourceUserRequest) (platformSourceUserBinding, error) {
-	tenant, user, err := s.findOrCreatePlatformSourceUser(r, in)
+func (s *HTTPServer) platformSourceUserBindingFromRequest(r *http.Request, in platformSourceUserRequest, create bool) (platformSourceUserBinding, bool, error) {
+	tenant, user, found, err := s.findPlatformSourceUser(r, in, create)
 	if err != nil {
-		return platformSourceUserBinding{}, err
+		return platformSourceUserBinding{}, false, err
 	}
-	if err := s.updatePlatformSourceUserLLMConfig(r, agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, in); err != nil {
-		return platformSourceUserBinding{}, err
+	if !found {
+		return platformSourceUserBinding{}, false, nil
 	}
-	return platformSourceUserBinding{Tenant: *tenant, User: *user, Source: in.SourceUser}, nil
+	if create {
+		if err := s.updatePlatformSourceUserConfig(r, agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, in); err != nil {
+			return platformSourceUserBinding{}, false, err
+		}
+	}
+	binding := platformSourceUserBinding{Tenant: *tenant, User: *user, Source: in.SourceUser}
+	if create {
+		if err := s.syncPlatformSourceUserInstanceMetadata(r, binding, in.TenantID); err != nil {
+			return platformSourceUserBinding{}, false, err
+		}
+	}
+	return binding, true, nil
 }
 
-func (s *HTTPServer) findOrCreatePlatformSourceUser(r *http.Request, in platformSourceUserRequest) (*agentservice.Tenant, *agentservice.User, error) {
-	if binding, ok, err := s.findExistingVirtualSourceUserBinding(r, in); err != nil {
-		return nil, nil, err
-	} else if ok {
-		if err := s.repairPlatformHubServiceGroupModel(r, binding); err != nil {
-			return nil, nil, err
+func (s *HTTPServer) syncPlatformSourceUserInstanceMetadata(r *http.Request, binding platformSourceUserBinding, platformTenantID string) error {
+	metadata := platformSourceUserSyncInstanceMetadata(platformTenantID, binding.Source)
+	if len(metadata) == 0 {
+		return nil
+	}
+	principal := agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}
+	instances, err := s.platformSourceUserInstances(r, binding)
+	if err != nil {
+		return err
+	}
+	for _, inst := range instances {
+		merged := mergePlatformInstanceMetadata(inst.Metadata, metadata)
+		if stringMapEqual(inst.Metadata, merged) {
+			continue
 		}
-		return &binding.Tenant, &binding.User, nil
+		if _, err := s.svc.UpdateInstance(r.Context(), principal, inst.ID, agentservice.UpdateInstanceInput{Metadata: merged}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func platformSourceUserSyncInstanceMetadata(platformTenantID string, source platformSourceUser) map[string]string {
+	metadata := platformSourceUserInstanceMetadata(platformTenantID, source)
+	if !platformSourceUserIsVirtualEmployee(source) {
+		return metadata
+	}
+	if strings.TrimSpace(source.DisplayName) == "" {
+		delete(metadata, "ve_name")
+	}
+	if strings.TrimSpace(source.ExternalID) == "" {
+		delete(metadata, "ve_handle")
+	}
+	if strings.TrimSpace(source.Title) == "" {
+		delete(metadata, "ve_skill_description")
+	}
+	if source.SkillTagsSet && strings.TrimSpace(source.SkillTags) == "" {
+		metadata["ve_skill_tags"] = ""
+	} else if !source.SkillTagsSet && strings.TrimSpace(source.SkillTags) == "" {
+		delete(metadata, "ve_skill_tags")
+	}
+	return metadata
+}
+
+func (s *HTTPServer) findPlatformSourceUser(r *http.Request, in platformSourceUserRequest, create bool) (*agentservice.Tenant, *agentservice.User, bool, error) {
+	if binding, ok, err := s.findExistingVirtualSourceUserBinding(r, in); err != nil {
+		return nil, nil, false, err
+	} else if ok {
+		if create {
+			if err := s.repairPlatformHubServiceGroupModel(r, binding); err != nil {
+				return nil, nil, false, err
+			}
+		}
+		return &binding.Tenant, &binding.User, true, nil
+	}
+	if binding, ok, err := s.findExistingSourceUserBinding(r, in); err != nil {
+		return nil, nil, false, err
+	} else if ok {
+		return &binding.Tenant, &binding.User, true, nil
+	}
+	if !create {
+		return nil, nil, false, nil
 	}
 	virtualEmployee := platformSourceUserIsVirtualEmployee(in.SourceUser)
 	virtualEmail := platformSourceUserRuntimeEmail(in.SourceUser)
@@ -715,22 +1142,62 @@ func (s *HTTPServer) findOrCreatePlatformSourceUser(r *http.Request, in platform
 		virtualEmail = firstPlatformNonEmpty(in.SourceUser.Email, virtualEmail)
 		skillDescription = firstPlatformNonEmpty(in.Description, in.SourceUser.Title, "VE Platform virtual employee web assistant")
 	}
-	ve := platformVirtualEmployeeRequest{EmployeeID: in.SourceUser.ID, TenantID: in.TenantID, PlatformTenantID: in.TenantID, TenantName: in.TenantID, Name: firstPlatformNonEmpty(in.SourceUser.DisplayName, in.SourceUser.Email, in.SourceUser.ExternalID, in.SourceUser.ID), Handle: sanitizePlatformEmailLocal(firstPlatformNonEmpty(in.SourceUser.ExternalID, in.SourceUser.Email, in.SourceUser.ID)), VirtualEmail: virtualEmail, SkillDescription: skillDescription, DefaultLLM: in.DefaultLLM, LLMServiceGroupID: in.LLMServiceGroupID, LLMModel: in.LLMModel, HubLLMEndpoint: in.HubLLMEndpoint, HubLLMAPIKey: in.HubLLMAPIKey, HubLLMViewerToken: in.HubLLMViewerToken, ViewerToken: in.ViewerToken, AccessToken: in.AccessToken}
+	ve := platformVirtualEmployeeRequest{EmployeeID: in.SourceUser.ID, TenantID: in.TenantID, PlatformTenantID: in.TenantID, TenantName: in.TenantID, Name: firstPlatformNonEmpty(in.SourceUser.DisplayName, in.SourceUser.Email, in.SourceUser.ExternalID, in.SourceUser.ID), Handle: sanitizePlatformEmailLocal(firstPlatformNonEmpty(in.SourceUser.ExternalID, in.SourceUser.Email, in.SourceUser.ID)), VirtualEmail: virtualEmail, SkillDescription: skillDescription, DefaultLLM: in.DefaultLLM, LLMServiceGroupID: in.LLMServiceGroupID, LLMModel: in.LLMModel, HubLLMEndpoint: in.HubLLMEndpoint, HubLLMAPIKey: in.HubLLMAPIKey, HubLLMViewerToken: in.HubLLMViewerToken, ViewerToken: in.ViewerToken, AccessToken: in.AccessToken, SSHHosts: in.SSHHosts}
 	tenant, err := s.findOrCreatePlatformTenant(r, in.TenantID, ve)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	user, err := s.findOrCreatePlatformUser(r, tenant.ID, ve)
+	if tenant == nil {
+		return nil, nil, false, nil
+	}
+	user, err := s.findPlatformUser(r, tenant.ID, ve, create)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	if err := s.ensurePlatformSourceUserDefaultConfig(r, agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}); err != nil {
-		return nil, nil, err
+	if user == nil {
+		return nil, nil, false, nil
 	}
-	return tenant, user, nil
+	if create {
+		if err := s.ensurePlatformSourceUserDefaultConfig(r, agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}); err != nil {
+			return nil, nil, false, err
+		}
+	}
+	return tenant, user, true, nil
 }
 
-func (s *HTTPServer) updatePlatformSourceUserLLMConfig(r *http.Request, p agentservice.Principal, in platformSourceUserRequest) error {
+func (s *HTTPServer) findExistingSourceUserBinding(r *http.Request, in platformSourceUserRequest) (platformSourceUserBinding, bool, error) {
+	sourceID := strings.TrimSpace(in.SourceUser.ID)
+	if sourceID == "" {
+		return platformSourceUserBinding{}, false, nil
+	}
+	ve := platformVirtualEmployeeRequest{TenantID: in.TenantID, PlatformTenantID: in.TenantID, TenantName: in.TenantID}
+	tenant, err := s.findPlatformTenant(r, in.TenantID, ve)
+	if err != nil || tenant == nil {
+		return platformSourceUserBinding{}, false, err
+	}
+	users, err := s.svc.ListUsers(r.Context(), tenant.ID, agentservice.ListUsersAdminInput{})
+	if err != nil {
+		return platformSourceUserBinding{}, false, err
+	}
+	source := in.SourceUser
+	for _, user := range users {
+		instances, err := s.svc.ListInstances(r.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+		if err != nil {
+			return platformSourceUserBinding{}, false, err
+		}
+		for _, inst := range instances {
+			if platformSourceUserInstanceMatches(source, inst) {
+				return platformSourceUserBinding{Tenant: *tenant, User: user, Source: source}, true, nil
+			}
+		}
+	}
+	return platformSourceUserBinding{}, false, nil
+}
+
+func (s *HTTPServer) updatePlatformSourceUserConfig(r *http.Request, p agentservice.Principal, in platformSourceUserRequest) error {
+	if err := s.updatePlatformUserSSHHosts(r, p, in.SSHHosts); err != nil {
+		return err
+	}
 	llmURL := strings.TrimSpace(in.HubLLMEndpoint)
 	llmKey := strings.TrimSpace(platformSourceUserLLMCredential(in))
 	llmModel := platformSourceUserLLMModelFromRequest(in)
@@ -738,6 +1205,111 @@ func (s *HTTPServer) updatePlatformSourceUserLLMConfig(r *http.Request, p agents
 		return nil
 	}
 	return s.updatePlatformUserLLMConfig(r, p, llmURL, llmKey, llmModel)
+}
+
+func (s *HTTPServer) updatePlatformUserSSHHosts(r *http.Request, p agentservice.Principal, hosts []corelib.SSHHostEntry) error {
+	if hosts == nil {
+		return nil
+	}
+	cfg, err := s.svc.GetUserConfig(r.Context(), p)
+	if err != nil {
+		return err
+	}
+	app := cfg.AppConfig
+	app.SSHHosts = normalizePlatformSSHHosts(hosts)
+	_, err = s.svc.UpdateUserConfig(r.Context(), p, app)
+	return err
+}
+
+func (s *HTTPServer) updatePlatformUserMaclawSrvConfig(r *http.Request, p agentservice.Principal, in platformMaclawSrvConfig) error {
+	if in.isZero() {
+		return nil
+	}
+	cfg, err := s.svc.GetUserConfig(r.Context(), p)
+	if err != nil {
+		return err
+	}
+	app := cfg.AppConfig
+	applyString := func(dst *string, src *string) {
+		if src == nil || maskedPlatformSecret(*src) {
+			return
+		}
+		*dst = strings.TrimSpace(*src)
+	}
+	applyBool := func(dst *bool, src *bool) {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	applyBoolPtr := func(dst **bool, src platformOptionalBool) {
+		if !src.Set {
+			return
+		}
+		if src.Value == nil {
+			*dst = nil
+			return
+		}
+		value := *src.Value
+		*dst = &value
+	}
+	applyBool(&app.QQBotEnabled, in.QQBotEnabled)
+	applyString(&app.QQBotAppID, in.QQBotAppID)
+	applyString(&app.QQBotAppSecret, in.QQBotAppSecret)
+	applyBoolPtr(&app.QQBotLocalMode, in.QQBotLocalMode)
+	applyBool(&app.TelegramBotEnabled, in.TelegramBotEnabled)
+	applyString(&app.TelegramBotToken, in.TelegramBotToken)
+	applyBoolPtr(&app.TelegramLocalMode, in.TelegramLocalMode)
+	applyBool(&app.WeixinEnabled, in.WeixinEnabled)
+	applyString(&app.WeixinToken, in.WeixinToken)
+	applyString(&app.WeixinBaseURL, in.WeixinBaseURL)
+	applyString(&app.WeixinCDNURL, in.WeixinCDNURL)
+	applyString(&app.WeixinAccountID, in.WeixinAccountID)
+	applyBoolPtr(&app.WeixinLocalMode, in.WeixinLocalMode)
+	applyBool(&app.LansengerEnabled, in.LansengerEnabled)
+	applyString(&app.LansengerAppID, in.LansengerAppID)
+	applyString(&app.LansengerAppSecret, in.LansengerAppSecret)
+	applyString(&app.LansengerGatewayURL, in.LansengerGatewayURL)
+	applyString(&app.LansengerWSSURL, in.LansengerWSSURL)
+	applyBoolPtr(&app.LansengerLocalMode, in.LansengerLocalMode)
+	applyBool(&app.ThirdPartyGatewayEnabled, in.ThirdPartyGatewayEnabled)
+	applyString(&app.ThirdPartyGatewayToken, in.ThirdPartyGatewayToken)
+	applyString(&app.ThirdPartyGatewayHost, in.ThirdPartyGatewayHost)
+	if in.ThirdPartyGatewayPort != nil {
+		if *in.ThirdPartyGatewayPort < 0 || *in.ThirdPartyGatewayPort > 65535 {
+			return fmt.Errorf("thirdparty_gateway_port must be between 0 and 65535")
+		}
+		app.ThirdPartyGatewayPort = *in.ThirdPartyGatewayPort
+	}
+	applyBoolPtr(&app.ThirdPartyGatewayLocalMode, in.ThirdPartyGatewayLocalMode)
+	_, err = s.svc.UpdateUserConfig(r.Context(), p, app)
+	return err
+}
+
+func maskedPlatformSecret(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "********" || strings.EqualFold(value, "__masked__")
+}
+
+func normalizePlatformSSHHosts(hosts []corelib.SSHHostEntry) []corelib.SSHHostEntry {
+	out := make([]corelib.SSHHostEntry, 0, len(hosts))
+	seen := map[string]bool{}
+	for _, host := range hosts {
+		host.Label = strings.TrimSpace(host.Label)
+		host.Host = strings.TrimSpace(host.Host)
+		host.User = strings.TrimSpace(host.User)
+		host.AuthMethod = strings.TrimSpace(host.AuthMethod)
+		host.KeyPath = strings.TrimSpace(host.KeyPath)
+		if host.Label == "" || host.Host == "" || host.User == "" {
+			continue
+		}
+		key := strings.ToLower(host.Label)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, host)
+	}
+	return out
 }
 
 func (s *HTTPServer) repairPlatformHubServiceGroupModel(r *http.Request, binding platformRuntimeBinding) error {
@@ -840,8 +1412,18 @@ func platformSourceUserInstanceMetadata(platformTenantID string, source platform
 	metadata := map[string]string{"ve_source_user_id": source.ID, "ve_source_user_external_id": source.ExternalID, "ve_source_user_email": source.Email, "ve_platform_tenant_id": platformTenantID, "ve_source_user_department": source.Department, "ve_source_user_title": source.Title}
 	if platformSourceUserIsVirtualEmployee(source) {
 		metadata["ve_employee_id"] = source.ID
+		metadata["ve_name"] = firstPlatformNonEmpty(source.DisplayName, source.Email, source.ExternalID, source.ID)
+		metadata["ve_handle"] = source.ExternalID
+		metadata["ve_skill_description"] = source.Title
+		metadata["ve_skill_tags"] = platformSourceUserSkillTags(source)
 	}
 	return compactPlatformMetadata(metadata)
+}
+
+func platformSourceUserSkillTags(source platformSourceUser) string {
+	return strings.Join(cleanPlatformSkillTags(strings.FieldsFunc(source.SkillTags, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\uff0c' || r == '\uff1b' || r == '\n' || r == '\t'
+	})), ", ")
 }
 
 func platformSourceUserRuntimeEmail(source platformSourceUser) string {
@@ -972,6 +1554,20 @@ func (s *HTTPServer) findOrCreatePlatformTenant(r *http.Request, tenantKey strin
 	return s.svc.CreateTenant(r.Context(), agentservice.CreateTenantInput{Name: name, DeleteProtected: true, DeleteProtectionReason: "Managed by VE Platform"})
 }
 
+func (s *HTTPServer) findPlatformTenant(r *http.Request, tenantKey string, in platformVirtualEmployeeRequest) (*agentservice.Tenant, error) {
+	name := platformTenantDisplayName(tenantKey, in)
+	tenants, err := s.svc.ListTenants(r.Context(), agentservice.ListTenantsInput{})
+	if err != nil {
+		return nil, err
+	}
+	for i := range tenants {
+		if platformTenantMatches(r, s, tenants[i], tenantKey, in, name) {
+			return &tenants[i], nil
+		}
+	}
+	return nil, nil
+}
+
 func (s *HTTPServer) renamePlatformTenantIfNeeded(r *http.Request, tenant agentservice.Tenant, name string) (*agentservice.Tenant, error) {
 	if tenant.Name == name {
 		return &tenant, nil
@@ -1044,6 +1640,10 @@ func platformTenantDisplayName(tenantKey string, in platformVirtualEmployeeReque
 }
 
 func (s *HTTPServer) findOrCreatePlatformUser(r *http.Request, tenantID string, in platformVirtualEmployeeRequest) (*agentservice.User, error) {
+	return s.findPlatformUser(r, tenantID, in, true)
+}
+
+func (s *HTTPServer) findPlatformUser(r *http.Request, tenantID string, in platformVirtualEmployeeRequest, create bool) (*agentservice.User, error) {
 	email := platformRuntimeEmail(in)
 	name := firstPlatformNonEmpty(in.Name, in.Handle, in.EmployeeID)
 	users, err := s.svc.ListUsers(r.Context(), tenantID, agentservice.ListUsersAdminInput{Email: email})
@@ -1052,8 +1652,14 @@ func (s *HTTPServer) findOrCreatePlatformUser(r *http.Request, tenantID string, 
 	}
 	for i := range users {
 		if strings.EqualFold(users[i].Email, email) {
+			if !create {
+				return &users[i], nil
+			}
 			return s.updatePlatformUserIfNeeded(r, tenantID, users[i], name)
 		}
+	}
+	if !create {
+		return nil, nil
 	}
 	return s.svc.CreateUser(r.Context(), agentservice.CreateUserInput{TenantID: tenantID, Name: name, Email: email, DeleteProtected: true, DeleteProtectionReason: "Managed by VE Platform"})
 }
@@ -1168,7 +1774,10 @@ func stringMapEqual(a, b map[string]string) bool {
 func platformInstanceMetadata(in platformVirtualEmployeeRequest) map[string]string {
 	return compactPlatformMetadata(map[string]string{
 		"ve_employee_id":        strings.TrimSpace(in.EmployeeID),
+		"ve_name":               strings.TrimSpace(in.Name),
 		"ve_handle":             strings.TrimSpace(in.Handle),
+		"ve_skill_description":  strings.TrimSpace(in.SkillDescription),
+		"ve_skill_tags":         strings.Join(cleanPlatformSkillTags(in.SkillTags), ", "),
 		"ve_platform_tenant_id": strings.TrimSpace(in.PlatformTenantID),
 		"ve_hub_tenant_id":      strings.TrimSpace(in.TenantID),
 		"ve_tenant_code":        strings.TrimSpace(in.TenantCode),
@@ -1189,10 +1798,21 @@ func compactPlatformMetadata(in map[string]string) map[string]string {
 }
 
 func (s *HTTPServer) findPlatformRuntimeBinding(r *http.Request, employeeID string) (platformRuntimeBinding, bool, error) {
+	return s.findPlatformRuntimeBindingByMetadata(r, employeeID, false)
+}
+
+func (s *HTTPServer) findPlatformMessageRuntimeBinding(r *http.Request, employeeID string) (platformRuntimeBinding, bool, error) {
+	return s.findPlatformRuntimeBindingByMetadata(r, employeeID, true)
+}
+
+func (s *HTTPServer) findPlatformRuntimeBindingByMetadata(r *http.Request, employeeID string, allowSourceUserID bool) (platformRuntimeBinding, bool, error) {
 	employeeID = strings.TrimSpace(employeeID)
 	if employeeID == "" {
 		return platformRuntimeBinding{}, false, nil
 	}
+	hubTenantID := platformRuntimeRequestHubTenantID(r)
+	var legacyCandidate platformRuntimeBinding
+	hasLegacyCandidate := false
 	tenants, err := s.svc.ListTenants(r.Context(), agentservice.ListTenantsInput{})
 	if err != nil {
 		return platformRuntimeBinding{}, false, err
@@ -1209,13 +1829,48 @@ func (s *HTTPServer) findPlatformRuntimeBinding(r *http.Request, employeeID stri
 				return platformRuntimeBinding{}, false, err
 			}
 			for _, inst := range instances {
-				if inst.Metadata["ve_employee_id"] == employeeID {
-					return platformRuntimeBinding{Tenant: tenant, User: user, Instance: inst}, true, nil
+				if platformRuntimeInstanceMatchesEmployeeID(inst, employeeID, allowSourceUserID) {
+					binding := platformRuntimeBinding{Tenant: tenant, User: user, Instance: inst}
+					if hubTenantID != "" {
+						instHubTenantID := strings.TrimSpace(inst.Metadata["ve_hub_tenant_id"])
+						if instHubTenantID == "" {
+							if !hasLegacyCandidate {
+								legacyCandidate = binding
+								hasLegacyCandidate = true
+							}
+							continue
+						}
+						if !strings.EqualFold(instHubTenantID, hubTenantID) {
+							continue
+						}
+					}
+					return binding, true, nil
 				}
 			}
 		}
 	}
+	if hasLegacyCandidate {
+		return legacyCandidate, true, nil
+	}
 	return platformRuntimeBinding{}, false, nil
+}
+
+func platformRuntimeRequestHubTenantID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return firstPlatformNonEmpty(r.Header.Get("X-VE-Hub-Tenant-ID"), r.Header.Get("X-Hub-Tenant-ID"))
+}
+
+func platformRuntimeInstanceMatchesEmployeeID(inst agentservice.Instance, employeeID string, allowSourceUserID bool) bool {
+	employeeID = strings.TrimSpace(employeeID)
+	if employeeID == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(inst.Metadata["ve_employee_id"]), employeeID) {
+		return true
+	}
+	return allowSourceUserID && strings.EqualFold(strings.TrimSpace(inst.Metadata["ve_source_user_id"]), employeeID)
 }
 
 func platformString(values map[string]any, key string) string {

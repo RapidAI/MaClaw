@@ -8,14 +8,23 @@ import (
 
 // mockLLMClassifier is a test double for TaskLLMClassifier.
 type mockLLMClassifier struct {
-	response string
-	err      error
-	calls    int
+	response   string
+	err        error
+	calls      int
+	timeoutSec int
 }
 
 func (m *mockLLMClassifier) Classify(systemPrompt, userMessage string, timeoutSec int) (string, error) {
 	m.calls++
+	m.timeoutSec = timeoutSec
 	return m.response, m.err
+}
+
+func TestDefaultTaskContextConfig_LLMTimeoutAllowsRemoteClassifier(t *testing.T) {
+	cfg := DefaultTaskContextConfig()
+	if cfg.LLMTimeout < 30*time.Second {
+		t.Fatalf("expected LLMTimeout >= 30s, got %s", cfg.LLMTimeout)
+	}
 }
 
 func TestResolve_ExplicitNewTask(t *testing.T) {
@@ -103,10 +112,9 @@ func TestResolve_EmptyHistory_ShortMsg_StillNewTask(t *testing.T) {
 	}
 }
 
-func TestResolve_ShortHistory_SkipsLLM_DefaultsToNew(t *testing.T) {
+func TestResolve_ShortHistory_UsesLLM(t *testing.T) {
 	llm := &mockLLMClassifier{response: "continue"}
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
-	// With < 5 entries, the LLM call should be skipped and default to TaskNew.
 	d := mgr.Resolve(ResolveInput{
 		UserMessage: "帮我搜索论文",
 		History: []ConversationEntry{
@@ -114,14 +122,14 @@ func TestResolve_ShortHistory_SkipsLLM_DefaultsToNew(t *testing.T) {
 			{Role: "assistant", Content: "好的"},
 		},
 	})
-	if d.Action != TaskNew {
-		t.Fatalf("expected TaskNew for short history (<5 entries), got %s", d.Action)
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue from classifier for short history, got %s", d.Action)
 	}
-	if d.Source != "structural" {
-		t.Fatalf("expected source=structural, got %s", d.Source)
+	if d.Source != "llm" {
+		t.Fatalf("expected source=llm, got %s", d.Source)
 	}
-	if llm.calls != 0 {
-		t.Fatalf("expected LLM not to be called for short history, got %d calls", llm.calls)
+	if llm.calls != 1 {
+		t.Fatalf("expected LLM to be called for short history, got %d calls", llm.calls)
 	}
 }
 
@@ -149,8 +157,6 @@ func TestResolve_ExactlyFiveEntries_UsesLLM(t *testing.T) {
 
 func TestResolve_ShortMessage_IsContinue(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
-	// With < 5 entries, short history defaults to TaskNew.
-	// With >= 5 entries and no LLM, defaults to TaskContinue (fallback).
 	d := mgr.Resolve(ResolveInput{
 		UserMessage: "好的",
 		History: []ConversationEntry{
@@ -162,7 +168,7 @@ func TestResolve_ShortMessage_IsContinue(t *testing.T) {
 		},
 	})
 	if d.Action != TaskContinue {
-		t.Fatalf("expected TaskContinue for short message, got %s", d.Action)
+		t.Fatalf("expected TaskContinue without semantic classifier, got %s", d.Action)
 	}
 }
 
@@ -205,6 +211,24 @@ func TestResolve_ActiveConversation_NoLLM_IsContinue(t *testing.T) {
 	})
 	if d.Action != TaskContinue {
 		t.Fatalf("expected TaskContinue for active conversation without LLM, got %s", d.Action)
+	}
+}
+
+func TestResolve_ActiveConversation_NoLLM_FollowUpFallsBackToContinue(t *testing.T) {
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "go on",
+		History: []ConversationEntry{
+			{Role: "user", Content: "install skills"},
+			{Role: "assistant", Content: "working"},
+			{Role: "user", Content: "continue"},
+			{Role: "assistant", Content: "still running"},
+			{Role: "user", Content: "status"},
+		},
+		LastAccess: time.Now().Add(-30 * time.Second),
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue without semantic classifier, got %s", d.Action)
 	}
 }
 
@@ -293,6 +317,24 @@ func TestResolve_LLM_RecallInvalidID(t *testing.T) {
 	}
 }
 
+func TestResolve_LLM_InvalidResponseFallsBackToContinue(t *testing.T) {
+	llm := &mockLLMClassifier{response: "let me think about it"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "review/fix/optimize",
+		History: []ConversationEntry{
+			{Role: "user", Content: "old task"},
+			{Role: "assistant", Content: "old answer"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue for invalid classifier response, got %s", d.Action)
+	}
+	if d.Source != "llm" {
+		t.Fatalf("expected source=llm, got %s", d.Source)
+	}
+}
+
 func TestResolve_LLM_Failure_FallbackToContinue(t *testing.T) {
 	llm := &mockLLMClassifier{err: fmt.Errorf("timeout")}
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
@@ -312,6 +354,21 @@ func TestResolve_LLM_Failure_FallbackToContinue(t *testing.T) {
 	}
 	if d.Source != "fallback" {
 		t.Fatalf("expected source=fallback, got %s", d.Source)
+	}
+}
+
+func TestResolve_LLM_UsesConfiguredTimeout(t *testing.T) {
+	llm := &mockLLMClassifier{response: "new"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	_ = mgr.Resolve(ResolveInput{
+		UserMessage: "帮我搜索最新的AI论文",
+		History: []ConversationEntry{
+			{Role: "user", Content: "之前的任务"},
+			{Role: "assistant", Content: "完成了"},
+		},
+	})
+	if llm.timeoutSec < 30 {
+		t.Fatalf("expected classifier timeout >= 30s, got %d", llm.timeoutSec)
 	}
 }
 

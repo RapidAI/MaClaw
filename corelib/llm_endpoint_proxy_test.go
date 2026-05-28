@@ -116,25 +116,40 @@ func writeErrorForTest(w http.ResponseWriter, status int, message string) {
 }
 
 func TestNewLLMEndpointHTTPClientUsesConfiguredTimeout(t *testing.T) {
-	client := NewLLMEndpointHTTPClient(MaclawLLMConfig{TimeoutSec: 7})
-	if client.Timeout != 7*time.Second {
-		t.Fatalf("client.Timeout = %s, want 7s", client.Timeout)
+	client := NewLLMEndpointHTTPClient(MaclawLLMConfig{TimeoutSec: 300})
+	if client.Timeout != 300*time.Second {
+		t.Fatalf("client.Timeout = %s, want 300s", client.Timeout)
 	}
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
 	}
-	if transport.ResponseHeaderTimeout != 7*time.Second {
-		t.Fatalf("ResponseHeaderTimeout = %s, want 7s", transport.ResponseHeaderTimeout)
+	if transport.ResponseHeaderTimeout != 300*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %s, want 300s", transport.ResponseHeaderTimeout)
 	}
 	if transport.MaxIdleConnsPerHost < 100 || transport.MaxConnsPerHost < 100 {
 		t.Fatalf("transport pool too small: MaxIdleConnsPerHost=%d MaxConnsPerHost=%d", transport.MaxIdleConnsPerHost, transport.MaxConnsPerHost)
 	}
 }
 
+func TestNewLLMEndpointHTTPClientClampsTimeout(t *testing.T) {
+	client := NewLLMEndpointHTTPClient(MaclawLLMConfig{TimeoutSec: 120})
+	if client.Timeout != time.Duration(MinAgentTimeoutSec)*time.Second {
+		t.Fatalf("client.Timeout = %s, want %ds", client.Timeout, MinAgentTimeoutSec)
+	}
+	client = NewLLMEndpointHTTPClient(MaclawLLMConfig{TimeoutSec: 900})
+	if client.Timeout != time.Duration(MaxAgentTimeoutSec)*time.Second {
+		t.Fatalf("client.Timeout = %s, want %ds", client.Timeout, MaxAgentTimeoutSec)
+	}
+	client = NewLLMEndpointHTTPClient(MaclawLLMConfig{})
+	if client.Timeout != time.Duration(DefaultLLMTimeoutSec)*time.Second {
+		t.Fatalf("client.Timeout = %s, want %ds", client.Timeout, DefaultLLMTimeoutSec)
+	}
+}
+
 func TestLLMEndpointProxyReusesHTTPClientByTimeout(t *testing.T) {
 	proxy := NewLLMEndpointProxy()
-	cfg := MaclawLLMConfig{TimeoutSec: 11}
+	cfg := MaclawLLMConfig{TimeoutSec: 360}
 	first := proxy.cachedHTTPClient(cfg)
 	second := proxy.cachedHTTPClient(cfg)
 	if first == nil || first != second {

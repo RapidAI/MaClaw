@@ -479,6 +479,17 @@ func (m *asyncJobManager) listAllJobs(filter adminJobListFilter) []asyncJobRecor
 	return items
 }
 
+func (m *asyncJobManager) getAnyJob(jobID string) (*asyncJobRecord, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked(time.Now().UTC())
+	job, ok := m.jobs[jobID]
+	if !ok {
+		return nil, false
+	}
+	return m.snapshot(job), true
+}
+
 func (m *asyncJobManager) cancelAnyJob(jobID string) (*asyncJobRecord, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

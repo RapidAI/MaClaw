@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -268,11 +269,11 @@ func TestAuditLog_ActionFieldAndFilter(t *testing.T) {
 			Result:       "rejected skill dangerous-tool from https://hub.example.com: critical risk, trust_level=unknown",
 		},
 		{
-			Timestamp: now,
-			ToolName:  "Bash",
-			RiskLevel: security.RiskLow,
+			Timestamp:    now,
+			ToolName:     "Bash",
+			RiskLevel:    security.RiskLow,
 			PolicyAction: security.PolicyAllow,
-			Result:    "success",
+			Result:       "success",
 		},
 	}
 
@@ -321,6 +322,51 @@ func TestAuditLog_ActionFieldAndFilter(t *testing.T) {
 		if entry.RiskLevel != security.RiskLow {
 			t.Errorf("expected risk level %q, got %q", security.RiskLow, entry.RiskLevel)
 		}
+	}
+}
+
+func TestAuditLog_RedactsSensitiveArgumentsBeforePersisting(t *testing.T) {
+	dir := t.TempDir()
+	al, err := NewAuditLog(dir)
+	if err != nil {
+		t.Fatalf("NewAuditLog: %v", err)
+	}
+	defer al.Close()
+
+	entry := security.AuditEntry{
+		ToolName: "ssh",
+		Arguments: map[string]interface{}{
+			"password": "pw-value",
+			"command":  "docker run -e JWT_SECRET='jwt-value' -e API_KEY_SECRET=api-value --token token-value --api-key=flag-api-value image",
+			"headers":  []string{"Authorization: Bearer bearer-value", "Cookie: session=cookie-value"},
+			"nested": map[string]interface{}{
+				"storage_encryption_key": "encryption-value",
+			},
+		},
+		RiskLevel:    security.RiskLow,
+		PolicyAction: security.PolicyAllow,
+		Result:       "used API_KEY_SECRET=api-value with Authorization: Bearer result-token",
+	}
+	if err := al.Log(entry); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+
+	files, err := al.logFiles()
+	if err != nil || len(files) != 1 {
+		t.Fatalf("logFiles = %v, %v", files, err)
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(raw)
+	for _, secret := range []string{"pw-value", "jwt-value", "api-value", "token-value", "flag-api-value", "bearer-value", "cookie-value", "encryption-value", "result-token"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("audit log leaked %q: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "[REDACTED]") || !strings.Contains(text, "sensitive_detected") {
+		t.Fatalf("audit log did not record redaction metadata: %s", text)
 	}
 }
 

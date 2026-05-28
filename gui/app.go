@@ -28,6 +28,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
@@ -4389,6 +4390,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		CheckUpdateOnStartup: true,
 		RemoteHubCenterURL:   defaultRemoteHubCenterURL,
 		RemoteHeartbeatSec:   10,
+		SmartRouteEnabled:    true,
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -4418,6 +4420,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	hasYoloModeAllowed := false
 	if _, ok := rawConfig["yolo_mode_allowed"]; ok {
 		hasYoloModeAllowed = true
+	}
+	hasSmartRouteEnabled := false
+	if _, ok := rawConfig["smart_route_enabled"]; ok {
+		hasSmartRouteEnabled = true
 	}
 	hasGossipEnabled := false
 	if _, ok := rawConfig["gossip_enabled"]; ok {
@@ -4468,6 +4474,9 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	}
 	if !hasYoloModeAllowed {
 		config.YoloModeAllowed = true
+	}
+	if !hasSmartRouteEnabled {
+		config.SmartRouteEnabled = true
 	}
 	if !hasGossipEnabled {
 		config.GossipEnabled = true
@@ -4913,11 +4922,20 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	normalizeCurrentModel(&config.IFlow)
 	normalizeCurrentModel(&config.Kilo)
 	normalizeCurrentModel(&config.Cursor)
+	normalizeConfigTimeouts(&config)
 	log.Printf("[config] LoadConfig:done total=%s", time.Since(start))
 	a.configCache = config
 	a.configCacheValid = true
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	return config, nil
+}
+
+func normalizeConfigTimeouts(config *corelib.AppConfig) {
+	config.MaclawLLMTimeoutSec = corelib.NormalizeAgentTimeoutSec(config.MaclawLLMTimeoutSec)
+	config.AgentResponseTimeoutSec = corelib.NormalizeAgentTimeoutSec(config.AgentResponseTimeoutSec)
+	for i := range config.MaclawLLMProviders {
+		config.MaclawLLMProviders[i].TimeoutSec = corelib.NormalizeAgentTimeoutSec(config.MaclawLLMProviders[i].TimeoutSec)
+	}
 }
 
 // getProviderModel gets the model for a specific provider name from a tool config
@@ -5046,6 +5064,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	sanitizeCustomNames(config.IFlow.Models)
 	sanitizeCustomNames(config.Kilo.Models)
 	config.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(config.SubAgentConcurrency)
+	normalizeConfigTimeouts(&config)
 	sanitizePetConfig(&config)
 	// Load old config to compare for sync logic
 	var oldConfig corelib.AppConfig
@@ -5055,6 +5074,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	if strings.TrimSpace(oldConfig.DefaultLaunchMode) != "" {
 		config.DefaultLaunchMode = oldConfig.DefaultLaunchMode
 	}
+	clientsecurity.PreserveHubManagedSecurityConfig(oldConfig, &config)
 	// Sync all apikeys across all tools before saving
 	syncStart := time.Now()
 	syncAllProviderApiKeys(a, &oldConfig, &config)
@@ -5159,13 +5179,22 @@ func (a *App) SetDefaultLaunchMode(mode string) error {
 	})
 }
 func (a *App) PatchConfig(patchFn func(cfg *corelib.AppConfig)) error {
+	return a.patchConfig(patchFn, false)
+}
+
+func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedSecurity bool) error {
 	a.configMu.Lock()
 	cfg, err := a.loadConfigLocked()
 	if err != nil {
 		a.configMu.Unlock()
 		return err
 	}
+	current := cfg
 	patchFn(&cfg)
+	if !allowHubManagedSecurity {
+		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
+	}
+	normalizeConfigTimeouts(&cfg)
 	path, err := a.getConfigPath()
 	if err != nil {
 		a.configMu.Unlock()

@@ -5,35 +5,87 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 )
 
 // ToolDefinitionGenerator dynamically generates the Agent's tool definition
 // list by merging builtin tool definitions with tools from healthy MCP Servers
 // and running local (stdio) MCP Servers.
 type ToolDefinitionGenerator struct {
-	registry        *MCPRegistry
-	localMCPManager *LocalMCPManager
-	builtinDefs     []map[string]interface{} // the 12 builtin tool definitions
-	deferredTools   map[string]bool          // tool names excluded from Generate(), discoverable via SearchDeferred()
+	registry          *MCPRegistry
+	localMCPManager   *LocalMCPManager
+	builtinDefs       []map[string]interface{} // the 12 builtin tool definitions
+	deferredTools     map[string]bool          // tool names excluded from Generate(), discoverable via SearchDeferred()
+	activatedDeferred map[string]bool          // deferred tools explicitly unlocked by discover_tool
+	deferredMu        sync.RWMutex
 }
 
 // NewToolDefinitionGenerator creates a new generator.
 // builtinDefs are the static tool definitions (e.g. from buildToolDefinitions).
 func NewToolDefinitionGenerator(registry *MCPRegistry, builtinDefs []map[string]interface{}) *ToolDefinitionGenerator {
 	return &ToolDefinitionGenerator{
-		registry:      registry,
-		builtinDefs:   builtinDefs,
-		deferredTools: make(map[string]bool),
+		registry:          registry,
+		builtinDefs:       builtinDefs,
+		deferredTools:     make(map[string]bool),
+		activatedDeferred: make(map[string]bool),
 	}
 }
 
 // SetDeferredTools marks tool names that should be excluded from Generate()
 // output. These tools are still available via SearchDeferred().
 func (g *ToolDefinitionGenerator) SetDeferredTools(names []string) {
+	g.deferredMu.Lock()
+	defer g.deferredMu.Unlock()
 	g.deferredTools = make(map[string]bool, len(names))
 	for _, n := range names {
 		g.deferredTools[n] = true
 	}
+	for name := range g.activatedDeferred {
+		if !g.deferredTools[name] {
+			delete(g.activatedDeferred, name)
+		}
+	}
+}
+
+func (g *ToolDefinitionGenerator) ActivateDeferredTool(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	g.deferredMu.Lock()
+	defer g.deferredMu.Unlock()
+	if !g.deferredTools[name] {
+		return false
+	}
+	if g.activatedDeferred == nil {
+		g.activatedDeferred = make(map[string]bool)
+	}
+	g.activatedDeferred[name] = true
+	return true
+}
+
+func (g *ToolDefinitionGenerator) IsDeferredToolActivated(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	g.deferredMu.RLock()
+	defer g.deferredMu.RUnlock()
+	return g.activatedDeferred[name]
+}
+
+func (g *ToolDefinitionGenerator) deferredStateSnapshot() (map[string]bool, map[string]bool) {
+	g.deferredMu.RLock()
+	defer g.deferredMu.RUnlock()
+	deferred := make(map[string]bool, len(g.deferredTools))
+	for name, enabled := range g.deferredTools {
+		deferred[name] = enabled
+	}
+	activated := make(map[string]bool, len(g.activatedDeferred))
+	for name, enabled := range g.activatedDeferred {
+		activated[name] = enabled
+	}
+	return deferred, activated
 }
 
 // SearchDeferred returns deferred tool definitions matching the query.
@@ -66,10 +118,11 @@ func (g *ToolDefinitionGenerator) SearchDeferred(query string, maxResults int) [
 
 // GenerateDeferred returns only the deferred tool definitions.
 func (g *ToolDefinitionGenerator) GenerateDeferred() []map[string]interface{} {
+	deferred, _ := g.deferredStateSnapshot()
 	var result []map[string]interface{}
 	for _, def := range g.builtinDefs {
 		name := extractToolName(def)
-		if name != "" && g.deferredTools[name] {
+		if name != "" && deferred[name] {
 			result = append(result, def)
 		}
 	}
@@ -85,11 +138,12 @@ func (g *ToolDefinitionGenerator) SetLocalMCPManager(mgr *LocalMCPManager) {
 // Dynamic tool names that conflict with builtin names get a server_id prefix.
 // Only tools from healthy remote MCP Servers and running local MCP Servers are included.
 func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
+	deferred, activated := g.deferredStateSnapshot()
 	// Start with a copy of builtin definitions, excluding deferred tools.
 	result := make([]map[string]interface{}, 0, len(g.builtinDefs))
 	for _, def := range g.builtinDefs {
 		name := extractToolName(def)
-		if name != "" && g.deferredTools[name] {
+		if name != "" && deferred[name] && !activated[name] {
 			continue
 		}
 		result = append(result, def)

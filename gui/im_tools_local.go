@@ -27,9 +27,13 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 		return "缺少 command 参数"
 	}
 
+	if rejection, rejected := coretool.RejectRawSSHCommand(command); rejected {
+		return rejection
+	}
+
 	// --- Background mode: submit to LocalBackgroundTaskManager ---
 	if bg, ok := args["background"].(bool); ok && bg {
-		return h.toolBashBackground(command, stringVal(args, "working_dir"))
+		return h.toolBashBackground(command, stringVal(args, "working_dir"), stringVal(args, "task_role"))
 	}
 
 	timeout := resolveBashTimeout(args, command)

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 )
+
+const hubRuntimeStatusResponseBodyLimit = 1 << 20
+const hubRuntimeStatusMaxConcurrentFetches = 16
 
 type hubRuntimeStatusView struct {
 	HubID             string   `json:"hub_id"`
@@ -39,6 +43,10 @@ type hubRuntimeHub struct {
 func ListHubRuntimeStatusesHandler(service *hubs.Service) http.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Second}
 	return func(w http.ResponseWriter, r *http.Request) {
+		if service == nil {
+			writeError(w, http.StatusInternalServerError, "LIST_HUB_RUNTIME_FAILED", "hub service is unavailable")
+			return
+		}
 		hubsList, err := service.ListHubs(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_HUB_RUNTIME_FAILED", err.Error())
@@ -51,18 +59,50 @@ func ListHubRuntimeStatusesHandler(service *hubs.Service) http.HandlerFunc {
 			}
 			items = append(items, hubRuntimeHub{id: item.ID, name: item.Name, baseURL: item.BaseURL})
 		}
-		results := make([]hubRuntimeStatusView, len(items))
-		var wg sync.WaitGroup
-		for i := range items {
-			wg.Add(1)
-			go func(idx int) {
-				defer wg.Done()
-				results[idx] = fetchHubRuntimeStatus(r.Context(), client, items[idx])
-			}(i)
-		}
-		wg.Wait()
+		results := fetchHubRuntimeStatuses(r.Context(), client, items, hubRuntimeStatusMaxConcurrentFetches)
 		writeJSON(w, http.StatusOK, map[string]any{"items": results})
 	}
+}
+
+func fetchHubRuntimeStatuses(ctx context.Context, client *http.Client, items []hubRuntimeHub, maxConcurrent int) []hubRuntimeStatusView {
+	results := make([]hubRuntimeStatusView, len(items))
+	if len(items) == 0 {
+		return results
+	}
+	if maxConcurrent <= 0 {
+		maxConcurrent = hubRuntimeStatusMaxConcurrentFetches
+	}
+	if maxConcurrent > len(items) {
+		maxConcurrent = len(items)
+	}
+
+	type job struct {
+		idx int
+		hub hubRuntimeHub
+	}
+	jobs := make(chan job)
+	var wg sync.WaitGroup
+	for worker := 0; worker < maxConcurrent; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				results[item.idx] = fetchHubRuntimeStatus(ctx, client, item.hub)
+			}
+		}()
+	}
+	for i, item := range items {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return results
+		case jobs <- job{idx: i, hub: item}:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return results
 }
 
 func fetchHubRuntimeStatus(parent context.Context, client *http.Client, hub hubRuntimeHub) hubRuntimeStatusView {
@@ -102,7 +142,7 @@ func fetchHubRuntimeStatus(parent context.Context, client *http.Client, hub hubR
 		LogTail           []string `json:"log_tail"`
 		LastDownloadError string   `json:"last_download_error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, hubRuntimeStatusResponseBodyLimit)).Decode(&payload); err != nil {
 		view.FetchError = err.Error()
 		return view
 	}

@@ -8,11 +8,13 @@ import (
 
 // MockLLMCaller is a test double for LLMCaller.
 type MockLLMCaller struct {
-	Response string
-	Err      error
+	Response    string
+	Err         error
+	LastTimeout time.Duration
 }
 
 func (m *MockLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeout time.Duration) (string, error) {
+	m.LastTimeout = timeout
 	if m.Err != nil {
 		return "", m.Err
 	}
@@ -25,7 +27,7 @@ func (m *MockLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeout time.
 // **Validates: Requirements 2.7**
 func TestProperty4_IntentUnderstandingCleanupExpired(t *testing.T) {
 	f := func(recentCount, expiredCount uint8) bool {
-		rc := int(recentCount)%5 + 1 // 1-5 recent sessions
+		rc := int(recentCount)%5 + 1  // 1-5 recent sessions
 		ec := int(expiredCount)%5 + 1 // 1-5 expired sessions
 
 		llm := &MockLLMCaller{Response: `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":false}`}

@@ -92,6 +92,8 @@ export function GroupDiscussionGetConsultationDetail(arg1:string):Promise<any>;
 
 export function GroupDiscussionDownloadAttachment(arg1:string,arg2:string,arg3:string):Promise<any>;
 
+export function GroupDiscussionAttachmentPreviewDataURL(arg1:string,arg2:string):Promise<string>;
+
 export function GroupDiscussionGetReadiness(arg1:string):Promise<any>;
 
 export function GroupDiscussionGetWorkflowState(arg1:string):Promise<any>;
@@ -596,6 +598,8 @@ export function FetchNews():Promise<Array<any>>;
 
 export function CancelAIAssistantSession():Promise<string>;
 
+export function CancelAIAssistantSessionForSession(arg1:string):Promise<string>;
+
 export function InjectAIAssistantSupplementary(arg1:string):Promise<boolean>;
 
 export function InjectAIAssistantGuideReference(arg1:string):Promise<boolean>;
@@ -618,6 +622,8 @@ export function GetAIAssistantTrace(arg1:string):Promise<any>;
 
 // Background Loop bindings
 export function ListBackgroundLoops():Promise<Array<any>>;
+
+export function ListSSHBackgroundTasks():Promise<Array<any>>;
 
 export function StopBackgroundLoop(arg1:string):Promise<void>;
 

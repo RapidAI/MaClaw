@@ -37,7 +37,6 @@ import (
 //	  X.NeedsConfirmFromEngine = true
 //	  AND NOT HasPhaseOutput(X.UserID)
 //	  AND trimmed != ""
-//	  AND NOT looksLikeNoToolStallReply(X.MsgContent)
 //	  AND isSubstantivePhaseDocument(trimmed)
 //
 // Counterexamples documented:
@@ -84,35 +83,12 @@ func simulateNeedsConfirmGate(
 	if trimmed == "" {
 		return false
 	}
-	if testLooksLikeNoToolStallReply(msgContent) {
-		return false
-	}
 	if !testIsSubstantivePhaseDocument(trimmed) {
 		return false
 	}
 
 	// Gate fires — force-return
 	return true
-}
-
-// testLooksLikeNoToolStallReply mirrors the logic from
-// gui/im_message_handler.go looksLikeNoToolStallReply.
-func testLooksLikeNoToolStallReply(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	stallHints := []string{
-		"我先想想", "先想想", "再想想", "整理一下步骤", "整理步骤", "先整理", "先分析", "先看看", "先确认", "先梳理",
-		"let me think", "i'll think", "think first", "organize the steps", "plan this out", "analyze first", "check first",
-	}
-	for _, hint := range stallHints {
-		if strings.Contains(lower, hint) {
-			return true
-		}
-	}
-	return false
 }
 
 // testIsSubstantivePhaseDocument mirrors the logic from
@@ -191,9 +167,6 @@ func TestBugCondition_FirstExecution_SubstantivePreamble_DoesNotForceReturn(t *t
 			if trimmed == "" {
 				t.Fatal("precondition failed: msgContent must be non-empty")
 			}
-			if testLooksLikeNoToolStallReply(tc.msgContent) {
-				t.Fatalf("precondition failed: %q should not be a stall reply", tc.msgContent)
-			}
 			if !testIsSubstantivePhaseDocument(trimmed) {
 				t.Fatalf("precondition failed: %q should be substantive", tc.msgContent)
 			}
@@ -238,7 +211,7 @@ func TestBugCondition_PBT_FirstExecution_NeverForceReturns(t *testing.T) {
 
 		// Verify generator invariant: input must be substantive
 		trimmed := strings.TrimSpace(input)
-		if trimmed == "" || testLooksLikeNoToolStallReply(input) || !testIsSubstantivePhaseDocument(trimmed) {
+		if trimmed == "" || !testIsSubstantivePhaseDocument(trimmed) {
 			// Generator produced invalid input — skip
 			return true
 		}

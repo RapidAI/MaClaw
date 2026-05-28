@@ -65,7 +65,7 @@ func ToolWebFetchWithProvider(args map[string]interface{}, provider corelib.WebS
 		return "缺少 url 参数"
 	}
 
-	opts := &websearch.FetchOptions{}
+	opts := &websearch.FetchOptions{TimeoutS: corelib.DefaultAgentTimeoutSec}
 	if v, ok := args["render_js"].(bool); ok {
 		opts.RenderJS = v
 	}
@@ -73,10 +73,7 @@ func ToolWebFetchWithProvider(args map[string]interface{}, provider corelib.WebS
 		opts.SavePath = ResolvePath(v)
 	}
 	if v, ok := args["timeout"].(float64); ok && v > 0 {
-		opts.TimeoutS = int(v)
-		if opts.TimeoutS > 120 {
-			opts.TimeoutS = 120
-		}
+		opts.TimeoutS = corelib.NormalizeAgentTimeoutSec(int(v))
 	}
 	if v, ok := args["offset"].(float64); ok {
 		opts.Offset = int(v)

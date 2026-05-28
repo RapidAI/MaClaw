@@ -65,7 +65,7 @@ func TestRenderSessionOutputNoOutputUsesHintFacts(t *testing.T) {
 		Status: SessionRunning,
 	}, sessionOutputHintFacts{Status: SessionRunning})
 
-	if !strings.Contains(out, "(暂无输出)") || !strings.Contains(out, "send_and_observe") {
+	if !strings.Contains(out, "(暂无输出)") || !strings.Contains(out, "CodingSubAgent") || strings.Contains(out, "send_and_observe") {
 		t.Fatalf("rendered no-output hint missing expected guidance:\n%s", out)
 	}
 }

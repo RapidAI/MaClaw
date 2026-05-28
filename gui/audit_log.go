@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 // AuditLog manages audit log files with date-based splitting, size-based
@@ -42,6 +43,12 @@ func NewAuditLog(dir string) (*AuditLog, error) {
 func (l *AuditLog) Log(entry security.AuditEntry) error {
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()
+	}
+	categories := security.RedactedAuditCategories(entry)
+	entry = security.SanitizeAuditEntry(entry)
+	if len(categories) > 0 {
+		entry.SensitiveDetected = true
+		entry.SensitiveCategories = categories
 	}
 
 	data, err := json.Marshal(entry)

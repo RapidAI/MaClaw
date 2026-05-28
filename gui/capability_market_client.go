@@ -46,6 +46,21 @@ type HubCapabilityRecommendation struct {
 	AllowUserDismiss     bool   `json:"allow_user_dismiss"`
 }
 
+type HubCapabilityInventoryItem struct {
+	CapabilityRef        string         `json:"capability_ref"`
+	CapabilityVersionKey string         `json:"capability_version_key,omitempty"`
+	CapabilityType       string         `json:"capability_type,omitempty"`
+	InstallStatus        string         `json:"install_status,omitempty"`
+	Installed            bool           `json:"installed"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+	LastSeenAt           string         `json:"last_seen_at,omitempty"`
+}
+
+type HubCapabilityInventoryReport struct {
+	Items        []HubCapabilityInventoryItem `json:"items,omitempty"`
+	FullSnapshot bool                         `json:"full_snapshot,omitempty"`
+}
+
 type HubCapabilityInstallIntent struct {
 	CapabilityID   string         `json:"capability_id"`
 	CapabilityType string         `json:"capability_type"`
@@ -237,6 +252,10 @@ func (c *capabilityMarketClient) listRecommendations(ctx context.Context) ([]Hub
 		return nil, err
 	}
 	return resp.Items, nil
+}
+
+func (c *capabilityMarketClient) reportInventory(ctx context.Context, report HubCapabilityInventoryReport) error {
+	return c.putJSON(ctx, "/api/capabilities/inventory", report, nil)
 }
 
 func (c *capabilityMarketClient) getCapability(ctx context.Context, id string) (*HubCapabilitySummary, error) {

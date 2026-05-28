@@ -22,6 +22,9 @@ func (h *IMMessageHandler) shouldTryInlineInterrupt(msg IMUserMessage) bool {
 	if strings.TrimSpace(msg.UserID) == "" {
 		return false
 	}
+	if h.hasCancelledTaskBoundary(msg.UserID) {
+		return false
+	}
 	// Only interrupt the active loop if it belongs to the same user.
 	// Different users (or different project tabs) must not merge into
 	// each other's loops.

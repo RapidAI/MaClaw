@@ -101,9 +101,11 @@ func NewRouter(
 	entrySvc := entry.NewService(identity, invChecker)
 	var userLookup machineUserLookup
 	var platformUsers store.UserRepository
+	var platformMachines platformMachineLister
 	if identity != nil {
 		userLookup = identity.UsersRepo()
 		platformUsers = identity.UsersRepo()
+		platformMachines = identity.MachinesRepo()
 	}
 	var imCleaners []IMBindingCleaner
 	if qqbotPlugin != nil {
@@ -133,7 +135,8 @@ func NewRouter(
 		return requireAdmin(RequireTenantAdmin(h))
 	}
 	groupDiscussionSvc := NewGroupDiscussionService(hubDB)
-	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc, deviceSvc)
+	groupDiscussionSender := platformAwareMachineSender{fallback: deviceSvc, system: system, tenants: tenantRepo}
+	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc, groupDiscussionSender)
 	fileRelay := ve.NewFileRelay(filepath.Join(resolveHubRuntimeDataDir(hubCfg, configPath), "ve-files"))
 	fileRelay.SetParticipantValidator(groupDiscussionSvc)
 	fileRelay.Start(context.Background())
@@ -185,8 +188,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/ve/{id}/history", requireTenantAdmin(VEHistoryHandler(system, groupDiscussionSvc, userLookup)))
 	mux.HandleFunc("GET /api/ve/history/search", requireTenantAdmin(VEHistorySearchHandler(system, groupDiscussionSvc, userLookup)))
 	mux.HandleFunc("GET /api/ve/history/{id}/detail", requireTenantAdmin(VEHistoryDetailHandler(groupDiscussionSvc)))
-	mux.HandleFunc("PUT /api/ve/config", requireTenantAdmin(VEAdminConfigHandler(system)))
-	mux.HandleFunc("GET /api/ve/config", requireTenantAdmin(VEAdminConfigHandler(system)))
+	mux.HandleFunc("PUT /api/ve/config", requireTenantAdmin(VEAdminConfigHandler(system, deviceSvc)))
+	mux.HandleFunc("GET /api/ve/config", requireTenantAdmin(VEAdminConfigHandler(system, deviceSvc)))
 	mux.HandleFunc("POST /api/ve/{id}/approve", requireTenantAdmin(VEAdminActionHandler(system, "approve", deviceSvc)))
 	mux.HandleFunc("POST /api/ve/{id}/reject", requireTenantAdmin(VEAdminActionHandler(system, "reject", deviceSvc)))
 	mux.HandleFunc("POST /api/ve/{id}/disable", requireTenantAdmin(VEAdminActionHandler(system, "disable", deviceSvc)))
@@ -199,7 +202,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/platform/llm/options", PlatformLLMOptionsHandler(system, tenantRepo))
 	mux.HandleFunc("POST /api/platform/tenant-admins/list", PlatformTenantAdminsListHandler(system, tenantRepo, admins))
 	mux.HandleFunc("POST /api/platform/tenant-admins/authenticate", PlatformTenantAdminAuthenticateHandler(system, tenantRepo, admins))
-	mux.HandleFunc("POST /api/platform/source-users/sync", PlatformSourceUsersSyncHandler(system, platformUsers, tenantRepo))
+	mux.HandleFunc("POST /api/platform/source-users/sync", PlatformSourceUsersSyncHandler(system, platformUsers, tenantRepo, platformMachines))
 	mux.HandleFunc("POST /api/platform/source-users/{id}/viewer-token", PlatformSourceUserViewerTokenHandler(system, tenantRepo, platformUsers, identity))
 	mux.HandleFunc("POST /api/platform/employees", PlatformEmployeeRegisterHandler(system, tenantRepo, platformUsers, identity))
 	mux.HandleFunc("POST /api/platform/employees/{id}/viewer-token", PlatformEmployeeViewerTokenHandler(system, tenantRepo, platformUsers, identity))
@@ -239,7 +242,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
-	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners)))
+	mux.HandleFunc("DELETE /api/admin/users", requireAdmin(DeleteBoundUserHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, centerSvc)))
 	mux.HandleFunc("GET /api/admin/users/lookup", requireAdmin(LookupUserHandler(identity)))
 	mux.HandleFunc("GET /api/admin/blocklist", requireAdmin(ListBlockedEmailsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/blocklist", requireAdmin(AddBlockedEmailHandler(identity)))
@@ -449,13 +452,14 @@ func NewRouter(
 	mux.HandleFunc("GET /api/shortcuts", GetShortcutsHandler(identity, system))
 	mux.HandleFunc("GET /marketplace", MarketplacePageHandler("hub"))
 	mux.HandleFunc("GET /api/capabilities", CapabilityListHandler(capabilitySvc, identity))
+	mux.HandleFunc("GET /api/admin/capabilities", requireTenantAdmin(AdminCapabilityListHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capabilities", requireTenantAdmin(AdminCapabilityUpsertHandler(capabilitySvc)))
 	mux.HandleFunc("GET /api/capabilities/{id}", CapabilityDetailHandler(capabilitySvc, identity))
 	mux.HandleFunc("GET /api/capabilities/{id}/versions", CapabilityVersionsHandler(capabilitySvc, identity))
 	mux.HandleFunc("GET /api/capabilities/{id}/mcp-secret-requirements", MCPSecretRequirementsHandler(capabilitySvc, identity))
 	mux.HandleFunc("POST /api/capabilities/{id}/install-intent", CapabilityInstallIntentHandler(capabilitySvc, system, identity, centerSvc))
-	mux.HandleFunc("GET /api/capabilities/managed-deployments", CapabilityManagedDeploymentsHandler(capabilitySvc, identity))
-	mux.HandleFunc("GET /api/capabilities/recommended", CapabilityRecommendationsHandler(capabilitySvc, identity))
+	mux.HandleFunc("GET /api/capabilities/managed-deployments", CapabilityManagedDeploymentsHandler(capabilitySvc, identity, securitySvc))
+	mux.HandleFunc("GET /api/capabilities/recommended", CapabilityRecommendationsHandler(capabilitySvc, identity, securitySvc))
 	mux.HandleFunc("GET /api/capabilities/inventory", UserCapabilityInventoryHandler(identity, capabilitySvc))
 	mux.HandleFunc("PUT /api/capabilities/inventory", UserCapabilityInventoryUpsertHandler(identity, capabilitySvc))
 	mux.HandleFunc("GET /api/capabilities/mcp-secret-bindings", MCPSecretBindingsHandler(identity, capabilitySvc))
@@ -471,8 +475,10 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/approve", requireTenantAdmin(AdminCapabilityApproveAcquisitionHandler(capabilitySvc, system, centerSvc)))
 	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/reject", requireTenantAdmin(AdminCapabilityRejectAcquisitionHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/complete", requireTenantAdmin(AdminCapabilityCompleteAcquisitionHandler(capabilitySvc)))
+	mux.HandleFunc("GET /api/admin/capability-market/managed-deployments", requireTenantAdmin(AdminCapabilityManagedDeploymentListHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capability-market/managed-deployments", requireTenantAdmin(AdminCapabilityManagedDeploymentCreateHandler(capabilitySvc, adminAudit)))
 	mux.HandleFunc("DELETE /api/admin/capability-market/managed-deployments/{id}", requireTenantAdmin(AdminCapabilityManagedDeploymentDeleteHandler(capabilitySvc, adminAudit)))
+	mux.HandleFunc("GET /api/admin/capability-market/recommendations", requireTenantAdmin(AdminCapabilityRecommendationListHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capability-market/recommendations", requireTenantAdmin(AdminCapabilityRecommendationCreateHandler(capabilitySvc, adminAudit)))
 	mux.HandleFunc("DELETE /api/admin/capability-market/recommendations/{id}", requireTenantAdmin(AdminCapabilityRecommendationDeleteHandler(capabilitySvc, adminAudit)))
 	mux.HandleFunc("GET /api/admin/audit-logs", requireAdmin(AdminAuditLogsHandler(adminAudit)))

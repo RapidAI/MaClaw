@@ -19,6 +19,7 @@ type agentLoopPhase struct {
 	RemoteSearchExhausted     bool
 	RecoverReason             agentRecoverReason
 	RecoverPrompt             string
+	NoToolActionPrompted      bool
 
 	FailedSkillName  string
 	FailedSkillError string
@@ -26,6 +27,7 @@ type agentLoopPhase struct {
 	ToolHallucinationCorrected bool
 	LengthContinuations        int
 	TruncationRetries          int
+	EssentialTruncationHints   int
 	TruncationBlockedTools     map[string]bool
 }
 

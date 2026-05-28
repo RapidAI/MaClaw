@@ -60,11 +60,17 @@ func (m configUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = configUIStatusOpenFullTUI(m.cfg.Language, "tools")
 		return m, nil
 	case views.ConfigSaveMsg:
+		if blocked, reason := rejectHubManagedSecurityConfigChange(m.cfg, msg.Key); blocked {
+			m.status = configUIStatusSaveFailed(m.cfg.Language, views.ConfigDisplayNameForLang(msg.Key, m.cfg.Language), reason)
+			return m, nil
+		}
+		current := m.cfg
 		if msg.HasConfig {
 			m.cfg = msg.Config
 		} else {
 			views.ApplyConfigValue(&m.cfg, msg.Key, msg.Value)
 		}
+		preserveHubManagedSecurityConfig(current, &m.cfg)
 		if msg.Key == "language" {
 			m.config.SetLang(m.cfg.Language)
 		}

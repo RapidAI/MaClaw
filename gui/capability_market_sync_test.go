@@ -1,6 +1,14 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+)
 
 func TestCapabilitySyncImmediateReason(t *testing.T) {
 	for _, reason := range []string{"hub-connect", "hub-config-update", "manual", "startup", " install "} {
@@ -16,5 +24,176 @@ func TestCapabilitySyncImmediateReason(t *testing.T) {
 func TestCapabilityManagedSyncRetryDelayThrottlesHeartbeatNoise(t *testing.T) {
 	if got := capabilityManagedSyncRetryDelay([]string{"download skill failed: unexpected EOF"}); got < capabilityManagedSyncMinRetry {
 		t.Fatalf("retry delay = %s, want at least %s", got, capabilityManagedSyncMinRetry)
+	}
+}
+
+func TestCapabilityMarketplaceUnsupportedErrorIgnoresInventory404(t *testing.T) {
+	if !isCapabilityMarketplaceUnsupportedError("managed deployments request failed: hub marketplace request failed: status=404 body=map[]") {
+		t.Fatal("marketplace endpoint 404 should mark marketplace unsupported")
+	}
+	if isCapabilityMarketplaceUnsupportedError("inventory report failed: hub marketplace request failed: status=404 body=map[]") {
+		t.Fatal("inventory report 404 should not disable marketplace sync")
+	}
+	if isCapabilityMarketplaceUnsupportedError("hub marketplace request failed: status=404 body=map[]") {
+		t.Fatal("capability detail 404 should not disable marketplace sync")
+	}
+}
+
+func TestCapabilityMarketplaceUnsupportedCacheResetsWhenHubURLChanges(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: "https://hub-a.example/"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app.hubMarketplace404URL.Store("https://hub-a.example")
+	app.hubMarketplaceUnsupported.Store(true)
+	if !app.capabilityMarketplaceUnsupportedForCurrentHub() {
+		t.Fatal("same hub URL should keep unsupported cache")
+	}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: "https://hub-b.example"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if app.capabilityMarketplaceUnsupportedForCurrentHub() {
+		t.Fatal("new hub URL should clear unsupported cache and allow re-probe")
+	}
+	if app.hubMarketplaceUnsupported.Load() {
+		t.Fatal("unsupported flag should be cleared after hub URL changes")
+	}
+}
+
+func TestShouldTrackManagedCapabilityDeploymentOnlyRequiredReinstall(t *testing.T) {
+	tests := []struct {
+		name string
+		dep  HubCapabilityDeployment
+		want bool
+	}{
+		{name: "required reinstall", dep: HubCapabilityDeployment{CapabilityRef: "cap-1", DeploymentPolicy: "required", ReinstallIfRemoved: true}, want: true},
+		{name: "empty policy defaults required", dep: HubCapabilityDeployment{CapabilityRef: "cap-1", ReinstallIfRemoved: true}, want: true},
+		{name: "required no reinstall", dep: HubCapabilityDeployment{CapabilityRef: "cap-1", DeploymentPolicy: "required"}, want: false},
+		{name: "blocked reinstall", dep: HubCapabilityDeployment{CapabilityRef: "cap-1", DeploymentPolicy: "blocked", ReinstallIfRemoved: true}, want: false},
+		{name: "recommended reinstall", dep: HubCapabilityDeployment{CapabilityRef: "cap-1", DeploymentPolicy: "recommended", ReinstallIfRemoved: true}, want: false},
+		{name: "empty ref", dep: HubCapabilityDeployment{DeploymentPolicy: "required", ReinstallIfRemoved: true}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldTrackManagedCapabilityDeployment(tt.dep); got != tt.want {
+				t.Fatalf("shouldTrackManagedCapabilityDeployment() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHubSkillCapabilityInstalledChecksCapabilityRef(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{Name: "Existing Skill", HubSkillID: "skill-1", Capability: &corelib.SkillCapabilityRef{CapabilityID: "cap-1", VersionKey: "v1"}}}}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	installed := HubCapabilitySummary{ID: "cap-1", CapabilityType: corelib.CapabilityTypeSkill, CapabilityID: "skill-1", CurrentVersionKey: "v1"}
+	missing := HubCapabilitySummary{ID: "cap-2", CapabilityType: corelib.CapabilityTypeSkill, CapabilityID: "skill-2", CurrentVersionKey: "v1"}
+	if !app.isHubSkillCapabilityInstalled(installed) {
+		t.Fatal("expected installed capability skill to be detected")
+	}
+	if app.isHubSkillCapabilityInstalled(missing) {
+		t.Fatal("unexpected missing capability skill detected as installed")
+	}
+	if skillInstallStatus(true) != "installed" || skillInstallStatus(false) != "missing" {
+		t.Fatal("unexpected skill install status mapping")
+	}
+}
+
+func TestEmitHubManagedCapabilitySyncEventIncludesErrors(t *testing.T) {
+	app := &App{}
+	if shouldEmitHubManagedCapabilitySyncEvent(CapabilitySyncStatus{}) {
+		t.Fatal("empty sync status should not emit")
+	}
+	if !shouldEmitHubManagedCapabilitySyncEvent(CapabilitySyncStatus{Errors: []string{"install failed"}}) {
+		t.Fatal("sync errors should emit")
+	}
+	if !shouldEmitHubManagedCapabilitySyncEvent(CapabilitySyncStatus{NeedsUserConfig: []string{"cap-1"}}) {
+		t.Fatal("needs config should emit")
+	}
+	app.emitHubManagedCapabilitySyncEvent(CapabilitySyncStatus{})
+}
+
+func TestCapabilityInventoryReportUsesSnapshotEndpoint(t *testing.T) {
+	var got struct {
+		Items        []HubCapabilityInventoryItem `json:"items"`
+		FullSnapshot bool                         `json:"full_snapshot"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/capabilities/inventory" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("missing bearer token: %q", r.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := &capabilityMarketClient{baseURL: server.URL, token: "token", http: server.Client()}
+	err := client.reportInventory(context.Background(), HubCapabilityInventoryReport{FullSnapshot: true, Items: []HubCapabilityInventoryItem{{CapabilityRef: "cap-1", CapabilityType: "skill", CapabilityVersionKey: "v1", InstallStatus: "installed", Installed: true}}})
+	if err != nil {
+		t.Fatalf("report inventory: %v", err)
+	}
+	if !got.FullSnapshot || len(got.Items) != 1 || got.Items[0].CapabilityRef != "cap-1" || !got.Items[0].Installed {
+		t.Fatalf("unexpected inventory payload: %+v", got)
+	}
+}
+
+func TestCapabilityInventorySnapshotPreservesMCPNeedsConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var got struct {
+		Items        []HubCapabilityInventoryItem `json:"items"`
+		FullSnapshot bool                         `json:"full_snapshot"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/capabilities/cap-mcp/mcp-secret-requirements":
+			_, _ = w.Write([]byte(`{"items":[{"name":"api_key","scope":"user","storage_policy":"hub","required":true}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/capabilities/mcp-secret-bindings":
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/capabilities/mcp-hub-secrets":
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/capabilities/inventory":
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{MCPServers: []corelib.MCPServerEntry{{ID: "srv-1", Name: "Remote MCP", Capability: &corelib.MCPServerCapabilityRef{CapabilityID: "cap-mcp", VersionKey: "v1"}}}}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	client := &capabilityMarketClient{baseURL: server.URL, token: "token", http: server.Client()}
+	reported, err := app.reportHubCapabilityInventorySnapshot(context.Background(), client)
+	if err != nil {
+		t.Fatalf("report snapshot: %v", err)
+	}
+	if reported != 1 || !got.FullSnapshot || len(got.Items) != 1 {
+		t.Fatalf("unexpected snapshot: reported=%d payload=%+v", reported, got)
+	}
+	item := got.Items[0]
+	if item.CapabilityRef != "cap-mcp" || item.InstallStatus != "needs_config" || item.Installed {
+		t.Fatalf("snapshot should preserve needs_config MCP status: %+v", item)
 	}
 }

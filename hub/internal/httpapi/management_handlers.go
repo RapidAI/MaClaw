@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,7 +30,8 @@ type LookupUserRequest struct {
 }
 
 type DeleteBoundUserRequest struct {
-	Email string `json:"email"`
+	Email    string `json:"email"`
+	TenantID string `json:"tenant_id"`
 }
 
 type BlockEmailRequest struct {
@@ -122,6 +126,10 @@ type BoundUserView struct {
 	ServiceStatus    *llmservice.ServiceStatus `json:"service_status,omitempty"`
 }
 
+type BoundUserRouteDeleter interface {
+	DeleteUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error
+}
+
 func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req ManualBindRequest
@@ -136,6 +144,10 @@ func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 
 		user, err := identity.ManualBindForTenant(r.Context(), RequestTenantID(r), req.Email)
 		if err != nil {
+			if errors.Is(err, auth.ErrRoutedToAnotherHub) {
+				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "MANUAL_BIND_FAILED", err.Error())
 			return
 		}
@@ -151,26 +163,37 @@ func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 	}
 }
 
-func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
+func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner, routeDeleters ...BoundUserRouteDeleter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
-		if email == "" && r.Body != nil {
+		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		if r.Body != nil {
 			var req DeleteBoundUserRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-				email = strings.TrimSpace(req.Email)
+				if email == "" {
+					email = strings.TrimSpace(req.Email)
+				}
+				if tenantID == "" {
+					tenantID = strings.TrimSpace(req.TenantID)
+				}
 			}
 		}
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
+		email = strings.TrimSpace(strings.ToLower(email))
 		if identity == nil || identity.UsersRepo() == nil {
 			writeError(w, http.StatusInternalServerError, "USER_DELETE_UNAVAILABLE", "User repository is unavailable")
 			return
 		}
 
-		user, err := identity.UsersRepo().GetByTenantEmail(r.Context(), RequestTenantID(r), email)
+		user, err := resolveBoundUserForDelete(r, identity.UsersRepo(), tenantID, email)
 		if err != nil {
+			if err == errAmbiguousTenantEmail {
+				writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required when email exists in multiple tenants")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "LOOKUP_USER_FAILED", err.Error())
 			return
 		}
@@ -178,7 +201,6 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 			writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found")
 			return
 		}
-
 		var deletedMachines int64
 		if deviceSvc != nil {
 			deletedMachines, err = deviceSvc.ForceDeleteMachinesByTenantUser(r.Context(), user.TenantID, user.ID)
@@ -200,11 +222,50 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 		}
 		removeIMBindingsForTenant(imCleaners, user.TenantID, user.Email)
 		if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), user.TenantID, user.Email); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "USER_NOT_DELETED", "User was not deleted; tenant_id and email did not match a stored user")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "email": user.Email, "deleted_machines": deletedMachines, "deleted_invitation_codes": deletedCodes})
+		resp := map[string]any{"ok": true, "tenant_id": user.TenantID, "email": user.Email, "deleted_machines": deletedMachines, "deleted_invitation_codes": deletedCodes}
+		if len(routeDeleters) > 0 && routeDeleters[0] != nil {
+			if err := routeDeleters[0].DeleteUserRoute(r.Context(), user.Email, user.TenantID); err != nil {
+				resp["route_delete_warning"] = err.Error()
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+var errAmbiguousTenantEmail = errors.New("email exists in multiple tenants")
+
+func resolveBoundUserForDelete(r *http.Request, users store.UserRepository, tenantID, email string) (*store.User, error) {
+	if r == nil || users == nil {
+		return nil, nil
+	}
+	if admin := AdminFromContext(r.Context()); adminHasTenantScope(admin) {
+		return users.GetByTenantEmail(r.Context(), AdminTenantID(r.Context()), email)
+	}
+	if tenantID != "" {
+		return users.GetByTenantEmail(r.Context(), tenantID, email)
+	}
+	items, err := users.List(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	var matched *store.User
+	for _, item := range items {
+		if item == nil || !strings.EqualFold(strings.TrimSpace(item.Email), strings.TrimSpace(email)) {
+			continue
+		}
+		if matched != nil && store.NormalizeTenantID(matched.TenantID) != store.NormalizeTenantID(item.TenantID) {
+			return nil, errAmbiguousTenantEmail
+		}
+		matched = item
+	}
+	return matched, nil
 }
 func ListBlockedEmailsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

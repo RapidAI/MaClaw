@@ -27,7 +27,7 @@ func TestAppRunctlDeleteRemovesCommandAndAuditsSource(t *testing.T) {
 	if !handled {
 		t.Fatal("expected passthrough command to be handled")
 	}
-	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "已删除直通任务 repair-env") {
+	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Deleted passthrough task repair-env") {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if _, ok, err := reg.Get("repair-env"); err != nil || ok {
@@ -65,7 +65,7 @@ func TestAppRunctlSaveRegistersCommandAndAuditsSource(t *testing.T) {
 	if !handled {
 		t.Fatal("expected passthrough command to be handled")
 	}
-	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "已保存直通任务 git-status") || !strings.Contains(resp.Text, "argv: git -C D:\\workprj\\aicoder status --short") || !strings.Contains(resp.Text, "远程注册命令：/runctl save git-status") || !strings.Contains(resp.Text, "--params-json") || !strings.Contains(resp.Text, "/runctl preview git-status") {
+	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Saved passthrough task git-status") || !strings.Contains(resp.Text, "argv: git -C D:\\workprj\\aicoder status --short") || !strings.Contains(resp.Text, "Remote registration command: /runctl save git-status") || !strings.Contains(resp.Text, "--params-json") || !strings.Contains(resp.Text, "/runctl preview git-status") {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	cmd, ok, err := reg.Get("git-status")
@@ -107,7 +107,7 @@ func TestAppRunctlShowIncludesRemoteRegistrationCommand(t *testing.T) {
 	if !handled {
 		t.Fatal("expected passthrough command to be handled")
 	}
-	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "运行示例：/run git-status") || !strings.Contains(resp.Text, "远程注册命令：/runctl save git-status") || !strings.Contains(resp.Text, "--params-json") {
+	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Run example: /run git-status") || !strings.Contains(resp.Text, "Remote registration command: /runctl save git-status") || !strings.Contains(resp.Text, "--params-json") {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
@@ -164,7 +164,7 @@ func TestAppRunctlExportReturnsOnlyRemoteRegistrationCommand(t *testing.T) {
 	if !handled {
 		t.Fatal("expected passthrough command to be handled")
 	}
-	if resp == nil || resp.Error != "" || !strings.HasPrefix(resp.Text, "/runctl save git-status") || !strings.Contains(resp.Text, "--params-json") || strings.Contains(resp.Text, "运行示例") {
+	if resp == nil || resp.Error != "" || !strings.HasPrefix(resp.Text, "/runctl save git-status") || !strings.Contains(resp.Text, "--params-json") || strings.Contains(resp.Text, "Run example") {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
@@ -178,7 +178,7 @@ func TestAppRunctlSaveRegistersCommandWithParamsJSON(t *testing.T) {
 	if !handled {
 		t.Fatal("expected passthrough command to be handled")
 	}
-	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "已保存直通任务 git-status") || !strings.Contains(resp.Text, "argv: git -C D:\\workprj\\aicoder status --short") {
+	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Saved passthrough task git-status") || !strings.Contains(resp.Text, "argv: git -C D:\\workprj\\aicoder status --short") {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	cmd, ok, err := reg.Get("git-status")
@@ -341,7 +341,7 @@ func TestAppRunctlSavePreviewDoesNotPersistOrAudit(t *testing.T) {
 	if !handled {
 		t.Fatal("expected passthrough command to be handled")
 	}
-	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "仅预览，未保存直通任务 git-status") || !strings.Contains(resp.Text, "argv: git status --short") {
+	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "Preview only; passthrough task git-status was not saved") || !strings.Contains(resp.Text, "argv: git status --short") {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if _, ok, err := reg.Get("git-status"); err != nil || ok {

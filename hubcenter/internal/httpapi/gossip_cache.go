@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -22,11 +21,15 @@ type GossipCache struct {
 	filePath     string
 	mu           sync.Mutex
 	failureCount int // consecutive refresh failures
+	asyncMu      sync.Mutex
+	asyncRunning bool
+	asyncPending bool
 }
 
 // snapshotMaxPosts is the upper bound for posts loaded into the snapshot cache.
 // Adjust if the gossip board grows beyond this limit.
 const snapshotMaxPosts = 100000
+const snapshotRefreshPageSize = 1000
 
 func NewGossipCache(gossip store.GossipRepository, filePath string) *GossipCache {
 	return &GossipCache{gossip: gossip, filePath: filePath}
@@ -42,6 +45,9 @@ func (gc *GossipCache) EnsureExists(ctx context.Context) {
 }
 
 func (gc *GossipCache) Refresh(ctx context.Context) error {
+	if gc == nil {
+		return nil
+	}
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 
@@ -56,48 +62,146 @@ func (gc *GossipCache) Refresh(ctx context.Context) error {
 	return nil
 }
 
+func (gc *GossipCache) RefreshAsync(ctx context.Context) {
+	if gc == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
+	gc.asyncMu.Lock()
+	if gc.asyncRunning {
+		gc.asyncPending = true
+		gc.asyncMu.Unlock()
+		return
+	}
+	gc.asyncRunning = true
+	gc.asyncMu.Unlock()
+	go gc.runAsyncRefresh(ctx)
+}
+
+func (gc *GossipCache) runAsyncRefresh(ctx context.Context) {
+	for {
+		if err := gc.Refresh(ctx); err != nil {
+			log.Printf("[gossip-cache] async refresh failed: %v", err)
+		}
+		gc.asyncMu.Lock()
+		if gc.asyncPending {
+			gc.asyncPending = false
+			gc.asyncMu.Unlock()
+			continue
+		}
+		gc.asyncRunning = false
+		gc.asyncMu.Unlock()
+		return
+	}
+}
+
 // doRefresh performs the actual snapshot generation. Separated so Refresh
 // can uniformly track failure counts regardless of which step fails.
 func (gc *GossipCache) doRefresh(ctx context.Context) error {
-	posts, _, err := gc.gossip.ListPosts(ctx, 0, snapshotMaxPosts)
-	if err != nil {
-		return fmt.Errorf("list posts: %w", err)
-	}
-
-	items := make([]map[string]any, 0, len(posts))
-	for _, p := range posts {
-		items = append(items, gossipPostToPublicMap(p))
-	}
-	payload, err := json.Marshal(map[string]any{"posts": items, "total": len(items)})
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-
-	var buf bytes.Buffer
-	gz, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-	if _, err := gz.Write(payload); err != nil {
-		return fmt.Errorf("gzip write: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		return fmt.Errorf("gzip close: %w", err)
-	}
-
 	dir := filepath.Dir(gc.filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 	tmp := gc.filePath + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("write tmp: %w", err)
+	file, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("create tmp: %w", err)
+	}
+	removeTmp := true
+	defer func() {
+		_ = file.Close()
+		if removeTmp {
+			_ = os.Remove(tmp)
+		}
+	}()
+
+	gz, err := gzip.NewWriterLevel(file, gzip.BestCompression)
+	if err != nil {
+		return fmt.Errorf("gzip writer: %w", err)
+	}
+	written, err := gc.writeSnapshotGzip(ctx, gz)
+	if err != nil {
+		_ = gz.Close()
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		return fmt.Errorf("gzip close: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close tmp: %w", err)
 	}
 	// On Windows, os.Rename fails if destination exists; remove first.
 	_ = os.Remove(gc.filePath)
 	if err := os.Rename(tmp, gc.filePath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
+	removeTmp = false
+	info, _ := os.Stat(gc.filePath)
+	size := int64(0)
+	if info != nil {
+		size = info.Size()
+	}
 
-	log.Printf("[gossip-cache] refreshed, %d posts, %d bytes gz", len(items), buf.Len())
+	log.Printf("[gossip-cache] refreshed, %d posts, %d bytes gz", written, size)
 	return nil
+}
+
+func (gc *GossipCache) writeSnapshotGzip(ctx context.Context, gz *gzip.Writer) (int, error) {
+	if _, err := gz.Write([]byte(`{"posts":[`)); err != nil {
+		return 0, fmt.Errorf("gzip write: %w", err)
+	}
+	written := 0
+	total := 0
+	first := true
+	for offset := 0; offset < snapshotMaxPosts; offset += snapshotRefreshPageSize {
+		limit := snapshotRefreshPageSize
+		if remaining := snapshotMaxPosts - offset; remaining < limit {
+			limit = remaining
+		}
+		posts, nextTotal, err := gc.gossip.ListPosts(ctx, offset, limit)
+		if err != nil {
+			return written, fmt.Errorf("list posts: %w", err)
+		}
+		if nextTotal > total {
+			total = nextTotal
+		}
+		for _, post := range posts {
+			if post == nil {
+				continue
+			}
+			if !first {
+				if _, err := gz.Write([]byte{','}); err != nil {
+					return written, fmt.Errorf("gzip write: %w", err)
+				}
+			}
+			first = false
+			data, err := json.Marshal(gossipPostToPublicMap(post))
+			if err != nil {
+				return written, fmt.Errorf("marshal: %w", err)
+			}
+			if _, err := gz.Write(data); err != nil {
+				return written, fmt.Errorf("gzip write: %w", err)
+			}
+			written++
+		}
+		if len(posts) == 0 || len(posts) < limit || offset+len(posts) >= total {
+			break
+		}
+	}
+	if total > snapshotMaxPosts {
+		total = snapshotMaxPosts
+	}
+	if total < written {
+		total = written
+	}
+	if _, err := gz.Write([]byte(fmt.Sprintf(`],"total":%d}`, total))); err != nil {
+		return written, fmt.Errorf("gzip write: %w", err)
+	}
+	return written, nil
 }
 
 func computeETag(data []byte) string {

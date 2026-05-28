@@ -757,8 +757,8 @@ func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []Docu
 	if timeoutSec <= 0 {
 		timeoutSec = defaultURLTimeoutSec
 	}
-	if timeoutSec > 120 {
-		timeoutSec = 120
+	if timeoutSec > 600 {
+		timeoutSec = 600
 	}
 
 	var result *websearch.FetchResult

@@ -39,6 +39,7 @@ type knowledgeAccessService struct {
 	cache      map[string]*knowledgeAccessConfig
 	crossReady bool
 	cross      knowledgeCrossTenantConfig
+	publicMu   sync.Mutex
 }
 
 const (
@@ -132,13 +133,29 @@ func (s *knowledgeAccessService) SetUser(ctx context.Context, tenantID, userID s
 	if err := normalizeKnowledgeAccessConfig(tenantID, cfg); err != nil {
 		return err
 	}
+	for i, scope := range cfg.ReadScopes {
+		if !isPublicKnowledgeScope(scope) {
+			continue
+		}
+		registered, err := s.publicKnowledgeScopeRegistered(ctx, scope)
+		if err != nil {
+			return err
+		}
+		if !registered {
+			return fmt.Errorf("read_scopes[%d] targets unknown public knowledge library", i)
+		}
+	}
 	if cfg.Enabled && !s.crossTenantEnabled(ctx) {
 		for i, scope := range cfg.ReadScopes {
-			if scope.TenantID != strings.TrimSpace(tenantID) {
+			if scope.TenantID != strings.TrimSpace(tenantID) && !isPublicKnowledgeScope(scope) {
 				return fmt.Errorf("read_scopes[%d] targets tenant %q; enable cross-tenant knowledge access first", i, scope.TenantID)
 			}
 		}
 	}
+	return s.saveUserConfig(ctx, key, cfg)
+}
+
+func (s *knowledgeAccessService) saveUserConfig(ctx context.Context, key string, cfg *knowledgeAccessConfig) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return err
@@ -180,6 +197,7 @@ func (s *knowledgeAccessService) ResolveForUser(ctx context.Context, tenantID, u
 	if !s.crossTenantEnabled(ctx) {
 		scopes = filterKnowledgeScopesByTenant(scopes, tenantID)
 	}
+	scopes = s.filterRegisteredPublicKnowledgeScopes(ctx, scopes)
 	return uniqueKnowledgeScopes(scopes)
 }
 
@@ -225,11 +243,15 @@ func filterKnowledgeScopesByTenant(scopes []knowledgeScope, tenantID string) []k
 	tenantID = strings.TrimSpace(tenantID)
 	filtered := make([]knowledgeScope, 0, len(scopes))
 	for _, scope := range scopes {
-		if strings.TrimSpace(scope.TenantID) == tenantID {
+		if strings.TrimSpace(scope.TenantID) == tenantID || isPublicKnowledgeScope(scope) {
 			filtered = append(filtered, scope)
 		}
 	}
 	return filtered
+}
+
+func isPublicKnowledgeScope(scope knowledgeScope) bool {
+	return strings.HasPrefix(strings.TrimSpace(scope.OwnerID), publicKnowledgeOwnerPrefix)
 }
 
 func uniqueKnowledgeScopes(scopes []knowledgeScope) []knowledgeScope {
@@ -242,7 +264,7 @@ func uniqueKnowledgeScopes(scopes []knowledgeScope) []knowledgeScope {
 		if scope.TenantID == "" || scope.OwnerID == "" {
 			continue
 		}
-		key := scope.TenantID + "\x00" + scope.OwnerID
+		key := knowledgeScopeKey(scope.TenantID, scope.OwnerID)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -250,6 +272,10 @@ func uniqueKnowledgeScopes(scopes []knowledgeScope) []knowledgeScope {
 		result = append(result, scope)
 	}
 	return result
+}
+
+func knowledgeScopeKey(tenantID, ownerID string) string {
+	return strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(ownerID)
 }
 
 func cloneKnowledgeAccessConfig(cfg *knowledgeAccessConfig) *knowledgeAccessConfig {

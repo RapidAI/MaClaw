@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,7 +18,9 @@ import (
 )
 
 type EntryResolveRequest struct {
-	Email string `json:"email"`
+	Email    string `json:"email"`
+	Domain   string `json:"domain,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 type AdminRouteQueryRequest struct {
@@ -51,8 +52,8 @@ type HubUserLinkSyncRequest struct {
 func RegisterHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req hubs.RegisterHubRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		resp, err := service.RegisterHubFromIP(r.Context(), req, clientIPFromRequest(r))
@@ -93,8 +94,8 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 		}
 
 		var req HubHeartbeatRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 
@@ -180,8 +181,8 @@ func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
 			return
 		}
 		var req HubUserLinkSyncRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if err := service.SyncHubUserLink(r.Context(), hubID, req.HubSecret, req.Email, req.IsDefault, req.TenantID); err != nil {
@@ -198,6 +199,38 @@ func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "HUB_USER_LINK_SYNC_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+func HubUserLinkDeleteHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		var req HubUserLinkSyncRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if err := service.DeleteHubUserLink(r.Context(), hubID, req.HubSecret, req.Email, req.TenantID); err != nil {
+			if errors.Is(err, hubs.ErrHubUnauthorized) {
+				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
+				return
+			}
+			if errors.Is(err, hubs.ErrHubPendingConfirmation) {
+				writeError(w, http.StatusConflict, "HUB_PENDING_CONFIRMATION", "Hub registration is waiting for email confirmation")
+				return
+			}
+			if errors.Is(err, hubs.ErrHubDisabled) {
+				writeError(w, http.StatusForbidden, "HUB_DISABLED", "Hub is disabled")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "HUB_USER_LINK_DELETE_FAILED", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -227,8 +260,8 @@ func ConfirmHubRegistrationHandler(service *hubs.Service) http.HandlerFunc {
 func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req EntryResolveRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		resp, err := service.ResolveByEmailFromIP(r.Context(), req.Email, clientIPFromRequest(r))
@@ -244,11 +277,80 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 	}
 }
 
+func EntryResolveDomainHandler(service *entry.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req EntryResolveRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		domain := strings.TrimSpace(req.Domain)
+		if domain == "" && strings.Contains(req.Email, "@") {
+			_, domain, _ = strings.Cut(strings.TrimSpace(req.Email), "@")
+		}
+		resp, err := service.ResolveByDomain(r.Context(), domain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ENTRY_DOMAIN_RESOLVE_FAILED", err.Error())
+			return
+		}
+		filterResolveResultByTenant(resp, req.TenantID)
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func filterResolveResultByTenant(resp *entry.ResolveResult, tenantID string) {
+	if resp == nil || len(resp.Hubs) == 0 {
+		return
+	}
+	tenantID = normalizeHubSyncTenantID(tenantID)
+	exact := make([]entry.HubAccessView, 0, len(resp.Hubs))
+	global := make([]entry.HubAccessView, 0, len(resp.Hubs))
+	for _, item := range resp.Hubs {
+		itemTenantID := normalizeHubSyncTenantID(item.TenantID)
+		if itemTenantID != "" && itemTenantID == tenantID {
+			exact = append(exact, item)
+			continue
+		}
+		if itemTenantID == "" {
+			global = append(global, item)
+		}
+	}
+	filtered := global
+	if len(exact) > 0 {
+		filtered = exact
+	}
+	if len(filtered) == 0 {
+		resp.Mode = "none"
+		resp.DefaultHubID = ""
+		resp.DefaultPWA = ""
+		resp.Hubs = nil
+		resp.Message = "No domain route found"
+		return
+	}
+	resp.Hubs = filtered
+	resp.DefaultHubID = filtered[0].HubID
+	resp.DefaultPWA = filtered[0].PWAURL
+	resp.Message = ""
+	if len(filtered) == 1 {
+		resp.Mode = "single"
+	} else {
+		resp.Mode = "multiple"
+	}
+}
+
+func normalizeHubSyncTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "tenant_default" {
+		return ""
+	}
+	return tenantID
+}
+
 func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req AdminRouteQueryRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		query := strings.TrimSpace(strings.ToLower(req.Query))
@@ -299,6 +401,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/hubs/runtime", RequireAdmin(adminService, ListHubRuntimeStatusesHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/users/dashboard", RequireAdmin(adminService, ListUserDashboardHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/{id}/registration-policy", RequireAdmin(adminService, UpdateHubRegistrationPolicyHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/digital-employee-authorization", RequireAdmin(adminService, UpdateDigitalEmployeeAuthorizationHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/disable", RequireAdmin(adminService, DisableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/enable", RequireAdmin(adminService, EnableHubHandler(hubService)))
@@ -316,8 +419,10 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/hubs/register", RegisterHubHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))
 	mux.HandleFunc("POST /api/hubs/{id}/user-links/sync", HubUserLinkSyncHandler(hubService))
+	mux.HandleFunc("DELETE /api/hubs/{id}/user-links/sync", HubUserLinkDeleteHandler(hubService))
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
+	mux.HandleFunc("POST /api/entry/resolve-domain", EntryResolveDomainHandler(entryService))
 	mux.HandleFunc("GET /api/client/quality", ClientQualityHandler(haSvc))
 	mux.HandleFunc("GET /api/client/endpoints", ClientEndpointsHandler(haSvc))
 	mux.HandleFunc("GET /api/client/hubcenters", ClientHubCentersHandler(haConfigSvc))

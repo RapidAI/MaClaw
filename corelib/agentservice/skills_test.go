@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +96,142 @@ func TestScanImportedSkillBeforeInstallIgnoresClaimedTrustedLevel(t *testing.T) 
 	if entry.TrustLevel != security.TrustLevelTrusted {
 		t.Fatalf("scanImportedSkillBeforeInstall mutated trust level to %q", entry.TrustLevel)
 	}
+}
+
+func TestFilterAllowedSourcesNormalizesHubCenterAliases(t *testing.T) {
+	got := filterAllowedSources([]string{"github", "skillmarket", "skillhub", "hubcenter"}, []string{"hubcenter", "git_hub"})
+	want := []string{"github", "skillmarket", "skillhub"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("filterAllowedSources() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNormalizeSkillSearchSourcesNormalizesMarketAliases(t *testing.T) {
+	got := normalizeSkillSearchSources([]string{"hubcenter", "hub_center", "market", "skill_hub"})
+	want := []string{"skillmarket", "skillhub"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("normalizeSkillSearchSources() = %#v, want %#v", got, want)
+	}
+}
+
+func TestInstallSourcePolicyNormalizesAliases(t *testing.T) {
+	if !isInSlice(installSourceToCanonical("github_repo"), []string{"git_hub"}) {
+		t.Fatal("github repo installs should be allowed by git_hub alias")
+	}
+	if !isInSlice(installSourceToCanonical("skillhub"), []string{"hubcenter"}) {
+		t.Fatal("skillhub installs should be allowed by hubcenter alias")
+	}
+}
+
+func TestInstallSkillFromSkillMarket(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skillmarket/demo/download" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("email") != user.Email || r.URL.Query().Get("format") != "agent_skill" {
+			t.Fatalf("unexpected skillmarket download query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		md := "---\nname: demo-skill\ndescription: demo\n---\n\n# Demo\n\nUse it."
+		if err := json.NewEncoder(w).Encode(map[string]any{"id": "demo", "version": "v1", "name": "demo-skill", "description": "demo", "agent_skill_md": md}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillMarketURL: server.URL, SkillID: "demo"})
+	if err != nil {
+		t.Fatalf("InstallSkill(skillmarket): %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "demo-skill" || items[0].Source != "skillmarket" || items[0].HubSkillID != "demo" || items[0].HubVersion != "v1" {
+		t.Fatalf("unexpected installed skill items: %#v", items)
+	}
+}
+
+func TestInstallSkillFromSkillMarketDoesNotFallbackToSkillHubDownload(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skills/paid/download" {
+			t.Fatalf("skillmarket install must not bypass market endpoint through skillhub download")
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	_, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillMarketURL: server.URL, SkillID: "paid"})
+	if err == nil {
+		t.Fatal("expected skillmarket install to fail without market download endpoint")
+	}
+}
+
+func TestInstallSkillFromSkillMarketMachineLoginAddsBearerToken(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/machine-login":
+			var req struct {
+				Email       string `json:"email"`
+				MachineID   string `json:"machine_id"`
+				ViewerToken string `json:"viewer_token"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode machine-login: %v", err)
+			}
+			if req.Email != user.Email || req.MachineID != "machine-1" || req.ViewerToken != "viewer-token-123456" {
+				t.Fatalf("unexpected machine-login request: %#v", req)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"session_token": "market-session-token", "email": req.Email, "user_id": "market-user"})
+		case "/api/v1/skillmarket/demo/download":
+			if r.Header.Get("Authorization") != "Bearer market-session-token" {
+				t.Fatalf("Authorization = %q, want bearer token", r.Header.Get("Authorization"))
+			}
+			md := "---\nname: demo-skill\ndescription: demo\n---\n\n# Demo\n\nUse it."
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "demo", "name": "demo-skill", "agent_skill_md": md})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteEmail: user.Email, RemoteMachineID: "machine-1", RemoteViewerToken: "viewer-token-123456"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillID: "demo"})
+	if err != nil {
+		t.Fatalf("InstallSkill(skillmarket): %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "demo-skill" {
+		t.Fatalf("unexpected installed skill items: %#v", items)
+	}
+	cfg, err := svc.getOrLoadUserConfig(tenant.ID, user.ID)
+	if err != nil {
+		t.Fatalf("getOrLoadUserConfig: %v", err)
+	}
+	if cfg.AppConfig.SkillMarketSessionToken != "market-session-token" {
+		t.Fatalf("SkillMarketSessionToken = %q, want cached token", cfg.AppConfig.SkillMarketSessionToken)
+	}
+}
+
+func createSkillMarketInstallTestUser(t *testing.T, svc *Service) (*Tenant, *User) {
+	t.Helper()
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User", Email: "user@example.test"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return tenant, user
 }
 
 func TestUnzipBytesRejectsBackslashTraversalEntry(t *testing.T) {

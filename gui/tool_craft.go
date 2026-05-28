@@ -757,7 +757,7 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 		result.WriteString("\n")
 	}
 	if attempt.ScriptPath != "" {
-		result.WriteString("脚本已保存，你可以手动修改后重新执行；若任务需要多轮探索或代码库改造，建议改用 create_session。")
+		result.WriteString("脚本已保存，你可以手动修改后重新执行；若任务需要多轮探索或代码库改造，应改走内部 CodingSubAgent。")
 	}
 	return strings.TrimSpace(result.String())
 }
@@ -809,7 +809,7 @@ func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) 
 	case craftFailureSignalEnvironment:
 		return craftFailureCategoryEnvironment, "这是运行环境或外部依赖问题，建议先修复网络、证书、目录或相关依赖后再重试。"
 	case craftFailureSignalCapabilityBoundary:
-		return craftFailureCategoryCapability, "该任务超出单脚本自动化边界，建议改用 create_session 进行多步探索或代码库级修改。"
+		return craftFailureCategoryCapability, "该任务超出单脚本自动化边界，应改走内部 CodingSubAgent 进行多步探索或代码库级修改。"
 	case craftFailureSignalScript:
 		return craftFailureCategoryScript, "这更像脚本本身的可修复错误，可以调整脚本内容、依赖导入或命令后再试。"
 	}
@@ -969,7 +969,7 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 			Action: "bash",
 			Params: map[string]interface{}{
 				"command": runCmd,
-				"timeout": float64(120),
+				"timeout": float64(corelib.DefaultAgentTimeoutSec),
 			},
 		}},
 		Params:         skillParams,
@@ -1086,7 +1086,7 @@ func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, scrip
 			security.AuditActionHubSkillInstall,
 			"craft_tool_prescan",
 			level,
-			security.PolicyAllow,
+			security.PolicyAudit,
 			fmt.Sprintf("developer mode allowed crafted script before execution for skill %s: %s", skillName, report.Summary),
 		)
 		return report, nil

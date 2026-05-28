@@ -33,7 +33,7 @@ import (
 func TestProperty1_BugCondition_ShortPreambleDoesNotTriggerForceReturn(t *testing.T) {
 	// Concrete counterexamples: all are short preambles (non-empty, non-stall,
 	// no document structure) that the current gate condition
-	//   trimmedForGate != "" && !looksLikeNoToolStallReply(msgContent)
+	//   trimmedForGate != ""
 	// evaluates to true, causing an incorrect force-return.
 	cases := []struct {
 		name  string
@@ -59,15 +59,12 @@ func TestProperty1_BugCondition_ShortPreambleDoesNotTriggerForceReturn(t *testin
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Pre-conditions: input is non-empty, not a stall reply, and
+			// Pre-conditions: input is non-empty, short, and
 			// shorter than 200 runes — i.e. the bug condition holds on
 			// unfixed code.
 			trimmed := strings.TrimSpace(tc.input)
 			if trimmed == "" {
 				t.Fatal("precondition failed: input must be non-empty")
-			}
-			if looksLikeNoToolStallReply(tc.input) {
-				t.Fatalf("precondition failed: %q should not be a stall reply", tc.input)
 			}
 			if utf8.RuneCountInString(trimmed) >= 200 {
 				t.Fatalf("precondition failed: input must be < 200 runes, got %d", utf8.RuneCountInString(trimmed))

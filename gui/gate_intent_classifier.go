@@ -350,8 +350,8 @@ func (g *GateIntentClassifier) classifyByEmbedding(text string) (GateIntentResul
 
 // classifyGateIntentWithLLM performs Layer 3 LLM-based gate classification.
 // It sends the user message to the configured LLM with a gate-specific system
-// prompt and parses the structured JSON response. A 3-second timeout is
-// enforced via context.WithTimeout.
+// prompt and parses the structured JSON response. The timeout is long enough
+// for remote LLM routing jitter while still keeping the gate bounded.
 func (g *GateIntentClassifier) classifyGateIntentWithLLM(text string) (GateIntentResult, error) {
 	if g.llmConfig == nil || g.httpClient == nil {
 		return GateIntentResult{}, fmt.Errorf("LLM config or HTTP client not available")
@@ -367,10 +367,9 @@ func (g *GateIntentClassifier) classifyGateIntentWithLLM(text string) (GateInten
 		map[string]interface{}{"role": "user", "content": strings.TrimSpace(text)},
 	}
 
-	// Use a 3-second timeout for the LLM call (Requirement 4.3).
-	const gateLLMTimeout = 3 * time.Second
+	const gateLLMTimeout = 30 * time.Second
 
-	// Create a child context with the 3-second timeout. DoSimpleLLMRequest
+	// Create a child context with the gate timeout. DoSimpleLLMRequest
 	// creates its own internal context, so we wrap the call in a goroutine
 	// and select on our timeout context.
 	ctx, cancel := context.WithTimeout(context.Background(), gateLLMTimeout)

@@ -27,9 +27,9 @@ func NewAdminReviewService(store WorkflowStore, capabilitySvc *capability.Servic
 // PendingSubmission represents a workflow version awaiting admin review,
 // enriched with the workflow definition metadata.
 type PendingSubmission struct {
-	Version      WorkflowVersion    `json:"version"`
-	WorkflowName string             `json:"workflow_name"`
-	AuthorID     string             `json:"author_id"`
+	Version      WorkflowVersion `json:"version"`
+	WorkflowName string          `json:"workflow_name"`
+	AuthorID     string          `json:"author_id"`
 }
 
 // PendingSubmissionsPage is a paginated list of pending submissions.
@@ -43,12 +43,12 @@ type PendingSubmissionsPage struct {
 // SubmissionDetail contains the complete workflow graph and configurations
 // for admin inspection during review.
 type SubmissionDetail struct {
-	Version        WorkflowVersion    `json:"version"`
-	WorkflowName   string             `json:"workflow_name"`
-	WorkflowDesc   string             `json:"workflow_description"`
-	AuthorID       string             `json:"author_id"`
-	Graph          WorkflowGraph      `json:"graph"`
-	NodeConfigs    []NodeConfigDetail `json:"node_configs"`
+	Version      WorkflowVersion    `json:"version"`
+	WorkflowName string             `json:"workflow_name"`
+	WorkflowDesc string             `json:"workflow_description"`
+	AuthorID     string             `json:"author_id"`
+	Graph        WorkflowGraph      `json:"graph"`
+	NodeConfigs  []NodeConfigDetail `json:"node_configs"`
 }
 
 // NodeConfigDetail provides a parsed view of a node's configuration for review.
@@ -162,25 +162,41 @@ func (s *AdminReviewService) ApproveSubmission(ctx context.Context, versionID st
 	if err != nil {
 		return fmt.Errorf("get previous published version: %w", err)
 	}
+
+	// Register in Capability Market before mutating workflow version state. If
+	// market publication fails, the submission remains pending for retry.
+	if err := s.registerInCapabilityMarket(ctx, ver); err != nil {
+		return fmt.Errorf("register workflow capability: %w", err)
+	}
+
 	if prevPublished != nil {
 		if err := s.store.UpdateVersionStatus(ctx, prevPublished.ID, VersionSuperseded, ""); err != nil {
+			s.rollbackCapabilityMarket(ctx, ver.WorkflowID, prevPublished)
 			return fmt.Errorf("supersede previous version: %w", err)
 		}
 	}
 
 	// Transition to published.
 	if err := s.store.UpdateVersionStatus(ctx, versionID, VersionPublished, ""); err != nil {
+		if prevPublished != nil {
+			_ = s.store.UpdateVersionStatus(ctx, prevPublished.ID, VersionPublished, "")
+		}
+		s.rollbackCapabilityMarket(ctx, ver.WorkflowID, prevPublished)
 		return fmt.Errorf("publish version: %w", err)
 	}
 
-	// Register in Capability Market.
-	if err := s.registerInCapabilityMarket(ctx, ver); err != nil {
-		// Log but don't fail the approval — the version is already published.
-		// Market registration can be retried.
-		_ = err
-	}
-
 	return nil
+}
+
+func (s *AdminReviewService) rollbackCapabilityMarket(ctx context.Context, workflowID string, previous *WorkflowVersion) {
+	if s.capabilitySvc == nil {
+		return
+	}
+	if previous != nil {
+		_ = s.registerInCapabilityMarket(ctx, previous)
+		return
+	}
+	_ = s.capabilitySvc.SetCapabilityStatus(ctx, workflowCapabilityID(workflowID), "inactive")
 }
 
 // RejectSubmission transitions a pending_review version to "rejected" with a reason.
@@ -215,7 +231,7 @@ func (s *AdminReviewService) RejectSubmission(ctx context.Context, versionID, re
 
 // UnpublishVersion transitions a published version to "unpublished".
 // This prevents new workflow instances from being created but does NOT
-// terminate running instances — they continue on their bound version.
+// terminate running instances; they continue on their bound version.
 func (s *AdminReviewService) UnpublishVersion(ctx context.Context, versionID string) error {
 	ver, err := s.store.GetVersion(ctx, versionID)
 	if err != nil {
@@ -259,14 +275,21 @@ func (s *AdminReviewService) registerInCapabilityMarket(ctx context.Context, ver
 		publisher = def.OwnerID
 	}
 
+	publishedAt := time.Now().UTC()
+	if ver.PublishedAt != nil {
+		publishedAt = ver.PublishedAt.UTC()
+	}
+
 	// Build metadata for market listing.
 	metadata := map[string]interface{}{
-		"category":       "审批类",
+		"category":       "approval_workflow",
+		"workflow_id":    ver.WorkflowID,
+		"version_id":     ver.ID,
 		"node_count":     len(ver.Graph.Nodes),
 		"approval_modes": extractApprovalModes(ver.Graph),
 		"thumbnail_url":  "/api/v1/workflow/" + ver.WorkflowID + "/thumbnail",
 		"version_number": ver.VersionNumber,
-		"published_at":   time.Now().UTC().Format(time.RFC3339),
+		"published_at":   publishedAt.Format(time.RFC3339),
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 
@@ -274,19 +297,20 @@ func (s *AdminReviewService) registerInCapabilityMarket(ctx context.Context, ver
 	globalKey := "approval_workflow:" + ver.WorkflowID
 
 	_, err = s.capabilitySvc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
-		ID:             capID,
-		CapabilityType: "approval_workflow",
-		Publisher:      publisher,
-		CapabilityID:   ver.WorkflowID,
-		DisplayName:    displayName,
-		Description:    description,
-		Source:         "hub",
-		Status:         "active",
-		GlobalKey:      globalKey,
-		MetadataJSON:   string(metadataJSON),
-		Version:        ver.VersionNumber,
-		VersionKey:     globalKey + ":" + ver.VersionNumber,
-		VersionStatus:  "active",
+		ID:                capID,
+		CapabilityType:    "approval_workflow",
+		Publisher:         publisher,
+		CapabilityID:      ver.WorkflowID,
+		DisplayName:       displayName,
+		Description:       description,
+		Source:            "hub",
+		Status:            "active",
+		GlobalKey:         globalKey,
+		MetadataJSON:      string(metadataJSON),
+		Version:           ver.VersionNumber,
+		VersionKey:        globalKey + ":" + ver.VersionNumber,
+		VersionStatus:     "active",
+		SetCurrentVersion: true,
 	})
 	return err
 }

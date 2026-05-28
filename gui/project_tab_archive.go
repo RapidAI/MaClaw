@@ -18,7 +18,7 @@ import (
 // Graceful degradation:
 //   - LLM unavailable → only marks archived, skips experience extraction
 //   - Concurrent archive → detects TaskPref.Archived=true and returns early
-//   - LLM timeout → 15s context deadline
+//   - LLM timeout -> 30s context deadline
 // ---------------------------------------------------------------------------
 
 // ArchiveRequest holds the parameters for an archive operation.
@@ -72,7 +72,7 @@ func NewArchiveService(store *memory.Store, caller archiveLLMCaller, index *memo
 // Archive performs the full archive operation:
 //  1. Check if already archived (concurrent archive guard)
 //  2. Collect project entries from memory store
-//  3. Call LLM to extract experience summary (15s timeout)
+//  3. Call LLM to extract experience summary (30s timeout)
 //  4. Save experience as project_knowledge (ScopeGlobal, tag: archived_experience)
 //  5. Mark TaskPref.Archived = true in ProjectIndex
 //
@@ -251,14 +251,15 @@ func (s *ArchiveService) extractExperience(ctx context.Context, projectName, pro
 	userMessage := fmt.Sprintf("项目名称：%s\n项目路径：%s\n\n项目记录：\n%s",
 		projectName, projectPath, entriesContent.String())
 
-	// Use 15s timeout for the LLM call.
-	llmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// Use 30s timeout for the LLM call; remote routing jitter should not drop
+	// archive extraction on otherwise healthy providers.
+	llmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	result, err := s.llmCaller.LLMClassify(llmCtx, LLMClassifyRequest{
 		SystemPrompt: systemPrompt,
 		UserMessage:  userMessage,
-		TimeoutSec:   15,
+		TimeoutSec:   30,
 		Tag:          "archive-experience",
 	})
 	if err != nil {

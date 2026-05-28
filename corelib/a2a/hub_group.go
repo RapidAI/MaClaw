@@ -176,7 +176,7 @@ func (e GroupEnvelope) ValidateCurrentHub() error {
 			return fmt.Errorf("invitation response decision is required")
 		}
 	case GroupMessageDiscussionMessage:
-		if e.Message == nil || !groupDiscussionMessageHasPayload(*e.Message) {
+		if e.Message == nil || !GroupDiscussionMessageHasPayload(*e.Message) {
 			return fmt.Errorf("discussion message content or attachment payload is required")
 		}
 	case GroupMessageDiscussionResult:
@@ -197,7 +197,7 @@ func (e GroupEnvelope) ValidateCurrentHub() error {
 	return nil
 }
 
-func groupDiscussionMessageHasPayload(msg GroupDiscussionMessage) bool {
+func GroupDiscussionMessageHasPayload(msg GroupDiscussionMessage) bool {
 	return strings.TrimSpace(msg.Content) != "" ||
 		msg.Kind == MessageStreamEnd ||
 		len(msg.TextAttachments) > 0 ||

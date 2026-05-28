@@ -239,6 +239,42 @@ func TestBuildToolDefinitionsWorkflowDocMetadataDescriptions(t *testing.T) {
 	}
 }
 
+func TestBuildToolDefinitionsCapInlinePayloads(t *testing.T) {
+	h := &IMMessageHandler{app: &App{}}
+	defs := h.buildToolDefinitions()
+
+	bashProps := toolDefinitionProperties(t, defs, "bash")
+	if got := toolSchemaMaxLength(t, bashProps, "command"); got != float64(maxAgentLoopInlineBashCommandRunes) {
+		t.Fatalf("bash command maxLength = %v, want %d", got, maxAgentLoopInlineBashCommandRunes)
+	}
+
+	writeProps := toolDefinitionProperties(t, defs, "write_file")
+	if got := toolSchemaMaxLength(t, writeProps, "content"); got != float64(maxAgentLoopInlineWriteFileContentRunes) {
+		t.Fatalf("write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
+	}
+}
+
+func TestBuiltinRegistryCapsInlinePayloads(t *testing.T) {
+	registry := NewToolRegistry()
+	registerBuiltinTools(registry, &IMMessageHandler{})
+
+	bash, ok := registry.Get("bash")
+	if !ok || bash == nil {
+		t.Fatal("bash registry tool missing")
+	}
+	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(bash.InputSchema), "command"); got != float64(maxAgentLoopInlineBashCommandRunes) {
+		t.Fatalf("registry bash command maxLength = %v, want %d", got, maxAgentLoopInlineBashCommandRunes)
+	}
+
+	write, ok := registry.Get("write_file")
+	if !ok || write == nil {
+		t.Fatal("write_file registry tool missing")
+	}
+	if got := registeredToolSchemaMaxLength(t, registeredToolSchemaProperties(write.InputSchema), "content"); got != float64(maxAgentLoopInlineWriteFileContentRunes) {
+		t.Fatalf("registry write_file content maxLength = %v, want %d", got, maxAgentLoopInlineWriteFileContentRunes)
+	}
+}
+
 func toolDefinitionProperties(t *testing.T, defs []map[string]interface{}, name string) map[string]interface{} {
 	t.Helper()
 	for _, def := range defs {
@@ -272,6 +308,52 @@ func toolSchemaDescription(t *testing.T, props map[string]interface{}, name stri
 	default:
 		t.Fatalf("schema property %s has unexpected type: %#v", name, raw)
 		return ""
+	}
+}
+
+func toolSchemaMaxLength(t *testing.T, props map[string]interface{}, name string) float64 {
+	t.Helper()
+	raw, ok := props[name]
+	if !ok {
+		t.Fatalf("schema property %s missing", name)
+	}
+	schema, ok := raw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema property %s has unexpected type: %#v", name, raw)
+	}
+	value, ok := schema["maxLength"]
+	if !ok {
+		t.Fatalf("schema property %s missing maxLength", name)
+	}
+	switch v := value.(type) {
+	case int:
+		return float64(v)
+	case float64:
+		return v
+	default:
+		t.Fatalf("schema property %s maxLength has unexpected type: %#v", name, value)
+		return 0
+	}
+}
+
+func registeredToolSchemaMaxLength(t *testing.T, props map[string]map[string]interface{}, name string) float64 {
+	t.Helper()
+	raw, ok := props[name]
+	if !ok {
+		t.Fatalf("schema property %s missing", name)
+	}
+	value, ok := raw["maxLength"]
+	if !ok {
+		t.Fatalf("schema property %s missing maxLength", name)
+	}
+	switch v := value.(type) {
+	case int:
+		return float64(v)
+	case float64:
+		return v
+	default:
+		t.Fatalf("schema property %s maxLength has unexpected type: %#v", name, value)
+		return 0
 	}
 }
 
@@ -413,6 +495,252 @@ func TestExecuteToolDetailed_ArgumentParseFailureUsesMetadata(t *testing.T) {
 	}
 }
 
+func TestExecuteToolDetailed_RegisteredHandlerInfersOutcome(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "ssh",
+		Description: "SSH",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			return "SSH connection succeeded"
+		},
+	}); err != nil {
+		t.Fatalf("Register ssh: %v", err)
+	}
+	if err := registry.Register(RegisteredTool{
+		Name:        "failing_tool",
+		Description: "Failing tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			return "error: test failed"
+		},
+	}); err != nil {
+		t.Fatalf("Register failing_tool: %v", err)
+	}
+	if err := registry.Register(RegisteredTool{
+		Name:        "empty_tool",
+		Description: "Empty tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			return ""
+		},
+	}); err != nil {
+		t.Fatalf("Register empty_tool: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+
+	success := h.executeToolDetailed("ssh", `{}`, nil)
+	if success.Outcome != toolOutcomeSucceeded || success.FailureKind != toolFailureNone {
+		t.Fatalf("success result metadata = %+v, want succeeded/no failure", success)
+	}
+
+	failure := h.executeToolDetailed("failing_tool", `{}`, nil)
+	if failure.Outcome != toolOutcomeFailed || failure.FailureKind != toolFailureHandlerReported {
+		t.Fatalf("failure result metadata = %+v, want failed/handler_reported", failure)
+	}
+
+	empty := h.executeToolDetailed("empty_tool", `{}`, nil)
+	if empty.Outcome != toolOutcomeUncertain || empty.FailureKind != toolFailureNone {
+		t.Fatalf("empty result metadata = %+v, want uncertain/no failure", empty)
+	}
+}
+
+func TestPinConditionalToolAfterSuccessRequiresSucceededOutcome(t *testing.T) {
+	h := &IMMessageHandler{toolRouter: NewToolRouter(NewToolDefinitionGenerator(nil, nil))}
+
+	h.pinConditionalToolAfterSuccess("ssh", toolExecutionResult{Outcome: toolOutcomeUncertain, FailureKind: toolFailureNone})
+	if h.toolRouter.IsSessionPinned("ssh") {
+		t.Fatal("uncertain outcome should not session-pin ssh")
+	}
+
+	h.pinConditionalToolAfterSuccess("ssh", toolExecutionResult{Outcome: toolOutcomeSucceeded, FailureKind: toolFailureNone})
+	if !h.toolRouter.IsSessionPinned("ssh") {
+		t.Fatal("succeeded outcome should session-pin ssh")
+	}
+}
+
+func TestDiscoverToolDoesNotSessionPinConditionalTool(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "ssh", Description: "SSH remote server access", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+		t.Fatalf("Register ssh: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry, toolRouter: NewToolRouter(NewToolDefinitionGenerator(nil, nil))}
+
+	out := h.toolDiscoverTool(map[string]interface{}{"need": "ssh remote server"})
+	if !strings.Contains(out, "ssh") {
+		t.Fatalf("discover output should mention ssh, got %q", out)
+	}
+	if h.toolRouter.IsSessionPinned("ssh") {
+		t.Fatal("discover_tool should not session-pin ssh before actual successful use")
+	}
+}
+
+func TestDiscoverToolActivatesDeferredToolDefinition(t *testing.T) {
+	guiObserveDef := map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "gui_observe",
+			"description": "observe desktop gui screen",
+			"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		},
+	}
+	gen := NewToolDefinitionGenerator(nil, []map[string]interface{}{guiObserveDef})
+	gen.SetDeferredTools([]string{"gui_observe"})
+	h := &IMMessageHandler{toolDefGen: gen, cachedTools: []map[string]interface{}{{"name": "stale"}}, toolsCacheTime: time.Now()}
+
+	out := h.toolDiscoverTool(map[string]interface{}{"need": "observe desktop gui"})
+	if !strings.Contains(out, "gui_observe") || !strings.Contains(out, "activated") {
+		t.Fatalf("discover output should activate gui_observe, got %q", out)
+	}
+	if h.cachedTools != nil {
+		t.Fatalf("discover activation should invalidate cached tools")
+	}
+	if !toolDefsContain(gen.Generate(), "gui_observe") {
+		t.Fatalf("activated deferred tool should be included by Generate")
+	}
+}
+
+func TestFilterInactiveDeferredToolsForRegistryPath(t *testing.T) {
+	guiObserveDef := map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "gui_observe",
+			"description": "observe desktop gui screen",
+			"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		},
+	}
+	bashDef := map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "bash",
+			"description": "run command",
+			"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		},
+	}
+	gen := NewToolDefinitionGenerator(nil, []map[string]interface{}{guiObserveDef})
+	gen.SetDeferredTools([]string{"gui_observe"})
+	h := &IMMessageHandler{toolDefGen: gen}
+
+	filtered := h.filterInactiveDeferredTools([]map[string]interface{}{bashDef, guiObserveDef})
+	if toolDefsContain(filtered, "gui_observe") {
+		t.Fatalf("inactive deferred tool should be filtered from registry-built tools")
+	}
+	if !toolDefsContain(filtered, "bash") {
+		t.Fatalf("non-deferred tool should remain available")
+	}
+
+	gen.ActivateDeferredTool("gui_observe")
+	filtered = h.filterInactiveDeferredTools([]map[string]interface{}{bashDef, guiObserveDef})
+	if !toolDefsContain(filtered, "gui_observe") {
+		t.Fatalf("activated deferred tool should remain available")
+	}
+}
+
+func TestPreCheckToolArgsForAgentLoopArgumentParseFailureUsesMetadata(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "write_file",
+		Description: "Write file",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"path":    map[string]interface{}{"type": "string"},
+				"content": map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"path", "content"},
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+
+	result := h.preCheckToolArgsForAgentLoop("write_file", `{"path":`, 2)
+	if result == nil {
+		t.Fatal("expected precheck argument parse failure")
+	}
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailureArgumentParse {
+		t.Fatalf("unexpected metadata: %+v", *result)
+	}
+	if !strings.Contains(result.Text, "arguments JSON parse failed") {
+		t.Fatalf("expected parse failure text, got: %q", result.Text)
+	}
+}
+
+func TestPreCheckAgentLoopInlinePayloadLimitGuidesChunking(t *testing.T) {
+	writeResult := preCheckAgentLoopInlinePayloadLimit("write_file", fmt.Sprintf(`{"path":"out.txt","content":%q}`, strings.Repeat("x", maxAgentLoopInlineWriteFileContentRunes+1)), 3)
+	if writeResult == nil {
+		t.Fatal("expected oversized write_file content to be rejected before execution")
+	}
+	if writeResult.Outcome != toolOutcomeFailed || writeResult.FailureKind != toolFailureValidation {
+		t.Fatalf("unexpected write_file metadata: %+v", *writeResult)
+	}
+	for _, want := range []string{"too large", "mode=overwrite", "mode=append"} {
+		if !strings.Contains(writeResult.Text, want) {
+			t.Fatalf("write_file result %q missing %q", writeResult.Text, want)
+		}
+	}
+
+	bashResult := preCheckAgentLoopInlinePayloadLimit("bash", fmt.Sprintf(`{"command":%q}`, strings.Repeat("x", maxAgentLoopInlineBashCommandRunes+1)), 4)
+	if bashResult == nil {
+		t.Fatal("expected oversized bash command to be rejected before execution")
+	}
+	for _, want := range []string{"too large", "Do not embed generated file bodies", "craft_tool"} {
+		if !strings.Contains(bashResult.Text, want) {
+			t.Fatalf("bash result %q missing %q", bashResult.Text, want)
+		}
+	}
+}
+
+func TestExecuteAgentLoopToolCallRejectsOversizedInlinePayloadBeforeHandler(t *testing.T) {
+	registry := NewToolRegistry()
+	executed := false
+	if err := registry.Register(RegisteredTool{
+		Name:        "bash",
+		Description: "Shell",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"command": map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"command"},
+		},
+		Handler: func(args map[string]interface{}) string {
+			executed = true
+			return "should not execute"
+		},
+	}); err != nil {
+		t.Fatalf("Register bash: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+
+	result := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		ToolCall: llm.ToolCall{
+			ID: "call_large_bash",
+			Function: llm.ToolCallFunction{
+				Name:      "bash",
+				Arguments: fmt.Sprintf(`{"command":%q}`, strings.Repeat("x", maxAgentLoopInlineBashCommandRunes+1)),
+			},
+		},
+	})
+
+	if executed {
+		t.Fatal("oversized bash payload reached handler")
+	}
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailureValidation {
+		t.Fatalf("unexpected result metadata: %+v", result)
+	}
+	if !strings.Contains(result.Text, "too large") || !strings.Contains(result.Text, "Do not embed generated file bodies") {
+		t.Fatalf("unexpected oversized payload guidance: %q", result.Text)
+	}
+}
+
 func TestParseToolPayloadResult(t *testing.T) {
 	image := parseToolPayloadResult("[screenshot_base64]abc123")
 	if image.ImageKey != "abc123" || image.TraceResult != "Tool result prepared for the user." {
@@ -539,8 +867,11 @@ func TestResolveBashTimeout_PrefersPDFDefaultOnlyWhenNoExplicitTimeout(t *testin
 	if got := resolveBashTimeout(map[string]interface{}{}, "npm test"); got != bashDefaultTimeout {
 		t.Fatalf("resolveBashTimeout(non-pdf) = %d, want %d", got, bashDefaultTimeout)
 	}
-	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(45)}, "python render_pdf.py --input review.md"); got != 45 {
-		t.Fatalf("resolveBashTimeout(explicit) = %d, want 45", got)
+	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(360)}, "python render_pdf.py --input review.md"); got != 360 {
+		t.Fatalf("resolveBashTimeout(explicit) = %d, want 360", got)
+	}
+	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(45)}, "python render_pdf.py --input review.md"); got != bashDefaultTimeout {
+		t.Fatalf("resolveBashTimeout(explicit below min) = %d, want %d", got, bashDefaultTimeout)
 	}
 	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(999)}, "python render_pdf.py --input review.md"); got != bashMaxTimeout {
 		t.Fatalf("resolveBashTimeout(clamped) = %d, want %d", got, bashMaxTimeout)
@@ -581,7 +912,7 @@ func TestToolGeneratePDFValidation_RejectsFilePayloadMarker(t *testing.T) {
 }
 
 // TestGetTools_FallbackWithoutGenerator verifies that getTools() returns
-// the hardcoded buildToolDefinitions() output when no generator is set.
+// builtin tools but strips external coding-session tools from the agent list.
 func TestGetTools_FallbackWithoutGenerator(t *testing.T) {
 	handler := &IMMessageHandler{
 		app: &App{},
@@ -592,11 +923,22 @@ func TestGetTools_FallbackWithoutGenerator(t *testing.T) {
 		t.Fatal("expected non-empty builtin tools")
 	}
 
-	// Verify first tool is list_sessions.
+	assertNoCodingSessionTools(t, tools)
+
+	// Verify first exposed tool is ssh after session tools are filtered.
 	name := extractToolName(tools[0])
-	if name != "list_sessions" {
-		t.Errorf("expected first tool to be list_sessions, got %s", name)
+	if name != "ssh" {
+		t.Errorf("expected first tool to be ssh, got %s", name)
 	}
+}
+
+func hasToolNamed(tools []map[string]interface{}, name string) bool {
+	for _, tool := range tools {
+		if extractToolName(tool) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TestGetTools_UsesGeneratorWhenSet verifies that getTools() delegates to
@@ -611,9 +953,19 @@ func TestGetTools_UsesGeneratorWhenSet(t *testing.T) {
 	handler.SetToolDefGenerator(gen)
 
 	tools := handler.getTools()
-	// With nil registry, generator returns only builtins.
-	if len(tools) != len(builtins) {
-		t.Fatalf("expected %d tools from generator (nil registry), got %d", len(builtins), len(tools))
+	if len(tools) >= len(builtins) {
+		t.Fatalf("expected coding-session tools to be filtered from generator output: builtins=%d tools=%d", len(builtins), len(tools))
+	}
+	assertNoCodingSessionTools(t, tools)
+}
+
+func assertNoCodingSessionTools(t *testing.T, tools []map[string]interface{}) {
+	t.Helper()
+	for _, tool := range tools {
+		name := extractToolName(tool)
+		if coretool.IsCodingSessionTool(name) {
+			t.Fatalf("agent tool list should not expose external coding-session tool %s", name)
+		}
 	}
 }
 
@@ -678,6 +1030,24 @@ func TestGetTools_CacheInvalidatedBySetGenerator(t *testing.T) {
 	}
 }
 
+func TestGetTools_CacheInvalidatedBySetRegistry(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}, registry: NewToolRegistry()}
+	handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
+	_ = handler.getTools()
+
+	if handler.cachedTools == nil || handler.toolsCacheTime.IsZero() {
+		t.Fatal("expected getTools to populate cache before registry replacement")
+	}
+	handler.SetToolRegistry(NewToolRegistry())
+
+	if handler.cachedTools != nil {
+		t.Fatal("expected cachedTools to be nil after SetToolRegistry")
+	}
+	if !handler.toolsCacheTime.IsZero() {
+		t.Fatal("expected toolsCacheTime to be zero after SetToolRegistry")
+	}
+}
+
 // TestRouteTools_NoRouterFailsClosed verifies that routeTools still applies
 // conservative conditional-tool filtering when no router is configured.
 func TestRouteTools_NoRouterFailsClosed(t *testing.T) {
@@ -686,6 +1056,7 @@ func TestRouteTools_NoRouterFailsClosed(t *testing.T) {
 	}
 
 	tools := handler.buildToolDefinitions()
+	tools = append(tools, toolDef("set_nickname", "设置昵称", nil, nil))
 	routed := handler.routeTools("open a browser and inspect the remote server", tools)
 
 	if len(routed) == 0 || len(routed) > len(tools) {
@@ -696,6 +1067,49 @@ func TestRouteTools_NoRouterFailsClosed(t *testing.T) {
 		if name == "browser" || name == "ssh" {
 			t.Fatalf("conditional tool %q should fail closed without configured router", name)
 		}
+	}
+}
+
+func TestRouteTools_SetNicknameRequiresExplicitUserRequest(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+	tools = append(tools, toolDef("set_nickname", "设置昵称", nil, nil))
+
+	routed := handler.routeTools("检查 api 服务器", tools)
+	for _, item := range routed {
+		if extractToolName(item) == "set_nickname" {
+			t.Fatal("set_nickname should not be exposed for unrelated tasks")
+		}
+	}
+
+	routed = handler.routeTools("以后叫你小管家", tools)
+	found := false
+	for _, item := range routed {
+		if extractToolName(item) == "set_nickname" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("set_nickname should be exposed for explicit rename requests")
+	}
+}
+
+func TestExecuteAgentLoopToolCallRejectsUnsolicitedSetNickname(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID:   desktopUserID,
+		UserText: "检查 api 服务器",
+		ToolCall: llm.ToolCall{ID: "call_1", Function: llm.ToolCallFunction{
+			Name:      "set_nickname",
+			Arguments: `{"nickname":"小管家"}`,
+		}},
+	})
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got outcome=%s failure=%s text=%q", result.Outcome, result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "only allowed") {
+		t.Fatalf("unexpected rejection text: %q", result.Text)
 	}
 }
 
@@ -821,6 +1235,51 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 	runCase("我要查询数据库", false)
 }
 
+func TestRouteTools_WiresHandlerUnifiedClassifierIntoRouter(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+	for i := 0; i < 20; i++ {
+		handler.registry.Register(RegisteredTool{
+			Name:        fmt.Sprintf("extra_%d", i),
+			Description: fmt.Sprintf("extra tool %d", i),
+			Category:    ToolCategoryNonCode,
+			Status:      RegToolAvailable,
+		})
+	}
+	tools := NewDynamicToolBuilder(handler.registry).BuildAll()
+	if len(tools) <= maxToolBudget {
+		t.Fatalf("need more than %d tools to test routing, got %d", maxToolBudget, len(tools))
+	}
+	handler.unifiedClassifier = intent.New(intent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"ssh","score":0.95,"reason":"server operation"}]}`, nil
+		},
+		LLMTimeout: time.Second,
+	})
+
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	handler.SetToolRouter(router)
+	routed := handler.routeTools("将驱网服务器上的 19080 端口反代到 ve.mypapers.top", tools)
+	foundSSH := false
+	foundCallMCPTool := false
+	for _, tool := range routed {
+		switch extractToolName(tool) {
+		case "ssh":
+			foundSSH = true
+		case "call_mcp_tool":
+			foundCallMCPTool = true
+		}
+	}
+	if !foundSSH {
+		t.Fatalf("expected ssh to be routed from handler unified classifier")
+	}
+	if foundCallMCPTool {
+		t.Fatalf("call_mcp_tool should be hidden when ssh is routed")
+	}
+}
+
 func TestToolCallMCPToolRejectsBuiltinToolRefs(t *testing.T) {
 	handler := &IMMessageHandler{registry: NewToolRegistry()}
 	if err := handler.registry.Register(RegisteredTool{
@@ -844,6 +1303,170 @@ func TestToolCallMCPToolRejectsBuiltinToolRefs(t *testing.T) {
 	}
 	if !strings.Contains(out, "MCP 调用被拒绝") || !strings.Contains(out, "直接调用 ssh") {
 		t.Fatalf("unexpected rejection text: %q", out)
+	}
+}
+
+func TestPreCheckToolArgsForAgentLoopReturnsMCPValidationToLLM(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "call_mcp_tool",
+		Description: "Call MCP tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"server_id": map[string]interface{}{"type": "string"},
+				"tool_name": map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{"type": "object"},
+			},
+			"required": []interface{}{"server_id", "tool_name"},
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	mgr := NewLocalMCPManager(nil)
+	mgr.clients["wiki"] = &LocalMCPClient{
+		entry: corelib.LocalMCPServerEntry{ID: "wiki", Name: "Wiki"},
+		tools: []MCPToolView{{
+			Name: "confluence_get_page_children",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"parent_id": map[string]interface{}{"type": "string"},
+					"limit":     map[string]interface{}{"type": "integer"},
+				},
+				"required": []interface{}{"parent_id"},
+			},
+		}},
+		running: true,
+	}
+	handler := &IMMessageHandler{app: &App{localMCPManager: mgr}, registry: registry}
+
+	result := handler.preCheckToolArgsForAgentLoop("call_mcp_tool", `{"server_id":"wiki","tool_name":"confluence_get_page_children","arguments":{"limit":25}}`, 3)
+	if result == nil {
+		t.Fatal("expected agent-loop MCP validation result")
+	}
+	if result.FailureKind != toolFailureMissingParameters || result.Outcome != toolOutcomeFailed {
+		t.Fatalf("unexpected result metadata: %+v", *result)
+	}
+	if !strings.Contains(result.Text, "parent_id") || !strings.Contains(result.Text, "Missing required MCP argument") {
+		t.Fatalf("validation result should tell LLM which MCP argument to recover, got: %q", result.Text)
+	}
+	if strings.Contains(result.Text, "task panel") || strings.Contains(result.Text, "form") {
+		t.Fatalf("agent-loop validation must not route to manual AgentView form: %q", result.Text)
+	}
+}
+
+func TestPreCheckToolArgsForAgentLoopAcceptsMCPArgumentsJSONString(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "call_mcp_tool",
+		Description: "Call MCP tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"server_id": map[string]interface{}{"type": "string"},
+				"tool_name": map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{"type": "object"},
+			},
+			"required": []interface{}{"server_id", "tool_name"},
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	mgr := NewLocalMCPManager(nil)
+	mgr.clients["wiki"] = &LocalMCPClient{
+		entry: corelib.LocalMCPServerEntry{ID: "wiki", Name: "Wiki"},
+		tools: []MCPToolView{{
+			Name: "confluence_get_page_children",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"parent_id": map[string]interface{}{"type": "string"},
+					"limit":     map[string]interface{}{"type": "integer"},
+				},
+				"required": []interface{}{"parent_id"},
+			},
+		}},
+		running: true,
+	}
+	handler := &IMMessageHandler{app: &App{localMCPManager: mgr}, registry: registry}
+
+	result := handler.preCheckToolArgsForAgentLoop("call_mcp_tool", `{"server_id":"wiki","tool_name":"confluence_get_page_children","arguments":"{\"limit\":25}"}`, 4)
+	if result == nil {
+		t.Fatal("expected inner MCP validation result")
+	}
+	if result.FailureKind != toolFailureMissingParameters || !strings.Contains(result.Text, "parent_id") {
+		t.Fatalf("expected inner missing parent_id, got: %+v", *result)
+	}
+	if strings.Contains(result.Text, "arguments must be an object") {
+		t.Fatalf("MCP JSON-string arguments should be normalized before outer validation: %q", result.Text)
+	}
+}
+
+func TestToolCallMCPToolAcceptsCleanableArgumentsJSONString(t *testing.T) {
+	mgr := NewLocalMCPManager(nil)
+	mgr.clients["wiki"] = &LocalMCPClient{
+		entry: corelib.LocalMCPServerEntry{ID: "wiki", Name: "Wiki"},
+		tools: []MCPToolView{{
+			Name: "confluence_get_page_children",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"parent_id": map[string]interface{}{"type": "string"},
+					"limit":     map[string]interface{}{"type": "integer"},
+				},
+				"required": []interface{}{"parent_id"},
+			},
+		}},
+		running: true,
+	}
+	handler := &IMMessageHandler{app: &App{localMCPManager: mgr}}
+
+	out := handler.toolCallMCPTool(map[string]interface{}{
+		"server_id": "wiki",
+		"tool_name": "confluence_get_page_children",
+		"arguments": "```json\n{\"limit\":25}\n```",
+	})
+	if strings.Contains(out, "JSON") && strings.Contains(out, "瑙ｆ瀽") {
+		t.Fatalf("cleanable JSON-string arguments should not fail parsing: %q", out)
+	}
+	if !strings.Contains(out, "parent_id") {
+		t.Fatalf("expected inner MCP validation after parsing, got: %q", out)
+	}
+}
+
+func TestPreCheckToolArgsForAgentLoopRejectsInvalidMCPArgumentsShape(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "call_mcp_tool",
+		Description: "Call MCP tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"server_id": map[string]interface{}{"type": "string"},
+				"tool_name": map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{},
+			},
+			"required": []interface{}{"server_id", "tool_name"},
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	handler := &IMMessageHandler{registry: registry}
+
+	result := handler.preCheckToolArgsForAgentLoop("call_mcp_tool", `{"server_id":"wiki","tool_name":"search","arguments":["bad"]}`, 1)
+	if result == nil || result.FailureKind != toolFailureArgumentParse {
+		t.Fatalf("expected argument parse failure, got: %+v", result)
+	}
+	if !strings.Contains(result.Text, "arguments must be an object") {
+		t.Fatalf("expected actionable argument shape error, got: %q", result.Text)
 	}
 }
 
@@ -958,6 +1581,7 @@ func TestToolsCacheTTL_Value(t *testing.T) {
 // TestToolCreateSession_SmartToolRecommendation verifies that toolCreateSession
 // auto-recommends a tool when the tool parameter is empty and contextResolver is set.
 func TestToolCreateSession_SmartToolRecommendation(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{
 		app:          &App{},
 		lastUserText: "请修改代码并创建会话",
@@ -974,6 +1598,7 @@ func TestToolCreateSession_SmartToolRecommendation(t *testing.T) {
 // TestToolCreateSession_WithToolProvided verifies that toolCreateSession
 // uses the provided tool parameter directly (no auto-recommendation).
 func TestToolCreateSession_WithToolProvided(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{
 		app:          &App{},
 		lastUserText: "fix code and create a coding session",
@@ -991,6 +1616,7 @@ func TestToolCreateSession_WithToolProvided(t *testing.T) {
 }
 
 func TestToolCreateSession_SSHIntentBlocked(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "ssh to 10.0.0.8 and inspect nginx logs"}
 	handler.unifiedClassifier = testIntentClassifier("ssh")
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
@@ -1000,6 +1626,7 @@ func TestToolCreateSession_SSHIntentBlocked(t *testing.T) {
 }
 
 func TestToolCreateSession_NonCodingIntentBlocked(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "translate this paper"}
 	handler.unifiedClassifier = testIntentClassifier("non_coding")
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
@@ -1009,10 +1636,36 @@ func TestToolCreateSession_NonCodingIntentBlocked(t *testing.T) {
 }
 
 func TestToolCreateSession_AmbiguousIntentBlocked(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "help me handle the production issue"}
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
 	if !contains(result, "ambiguous") || !contains(result, "Do not create a coding session yet") {
 		t.Fatalf("expected ambiguous guard hint, got: %s", result)
+	}
+}
+
+func TestToolCreateSessionDisabled(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}, lastUserText: "fix code"}
+	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
+	if !contains(result, "create_session is disabled") || !contains(result, "CodingSubAgent") {
+		t.Fatalf("expected disabled CodingSubAgent guidance, got: %s", result)
+	}
+}
+
+func TestExternalCodingSessionFollowupToolsDisabled(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	for name, call := range map[string]func() string{
+		"send_input": func() string { return handler.toolSendInput(map[string]interface{}{"session_id": "s1", "text": "go"}) },
+		"send_and_observe": func() string {
+			return handler.toolSendAndObserve(map[string]interface{}{"session_id": "s1", "text": "go"})
+		},
+		"parallel_execute": func() string { return handler.toolParallelExecute(map[string]interface{}{"tasks": []interface{}{}}) },
+		"launch_template":  func() string { return handler.toolLaunchTemplate(map[string]interface{}{"template_name": "t1"}) },
+	} {
+		result := call()
+		if !contains(result, name+" is disabled") || !contains(result, "CodingSubAgent") {
+			t.Fatalf("%s should be disabled with CodingSubAgent guidance, got: %s", name, result)
+		}
 	}
 }
 
@@ -1457,6 +2110,7 @@ func TestBuildToolDefinitions_CreateSessionHasProviderParam(t *testing.T) {
 // TestToolCreateSession_NoProviderBehaviorUnchanged verifies that not passing
 // provider keeps the original behavior (tool param required, no provider passed).
 func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "请修改代码并创建会话"}
 	handler.unifiedClassifier = testCodingIntentClassifier()
 
@@ -1484,6 +2138,7 @@ func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
 // parameter is extracted and resolved via ProviderResolver. When the specified
 // provider doesn't exist, the resolver returns an error before reaching session creation.
 func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{sessionStarter: &CodingSessionStarter{}}, lastUserText: "请修改代码并创建会话"}
 	handler.unifiedClassifier = testCodingIntentClassifier()
 
@@ -1532,6 +2187,7 @@ func TestBuildToolDefinitions_CreateSessionHasResumeSessionIDParam(t *testing.T)
 // TestToolCreateSession_ProviderDescriptionInToolDef verifies the create_session
 // description mentions provider selection and resume support.
 func TestToolCreateSession_ProviderDescriptionInToolDef(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{}}
 	tools := handler.buildToolDefinitions()
 
@@ -1556,6 +2212,7 @@ func TestToolCreateSession_ProviderDescriptionInToolDef(t *testing.T) {
 }
 
 func TestBuildToolDefinitions_CreateSessionDescriptionMentionsSSH(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	handler := &IMMessageHandler{app: &App{}}
 	tools := handler.buildToolDefinitions()
 	for _, tool := range tools {
@@ -1842,6 +2499,7 @@ func TestToolListProviders_ModelIdTruncation(t *testing.T) {
 // TestToolCreateSession_NoProviderUsesDefault verifies that when no provider
 // is specified, the ProviderResolver uses the default provider from corelib.ToolConfig.
 func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -1885,6 +2543,7 @@ func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 // provider. Since the test environment has remote mode disabled, the session
 // creation will fail, but the provider resolution should succeed with fallback.
 func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -1943,6 +2602,7 @@ func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
 // TestToolCreateSession_UserSpecifiedProviderUsed verifies that when the user
 // specifies a valid provider, it is used directly without fallback.
 func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -2012,6 +2672,7 @@ func TestBuildToolDefinitions_CreateSessionHasProjectIDParam(t *testing.T) {
 // TestToolCreateSession_ProjectIDResolvesSuccessfully verifies that when
 // project_id matches a configured project, its path is used.
 func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -2052,6 +2713,7 @@ func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
 // TestToolCreateSession_ProjectIDNotFound verifies that when project_id
 // doesn't match any configured project, an error with available projects is returned.
 func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -2087,6 +2749,7 @@ func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
 // TestToolCreateSession_ProjectIDPriorityOverProjectPath verifies that
 // project_id takes priority over project_path when both are provided.
 func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
+	t.Skip("legacy external create_session is disabled; covered by TestToolCreateSessionDisabled")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -2257,5 +2920,46 @@ func TestExecuteTool_ProjectManageRouting(t *testing.T) {
 	// With no projects, should return hint.
 	if !contains(result, "当前没有已配置的项目") {
 		t.Errorf("expected no projects hint, got: %s", result)
+	}
+}
+
+func TestRouteTools_SSHIntentKeepsBashButHidesMCPGateway(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+	for i := 0; i < 20; i++ {
+		handler.registry.Register(RegisteredTool{
+			Name:        fmt.Sprintf("extra_ssh_bash_%d", i),
+			Description: fmt.Sprintf("extra tool %d", i),
+			Category:    ToolCategoryNonCode,
+			Status:      RegToolAvailable,
+		})
+	}
+	tools := NewDynamicToolBuilder(handler.registry).BuildAll()
+	handler.unifiedClassifier = testIntentClassifier("ssh")
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	handler.SetToolRouter(router)
+
+	routed := handler.routeTools("configure nginx on production server", tools)
+	foundBash := false
+	for _, tool := range routed {
+		name := extractToolName(tool)
+		if name == "call_mcp_tool" {
+			t.Fatalf("call_mcp_tool should be hidden when ssh intent is routed; got tools=%v", routed)
+		}
+		if name == "bash" {
+			foundBash = true
+		}
+	}
+	if !foundBash {
+		t.Fatalf("bash should remain available for local helper work; got tools=%v", routed)
+	}
+}
+
+func TestToolBashRejectsRawSSHCommand(t *testing.T) {
+	handler := &IMMessageHandler{}
+	result := handler.toolBash(map[string]interface{}{"command": "ssh root@example.com uptime"}, nil)
+	if !strings.Contains(result, "Raw ssh/scp/sftp") || !strings.Contains(result, "builtin ssh tool") {
+		t.Fatalf("expected raw ssh command rejection, got: %s", result)
 	}
 }

@@ -5,9 +5,9 @@ package main
 // to the abstract interfaces expected by swarm.SwarmOrchestrator.
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"net/http"
 	"time"
 
@@ -24,17 +24,7 @@ type guiSessionAdapter struct {
 }
 
 func (a *guiSessionAdapter) Create(spec swarm.SwarmLaunchSpec) (swarm.SwarmSession, error) {
-	ls := LaunchSpec{
-		Tool:         spec.Tool,
-		ProjectPath:  spec.ProjectPath,
-		Env:          spec.Env,
-		LaunchSource: RemoteLaunchSourceAI,
-	}
-	session, err := a.manager.Create(ls)
-	if err != nil {
-		return nil, err
-	}
-	return &guiSessionWrapper{session: session}, nil
+	return nil, fmt.Errorf("external coding session creation is disabled; use CodingSubAgent for agent coding work")
 }
 
 func (a *guiSessionAdapter) Get(sessionID string) (swarm.SwarmSession, bool) {
@@ -50,7 +40,7 @@ func (a *guiSessionAdapter) Kill(sessionID string) error {
 }
 
 func (a *guiSessionAdapter) WriteInput(sessionID, text string) error {
-	return a.manager.WriteInput(sessionID, text)
+	return fmt.Errorf("external coding session input is disabled; use CodingSubAgent for agent coding work")
 }
 
 // ---------------------------------------------------------------------------

@@ -516,15 +516,18 @@ func (s *Service) ImportMachines(ctx context.Context, userID string, machines []
 		if machine == nil || strings.TrimSpace(machine.ID) == "" {
 			continue
 		}
+		copy := *machine
+		copy.UserID = strings.TrimSpace(userID)
 		existing, err := s.repo.GetByID(ctx, machine.ID)
 		if err != nil {
 			return err
 		}
 		if existing != nil {
-			continue
+			if strings.TrimSpace(existing.UserID) == strings.TrimSpace(userID) {
+				continue
+			}
+			copy.ID = fmt.Sprintf("%s_mig_%d", strings.TrimSpace(machine.ID), time.Now().UnixNano())
 		}
-		copy := *machine
-		copy.UserID = strings.TrimSpace(userID)
 		if strings.TrimSpace(copy.TenantID) == "" {
 			copy.TenantID = store.DefaultTenantID
 		}

@@ -27,13 +27,13 @@ export function MCPSecretConfigurationEditor({ requirements, inputs, onChange, t
                 const canUseLocal = policy !== "hub";
                 return (
                     <div key={req.name} style={rowStyle}>
-                        <div style={{ minWidth: 0 }}>
+                        <div style={{ flex: "1 1 140px", minWidth: 0, textAlign: "left" }}>
                             <div style={{ fontSize: "0.72rem", fontWeight: 600, color: colors.text }}>{req.label || req.name}{req.required ? " *" : ""}</div>
-                            <div style={{ fontSize: "0.68rem", color: colors.textMuted }}>{input.configured && !input.value ? translate(input.storage === "local" ? "mcpSecretConfiguredLocal" : "mcpSecretConfiguredHub") : policy}</div>
+                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, lineHeight: 1.4, textAlign: "left" }}>{input.configured && !input.value ? translate(input.storage === "local" ? "mcpSecretConfiguredLocal" : "mcpSecretConfiguredHub") : policy}</div>
                         </div>
                         <select
                             className="form-input"
-                            style={{ width: "92px", fontSize: "0.7rem" }}
+                            style={{ width: "92px", fontSize: "0.7rem", flexShrink: 0 }}
                             value={input.storage}
                             onChange={(e) => {
                                 const storage = e.target.value as "hub" | "local";
@@ -46,7 +46,7 @@ export function MCPSecretConfigurationEditor({ requirements, inputs, onChange, t
                         <input
                             className="form-input"
                             type="password"
-                            style={{ flex: 1, fontSize: "0.72rem" }}
+                            style={{ flex: "1 1 160px", minWidth: 0, fontSize: "0.72rem" }}
                             value={input.value}
                             onChange={(e) => updateInput(req.name, { ...input, value: e.target.value })}
                             placeholder={input.storage === "hub" ? translate("mcpSecretSaveHub") : translate("mcpSecretSaveLocal")}
@@ -67,10 +67,13 @@ const containerStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
     gap: "6px",
+    textAlign: "left",
 };
 
 const rowStyle: CSSProperties = {
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-start",
+    flexWrap: "wrap",
     gap: "6px",
+    textAlign: "left",
 };

@@ -16,6 +16,8 @@ import (
 
 type RemoteActivationResult struct {
 	Status       string `json:"status"`
+	TenantID     string `json:"tenant_id,omitempty"`
+	TenantName   string `json:"tenant_name,omitempty"`
 	Message      string `json:"message,omitempty"`
 	Code         string `json:"code,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
@@ -30,16 +32,20 @@ type RemoteActivationResult struct {
 
 type RemoteProbeResult struct {
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
+	TenantID               string `json:"tenant_id,omitempty"`
+	TenantName             string `json:"tenant_name,omitempty"`
 	Status                 string `json:"status,omitempty"`
 	Message                string `json:"message,omitempty"`
 }
 
 type RemoteActivationStatus struct {
-	Activated bool   `json:"activated"`
-	Email     string `json:"email"`
-	SN        string `json:"sn"`
-	MachineID string `json:"machine_id"`
-	HubURL    string `json:"hub_url"`
+	Activated  bool   `json:"activated"`
+	Email      string `json:"email"`
+	SN         string `json:"sn"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	TenantName string `json:"tenant_name,omitempty"`
+	MachineID  string `json:"machine_id"`
+	HubURL     string `json:"hub_url"`
 }
 
 type RemoteHubCenterHub struct {
@@ -167,8 +173,12 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		cfg.RemoteEmail = enrollResult.Email
 		cfg.RemoteSN = enrollResult.SN
 		cfg.RemoteUserID = enrollResult.UserID
+		cfg.RemoteTenantID = enrollResult.TenantID
+		cfg.RemoteTenantName = enrollResult.TenantName
 		cfg.RemoteMachineID = enrollResult.MachineID
+		cfg.RemoteMachineName = profile.Name
 		cfg.RemoteMachineToken = enrollResult.MachineToken
+		cfg.RemoteNickname = ""
 		cfg.RemoteHubURL = enrollResult.HubURL
 		cfg.RemoteEnabled = true
 		if enrollResult.ViewerToken != "" {
@@ -197,6 +207,8 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	// Convert to GUI result type.
 	result := RemoteActivationResult{
 		Status:       enrollResult.Status,
+		TenantID:     enrollResult.TenantID,
+		TenantName:   enrollResult.TenantName,
 		Message:      enrollResult.Message,
 		Code:         enrollResult.Code,
 		UserID:       enrollResult.UserID,
@@ -269,11 +281,13 @@ func (a *App) GetRemoteActivationStatus() RemoteActivationStatus {
 		return RemoteActivationStatus{}
 	}
 	return RemoteActivationStatus{
-		Activated: cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "",
-		Email:     cfg.RemoteEmail,
-		SN:        cfg.RemoteSN,
-		MachineID: cfg.RemoteMachineID,
-		HubURL:    cfg.RemoteHubURL,
+		Activated:  cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "",
+		Email:      cfg.RemoteEmail,
+		SN:         cfg.RemoteSN,
+		TenantID:   cfg.RemoteTenantID,
+		TenantName: cfg.RemoteTenantName,
+		MachineID:  cfg.RemoteMachineID,
+		HubURL:     cfg.RemoteHubURL,
 	}
 }
 
@@ -326,9 +340,13 @@ func (a *App) clearMachineCredentials() {
 	_ = a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.RemoteSN = ""
 		cfg.RemoteUserID = ""
+		cfg.RemoteTenantID = ""
+		cfg.RemoteTenantName = ""
 		cfg.RemoteMachineID = ""
+		cfg.RemoteMachineName = ""
 		cfg.RemoteMachineToken = ""
 		cfg.RemoteViewerToken = ""
+		cfg.RemoteNickname = ""
 	})
 
 	a.emitRemoteStateChanged()
@@ -343,9 +361,13 @@ func (a *App) ClearRemoteActivation() error {
 		cfg.RemoteEmail = ""
 		cfg.RemoteSN = ""
 		cfg.RemoteUserID = ""
+		cfg.RemoteTenantID = ""
+		cfg.RemoteTenantName = ""
 		cfg.RemoteMachineID = ""
+		cfg.RemoteMachineName = ""
 		cfg.RemoteMachineToken = ""
 		cfg.RemoteViewerToken = ""
+		cfg.RemoteNickname = ""
 	}); err != nil {
 		return err
 	}

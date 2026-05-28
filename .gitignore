@@ -124,6 +124,7 @@ _tmp_*.py
 
 # Property test rapid cache
 corelib/memory/testdata/rapid/
+corelib/agent/testdata/rapid/
 gui/testdata/rapid/
 
 # Local test and generated artifacts

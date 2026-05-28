@@ -43,10 +43,10 @@ func TestRepairOrphanedToolEntries_RemovesOrphan(t *testing.T) {
 	entries := []ConversationEntry{
 		{Role: "user", Content: "hi"},
 		{Role: "system", Content: "summary"},
-		{Role: "tool", Content: "743.6", ToolCallID: "call_A"},       // orphan — no parent
+		{Role: "tool", Content: "743.6", ToolCallID: "call_A"}, // orphan — no parent
 		{Role: "assistant", Content: "PDF done!"},
 		{Role: "assistant", Content: "compressing", ToolCalls: toolCalls},
-		{Role: "tool", Content: "queued", ToolCallID: "call_B"},      // valid — parent at [4]
+		{Role: "tool", Content: "queued", ToolCallID: "call_B"}, // valid — parent at [4]
 		{Role: "assistant", Content: "done"},
 	}
 	result := repairOrphanedToolEntries(entries)
@@ -129,11 +129,14 @@ func TestLoadFromDisk_RepairsOrphanedToolEntries(t *testing.T) {
 		}
 	}
 
-	// Verify dirty flag is set (will trigger rewrite with clean data).
-	cm.persistStateMu.Lock()
-	dirty := cm.dirty
-	cm.persistStateMu.Unlock()
-	if !dirty {
-		t.Error("dirty flag should be set after repairing orphaned entries")
+	if err := cm.FlushNow(); err != nil {
+		t.Fatalf("FlushNow failed: %v", err)
+	}
+	reloaded := NewPersistentConversationMemory(storePath)
+	defer reloaded.Stop()
+	for _, e := range reloaded.Load("test-user") {
+		if e.Role == "tool" && e.ToolCallID == "call_MISSING" {
+			t.Error("orphaned tool entry should have been removed from persisted rewrite")
+		}
 	}
 }

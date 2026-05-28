@@ -506,6 +506,27 @@ func TestScanAndAdmitSkillBeforeRegisterAllowsMissingReportInDeveloperMode(t *te
 	}
 }
 
+func TestDeveloperModeSkillInstallRecordsAuditOnly(t *testing.T) {
+	auditLog, err := NewAuditLog(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAuditLog: %v", err)
+	}
+	defer auditLog.Close()
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("developer"), auditLog: auditLog}
+	entry := &corelib.NLSkillEntry{Name: "dev-mode-risk"}
+	report := &cskill.ScanReport{FinalLevel: security.RiskCritical, Summary: "critical", ScannedBy: "unit"}
+	if err := app.admitManualSkillInstall(context.Background(), entry, "unit test", report); err != nil {
+		t.Fatalf("developer mode should allow critical skill report, got %v", err)
+	}
+	entries, err := auditLog.Query(security.AuditFilter{})
+	if err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	if len(entries) != 1 || entries[0].PolicyAction != security.PolicyAudit || entries[0].RiskLevel != security.RiskCritical {
+		t.Fatalf("developer audit entry = %#v", entries)
+	}
+}
+
 func TestAdmitManualSkillInstallAllowsMissingReportInRelaxedMode(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("relaxed")}
 	entry := &corelib.NLSkillEntry{Name: "relaxed-missing-report"}

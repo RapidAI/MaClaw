@@ -283,8 +283,11 @@ func TestBuildSystemInjection(t *testing.T) {
 	if !strings.Contains(inj, "1/2") {
 		t.Error("injection should contain current task number")
 	}
-	if !strings.Contains(inj, "create_session") {
-		t.Error("injection for pending external task should mention create_session")
+	if !strings.Contains(inj, "CodingSubAgent") {
+		t.Error("injection for pending task should mention CodingSubAgent")
+	}
+	if strings.Contains(inj, "create_session") {
+		t.Error("injection should not mention create_session")
 	}
 	if !strings.Contains(inj, "remaining") {
 		t.Error("injection should contain progress summary")
@@ -597,7 +600,7 @@ func TestBuildSystemInjectionForTaskRunUsesTargetTask(t *testing.T) {
 	if !strings.Contains(inj, "Task A") || strings.Contains(inj, "executing task 2/2") {
 		t.Fatalf("target injection mismatch, got %q", inj)
 	}
-	if !strings.Contains(inj, "direct coding") || strings.Contains(inj, "create_session") {
+	if !strings.Contains(inj, "CodingSubAgent") || strings.Contains(inj, "create_session") {
 		t.Fatalf("target injection should use target task mode, got %q", inj)
 	}
 }

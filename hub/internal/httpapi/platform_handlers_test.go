@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,7 +124,7 @@ func (f *fakePlatformMachineSender) SendToMachine(machineID string, msg any) err
 	return f.err
 }
 
-func TestPlatformAwareMachineSenderPrefersPlatformCallback(t *testing.T) {
+func TestPlatformAwareMachineSenderDoesNotPostPlatformCallback(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	callbackCalls := 0
 	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +162,7 @@ func TestPlatformAwareMachineSenderPrefersPlatformCallback(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account-1", Status: veStatusActive, OnlineStatus: "platform", RegisteredAt: time.Now().UTC().Format(time.RFC3339)}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: time.Now().UTC().Format(time.RFC3339)}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -171,11 +172,162 @@ func TestPlatformAwareMachineSenderPrefersPlatformCallback(t *testing.T) {
 	if err := sender.SendToMachine("ve_employee_1", map[string]any{"type": "discussion.message"}); err != nil {
 		t.Fatalf("SendToMachine returned error: %v", err)
 	}
-	if callbackCalls != 1 {
-		t.Fatalf("expected one platform callback, got %d", callbackCalls)
+	if callbackCalls != 0 {
+		t.Fatalf("platform callback must not be used for execution events, got %d", callbackCalls)
 	}
 	if fallback.calls != 0 {
 		t.Fatalf("fallback should not be used for platform employees when callback succeeds, got %d calls", fallback.calls)
+	}
+}
+
+func TestPlatformAwareMachineSenderFallsBackForPhysicalDigitalEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_machine-a", MachineID: "machine-a", EmployeeType: veEmployeeTypePhysical, Name: "Desktop Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	fallback := &fakePlatformMachineSender{err: nil}
+	sender := platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	if err := sender.SendToMachine("machine-a", map[string]any{"type": "ve:discussion_message"}); err != nil {
+		t.Fatalf("SendToMachine returned error: %v", err)
+	}
+	if fallback.calls != 1 {
+		t.Fatalf("physical GUI/TUI employee should use websocket fallback, got %d calls", fallback.calls)
+	}
+}
+
+func waitForDiscussionMessages(t *testing.T, svc *GroupDiscussionService, tenantID, sessionID string, want int, accept func([]corea2a.Message) bool) corea2a.HubDiscussionDetail {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var detail corea2a.HubDiscussionDetail
+	var err error
+	for time.Now().Before(deadline) {
+		detail, err = svc.GetDiscussionDetail(tenantID, sessionID)
+		if err == nil && len(detail.Messages) >= want && (accept == nil || accept(detail.Messages)) {
+			return detail
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	t.Fatalf("timed out waiting for discussion messages, got %#v", detail.Messages)
+	return detail
+}
+
+func waitForFallbackMessages(t *testing.T, sender *captureGroupDiscussionSender, want int, accept func([]sentGroupDiscussionMessage) bool) []sentGroupDiscussionMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var messages []sentGroupDiscussionMessage
+	for time.Now().Before(deadline) {
+		messages = sender.snapshotMessages()
+		if len(messages) >= want && (accept == nil || accept(messages)) {
+			return messages
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for fallback messages, got %#v", messages)
+	return messages
+}
+
+func TestPlatformAwareMachineSenderFallsBackForNonMacLawRuntimeProvider(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_other_runtime", MachineID: "machine-other-runtime", PlatformID: "platform-1", PlatformEmployeeID: "platform-other-runtime", RuntimeProviderID: "other-runtime", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	fallback := &fakePlatformMachineSender{err: nil}
+	sender := platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	if err := sender.SendToMachine("machine-other-runtime", map[string]any{"type": "ve:discussion_message"}); err != nil {
+		t.Fatalf("SendToMachine returned error: %v", err)
+	}
+	if fallback.calls != 1 {
+		t.Fatalf("non-MaClaw runtime provider should use websocket fallback, got %d calls", fallback.calls)
+	}
+}
+
+func TestPlatformAwareMachineSenderFallsBackForLegacyPlatformIDOnlyEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_emp_legacy", MachineID: "ve_emp_legacy", PlatformID: "platform-1", Name: "Legacy Desktop Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	fallback := &fakePlatformMachineSender{err: nil}
+	sender := platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	if err := sender.SendToMachine("ve_emp_legacy", map[string]any{"type": "ve:discussion_message"}); err != nil {
+		t.Fatalf("SendToMachine returned error: %v", err)
+	}
+	if fallback.calls != 1 {
+		t.Fatalf("legacy platform-id-only employee should use websocket fallback, got %d calls", fallback.calls)
+	}
+}
+
+func TestGroupDiscussionMessageFallsBackForPhysicalDigitalEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_machine-a", MachineID: "machine-a", EmployeeType: veEmployeeTypePhysical, Name: "Desktop Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "machine-a", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-physical-1","from_id":"maclaw-gui","content":"hello desktop"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(fallback.messages) != 1 || fallback.messages[0].machineID != "machine-a" {
+		t.Fatalf("physical employee should receive websocket delivery, got %#v", fallback.messages)
+	}
+}
+
+func TestGroupDiscussionMessagePrefersPhysicalIDOverPlatformEmployeeIDCollision(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimeCalls := 0
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"wrong target"}}`))
+	}))
+	defer runtime.Close()
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_runtime", MachineID: "runtime-machine", PlatformID: "platform-1", PlatformEmployeeID: "machine-a", RuntimeProviderID: maclawSrvRuntimePlatformID, Name: "Runtime Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_machine-a", MachineID: "machine-a", EmployeeType: veEmployeeTypePhysical, Name: "Desktop Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "machine-a", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-physical-collision","from_id":"maclaw-gui","content":"hello desktop"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if runtimeCalls != 0 {
+		t.Fatalf("physical id collision must not call runtime, got %d", runtimeCalls)
+	}
+	if len(fallback.messages) != 1 || fallback.messages[0].machineID != "machine-a" {
+		t.Fatalf("physical employee should receive websocket delivery, got %#v", fallback.messages)
 	}
 }
 
@@ -201,6 +353,25 @@ func TestPlatformA2APayloadExtractsEnvelopeIDs(t *testing.T) {
 	}
 }
 
+func TestPlatformRuntimeLogValuesRedactIdentifiers(t *testing.T) {
+	endpoint := runtimeDiscussionEndpointLogValue("https://runtime.example/api/runtime/virtual-employees/platform-employee-1/discussion-messages")
+	if endpoint != "runtime.example/api/runtime/virtual-employees/*/discussion-messages" {
+		t.Fatalf("endpoint log value = %q", endpoint)
+	}
+	redacted := platformLogID("platform-employee-1")
+	if redacted == "" || strings.Contains(redacted, "platform-employee-1") || !strings.HasPrefix(redacted, "sha256:") {
+		t.Fatalf("platform employee log id was not redacted: %q", redacted)
+	}
+	transportErr := sanitizeRuntimeDeliveryErrorText(`Post "https://runtime.example/api/runtime/virtual-employees/platform-employee-1/discussion-messages": dial tcp`, "platform-employee-1")
+	if strings.Contains(transportErr, "platform-employee-1") || !strings.Contains(transportErr, "virtual-employees/*/discussion-messages") {
+		t.Fatalf("runtime transport error was not redacted: %q", transportErr)
+	}
+	statusErr := sanitizeRuntimeDeliveryErrorText(`{"error":"runtime failed for platform-employee-1"}`, "platform-employee-1")
+	if strings.Contains(statusErr, "platform-employee-1") {
+		t.Fatalf("runtime status error was not redacted: %q", statusErr)
+	}
+}
+
 func TestPlatformA2APayloadPreservesOuterEventType(t *testing.T) {
 	envelope := corea2a.NewGroupEnvelope("env-cancel", corea2a.GroupMessageDiscussionResult, "maclaw-a", time.Now().UTC())
 	envelope.SessionID = "discussion-1"
@@ -219,7 +390,7 @@ func TestPlatformA2APayloadPreservesOuterEventType(t *testing.T) {
 	}
 }
 
-func TestPlatformAwareMachineSenderRoutesA2AInviteAndCancel(t *testing.T) {
+func TestPlatformAwareMachineSenderDoesNotRouteA2AInviteAndCancelThroughPlatform(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	seen := make(chan string, 2)
 	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +403,7 @@ func TestPlatformAwareMachineSenderRoutesA2AInviteAndCancel(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account-1", Status: veStatusActive, OnlineStatus: "platform", RegisteredAt: time.Now().UTC().Format(time.RFC3339)}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: time.Now().UTC().Format(time.RFC3339)}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -245,19 +416,663 @@ func TestPlatformAwareMachineSenderRoutesA2AInviteAndCancel(t *testing.T) {
 		t.Fatalf("cancel SendToMachine returned error: %v", err)
 	}
 
-	got := []string{<-seen, <-seen}
-	want := []string{"/a2a/employees/platform-employee-1/invite", "/a2a/employees/platform-employee-1/cancel"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("callback paths=%v want %v", got, want)
+	select {
+	case got := <-seen:
+		t.Fatalf("platform callback must not receive invite/cancel execution event, got %s", got)
+	default:
 	}
 }
 
-func TestPlatformA2AEndpointSuffixDoesNotTreatInvitationResponseAsInvite(t *testing.T) {
-	if got := platformA2AEndpointSuffix(map[string]any{"payload": map[string]any{"envelope": corea2a.NewGroupEnvelope("env-response", corea2a.GroupMessageInvitationResponse, "maclaw-a", time.Now().UTC())}}); got != "/messages" {
-		t.Fatalf("invitation response suffix=%q want /messages", got)
+func TestPlatformAwareMachineSenderDoesNotExecuteMacLawSrvInviteOrCancel(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimeCalls := 0
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer runtime.Close()
+
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, CallbackBaseURL: runtime.URL, CallbackSecret: "srv-secret", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
 	}
-	if got := platformA2AEndpointSuffix(map[string]any{"payload": map[string]any{"envelope": corea2a.NewGroupEnvelope("env-invite", corea2a.GroupMessageInvitation, "maclaw-a", time.Now().UTC())}}); got != "/invite" {
-		t.Fatalf("invitation suffix=%q want /invite", got)
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "srv-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_srv", MachineID: "ve_srv", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "srv-user-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+
+	fallback := &fakePlatformMachineSender{err: nil}
+	sender := platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
+	if err := sender.SendToMachine("ve_srv", map[string]any{"type": "ve:discussion_invite"}); err != nil {
+		t.Fatalf("invite SendToMachine returned error: %v", err)
+	}
+	if err := sender.SendToMachine("ve_srv", map[string]any{"type": "ve:discussion_cancel"}); err != nil {
+		t.Fatalf("cancel SendToMachine returned error: %v", err)
+	}
+	if runtimeCalls != 0 {
+		t.Fatalf("MaClawSrv runtime should only execute discussion messages, got %d calls", runtimeCalls)
+	}
+	if fallback.calls != 0 {
+		t.Fatalf("headless MaClawSrv employees should not use GUI websocket fallback, got %d calls", fallback.calls)
+	}
+}
+
+func TestGroupDiscussionMessageRoutesPlatformEmployeeToMacLawSrvRuntime(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	seen := make(chan map[string]any, 1)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/runtime/virtual-employees/platform-employee-1/discussion-messages" {
+			t.Fatalf("unexpected runtime path %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode runtime body: %v", err)
+		}
+		seen <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"reply from runtime"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-platform-reply","from_id":"maclaw-gui","content":"hello platform employee"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case body := <-seen:
+		if body["content"] != "hello platform employee" || body["hub_message_id"] != "hub-msg-platform-reply" {
+			t.Fatalf("unexpected runtime payload: %#v", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for MaClawSrv runtime")
+	}
+	detail := waitForDiscussionMessages(t, groupSvc, "tenant-a", session.ID, 2, func(messages []corea2a.Message) bool {
+		return len(messages) >= 2 && messages[1].FromID == "ve_employee_1" && messages[1].Content == "reply from runtime"
+	})
+	if len(detail.Messages) != 2 || detail.Messages[1].FromID != "ve_employee_1" || detail.Messages[1].Content != "reply from runtime" {
+		t.Fatalf("unexpected runtime reply messages: %#v", detail.Messages)
+	}
+	fallbackMessages := waitForFallbackMessages(t, fallback, 1, func(messages []sentGroupDiscussionMessage) bool {
+		return len(messages) == 1 && messages[0].machineID == "maclaw-gui"
+	})
+	if len(fallbackMessages) != 1 || fallbackMessages[0].machineID != "maclaw-gui" {
+		t.Fatalf("runtime reply should notify GUI through fallback only, got %#v", fallbackMessages)
+	}
+}
+
+func TestGroupDiscussionMessagePersistsRepliesFromMultiplePlatformEmployees(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		employeeID := strings.TrimPrefix(r.URL.Path, "/api/runtime/virtual-employees/")
+		employeeID = strings.TrimSuffix(employeeID, "/discussion-messages")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"reply from ` + employeeID + `"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+		{ID: "ve_employee_2", MachineID: "runtime-machine-2", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-2", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-2", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline},
+	}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}, {ID: "ve_employee_2", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-multi-runtime","from_id":"maclaw-gui","content":"hello platform employees"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	detail := waitForDiscussionMessages(t, groupSvc, "tenant-a", session.ID, 3, func(messages []corea2a.Message) bool {
+		seen := map[string]bool{}
+		for _, msg := range messages {
+			seen[msg.Content] = true
+		}
+		return seen["reply from platform-employee-1"] && seen["reply from platform-employee-2"]
+	})
+	ids := map[string]bool{}
+	for _, msg := range detail.Messages {
+		if msg.FromID == "ve_employee_1" || msg.FromID == "ve_employee_2" {
+			if ids[msg.ID] {
+				t.Fatalf("runtime replies must use unique ids, duplicate %s in %#v", msg.ID, detail.Messages)
+			}
+			ids[msg.ID] = true
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected two platform replies, got messages %#v", detail.Messages)
+	}
+	waitForFallbackMessages(t, fallback, 2, nil)
+}
+
+func TestGroupDiscussionStreamMessagesDoNotExecutePlatformRuntime(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimeCalls := make(chan string, 2)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalls <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"should not run"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	for _, body := range []string{
+		`{"id":"hub-msg-stream-chunk","from_id":"maclaw-gui","kind":"stream_chunk","content":"partial"}`,
+		`{"id":"hub-msg-stream-end","from_id":"maclaw-gui","kind":"stream_end"}`,
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", body))
+		if w.Code != http.StatusOK {
+			t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	select {
+	case path := <-runtimeCalls:
+		t.Fatalf("stream messages must not execute platform runtime, got %s", path)
+	case <-time.After(150 * time.Millisecond):
+	}
+	detail, err := groupSvc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	if len(detail.Messages) != 2 || detail.Messages[0].Kind != corea2a.MessageStreamChunk || detail.Messages[1].Kind != corea2a.MessageStreamEnd {
+		t.Fatalf("stream messages should still persist, got %#v", detail.Messages)
+	}
+}
+
+func TestGroupDiscussionMessageReturnsBeforeSlowMacLawSrvRuntimeReply(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	called := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called <- struct{}{}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"slow runtime reply"}}`))
+	}))
+	defer runtime.Close()
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+	}()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	started := time.Now()
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-slow-runtime","from_id":"maclaw-gui","content":"hello slow runtime"}`))
+	elapsed := time.Since(started)
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("Hub message POST waited for runtime response: %s", elapsed)
+	}
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("MaClawSrv runtime was not called")
+	}
+	releaseOnce.Do(func() { close(release) })
+	waitForDiscussionMessages(t, groupSvc, "tenant-a", session.ID, 2, func(messages []corea2a.Message) bool {
+		return len(messages) >= 2 && messages[1].Content == "slow runtime reply"
+	})
+}
+
+func TestGroupDiscussionMessageRoutesMacLawSrvEmployeeDirectly(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimePayloads := make(chan map[string]any, 2)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/runtime/virtual-employees/srv-user-1/discussion-messages" {
+			t.Fatalf("unexpected runtime path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("X-MaClaw-Admin-Secret"); got != "srv-secret" {
+			t.Fatalf("unexpected runtime secret %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode runtime body: %v", err)
+		}
+		runtimePayloads <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"reply from headless maclaw"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, CallbackBaseURL: runtime.URL, CallbackSecret: "srv-secret", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "srv-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_srv", MachineID: "ve_srv", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "srv-user-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_srv", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	body := `{"id":"hub-msg-direct-1","from_id":"maclaw-gui","content":"hello srv"}`
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case body := <-runtimePayloads:
+		if body["hub_discussion_id"] != session.ID || body["content"] != "hello srv" || body["hub_message_id"] == "" {
+			t.Fatalf("unexpected runtime body: %#v", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MaClawSrv runtime was not called")
+	}
+	detail := waitForDiscussionMessages(t, groupSvc, "tenant-a", session.ID, 2, func(messages []corea2a.Message) bool {
+		return len(messages) >= 2 && messages[1].FromID == "ve_srv" && messages[1].Content == "reply from headless maclaw"
+	})
+	if len(detail.Messages) != 2 || detail.Messages[0].FromID != "maclaw-gui" || detail.Messages[1].FromID != "ve_srv" || detail.Messages[1].Content != "reply from headless maclaw" {
+		t.Fatalf("unexpected direct runtime messages: %#v", detail.Messages)
+	}
+	fallbackMessages := waitForFallbackMessages(t, fallback, 1, func(messages []sentGroupDiscussionMessage) bool {
+		return len(messages) == 1 && messages[0].machineID == "maclaw-gui"
+	})
+	if len(fallbackMessages) != 1 || fallbackMessages[0].machineID != "maclaw-gui" {
+		t.Fatalf("runtime reply should notify GUI through fallback only, got %#v", fallbackMessages)
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("duplicate group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case body := <-runtimePayloads:
+		t.Fatalf("duplicate Hub message should not call runtime again, got %#v", body)
+	case <-time.After(150 * time.Millisecond):
+	}
+	detail, err = groupSvc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail after duplicate: %v", err)
+	}
+	fallbackMessages = fallback.snapshotMessages()
+	if len(detail.Messages) != 2 || len(fallbackMessages) != 1 {
+		t.Fatalf("duplicate delivery should not duplicate messages or GUI notification, messages=%#v fallback=%#v", detail.Messages, fallbackMessages)
+	}
+}
+
+func TestGroupDiscussionMessageBypassesPlatformForMacLawSrvRuntimeEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	platformCalls := 0
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		platformCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer platform.Close()
+	runtimeCalls := 0
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalls++
+		if r.URL.Path != "/api/runtime/virtual-employees/platform-employee-1/discussion-messages" {
+			t.Fatalf("unexpected runtime path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"runtime direct reply"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: platform.URL, CallbackSecret: "platform-secret", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_employee_1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-platform-managed","from_id":"maclaw-gui","content":"hello runtime"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	detail := waitForDiscussionMessages(t, groupSvc, "tenant-a", session.ID, 2, func(messages []corea2a.Message) bool {
+		return len(messages) >= 2 && messages[1].Content == "runtime direct reply"
+	})
+	if runtimeCalls != 1 || platformCalls != 0 {
+		t.Fatalf("expected direct runtime call only, runtime=%d platform=%d", runtimeCalls, platformCalls)
+	}
+	fallbackMessages := waitForFallbackMessages(t, fallback, 1, nil)
+	if len(detail.Messages) != 2 || detail.Messages[1].Content != "runtime direct reply" || len(fallbackMessages) != 1 {
+		t.Fatalf("unexpected direct runtime result messages=%#v fallback=%#v", detail.Messages, fallbackMessages)
+	}
+}
+
+func TestGroupDiscussionMessageRoutesLegacyPlatformEmployeeToRuntimeWhenConfigured(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	platformCalls := 0
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		platformCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer platform.Close()
+	runtimeCalls := 0
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalls++
+		if r.URL.Path != "/api/runtime/virtual-employees/platform-employee-legacy/discussion-messages" {
+			t.Fatalf("unexpected runtime path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"legacy runtime reply"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: platform.URL, CallbackSecret: "platform-secret", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_legacy", MachineID: "ve_legacy", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-legacy", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "ve_legacy", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-legacy-runtime","from_id":"maclaw-gui","content":"hello legacy"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	detail := waitForDiscussionMessages(t, groupSvc, "tenant-a", session.ID, 2, func(messages []corea2a.Message) bool {
+		return len(messages) >= 2 && messages[1].Content == "legacy runtime reply"
+	})
+	if runtimeCalls != 1 || platformCalls != 0 {
+		t.Fatalf("expected MaClawSrv runtime only, runtime=%d platform=%d", runtimeCalls, platformCalls)
+	}
+	fallbackMessages := waitForFallbackMessages(t, fallback, 1, nil)
+	if len(detail.Messages) != 2 || detail.Messages[1].Content != "legacy runtime reply" || len(fallbackMessages) != 1 {
+		t.Fatalf("unexpected runtime result messages=%#v fallback=%#v", detail.Messages, fallbackMessages)
+	}
+}
+
+func TestGroupDiscussionMessageUsesSessionTenantForRuntimeLookup(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimeACalls := make(chan string, 1)
+	runtimeA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeACalls <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"tenant a reply"}}`))
+	}))
+	defer runtimeA.Close()
+	runtimeBCalls := make(chan string, 1)
+	runtimeB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeBCalls <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"tenant b reply"}}`))
+	}))
+	defer runtimeB.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}, {HubTenantID: "tenant-b"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{
+		{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtimeA.URL, AdminSecret: "runtime-a-secret", TenantIDs: []string{"tenant-a"}},
+		{RuntimeID: maclawSrvRuntimePlatformID + "_b", BaseURL: runtimeB.URL, AdminSecret: "runtime-b-secret", TenantIDs: []string{"tenant-b"}},
+	}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registryA := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_shared", MachineID: "shared-machine", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-a", RuntimeProviderID: maclawSrvRuntimePlatformID, Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registryA); err != nil {
+		t.Fatalf("save tenant-a registry: %v", err)
+	}
+	registryB := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_shared", MachineID: "shared-machine", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-b", RuntimeProviderID: maclawSrvRuntimePlatformID, Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-b", settings), registryB); err != nil {
+		t.Fatalf("save tenant-b registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-b", CreateSessionRequest{Topic: "Tenant scoped", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "shared-machine", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}, {ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	req := groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-tenant-b","from_id":"maclaw-gui","content":"hello tenant b"}`)
+	req = req.WithContext(WithRequestTenant(req.Context(), "tenant-b"))
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case path := <-runtimeBCalls:
+		if path != "/api/runtime/virtual-employees/platform-employee-b/discussion-messages" {
+			t.Fatalf("unexpected tenant-b runtime path %s", path)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tenant-b runtime was not called")
+	}
+	select {
+	case path := <-runtimeACalls:
+		t.Fatalf("tenant-a runtime must not receive tenant-b message, got %s", path)
+	case <-time.After(150 * time.Millisecond):
+	}
+	detail := waitForDiscussionMessages(t, groupSvc, "tenant-b", session.ID, 2, func(messages []corea2a.Message) bool {
+		return len(messages) >= 2 && messages[1].Content == "tenant b reply"
+	})
+	if len(detail.Messages) != 2 || detail.Messages[1].Content != "tenant b reply" {
+		t.Fatalf("unexpected tenant-b detail: %#v", detail.Messages)
+	}
+}
+
+func TestGroupDiscussionMessageReturnsDeliveryErrorWhenRuntimeMissing(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: "https://platform.invalid", CallbackSecret: "secret-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "runtime-machine-1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &fakePlatformMachineSender{err: nil}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"from_id":"maclaw-gui","content":"hello platform employee"}`))
+	if w.Code != http.StatusBadGateway || !bytes.Contains(w.Body.Bytes(), []byte("MESSAGE_DELIVERY_FAILED")) {
+		t.Fatalf("delivery failure status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("MaClawSrv runtime is not configured")) {
+		t.Fatalf("expected runtime missing error, got %s", w.Body.String())
+	}
+	if fallback.calls != 0 {
+		t.Fatalf("runtime missing should not use desktop fallback, got %d", fallback.calls)
+	}
+	detail, err := groupSvc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	if len(detail.Messages) != 0 {
+		t.Fatalf("failed runtime delivery should roll back persisted sender message, got %#v", detail.Messages)
+	}
+}
+
+func TestGroupDiscussionMessageDoesNotDeliverDisabledPlatformEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtimeCalls := 0
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"should not send"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusDisabled, OnlineStatus: veOnlineStatusOffline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "runtime-machine-1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &fakePlatformMachineSender{err: nil}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"from_id":"maclaw-gui","content":"hello disabled platform employee"}`))
+	if w.Code != http.StatusBadGateway || !bytes.Contains(w.Body.Bytes(), []byte("MESSAGE_DELIVERY_FAILED")) {
+		t.Fatalf("delivery failure status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("is not active")) {
+		t.Fatalf("expected inactive employee error, got %s", w.Body.String())
+	}
+	if runtimeCalls != 0 {
+		t.Fatalf("disabled platform employee must not call runtime, got %d", runtimeCalls)
+	}
+	if fallback.calls != 0 {
+		t.Fatalf("disabled platform employee must not use desktop fallback, got %d", fallback.calls)
+	}
+	detail, err := groupSvc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	if len(detail.Messages) != 0 {
+		t.Fatalf("failed disabled delivery should roll back persisted sender message, got %#v", detail.Messages)
+	}
+}
+
+func TestGroupDiscussionMessageDoesNotFallbackWhenPlatformProviderMissingRuntime(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "runtime-machine-1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &fakePlatformMachineSender{err: nil}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"from_id":"maclaw-gui","content":"hello platform employee"}`))
+	if w.Code != http.StatusBadGateway || !bytes.Contains(w.Body.Bytes(), []byte("MESSAGE_DELIVERY_FAILED")) {
+		t.Fatalf("delivery failure status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("MaClawSrv runtime is not configured")) {
+		t.Fatalf("expected runtime missing error, got %s", w.Body.String())
+	}
+	if fallback.calls != 0 {
+		t.Fatalf("platform employee without runtime must not use desktop fallback, got %d", fallback.calls)
 	}
 }
 
@@ -317,59 +1132,13 @@ func TestPostPlatformTenantCallbacksSendsTenantReadiness(t *testing.T) {
 	}
 }
 
-func TestPlatformAwareMachineSenderFallsBackWhenCallbackFails(t *testing.T) {
-	settings := &testSystemSettingsRepo{}
-	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = r
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer callback.Close()
-
-	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: callback.URL, RegistrationStatus: "active"}
-	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
-		t.Fatalf("save provider registry: %v", err)
-	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive}}}
-	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
-		t.Fatalf("save ve registry: %v", err)
-	}
-
-	fallback := &fakePlatformMachineSender{err: nil}
-	sender := platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
-	if err := sender.SendToMachine("ve_employee_1", map[string]any{"type": "discussion.message"}); err != nil {
-		t.Fatalf("SendToMachine returned error: %v", err)
-	}
-	if fallback.calls != 1 {
-		t.Fatalf("expected fallback after callback failure, got %d calls", fallback.calls)
-	}
-}
-
-func TestPlatformAwareMachineSenderReturnsCallbackErrorWithoutFallback(t *testing.T) {
-	settings := &testSystemSettingsRepo{}
-	provider := platformProviderEntry{PlatformID: "platform-1", CallbackBaseURL: "http://127.0.0.1:1", RegistrationStatus: "active"}
-	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
-		t.Fatalf("save provider registry: %v", err)
-	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive}}}
-	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
-		t.Fatalf("save ve registry: %v", err)
-	}
-
-	sender := platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}}
-	if err := sender.SendToMachine("ve_employee_1", map[string]any{"type": "discussion.message"}); err == nil {
-		t.Fatal("expected callback error without fallback")
-	} else if errors.Is(err, context.Canceled) {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestUpdatePlatformEmployeeStatusDisablesTenantScopedRegistryEntry(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -393,6 +1162,30 @@ func TestUpdatePlatformEmployeeStatusDisablesTenantScopedRegistryEntry(t *testin
 
 type fakePlatformUserRepo struct {
 	items []*store.User
+}
+
+type createCountingPlatformUserRepo struct {
+	fakePlatformUserRepo
+	creates int
+}
+
+type failKeySystemSettingsRepo struct {
+	testSystemSettingsRepo
+	failKey string
+}
+
+func (f *failKeySystemSettingsRepo) Set(ctx context.Context, key, valueJSON string) error {
+	if key == f.failKey || strings.HasSuffix(key, ":"+f.failKey) {
+		return errors.New("set failed")
+	}
+	return f.testSystemSettingsRepo.Set(ctx, key, valueJSON)
+}
+
+func (f *createCountingPlatformUserRepo) Create(ctx context.Context, user *store.User) error {
+	_ = ctx
+	f.creates++
+	f.items = append(f.items, user)
+	return nil
 }
 
 func (f fakePlatformUserRepo) Create(ctx context.Context, user *store.User) error {
@@ -471,6 +1264,21 @@ type fakePlatformViewerTokenRepo struct {
 	items []*store.ViewerToken
 }
 
+type fakePlatformMachineLister struct {
+	items []*store.Machine
+}
+
+func (f fakePlatformMachineLister) ListByTenant(ctx context.Context, tenantID string) ([]*store.Machine, error) {
+	_ = ctx
+	out := make([]*store.Machine, 0, len(f.items))
+	for _, item := range f.items {
+		if item != nil && item.TenantID == tenantID {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakePlatformViewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) error {
 	_ = ctx
 	f.items = append(f.items, token)
@@ -503,12 +1311,172 @@ func TestPlatformSourceUsersForTenantExcludesPlatformEmployees(t *testing.T) {
 		t.Fatalf("save ve registry: %v", err)
 	}
 
-	items, err := platformSourceUsersForTenant(context.Background(), settings, users, "tenant-a")
+	items, stats, err := platformSourceUsersForTenantWithStats(context.Background(), settings, users, "tenant-a")
 	if err != nil {
 		t.Fatalf("source users: %v", err)
 	}
 	if len(items) != 1 || items[0]["id"] != "real-1" {
 		t.Fatalf("expected only real user, got %#v", items)
+	}
+	if stats.ExcludedPlatformEmployees != 1 || stats.ExcludedDesktopEnrolled != 0 {
+		t.Fatalf("unexpected source user sync stats: %#v", stats)
+	}
+}
+
+func TestPlatformSourceUsersForTenantExcludesDesktopEnrolledUsers(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	now := time.Now().UTC()
+	users := fakePlatformUserRepo{items: []*store.User{
+		{ID: "gui-user", TenantID: "tenant-a", Email: "gui@example.com", Status: "active", UpdatedAt: now},
+		{ID: "source-user", TenantID: "tenant-a", Email: "source@example.com", Status: "active", UpdatedAt: now},
+		{ID: "inactive-user", TenantID: "tenant-a", Email: "inactive@example.com", Status: "inactive", UpdatedAt: now},
+		{ID: "other-tenant-gui", TenantID: "tenant-b", Email: "other@example.com", Status: "active", UpdatedAt: now},
+	}}
+	machines := fakePlatformMachineLister{items: []*store.Machine{
+		{ID: "machine-gui", TenantID: "tenant-a", UserID: "gui-user"},
+		{ID: "machine-other", TenantID: "tenant-b", UserID: "other-tenant-gui"},
+	}}
+
+	items, stats, err := platformSourceUsersForTenantWithStats(context.Background(), settings, users, "tenant-a", machines)
+	if err != nil {
+		t.Fatalf("source users: %v", err)
+	}
+	if len(items) != 1 || items[0]["id"] != "source-user" {
+		t.Fatalf("expected only non-desktop source user, got %#v", items)
+	}
+	if stats.ExcludedDesktopEnrolled != 1 || stats.ExcludedPlatformEmployees != 0 {
+		t.Fatalf("unexpected source user sync stats: %#v", stats)
+	}
+}
+
+func TestPlatformSourceUsersForTenantCountsPlatformEmployeeBeforeDesktopMachine(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve-1", MachineID: "machine-ve", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account", OwnerEmail: "ve@example.com", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	now := time.Now().UTC()
+	users := fakePlatformUserRepo{items: []*store.User{
+		{ID: "ve-account", TenantID: "tenant-a", Email: "ve@example.com", Status: "active", UpdatedAt: now},
+		{ID: "source-user", TenantID: "tenant-a", Email: "source@example.com", Status: "active", UpdatedAt: now},
+	}}
+	machines := fakePlatformMachineLister{items: []*store.Machine{{ID: "machine-ve", TenantID: "tenant-a", UserID: "ve-account"}}}
+
+	items, stats, err := platformSourceUsersForTenantWithStats(context.Background(), settings, users, "tenant-a", machines)
+	if err != nil {
+		t.Fatalf("source users: %v", err)
+	}
+	if len(items) != 1 || items[0]["id"] != "source-user" {
+		t.Fatalf("expected only source user, got %#v", items)
+	}
+	if stats.ExcludedPlatformEmployees != 1 || stats.ExcludedDesktopEnrolled != 0 {
+		t.Fatalf("expected platform employee exclusion to win over desktop machine count, got %#v", stats)
+	}
+}
+
+func TestPlatformSourceUsersSyncHandlerExcludesDesktopEnrolledUsers(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	now := time.Now().UTC()
+	users := fakePlatformUserRepo{items: []*store.User{
+		{ID: "gui-user", TenantID: "tenant-a", Email: "gui@example.com", Status: "active", UpdatedAt: now},
+		{ID: "source-user", TenantID: "tenant-a", Email: "source@example.com", Status: "active", UpdatedAt: now},
+	}}
+	machines := fakePlatformMachineLister{items: []*store.Machine{{ID: "machine-gui", TenantID: "tenant-a", UserID: "gui-user"}}}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/source-users/sync", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a"})
+	rec := httptest.NewRecorder()
+	PlatformSourceUsersSyncHandler(settings, users, tenants, machines).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("source users sync status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Users []struct {
+			ID string `json:"id"`
+		} `json:"users"`
+		SyncSummary struct {
+			ExcludedDesktopEnrolled int `json:"excluded_desktop_enrolled"`
+		} `json:"sync_summary"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "source-user" {
+		t.Fatalf("expected sync response to exclude desktop user, got %#v", resp.Items)
+	}
+	if len(resp.Users) != 1 || resp.Users[0].ID != "source-user" {
+		t.Fatalf("expected users alias to exclude desktop user, got %#v", resp.Users)
+	}
+	if resp.SyncSummary.ExcludedDesktopEnrolled != 1 {
+		t.Fatalf("expected desktop exclusion count, got %#v", resp.SyncSummary)
+	}
+}
+
+func TestPlatformSourceUsersSyncHandlerExcludesRealDesktopEnrollment(t *testing.T) {
+	deps := newPlatformHubTestDeps(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(ctx, &store.Tenant{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	identity := auth.NewIdentityService(deps.store.Users, deps.store.Enrollments, deps.store.EmailBlocks, deps.store.Machines, deps.store.ViewerTokens, deps.store.LoginTokens, deps.store.System, nil, "open", true, nil, "")
+	identity.SetTenantRepository(deps.store.Tenants)
+	if _, err := identity.StartEnrollment(auth.WithTenant(ctx, "tenant-a"), "gui@example.com", "office-pc", "darwin", "gui-client-1", ""); err != nil {
+		t.Fatalf("start desktop enrollment: %v", err)
+	}
+	if err := deps.store.Users.Create(ctx, &store.User{ID: "source-user", TenantID: "tenant-a", Email: "source@example.com", SN: "SN-SOURCE", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(ctx, deps.store.System, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/source-users/sync", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a"})
+	rec := httptest.NewRecorder()
+	PlatformSourceUsersSyncHandler(deps.store.System, deps.store.Users, deps.store.Tenants, deps.store.Machines).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("source users sync status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+		} `json:"items"`
+		Users []struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+		} `json:"users"`
+		SyncSummary struct {
+			ExcludedDesktopEnrolled int `json:"excluded_desktop_enrolled"`
+		} `json:"sync_summary"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "source-user" || resp.Items[0].Email != "source@example.com" {
+		t.Fatalf("expected real desktop enrollment to be excluded, got %#v", resp.Items)
+	}
+	if len(resp.Users) != 1 || resp.Users[0].ID != "source-user" || resp.Users[0].Email != "source@example.com" {
+		t.Fatalf("expected users alias to exclude real desktop enrollment, got %#v", resp.Users)
+	}
+	if resp.SyncSummary.ExcludedDesktopEnrolled != 1 {
+		t.Fatalf("expected desktop exclusion count for real enrollment, got %#v", resp.SyncSummary)
 	}
 }
 
@@ -543,6 +1511,60 @@ func TestPlatformSourceUserViewerTokenUsesTenantUser(t *testing.T) {
 	}
 }
 
+func TestPlatformSourceUserViewerTokenRejectsDesktopEnrolledUser(t *testing.T) {
+	deps := newPlatformHubTestDeps(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(ctx, &store.Tenant{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	identity := auth.NewIdentityService(deps.store.Users, deps.store.Enrollments, deps.store.EmailBlocks, deps.store.Machines, deps.store.ViewerTokens, deps.store.LoginTokens, deps.store.System, nil, "open", true, nil, "")
+	identity.SetTenantRepository(deps.store.Tenants)
+	enroll, err := identity.StartEnrollment(auth.WithTenant(ctx, "tenant-a"), "gui@example.com", "office-pc", "darwin", "gui-client-1", "")
+	if err != nil {
+		t.Fatalf("start desktop enrollment: %v", err)
+	}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(ctx, deps.store.System, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/source-users/"+enroll.UserID+"/viewer-token", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "source_user_id": enroll.UserID, "external_id": enroll.UserID, "email": "gui@example.com"})
+	rec := httptest.NewRecorder()
+	PlatformSourceUserViewerTokenHandler(deps.store.System, deps.store.Tenants, deps.store.Users, identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || !bytes.Contains(rec.Body.Bytes(), []byte("SOURCE_USER_NOT_FOUND")) {
+		t.Fatalf("desktop source viewer token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPlatformSourceUserViewerTokenRejectsPlatformEmployeeAccount(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "ve-account-1", OwnerEmail: "worker@tenant.test", Status: veStatusActive}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	users := fakePlatformUserRepo{items: []*store.User{{ID: "ve-account-1", TenantID: "tenant-a", Email: "worker@tenant.test", Status: "active"}}}
+	identity := auth.NewIdentityService(users, nil, nil, nil, &fakePlatformViewerTokenRepo{}, nil, nil, nil, "open", true, nil, "")
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/source-users/ve-account-1/viewer-token", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "source_user_id": "ve-account-1", "external_id": "ve-account-1", "email": "worker@tenant.test"})
+	rec := httptest.NewRecorder()
+	PlatformSourceUserViewerTokenHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, users, identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || !bytes.Contains(rec.Body.Bytes(), []byte("SOURCE_USER_NOT_FOUND")) {
+		t.Fatalf("platform employee account source viewer token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPlatformEmployeeRegisterRequiresUserRepoAndEmployeeID(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -569,17 +1591,230 @@ func TestPlatformEmployeeRegisterRequiresUserRepoAndEmployeeID(t *testing.T) {
 		t.Fatalf("missing employee id status=%d body=%s", missingEmployeeRec.Code, missingEmployeeRec.Body.String())
 	}
 
-	platformOnlyReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-2", "virtual_email": "worker2@tenant.test", "name": "Worker 2"})
+	platformOnlyReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-2", "virtual_email": "worker2@tenant.test", "name": "Worker 2", "runtime_provider_id": "maclawsrv", "runtime_base_url": "https://runtime.example", "runtime_api_key": "runtime-secret"})
 	platformOnlyRec := httptest.NewRecorder()
 	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(platformOnlyRec, platformOnlyReq)
 	if platformOnlyRec.Code != http.StatusOK {
 		t.Fatalf("platform employee id register status=%d body=%s", platformOnlyRec.Code, platformOnlyRec.Body.String())
 	}
 	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
-	if len(registry.Employees) != 1 || registry.Employees[0].PlatformEmployeeID != "platform-employee-2" || registry.Employees[0].MachineID != "ve_platform-employee-2" {
+	if len(registry.Employees) != 1 || registry.Employees[0].PlatformEmployeeID != "platform-employee-2" || registry.Employees[0].MachineID != "ve_platform-employee-2" || registry.Employees[0].RuntimeProviderID != maclawSrvRuntimePlatformID {
 		t.Fatalf("unexpected registered employee: %#v", registry.Employees)
 	}
+	runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings)
+	if len(runtimeRegistry.Runtimes) != 1 || runtimeRegistry.Runtimes[0].BaseURL != "https://runtime.example" || runtimeRegistry.Runtimes[0].AdminSecret != "runtime-secret" || !reflect.DeepEqual(runtimeRegistry.Runtimes[0].TenantIDs, []string{"tenant-a"}) {
+		t.Fatalf("unexpected runtime registry: %#v", runtimeRegistry.Runtimes)
+	}
 }
+
+func TestPlatformEmployeeRegisterRequiresMacLawSrvRuntimeURLWhenRuntimeMissing(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), CallbackBaseURL: "https://platform.example/callback", RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenantRepo := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	users := &createCountingPlatformUserRepo{}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "runtime_provider_id": "maclawsrv"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenantRepo, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("MACLAWSRV_RUNTIME_REQUIRED")) {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.creates != 0 || len(users.items) != 0 {
+		t.Fatalf("missing runtime must not create user, creates=%d users=%#v", users.creates, users.items)
+	}
+	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(registry.Employees) != 0 {
+		t.Fatalf("employee should not be registered without runtime_base_url: %#v", registry.Employees)
+	}
+	if runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings); len(runtimeRegistry.Runtimes) != 0 {
+		t.Fatalf("runtime registry should not be created without runtime_base_url: %#v", runtimeRegistry.Runtimes)
+	}
+}
+
+func TestPlatformEmployeeRegisterRejectsUnsupportedRuntimeProvider(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), CallbackBaseURL: "https://platform.example/callback", RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	users := &createCountingPlatformUserRepo{}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "runtime_provider_id": "other-runtime", "runtime_base_url": "https://runtime.example", "runtime_api_key": "runtime-secret"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("UNSUPPORTED_RUNTIME_PROVIDER")) {
+		t.Fatalf("expected unsupported runtime provider, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.creates != 0 || len(users.items) != 0 {
+		t.Fatalf("unsupported runtime must not create user, creates=%d users=%#v", users.creates, users.items)
+	}
+	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(registry.Employees) != 0 {
+		t.Fatalf("unsupported runtime provider must not register employee: %#v", registry.Employees)
+	}
+	if runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings); len(runtimeRegistry.Runtimes) != 0 {
+		t.Fatalf("unsupported runtime provider must not create runtime registry: %#v", runtimeRegistry.Runtimes)
+	}
+}
+
+func TestPlatformEmployeeRegisterRequiresRuntimeForCurrentTenant(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime-a.example", AdminSecret: "runtime-a-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}, {ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active"}}}
+	users := &createCountingPlatformUserRepo{}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-b", "platform_employee_id": "platform-employee-b", "virtual_email": "worker-b@tenant.test", "name": "Worker B"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("MACLAWSRV_RUNTIME_REQUIRED")) {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.creates != 0 || len(users.items) != 0 {
+		t.Fatalf("wrong-tenant runtime must not create user, creates=%d users=%#v", users.creates, users.items)
+	}
+	if runtime, ok := loadMacLawSrvRuntimeRegistry(context.Background(), settings).findForTenant("tenant-b"); ok {
+		t.Fatalf("tenant-b should not inherit tenant-a runtime: %#v", runtime)
+	}
+	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-b", settings))
+	if len(registry.Employees) != 0 {
+		t.Fatalf("employee should not be registered with another tenant runtime: %#v", registry.Employees)
+	}
+}
+
+func TestPlatformEmployeeRegisterKeepsRuntimesTenantScoped(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}, {ID: "tenant-b", Slug: "tenant-b", Name: "Tenant B", Status: "active"}}}
+	users := &createCountingPlatformUserRepo{}
+	for _, tc := range []struct {
+		tenantID string
+		email    string
+		empID    string
+		baseURL  string
+	}{
+		{tenantID: "tenant-a", email: "worker-a@tenant.test", empID: "platform-employee-a", baseURL: "https://runtime-a.example"},
+		{tenantID: "tenant-b", email: "worker-b@tenant.test", empID: "platform-employee-b", baseURL: "https://runtime-b.example"},
+	} {
+		req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": tc.tenantID, "platform_employee_id": tc.empID, "virtual_email": tc.email, "name": tc.empID, "runtime_base_url": tc.baseURL, "runtime_api_key": tc.empID + "-secret"})
+		rec := httptest.NewRecorder()
+		PlatformEmployeeRegisterHandler(settings, tenants, users).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("register %s status=%d body=%s", tc.tenantID, rec.Code, rec.Body.String())
+		}
+	}
+	runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings)
+	if len(runtimeRegistry.Runtimes) != 2 {
+		t.Fatalf("expected one runtime per base URL, got %#v", runtimeRegistry.Runtimes)
+	}
+	if runtime, ok := runtimeRegistry.findForTenant("tenant-a"); !ok || runtime.BaseURL != "https://runtime-a.example" {
+		t.Fatalf("tenant-a runtime = %#v ok=%v", runtime, ok)
+	}
+	if runtime, ok := runtimeRegistry.findForTenant("tenant-b"); !ok || runtime.BaseURL != "https://runtime-b.example" {
+		t.Fatalf("tenant-b runtime = %#v ok=%v", runtime, ok)
+	}
+}
+
+func TestPlatformEmployeeRegisterUpdatesExistingPlatformEmployeeID(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registeredAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_old-employee-id", MachineID: "ve_old-employee-id", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "old-account", OwnerEmail: "old@tenant.test", Name: "Old Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: registeredAt}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "new-employee-id", "platform_employee_id": "platform-employee-1", "virtual_email": "new@tenant.test", "name": "New Worker"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(registry.Employees) != 1 {
+		t.Fatalf("expected registration to update existing employee, got %#v", registry.Employees)
+	}
+	got := registry.Employees[0]
+	if got.ID != "ve_new-employee-id" || got.MachineID != "ve_new-employee-id" || got.PlatformEmployeeID != "platform-employee-1" || got.Name != "New Worker" || got.RegisteredAt != registeredAt {
+		t.Fatalf("unexpected updated employee: %#v", got)
+	}
+}
+
+func TestPlatformEmployeeRegisterDoesNotOverwritePhysicalEmployeeIDCollision(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_emp_1", MachineID: "ve_emp_1", EmployeeType: veEmployeeTypePhysical, PlatformID: "platform-1", Name: "Desktop Worker", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), tenantSystem, seed); err != nil {
+		t.Fatalf("save seed registry: %v", err)
+	}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "emp_1", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Platform Worker"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	registry := loadVERegistry(context.Background(), tenantSystem)
+	if len(registry.Employees) != 2 {
+		t.Fatalf("physical employee should not be overwritten: %#v", registry.Employees)
+	}
+	byID := map[string]digitalEmployeeEntry{}
+	for _, employee := range registry.Employees {
+		byID[employee.ID] = employee
+	}
+	if byID["ve_emp_1"].EmployeeType != veEmployeeTypePhysical || byID["ve_emp_1"].PlatformEmployeeID != "" {
+		t.Fatalf("physical employee mutated: %#v", byID["ve_emp_1"])
+	}
+	if got := byID["ve_platform-employee-1"]; got.EmployeeType != veEmployeeTypeVirtual || got.PlatformEmployeeID != "platform-employee-1" {
+		t.Fatalf("platform employee not registered separately: %#v", got)
+	}
+}
+
 func TestPlatformEmployeeRegisterInvalidLLMServiceGroupDoesNotCreateDigitalEmployee(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -595,18 +1830,102 @@ func TestPlatformEmployeeRegisterInvalidLLMServiceGroupDoesNotCreateDigitalEmplo
 		t.Fatalf("save llm registry: %v", err)
 	}
 	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	users := &createCountingPlatformUserRepo{}
 
-	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "missing-group"})
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "missing-group", "runtime_base_url": "https://runtime.example", "runtime_api_key": "runtime-secret"})
 	rec := httptest.NewRecorder()
-	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	PlatformEmployeeRegisterHandler(settings, tenants, users).ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED") {
 		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.creates != 0 || len(users.items) != 0 {
+		t.Fatalf("invalid llm service group must not create user, creates=%d users=%#v", users.creates, users.items)
+	}
+	if runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings); len(runtimeRegistry.Runtimes) != 0 {
+		t.Fatalf("invalid llm service group must not create runtime registry: %#v", runtimeRegistry.Runtimes)
 	}
 	registry := loadVERegistry(context.Background(), tenantSystem)
 	if len(registry.Employees) != 0 {
 		t.Fatalf("digital employee should not be created for invalid llm service group: %#v", registry.Employees)
 	}
 }
+
+func TestPlatformEmployeeRegisterLLMEntitlementSaveFailureDoesNotCreateUser(t *testing.T) {
+	settings := &failKeySystemSettingsRepo{failKey: llmservice.RegistryKey}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: "https://runtime.example", AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	tenantSystem := scopedSystemSettingsForTenant("tenant-a", settings)
+	if err := settings.testSystemSettingsRepo.Set(context.Background(), "tenant:tenant-a:"+llmservice.RegistryKey, mustJSON(t, llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "ops-pro", Name: "Ops Pro"}}})); err != nil {
+		t.Fatalf("seed llm registry: %v", err)
+	}
+	users := &createCountingPlatformUserRepo{}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "ops-pro"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED") {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.creates != 0 || len(users.items) != 0 {
+		t.Fatalf("llm entitlement save failure must not create user, creates=%d users=%#v", users.creates, users.items)
+	}
+	registry := loadVERegistry(context.Background(), tenantSystem)
+	if len(registry.Employees) != 0 {
+		t.Fatalf("employee should not be registered when llm entitlement save fails: %#v", registry.Employees)
+	}
+}
+
+func TestPlatformEmployeeRegisterLLMEntitlementSaveFailureDoesNotCreateRuntime(t *testing.T) {
+	settings := &failKeySystemSettingsRepo{failKey: llmservice.RegistryKey}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := settings.testSystemSettingsRepo.Set(context.Background(), "tenant:tenant-a:"+llmservice.RegistryKey, mustJSON(t, llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "ops-pro", Name: "Ops Pro"}}})); err != nil {
+		t.Fatalf("seed llm registry: %v", err)
+	}
+	users := &createCountingPlatformUserRepo{}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "ops-pro", "runtime_base_url": "https://runtime.example", "runtime_api_key": "runtime-secret"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "LLM_SERVICE_GROUP_ENTITLEMENT_FAILED") {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.creates != 0 || len(users.items) != 0 {
+		t.Fatalf("llm entitlement save failure must not create user, creates=%d users=%#v", users.creates, users.items)
+	}
+	if runtimeRegistry := loadMacLawSrvRuntimeRegistry(context.Background(), settings); len(runtimeRegistry.Runtimes) != 0 {
+		t.Fatalf("llm entitlement save failure must not create runtime registry: %#v", runtimeRegistry.Runtimes)
+	}
+	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(registry.Employees) != 0 {
+		t.Fatalf("employee should not be registered when llm entitlement save fails: %#v", registry.Employees)
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return string(data)
+}
+
 func TestPlatformEmployeeRegisterGrantsRequestedLLMServiceGroup(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -623,7 +1942,7 @@ func TestPlatformEmployeeRegisterGrantsRequestedLLMServiceGroup(t *testing.T) {
 	}
 	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
 
-	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "ops-pro"})
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test", "name": "Worker", "llm_service_group_id": "ops-pro", "runtime_base_url": "https://runtime.example", "runtime_api_key": "runtime-secret"})
 	rec := httptest.NewRecorder()
 	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -642,6 +1961,10 @@ func TestPlatformEmployeeRegisterGrantsRequestedLLMServiceGroup(t *testing.T) {
 	}
 	if len(status.ActiveGrants) != 1 || status.ActiveGrants[0].ServiceGroupID != "ops-pro" || status.ActiveGrants[0].Source != "ve_platform_employee" {
 		t.Fatalf("active grants = %#v", status.ActiveGrants)
+	}
+	registry := loadVERegistry(context.Background(), tenantSystem)
+	if len(registry.Employees) != 1 || registry.Employees[0].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("registered employee online status = %#v", registry.Employees)
 	}
 }
 
@@ -863,7 +2186,7 @@ func TestPlatformEmployeeStatusAcceptsPlatformEmployeeID(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -898,7 +2221,7 @@ func TestPlatformEmployeeStatusRejectsMismatchedHubIdentity(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -925,7 +2248,7 @@ func TestPlatformSyncJobRunValidatesEmployeeIdentity(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -972,7 +2295,7 @@ func TestPlatformSyncJobRunPostsCallbacks(t *testing.T) {
 	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: "platform"}}}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
 	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}

@@ -878,8 +878,24 @@ func (g *Gateway) handleMachineHello(ctx *ConnContext, msg Envelope) error {
 	// Include hub_config in hello ack so the client gets digital_employee_authorization
 	// immediately on connection, without waiting for the first heartbeat cycle.
 	ackPayload := map[string]any{"ok": true}
+	g.injectSecurityPolicy(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHello")
 	g.injectHubConfig(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHello")
 	return writeAckPayload(ctx.Conn, msg.RequestID, ackPayload)
+}
+
+func (g *Gateway) injectSecurityPolicy(ackPayload map[string]any, userID, tenantID, source string) {
+	if g.SecurityProvider == nil {
+		return
+	}
+	policyCtx := security.WithTenant(context.Background(), tenantID)
+	policy, err := g.SecurityProvider.GetHeartbeatPolicy(policyCtx, userID)
+	if err != nil {
+		log.Printf("[ws] %s: security policy unavailable for tenant_id=%s user_id=%s: %v", source, tenantID, userID, err)
+		return
+	}
+	if policy != nil {
+		ackPayload["security_policy"] = policy
+	}
 }
 
 func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
@@ -894,14 +910,7 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	ackPayload := map[string]any{"ok": true}
-	if g.SecurityProvider != nil {
-		policy, err := g.SecurityProvider.GetHeartbeatPolicy(context.Background(), ctx.UserID)
-		if err != nil {
-			log.Printf("[ws] handleMachineHeartbeat: security policy unavailable for user_id=%s: %v", ctx.UserID, err)
-		} else if policy != nil {
-			ackPayload["security_policy"] = policy
-		}
-	}
+	g.injectSecurityPolicy(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHeartbeat")
 	g.injectHubConfig(ackPayload, ctx.UserID, ctx.TenantID, "handleMachineHeartbeat")
 	return writeAckPayload(ctx.Conn, msg.RequestID, ackPayload)
 }

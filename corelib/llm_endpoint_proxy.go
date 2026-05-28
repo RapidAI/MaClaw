@@ -183,13 +183,15 @@ func (p LLMEndpointProvider) MaclawLLMConfig() MaclawLLMConfig {
 }
 
 func NewLLMEndpointHTTPClient(cfg MaclawLLMConfig) *http.Client {
-	return NewLLMEndpointHTTPClientWithTimeout(cfg.EffectiveTimeoutSec())
+	return NewLLMEndpointHTTPClientWithTimeout(llmEndpointHTTPTimeoutSec(cfg))
+}
+
+func llmEndpointHTTPTimeoutSec(cfg MaclawLLMConfig) int {
+	return cfg.EffectiveTimeoutSec()
 }
 
 func NewLLMEndpointHTTPClientWithTimeout(timeoutSec int) *http.Client {
-	if timeoutSec <= 0 {
-		timeoutSec = DefaultLLMTimeoutSec
-	}
+	timeoutSec = NormalizeAgentTimeoutSec(timeoutSec)
 	totalTimeout := time.Duration(timeoutSec) * time.Second
 	connectTimeout := boundedSubTimeout(totalTimeout, 5*time.Second, 30*time.Second)
 	tlsTimeout := boundedSubTimeout(totalTimeout, 10*time.Second, 30*time.Second)
@@ -218,7 +220,7 @@ func (p *LLMEndpointProxy) cachedHTTPClient(cfg MaclawLLMConfig) *http.Client {
 	if p == nil {
 		return NewLLMEndpointHTTPClient(cfg)
 	}
-	timeoutSec := cfg.EffectiveTimeoutSec()
+	timeoutSec := llmEndpointHTTPTimeoutSec(cfg)
 	p.clientCacheMu.Lock()
 	defer p.clientCacheMu.Unlock()
 	if p.clientCache == nil {

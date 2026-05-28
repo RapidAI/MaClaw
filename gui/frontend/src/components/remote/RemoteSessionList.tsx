@@ -4,6 +4,7 @@ import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
 import { PassthroughCommandsPanel } from "./PassthroughCommandsPanel";
+import { countActiveBackgroundLoops } from "../layout/backgroundTaskCount";
 import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundLoops, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
@@ -113,10 +114,10 @@ export function RemoteSessionList(props: Props) {
     // EventsOn listener + 5s polling fallback
     useEffect(() => {
         refreshBgLoops();
-        EventsOn("background-loops-changed", refreshBgLoops);
+        const cleanup = EventsOn("background-loops-changed", refreshBgLoops);
         const timer = setInterval(refreshBgLoops, 5000);
         return () => {
-            EventsOff("background-loops-changed");
+            if (typeof cleanup === "function") cleanup(); else EventsOff("background-loops-changed");
             clearInterval(timer);
         };
     }, [refreshBgLoops]);
@@ -562,7 +563,7 @@ export function RemoteSessionList(props: Props) {
     const isPassthroughTab = sessionTab === "passthrough";
     const isRemoteTab = sessionTab === "remote";
     const remoteLiveCount = useMemo(() => remoteSess.filter(isLiveSession).length, [remoteSess]);
-    const bgTotalCount = bgLoops.filter(l => l.status === "running" || l.status === "paused").length + aiSessions.filter(isLiveSession).length;
+    const bgTotalCount = countActiveBackgroundLoops(bgLoops) + aiSessions.filter(isLiveSession).length;
 
     const openScheduledTab = () => {
         setSessionTab("scheduled");

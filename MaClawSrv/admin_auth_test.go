@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -535,6 +536,12 @@ func TestAdminOwnerCanCreateOperatorAndOperatorCannotManageAdmins(t *testing.T) 
 		{http.MethodPut, "/api/v1/admin/knowledge-access/cross-tenant", `{"enabled":true}`},
 		{http.MethodPut, "/api/v1/admin/knowledge-access/tenants/" + ownerTenant.ID + "/users/" + ownerUser.ID, `{"scopes":[]}`},
 		{http.MethodDelete, "/api/v1/admin/knowledge-access/tenants/" + ownerTenant.ID + "/users/" + ownerUser.ID, ``},
+		{http.MethodPost, "/api/v1/admin/knowledge-access/tenants/" + ownerTenant.ID + "/users/" + ownerUser.ID + "/public-libraries/missing", ``},
+		{http.MethodDelete, "/api/v1/admin/knowledge-access/tenants/" + ownerTenant.ID + "/users/" + ownerUser.ID + "/public-libraries/missing", ``},
+		{http.MethodPost, "/api/v1/admin/public-knowledge-libraries", `{"tenant_id":"` + ownerTenant.ID + `","name":"ops"}`},
+		{http.MethodDelete, "/api/v1/admin/public-knowledge-libraries/missing", ``},
+		{http.MethodPost, "/api/v1/admin/public-knowledge-libraries/missing/import/text", `{"text":"ops"}`},
+		{http.MethodPost, "/api/v1/admin/public-knowledge-libraries/missing/import/urls", `{"text":"https://example.com","max_depth":0}`},
 		{http.MethodGet, "/api/v1/admin/tenants/" + ownerTenant.ID + "/retire-plan?include_secrets=true&confirm=true", ``},
 		{http.MethodGet, "/api/v1/admin/tenants/" + ownerTenant.ID + "/users/" + ownerUser.ID + "/retire-plan?include_secrets=true&confirm=true", ``},
 		{http.MethodDelete, "/api/v1/admin/tenants/" + ownerTenant.ID + "/knowledge?confirm=true", ``},
@@ -569,12 +576,32 @@ func TestAdminOwnerCanCreateOperatorAndOperatorCannotManageAdmins(t *testing.T) 
 			t.Fatalf("operator %s %s should be forbidden, got %d body = %s", tc.method, tc.path, w.Code, w.Body.String())
 		}
 	}
+	var uploadBody bytes.Buffer
+	uploadWriter := multipart.NewWriter(&uploadBody)
+	uploadFile, err := uploadWriter.CreateFormFile("file", "ops.txt")
+	if err != nil {
+		t.Fatalf("create forbidden upload form: %v", err)
+	}
+	if _, err := uploadFile.Write([]byte("ops")); err != nil {
+		t.Fatalf("write forbidden upload form: %v", err)
+	}
+	if err := uploadWriter.Close(); err != nil {
+		t.Fatalf("close forbidden upload form: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-knowledge-libraries/missing/import/file", &uploadBody)
+	req.Header.Set("X-MaClaw-Admin-Secret", operatorLogin.Token)
+	req.Header.Set("Content-Type", uploadWriter.FormDataContentType())
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("operator public knowledge file import should be forbidden, got %d body = %s", w.Code, w.Body.String())
+	}
 	deniedEvents, err := svc.ListAuditEvents(req.Context(), agentservice.ListAuditEventsInput{Action: "admin.owner_required_failed", ActorType: "admin"})
 	if err != nil {
 		t.Fatalf("ListAuditEvents owner denied: %v", err)
 	}
-	if len(deniedEvents) != len(ownerOnlyChecks)+3 {
-		t.Fatalf("owner denied audit events = %d, want %d", len(deniedEvents), len(ownerOnlyChecks)+3)
+	if len(deniedEvents) != len(ownerOnlyChecks)+4 {
+		t.Fatalf("owner denied audit events = %d, want %d", len(deniedEvents), len(ownerOnlyChecks)+4)
 	}
 	lastDenied := deniedEvents[0]
 	if lastDenied.ActorUser != created.Admin.ID || lastDenied.ResourceType != "admin_authorization" || lastDenied.Metadata["admin_role"] != "operator" || lastDenied.Metadata["method"] == "" || lastDenied.Metadata["auth_type"] != "admin_session" {

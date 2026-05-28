@@ -27,8 +27,11 @@ func TestApplyAgentLoopTaskOrchestratorStepUsesNextReadyTask(t *testing.T) {
 	for _, item := range result.Tools {
 		names[tool.ExtractToolName(item)] = true
 	}
-	if !names["create_session"] {
-		t.Fatalf("ready external task should keep create_session tool, got %#v", names)
+	if names["create_session"] {
+		t.Fatalf("ready coding task should strip create_session tool, got %#v", names)
+	}
+	if !names["bash"] {
+		t.Fatalf("ready coding task should keep direct coding tools, got %#v", names)
 	}
 	if len(result.Conversation) != 1 {
 		t.Fatalf("expected one task injection, got %#v", result.Conversation)

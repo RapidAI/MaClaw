@@ -1293,6 +1293,13 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 	log.Printf("[hub-client] im.cancel_session received")
 	if c.imHandler != nil {
+		var payload struct {
+			UserID string `json:"user_id"`
+		}
+		if len(msg.Payload) > 0 && json.Unmarshal(msg.Payload, &payload) == nil && strings.TrimSpace(payload.UserID) != "" {
+			_, _ = c.imHandler.CancelSessionForUser(payload.UserID)
+			return
+		}
 		_, _ = c.imHandler.CancelCurrentSession()
 	}
 }
@@ -1448,15 +1455,12 @@ func (c *RemoteHubClient) handleNicknameAssigned(msg inboundHubEnvelope) {
 		return
 	}
 	log.Printf("[hub-client] nickname assigned by Hub: %q", nickname)
-	cfg, err := c.app.LoadConfig()
-	if err != nil {
-		return
-	}
 	// Always accept hub-assigned nickname - the hub only sends this when
 	// auto-assigning (first time) or resolving a conflict with another
 	// online device, so it should always take effect.
-	cfg.RemoteNickname = nickname
-	_ = c.app.SaveConfig(cfg)
+	_ = c.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteNickname = nickname
+	})
 }
 
 // sendIMAgentResponse sends the Agent's reply back to Hub.

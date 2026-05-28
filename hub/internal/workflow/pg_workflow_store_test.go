@@ -237,6 +237,59 @@ func TestPGWorkflowStore_DeleteWorkflowRejectsRunningInstance(t *testing.T) {
 	}
 }
 
+func TestPGWorkflowStore_DeleteWorkflowRejectsPublishedVersion(t *testing.T) {
+	store := newTestPGStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	def := &WorkflowDefinition{ID: "wf_published_delete", OwnerID: "user_a", Name: "Published", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateWorkflow(ctx, def); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	ver := &WorkflowVersion{ID: "ver_published_delete", WorkflowID: def.ID, VersionNumber: "1.0.0", Status: VersionPublished, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateVersion(ctx, ver); err != nil {
+		t.Fatalf("CreateVersion: %v", err)
+	}
+
+	if err := store.DeleteWorkflow(ctx, def.ID); err == nil {
+		t.Fatal("expected published version to block workflow deletion")
+	}
+	got, err := store.GetWorkflow(ctx, def.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflow: %v", err)
+	}
+	if got == nil {
+		t.Fatal("published workflow should not have been deleted")
+	}
+}
+
+func TestPGWorkflowStore_DeleteWorkflowRejectsPreviouslyPublishedVersion(t *testing.T) {
+	store := newTestPGStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	for _, status := range []VersionStatus{VersionSuperseded, VersionUnpublished} {
+		def := &WorkflowDefinition{ID: "wf_" + string(status) + "_delete", OwnerID: "user_a", Name: "Published History", CreatedAt: now, UpdatedAt: now}
+		if err := store.CreateWorkflow(ctx, def); err != nil {
+			t.Fatalf("CreateWorkflow %s: %v", status, err)
+		}
+		ver := &WorkflowVersion{ID: "ver_" + string(status) + "_delete", WorkflowID: def.ID, VersionNumber: "1.0.0", Status: status, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
+		if err := store.CreateVersion(ctx, ver); err != nil {
+			t.Fatalf("CreateVersion %s: %v", status, err)
+		}
+
+		if err := store.DeleteWorkflow(ctx, def.ID); err == nil {
+			t.Fatalf("expected %s version to block workflow deletion", status)
+		}
+		got, err := store.GetWorkflow(ctx, def.ID)
+		if err != nil {
+			t.Fatalf("GetWorkflow %s: %v", status, err)
+		}
+		if got == nil {
+			t.Fatalf("%s workflow should not have been deleted", status)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Workflow Version Tests
 // ---------------------------------------------------------------------------
@@ -757,7 +810,7 @@ func TestPGWorkflowStore_DeleteWorkflowIgnoresOtherTenantRunningInstance(t *test
 	if err := wfStore.CreateWorkflow(ctxA, def); err != nil {
 		t.Fatalf("CreateWorkflow: %v", err)
 	}
-	ver := &WorkflowVersion{ID: "ver_cross_running", WorkflowID: def.ID, VersionNumber: "0.1.0", Status: VersionPublished, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
+	ver := &WorkflowVersion{ID: "ver_cross_running", WorkflowID: def.ID, VersionNumber: "0.1.0", Status: VersionDraft, Graph: WorkflowGraph{}, CreatedAt: now, UpdatedAt: now}
 	if err := wfStore.CreateVersion(ctxA, ver); err != nil {
 		t.Fatalf("CreateVersion: %v", err)
 	}

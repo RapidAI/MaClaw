@@ -1,14 +1,21 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 )
+
+func workflowAdminReviewContext(r *http.Request) context.Context {
+	tenantID := RequestTenantID(r)
+	return capability.WithTenant(store.WithTenant(r.Context(), tenantID), tenantID)
+}
 
 // WorkflowAdminReviewListHandler handles GET /api/v1/admin/reviews.
 // Returns the pending submissions queue, paginated at 50 per page.
@@ -26,7 +33,7 @@ func WorkflowAdminReviewListHandler(reviewSvc *workflow.AdminReviewService) http
 			}
 		}
 
-		result, err := reviewSvc.ListPendingSubmissions(store.WithTenant(r.Context(), RequestTenantID(r)), page)
+		result, err := reviewSvc.ListPendingSubmissions(workflowAdminReviewContext(r), page)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -51,7 +58,7 @@ func WorkflowAdminReviewDetailHandler(reviewSvc *workflow.AdminReviewService) ht
 			return
 		}
 
-		detail, err := reviewSvc.GetSubmissionForReview(store.WithTenant(r.Context(), RequestTenantID(r)), versionID)
+		detail, err := reviewSvc.GetSubmissionForReview(workflowAdminReviewContext(r), versionID)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
@@ -84,7 +91,7 @@ func WorkflowAdminReviewApproveHandler(reviewSvc *workflow.AdminReviewService) h
 			return
 		}
 
-		if err := reviewSvc.ApproveSubmission(store.WithTenant(r.Context(), RequestTenantID(r)), versionID); err != nil {
+		if err := reviewSvc.ApproveSubmission(workflowAdminReviewContext(r), versionID); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 				return
@@ -127,7 +134,7 @@ func WorkflowAdminReviewRejectHandler(reviewSvc *workflow.AdminReviewService) ht
 			return
 		}
 
-		if err := reviewSvc.RejectSubmission(store.WithTenant(r.Context(), RequestTenantID(r)), versionID, req.Reason); err != nil {
+		if err := reviewSvc.RejectSubmission(workflowAdminReviewContext(r), versionID, req.Reason); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 				return
@@ -166,7 +173,7 @@ func WorkflowAdminReviewUnpublishHandler(reviewSvc *workflow.AdminReviewService)
 			return
 		}
 
-		if err := reviewSvc.UnpublishVersion(store.WithTenant(r.Context(), RequestTenantID(r)), versionID); err != nil {
+		if err := reviewSvc.UnpublishVersion(workflowAdminReviewContext(r), versionID); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 				return

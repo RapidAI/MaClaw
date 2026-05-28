@@ -15,6 +15,7 @@ import (
 )
 
 func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesSharedHelper(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled; coding tasks use CodingSubAgent")
 	session := &RemoteSession{
 		ID:        "sess-observe-1",
 		Tool:      "claude-code",
@@ -60,6 +61,7 @@ func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesSharedHelper(t *tes
 }
 
 func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesImplicitSessionID(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled; coding tasks use CodingSubAgent")
 	session := &RemoteSession{
 		ID:        "sess-observe-implicit-1",
 		Tool:      "claude-code",
@@ -100,6 +102,7 @@ func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesImplicitSessionID(t
 }
 
 func TestSkillRunnerExecuteStepWithContext_SendAndObserveFallsBackFromUnknownExplicitSessionID(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled; coding tasks use CodingSubAgent")
 	session := &RemoteSession{
 		ID:        "sess-observe-fallback-1",
 		Tool:      "claude-code",
@@ -1387,6 +1390,7 @@ func TestSkillExecutorExecuteSkillSteps_ConditionSkipsFollowRuntimeState(t *test
 }
 
 func TestSkillExecutorExecute_ImplicitSessionReuse(t *testing.T) {
+	t.Skip("legacy external session reuse is disabled; coding tasks use CodingSubAgent")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)

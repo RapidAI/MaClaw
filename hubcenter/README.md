@@ -23,6 +23,15 @@ go run .\cmd\hubcenter --config .\configs\config.yaml
 
 For a 3-node Hub Center HA deployment with local SQLite on each node, see `../docs/hubcenter-ha-3nodes.md`.
 
+## HA history maintenance
+
+HA sync history is pruned automatically by default. For emergency disk cleanup, stop Hub Center first when using `--vacuum`, then run:
+
+```powershell
+go run .\cmd\hubcenter backup create --config .\configs\config.yaml --out .\data\backups\pre-ha-prune.tar.gz --json
+go run .\cmd\hubcenter maintenance ha-prune --config .\configs\config.yaml --retention-days 0.5 --max-retained-ops 50000 --batch-size 20000 --vacuum --json
+```
+
 
 ## Disaster backup and restore
 

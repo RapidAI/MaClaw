@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $true)]
     [string]$InventoryPath,
 
@@ -69,9 +69,14 @@ ha:
   self_fqdn: $(Get-Fqdn $Center)
   private_key_path: ./data/ha_node_key.pem
   cluster_secret: $ClusterSecret
-  sync_interval_seconds: 3
+  sync_interval_seconds: 180
+  push_debounce_seconds: 180
   pull_batch_size: 200
-  heartbeat_sync_min_interval_seconds: 10
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  history_max_retained_ops: 50000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
   nodes:
 $($nodeLines -join "`r`n")
 
@@ -79,8 +84,8 @@ database:
   driver: sqlite
   dsn: $(Quote-YamlString $Center.DatabaseDSN)
   wal: true
-  busy_timeout_ms: 5000
-  max_read_open_conns: 8
+  busy_timeout_ms: 10000
+  max_read_open_conns: 4
   max_read_idle_conns: 4
   max_write_open_conns: 1
   max_write_idle_conns: 1

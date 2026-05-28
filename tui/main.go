@@ -21,11 +21,19 @@ var version = "dev"
 
 func init() {
 	// Security policy bridge functions for the commands package.
-	// In standalone TUI mode, these default to relaxed.
-	// When running as `maclaw tui` (GUI binary), the App sets stricter policies.
-	commands.GossipGuardFn = func() error { return nil }
+	// Standalone TUI honors the last Hub-pushed security snapshot persisted by GUI.
+	commands.GossipGuardFn = func() error {
+		cfg, err := commands.NewFileConfigStore(commands.ResolveDataDir()).LoadConfig()
+		if err != nil || !cfg.HubSecurityCentralized || cfg.GossipEnabled {
+			return nil
+		}
+		return fmt.Errorf("gossip is disabled by Hub security policy")
+	}
 	commands.SecurityReadOnlyFn = func() bool { return false }
-	commands.ConfigSecurityReadOnlyFn = func() bool { return false }
+	commands.ConfigSecurityReadOnlyFn = func() bool {
+		cfg, err := commands.NewFileConfigStore(commands.ResolveDataDir()).LoadConfig()
+		return err == nil && cfg.HubSecurityCentralized
+	}
 }
 
 func main() {
@@ -955,6 +963,10 @@ func runRemoteCommand(args []string) {
 		runTUI(views.TabOnboarding)
 		return
 	}
+	if err := enforceScriptedCommandSecurity("remote", args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(exitCodeForError(err))
+	}
 	if err := commands.RunRemote(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(exitCodeForError(err))
@@ -1007,6 +1019,10 @@ func runToolsBackedCommand(name string, args []string) {
 		runTUI(views.TabTools)
 		return
 	}
+	if err := enforceScriptedCommandSecurity(name, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(exitCodeForError(err))
+	}
 	var err error
 	switch name {
 	case "tool":
@@ -1057,6 +1073,10 @@ func runMCPCommand(args []string) {
 	case mcpCommandOpenTools:
 		runTUIWithOptions(tuiStartupOptions{forceInitialTab: []int{views.TabTools, views.ToolSubMCP}, mcpAddMode: mcpDefaultAddModeFromArgs(args)})
 		return
+	}
+	if err := enforceScriptedCommandSecurity("mcp", args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(exitCodeForError(err))
 	}
 	if err := commands.RunMCP(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

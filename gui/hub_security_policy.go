@@ -20,6 +20,7 @@ type HubEffectivePolicy struct {
 	GuardrailMode        string   `json:"guardrail_mode"`
 	SandboxMode          string   `json:"sandbox_mode"`
 	NetworkLevel         string   `json:"network_level"`
+	NetworkAllowlist     []string `json:"network_allowlist,omitempty"`
 	YoloModeAllowed      bool     `json:"yolo_mode_allowed"`
 	SmartRouteEnabled    bool     `json:"smart_route_enabled"`
 	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed
@@ -195,6 +196,7 @@ func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 	if policy == nil {
 		return
 	}
+	a.persistHubSecurityPolicy(policy)
 
 	// Log skill source restrictions even when centralized security is off
 	// (independent source control plane).
@@ -234,6 +236,38 @@ func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 	// 5. skill_sources_allowed -> restrict skill search/download sources
 	if len(ep.SkillSourcesAllowed) > 0 {
 		log.Printf("[hub-security] skill_sources_allowed applied (centralized): %v", ep.SkillSourcesAllowed)
+	}
+}
+
+func (a *App) persistHubSecurityPolicy(policy *HubSecurityPolicy) {
+	if policy == nil {
+		return
+	}
+	if err := a.patchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HubSecurityCentralized = policy.CentralizedSecurity
+		cfg.SkillSourcesAllowed = append([]string(nil), policy.SkillSourcesAllowed...)
+		if !policy.CentralizedSecurity || policy.Policy == nil {
+			return
+		}
+		ep := policy.Policy
+		if strings.TrimSpace(ep.GuardrailMode) != "" {
+			cfg.SecurityPolicyMode = ep.GuardrailMode
+		}
+		if strings.TrimSpace(ep.SandboxMode) != "" {
+			cfg.SandboxMode = ep.SandboxMode
+		}
+		if strings.TrimSpace(ep.NetworkLevel) != "" {
+			cfg.NetworkLevel = ep.NetworkLevel
+		}
+		cfg.NetworkAllowlist = append([]string(nil), ep.NetworkAllowlist...)
+		cfg.YoloModeAllowed = ep.YoloModeAllowed
+		cfg.SmartRouteEnabled = ep.SmartRouteEnabled
+		cfg.GossipEnabled = ep.GossipEnabled
+		cfg.FileOutboundEnabled = ep.FileOutboundEnabled
+		cfg.ImageOutboundEnabled = ep.ImageOutboundEnabled
+		cfg.SkillSourcesAllowed = append([]string(nil), ep.SkillSourcesAllowed...)
+	}, true); err != nil {
+		log.Printf("[hub-security] failed to persist hub policy to local config: %v", err)
 	}
 }
 
@@ -291,6 +325,9 @@ func (a *App) getHubNetworkLevel() string {
 // source control) > local AppConfig > default (all allowed).
 // Returns nil when all sources are allowed.
 func (a *App) GetAllowedSkillSources() []string {
+	if a != nil && a.securityPolicyMode() == "developer" {
+		return nil
+	}
 	p := a.hubSecurityCache.get()
 	if p != nil {
 		// Case 1: Centralized security on - use Policy.SkillSourcesAllowed (already
@@ -305,6 +342,9 @@ func (a *App) GetAllowedSkillSources() []string {
 	}
 	// 3. Check local config (standalone mode, no Hub connection).
 	cfg, err := a.LoadConfig()
+	if err == nil && strings.EqualFold(strings.TrimSpace(cfg.SecurityPolicyMode), "developer") {
+		return nil
+	}
 	if err == nil && len(cfg.SkillSourcesAllowed) > 0 {
 		return cfg.SkillSourcesAllowed
 	}
@@ -320,12 +360,28 @@ func (a *App) IsSkillSourceAllowed(source string) bool {
 	if len(allowed) == 0 {
 		return true // all allowed
 	}
+	source = normalizeHubSkillSource(source)
 	for _, s := range allowed {
-		if s == source {
+		if normalizeHubSkillSource(s) == source {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeHubSkillSource(source string) string {
+	switch strings.TrimSpace(strings.ToLower(source)) {
+	case "skillmarket", "market", "hubcenter", "hub_center", "skill_hub":
+		return "skillhub"
+	case "enterprise", "hub", "enterprisehub", "enterprise_hub":
+		return corelib.CapabilitySourceEnterpriseHub
+	case "claw_hub":
+		return corelib.CapabilitySourceClawHub
+	case "git_hub":
+		return corelib.CapabilitySourceGitHub
+	default:
+		return strings.TrimSpace(strings.ToLower(source))
+	}
 }
 
 // enforceYoloMode applies the Hub YOLO override to a launch spec's YoloMode flag.

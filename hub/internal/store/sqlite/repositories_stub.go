@@ -437,10 +437,10 @@ func (r *userRepo) GetByTenantEmail(ctx context.Context, tenantID, email string)
 }
 
 func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*store.User, error) {
-	where := `email = ?`
+	where := `lower(email) = lower(?)`
 	args := []any{email}
 	if tenantID != "" {
-		where = `tenant_id = ? AND email = ?`
+		where = `tenant_id = ? AND lower(email) = lower(?)`
 		args = []any{tenantID, email}
 	}
 	row := r.readDB.QueryRowContext(
@@ -538,8 +538,14 @@ func (r *userRepo) DeleteByEmail(ctx context.Context, email string) error {
 }
 
 func (r *userRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = ? AND email = ?`, normalizeTenantID(tenantID), email)
-	return err
+	res, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = ? AND lower(email) = lower(?)`, normalizeTenantID(tenantID), strings.TrimSpace(email))
+	if err != nil {
+		return err
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (r *userRepo) UpdateSmartRoute(ctx context.Context, userID string, enabled bool) error {

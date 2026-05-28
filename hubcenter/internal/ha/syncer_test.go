@@ -3,6 +3,7 @@ package ha
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -60,6 +61,42 @@ func TestSyncPeerClearsBacklogOnEmptySuccess(t *testing.T) {
 	}
 	if quality.Sync.Backlog != 0 {
 		t.Fatalf("quality.Sync.Backlog = %d, want 0", quality.Sync.Backlog)
+	}
+}
+
+func TestSyncPeerAdvancesCursorFromEmptyResponseNextSeq(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(&PullOpsResponse{
+			NodeID:       "hc-2",
+			Ops:          []*store.HASyncOp{},
+			NextAfterSeq: 250,
+			HasMore:      false,
+			MaxSeq:       250,
+		})
+	}))
+	defer server.Close()
+
+	peer := &PeerRuntimeState{NodeID: "hc-2", NodeName: "HubCenter 2", BaseURL: server.URL, Backlog: 20}
+	cursors := &fakeHAPeerCursorRepo{items: map[string]*store.HAPeerCursor{"hc-2": {PeerNodeID: "hc-2", LastPulledSeq: 200}}}
+	svc := &Service{
+		nodeID:  "hc-1",
+		peers:   map[string]*PeerRuntimeState{"hc-2": peer},
+		cursors: cursors,
+		ops:     &fakeHASyncOpRepo{},
+	}
+	syncer := NewSyncer(svc, time.Second, 200)
+
+	syncer.syncPeer(context.Background(), peer)
+
+	got, err := cursors.Get(context.Background(), "hc-2")
+	if err != nil {
+		t.Fatalf("cursor Get() error = %v", err)
+	}
+	if got == nil || got.LastPulledSeq != 250 {
+		t.Fatalf("LastPulledSeq = %#v, want 250", got)
+	}
+	if peer.Backlog != 0 {
+		t.Fatalf("peer.Backlog = %d, want 0", peer.Backlog)
 	}
 }
 
@@ -130,4 +167,70 @@ func TestSyncAllSkipsPeerAlreadyRunning(t *testing.T) {
 			t.Fatal("second sync did not start after first completed")
 		}
 	}
+}
+
+func TestSyncAllCapsConcurrentPeerSyncs(t *testing.T) {
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	requests := 0
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		active++
+		requests++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		mu.Lock()
+		active--
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(&PullOpsResponse{
+			NodeID:       "hc-peer",
+			Ops:          []*store.HASyncOp{},
+			NextAfterSeq: 0,
+			HasMore:      false,
+			MaxSeq:       0,
+		})
+	}))
+	defer server.Close()
+
+	peers := make(map[string]*PeerRuntimeState)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("hc-peer-%d", i)
+		peers[id] = &PeerRuntimeState{NodeID: id, NodeName: id, BaseURL: server.URL}
+	}
+	svc := &Service{
+		nodeID:  "hc-1",
+		peers:   peers,
+		cursors: &fakeHAPeerCursorRepo{items: map[string]*store.HAPeerCursor{}},
+		ops:     &fakeHASyncOpRepo{},
+	}
+	syncer := NewSyncer(svc, time.Second, 200)
+	syncer.slots = make(chan struct{}, 2)
+
+	syncer.syncAll(context.Background())
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("sync did not reach concurrency cap")
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	gotRequests := requests
+	gotMaxActive := maxActive
+	mu.Unlock()
+	if gotRequests != 2 {
+		t.Fatalf("requests before releasing slots = %d, want 2", gotRequests)
+	}
+	if gotMaxActive > 2 {
+		t.Fatalf("max active syncs = %d, want <= 2", gotMaxActive)
+	}
+	close(release)
 }

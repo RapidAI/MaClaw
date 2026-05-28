@@ -71,6 +71,9 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	if messageText == "" {
 		return progress.InterruptResult{}
 	}
+	if ih.handler == nil || ih.handler.hasCancelledTaskBoundary(userID) || !ih.handler.hasActiveLoopForUser(userID) {
+		return progress.InterruptResult{}
+	}
 
 	// Get the active milestone tracker for this user.
 	var tracker *progress.AgentProgressTracker
@@ -141,9 +144,9 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 				},
 			}
 		}
-		taskText, err := ih.handler.CancelCurrentSession()
+		taskText, err := ih.handler.CancelSessionForUser(userID)
 		if err != nil {
-			log.Printf("[interrupt] CancelCurrentSession error: %v", err)
+			log.Printf("[interrupt] CancelSessionForUser error: %v", err)
 			return progress.InterruptResult{}
 		}
 		cancelReply := "⏹️ 已停止当前任务。"
@@ -266,9 +269,9 @@ func (ih *imInterruptHandler) HandleCorrection(
 		if originalAction == progress.ActionMerge {
 			ih.handler.pendingInjection.LoadAndDelete(userID) // best-effort retract
 		}
-		taskText, err := ih.handler.CancelCurrentSession()
+		taskText, err := ih.handler.CancelSessionForUser(userID)
 		if err != nil {
-			log.Printf("[correction] CancelCurrentSession error: %v", err)
+			log.Printf("[correction] CancelSessionForUser error: %v", err)
 			return progress.InterruptResult{Reply: "⚠️ 打断失败: " + err.Error()}
 		}
 		reply := "⏹️ 已改为打断"

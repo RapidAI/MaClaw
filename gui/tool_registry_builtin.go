@@ -307,11 +307,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolTask(args) })
 
 	// --- Sub-agent delegation tool ---
-	reg("delegate_task", "将任务委派给专业子 Agent 处理。可用: coding_workflow（编码工作流）、help（使用帮助）。",
+	reg("delegate_task", "将任务委派给专业子 Agent 处理。coding_workflow 会同步运行内部 CodingSubAgent 完成编码任务，不返回占位激活文本；help 用于使用帮助。",
 		ToolCategoryBuiltin, []string{"delegate", "subagent", "workflow", "help"},
 		map[string]interface{}{
-			"agent":   map[string]string{"type": "string", "description": "子 Agent 名称: coding_workflow / help"},
-			"request": map[string]string{"type": "string", "description": "要委派的任务描述"},
+			"agent":        map[string]string{"type": "string", "description": "子 Agent 名称: coding_workflow / help"},
+			"request":      map[string]string{"type": "string", "description": "要委派的任务描述"},
+			"project_path": map[string]string{"type": "string", "description": "target project path for coding_workflow (optional)"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolDelegateTask(args) })
 
@@ -338,7 +339,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	regP("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
 		ToolCategoryBuiltin, []string{"shell", "bash", "command", "execute"},
 		map[string]interface{}{
-			"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
+			"command":     map[string]interface{}{"type": "string", "description": "要执行的 shell 命令", "maxLength": maxAgentLoopInlineBashCommandRunes},
 			"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
 			"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
 		}, []string{"command"},
@@ -359,7 +360,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		ToolCategoryBuiltin, []string{"file", "write"},
 		map[string]interface{}{
 			"path":     map[string]string{"type": "string", "description": "文件路径"},
-			"content":  map[string]string{"type": "string", "description": "文件内容，可为空字符串"},
+			"content":  map[string]interface{}{"type": "string", "description": "文件内容，可为空字符串", "maxLength": maxAgentLoopInlineWriteFileContentRunes},
 			"mode":     map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
 			"phase_id": map[string]string{"type": "string", "description": workflowDocPhaseIDSchemaDescription()},
 			"doc_type": map[string]string{"type": "string", "description": workflowDocTypeSchemaDescription()},

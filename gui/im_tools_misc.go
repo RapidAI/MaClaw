@@ -13,7 +13,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,7 +100,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		toolArgs = v
 	case string:
 		if v = strings.TrimSpace(v); v != "" {
-			if err := json.Unmarshal([]byte(v), &toolArgs); err != nil {
+			if err := json.Unmarshal([]byte(coretool.CleanToolArguments(v)), &toolArgs); err != nil {
 				return fmt.Sprintf("arguments JSON 解析失败: %s", err.Error())
 			}
 		}
@@ -208,16 +207,14 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 	// Resolve the SkillHub base URL from HubCenter (same as SkillHubClient).
 	// If resolution fails, SearchAllFiltered still queries ClawHub and GitHub.
 	hubURL := ""
-	var allowedSources []string
 	if h.app != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if base, _, err := h.app.resolveHubCenterBaseURLCached(ctx, &http.Client{Timeout: 10 * time.Second}); err == nil {
-			hubURL = base
-		}
-		allowedSources = h.app.GetAllowedSkillSources()
+		hubURL = NewSkillMarketClient(h.app).baseURL()
 	}
-	results := cskill.DefaultHubClient().SearchAllFiltered(context.Background(), hubURL, query, allowedSources)
+	searcher := NewSkillSearcher(NewSkillMarketClient(h.app))
+	results, err := searcher.SearchAll(context.Background(), query)
+	if err != nil {
+		return err.Error()
+	}
 	if len(results) == 0 {
 		return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill", query)
 	}
@@ -226,7 +223,7 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 	b.WriteString(fmt.Sprintf("找到 %d 个 Skill：\n", len(results)))
 	for _, r := range results {
 		switch r.Source {
-		case "skillhub":
+		case "skillhub", "skillmarket":
 			b.WriteString(fmt.Sprintf("- [SkillHub] ID: %s | %s: %s (trust: %s, downloads: %d)\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"%s\")\n",
 				r.ID, r.Name, r.Description, r.TrustLevel, r.Downloads, r.ID, hubURL))
 		case "clawhub":
@@ -265,6 +262,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		effectiveSource = "clawhub"
 	default:
 		effectiveSource = "skillhub"
+	}
+	guardArgs := map[string]interface{}{"action": "install", "source": effectiveSource, "skill_id": skillID, "hub_url": hubURL, "install_ref": args["install_ref"]}
+	if h.app != nil {
+		if ok, reason := h.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
+			return reason
+		}
 	}
 	if h.app != nil && !h.app.IsSkillSourceAllowed(effectiveSource) {
 		allowed := h.app.GetAllowedSkillSources()
@@ -450,8 +453,8 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		policyAction := security.PolicyAllow
 		if installScanReport != nil {
 			riskLevel = installScanReport.FinalLevel
-			if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(installScanReport) {
-				policyAction = security.PolicyUserOverride
+			if h.app != nil {
+				policyAction = h.app.skillInstallFinalAuditAction(installScanReport)
 			} else if installScanReport.NeedsUserReview() {
 				policyAction = security.PolicyAudit
 			}
@@ -1072,50 +1075,7 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 	return nil
 }
 func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) string {
-	h.app.ensureOrchestrator()
-	orch := h.app.orchestrator
-	if orch == nil {
-		return "Orchestrator 未初始化"
-	}
-	tasksRaw, ok := args["tasks"].([]interface{})
-	if !ok || len(tasksRaw) == 0 {
-		return "缺少 tasks 参数"
-	}
-	var tasks []TaskRequest
-	for _, t := range tasksRaw {
-		tm, ok := t.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		tr := TaskRequest{
-			Tool:        stringVal(tm, "tool"),
-			Description: stringVal(tm, "description"),
-			ProjectPath: stringVal(tm, "project_path"),
-		}
-		if tr.Tool == "" {
-			continue
-		}
-		tasks = append(tasks, tr)
-	}
-	if len(tasks) == 0 {
-		return "没有有效的任务"
-	}
-	result, err := orch.ExecuteParallel(tasks)
-	if err != nil {
-		return fmt.Sprintf("队列执行失败: %s", err.Error())
-	}
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("任务 %s: %s\n", result.TaskID, result.Summary))
-	for i := 0; i < len(tasks); i++ {
-		key := fmt.Sprintf("task_%d", i)
-		sr, ok := result.Results[key]
-		if !ok {
-			continue
-		}
-		b.WriteString(formatQueuedSessionResultLine(key, sr))
-		b.WriteString("\n")
-	}
-	return b.String()
+	return "[system rejected] parallel_execute is disabled for external coding sessions. Coding tasks must run through the internal CodingSubAgent."
 }
 
 func formatQueuedSessionResultLine(key string, sr SessionResult) string {
@@ -1179,8 +1139,8 @@ func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string
 // ---------------------------------------------------------------------------
 
 const (
-	bashDefaultTimeout      = 30
-	bashMaxTimeout          = 120
+	bashDefaultTimeout      = 240
+	bashMaxTimeout          = 600
 	bashPDFTimeout          = bashMaxTimeout
 	craftToolDefaultTimeout = 90
 	craftToolMaxTimeout     = 300
@@ -1216,6 +1176,9 @@ func resolveBashTimeout(args map[string]interface{}, command string) int {
 	}
 	if !explicit && looksLikePDFRelatedWork(command) {
 		timeout = bashPDFTimeout
+	}
+	if timeout < bashDefaultTimeout {
+		timeout = bashDefaultTimeout
 	}
 	if timeout > bashMaxTimeout {
 		timeout = bashMaxTimeout
@@ -1418,26 +1381,7 @@ func (h *IMMessageHandler) toolListTemplates() string {
 }
 
 func (h *IMMessageHandler) toolLaunchTemplate(args map[string]interface{}) string {
-	if h.templateManager == nil {
-		return "模板管理器未初始化"
-	}
-
-	name := stringVal(args, "template_name")
-	if name == "" {
-		return "缺少 template_name 参数"
-	}
-
-	tpl, err := h.templateManager.Get(name)
-	if err != nil {
-		return fmt.Sprintf("获取模板失败: %s", err.Error())
-	}
-
-	// Build args from template config and delegate to toolCreateSession.
-	sessionArgs := map[string]interface{}{
-		"tool":         tpl.Tool,
-		"project_path": tpl.ProjectPath,
-	}
-	return h.toolCreateSession(sessionArgs)
+	return "[system rejected] launch_template is disabled for external coding sessions. Coding tasks must run through the internal CodingSubAgent."
 }
 
 // ---------------------------------------------------------------------------
@@ -1645,6 +1589,15 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 // ---------------------------------------------------------------------------
 
 func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
+	requestText := stringVal(args, "_user_text")
+	if requestText == "" && h != nil {
+		h.globalLoopMu.RLock()
+		requestText = h.lastUserText
+		h.globalLoopMu.RUnlock()
+	}
+	if h == nil || !isExplicitNicknameRequest(requestText) {
+		return "[system rejected] set_nickname 仅在用户明确要求改名或给你起名字时可用。不要主动给自己起昵称；昵称为空时等待 Hub 自动分配。"
+	}
 	nickname := strings.TrimSpace(stringVal(args, "nickname"))
 	if nickname == "" {
 		return "❌ nickname 不能为空"
@@ -1652,6 +1605,9 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 	// Persist to local config.
 	cfg, err := h.loadConfig()
 	if err == nil {
+		if strings.TrimSpace(cfg.RemoteNickname) == nickname {
+			return fmt.Sprintf("✅ 昵称已经是「%s」，无需重复上报。", nickname)
+		}
 		cfg.RemoteNickname = nickname
 		_ = h.saveConfig(cfg)
 	}
@@ -1663,6 +1619,25 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 		}
 	}
 	return fmt.Sprintf("✅ 昵称已更新为「%s」，Hub 已同步。", nickname)
+}
+
+func isExplicitNicknameRequest(text string) bool {
+	s := strings.ToLower(strings.TrimSpace(text))
+	if s == "" {
+		return false
+	}
+	patterns := []string{
+		"你叫", "以后叫你", "以后你叫", "以后就叫", "叫你", "给你起名", "给你起个名", "给你取名", "给你取个名",
+		"把你的昵称", "把你昵称", "你的昵称改", "昵称改为", "昵称改成", "昵称设为", "昵称设置为", "昵称叫",
+		"你的名字是", "名字叫", "改名叫", "重命名为",
+		"call you", "your name is", "rename you", "set your nickname", "change your nickname", "nickname is", "you are named",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(s, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

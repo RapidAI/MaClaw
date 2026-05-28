@@ -25,6 +25,9 @@
       emptyPending: 'No pending registration requests.',
       emptyActive: 'No active digital employees.',
       name: 'Name',
+      employeeType: 'Employee Type',
+      employeeTypeVirtual: 'Virtual Employee',
+      employeeTypePhysical: 'Physical Employee',
       skillDesc: 'Skill Description',
       accessPolicy: 'Access Policy',
       onlineStatus: 'Online Status',
@@ -39,6 +42,11 @@
       policyWhitelist: 'Whitelist',
       policyBlacklist: 'Blacklist',
       policyPerRequest: 'Per-Request',
+      autoApproveTitle: 'Auto Approval',
+      autoApproveDesc: 'When enabled, new digital employee applications are approved automatically while quota is available.',
+      autoApproveLabel: 'Automatically approve applications',
+      autoApproveEnabled: 'Enabled',
+      autoApproveDisabled: 'Disabled',
       groupConfigTitle: 'Group Chat Configuration',
       groupConfigDesc: 'Maximum number of digital employee participants in a single group chat.',
       maxParticipants: 'Max Participants',
@@ -89,6 +97,9 @@
       emptyPending: '\u6682\u65e0\u5f85\u5ba1\u6279\u7684\u6ce8\u518c\u8bf7\u6c42\u3002',
       emptyActive: '\u6682\u65e0\u5df2\u6fc0\u6d3b\u7684\u6570\u5b57\u5458\u5de5\u3002',
       name: '\u540d\u79f0',
+      employeeType: '\u6570\u5b57\u5458\u5de5\u7c7b\u578b',
+      employeeTypeVirtual: '\u865a\u62df\u5458\u5de5',
+      employeeTypePhysical: '\u7269\u7406\u5458\u5de5',
       skillDesc: '\u6280\u80fd\u63cf\u8ff0',
       accessPolicy: '\u8bbf\u95ee\u7b56\u7565',
       onlineStatus: '\u5728\u7ebf\u72b6\u6001',
@@ -103,6 +114,11 @@
       policyWhitelist: '\u767d\u540d\u5355',
       policyBlacklist: '\u9ed1\u540d\u5355',
       policyPerRequest: '\u9010\u6b21\u6388\u6743',
+      autoApproveTitle: '\u81ea\u52a8\u901a\u8fc7',
+      autoApproveDesc: '\u6253\u5f00\u540e\uff0c\u5728\u914d\u989d\u5141\u8bb8\u65f6\u65b0\u7684\u6570\u5b57\u5458\u5de5\u7533\u8bf7\u5c06\u81ea\u52a8\u901a\u8fc7\u3002',
+      autoApproveLabel: '\u81ea\u52a8\u901a\u8fc7\u6570\u5b57\u5458\u5de5\u7533\u8bf7',
+      autoApproveEnabled: '\u5df2\u5f00\u542f',
+      autoApproveDisabled: '\u5df2\u5173\u95ed',
       groupConfigTitle: '\u7fa4\u804a\u914d\u7f6e',
       groupConfigDesc: '\u5355\u4e2a\u7fa4\u804a\u4e2d\u6570\u5b57\u5458\u5de5\u53c2\u4e0e\u8005\u7684\u6700\u5927\u6570\u91cf\u3002',
       maxParticipants: '\u6700\u5927\u53c2\u4e0e\u8005',
@@ -151,7 +167,8 @@
 
   // --- State ---
   var veListCache = [];
-  var veGroupConfig = { max_group_participants: 5 };
+  var veGroupConfig = { max_group_participants: 5, auto_approve: false };
+  var veGroupConfigLoaded = false;
   var veQuota = 0;
   var veActiveCount = 0;
   var veHistoryEmployeeID = '';
@@ -169,6 +186,20 @@
       case 'per_request': return vt('policyPerRequest');
       default: return policy || '';
     }
+  }
+
+  function inferEmployeeType(ve) {
+    if (ve && (String(ve.platform_id || '').trim() || String(ve.platform_employee_id || '').trim() || String(ve.runtime_provider_id || '').trim().toLowerCase() === 'maclawsrv')) return 'virtual';
+    var explicit = String((ve && ve.employee_type) || '').trim().toLowerCase();
+    if (explicit === 'virtual' || explicit === 'physical') return explicit;
+    return 'physical';
+  }
+
+  function formatEmployeeType(ve) {
+    var type = inferEmployeeType(ve);
+    var label = type === 'virtual' ? vt('employeeTypeVirtual') : vt('employeeTypePhysical');
+    var cls = type === 'virtual' ? 'badge info' : 'badge warn';
+    return '<span class="' + cls + '" title="' + escapeHtml(vt('employeeType')) + '">' + escapeHtml(label) + '</span>';
   }
 
   function formatOnlineStatus(status) {
@@ -228,10 +259,15 @@
     return (ve.name || ve.id || '') + (owner ? ' / ' + owner : '');
   }
 
+  function veListGridTemplate() {
+    return 'var(--ve-list-grid,minmax(110px,1fr) minmax(90px,.8fr) minmax(150px,1.15fr) minmax(150px,1fr) minmax(78px,.7fr) minmax(78px,.7fr) minmax(130px,.9fr) minmax(118px,1fr))';
+  }
+
   // --- Rendering ---
   function renderVEListHeader() {
-    return '<div class="row header" style="grid-template-columns:1fr 1.2fr 1fr .7fr .7fr .9fr 1fr">' +
+    return '<div class="row header" style="grid-template-columns:' + veListGridTemplate() + '">' +
       '<div>' + vt('name') + '</div>' +
+      '<div>' + vt('employeeType') + '</div>' +
       '<div>' + vt('skillDesc') + '</div>' +
       '<div>' + vt('ownerEmail') + '</div>' +
       '<div>' + vt('accessPolicy') + '</div>' +
@@ -245,8 +281,9 @@
     var veIDExpr = JSON.stringify(ve.id || '');
     var historyBtn = actionBtn(vt('openHistory'), 'btn-ghost', 'veLoadHistory(' + veIDExpr + ')');
     var ownerText = ve.owner_email || ve.owner_user_id || '';
-    return '<div class="row" style="grid-template-columns:1fr 1.2fr 1fr .7fr .7fr .9fr 1fr">' +
+    return '<div class="row" style="grid-template-columns:' + veListGridTemplate() + '">' +
       '<div><strong>' + escapeHtml(truncate(ve.name || '', 50)) + '</strong></div>' +
+      '<div>' + formatEmployeeType(ve) + '</div>' +
       '<div class="item-meta">' + escapeHtml(truncate(ve.skill_description || '', 100)) + '</div>' +
       '<div class="item-meta" title="' + escapeHtml(ownerText) + '">' + escapeHtml(truncate(ownerText, 42)) + '</div>' +
       '<div><span class="badge info">' + escapeHtml(formatAccessPolicy(ve.access_policy)) + '</span></div>' +
@@ -298,11 +335,19 @@
   }
 
   function renderGroupConfig() {
-    var container = document.getElementById('veGroupConfigForm');
-    if (!container) return;
     var input = document.getElementById('veMaxParticipantsInput');
     if (input) {
       input.value = String(veGroupConfig.max_group_participants || 5);
+    }
+  }
+
+  function renderAutoApproveConfig() {
+    var checkbox = document.getElementById('veAutoApproveInput');
+    if (checkbox) checkbox.checked = !!veGroupConfig.auto_approve;
+    var badge = document.getElementById('veAutoApproveBadge');
+    if (badge) {
+      badge.className = 'badge ' + (veGroupConfig.auto_approve ? 'ok' : 'warn');
+      badge.textContent = veGroupConfig.auto_approve ? vt('autoApproveEnabled') : vt('autoApproveDisabled');
     }
   }
 
@@ -353,16 +398,27 @@
     renderActiveList(veListCache);
   }
 
+  async function ensureVEGroupConfigLoaded() {
+    if (veGroupConfigLoaded) return;
+    var cfg = await api('/api/ve/config');
+    veGroupConfig = cfg || { max_group_participants: 5, auto_approve: false };
+    veGroupConfigLoaded = true;
+    renderGroupConfig();
+    renderAutoApproveConfig();
+  }
+
   // --- API Calls ---
   global.loadVEList = async function loadVEList() {
     try {
       var data = await api('/api/ve/list');
       veListCache = data.employees || [];
-      veGroupConfig = data.group_config || { max_group_participants: 5 };
+      veGroupConfig = data.group_config || { max_group_participants: 5, auto_approve: false };
+      veGroupConfigLoaded = true;
       veQuota = data.quota || 0;
       veActiveCount = data.active_count || 0;
       renderVELists();
       renderGroupConfig();
+      renderAutoApproveConfig();
       renderQuotaInfo();
       renderVEHistoryList();
     } catch (err) {
@@ -665,17 +721,58 @@
       return;
     }
     try {
+      await ensureVEGroupConfigLoaded();
       await api('/api/ve/config', {
         method: 'PUT',
-        body: JSON.stringify({ max_group_participants: val })
+        body: JSON.stringify({ max_group_participants: val, auto_approve: !!veGroupConfig.auto_approve })
       });
       veGroupConfig.max_group_participants = val;
+      renderGroupConfig();
       showToast(vt('configSaved'), 'success');
+      if (veGroupConfig.auto_approve) await global.loadVEList();
       // Push ve:group_config event is handled server-side on config change
     } catch (err) {
       var msg = vt('configSaveFailed').replace('{error}', err.message);
       setOutput(msg);
       showToast(msg, 'error');
+    }
+  };
+
+  global.veSaveAutoApproveConfig = async function veSaveAutoApproveConfig() {
+    var checkbox = document.getElementById('veAutoApproveInput');
+    var nextAutoApprove = !!(checkbox && checkbox.checked);
+    var input = document.getElementById('veMaxParticipantsInput');
+    var requestedParticipants = NaN;
+    if (input && String(input.value || '').trim()) {
+      requestedParticipants = parseInt(input.value, 10);
+      if (isNaN(requestedParticipants) || requestedParticipants < 1 || requestedParticipants > 10) {
+        showToast('max_group_participants must be 1-10', 'error');
+        renderAutoApproveConfig();
+        return;
+      }
+    }
+    try {
+      await ensureVEGroupConfigLoaded();
+      var maxParticipants = !isNaN(requestedParticipants) ? requestedParticipants : parseInt((input && input.value) || veGroupConfig.max_group_participants || 5, 10);
+      if (isNaN(maxParticipants) || maxParticipants < 1 || maxParticipants > 10) {
+        showToast('max_group_participants must be 1-10', 'error');
+        renderAutoApproveConfig();
+        return;
+      }
+      await api('/api/ve/config', {
+        method: 'PUT',
+        body: JSON.stringify({ max_group_participants: maxParticipants, auto_approve: nextAutoApprove })
+      });
+      veGroupConfig.max_group_participants = maxParticipants;
+      veGroupConfig.auto_approve = nextAutoApprove;
+      renderAutoApproveConfig();
+      showToast(vt('configSaved'), 'success');
+      if (nextAutoApprove) await global.loadVEList();
+    } catch (err) {
+      var msg = vt('configSaveFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+      renderAutoApproveConfig();
     }
   };
 
@@ -700,6 +797,9 @@
     setText('navVirtualEmployeesDesc', vt('navDesc'));
     setText('vePanelTitle', vt('panelTitle'));
     setText('vePanelDesc', vt('panelDesc'));
+    setText('veAutoApproveTitle', vt('autoApproveTitle'));
+    setText('veAutoApproveDesc', vt('autoApproveDesc'));
+    setText('veAutoApproveLabel', vt('autoApproveLabel'));
     setText('veGroupConfigTitle', vt('groupConfigTitle'));
     setText('veGroupConfigDesc', vt('groupConfigDesc'));
     setText('veMaxParticipantsLabel', vt('maxParticipants'));
@@ -712,6 +812,7 @@
     var search = document.getElementById('veHistorySearchInput');
     if (search) search.placeholder = vt('historySearchPlaceholder');
     setText('veSearchHistoryBtn', vt('searchHistory'));
+    renderAutoApproveConfig();
   }
 
   // Apply text on load and on language change

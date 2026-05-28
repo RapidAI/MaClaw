@@ -16,7 +16,11 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	h.globalLoopMu.RLock()
 	ctx := h.currentLoopCtx
 	taskText := h.lastUserText
+	userID := h.lastUserID
 	h.globalLoopMu.RUnlock()
+	if userID != "" {
+		return h.CancelSessionForUser(userID)
+	}
 	if ctx == nil {
 		return "", fmt.Errorf("no active session to cancel")
 	}
@@ -31,12 +35,80 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	return taskText, nil
 }
 
+func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", fmt.Errorf("missing userID")
+	}
+	ctx := h.getSessionLoopCtx(userID)
+	taskText := h.sessionLoopTaskText(userID)
+	if ctx == nil {
+		h.globalLoopMu.RLock()
+		if h.lastUserID == userID {
+			ctx = h.currentLoopCtx
+			taskText = h.lastUserText
+		}
+		h.globalLoopMu.RUnlock()
+	}
+	if ctx == nil {
+		return "", fmt.Errorf("no active session to cancel")
+	}
+	h.markTaskCancelledByUser(userID)
+	ctx.Cancel()
+	select {
+	case <-ctx.DoneC:
+	case <-time.After(10 * time.Second):
+		log.Printf("[CancelSessionForUser] timed out waiting for loop to exit user=%s", userID)
+	}
+	return taskText, nil
+}
+
+func (h *IMMessageHandler) sessionLoopTaskText(userID string) string {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return ""
+	}
+	if v, ok := h.sessionLoops.Load(userID); ok {
+		state := v.(*sessionLoopState)
+		state.stateMu.RLock()
+		defer state.stateMu.RUnlock()
+		return state.userText
+	}
+	return ""
+}
+
+func (h *IMMessageHandler) markTaskCancelledByUser(userID string) {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	h.cancelledTaskBoundary.Store(userID, time.Now())
+	h.pendingInjection.Delete(userID)
+	if h.interruptHandler != nil {
+		h.interruptHandler.ClearTracker(userID)
+	}
+}
+
+func (h *IMMessageHandler) hasCancelledTaskBoundary(userID string) bool {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return false
+	}
+	_, ok := h.cancelledTaskBoundary.Load(userID)
+	return ok
+}
+
+func (h *IMMessageHandler) consumeCancelledTaskBoundary(userID string) bool {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return false
+	}
+	_, ok := h.cancelledTaskBoundary.LoadAndDelete(userID)
+	return ok
+}
+
 // InjectSupplementary stores a supplementary message for the running agent
 // loop to consume at the start of its next iteration. Returns true if a loop
 // is currently active (injection accepted), false otherwise.
 func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || !h.hasActiveLoopForUser(userID) {
+	if text == "" || h.hasCancelledTaskBoundary(userID) || !h.hasActiveLoopForUser(userID) {
 		return false
 	}
 	h.accumulateInjection(userID, "[用户补充] "+text)

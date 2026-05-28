@@ -254,7 +254,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     />
 
                     {/* Name + skill description */}
-                    <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             <span style={{ color: theme.text, fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                 {truncateText(displayName, 20)}
@@ -277,7 +277,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 </span>
                             )}
                         </div>
-                        <div style={{ color: theme.textMuted, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div style={{ color: theme.textMuted, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left" }}>
                             {truncateText(ve.skill_description, 50)}
                         </div>
                     </div>

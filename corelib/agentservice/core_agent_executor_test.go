@@ -210,6 +210,56 @@ func TestCoreAgentBuildSystemPromptIncludesKnowledgeRulesWhenStoreConfigured(t *
 	}
 }
 
+func TestCoreAgentBuildSystemPromptIncludesConfiguredSSHHosts(t *testing.T) {
+	cb := &coreAgentCallbacks{appCfg: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{
+		{Label: "prod-web", Host: "10.0.0.10", User: "deploy", Port: 2222},
+		{Label: "broken", Host: "10.0.0.11"},
+	}}}
+	prompt := cb.BuildSystemPrompt("connect to ssh", true)
+	if !strings.Contains(prompt, "Configured SSH hosts:") || !strings.Contains(prompt, "prod-web -> deploy@10.0.0.10:2222") {
+		t.Fatalf("expected configured SSH host labels in prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "broken") {
+		t.Fatalf("expected invalid SSH host to be omitted from prompt, got %q", prompt)
+	}
+}
+
+func TestCoreAgentBuildSystemPromptIncludesVEPlatformProfile(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		appCfg: corelib.AppConfig{MaclawRoleName: "MaClaw", MaclawRoleDescription: "generic runtime assistant"},
+		tenant: Tenant{Name: "Acme Legal"},
+		user:   User{Name: "Contract Bot"},
+		instance: Instance{
+			Name:        "Contract Reviewer",
+			Description: "fallback description",
+			Metadata: map[string]string{
+				"ve_employee_id":       "emp-001",
+				"ve_name":              "Contract Reviewer",
+				"ve_handle":            "contract-reviewer",
+				"ve_skill_description": "Review contract risk and compliance issues",
+				"ve_skill_tags":        "legal, risk",
+			},
+		},
+	}
+	prompt := cb.BuildSystemPrompt("hello", true)
+	for _, want := range []string{
+		"You are Contract Reviewer",
+		"## VE Platform assigned identity",
+		"Review contract risk and compliance issues",
+		"legal, risk",
+		"Acme Legal",
+		"platform-assigned work identity",
+		"Do not replace it with chat role-play",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got %q", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "You are MaClaw") || strings.Contains(prompt, "generic runtime assistant") {
+		t.Fatalf("VE Platform profile should override generic user role config, got %q", prompt)
+	}
+}
+
 func TestCoreAgentExecutorMemoryUsesCorelibStoreFactory(t *testing.T) {
 	dataDir := t.TempDir()
 	legacyPath := filepath.Join(dataDir, "agent_memory.json")
@@ -1276,11 +1326,41 @@ func TestCoreAgentDescribeCapabilitiesEnablesSSHWhenHostsConfigured(t *testing.T
 	}
 }
 
+func TestCoreAgentDescribeCapabilitiesIgnoresInvalidSSHHosts(t *testing.T) {
+	executor := &CoreAgentExecutor{}
+	caps, err := executor.DescribeCapabilities(context.Background(), ExecuteRequest{Config: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "prod", Host: "example.com"}, {Label: "bad-auth", Host: "example.com", User: "root", AuthMethod: "token"}}}, Instance: Instance{Workspace: "/tmp/workspace"}})
+	if err != nil {
+		t.Fatalf("DescribeCapabilities: %v", err)
+	}
+	if caps.SupportsSSH {
+		t.Fatalf("expected ssh to stay unavailable for invalid host config, got %#v", caps)
+	}
+}
+
 func TestCoreAgentValidateSSHArgsRequiresLabelByDefault(t *testing.T) {
 	cb := &coreAgentCallbacks{workspace: t.TempDir()}
 	_, err := cb.validateSSHArgs(map[string]interface{}{"action": "connect", "host": "example.com", "user": "root"})
 	if err == nil || !strings.Contains(err.Error(), "configured label") {
 		t.Fatalf("expected label requirement error, got %v", err)
+	}
+}
+
+func TestCoreAgentValidateSSHArgsRejectsUnknownLabelByDefault(t *testing.T) {
+	cb := &coreAgentCallbacks{workspace: t.TempDir(), appCfg: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "prod", Host: "example.com", User: "root"}}}}
+	_, err := cb.validateSSHArgs(map[string]interface{}{"action": "connect", "label": "staging"})
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("expected unknown label rejection, got %v", err)
+	}
+}
+
+func TestCoreAgentValidateSSHArgsNormalizesConfiguredLabel(t *testing.T) {
+	cb := &coreAgentCallbacks{workspace: t.TempDir(), appCfg: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "Prod", Host: "example.com", User: "root"}}}}
+	args, err := cb.validateSSHArgs(map[string]interface{}{"action": "connect", "label": " prod "})
+	if err != nil {
+		t.Fatalf("validateSSHArgs: %v", err)
+	}
+	if got := args["label"]; got != "Prod" {
+		t.Fatalf("expected canonical label, got %#v", got)
 	}
 }
 
@@ -1293,7 +1373,7 @@ func TestCoreAgentExecuteSSHReturnsUnavailableWhenNotConfigured(t *testing.T) {
 }
 
 func TestCoreAgentValidateSSHArgsRejectsDirectOverrideWhenUsingLabel(t *testing.T) {
-	cb := &coreAgentCallbacks{workspace: t.TempDir()}
+	cb := &coreAgentCallbacks{workspace: t.TempDir(), appCfg: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "prod", Host: "configured.example.com", User: "root"}}}}
 	_, err := cb.validateSSHArgs(map[string]interface{}{"action": "connect", "label": "prod", "host": "example.com"})
 	if err == nil || !strings.Contains(err.Error(), "overriding host") {
 		t.Fatalf("expected override rejection, got %v", err)

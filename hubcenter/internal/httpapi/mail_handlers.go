@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -35,8 +34,8 @@ func UpdateMailConfigHandler(mailer *mail.Service) http.HandlerFunc {
 			return
 		}
 		var cfg mail.ConfigState
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &cfg, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		saved, err := mailer.SaveConfig(r.Context(), cfg)
@@ -56,8 +55,8 @@ func AdminSendTestMailHandler(mailer mail.Mailer) http.HandlerFunc {
 		}
 
 		var req AdminSendTestMailRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 

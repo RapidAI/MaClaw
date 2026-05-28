@@ -45,14 +45,15 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/admin/insights", Summary: "Admin insights", Description: "Returns top tenants, inactive users, and quota-pressure insights for operator consoles.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"inactive_for_days", "limit"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/alerts", Summary: "Admin alerts", Description: "Returns unready instances, waiting runs, failed runs, and credential expiry alerts for operator panels.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "kind", "since", "limit", "credential_expiry_window_days"}},
 	{Method: http.MethodGet, Path: "/api/platform/runtime/report", Summary: "Platform runtime report", Description: "Returns VE Platform-compatible MaClawSrv runtime health, users, instances, and summary counters.", Tag: "platform", Security: adminSecurity()},
-	{Method: http.MethodPost, Path: "/api/platform/virtual-employees", Summary: "Create VE Platform runtime", Description: "Creates or reuses the MaClawSrv tenant, user, user LLM config, and instance for one VE Platform virtual employee.", Tag: "platform", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/platform/virtual-employees", Summary: "Create VE Platform runtime", Description: "Creates or reuses the MaClawSrv tenant, user, user LLM config, SSH host labels, and instance for one VE Platform virtual employee.", Tag: "platform", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/platform/virtual-employees/{employeeId}/config", Summary: "Update VE Platform user config", Description: "Updates the shared MaClawSrv user IM and third-party access settings for one VE Platform virtual employee without changing LLM or instance state.", Tag: "platform", Security: adminSecurity()},
 	{Method: http.MethodDelete, Path: "/api/platform/virtual-employees/{employeeId}", Summary: "Delete VE Platform runtime", Description: "Deletes the MaClawSrv instance for one VE Platform virtual employee, and removes the managed runtime user when no other instances remain.", Tag: "platform", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/platform/source-users/runtime-status", Summary: "Batch source-user runtime status", Description: "Returns per-source-user web assistant instance counts and shared user config validation for VE Platform tenant user rows.", Tag: "platform", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/platform/source-users/{sourceUserId}/runtime-status", Summary: "Source-user runtime status", Description: "Returns web assistant readiness, instance counts, and shared user config validation for one VE Platform source user.", Tag: "platform", Security: adminSecurity(), QueryParams: []string{"tenant_id"}},
 	{Method: http.MethodGet, Path: "/api/platform/source-users/{sourceUserId}/assistant-instances", Summary: "List source-user assistant instances", Description: "Lists MaClawSrv web assistant instances for one VE Platform source user. All instances share the source user's config, tools, knowledge, memory, and security settings.", Tag: "platform", Security: adminSecurity(), QueryParams: []string{"tenant_id"}},
-	{Method: http.MethodPost, Path: "/api/platform/source-users/{sourceUserId}/assistant-instances", Summary: "Create source-user assistant instance", Description: "Creates another web assistant instance under the same MaClawSrv user for one VE Platform source user.", Tag: "platform", Security: adminSecurity()},
-	{Method: http.MethodPost, Path: "/api/platform/source-users/{sourceUserId}/assistant-link", Summary: "Create source-user assistant launch link", Description: "Creates a short-lived one-time launch URL for a source user's web AI assistant, optionally bound to an existing assistant instance.", Tag: "platform", Security: adminSecurity()},
-	{Method: http.MethodPost, Path: "/api/platform/source-users/{sourceUserId}/settings-link", Summary: "Create source-user settings launch link", Description: "Creates a short-lived one-time launch URL for the source user's shared system settings page.", Tag: "platform", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/platform/source-users/{sourceUserId}/assistant-instances", Summary: "Create source-user assistant instance", Description: "Creates another web assistant instance under the same MaClawSrv user for one VE Platform source user. Optional ssh_hosts updates the user's shared SSH host labels; an empty array clears them.", Tag: "platform", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/platform/source-users/{sourceUserId}/assistant-link", Summary: "Create source-user assistant launch link", Description: "Creates a short-lived one-time launch URL for a source user's web AI assistant, optionally bound to an existing assistant instance. Optional ssh_hosts updates the user's shared SSH host labels; an empty array clears them.", Tag: "platform", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/platform/source-users/{sourceUserId}/settings-link", Summary: "Create source-user settings launch link", Description: "Creates a short-lived one-time launch URL for the source user's shared system settings page. Optional ssh_hosts updates the user's shared SSH host labels; an empty array clears them.", Tag: "platform", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/platform/virtual-employees/{employeeId}/knowledge/imports", Summary: "Import platform knowledge", Description: "Accepts a VE Platform knowledge import handoff for a virtual employee runtime.", Tag: "platform", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/platform/virtual-employees/{employeeId}/migrations/imports", Summary: "Import platform migration", Description: "Accepts a VE Platform migration handoff for a virtual employee runtime.", Tag: "platform", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/platform/sync/jobs/{jobId}/run", Summary: "Run platform sync job", Description: "Runs a VE Platform sync job handoff and returns conflict and cursor metadata.", Tag: "platform", Security: adminSecurity()},
@@ -65,6 +66,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/admin/runtime/profiles/{profileName}", Summary: "Runtime text profile", Description: "Returns a redacted text/plain Go runtime profile for heap, allocs, block, mutex, or threadcreate diagnostics. Only debug=1 or debug=2 text output is supported; heap/allocs may set gc=true first; download=true adds an attachment filename.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"debug", "gc", "download"}, ResponseContent: "text/plain"},
 	{Method: http.MethodGet, Path: "/api/v1/admin/scheduler/status", Summary: "Scheduler status", Description: "Returns scheduler enablement and persisted scheduled task rollups.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/jobs", Summary: "List admin jobs", Description: "Lists async jobs across tenants for Admin Web operations diagnostics.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id", "user_id", "kind", "status", "limit"}},
+	{Method: http.MethodGet, Path: "/api/v1/admin/jobs/{jobId}", Summary: "Get admin job", Description: "Returns one async job across tenants for Admin Web progress polling.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/admin/jobs/{jobId}/cancel", Summary: "Cancel admin job", Description: "Cancels a pending or running async job across tenants.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/logs/sources", Summary: "List log sources", Description: "Lists service log files available for Admin Web diagnostics.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/logs/errors/recent", Summary: "Recent log errors", Description: "Returns a bounded, redacted list of recent error log lines across configured service log sources. Set include_warn=true to include warnings.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"limit", "include_warn"}},
@@ -147,12 +149,21 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPost, Path: "/api/v1/admin/tenants/{tenantId}/users/{userId}/config/test", Summary: "Test user config", Description: "Tests a candidate configuration for one user without saving it.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/knowledge/stats", Summary: "Admin knowledge stats", Description: "Returns service-wide knowledge store statistics for Admin Web diagnostics.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/knowledge/sources", Summary: "List all knowledge sources", Description: "Lists knowledge sources across tenants and users for Admin Web inspection.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/admin/public-knowledge-libraries", Summary: "List public knowledge libraries", Description: "Lists named public knowledge libraries that users may be granted access to.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/public-knowledge-libraries", Summary: "Create public knowledge library", Description: "Creates a named public knowledge library in a tenant.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/admin/public-knowledge-libraries/{libraryId}", Summary: "Delete public knowledge library", Description: "Deletes a public knowledge library and its sources.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/admin/public-knowledge-libraries/{libraryId}/sources", Summary: "List public knowledge library sources", Description: "Lists knowledge sources inside one named public knowledge library.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/public-knowledge-libraries/{libraryId}/import/text", Summary: "Import public knowledge text", Description: "Imports text into a named public knowledge library.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/public-knowledge-libraries/{libraryId}/import/file", Summary: "Import public knowledge files", Description: "Imports one or more documents or ZIP/RAR document archives into a named public knowledge library as an async job.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/public-knowledge-libraries/{libraryId}/import/urls", Summary: "Import public knowledge URLs", Description: "Imports URLs into a named public knowledge library, optionally crawling to a configured depth.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/admin/tenants/{tenantId}/knowledge", Summary: "Clear tenant knowledge", Description: "Deletes knowledge sources for one tenant after confirm=true is explicitly provided. This is an irreversible admin cleanup operation.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"confirm"}},
 	{Method: http.MethodGet, Path: "/api/v1/admin/knowledge-access/cross-tenant", Summary: "Knowledge cross-tenant access", Description: "Returns whether administrators may configure cross-tenant readable knowledge scopes.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPut, Path: "/api/v1/admin/knowledge-access/cross-tenant", Summary: "Update knowledge cross-tenant access", Description: "Enables or disables admin configuration of cross-tenant readable knowledge scopes.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", Summary: "Get knowledge access", Description: "Returns the configured additional readable knowledge scopes for one user. The user's own scope is implicit.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPut, Path: "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", Summary: "Update knowledge access", Description: "Configures additional readable knowledge scopes for one user. Same-tenant scopes are allowed by default; cross-tenant scopes require the global cross-tenant switch.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", Summary: "Delete knowledge access", Description: "Deletes the configured additional readable knowledge scopes for one user.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", Summary: "Attach public knowledge library", Description: "Grants one user read access to a named public knowledge library.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", Summary: "Detach public knowledge library", Description: "Removes one user's read access to a named public knowledge library.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/resolve", Summary: "Resolve knowledge access", Description: "Returns the effective readable knowledge scopes for one user, including the implicit self scope and cross-tenant filtering.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/skill-sources/available", Summary: "Available skill sources", Description: "Returns the canonical list of skill source identifiers that can be allowed or blocked by admin policy.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/admin/skill-sources/global", Summary: "Get global skill source policy", Description: "Returns the global service-wide skill source allow policy.", Tag: "admin", Security: adminSecurity()},
@@ -172,9 +183,15 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPut, Path: "/api/v1/config", Summary: "Update config", Tag: "config", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/config/validate", Summary: "Validate config", Tag: "config", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/config/test", Summary: "Test config", Tag: "config", Security: bearerSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/knowledge/import/text", Summary: "Import knowledge text", Description: "Saves user-provided text into the current user's knowledge base.", Tag: "knowledge", Security: bearerSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/knowledge/import/file", Summary: "Import knowledge files", Description: "Uploads one or more files and imports them into the current user's knowledge base as an async job.", Tag: "knowledge", Security: bearerSecurity()},
+	{Method: http.MethodPost, Path: "/api/v1/knowledge/import/urls", Summary: "Import knowledge URLs", Description: "Imports one or more URLs, optionally crawling discovered links up to max_depth.", Tag: "knowledge", Security: bearerSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/knowledge/import/jobs/{jobId}", Summary: "Knowledge import job", Description: "Returns status and result for a user knowledge import job.", Tag: "knowledge", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/knowledge/access", Summary: "Effective knowledge access", Description: "Returns the current user's effective readable knowledge scopes. Own knowledge is included by default.", Tag: "knowledge", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/usage/summary", Summary: "Usage summary", Tag: "usage", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/mcp/servers", Summary: "List MCP servers", Tag: "mcp", Security: bearerSecurity(), QueryParams: []string{"limit", "before"}},
+	{Method: http.MethodGet, Path: "/api/v1/mcp/market", Summary: "Search MCP marketplace", Tag: "mcp", Security: bearerSecurity(), QueryParams: []string{"q"}},
+	{Method: http.MethodPost, Path: "/api/v1/mcp/market/install", Summary: "Install MCP capability", Tag: "mcp", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/mcp/servers", Summary: "Create MCP server", Description: "Creates an MCP server synchronously or starts an async job when async=true.", Tag: "mcp", Security: bearerSecurity(), QueryParams: []string{"async"}},
 	{Method: http.MethodGet, Path: "/api/v1/mcp/servers/{serverId}", Summary: "Get MCP server", Tag: "mcp", Security: bearerSecurity()},
 	{Method: http.MethodPatch, Path: "/api/v1/mcp/servers/{serverId}", Summary: "Update MCP server", Description: "Updates an MCP server synchronously or starts an async job when async=true.", Tag: "mcp", Security: bearerSecurity(), QueryParams: []string{"async"}},
@@ -303,10 +320,17 @@ func isOwnerOpenAPIRoute(method, path string) bool {
 		http.MethodPost + " /api/v1/admin/snapshots/prune",
 		http.MethodPost + " /api/v1/admin/snapshots/{snapshotId}/restore",
 		http.MethodDelete + " /api/v1/admin/snapshots/{snapshotId}",
+		http.MethodPost + " /api/v1/admin/public-knowledge-libraries",
+		http.MethodDelete + " /api/v1/admin/public-knowledge-libraries/{libraryId}",
+		http.MethodPost + " /api/v1/admin/public-knowledge-libraries/{libraryId}/import/text",
+		http.MethodPost + " /api/v1/admin/public-knowledge-libraries/{libraryId}/import/file",
+		http.MethodPost + " /api/v1/admin/public-knowledge-libraries/{libraryId}/import/urls",
 		http.MethodDelete + " /api/v1/admin/tenants/{tenantId}/knowledge",
 		http.MethodPut + " /api/v1/admin/knowledge-access/cross-tenant",
 		http.MethodPut + " /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}",
 		http.MethodDelete + " /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}",
+		http.MethodPost + " /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}",
+		http.MethodDelete + " /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}",
 		http.MethodPut + " /api/v1/admin/skill-sources/global",
 		http.MethodPut + " /api/v1/admin/skill-sources/tenant/{id}",
 		http.MethodDelete + " /api/v1/admin/skill-sources/tenant/{id}",
@@ -386,6 +410,9 @@ func buildOpenAPISpec() map[string]any {
 					},
 				},
 			}
+		}
+		if body := openAPIFileImportRequestBody(route.Path); body != nil {
+			op["requestBody"] = body
 		}
 		if route.Path == "/api/v1/instances/{instanceId}/runs/{runId}/events" {
 			op["responses"] = map[string]any{
@@ -520,6 +547,40 @@ func openAPIQuerySchema(path, name string) map[string]any {
 		return map[string]any{"type": "integer", "minimum": 0, "maximum": 365}
 	}
 	return map[string]any{"type": "string"}
+}
+
+func openAPIFileImportRequestBody(path string) map[string]any {
+	if path != "/api/v1/knowledge/import/file" && path != "/api/v1/admin/public-knowledge-libraries/{libraryId}/import/file" {
+		return nil
+	}
+	properties := map[string]any{
+		"file": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type":   "string",
+				"format": "binary",
+			},
+			"minItems": 1,
+			"maxItems": maxKnowledgeUploadFiles,
+		},
+		"topic_hint": map[string]any{"type": "string"},
+		"labels":     map[string]any{"type": "string"},
+	}
+	if path == "/api/v1/knowledge/import/file" {
+		properties["title"] = map[string]any{"type": "string"}
+	}
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{
+			"multipart/form-data": map[string]any{
+				"schema": map[string]any{
+					"type":       "object",
+					"required":   []string{"file"},
+					"properties": properties,
+				},
+			},
+		},
+	}
 }
 
 func openAPIQueryDescription(path, name string) string {

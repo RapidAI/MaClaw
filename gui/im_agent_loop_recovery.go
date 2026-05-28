@@ -86,7 +86,7 @@ func truncateRunesForDrift(s string, maxRunes int) string {
 	if idx := strings.LastIndex(truncated, "\n"); idx > len(truncated)/2 {
 		truncated = truncated[:idx]
 	}
-	return truncated + "..."
+	return truncated + "…"
 }
 
 func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID string) string {

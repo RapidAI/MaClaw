@@ -20,7 +20,7 @@ func DefaultParameterDefinitions() []ParameterDefinition {
 		{Key: "maclaw_llm_providers", Title: "LLM Providers", Description: "Provider list. When configured, MaClawSrv prefers the selected provider over legacy flat fields.", Required: false, Type: "array", Example: `[{"name":"openai-prod","url":"https://api.openai.com/v1","key":"sk-***","model":"gpt-5.4","wire_api":"responses"}]`},
 		{Key: "mcp_servers", Title: "Remote MCP Servers", Description: "Remote MCP server registry shared by all user assistant instances.", Required: false, Type: "array", Example: `[{"id":"docs","name":"Docs","endpoint_url":"https://mcp.example/sse","auth_type":"bearer","auth_secret":"token"}]`},
 		{Key: "local_mcp_servers", Title: "Local MCP Servers", Description: "Local MCP stdio server registry shared by all user assistant instances.", Required: false, Type: "array", Example: `[{"id":"local-tools","name":"Local Tools","command":"node","args":["server.js"],"env":{"TOKEN":"***"}}]`},
-		{Key: "nl_skills", Title: "Installed Skills", Description: "User-level skill entries available to assistant instances.", Required: false, Type: "array", Example: `[{"name":"summarize","description":"Summarize documents","status":"active"}]`},
+		{Key: "ssh_hosts", Title: "SSH Hosts", Description: "Preconfigured SSH host labels available to user assistant instances. Label-based hosts enable the SSH tool without allowing arbitrary direct SSH targets.", Required: false, Type: "array", Example: `[{"label":"prod-web","host":"10.0.0.10","port":22,"user":"deploy","auth_method":"agent"}]`},
 		{Key: "skill_hub_urls", Title: "Skill Hubs", Description: "Skill discovery sources for this user.", Required: false, Type: "array", Example: `[{"name":"default","url":"https://hub.example"}]`},
 		{Key: "external_skill_dirs", Title: "External Skill Directories", Description: "Additional user skill directories.", Required: false, Type: "array", Example: `["D:/skills"]`},
 		{Key: "skill_sources_allowed", Title: "Allowed Skill Sources", Description: "Optional allow-list for skill sources. Empty allows all configured sources.", Required: false, Type: "array", Example: `["skillhub","clawhub","github"]`},
@@ -46,13 +46,47 @@ func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDe
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		key := jsonFieldName(field)
-		if key == "" || seen[key] {
+		if key == "" || seen[key] || !appConfigFieldAvailableInMaClawSrv(key) {
 			continue
 		}
 		defs = append(defs, ParameterDefinition{Key: key, Title: titleFromConfigKey(key), Description: "AppConfig field " + key + ".", Required: false, Secret: configKeyLooksSecret(key), Type: appConfigFieldType(field.Type)})
 		seen[key] = true
 	}
 	return defs
+}
+
+func appConfigFieldAvailableInMaClawSrv(key string) bool {
+	if _, ok := maclawSrvHiddenAppConfigKeys[key]; ok {
+		return false
+	}
+	return true
+}
+
+var maclawSrvHiddenAppConfigKeys = map[string]struct{}{
+	"claude":                           {},
+	"gemini":                           {},
+	"codex":                            {},
+	"opencode":                         {},
+	"codebuddy":                        {},
+	"iflow":                            {},
+	"kilo":                             {},
+	"cursor":                           {},
+	"projects":                         {},
+	"current_project":                  {},
+	"active_tool":                      {},
+	"default_tool":                     {},
+	"default_tool_provider":            {},
+	"show_gemini":                      {},
+	"show_codex":                       {},
+	"show_opencode":                    {},
+	"show_codebuddy":                   {},
+	"show_iflow":                       {},
+	"show_kilo":                        {},
+	"show_cursor":                      {},
+	"extra_tool_configs":               {},
+	"default_proxy_scope_coding_tools": {},
+	"use_windows_terminal":             {},
+	"nl_skills":                        {},
 }
 
 func jsonFieldName(field reflect.StructField) string {
@@ -267,6 +301,7 @@ func maskedSecretPlaceholder(value string) bool {
 
 func ValidateAppConfig(cfg corelib.AppConfig) ConfigValidationResult {
 	issues := validateLLMConfig(cfg)
+	issues = append(issues, validateSSHHostConfig(cfg)...)
 	return ConfigValidationResult{Valid: len(issues) == 0, Issues: issues}
 }
 
@@ -397,6 +432,42 @@ func validateLLMConfig(cfg corelib.AppConfig) []ConfigValidationIssue {
 		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_model", Message: "LLM model is required."})
 	} else if isManagedByHubPlaceholder("", "", cfg.MaclawLLMModel) {
 		issues = append(issues, ConfigValidationIssue{Key: "maclaw_llm_model", Message: "LLM model still uses unresolved VE Platform managed-by-hub placeholder."})
+	}
+	return issues
+}
+
+func validateSSHHostConfig(cfg corelib.AppConfig) []ConfigValidationIssue {
+	issues := make([]ConfigValidationIssue, 0)
+	seen := make(map[string]int, len(cfg.SSHHosts))
+	for i, host := range cfg.SSHHosts {
+		prefix := fmt.Sprintf("ssh_hosts[%d]", i)
+		label := strings.TrimSpace(host.Label)
+		addr := strings.TrimSpace(host.Host)
+		user := strings.TrimSpace(host.User)
+		if label == "" {
+			issues = append(issues, ConfigValidationIssue{Key: prefix + ".label", Message: "SSH host label is required."})
+		} else {
+			key := strings.ToLower(label)
+			if first, ok := seen[key]; ok {
+				issues = append(issues, ConfigValidationIssue{Key: prefix + ".label", Message: fmt.Sprintf("SSH host label duplicates ssh_hosts[%d].label.", first)})
+			} else {
+				seen[key] = i
+			}
+		}
+		if addr == "" {
+			issues = append(issues, ConfigValidationIssue{Key: prefix + ".host", Message: "SSH host address is required."})
+		}
+		if user == "" {
+			issues = append(issues, ConfigValidationIssue{Key: prefix + ".user", Message: "SSH username is required."})
+		}
+		if host.Port < 0 || host.Port > 65535 {
+			issues = append(issues, ConfigValidationIssue{Key: prefix + ".port", Message: "SSH port must be between 1 and 65535, or 0 to use default 22."})
+		}
+		switch strings.ToLower(strings.TrimSpace(host.AuthMethod)) {
+		case "", "password", "key", "agent":
+		default:
+			issues = append(issues, ConfigValidationIssue{Key: prefix + ".auth_method", Message: "SSH auth_method must be password, key, or agent."})
+		}
 	}
 	return issues
 }

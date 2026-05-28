@@ -263,7 +263,7 @@ Reply with exactly one word:
 - pending: the assistant asks the user to choose, confirm, provide details, approve starting, or otherwise answer before continuing.
 - done: the assistant is simply closing, reporting completion, or making a statement that does not require the next user message to be bound to this task.`,
 			UserMessage: "Assistant message:\n" + assistantText,
-			TimeoutSec:  6,
+			TimeoutSec:  30,
 			Tag:         "pending-reply-prompt",
 		})
 		if err == nil {
@@ -289,32 +289,28 @@ func (h *IMMessageHandler) classifyPendingUserReplyAnswer(question, answer strin
 		log.Printf("[PendingUserReply] answer test classifier failed: %v", err)
 	}
 
-	// When this function is called, pendingFresh=true is already guaranteed by
-	// the caller (bindPendingUserReplyAnswer). This means the pending question
-	// is the last assistant message the user saw, and no other user message has
-	// been sent since.
-	//
-	// IMPORTANT: returning (true, true) here has downstream effects beyond just
-	// injecting a context hint — it sets HasPendingUserReply=true which SKIPS
-	// workflow interception and NeedsConfirm gate. So we must reject messages
-	// that are clearly new tasks (especially coding tasks that need three-phase).
-	//
-	// Strategy:
-	// - Messages containing task-initiation keywords → reject (new task)
-	// - Everything else → accept (contextual response to pending question)
-	//
-	// This avoids the LLM call (2-6s) while preserving correctness for the
-	// critical case (new coding task accidentally skipping three-phase).
-	lowerAnswer := strings.ToLower(answer)
-	for _, signal := range []string{"帮我", "帮忙", "请帮", "写一个", "做一个", "开发一个", "实现一个", "设计一个", "创建一个"} {
-		if strings.Contains(lowerAnswer, signal) {
-			log.Printf("[PendingUserReply] answer rejected as new task (keyword=%q): answer=%q question=%q",
-				signal, truncateForLogGUI(answer, 40), truncateForLogGUI(question, 40))
-			return false, true
+	if h != nil {
+		result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
+			SystemPrompt: `You classify whether the user's next message answers the assistant's pending question or starts a new task.
+
+Reply with exactly one word:
+- answer: the user is choosing, confirming, approving, refusing, or otherwise answering the pending question.
+- new: the user is asking for a different task, especially deployment, coding, server work, file work, or a new request.`,
+			UserMessage: fmt.Sprintf("Assistant question:\n%s\n\nUser message:\n%s", question, answer),
+			TimeoutSec:  30,
+			Tag:         "pending-reply-answer",
+		})
+		if err == nil {
+			intent, ok := parsePendingReplyAnswerIntent(result.Text)
+			if !ok {
+				return false, false
+			}
+			return intent == pendingReplyAnswerIntentAnswer, true
 		}
+		log.Printf("[PendingUserReply] answer intent classification failed: %v", err)
 	}
 
-	return true, true
+	return false, false
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a

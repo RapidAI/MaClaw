@@ -120,6 +120,82 @@ func TestMCPAddRemoteAuthRequiresSecret(t *testing.T) {
 	}
 }
 
+func TestMCPAddHonorsHubSecurityPolicy(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	if err := NewFileConfigStore(dataDir).SaveConfig(corelib.AppConfig{HubSecurityCentralized: true, SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: true, ImageOutboundEnabled: true}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	localErr := mcpAdd([]string{"--name", "local", "--command", "node", "--args", "server.js"})
+	if localErr == nil || !strings.Contains(localErr.Error(), "sandbox") {
+		t.Fatalf("local add err=%v, want sandbox rejection", localErr)
+	}
+	remoteErr := mcpAdd([]string{"--name", "remote", "--url", "https://mcp.example/rpc"})
+	if remoteErr == nil || !strings.Contains(remoteErr.Error(), "network") {
+		t.Fatalf("remote add err=%v, want network rejection", remoteErr)
+	}
+
+	loaded, err := NewFileConfigStore(dataDir).LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.LocalMCPServers) != 0 || len(loaded.MCPServers) != 0 {
+		t.Fatalf("blocked MCP persisted: local=%d remote=%d", len(loaded.LocalMCPServers), len(loaded.MCPServers))
+	}
+}
+
+func TestMCPAddTrimsCommaArgs(t *testing.T) {
+	got := splitMCPArgs(" server.js, --port, 3000 ,, ")
+	want := []string{"server.js", "--port", "3000"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestMCPOperationsHonorHubSecurityPolicy(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	cfg := corelib.AppConfig{
+		HubSecurityCentralized: true,
+		SandboxMode:            "os",
+		NetworkLevel:           "none",
+		FileOutboundEnabled:    true,
+		ImageOutboundEnabled:   true,
+		MCPServers:             []corelib.MCPServerEntry{{Name: "remote", EndpointURL: "https://mcp.example/rpc"}},
+		LocalMCPServers:        []corelib.LocalMCPServerEntry{{Name: "local", Command: "node", Args: []string{"server.js"}}},
+	}
+	if err := NewFileConfigStore(dataDir).SaveConfig(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	callErr := mcpCallTool([]string{"--server", "remote", "--tool", "fetch", "--args", `{"url":"https://example.com"}`})
+	if callErr == nil || !strings.Contains(callErr.Error(), "network") {
+		t.Fatalf("call-tool err=%v, want network rejection", callErr)
+	}
+
+	toolsOut, toolsErr := captureMCPStdout(t, func() error { return mcpTools(nil) })
+	if toolsErr != nil {
+		t.Fatalf("mcpTools error = %v", toolsErr)
+	}
+	if !strings.Contains(toolsOut, "blocked") || !strings.Contains(toolsOut, "network") || !strings.Contains(toolsOut, "sandbox") {
+		t.Fatalf("mcpTools output should report blocked remote/local tools:\n%s", toolsOut)
+	}
+
+	healthOut, healthErr := captureMCPStdout(t, func() error { return mcpHealthCheck([]string{"--json"}) })
+	if healthErr != nil {
+		t.Fatalf("mcpHealthCheck error = %v", healthErr)
+	}
+	if !strings.Contains(healthOut, "blocked") || !strings.Contains(healthOut, "network") {
+		t.Fatalf("mcpHealthCheck output should report blocked remote health check:\n%s", healthOut)
+	}
+}
+
 func captureMCPStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	oldStdout := os.Stdout

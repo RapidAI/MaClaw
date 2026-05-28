@@ -36,6 +36,15 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	appCtx, appCancel := context.WithCancel(context.Background())
+	app := &App{Config: cfg, Provider: provider, ctx: appCtx, cancel: appCancel}
+	bootOK := false
+	defer func() {
+		if !bootOK {
+			appCancel()
+			_ = provider.Close()
+		}
+	}()
 
 	if err := sqlite.RunMigrations(provider.Write); err != nil {
 		return nil, err
@@ -73,6 +82,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
 		haSvc.SetNodeKeyMaterial(keyMaterial)
 		haSvc.AttachStore(st)
+		haSvc.SetPushDebounceInterval(time.Duration(cfg.HA.PushDebounceSeconds) * time.Second)
 		haSvc.SetHeartbeatSyncMinInterval(time.Duration(cfg.HA.HeartbeatSyncMinIntervalSeconds) * time.Second)
 		haSvc.SetFailureEventRecorder(failureRecorder)
 	}
@@ -88,7 +98,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	mailer := mail.New(*cfg, systemSettings)
 	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, systemSettings, mailer, cfg.Server.PublicBaseURL)
 	hubService.SetFailureEventRecorder(failureRecorder)
-	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, systemSettings)
 	hubService.SetRouteSnapshotRefresher(entryService)
 	if err := entryService.Rebuild(context.Background()); err != nil {
 		return nil, err
@@ -176,39 +186,85 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		DataDir:        dataDir,
 	})
 
-	go processor.Run(context.Background())
+	app.goBackground(processor.Run)
 
-	go func() {
-		ctx := context.Background()
+	app.goBackground(func(ctx context.Context) {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for {
-			<-ticker.C
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			_ = notifSvc.ProcessPendingNotifications(ctx)
 			trialMgr.ProcessExpiredTrials(ctx)
 			_ = smStore.DeleteExpiredAuthTokens(ctx)
 			_ = smStore.DeleteExpiredSessions(ctx)
 		}
-	}()
+	})
 
 	if haSvc != nil {
 		hubService.SetSyncRecorder(haSvc)
 		haSvc.SetRouteSnapshotRefresher(entryService)
-		go seedInitialHASnapshots(context.Background(), haSvc, entryService, st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.System, st.Gossip, st.News, skillStore, smStore)
-		go ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run(context.Background())
-		go ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run(context.Background())
+		app.goBackground(func(ctx context.Context) {
+			seedInitialHASnapshots(ctx, haSvc, entryService, st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.System, st.Gossip, st.News, skillStore, smStore)
+		})
+		app.goBackground(func(ctx context.Context) {
+			runHAHistoryPruner(ctx, haSvc, cfg.HA.HistoryRetentionDays, cfg.HA.HistoryMaxRetainedOps, cfg.HA.HistoryPruneIntervalMinutes, cfg.HA.HistoryPruneBatchSize)
+		})
+		app.goBackground(ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run)
+		app.goBackground(ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run)
 	}
 
 	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc)
 
-	return &App{
-		Config:       cfg,
-		Provider:     provider,
-		Store:        st,
-		AdminService: adminService,
-		HubService:   hubService,
-		EntryService: entryService,
-		Mailer:       mailer,
-		HTTPHandler:  router,
-	}, nil
+	app.Store = st
+	app.AdminService = adminService
+	app.HubService = hubService
+	app.EntryService = entryService
+	app.Mailer = mailer
+	app.HTTPHandler = router
+	bootOK = true
+	return app, nil
+}
+
+func runHAHistoryPruner(ctx context.Context, haSvc *ha.Service, retentionDays float64, maxRetainedOps, intervalMinutes, batchSize int) {
+	if haSvc == nil {
+		return
+	}
+	if retentionDays <= 0 {
+		retentionDays = 0.5
+	}
+	if maxRetainedOps <= 0 {
+		maxRetainedOps = 50000
+	}
+	if intervalMinutes <= 0 {
+		intervalMinutes = 10
+	}
+	if batchSize <= 0 {
+		batchSize = 20000
+	}
+	retention := time.Duration(retentionDays * float64(24*time.Hour))
+	prune := func() {
+		result, err := haSvc.PruneHistory(ctx, retention, int64(maxRetainedOps), int64(batchSize))
+		if err != nil {
+			log.Printf("[hubcenter][ha] prune history: %v", err)
+			return
+		}
+		if result != nil && (result.DeletedOps > 0 || result.DeletedAppliedOps > 0) {
+			log.Printf("[hubcenter][ha] pruned history: ops=%d applied_ops=%d remaining_ops=%d max_seq=%d", result.DeletedOps, result.DeletedAppliedOps, result.RemainingOps, result.MaxSeq)
+		}
+	}
+	prune()
+	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			prune()
+		}
+	}
 }

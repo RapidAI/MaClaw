@@ -689,15 +689,16 @@ type securityProfilePreset struct {
 	SandboxMode          string
 	NetworkLevel         string
 	YoloModeAllowed      bool
+	SmartRouteEnabled    bool
 	FileOutboundEnabled  bool
 	ImageOutboundEnabled bool
 }
 
 var securityProfilePresets = []securityProfilePreset{
-	{Name: "standard", PolicyMode: "standard", SandboxMode: "none", NetworkLevel: "full", YoloModeAllowed: true, FileOutboundEnabled: true, ImageOutboundEnabled: true},
-	{Name: "strict", PolicyMode: "strict", SandboxMode: "os", NetworkLevel: "intranet", YoloModeAllowed: false, FileOutboundEnabled: false, ImageOutboundEnabled: false},
-	{Name: "offline", PolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", YoloModeAllowed: false, FileOutboundEnabled: false, ImageOutboundEnabled: false},
-	{Name: "developer", PolicyMode: "developer", SandboxMode: "none", NetworkLevel: "full", YoloModeAllowed: true, FileOutboundEnabled: true, ImageOutboundEnabled: true},
+	{Name: "standard", PolicyMode: "standard", SandboxMode: "none", NetworkLevel: "full", YoloModeAllowed: true, SmartRouteEnabled: true, FileOutboundEnabled: true, ImageOutboundEnabled: true},
+	{Name: "strict", PolicyMode: "strict", SandboxMode: "os", NetworkLevel: "intranet", YoloModeAllowed: false, SmartRouteEnabled: false, FileOutboundEnabled: false, ImageOutboundEnabled: false},
+	{Name: "offline", PolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", YoloModeAllowed: false, SmartRouteEnabled: false, FileOutboundEnabled: false, ImageOutboundEnabled: false},
+	{Name: "developer", PolicyMode: "developer", SandboxMode: "none", NetworkLevel: "full", YoloModeAllowed: true, SmartRouteEnabled: true, FileOutboundEnabled: true, ImageOutboundEnabled: true},
 }
 
 func currentSecurityProfile(c *corelib.AppConfig) string {
@@ -729,11 +730,11 @@ func applySecurityProfile(c *corelib.AppConfig, profile string) {
 }
 
 func securityFieldsAreBlank(c *corelib.AppConfig) bool {
-	return strings.TrimSpace(c.SecurityPolicyMode) == "" && strings.TrimSpace(c.SandboxMode) == "" && strings.TrimSpace(c.NetworkLevel) == "" && !c.YoloModeAllowed && !c.FileOutboundEnabled && !c.ImageOutboundEnabled
+	return strings.TrimSpace(c.SecurityPolicyMode) == "" && strings.TrimSpace(c.SandboxMode) == "" && strings.TrimSpace(c.NetworkLevel) == "" && !c.YoloModeAllowed && !c.SmartRouteEnabled && !c.FileOutboundEnabled && !c.ImageOutboundEnabled
 }
 
 func securityProfileMatches(c *corelib.AppConfig, preset securityProfilePreset) bool {
-	return strings.TrimSpace(c.SecurityPolicyMode) == preset.PolicyMode && strings.TrimSpace(c.SandboxMode) == preset.SandboxMode && strings.TrimSpace(c.NetworkLevel) == preset.NetworkLevel && c.YoloModeAllowed == preset.YoloModeAllowed && c.FileOutboundEnabled == preset.FileOutboundEnabled && c.ImageOutboundEnabled == preset.ImageOutboundEnabled
+	return strings.TrimSpace(c.SecurityPolicyMode) == preset.PolicyMode && strings.TrimSpace(c.SandboxMode) == preset.SandboxMode && strings.TrimSpace(c.NetworkLevel) == preset.NetworkLevel && c.YoloModeAllowed == preset.YoloModeAllowed && c.SmartRouteEnabled == preset.SmartRouteEnabled && c.FileOutboundEnabled == preset.FileOutboundEnabled && c.ImageOutboundEnabled == preset.ImageOutboundEnabled
 }
 
 func applySecurityProfilePreset(c *corelib.AppConfig, preset securityProfilePreset) {
@@ -741,6 +742,7 @@ func applySecurityProfilePreset(c *corelib.AppConfig, preset securityProfilePres
 	c.SandboxMode = preset.SandboxMode
 	c.NetworkLevel = preset.NetworkLevel
 	c.YoloModeAllowed = preset.YoloModeAllowed
+	c.SmartRouteEnabled = preset.SmartRouteEnabled
 	c.FileOutboundEnabled = preset.FileOutboundEnabled
 	c.ImageOutboundEnabled = preset.ImageOutboundEnabled
 }
@@ -1050,7 +1052,7 @@ var allConfigFields = []ConfigFieldDef{
 	},
 	{
 		Key: "security_policy_mode", Tab: CfgTabSecurity, Section: "security",
-		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"standard", "relaxed", "strict", "developer"}, Default: "standard",
+		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"none", "standard", "relaxed", "strict", "developer"}, Default: "standard",
 		Get: func(c *corelib.AppConfig) string { return c.SecurityPolicyMode },
 		Set: func(c *corelib.AppConfig, v string) {
 			if v == "permissive" {
@@ -1067,7 +1069,7 @@ var allConfigFields = []ConfigFieldDef{
 	},
 	{
 		Key: "network_level", Tab: CfgTabSecurity, Section: "security",
-		DescKey: i18n.MsgTUIConfigDescNetworkLevel, Options: []string{"none", "intranet", "full"}, Default: "full",
+		DescKey: i18n.MsgTUIConfigDescNetworkLevel, Options: []string{"none", "intranet", "allowlist", "full"}, Default: "full",
 		Get: func(c *corelib.AppConfig) string { return c.NetworkLevel },
 		Set: func(c *corelib.AppConfig, v string) { c.NetworkLevel = v },
 	},
@@ -1076,6 +1078,12 @@ var allConfigFields = []ConfigFieldDef{
 		DescKey: i18n.MsgTUIConfigDescYoloMode, Options: boolOpts, Default: "true",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.YoloModeAllowed }),
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.YoloModeAllowed = v }),
+	},
+	{
+		Key: "smart_route_enabled", Tab: CfgTabSecurity, Section: "security",
+		DescKey: i18n.MsgTUIConfigDescSmartRoute, Options: boolOpts, Default: "true",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.SmartRouteEnabled }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.SmartRouteEnabled = v }),
 	},
 	{
 		Key: "file_outbound_enabled", Tab: CfgTabSecurity, Section: "security",

@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +15,14 @@ import (
 
 type groupDiscussionMachineSender interface {
 	SendToMachine(machineID string, msg any) error
+}
+
+type groupDiscussionMessageDelivery interface {
+	SendDiscussionMessage(session *corea2a.Session, msg corea2a.GroupDiscussionMessage, target corea2a.Participant) (bool, *corea2a.GroupDiscussionMessage, error)
+}
+
+type asyncGroupDiscussionMessageDelivery interface {
+	SendDiscussionMessageAsync(session *corea2a.Session, msg corea2a.GroupDiscussionMessage, target corea2a.Participant, onReply func(corea2a.GroupDiscussionMessage) error) (bool, error)
 }
 
 type GroupDiscussionHandler struct {
@@ -290,12 +300,22 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if !enforceAuthenticatedGroupIdentity(w, r, &msg.FromID, "from_id") {
 			return
 		}
+		duplicate := h.svc.HasDiscussionMessage(tid, id, msg.ID)
 		session, err := h.svc.AddDiscussionMessage(tid, id, msg)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "MESSAGE_REJECTED", err.Error())
 			return
 		}
-		h.notifyDiscussionMessage(session, persistedGroupDiscussionMessage(session, msg))
+		if duplicate {
+			writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
+			return
+		}
+		persisted := persistedGroupDiscussionMessage(session, msg)
+		if err := h.notifyDiscussionMessage(session, persisted); err != nil {
+			_ = h.svc.RemoveDiscussionMessage(tid, id, persisted.ID)
+			writeError(w, http.StatusBadGateway, "MESSAGE_DELIVERY_FAILED", err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
 	case "proposals":
 		var req AddProposalRequest
@@ -654,14 +674,16 @@ func persistedGroupDiscussionMessage(session *corea2a.Session, fallback corea2a.
 	}
 }
 
-func (h *GroupDiscussionHandler) notifyDiscussionMessage(session *corea2a.Session, msg corea2a.GroupDiscussionMessage) {
+func (h *GroupDiscussionHandler) notifyDiscussionMessage(session *corea2a.Session, msg corea2a.GroupDiscussionMessage) error {
 	if h == nil || h.sender == nil || session == nil {
-		return
+		return nil
 	}
 	fromID := strings.TrimSpace(msg.FromID)
 	if msg.SessionID == "" {
 		msg.SessionID = session.ID
 	}
+	sessionTenantID := session.TenantID
+	sessionID := session.ID
 	targetFilter := map[string]struct{}{}
 	for _, id := range msg.ToIDs {
 		if id = strings.TrimSpace(id); id != "" {
@@ -678,19 +700,72 @@ func (h *GroupDiscussionHandler) notifyDiscussionMessage(session *corea2a.Sessio
 				continue
 			}
 		}
+		if delivery, ok := h.sender.(asyncGroupDiscussionMessageDelivery); ok {
+			sessionSnapshot := cloneSession(session)
+			handled, err := delivery.SendDiscussionMessageAsync(sessionSnapshot, msg, participant, func(reply corea2a.GroupDiscussionMessage) error {
+				duplicateReply := h.svc.HasDiscussionMessage(sessionTenantID, sessionID, reply.ID)
+				replySession, err := h.svc.AddDiscussionMessage(sessionTenantID, sessionID, reply)
+				if err != nil {
+					return fmt.Errorf("persist discussion reply from %s: %w", reply.FromID, err)
+				}
+				if duplicateReply {
+					return nil
+				}
+				persistedReply := persistedGroupDiscussionMessage(replySession, reply)
+				if err := h.notifyDiscussionMessage(replySession, persistedReply); err != nil {
+					_ = h.svc.RemoveDiscussionMessage(sessionTenantID, sessionID, persistedReply.ID)
+					return err
+				}
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("deliver discussion message to %s: %w", targetID, err)
+			}
+			if handled {
+				log.Printf("[a2a-group] queued async discussion delivery session=%s message=%s from=%s target=%s", session.ID, msg.ID, fromID, targetID)
+				continue
+			}
+		}
+		if delivery, ok := h.sender.(groupDiscussionMessageDelivery); ok {
+			handled, reply, err := delivery.SendDiscussionMessage(session, msg, participant)
+			if err != nil {
+				return fmt.Errorf("deliver discussion message to %s: %w", targetID, err)
+			}
+			if handled {
+				if reply != nil {
+					duplicateReply := h.svc.HasDiscussionMessage(session.TenantID, session.ID, reply.ID)
+					replySession, err := h.svc.AddDiscussionMessage(session.TenantID, session.ID, *reply)
+					if err != nil {
+						return fmt.Errorf("persist discussion reply from %s: %w", reply.FromID, err)
+					}
+					if duplicateReply {
+						continue
+					}
+					persistedReply := persistedGroupDiscussionMessage(replySession, *reply)
+					if err := h.notifyDiscussionMessage(replySession, persistedReply); err != nil {
+						_ = h.svc.RemoveDiscussionMessage(session.TenantID, session.ID, persistedReply.ID)
+						return err
+					}
+				}
+				continue
+			}
+		}
 		envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, fromID, time.Now().UTC())
 		envelope.SessionID = session.ID
 		envelope.ToIDs = []string{targetID}
 		envelope.Message = &msg
-		_ = h.sender.SendToMachine(targetID, map[string]any{
+		if err := h.sender.SendToMachine(targetID, map[string]any{
 			"type": "ve:discussion_message",
 			"ts":   time.Now().Unix(),
 			"payload": map[string]any{
 				"envelope":    envelope,
 				"target_role": strings.TrimSpace(participant.RoleCode),
 			},
-		})
+		}); err != nil {
+			return fmt.Errorf("deliver discussion message to %s: %w", targetID, err)
+		}
 	}
+	return nil
 }
 
 func (h *GroupDiscussionHandler) notifyDiscussionInvite(tenantID, sessionID, inviteID string, inv corea2a.GroupInvitation) {

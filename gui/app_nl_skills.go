@@ -220,7 +220,7 @@ func (e *SkillExecutor) scanFileSkills(externalDirs []string) []corelib.NLSkillE
 			// cached is non-nil: scan completed (may be empty slice if no skills found).
 			return cached
 		}
-		// nil: scan not yet complete — fall through to synchronous scan.
+		// nil: scan not yet complete - fall through to synchronous scan.
 	}
 	// Fallback: CachedSkillScanner not available or scan not yet complete.
 	return skill.ScanAllSkillDirsWithExternal(externalDirs)
@@ -1284,72 +1284,16 @@ func (e *SkillExecutor) RunSubSkill(ctx context.Context, skillName string, param
 
 // executeStep runs a single skill step.
 func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription string) (string, error) {
-	switch classifySkillStepAction(step.Action) {
+	kind := classifySkillStepAction(step.Action)
+	switch kind {
 	case skillStepActionCreateSession:
-		tool, _ := step.Params["tool"].(string)
-		projectPath, _ := step.Params["project_path"].(string)
-		projectID, _ := step.Params["project_id"].(string)
-		provider, _ := step.Params["provider"].(string)
-		resumeSessionID, _ := step.Params["resume_session_id"].(string)
-		if tool == "" {
-			return "", fmt.Errorf("missing tool parameter")
-		}
-		if hint := skillCreateSessionGuard(skillDescription, step); hint != "" {
-			return "", fmt.Errorf("%s", hint)
-		}
-		starter := e.app.sessionStarter
-		if starter == nil {
-			e.app.ensureInteractionInfra()
-			starter = e.app.sessionStarter
-		}
-		if starter == nil {
-			return "", fmt.Errorf("session starter not initialized")
-		}
-		startResult, err := starter.Start(CodingSessionStartRequest{
-			Tool:               tool,
-			ProjectID:          projectID,
-			ProjectPath:        projectPath,
-			Provider:           provider,
-			ResumeSessionID:    resumeSessionID,
-			InjectResumePrompt: false,
-			LaunchSource:       RemoteLaunchSourceAI,
-		})
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("会话已创建: ID=%s", startResult.View.ID), nil
+		return "", fmt.Errorf("external coding-session steps are disabled; coding tasks must run through CodingSubAgent")
 
 	case skillStepActionSendInput:
-		sessionID, _ := step.Params["session_id"].(string)
-		text, _ := step.Params["text"].(string)
-		if sessionID == "" || text == "" {
-			return "", fmt.Errorf("missing session_id or text parameter")
-		}
-		if e.manager == nil {
-			return "", fmt.Errorf("session manager not initialized")
-		}
-		if err := e.manager.WriteInput(sessionID, text); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("sent input to session %s", sessionID), nil
+		return "", fmt.Errorf("external coding-session input steps are disabled; coding tasks must run through CodingSubAgent")
 
 	case skillStepActionSendAndObserve:
-		sessionID, _ := step.Params["session_id"].(string)
-		text, _ := step.Params["text"].(string)
-		timeoutSeconds, _ := step.Params["timeout_seconds"].(float64)
-		if sessionID == "" || text == "" {
-			return "", fmt.Errorf("missing session_id or text parameter")
-		}
-		if e.manager == nil {
-			return "", fmt.Errorf("session manager not initialized")
-		}
-		return SendAndObserveSession(e.manager, sessionID, text, SessionObserveOptions{
-			TimeoutSeconds: timeoutSeconds,
-			Lines:          40,
-		}, func(renderArgs map[string]interface{}) string {
-			h := &IMMessageHandler{app: e.app, manager: e.manager}
-			return h.toolGetSessionOutput(renderArgs)
-		}), nil
+		return "", fmt.Errorf("external coding-session observe steps are disabled; coding tasks must run through CodingSubAgent")
 
 	case skillStepActionCallMCPTool:
 		serverRef, _ := step.Params["server_id"].(string)
@@ -1534,6 +1478,7 @@ func (e *SkillExecutor) sshExecBackground(args map[string]interface{}) string {
 	mgr := e.ensureSSHManager()
 	sessionID, _ := args["session_id"].(string)
 	command, _ := args["command"].(string)
+	taskRole, _ := args["task_role"].(string)
 	if sessionID == "" || command == "" {
 		return "ssh exec_background requires session_id and command"
 	}
@@ -1544,11 +1489,14 @@ func (e *SkillExecutor) sshExecBackground(args map[string]interface{}) string {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	task, err := e.bgTaskMgr.Submit(sessionID, command)
+	task, err := e.bgTaskMgr.SubmitWithRole(sessionID, command, taskRole)
 	if err != nil {
 		return fmt.Sprintf("background task submit failed: %v", err)
 	}
-	return fmt.Sprintf("background task started\ntask_id: %s\ncommand: %s\nlog_file: %s\npid: %s\nstatus: running", task.TaskID, task.Command, task.LogFile, task.PID)
+	if e.app != nil {
+		e.app.emitEvent("background-loops-changed")
+	}
+	return fmt.Sprintf("background task started\ntask_id: %s\nrole: %s\ncommand: %s\nlog_file: %s\npid: %s\nstatus: running", task.TaskID, task.TaskRole, task.Command, task.LogFile, task.PID)
 }
 
 func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
@@ -1567,11 +1515,18 @@ func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("check task failed: %v", err)
 	}
+	if e.app != nil {
+		e.app.emitEvent("background-loops-changed")
+	}
 	return formatSSHBackgroundTaskStatus(result)
 }
 
 func (e *SkillExecutor) sshWaitTask(args map[string]interface{}) string {
-	return waitSSHBackgroundTask(e.bgTaskMgr, args, "background task manager is not initialized", "ssh wait_task requires task_id")
+	return waitSSHBackgroundTask(e.bgTaskMgr, args, "background task manager is not initialized", "ssh wait_task requires task_id", func() {
+		if e.app != nil {
+			e.app.emitEvent("background-loops-changed")
+		}
+	})
 }
 
 func (e *SkillExecutor) sshListTasks() string {
@@ -1586,7 +1541,11 @@ func (e *SkillExecutor) sshListTasks() string {
 	sb.WriteString(fmt.Sprintf("background tasks: %d\n", len(tasks)))
 	for _, t := range tasks {
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
-		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | status: %s | elapsed: %s\n    command: %s\n", t.TaskID, t.PID, t.Status, elapsed, t.Command))
+		role := strings.TrimSpace(t.TaskRole)
+		if role == "" {
+			role = "command"
+		}
+		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | role: %s | status: %s | elapsed: %s\n    command: %s\n", t.TaskID, t.PID, role, t.Status, elapsed, t.Command))
 	}
 	return sb.String()
 }
@@ -1601,6 +1560,9 @@ func (e *SkillExecutor) sshKillTask(args map[string]interface{}) string {
 	}
 	if err := e.bgTaskMgr.KillTask(taskID); err != nil {
 		return fmt.Sprintf("kill task failed: %v", err)
+	}
+	if e.app != nil {
+		e.app.emitEvent("background-loops-changed")
 	}
 	return fmt.Sprintf("background task %s killed", taskID)
 }
@@ -1682,13 +1644,13 @@ func skillCreateSessionGuard(skillDescription string, step corelib.NLSkillStep) 
 	result := classifyTaskIntent(taskText)
 	switch result.Intent {
 	case intentCoding:
-		return ""
+		return "External coding-session steps are disabled. Coding tasks should be routed through CodingSubAgent."
 	case intentSSH:
-		return fmt.Sprintf("SSH/server operation task detected (%s). Use ssh(action=\"connect\", ...), ssh(action=\"exec\", ...), ssh(action=\"exec_background\", ...), and upload/download/check_task before create_session.", formatIntentEvidence(result))
+		return fmt.Sprintf("SSH/server operation task detected (%s). Use ssh(action=\"connect\", ...), ssh(action=\"exec\", ...), ssh(action=\"exec_background\", ...), and upload/download/check_task instead of external coding sessions.", formatIntentEvidence(result))
 	case intentNonCoding:
-		return fmt.Sprintf("Not a coding task (%s). Prefer direct file/tool execution before opening a coding session.", formatIntentEvidence(result))
+		return fmt.Sprintf("Not a coding task (%s). Prefer direct file/tool execution instead of external coding sessions.", formatIntentEvidence(result))
 	case intentUnknown, intentAmbiguous:
-		return fmt.Sprintf("Cannot determine whether this needs a coding session (%s). Clarify before creating a coding session.", formatIntentEvidence(result))
+		return fmt.Sprintf("Cannot determine whether this needs a coding session (%s). External coding sessions are disabled; clarify before routing to CodingSubAgent.", formatIntentEvidence(result))
 	default:
 		return ""
 	}

@@ -52,6 +52,24 @@ func TestNewIMMessageHandlerStandalone_MinimalConfig(t *testing.T) {
 	}
 }
 
+func TestNewIMMessageHandlerStandalone_DefaultResponseHeaderTimeout(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
+		},
+	})
+	defer h.memory.Stop()
+
+	transport, ok := h.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport = %T, want *http.Transport", h.client.Transport)
+	}
+	want := time.Duration(corelib.DefaultLLMTimeoutSec) * time.Second
+	if transport.ResponseHeaderTimeout != want {
+		t.Fatalf("ResponseHeaderTimeout = %s, want %s", transport.ResponseHeaderTimeout, want)
+	}
+}
+
 func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{
 		LLMConfigFunc: func() corelib.MaclawLLMConfig {
@@ -94,6 +112,33 @@ func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 	}
 	if h.getAuditLog() != nil {
 		t.Error("expected nil audit log")
+	}
+}
+
+func TestEnsureSSHManagerIsPerHandler(t *testing.T) {
+	newHandler := func() *IMMessageHandler {
+		h := NewIMMessageHandlerStandalone(StandaloneConfig{
+			LLMConfigFunc: func() corelib.MaclawLLMConfig {
+				return corelib.MaclawLLMConfig{URL: "http://test", Model: "m", Key: "k"}
+			},
+		})
+		t.Cleanup(h.memory.Stop)
+		return h
+	}
+
+	h1 := newHandler()
+	h2 := newHandler()
+	m1 := h1.ensureSSHManager()
+	m2 := h2.ensureSSHManager()
+
+	if m1 == nil || m2 == nil {
+		t.Fatal("expected both handlers to initialize SSH managers")
+	}
+	if m1 == m2 {
+		t.Fatal("SSH manager should be scoped to each handler")
+	}
+	if h1.bgTaskMgr == nil || h2.bgTaskMgr == nil {
+		t.Fatal("expected SSH background task managers to initialize with SSH managers")
 	}
 }
 
@@ -614,8 +659,8 @@ func TestHandleIMMessage_PlainTextStartAnswerKeepsPreviousTaskContext(t *testing
 	if resp == nil || resp.Error != "" {
 		t.Fatalf("expected successful response, got %+v", resp)
 	}
-	if requestCount < 2 {
-		t.Fatalf("expected pending-answer classifier plus agent request, got %d request(s)", requestCount)
+	if requestCount < 1 {
+		t.Fatalf("expected agent request, got %d request(s)", requestCount)
 	}
 	if !strings.Contains(requestBody, "flight-game-task") {
 		t.Fatalf("expected previous airplane game context in LLM request, got %s", requestBody)
@@ -657,6 +702,63 @@ func TestPendingUserReplyPromptCandidateFiltersClosingStatements(t *testing.T) {
 	}
 	if !looksLikePendingUserReplyPromptCandidate("Which model should I deploy?") {
 		t.Fatal("question should be a pending reply candidate")
+	}
+}
+
+func TestPendingUserReplyBindingSurvivesTranscriptReconciliation(t *testing.T) {
+	question := "请查看并确认需求是否准确，或提出修改意见。确认后我将进入技术设计阶段。"
+	pendingHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "在 d:\\workprj\\testprj 下开发一个打地鼠游戏。"},
+		{Role: "assistant", Content: "# 打地鼠游戏 - 需求文档\n" + question},
+	}
+	currentHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "北京天气"},
+		{Role: "assistant", Content: "天气结果"},
+		{Role: "user", Content: "在 d:\\workprj\\testprj 下开发一个打地鼠游戏。"},
+		{Role: "assistant", Content: "# 打地鼠游戏 - 需求文档\n" + question},
+	}
+
+	pending, fresh := pendingUserReplyForCurrentHistory(&pendingUserReplyState{
+		Question:  question,
+		History:   pendingHistory,
+		Timestamp: time.Now(),
+	}, currentHistory)
+	if pending == nil || !fresh {
+		t.Fatal("pending reply should remain bound after client transcript reconciliation prepends older entries")
+	}
+}
+
+func TestPendingUserReplyBindingRejectsQuestionWithLaterUserMessage(t *testing.T) {
+	question := "Should I check the A100 server now?"
+	currentHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "server-task: check A100 status"},
+		{Role: "assistant", Content: question},
+		{Role: "user", Content: "game-task: create snake2 in D:\\workprj\\snake2"},
+		{Role: "assistant", Content: "Run it with .\\build\\Release\\snake2.exe"},
+	}
+
+	_, fresh := pendingUserReplyForCurrentHistory(&pendingUserReplyState{
+		Question:  question,
+		History:   []agent.ConversationEntry{{Role: "user", Content: "server-task: check A100 status"}, {Role: "assistant", Content: question}},
+		Timestamp: time.Now(),
+	}, currentHistory)
+	if fresh {
+		t.Fatal("pending reply must not bind after a later user message starts another task")
+	}
+}
+
+func TestPendingUserReplyBindingRejectsShortSubstringMatch(t *testing.T) {
+	currentHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "current task"},
+		{Role: "assistant", Content: "ongoing work is complete"},
+	}
+
+	_, fresh := pendingUserReplyForCurrentHistory(&pendingUserReplyState{
+		Question:  "go",
+		Timestamp: time.Now(),
+	}, currentHistory)
+	if fresh {
+		t.Fatal("short pending question must not bind by substring match")
 	}
 }
 

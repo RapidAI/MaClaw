@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"pgregory.net/rapid"
 )
 
@@ -229,6 +230,26 @@ func TestFilterToolsForVE_KeepsRunSkillAndManageSkill(t *testing.T) {
 	}
 	if names["write_file"] {
 		t.Error("write_file should NOT be in VE tool list")
+	}
+}
+
+func TestFilterToolsForVE_BlocksAllCodingSessionTools(t *testing.T) {
+	tools := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "run_skill"}},
+	}
+	for name := range coretool.CodingSessionToolNames {
+		tools = append(tools, map[string]interface{}{"function": map[string]interface{}{"name": name}})
+	}
+
+	filtered := filterToolsForVE(tools)
+	for _, tool := range filtered {
+		name := extractToolName(tool)
+		if coretool.IsCodingSessionTool(name) {
+			t.Fatalf("VE tool list should not expose external coding-session tool %s", name)
+		}
+	}
+	if !hasToolNamed(filtered, "run_skill") {
+		t.Fatal("VE tool list should keep safe non-coding tools")
 	}
 }
 

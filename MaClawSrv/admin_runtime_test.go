@@ -253,6 +253,21 @@ func TestAdminCanListAndCancelAsyncJobsAcrossTenants(t *testing.T) {
 		t.Fatalf("unexpected jobs: %#v", out)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/jobs/"+job.ID, nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin get job = %d body = %s", w.Code, w.Body.String())
+	}
+	var got asyncJobRecord
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if got.ID != job.ID || got.TenantID != "tenant-a" || got.UserID != "user-a" || got.Kind != "admin.test" {
+		t.Fatalf("unexpected job detail: %#v", got)
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/jobs/"+job.ID+"/cancel", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()

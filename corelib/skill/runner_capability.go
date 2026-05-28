@@ -88,6 +88,11 @@ func CheckStepActionSupport(runner, action string) StepActionSupport {
 		support.ActionHint = "[action: open_gui] Run this skill in the GUI runner, or replace the poll step with a bash-compatible check."
 		return support
 	}
+	if runner == RunnerBackendGUI && isExternalCodingSessionAction(action) {
+		support.Reason = fmt.Sprintf("action %q uses external coding sessions, which are disabled for the GUI skill runner; use the internal CodingSubAgent workflow for coding tasks.", action)
+		support.ActionHint = "[action: edit_skill] Replace external session steps with bash/craft_tool steps, or let the agent route coding tasks to CodingSubAgent."
+		return support
+	}
 	support.Reason = fmt.Sprintf("action %q is not supported by %s runner; supported actions: %s", action, runner, strings.Join(SupportedStepActions(runner), ", "))
 	return support
 }
@@ -95,11 +100,20 @@ func CheckStepActionSupport(runner, action string) StepActionSupport {
 func SupportedStepActions(runner string) []string {
 	switch normalizeRunnerBackend(runner) {
 	case RunnerBackendGUI:
-		return []string{"bash", "call_mcp_tool", "craft_tool", "create_session", "poll", "send_and_observe", "send_input"}
+		return []string{"bash", "call_mcp_tool", "craft_tool", "poll"}
 	case RunnerBackendTUI:
 		return []string{"bash"}
 	default:
 		return nil
+	}
+}
+
+func isExternalCodingSessionAction(action string) bool {
+	switch NormalizeStepActionName(action) {
+	case "create_session", "send_input", "send_and_observe":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -18,14 +18,17 @@ import (
 
 // veGroupConfig holds the hub-level digital employee group chat configuration.
 type veGroupConfig struct {
-	MaxGroupParticipants int `json:"max_group_participants"`
+	MaxGroupParticipants int  `json:"max_group_participants"`
+	AutoApprove          bool `json:"auto_approve"`
 }
 
 type digitalEmployeeEntry struct {
 	ID                 string   `json:"id"`
 	MachineID          string   `json:"machine_id"`
+	EmployeeType       string   `json:"employee_type,omitempty"`
 	PlatformID         string   `json:"platform_id,omitempty"`
 	PlatformEmployeeID string   `json:"platform_employee_id,omitempty"`
+	RuntimeProviderID  string   `json:"runtime_provider_id,omitempty"`
 	OwnerUserID        string   `json:"owner_user_id"`
 	OwnerEmail         string   `json:"owner_email,omitempty"`
 	Name               string   `json:"name"`
@@ -74,6 +77,9 @@ const (
 
 	veOnlineStatusOnline  = "online"
 	veOnlineStatusOffline = "offline"
+
+	veEmployeeTypeVirtual  = "virtual"
+	veEmployeeTypePhysical = "physical"
 )
 
 // VEAdminListHandler handles GET /api/ve/list.
@@ -83,6 +89,7 @@ func VEAdminListHandler(system store.SystemSettingsRepository, ownerLookups ...v
 		cfg := loadVEGroupConfig(r.Context(), system)
 		registry := loadVERegistry(r.Context(), system)
 		enrichVERegistryOwners(r.Context(), &registry, firstVEOwnerLookup(ownerLookups...))
+		enrichVERegistryEmployeeTypes(&registry)
 		employees := registry.Employees
 		sort.SliceStable(employees, func(i, j int) bool {
 			return employees[i].RegisteredAt > employees[j].RegisteredAt
@@ -99,16 +106,21 @@ func VEAdminListHandler(system store.SystemSettingsRepository, ownerLookups ...v
 }
 
 // VEAdminConfigHandler handles GET/PUT /api/ve/config.
-func VEAdminConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+func VEAdminConfigHandler(system store.SystemSettingsRepository, senders ...veMachineEventSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		baseSystem := globalSystemSettings(system)
 		system := veSystemSettingsForRequest(r, system)
+		tenantID := RequestTenantID(r)
 		switch r.Method {
 		case http.MethodGet:
 			cfg := loadVEGroupConfig(r.Context(), system)
 			writeJSON(w, http.StatusOK, cfg)
 
 		case http.MethodPut:
-			var req veGroupConfig
+			var req struct {
+				MaxGroupParticipants int   `json:"max_group_participants"`
+				AutoApprove          *bool `json:"auto_approve"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 				return
@@ -117,12 +129,28 @@ func VEAdminConfigHandler(system store.SystemSettingsRepository) http.HandlerFun
 				writeError(w, http.StatusBadRequest, "INVALID_CONFIG", "max_group_participants must be 1-10")
 				return
 			}
-			data, _ := json.Marshal(req)
+			cfg := loadVEGroupConfig(r.Context(), system)
+			cfg.MaxGroupParticipants = req.MaxGroupParticipants
+			if req.AutoApprove != nil {
+				cfg.AutoApprove = *req.AutoApprove
+			}
+			data, _ := json.Marshal(cfg)
 			if err := system.Set(r.Context(), veGroupConfigKey, string(data)); err != nil {
 				writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 				return
 			}
-			writeJSON(w, http.StatusOK, req)
+			if cfg.AutoApprove {
+				approved, err := autoApprovePendingVERegistrations(r.Context(), system)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+					return
+				}
+				for _, entry := range approved {
+					emitVEAdminActionEvent(firstVEMachineEventSender(senders...), "approve", entry)
+					postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, "approve", entry)
+				}
+			}
+			writeJSON(w, http.StatusOK, cfg)
 
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or PUT")
@@ -158,6 +186,8 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 		entry.RegisteredAt = now
 		entry.UpdatedAt = now
 		entry.OnlineStatus = veOnlineStatusOnline
+		autoApprove := loadVEGroupConfig(r.Context(), system).AutoApprove
+		authz := loadVEDigitalEmployeeAuthorization(r.Context(), system)
 		if idx >= 0 {
 			previous := registry.Employees[idx]
 			entry.ID = previous.ID
@@ -165,12 +195,12 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			entry.RegisteredAt = firstNonEmptyVE(previous.RegisteredAt, now)
 			entry.Status = previous.Status
 			if entry.Status == "" || entry.Status == veStatusRejected || entry.Status == veStatusDisabled {
-				entry.Status = veStatusPending
+				entry.Status = veRegistrationStatus(autoApprove, authz, registry.Employees, entry.Status)
 			}
 			registry.Employees[idx] = entry
 		} else {
 			entry.ID = veIDForMachine(principal.MachineID)
-			entry.Status = veStatusPending
+			entry.Status = veRegistrationStatus(autoApprove, authz, registry.Employees, "")
 			registry.Employees = append(registry.Employees, entry)
 		}
 		if err := saveVERegistry(r.Context(), system, registry); err != nil {
@@ -306,7 +336,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			return
 		}
 		registry := loadVERegistry(r.Context(), system)
-		idx := registry.findByID(veID)
+		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
 		if idx < 0 {
 			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
 			return
@@ -327,6 +357,17 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 		topic := strings.TrimSpace(target.Name)
 		if topic == "" {
 			topic = "Digital employee conversation"
+		}
+		if session := findReusableVEDirectSession(groupSvc, store.NormalizeTenantID(principal.TenantID), principal.MachineID, target.MachineID); session != nil {
+			summary := discussionSummaryFromSession(session)
+			decorateSummaryForParticipant(&summary, session, principal.MachineID)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"session_id": session.ID,
+				"ve_id":      target.ID,
+				"ve_name":    target.Name,
+				"discussion": summary,
+			})
+			return
 		}
 		session, err := groupSvc.CreateSession(store.NormalizeTenantID(principal.TenantID), CreateSessionRequest{
 			Topic: "数字员工会话：" + topic,
@@ -362,7 +403,7 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 			return
 		}
 		registry := loadVERegistry(r.Context(), system)
-		idx := registry.findByID(veID)
+		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
 		if idx < 0 {
 			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
 			return
@@ -525,7 +566,7 @@ func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDisc
 		veID := strings.TrimSpace(r.PathValue("id"))
 		registry := loadVERegistry(r.Context(), system)
 		enrichVERegistryOwners(r.Context(), &registry, firstVEOwnerLookup(ownerLookups...))
-		idx := registry.findByID(veID)
+		idx := registry.findByIDOrMachineIDOrPlatformEmployeeID(veID)
 		if idx < 0 {
 			writeError(w, http.StatusNotFound, "VE_NOT_FOUND", "digital employee not found")
 			return
@@ -586,6 +627,7 @@ func digitalEmployeeFromRequest(principal *auth.MachinePrincipal, req veSettings
 	return digitalEmployeeEntry{
 		ID:               veIDForMachine(principal.MachineID),
 		MachineID:        principal.MachineID,
+		EmployeeType:     veEmployeeTypePhysical,
 		OwnerUserID:      principal.UserID,
 		Name:             name,
 		SkillDescription: strings.TrimSpace(req.SkillDescription),
@@ -646,6 +688,54 @@ func veAuthorizedQuota(authz *corelib.DigitalEmployeeAuthorization) int {
 		return 0
 	}
 	return authz.Quota
+}
+
+func veRegistrationStatus(autoApprove bool, authz *corelib.DigitalEmployeeAuthorization, employees []digitalEmployeeEntry, previousStatus string) string {
+	if previousStatus == veStatusDisabled {
+		return veStatusPending
+	}
+	if !autoApprove || !veAuthorizationActive(authz) {
+		return veStatusPending
+	}
+	if previousStatus == veStatusActive || countVEByStatus(employees, veStatusActive) < veAuthorizedQuota(authz) {
+		return veStatusActive
+	}
+	return veStatusPending
+}
+
+func autoApprovePendingVERegistrations(ctx context.Context, system store.SystemSettingsRepository) ([]digitalEmployeeEntry, error) {
+	authz := loadVEDigitalEmployeeAuthorization(ctx, system)
+	if !veAuthorizationActive(authz) {
+		return nil, nil
+	}
+	registry := loadVERegistry(ctx, system)
+	activeCount := countVEByStatus(registry.Employees, veStatusActive)
+	quota := veAuthorizedQuota(authz)
+	approved := make([]digitalEmployeeEntry, 0)
+	changed := false
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range registry.Employees {
+		if activeCount >= quota {
+			break
+		}
+		if registry.Employees[i].Status != veStatusPending {
+			continue
+		}
+		registry.Employees[i].Status = veStatusActive
+		registry.Employees[i].UpdatedAt = now
+		registry.Employees[i].RejectReason = ""
+		registry.Employees[i].RejectedAt = ""
+		approved = append(approved, registry.Employees[i])
+		activeCount++
+		changed = true
+	}
+	if !changed {
+		return nil, nil
+	}
+	if err := saveVERegistry(ctx, system, registry); err != nil {
+		return nil, err
+	}
+	return approved, nil
 }
 
 func firstVEMachineEventSender(senders ...veMachineEventSender) veMachineEventSender {
@@ -731,8 +821,47 @@ func enrichVERegistryOwners(ctx context.Context, registry *digitalEmployeeRegist
 	}
 }
 
+func enrichVERegistryEmployeeTypes(registry *digitalEmployeeRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	changed := false
+	for i := range registry.Employees {
+		typ := inferVEEmployeeType(registry.Employees[i])
+		if registry.Employees[i].EmployeeType != typ {
+			registry.Employees[i].EmployeeType = typ
+			changed = true
+		}
+	}
+	return changed
+}
+
+func inferVEEmployeeType(entry digitalEmployeeEntry) string {
+	if typ := normalizeVEEmployeeType(entry.EmployeeType); typ != "" {
+		return typ
+	}
+	if strings.TrimSpace(entry.PlatformEmployeeID) != "" {
+		return veEmployeeTypeVirtual
+	}
+	return veEmployeeTypePhysical
+}
+
+func normalizeVEEmployeeType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case veEmployeeTypeVirtual:
+		return veEmployeeTypeVirtual
+	case veEmployeeTypePhysical:
+		return veEmployeeTypePhysical
+	default:
+		return ""
+	}
+}
+
 func loadVEGroupConfig(ctx context.Context, system store.SystemSettingsRepository) veGroupConfig {
 	cfg := veGroupConfig{MaxGroupParticipants: 5}
+	if system == nil {
+		return cfg
+	}
 	raw, err := system.Get(ctx, veGroupConfigKey)
 	if err == nil && raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg)
@@ -755,10 +884,15 @@ func loadVERegistry(ctx context.Context, system store.SystemSettingsRepository) 
 	if registry.Employees == nil {
 		registry.Employees = []digitalEmployeeEntry{}
 	}
+	if normalizeVERegistryOnlineStatuses(&registry) || enrichVERegistryEmployeeTypes(&registry) {
+		_ = saveVERegistry(ctx, system, registry)
+	}
 	return registry
 }
 
 func saveVERegistry(ctx context.Context, system store.SystemSettingsRepository, registry digitalEmployeeRegistry) error {
+	normalizeVERegistryOnlineStatuses(&registry)
+	enrichVERegistryEmployeeTypes(&registry)
 	data, err := json.Marshal(registry)
 	if err != nil {
 		return err
@@ -766,9 +900,46 @@ func saveVERegistry(ctx context.Context, system store.SystemSettingsRepository, 
 	return system.Set(ctx, veRegistryKey, string(data))
 }
 
+func normalizeVERegistryOnlineStatuses(registry *digitalEmployeeRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	changed := false
+	for i := range registry.Employees {
+		status := strings.TrimSpace(registry.Employees[i].OnlineStatus)
+		if shouldNormalizeVirtualRuntimeEmployeeOnline(registry.Employees[i], status) {
+			registry.Employees[i].OnlineStatus = veOnlineStatusOnline
+			changed = true
+			continue
+		}
+		if status == "" {
+			registry.Employees[i].OnlineStatus = veOnlineStatusOffline
+			changed = true
+		}
+	}
+	return changed
+}
+
+func shouldNormalizeVirtualRuntimeEmployeeOnline(entry digitalEmployeeEntry, status string) bool {
+	if entry.Status != veStatusActive {
+		return false
+	}
+	if status == "platform" {
+		return true
+	}
+	if status != "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(entry.PlatformID), maclawSrvRuntimePlatformID) || strings.EqualFold(strings.TrimSpace(entry.RuntimeProviderID), maclawSrvRuntimePlatformID)
+}
+
 func (r digitalEmployeeRegistry) findByMachineID(machineID string) int {
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return -1
+	}
 	for i, entry := range r.Employees {
-		if entry.MachineID == machineID {
+		if strings.EqualFold(strings.TrimSpace(entry.MachineID), machineID) {
 			return i
 		}
 	}
@@ -776,8 +947,12 @@ func (r digitalEmployeeRegistry) findByMachineID(machineID string) int {
 }
 
 func (r digitalEmployeeRegistry) findByID(id string) int {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return -1
+	}
 	for i, entry := range r.Employees {
-		if entry.ID == id {
+		if strings.EqualFold(strings.TrimSpace(entry.ID), id) {
 			return i
 		}
 	}
@@ -785,8 +960,38 @@ func (r digitalEmployeeRegistry) findByID(id string) int {
 }
 
 func (r digitalEmployeeRegistry) findByIDOrMachineID(id string) int {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return -1
+	}
 	for i, entry := range r.Employees {
-		if entry.ID == id || entry.MachineID == id {
+		if strings.EqualFold(strings.TrimSpace(entry.ID), id) || strings.EqualFold(strings.TrimSpace(entry.MachineID), id) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (r digitalEmployeeRegistry) findByPlatformEmployeeID(id string) int {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return -1
+	}
+	for i, entry := range r.Employees {
+		if strings.EqualFold(strings.TrimSpace(entry.PlatformEmployeeID), id) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (r digitalEmployeeRegistry) findByIDOrMachineIDOrPlatformEmployeeID(id string) int {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return -1
+	}
+	for i, entry := range r.Employees {
+		if strings.EqualFold(strings.TrimSpace(entry.ID), id) || strings.EqualFold(strings.TrimSpace(entry.MachineID), id) || strings.EqualFold(strings.TrimSpace(entry.PlatformEmployeeID), id) {
 			return i
 		}
 	}

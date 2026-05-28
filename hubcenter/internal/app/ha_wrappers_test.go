@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -87,16 +90,85 @@ func (f *fakeSeedHubStore) ListAll(context.Context) ([]*store.HubInstance, error
 	return []*store.HubInstance{{ID: "hub-1"}, {ID: "hub-2"}}, nil
 }
 
+type fakePagedSeedHubStore struct {
+	items     []*store.HubInstance
+	pageCalls int
+	listCalls int
+}
+
+func (f *fakePagedSeedHubStore) ListAll(context.Context) ([]*store.HubInstance, error) {
+	f.listCalls++
+	return f.items, nil
+}
+
+func (f *fakePagedSeedHubStore) ListPage(_ context.Context, offset, limit int) ([]*store.HubInstance, error) {
+	f.pageCalls++
+	if offset >= len(f.items) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(f.items) {
+		end = len(f.items)
+	}
+	return f.items[offset:end], nil
+}
+
 type fakeSeedLinkStore struct{}
 
 func (f *fakeSeedLinkStore) ListAll(context.Context) ([]*store.HubUserLink, error) {
 	return []*store.HubUserLink{{ID: "link-1", HubID: "hub-1"}}, nil
 }
 
+type fakePagedSeedLinkStore struct {
+	items     []*store.HubUserLink
+	pageCalls int
+	listCalls int
+}
+
+func (f *fakePagedSeedLinkStore) ListAll(context.Context) ([]*store.HubUserLink, error) {
+	f.listCalls++
+	return f.items, nil
+}
+
+func (f *fakePagedSeedLinkStore) ListPage(_ context.Context, offset, limit int) ([]*store.HubUserLink, error) {
+	f.pageCalls++
+	if offset >= len(f.items) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(f.items) {
+		end = len(f.items)
+	}
+	return f.items[offset:end], nil
+}
+
 type fakeSeedRouteStore struct{}
 
 func (f *fakeSeedRouteStore) ListAll(context.Context) ([]*store.HubDomainRoute, error) {
 	return []*store.HubDomainRoute{{ID: "route-1", HubID: "hub-1", Domain: "rapidai.tech"}}, nil
+}
+
+type fakePagedSeedRouteStore struct {
+	items     []*store.HubDomainRoute
+	pageCalls int
+	listCalls int
+}
+
+func (f *fakePagedSeedRouteStore) ListAll(context.Context) ([]*store.HubDomainRoute, error) {
+	f.listCalls++
+	return f.items, nil
+}
+
+func (f *fakePagedSeedRouteStore) ListPage(_ context.Context, offset, limit int) ([]*store.HubDomainRoute, error) {
+	f.pageCalls++
+	if offset >= len(f.items) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(f.items) {
+		end = len(f.items)
+	}
+	return f.items[offset:end], nil
 }
 
 type fakeSeedSystemSettingsRepo struct{}
@@ -147,6 +219,109 @@ type fakeSeedNewsRepo struct{}
 
 func (f *fakeSeedNewsRepo) List(context.Context, int, int) ([]*store.NewsArticle, int, error) {
 	return []*store.NewsArticle{{ID: "news-1"}, {ID: "news-2"}}, 2, nil
+}
+
+type fakePagedNewsRepo struct {
+	items  []*store.NewsArticle
+	limits []int
+}
+
+func (f *fakePagedNewsRepo) List(_ context.Context, offset, limit int) ([]*store.NewsArticle, int, error) {
+	f.limits = append(f.limits, limit)
+	if offset >= len(f.items) {
+		return nil, len(f.items), nil
+	}
+	end := offset + limit
+	if end > len(f.items) {
+		end = len(f.items)
+	}
+	return f.items[offset:end], len(f.items), nil
+}
+
+type fakePagedGossipRepo struct {
+	posts         []*store.GossipPost
+	comments      map[string][]*store.GossipComment
+	postLimits    []int
+	commentLimits []int
+}
+
+func (f *fakePagedGossipRepo) CreatePost(context.Context, *store.GossipPost) error { return nil }
+func (f *fakePagedGossipRepo) ListPosts(context.Context, int, int) ([]*store.GossipPost, int, error) {
+	return nil, 0, nil
+}
+func (f *fakePagedGossipRepo) ListAllPosts(_ context.Context, offset, limit int) ([]*store.GossipPost, int, error) {
+	f.postLimits = append(f.postLimits, limit)
+	if offset >= len(f.posts) {
+		return nil, len(f.posts), nil
+	}
+	end := offset + limit
+	if end > len(f.posts) {
+		end = len(f.posts)
+	}
+	return f.posts[offset:end], len(f.posts), nil
+}
+func (f *fakePagedGossipRepo) ListFlaggedPosts(context.Context, int, int) ([]*store.GossipPost, int, error) {
+	return nil, 0, nil
+}
+func (f *fakePagedGossipRepo) GetPost(context.Context, string) (*store.GossipPost, error) {
+	return nil, nil
+}
+func (f *fakePagedGossipRepo) DeletePost(context.Context, string) error        { return nil }
+func (f *fakePagedGossipRepo) DeleteFlaggedPosts(context.Context) (int, error) { return 0, nil }
+func (f *fakePagedGossipRepo) LockPost(context.Context, string, bool) error    { return nil }
+func (f *fakePagedGossipRepo) FlagPost(context.Context, string, bool) error    { return nil }
+func (f *fakePagedGossipRepo) ReplaceAll(context.Context, []*store.GossipPost, []*store.GossipComment) error {
+	return nil
+}
+func (f *fakePagedGossipRepo) CreateComment(context.Context, *store.GossipComment) error { return nil }
+func (f *fakePagedGossipRepo) ListComments(_ context.Context, postID string, offset, limit int) ([]*store.GossipComment, int, error) {
+	f.commentLimits = append(f.commentLimits, limit)
+	items := f.comments[postID]
+	if offset >= len(items) {
+		return nil, len(items), nil
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[offset:end], len(items), nil
+}
+func (f *fakePagedGossipRepo) DeleteComment(context.Context, string) error   { return nil }
+func (f *fakePagedGossipRepo) UpdatePostScore(context.Context, string) error { return nil }
+func (f *fakePagedGossipRepo) HasRated(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (f *fakePagedGossipRepo) RateComment(context.Context, *store.GossipComment) error { return nil }
+
+type blockingGossipRepo struct {
+	fakeSeedGossipRepo
+	calls   chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingGossipRepo) ListAllPosts(context.Context, int, int) ([]*store.GossipPost, int, error) {
+	r.calls <- struct{}{}
+	<-r.release
+	return []*store.GossipPost{{ID: "post-1"}}, 1, nil
+}
+
+type fakeGossipSnapshotRecorder struct {
+	mu    sync.Mutex
+	count int
+	done  chan struct{}
+}
+
+func (r *fakeGossipSnapshotRecorder) AppendGossipSnapshot(context.Context, *ha.GossipSnapshot) {
+	r.mu.Lock()
+	r.count++
+	r.mu.Unlock()
+	r.done <- struct{}{}
+}
+
+func (r *fakeGossipSnapshotRecorder) Count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.count
 }
 
 type fakeSeedSkillStore struct{}
@@ -215,5 +390,119 @@ func TestSeedInitialHASnapshotsSkipsNewsWithExistingEntityVersion(t *testing.T) 
 	}
 	if refresher.calls != 1 {
 		t.Fatalf("refresher calls = %d, want 1", refresher.calls)
+	}
+}
+
+func TestSeedInitialHASnapshotsUsesPagedRoutingStores(t *testing.T) {
+	hubs := &fakePagedSeedHubStore{items: make([]*store.HubInstance, haSeedPageSize+1)}
+	links := &fakePagedSeedLinkStore{items: make([]*store.HubUserLink, haSeedPageSize+1)}
+	routes := &fakePagedSeedRouteStore{items: make([]*store.HubDomainRoute, haSeedPageSize+1)}
+	for i := range hubs.items {
+		hubs.items[i] = &store.HubInstance{ID: "hub-" + strconv.Itoa(i)}
+	}
+	for i := range links.items {
+		links.items[i] = &store.HubUserLink{ID: "link-" + strconv.Itoa(i), HubID: "hub-0"}
+	}
+	for i := range routes.items {
+		routes.items[i] = &store.HubDomainRoute{ID: "route-" + strconv.Itoa(i), HubID: "hub-0", Domain: "rapidai.tech"}
+	}
+	sync := &fakeSeedSync{has: map[string]bool{ha.EntitySystemSetting: true, ha.EntityGossipSnapshot: true, ha.EntityNewsArticle: true, ha.EntitySkillHubSnapshot: true, ha.EntitySkillMarketSnapshot: true}}
+	seedInitialHASnapshots(context.Background(), sync, nil, hubs, links, routes, nil, nil, nil, nil, nil)
+
+	want := haSeedPageSize + 1
+	if sync.routingHubs != want || sync.routingLinks != want || sync.routingRoutes != want {
+		t.Fatalf("routing seeds = hubs:%d links:%d routes:%d, want %d/%d/%d", sync.routingHubs, sync.routingLinks, sync.routingRoutes, want, want, want)
+	}
+	if hubs.listCalls != 0 || links.listCalls != 0 || routes.listCalls != 0 {
+		t.Fatalf("ListAll calls = hubs:%d links:%d routes:%d, want 0", hubs.listCalls, links.listCalls, routes.listCalls)
+	}
+	if hubs.pageCalls != 2 || links.pageCalls != 2 || routes.pageCalls != 2 {
+		t.Fatalf("page calls = hubs:%d links:%d routes:%d, want 2/2/2", hubs.pageCalls, links.pageCalls, routes.pageCalls)
+	}
+}
+
+func TestSeedNewsArticlesPagedUsesBoundedPages(t *testing.T) {
+	items := make([]*store.NewsArticle, haSeedPageSize+1)
+	for i := range items {
+		items[i] = &store.NewsArticle{ID: "news-" + strconv.Itoa(i)}
+	}
+	repo := &fakePagedNewsRepo{items: items}
+	sync := &fakeSeedSync{has: map[string]bool{}}
+	seeded, skipped, err := seedNewsArticlesPaged(context.Background(), sync, repo)
+	if err != nil {
+		t.Fatalf("seedNewsArticlesPaged() error = %v", err)
+	}
+	if seeded != len(items) || skipped != 0 || sync.newsSeeds != len(items) {
+		t.Fatalf("seeded/skipped/newsSeeds = %d/%d/%d, want %d/0/%d", seeded, skipped, sync.newsSeeds, len(items), len(items))
+	}
+	if len(repo.limits) != 2 || repo.limits[0] != haSeedPageSize || repo.limits[1] != haSeedPageSize {
+		t.Fatalf("limits = %v, want two bounded pages", repo.limits)
+	}
+}
+
+func TestBuildGossipSnapshotUsesBoundedPages(t *testing.T) {
+	posts := make([]*store.GossipPost, haSeedPageSize+1)
+	comments := make([]*store.GossipComment, haSeedPageSize+1)
+	for i := range posts {
+		posts[i] = &store.GossipPost{ID: "post-" + strconv.Itoa(i)}
+	}
+	for i := range comments {
+		comments[i] = &store.GossipComment{ID: "comment-" + strconv.Itoa(i), PostID: posts[0].ID}
+	}
+	repo := &fakePagedGossipRepo{posts: posts, comments: map[string][]*store.GossipComment{posts[0].ID: comments}}
+	snap, err := buildGossipSnapshot(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("buildGossipSnapshot() error = %v", err)
+	}
+	if len(snap.Posts) != len(posts) || len(snap.Comments) != len(comments) {
+		t.Fatalf("snapshot sizes = posts:%d comments:%d, want %d/%d", len(snap.Posts), len(snap.Comments), len(posts), len(comments))
+	}
+	if len(repo.postLimits) != 2 || repo.postLimits[0] != haSeedPageSize || repo.postLimits[1] != haSeedPageSize {
+		t.Fatalf("post limits = %v, want two bounded pages", repo.postLimits)
+	}
+	if len(repo.commentLimits) < 2 || repo.commentLimits[0] != haSeedPageSize || repo.commentLimits[1] != haSeedPageSize {
+		t.Fatalf("comment limits = %v, want bounded pages", repo.commentLimits)
+	}
+}
+
+func TestHAGossipRepoCoalescesConcurrentSnapshotEmits(t *testing.T) {
+	inner := &blockingGossipRepo{calls: make(chan struct{}, 4), release: make(chan struct{}, 4)}
+	recorder := &fakeGossipSnapshotRecorder{done: make(chan struct{}, 4)}
+	repo := &haGossipRepo{inner: inner, sync: recorder}
+
+	repo.syncSnapshot(context.Background())
+	select {
+	case <-inner.calls:
+	case <-time.After(time.Second):
+		t.Fatal("first snapshot build did not start")
+	}
+	repo.syncSnapshot(context.Background())
+	repo.syncSnapshot(context.Background())
+
+	inner.release <- struct{}{}
+	select {
+	case <-recorder.done:
+	case <-time.After(time.Second):
+		t.Fatal("first snapshot was not recorded")
+	}
+	select {
+	case <-inner.calls:
+	case <-time.After(time.Second):
+		t.Fatal("coalesced pending snapshot build did not start")
+	}
+	inner.release <- struct{}{}
+	select {
+	case <-recorder.done:
+	case <-time.After(time.Second):
+		t.Fatal("coalesced snapshot was not recorded")
+	}
+
+	select {
+	case <-inner.calls:
+		t.Fatal("unexpected third snapshot build")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := recorder.Count(); got != 2 {
+		t.Fatalf("recorded snapshots = %d, want 2", got)
 	}
 }

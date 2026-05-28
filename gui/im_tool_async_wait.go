@@ -46,7 +46,7 @@ func (h *IMMessageHandler) ensureLocalBgTaskMgr() *coretool.LocalBackgroundTaskM
 
 // toolBashBackground handles bash(background=true): submit a command to the
 // local background task manager and return immediately with task metadata.
-func (h *IMMessageHandler) toolBashBackground(command, workDir string) string {
+func (h *IMMessageHandler) toolBashBackground(command, workDir, taskRole string) string {
 	mgr := h.ensureLocalBgTaskMgr()
 	if workDir != "" {
 		workDir = resolvePath(workDir)
@@ -55,7 +55,7 @@ func (h *IMMessageHandler) toolBashBackground(command, workDir string) string {
 		workDir = h.projectTabWorkDir()
 	}
 
-	task, err := mgr.Submit(command, workDir)
+	task, err := mgr.SubmitWithRole(command, workDir, taskRole)
 	if err != nil {
 		return fmt.Sprintf("[错误] 后台任务启动失败: %v", err)
 	}

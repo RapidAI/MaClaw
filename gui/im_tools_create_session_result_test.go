@@ -28,8 +28,8 @@ func TestRenderCreateSessionStartedMessageIncludesHintsAndSessionID(t *testing.T
 	if !contains(got, "get_session_output") {
 		t.Fatalf("expected output verification guidance, got %q", got)
 	}
-	if !contains(got, "send_and_observe") {
-		t.Fatalf("expected send guidance, got %q", got)
+	if !contains(got, "CodingSubAgent") || contains(got, "send_and_observe") {
+		t.Fatalf("expected CodingSubAgent guidance without send guidance, got %q", got)
 	}
 }
 

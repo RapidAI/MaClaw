@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -15,7 +16,7 @@ import (
 type Config struct {
 	Embedder   embedding.Embedder
 	LLMFunc    LLMClassifyFunc // optional, can be nil
-	LLMTimeout time.Duration   // 0 → default 15s
+	LLMTimeout time.Duration   // 0 -> default 30s
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
@@ -44,6 +45,7 @@ type UnifiedIntentClassifier struct {
 
 	// Per-message cache: cleared after each message processing cycle.
 	cache       sync.Map // map[string]*ClassificationResult
+	cacheEpoch  atomic.Uint64
 	fusionCache sync.Map // map[string]FusionResult — stores fusion details for diagnostics
 
 	// workflowCandidates is the set of IntentLabels that may trigger a
@@ -61,7 +63,7 @@ type UnifiedIntentClassifier struct {
 func New(cfg Config) *UnifiedIntentClassifier {
 	timeout := cfg.LLMTimeout
 	if timeout == 0 {
-		timeout = 15 * time.Second
+		timeout = 30 * time.Second
 	}
 
 	// Build intent tree text from unified definitions for Layer 3 tree reasoning.
@@ -129,7 +131,8 @@ func New(cfg Config) *UnifiedIntentClassifier {
 // gate workflow transitions should fail closed or ask for clarification when
 // semantic classifiers are unavailable.
 func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationResult {
-	cacheKey := classificationCacheKey(msg)
+	epoch := u.cacheEpoch.Load()
+	cacheKey := classificationCacheKey(epoch, msg)
 
 	// Check cache first.
 	if cached, ok := u.cache.Load(cacheKey); ok {
@@ -156,7 +159,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	// Dual-channel parallel fusion when both channels are available.
 	if canEmb && canTree {
 		fusionResult := u.classifyWithFusion(msg.Text)
-		u.fusionCache.Store(msg.Text, fusionResult) // store for diagnostics
+		u.fusionCache.Store(fusionCacheKey(epoch, msg.Text), fusionResult) // store for diagnostics
 		bestResult := u.fusionToClassification(fusionResult)
 		bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
 		u.cacheAndLog(cacheKey, msg.Text, &bestResult)
@@ -175,9 +178,10 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	if canTree {
 		u.mu.RLock()
 		llmFn := u.llmFunc
+		llmTimeout := u.llmTimeout
 		u.mu.RUnlock()
 
-		candidates, err := ClassifyByTree(llmFn, u.treeText, msg.Text)
+		candidates, err := classifyByTreeWithTimeout(llmFn, u.treeText, msg.Text, llmTimeout)
 		if err == nil && len(candidates) > 0 {
 			top := candidates[0]
 			bestResult := ClassificationResult{
@@ -211,6 +215,27 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	}
 	u.cacheAndLog(cacheKey, msg.Text, &result)
 	return result
+}
+
+func classifyByTreeWithTimeout(llmFn LLMClassifyFunc, treeText, text string, timeout time.Duration) ([]TreeCandidate, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	type result struct {
+		candidates []TreeCandidate
+		err        error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		candidates, err := ClassifyByTree(llmFn, treeText, text)
+		ch <- result{candidates: candidates, err: err}
+	}()
+	select {
+	case r := <-ch:
+		return r.candidates, r.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("tree reasoning LLM call timed out after %s", timeout)
+	}
 }
 
 func secondaryTreeLabels(candidates []TreeCandidate) []IntentLabel {
@@ -248,7 +273,7 @@ func (u *UnifiedIntentClassifier) InvalidateCache() {
 
 // ClassifyEmbeddingOnly performs L2 embedding-only classification without
 // triggering the L3 tree reasoning LLM call. This is significantly faster
-// (~50-100ms vs 3-15s) and suitable for auxiliary checks where a rough
+// (~50-100ms vs LLM latency) and suitable for auxiliary checks where a rough
 // intent signal is sufficient (e.g., checking if conversation history
 // contains coding context).
 //
@@ -288,8 +313,10 @@ func (u *UnifiedIntentClassifier) Ready() bool {
 // SetLLMFunc sets or replaces the Layer 3 LLM callback.
 func (u *UnifiedIntentClassifier) SetLLMFunc(fn LLMClassifyFunc) {
 	u.mu.Lock()
-	defer u.mu.Unlock()
 	u.llmFunc = fn
+	u.cacheEpoch.Add(1)
+	u.mu.Unlock()
+	u.InvalidateCache()
 }
 
 // SetEmbedder sets or replaces the Layer 2 embedder and triggers background
@@ -309,13 +336,17 @@ func (u *UnifiedIntentClassifier) SetEmbedder(emb embedding.Embedder) {
 	u.embedder = emb
 	u.anchors = newAnchors
 	u.ready = false // reset until new anchors are warmed up
+	u.cacheEpoch.Add(1)
 	u.mu.Unlock()
+	u.InvalidateCache()
 
 	go func() {
 		warmupAnchors(emb, newAnchors)
 		u.mu.Lock()
 		u.ready = true
+		u.cacheEpoch.Add(1)
 		u.mu.Unlock()
+		u.InvalidateCache()
 		log.Println("[UnifiedIntentClassifier] SetEmbedder: anchor warmup complete, Layer 2 now available")
 	}()
 }
@@ -357,11 +388,16 @@ func (u *UnifiedIntentClassifier) DiagnoseScores(text string) map[IntentLabel]fl
 	return scores
 }
 
-func classificationCacheKey(msg MessageContext) string {
+func classificationCacheKey(epoch uint64, msg MessageContext) string {
+	prefix := fmt.Sprintf("%d\x00", epoch)
 	if len(msg.RecentHistory) == 0 {
-		return msg.Text
+		return prefix + msg.Text
 	}
-	return msg.Text + "\x00" + strings.Join(msg.RecentHistory, "\x00")
+	return prefix + msg.Text + "\x00" + strings.Join(msg.RecentHistory, "\x00")
+}
+
+func fusionCacheKey(epoch uint64, text string) string {
+	return fmt.Sprintf("%d\x00%s", epoch, text)
 }
 
 // cacheAndLog stores the result in cache and logs the decision.
@@ -451,6 +487,7 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	u.mu.RLock()
 	fusionCfg := u.fusionCfg
 	llmFn := u.llmFunc
+	llmTimeout := u.llmTimeout
 	u.mu.RUnlock()
 
 	type embResult struct {
@@ -483,16 +520,17 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	// Wait for embedding (fast, <100ms typically).
 	emb := <-embCh
 
-	// Wait for tree channel with a tight deadline. Reasoning models
-	// (deepseek-reasoner) have a thinking phase that makes them unable to
-	// respond within this budget. When tree times out, we proceed with
+	// Wait for tree channel using the configured classifier timeout. Reasoning models
+	// may have a thinking phase, but short inner deadlines make routing jitter look
+	// like semantic uncertainty. When tree times out, we proceed with
 	// embedding-only results — this is the designed degradation path.
-	// The 1.5s deadline here is independent of the LLM HTTP timeout (5s in
-	// buildUICLLMFunc): if the LLM responds quickly we use it; if not, we
-	// don't wait. This ensures the critical path is bounded.
+	// The deadline here is aligned with the LLM request timeout.
 	// Timeout returns: tree channel contributes label="ambiguous",
 	// confidence=0.0, Degraded=true to the fusion result.
-	const treeDeadline = 1500 * time.Millisecond
+	treeDeadline := llmTimeout
+	if treeDeadline <= 0 {
+		treeDeadline = 30 * time.Second
+	}
 	var tree treeResult
 	treeTimer := time.NewTimer(treeDeadline)
 	select {
@@ -703,7 +741,7 @@ func (u *UnifiedIntentClassifier) GetFusionConfig() FusionConfig {
 // classified via the fusion path. Returns nil if the text was classified
 // via L1 fast path or is not in cache. Used for diagnostics.
 func (u *UnifiedIntentClassifier) LastFusionResult(text string) *FusionResult {
-	if cached, ok := u.fusionCache.Load(text); ok {
+	if cached, ok := u.fusionCache.Load(fusionCacheKey(u.cacheEpoch.Load(), text)); ok {
 		fr := cached.(FusionResult)
 		return &fr
 	}

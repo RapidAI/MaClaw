@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,12 +150,28 @@ func isSourceAllowed(source string, allowedSources []string) bool {
 	if len(allowedSources) == 0 {
 		return true
 	}
+	source = normalizeHubSearchSource(source)
 	for _, s := range allowedSources {
-		if s == source {
+		if normalizeHubSearchSource(s) == source {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeHubSearchSource(source string) string {
+	switch strings.TrimSpace(strings.ToLower(source)) {
+	case "skillmarket", "market", "hubcenter", "hub_center", "skill_hub":
+		return "skillhub"
+	case "enterprise", "hub", "enterprisehub", "enterprise_hub":
+		return "enterprise_hub"
+	case "claw_hub":
+		return "clawhub"
+	case "git_hub":
+		return "github"
+	default:
+		return strings.TrimSpace(strings.ToLower(source))
+	}
 }
 
 // IsSourceAllowed is the exported version for use by consumers.

@@ -22,6 +22,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetAIAssistantTrace: vi.fn(async () => ({ summary: 'trace ok', event_count: 2, evidence_count: 1, events: [], evidence: [] })),
     LoadConfig: vi.fn(async () => ({ show_ai_trace_entry: false })),
     CancelAIAssistantSession: vi.fn(async () => {}),
+    CancelAIAssistantSessionForSession: vi.fn(async () => {}),
     CancelAIAssistantTask: vi.fn(async () => {}),
     StartAIAssistantBackgroundTask: vi.fn(async () => ({ accepted: true, session_id: 'session-test' })),
     ListRemoteSessions: vi.fn(async () => []),
@@ -44,7 +45,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
@@ -101,6 +102,8 @@ function resetAppMocks() {
     (LoadConfig as any).mockImplementation(async () => new main.AppConfig({ show_ai_trace_entry: false, trial_reflect_enabled: false }));
     (CancelAIAssistantSession as any).mockReset();
     (CancelAIAssistantSession as any).mockImplementation(async () => {});
+    (CancelAIAssistantSessionForSession as any).mockReset();
+    (CancelAIAssistantSessionForSession as any).mockImplementation(async () => {});
     (CancelAIAssistantTask as any).mockReset();
     (CancelAIAssistantTask as any).mockImplementation(async () => {});
     (StartAIAssistantBackgroundTask as any).mockReset();
@@ -751,7 +754,7 @@ describe('useAIAssistant property tests', () => {
             await act(async () => {
                 emitRuntimeEvent('ai-assistant-new-round', requestEvent());
                 emitRuntimeEvent('ai-assistant-token', requestEvent('partial'));
-                await vi.advanceTimersByTimeAsync(119_000);
+                await vi.advanceTimersByTimeAsync(239_000);
                 emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
                 await vi.advanceTimersByTimeAsync(1_000);
             });
@@ -760,7 +763,7 @@ describe('useAIAssistant property tests', () => {
             expect(messageContents(result.current.messages).join('\n')).not.toContain('超时');
 
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(118_999);
+                await vi.advanceTimersByTimeAsync(238_999);
             });
 
             expect(result.current.sending).toBe(true);
@@ -770,6 +773,87 @@ describe('useAIAssistant property tests', () => {
                 pending.resolve({ text: 'done', error: '', fields: null, actions: null });
                 await pending.promise;
             });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('uses configured foreground response timeout from config', async () => {
+        vi.useFakeTimers();
+        try {
+            (LoadConfig as any).mockResolvedValueOnce(new main.AppConfig({
+                show_ai_trace_entry: false,
+                trial_reflect_enabled: false,
+                agent_response_timeout_sec: 600,
+            }));
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+            (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            expect(LoadConfig).toHaveBeenCalled();
+
+            await act(async () => {
+                void result.current.sendMessage('honor configured timeout');
+                await Promise.resolve();
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(240_001);
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('请求超时');
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(360_000);
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(messageContents(result.current.messages).join('\n')).toContain('600秒无响应');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('uses locally saved foreground response timeout without waiting for backend event', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+            (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                await Promise.resolve();
+                window.dispatchEvent(new CustomEvent('maclaw-config-changed', {
+                    detail: new main.AppConfig({ agent_response_timeout_sec: 600 }),
+                }));
+                await Promise.resolve();
+            });
+
+            await act(async () => {
+                void result.current.sendMessage('honor locally saved timeout');
+                await Promise.resolve();
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(240_001);
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('璇锋眰瓒呮椂');
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(360_000);
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(messageContents(result.current.messages).join('\n')).toContain('600秒无响应');
         } finally {
             vi.useRealTimers();
         }
@@ -944,7 +1028,7 @@ describe('useAIAssistant property tests', () => {
             expect(result.current.sending).toBe(true);
 
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(120_001);
+                await vi.advanceTimersByTimeAsync(240_001);
             });
 
             expect(result.current.sending).toBe(true);
@@ -1639,14 +1723,92 @@ describe('useAIAssistant property tests', () => {
             expect(result.current.progressMessages).toEqual([]);
 
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(120_001);
+                await vi.advanceTimersByTimeAsync(240_001);
             });
 
-            expect(messageContents(result.current.messages)).not.toContain('⏱️ 请求超时（120秒无响应），请重试。');
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('请求超时');
             expect(result.current.sending).toBe(false);
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('sendMessage waits for backend cancel before starting next foreground request', async () => {
+        const first = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        const cancel = deferred<string>();
+        const second = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(() => first.promise)
+            .mockImplementationOnce(() => second.promise);
+        (CancelAIAssistantSession as any).mockImplementationOnce(() => cancel.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('first request');
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            void result.current.cancelSession();
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            void result.current.sendMessage('second request');
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(CancelAIAssistantSession).toHaveBeenCalledTimes(1);
+        expect(SendAIAssistantMessage).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            cancel.resolve('first request');
+            await cancel.promise;
+            await Promise.resolve();
+        });
+
+        expect(SendAIAssistantMessage).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+            second.resolve({ text: 'fresh reply', error: '', fields: null, actions: null });
+            await second.promise;
+        });
+
+        await act(async () => {
+            first.resolve({ text: 'stale reply', error: '', fields: null, actions: null });
+            await first.promise;
+        });
+
+        expect(messageContents(result.current.messages)).toContain('second request');
+        expect(messageContents(result.current.messages)).toContain('fresh reply');
+        expect(messageContents(result.current.messages)).not.toContain('stale reply');
+    });
+
+    it('cancelSession targets the active project session key', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        (CancelAIAssistantSessionForSession as any).mockResolvedValueOnce('project request');
+
+        const { result } = renderHook(() => useAIAssistant({ activeSessionKey: 'desktop-user:D:/work/project' }));
+
+        await act(async () => {
+            void result.current.sendMessage('project request', { project_path: 'D:/work/project' });
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            await result.current.cancelSession();
+        });
+
+        expect(CancelAIAssistantSessionForSession).toHaveBeenCalledWith('desktop-user:D:/work/project');
+        expect(CancelAIAssistantSession).not.toHaveBeenCalled();
+
+        await act(async () => {
+            pending.resolve({ text: 'stale project reply', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
     });
 
     it('stale canceled requests do not clear the next round response timeout controller', async () => {
@@ -3050,7 +3212,7 @@ describe('useAIAssistant property tests', () => {
             expect(result.current.sending).toBe(false);
 
             await act(async () => {
-                vi.advanceTimersByTime(120_000);
+                vi.advanceTimersByTime(240_000);
             });
 
             expect(messageContents(result.current.messages).join('\n')).not.toContain('超时');
@@ -3271,7 +3433,7 @@ describe('useAIAssistant property tests', () => {
             expect(messageContents(result.current.messages)).not.toContain('wrong terminal event');
 
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(120_001);
+                await vi.advanceTimersByTimeAsync(240_001);
             });
 
             expect(result.current.sending).toBe(false);
@@ -3324,7 +3486,7 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.progressMessages).toHaveLength(1);
 
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(120_001);
+            await vi.advanceTimersByTimeAsync(240_001);
         });
 
         expect(result.current.sending).toBe(false);

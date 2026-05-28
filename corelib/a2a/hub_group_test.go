@@ -45,6 +45,27 @@ func TestGroupEnvelopeDiscussionMessageAllowsStreamEndAndAttachmentOnlyPayloads(
 	}
 }
 
+func TestGroupDiscussionMessageHasPayload(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  GroupDiscussionMessage
+		want bool
+	}{
+		{name: "empty stream chunk", msg: GroupDiscussionMessage{Kind: MessageStreamChunk}, want: false},
+		{name: "stream end", msg: GroupDiscussionMessage{Kind: MessageStreamEnd}, want: true},
+		{name: "text", msg: GroupDiscussionMessage{Kind: MessageStatement, Content: "hello"}, want: true},
+		{name: "attachment", msg: GroupDiscussionMessage{Kind: MessageStatement, FileAttachments: []FileAttachment{{FileURL: "https://hub.local/file"}}}, want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := GroupDiscussionMessageHasPayload(tc.msg); got != tc.want {
+				t.Fatalf("GroupDiscussionMessageHasPayload() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGroupProfileDiscoveryViewHidesModelWhenConfigured(t *testing.T) {
 	profile := GroupProfile{
 		AgentID:         " maclaw-a ",

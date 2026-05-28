@@ -4,12 +4,15 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
+
+const haSeedPageSize = 500
 
 type haSystemSettings struct {
 	inner store.SystemSettingsRepository
@@ -35,24 +38,70 @@ func (r *haSystemSettings) List(ctx context.Context) ([]*store.SystemSettingEntr
 }
 
 type haGossipRepo struct {
-	inner store.GossipRepository
-	sync  *ha.Service
+	inner       store.GossipRepository
+	sync        gossipSnapshotRecorder
+	syncMu      sync.Mutex
+	syncRunning bool
+	syncPending bool
+}
+
+type gossipSnapshotRecorder interface {
+	AppendGossipSnapshot(ctx context.Context, snap *ha.GossipSnapshot)
 }
 
 func (r *haGossipRepo) syncSnapshot(ctx context.Context) {
-	if r.sync == nil {
+	if r == nil || r.sync == nil {
 		return
 	}
-	snap, err := buildGossipSnapshot(ctx, r.inner)
-	if err != nil {
-		log.Printf("[hubcenter][ha] build gossip snapshot: %v", err)
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
+	if !r.beginSyncSnapshot() {
 		return
 	}
-	r.sync.AppendGossipSnapshot(ctx, snap)
+	go r.runSyncSnapshot(ctx)
+}
+
+func (r *haGossipRepo) beginSyncSnapshot() bool {
+	r.syncMu.Lock()
+	defer r.syncMu.Unlock()
+	if r.syncRunning {
+		r.syncPending = true
+		return false
+	}
+	r.syncRunning = true
+	return true
+}
+
+func (r *haGossipRepo) finishOrContinueSyncSnapshot() bool {
+	r.syncMu.Lock()
+	defer r.syncMu.Unlock()
+	if r.syncPending {
+		r.syncPending = false
+		return true
+	}
+	r.syncRunning = false
+	return false
+}
+
+func (r *haGossipRepo) runSyncSnapshot(ctx context.Context) {
+	for {
+		snap, err := buildGossipSnapshot(ctx, r.inner)
+		if err != nil {
+			log.Printf("[hubcenter][ha] build gossip snapshot: %v", err)
+		} else if r.sync != nil {
+			r.sync.AppendGossipSnapshot(ctx, snap)
+		}
+		if !r.finishOrContinueSyncSnapshot() {
+			return
+		}
+	}
 }
 
 func buildGossipSnapshot(ctx context.Context, repo store.GossipRepository) (*ha.GossipSnapshot, error) {
-	posts, _, err := repo.ListAllPosts(ctx, 0, 1000000)
+	posts, err := listAllGossipPostsPaged(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -61,13 +110,41 @@ func buildGossipSnapshot(ctx context.Context, repo store.GossipRepository) (*ha.
 		if post == nil {
 			continue
 		}
-		items, _, err := repo.ListComments(ctx, post.ID, 0, 1000000)
+		items, err := listAllGossipCommentsPaged(ctx, repo, post.ID)
 		if err != nil {
 			return nil, err
 		}
 		comments = append(comments, items...)
 	}
 	return &ha.GossipSnapshot{Posts: posts, Comments: comments}, nil
+}
+
+func listAllGossipPostsPaged(ctx context.Context, repo store.GossipRepository) ([]*store.GossipPost, error) {
+	var out []*store.GossipPost
+	for offset := 0; ; offset += haSeedPageSize {
+		items, total, err := repo.ListAllPosts(ctx, offset, haSeedPageSize)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if len(items) == 0 || len(out) >= total || len(items) < haSeedPageSize {
+			return out, nil
+		}
+	}
+}
+
+func listAllGossipCommentsPaged(ctx context.Context, repo store.GossipRepository, postID string) ([]*store.GossipComment, error) {
+	var out []*store.GossipComment
+	for offset := 0; ; offset += haSeedPageSize {
+		items, total, err := repo.ListComments(ctx, postID, offset, haSeedPageSize)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if len(items) == 0 || len(out) >= total || len(items) < haSeedPageSize {
+			return out, nil
+		}
+	}
 }
 
 func (r *haGossipRepo) CreatePost(ctx context.Context, post *store.GossipPost) error {
@@ -189,12 +266,24 @@ type haSeedHubStore interface {
 	ListAll(ctx context.Context) ([]*store.HubInstance, error)
 }
 
+type haSeedHubPager interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.HubInstance, error)
+}
+
 type haSeedLinkStore interface {
 	ListAll(ctx context.Context) ([]*store.HubUserLink, error)
 }
 
+type haSeedLinkPager interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.HubUserLink, error)
+}
+
 type haSeedRouteStore interface {
 	ListAll(ctx context.Context) ([]*store.HubDomainRoute, error)
+}
+
+type haSeedRoutePager interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.HubDomainRoute, error)
 }
 
 type haSeedSystemSettingsStore interface {
@@ -229,17 +318,11 @@ func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresh
 	if hubs != nil {
 		if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntityHubInstance); err == nil {
 			if !seeded {
-				items, listErr := hubs.ListAll(ctx)
+				count, listErr := seedHubsPaged(ctx, sync, hubs)
 				if listErr != nil {
 					log.Printf("[hubcenter][ha] seed routing hubs failed: %v", listErr)
 				} else {
-					for _, item := range items {
-						if item == nil {
-							continue
-						}
-						sync.AppendHubInstance(ctx, item)
-						seededHubs++
-					}
+					seededHubs += count
 				}
 			}
 		} else {
@@ -249,17 +332,11 @@ func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresh
 	if links != nil {
 		if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntityHubUserLink); err == nil {
 			if !seeded {
-				items, listErr := links.ListAll(ctx)
+				count, listErr := seedLinksPaged(ctx, sync, links)
 				if listErr != nil {
 					log.Printf("[hubcenter][ha] seed routing links failed: %v", listErr)
 				} else {
-					for _, item := range items {
-						if item == nil {
-							continue
-						}
-						sync.AppendHubUserLink(ctx, item)
-						seededLinks++
-					}
+					seededLinks += count
 				}
 			}
 		} else {
@@ -269,17 +346,11 @@ func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresh
 	if routes != nil {
 		if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntityHubDomainRoute); err == nil {
 			if !seeded {
-				items, listErr := routes.ListAll(ctx)
+				count, listErr := seedRoutesPaged(ctx, sync, routes)
 				if listErr != nil {
 					log.Printf("[hubcenter][ha] seed routing routes failed: %v", listErr)
 				} else {
-					for _, item := range items {
-						if item == nil {
-							continue
-						}
-						sync.AppendHubDomainRoute(ctx, item)
-						seededRoutes++
-					}
+					seededRoutes += count
 				}
 			}
 		} else {
@@ -327,31 +398,11 @@ func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresh
 	}
 
 	if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntityNewsArticle); err == nil && !seeded && news != nil {
-		items, _, listErr := news.List(ctx, 0, 1000000)
+		seededCount, skippedCount, listErr := seedNewsArticlesPaged(ctx, sync, news)
 		if listErr != nil {
 			log.Printf("[hubcenter][ha] seed news snapshot failed: %v", listErr)
-		} else {
-			seededCount := 0
-			skippedCount := 0
-			for _, item := range items {
-				if item == nil {
-					continue
-				}
-				exists, existsErr := sync.HasEntityVersion(ctx, ha.EntityNewsArticle, item.ID)
-				if existsErr != nil {
-					log.Printf("[hubcenter][ha] inspect news entity version failed for %s: %v", item.ID, existsErr)
-					continue
-				}
-				if exists {
-					skippedCount++
-					continue
-				}
-				sync.AppendNewsArticle(ctx, item)
-				seededCount++
-			}
-			if seededCount > 0 || skippedCount > 0 {
-				log.Printf("[hubcenter][ha] seeded news snapshot: articles=%d skipped=%d", seededCount, skippedCount)
-			}
+		} else if seededCount > 0 || skippedCount > 0 {
+			log.Printf("[hubcenter][ha] seeded news snapshot: articles=%d skipped=%d", seededCount, skippedCount)
 		}
 	} else if err != nil {
 		log.Printf("[hubcenter][ha] inspect news seed state failed: %v", err)
@@ -379,5 +430,131 @@ func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresh
 		}
 	} else if err != nil {
 		log.Printf("[hubcenter][ha] inspect skillmarket seed state failed: %v", err)
+	}
+}
+
+func seedHubsPaged(ctx context.Context, sync haSeedSyncChecker, hubs haSeedHubStore) (int, error) {
+	seed := func(items []*store.HubInstance) int {
+		count := 0
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			sync.AppendHubInstance(ctx, item)
+			count++
+		}
+		return count
+	}
+	if pager, ok := hubs.(haSeedHubPager); ok {
+		count := 0
+		for offset := 0; ; offset += haSeedPageSize {
+			items, err := pager.ListPage(ctx, offset, haSeedPageSize)
+			if err != nil {
+				return count, err
+			}
+			count += seed(items)
+			if len(items) < haSeedPageSize {
+				return count, nil
+			}
+		}
+	}
+	items, err := hubs.ListAll(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return seed(items), nil
+}
+
+func seedLinksPaged(ctx context.Context, sync haSeedSyncChecker, links haSeedLinkStore) (int, error) {
+	seed := func(items []*store.HubUserLink) int {
+		count := 0
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			sync.AppendHubUserLink(ctx, item)
+			count++
+		}
+		return count
+	}
+	if pager, ok := links.(haSeedLinkPager); ok {
+		count := 0
+		for offset := 0; ; offset += haSeedPageSize {
+			items, err := pager.ListPage(ctx, offset, haSeedPageSize)
+			if err != nil {
+				return count, err
+			}
+			count += seed(items)
+			if len(items) < haSeedPageSize {
+				return count, nil
+			}
+		}
+	}
+	items, err := links.ListAll(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return seed(items), nil
+}
+
+func seedRoutesPaged(ctx context.Context, sync haSeedSyncChecker, routes haSeedRouteStore) (int, error) {
+	seed := func(items []*store.HubDomainRoute) int {
+		count := 0
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			sync.AppendHubDomainRoute(ctx, item)
+			count++
+		}
+		return count
+	}
+	if pager, ok := routes.(haSeedRoutePager); ok {
+		count := 0
+		for offset := 0; ; offset += haSeedPageSize {
+			items, err := pager.ListPage(ctx, offset, haSeedPageSize)
+			if err != nil {
+				return count, err
+			}
+			count += seed(items)
+			if len(items) < haSeedPageSize {
+				return count, nil
+			}
+		}
+	}
+	items, err := routes.ListAll(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return seed(items), nil
+}
+
+func seedNewsArticlesPaged(ctx context.Context, sync haSeedSyncChecker, news haSeedNewsRepo) (int, int, error) {
+	seededCount := 0
+	skippedCount := 0
+	for offset := 0; ; offset += haSeedPageSize {
+		items, total, err := news.List(ctx, offset, haSeedPageSize)
+		if err != nil {
+			return seededCount, skippedCount, err
+		}
+		for _, item := range items {
+			if item == nil {
+				continue
+			}
+			exists, existsErr := sync.HasEntityVersion(ctx, ha.EntityNewsArticle, item.ID)
+			if existsErr != nil {
+				log.Printf("[hubcenter][ha] inspect news entity version failed for %s: %v", item.ID, existsErr)
+				continue
+			}
+			if exists {
+				skippedCount++
+				continue
+			}
+			sync.AppendNewsArticle(ctx, item)
+			seededCount++
+		}
+		if len(items) == 0 || offset+len(items) >= total || len(items) < haSeedPageSize {
+			return seededCount, skippedCount, nil
+		}
 	}
 }

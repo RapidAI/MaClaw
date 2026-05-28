@@ -46,7 +46,7 @@ type LoopCommandConfig struct {
 	WorkDir string
 
 	// VerifyTimeout is the timeout for each verification command execution.
-	// Default: 120 seconds.
+	// Default: 240 seconds, clamped to 240-600 seconds.
 	VerifyTimeout time.Duration
 
 	// MaxLLMIterationsPerCycle limits how many LLM iterations RunLoop can
@@ -114,13 +114,28 @@ const (
 	MaxVerifyOutputLen = 4000
 
 	defaultLoopMaxIterations       = 10
-	defaultLoopVerifyTimeout       = 120 * time.Second
+	minLoopVerifyTimeout           = 240 * time.Second
+	defaultLoopVerifyTimeout       = 240 * time.Second
+	maxLoopVerifyTimeout           = 600 * time.Second
 	defaultLoopMaxLLMItersPerCycle = 30
 )
 
 // LoopVerifyTimeoutFromSeconds converts seconds to a Duration for VerifyTimeout.
 func LoopVerifyTimeoutFromSeconds(seconds int) time.Duration {
-	return time.Duration(seconds) * time.Second
+	return normalizeLoopVerifyTimeout(time.Duration(seconds) * time.Second)
+}
+
+func normalizeLoopVerifyTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return defaultLoopVerifyTimeout
+	}
+	if timeout < minLoopVerifyTimeout {
+		return minLoopVerifyTimeout
+	}
+	if timeout > maxLoopVerifyTimeout {
+		return maxLoopVerifyTimeout
+	}
+	return timeout
 }
 
 // NormalizeLoopConfig fills in defaults for zero-valued fields.
@@ -128,9 +143,7 @@ func NormalizeLoopConfig(cfg LoopCommandConfig) LoopCommandConfig {
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = defaultLoopMaxIterations
 	}
-	if cfg.VerifyTimeout <= 0 {
-		cfg.VerifyTimeout = defaultLoopVerifyTimeout
-	}
+	cfg.VerifyTimeout = normalizeLoopVerifyTimeout(cfg.VerifyTimeout)
 	if cfg.MaxLLMIterationsPerCycle <= 0 {
 		cfg.MaxLLMIterationsPerCycle = defaultLoopMaxLLMItersPerCycle
 	}

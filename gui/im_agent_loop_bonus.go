@@ -129,7 +129,7 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		toolOnProgress := filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug)
 		toolExecStartedAt := time.Now()
 		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
-		execResult := h.executeBonusRoundTool(tc, toolOnProgress, opts.Phase)
+		execResult := h.executeBonusRoundTool(tc, toolOnProgress, opts.Phase, opts.HTTPClient, opts.UserID)
 		toolResult := execResult.Text
 		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
 		if IsAskUserResult(toolResult) {
@@ -138,7 +138,7 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		if IsSubAgentContext(toolResult) {
 			toolResult = ExtractSubAgentContext(toolResult)
 		}
-		if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) && execResult.FailureKind == toolFailureNone {
+		if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) && execResult.Outcome == toolOutcomeSucceeded && execResult.FailureKind == toolFailureNone {
 			h.toolRouter.ActivateSessionTool(tc.Function.Name)
 			log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
 		}
@@ -154,10 +154,28 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 	return conversation, history, toolExecElapsed
 }
 
-func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress tool.ProgressCallback, phase *agentLoopPhase) toolExecutionResult {
+func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress tool.ProgressCallback, phase *agentLoopPhase, httpClient *http.Client, userID string) toolExecutionResult {
 	if phase != nil && phase.TruncationBlockedTools[tc.Function.Name] {
 		result := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
 		return toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailureTruncationBlocked}
+	}
+	if tool.IsCodingSessionTool(tc.Function.Name) {
+		result := fmt.Sprintf("[system rejected] %s is disabled for the agent. Coding tasks must run through the internal CodingSubAgent, not external coding sessions.", tc.Function.Name)
+		return toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if tc.Function.Name == "delegate_task" {
+		loopCtx := (*LoopContext)(nil)
+		if httpClient != nil {
+			loopCtx = &LoopContext{HTTPClient: httpClient}
+		}
+		if result, handled := h.executeCodingWorkflowDelegateTask(agentLoopToolExecutionOptions{
+			Context:    loopCtx,
+			UserID:     userID,
+			ToolCall:   tc,
+			OnProgress: onProgress,
+		}); handled {
+			return result
+		}
 	}
 	// In bonus round (still agent loop context), intercept missing/invalid parameter
 	// errors before executeToolDetailed to prevent AgentView panel from popping up.

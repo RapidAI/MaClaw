@@ -28,26 +28,27 @@ type MCPToolView struct {
 }
 
 type MCPServerView struct {
-	ID            string                  `json:"id"`
-	Kind          string                  `json:"kind"`
-	Name          string                  `json:"name"`
-	EndpointURL   string                  `json:"endpoint_url,omitempty"`
-	AuthType      string                  `json:"auth_type,omitempty"`
-	HasAuthSecret bool                    `json:"has_auth_secret,omitempty"`
-	HeaderNames   []string                `json:"header_names,omitempty"`
-	Command       string                  `json:"command,omitempty"`
-	Args          []string                `json:"args,omitempty"`
-	EnvKeys       []string                `json:"env_keys,omitempty"`
-	HasEnv        bool                    `json:"has_env,omitempty"`
-	Disabled      bool                    `json:"disabled,omitempty"`
-	AutoStart     bool                    `json:"auto_start,omitempty"`
-	Source        corelib.MCPServerSource `json:"source,omitempty"`
-	Running       bool                    `json:"running"`
-	HealthStatus  MCPHealthStatus         `json:"health_status"`
-	FailCount     int                     `json:"fail_count,omitempty"`
-	LastCheckAt   *time.Time              `json:"last_check_at,omitempty"`
-	CreatedAt     string                  `json:"created_at,omitempty"`
-	Tools         []MCPToolView           `json:"tools,omitempty"`
+	ID            string                          `json:"id"`
+	Kind          string                          `json:"kind"`
+	Name          string                          `json:"name"`
+	EndpointURL   string                          `json:"endpoint_url,omitempty"`
+	AuthType      string                          `json:"auth_type,omitempty"`
+	HasAuthSecret bool                            `json:"has_auth_secret,omitempty"`
+	HeaderNames   []string                        `json:"header_names,omitempty"`
+	Command       string                          `json:"command,omitempty"`
+	Args          []string                        `json:"args,omitempty"`
+	EnvKeys       []string                        `json:"env_keys,omitempty"`
+	HasEnv        bool                            `json:"has_env,omitempty"`
+	Disabled      bool                            `json:"disabled,omitempty"`
+	AutoStart     bool                            `json:"auto_start,omitempty"`
+	Source        corelib.MCPServerSource         `json:"source,omitempty"`
+	Capability    *corelib.MCPServerCapabilityRef `json:"capability,omitempty"`
+	Running       bool                            `json:"running"`
+	HealthStatus  MCPHealthStatus                 `json:"health_status"`
+	FailCount     int                             `json:"fail_count,omitempty"`
+	LastCheckAt   *time.Time                      `json:"last_check_at,omitempty"`
+	CreatedAt     string                          `json:"created_at,omitempty"`
+	Tools         []MCPToolView                   `json:"tools,omitempty"`
 }
 
 type MCPServerCreateInput struct {
@@ -244,10 +245,12 @@ func (s *Service) UpdateMCPServer(ctx context.Context, p Principal, serverID str
 			entry.AuthType = authType
 		}
 		if in.AuthSecret != nil {
-			entry.AuthSecret = strings.TrimSpace(*in.AuthSecret)
+			nextSecret := strings.TrimSpace(*in.AuthSecret)
+			preserveMaskedSecretString(&nextSecret, entry.AuthSecret)
+			entry.AuthSecret = nextSecret
 		}
 		if in.Headers != nil {
-			entry.Headers = cleanStringMap(in.Headers)
+			entry.Headers = preserveStringMapSecretValues(entry.Headers, cleanStringMap(in.Headers))
 		}
 		updatedKind = "remote"
 		break
@@ -273,7 +276,7 @@ func (s *Service) UpdateMCPServer(ctx context.Context, p Principal, serverID str
 			entry.Args = cloneStringSlice(*in.Args)
 		}
 		if in.Env != nil {
-			entry.Env = cleanStringMap(in.Env)
+			entry.Env = preserveStringMapSecretValues(entry.Env, cleanStringMap(in.Env))
 		}
 		if in.Disabled != nil {
 			entry.Disabled = *in.Disabled
@@ -497,6 +500,7 @@ func buildMCPViews(cfg corelib.AppConfig, runtime *userMCPRuntime) []MCPServerVi
 			HasAuthSecret: strings.TrimSpace(entry.AuthSecret) != "",
 			HeaderNames:   sortedKeys(entry.Headers),
 			Source:        entry.Source,
+			Capability:    entry.Capability,
 			CreatedAt:     entry.CreatedAt,
 			HealthStatus:  MCPHealthUnknown,
 		}
@@ -524,6 +528,8 @@ func buildMCPViews(cfg corelib.AppConfig, runtime *userMCPRuntime) []MCPServerVi
 			HasEnv:       len(entry.Env) > 0,
 			Disabled:     entry.Disabled,
 			AutoStart:    entry.AutoStart,
+			Source:       entry.Source,
+			Capability:   entry.Capability,
 			CreatedAt:    entry.CreatedAt,
 			HealthStatus: MCPHealthStopped,
 		}

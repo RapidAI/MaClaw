@@ -7,7 +7,24 @@ import (
 )
 
 func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, trimmed string, decision explicitTaskSlotDecision, entries []agent.ConversationEntry, unfinishedSlot **agent.UnfinishedTaskSlot, askUserContext string, confirmedResume, freshTask, hasPendingTaskAnswer bool) (string, bool, bool) {
-	if h == nil || confirmedResume || freshTask || msg.IsBackground || decision.ResumeSlotID != "" {
+	if h == nil || msg.IsBackground {
+		return askUserContext, freshTask, false
+	}
+	if h.consumeCancelledTaskBoundary(msg.UserID) {
+		if len(entries) >= 2 {
+			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusInterrupted)
+		}
+		if h.memory != nil {
+			h.memory.ClearConversationAndDismissSlot(msg.UserID)
+		}
+		h.clearPerUserSessionState(msg.UserID)
+		if h.confirmationStore != nil {
+			h.confirmationStore.clear(msg.UserID)
+		}
+		log.Printf("[TaskContext] new task for user %s: previous task was explicitly cancelled", msg.UserID)
+		return "", true, len(entries) > 0
+	}
+	if confirmedResume || freshTask || decision.ResumeSlotID != "" {
 		return askUserContext, freshTask, false
 	}
 	tcDecision := h.resolveTaskContext(

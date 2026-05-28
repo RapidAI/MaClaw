@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
@@ -179,7 +180,7 @@ func (h *IMMessageHandler) rebuildFTSInBackground(store *knowledge.SQLiteStore) 
 	// PrewarmDict ensures gse dictionary loading has started.
 	// bm25.Tokenize (called by RebuildFTSIndex) will block until loading completes.
 	bm25.PrewarmDict()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 	defer cancel()
 	if err := store.RebuildFTSIndex(ctx); err != nil {
 		log.Printf("[knowledge_auto_recall] FTS rebuild failed: %v", err)

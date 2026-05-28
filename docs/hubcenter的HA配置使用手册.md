@@ -1,4 +1,4 @@
-﻿# hubcenter 的 HA 配置使用手册
+# hubcenter 的 HA 配置使用手册
 
 本文档说明 `hubcenter` 第一版 3 节点 HA 的配置方式、管理后台使用方法、推荐部署目录、`hub`/`hubcenter` 的配合关系，以及 `deploy_all.cmd` 的自动化部署约定。
 
@@ -63,6 +63,7 @@
 - `Advertise URL`
 - `Cluster secret`
 - `Sync interval`
+- `Push debounce interval`
 - `Pull batch size`
 - `Heartbeat sync minimum interval`
 - `peers` 列表
@@ -98,9 +99,14 @@ ha:
   node_name: hubcenter-1
   advertise_url: https://hubs.mypapers.top
   cluster_secret: replace-with-a-long-random-shared-secret
-  sync_interval_seconds: 3
+  sync_interval_seconds: 180
+  push_debounce_seconds: 180
   pull_batch_size: 200
-  heartbeat_sync_min_interval_seconds: 10
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  history_max_retained_ops: 50000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
   peers:
     - node_id: hc-2
       name: hubcenter-2
@@ -152,7 +158,12 @@ ha:
 ### `ha.sync_interval_seconds`
 
 - 拉取远端 HA op 的周期
-- 推荐首版保持 `3`
+- 推荐首版保持 `180`，允许几分钟最终一致，降低 peer 轮询压力
+
+### `ha.push_debounce_seconds`
+
+- 本地写入后推送到 peer 的合并等待窗口
+- 推荐首版保持 `180`，把短时间内多次写入合并为一次推送
 
 ### `ha.pull_batch_size`
 
@@ -162,7 +173,27 @@ ha:
 ### `ha.heartbeat_sync_min_interval_seconds`
 
 - 对高频心跳同步做节流
+- 推荐首版保持 `600`
+
+### `ha.history_retention_days`
+
+- 自动清理 HA 历史日志的保留天数
+- 推荐首版保持 `0.5`
+
+### `ha.history_max_retained_ops`
+
+- 自动清理后最多保留的 HA op 数量
+- 推荐首版保持 `50000`
+
+### `ha.history_prune_interval_minutes`
+
+- 后台历史清理运行间隔
 - 推荐首版保持 `10`
+
+### `ha.history_prune_batch_size`
+
+- 每次删除的历史操作上限，避免 SQLite 长时间写锁
+- 推荐首版保持 `20000`
 
 ### `ha.peers`
 
@@ -447,9 +478,8 @@ ls -la /data/soft/hub/data/models
 ## 15. 运维建议
 
 - 每台 `hubcenter` 使用独立 SQLite 文件，不共享 `.db`
-- 首版保持默认同步参数，不要一开始就频繁调大或调小
+- 首版保持低压力同步参数，接受几分钟最终一致，不要一开始就频繁调大或调小
 - 后台改完参数后，记得同步回运维配置文件
 - 定期检查 `quality_score`、`lag_seconds`、`backlog`、`last_error`
 - 对 `hub` 额外关注模型下载日志与磁盘空间
 - 如果某台节点长期离线，恢复后会按 peer cursor 继续追同步日志
-

@@ -72,6 +72,25 @@ func TestAdminCapabilityMarketMCPUpsertAndList(t *testing.T) {
 	}
 }
 
+func TestCapabilityMarketMCPPurchaseAllowsEmptyBodyForFreeCapability(t *testing.T) {
+	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
+	body := []byte(`{"capability_id":"free-mcp","display_name":"Free MCP","mcp":{"endpoint_url":"https://free.example.com/mcp"}}`)
+	upsertReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/mcp", bytes.NewReader(body))
+	upsertRec := httptest.NewRecorder()
+	AdminCapabilityMarketMCPUpsertHandler(settings)(upsertRec, upsertReq)
+	if upsertRec.Code != http.StatusOK {
+		t.Fatalf("upsert status=%d body=%s", upsertRec.Code, upsertRec.Body.String())
+	}
+
+	purchaseReq := httptest.NewRequest(http.MethodPost, "/api/capability-market/mcp/free-mcp/purchase", nil)
+	purchaseReq.SetPathValue("id", "free-mcp")
+	purchaseRec := httptest.NewRecorder()
+	CapabilityMarketMCPPurchaseHandler(settings)(purchaseRec, purchaseReq)
+	if purchaseRec.Code != http.StatusOK {
+		t.Fatalf("purchase status=%d body=%s", purchaseRec.Code, purchaseRec.Body.String())
+	}
+}
+
 func TestAdminCapabilityMarketMCPUpsertPreservesOptionalSecret(t *testing.T) {
 	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
 	body := []byte(`{

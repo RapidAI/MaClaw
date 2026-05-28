@@ -149,7 +149,7 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 		}
 	}
 
-	if trimmedForGate == "" || looksLikeNoToolStallReply(msgContent) {
+	if trimmedForGate == "" {
 		return result
 	}
 	if !isSubstantivePhaseDocument(trimmedForGate) {
@@ -247,7 +247,7 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 				truncateTraceText(trimmedAfterTools, 220), "", "")
 		}
 	}
-	if trimmedAfterTools == "" || looksLikeNoToolStallReply(msgContent) {
+	if trimmedAfterTools == "" {
 		return result
 	}
 	if !isSubstantivePhaseDocument(trimmedAfterTools) {
@@ -792,7 +792,7 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text, platform str
 	// Short message fast path: messages with fewer than 10 runes cannot be
 	// workflow tasks, which require detailed descriptions.
 	// Skip QuickFilter.Classify, handleNeedsUnderstanding, and UIC fusion entirely.
-	// This eliminates the 1.5-2s UIC fusion call for short queries.
+	// This avoids routing short acknowledgements through semantic classification.
 	// Note: shouldBypassWorkflowForIntent already skips UIC for short messages,
 	// but QuickFilter.Classify may still route to FilterNeedsUnderstanding via
 	// BM25 template matching, triggering a second UIC fusion in handleNeedsUnderstanding.
@@ -947,8 +947,8 @@ func (h *IMMessageHandler) recentContextResolvesToNonWorkflow(uic *intent.Unifie
 			continue
 		}
 		// Use embedding-only classification for history entries to avoid
-		// triggering the tree channel LLM call (1.5s deadline per entry).
-		// This function is on the critical path; each tree call adds 1.5s.
+		// triggering a full tree-channel LLM call per entry.
+		// This function is on the critical path; rough history scoring is enough.
 		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
 			Text:   entry,
 			UserID: userID,
@@ -1229,7 +1229,7 @@ func workflowInputPayloadFromMessage(text string, attachments []MessageAttachmen
 // the typed review-state transition.
 //
 // Token budget: ~300-500 input + ~10 output vs ~55000 input for full agent loop.
-// Latency: 1-3s (lightweight) vs 5-15s (full loop).
+// Latency: one lightweight classifier call vs the full agent loop.
 func (h *IMMessageHandler) handleWorkflowReview(engine *workflow.WorkflowEngine, userID, text, platform string) *IMAgentResponse {
 	ctx := context.Background()
 
@@ -1306,7 +1306,7 @@ CRITICAL: "update" can mean either "update the document" or "update software on 
 
 When in doubt between "confirm" and "other", prefer "confirm" - the conversational context is a document review, so the user's response is most likely directed at the document.`,
 		UserMessage: userMessage,
-		TimeoutSec:  10,
+		TimeoutSec:  30,
 		Tag:         "workflow-confirm",
 	})
 

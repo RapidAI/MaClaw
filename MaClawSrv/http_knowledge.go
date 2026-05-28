@@ -1,10 +1,13 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,10 +19,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/nwaples/rardecode/v2"
 )
 
 const defaultMaxFileSize int64 = 50 << 20 // 50MB
 const maxReadableKnowledgeSourcesPerScope = 5000
+const maxKnowledgeArchiveFiles = 2000
+const maxKnowledgeUploadFiles = 20
 
 // resolveKnowledgeMaxFileSize parses the file size limit from env at startup.
 func resolveKnowledgeMaxFileSize() int64 {
@@ -49,35 +55,18 @@ func (s *HTTPServer) handleKnowledgeImportFile(w http.ResponseWriter, r *http.Re
 		return
 	}
 	maxSize := knowledgeMaxUploadSize
-	r.Body = http.MaxBytesReader(w, r.Body, maxSize+1024) // +1KB for form overhead
+	r.Body = http.MaxBytesReader(w, r.Body, knowledgeMultipartRequestLimit(maxSize))
 
 	if err := r.ParseMultipartForm(maxSize); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file too large or invalid multipart form"})
 		return
 	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file field is required"})
-		return
-	}
-	defer file.Close()
-
-	// Save to temp directory
 	tmpDir := filepath.Join(s.svc.DataRoot(), "knowledge", "tmp")
-	_ = os.MkdirAll(tmpDir, 0o755)
-	tmpFile, err := os.CreateTemp(tmpDir, "import-*-"+header.Filename)
+	uploads, err := saveKnowledgeMultipartFiles(r, tmpDir, "import-*", maxSize, maxKnowledgeUploadFiles)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create temp file"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
-	tmpPath := tmpFile.Name()
-	if _, err := io.Copy(tmpFile, file); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save uploaded file"})
-		return
-	}
-	_ = tmpFile.Close()
 
 	title := strings.TrimSpace(r.FormValue("title"))
 	labels := strings.TrimSpace(r.FormValue("labels"))
@@ -85,15 +74,14 @@ func (s *HTTPServer) handleKnowledgeImportFile(w http.ResponseWriter, r *http.Re
 
 	// Create async job for import
 	job := s.jobs.createUserJob("knowledge_import_file", p, func(ctx context.Context) (any, error) {
-		defer os.Remove(tmpPath)
 		store := s.knowledgeMgr.Store()
-		result, err := store.ImportFiles(ctx, knowledge.DirectoryImportRequest{
-			RootPath:  filepath.Dir(tmpPath),
+		importReq := knowledge.DirectoryImportRequest{
 			OwnerID:   p.UserID,
 			TenantID:  p.TenantID,
 			TopicHint: topicHint,
 			Labels:    splitLabels(labels),
-		}, []string{tmpPath})
+		}
+		result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
 		if err != nil {
 			return nil, err
 		}
@@ -113,10 +101,192 @@ func (s *HTTPServer) handleKnowledgeImportFile(w http.ResponseWriter, r *http.Re
 	})
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"job_id":   job.ID,
-		"filename": filepath.Base(header.Filename),
-		"status":   string(job.Status),
+		"job_id":     job.ID,
+		"filename":   uploads[0].Name,
+		"filenames":  uploadedKnowledgeFileNames(uploads),
+		"file_count": len(uploads),
+		"status":     string(job.Status),
 	})
+}
+
+func isKnowledgeArchivePath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".zip" || ext == ".rar"
+}
+
+func archiveExtractLimit(uploadLimit int64) int64 {
+	limit := uploadLimit * 10
+	if limit <= 0 || limit > 500<<20 {
+		return 500 << 20
+	}
+	return limit
+}
+
+func knowledgeMultipartRequestLimit(fileLimit int64) int64 {
+	if fileLimit <= 0 {
+		fileLimit = defaultMaxFileSize
+	}
+	return fileLimit*maxKnowledgeUploadFiles + int64(maxKnowledgeUploadFiles*4096)
+}
+
+func extractKnowledgeArchive(ctx context.Context, archivePath, uploadName, parentDir string, maxBytes int64) (string, []string, error) {
+	extractDir, err := os.MkdirTemp(parentDir, "knowledge-archive-*")
+	if err != nil {
+		return "", nil, err
+	}
+	var paths []string
+	switch strings.ToLower(filepath.Ext(uploadName)) {
+	case ".zip":
+		paths, err = extractKnowledgeZip(ctx, archivePath, extractDir, maxBytes)
+	case ".rar":
+		paths, err = extractKnowledgeRAR(ctx, archivePath, extractDir, maxBytes)
+	default:
+		err = fmt.Errorf("unsupported archive type")
+	}
+	if err != nil {
+		_ = os.RemoveAll(extractDir)
+		return "", nil, err
+	}
+	if len(paths) == 0 {
+		_ = os.RemoveAll(extractDir)
+		return "", nil, fmt.Errorf("archive has no importable files")
+	}
+	return extractDir, paths, nil
+}
+
+func extractKnowledgeZip(ctx context.Context, archivePath, extractDir string, maxBytes int64) ([]string, error) {
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	paths := make([]string, 0, len(zr.File))
+	var total int64
+	for _, file := range zr.File {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		if file.UncompressedSize64 > uint64(maxBytes-total) {
+			return nil, fmt.Errorf("archive exceeds extracted size limit")
+		}
+		outPath, err := safeKnowledgeArchivePath(extractDir, file.Name)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return nil, err
+		}
+		rc, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		written, copyErr := writeKnowledgeArchiveFile(outPath, rc, maxBytes-total)
+		closeErr := rc.Close()
+		if copyErr != nil {
+			return nil, copyErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		total += written
+		paths = append(paths, outPath)
+		if len(paths) > maxKnowledgeArchiveFiles {
+			return nil, fmt.Errorf("archive exceeds file count limit")
+		}
+	}
+	return paths, nil
+}
+
+func extractKnowledgeRAR(ctx context.Context, archivePath, extractDir string, maxBytes int64) ([]string, error) {
+	rr, err := rardecode.OpenReader(archivePath, rardecode.MaxDictionarySize(128<<20))
+	if err != nil {
+		return nil, err
+	}
+	defer rr.Close()
+	var paths []string
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		header, err := rr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if header.IsDir {
+			continue
+		}
+		if header.Encrypted || header.HeaderEncrypted {
+			return nil, fmt.Errorf("encrypted rar archives are not supported")
+		}
+		if !header.UnKnownSize && header.UnPackedSize > maxBytes-total {
+			return nil, fmt.Errorf("archive exceeds extracted size limit")
+		}
+		outPath, err := safeKnowledgeArchivePath(extractDir, header.Name)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return nil, err
+		}
+		written, err := writeKnowledgeArchiveFile(outPath, rr, maxBytes-total)
+		if err != nil {
+			return nil, err
+		}
+		total += written
+		paths = append(paths, outPath)
+		if len(paths) > maxKnowledgeArchiveFiles {
+			return nil, fmt.Errorf("archive exceeds file count limit")
+		}
+	}
+	return paths, nil
+}
+
+func safeKnowledgeArchivePath(root, name string) (string, error) {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
+		return "", fmt.Errorf("archive contains unsafe path")
+	}
+	outPath := filepath.Join(root, clean)
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	outAbs, err := filepath.Abs(outPath)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(rootAbs, outAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("archive contains unsafe path")
+	}
+	return outAbs, nil
+}
+
+func writeKnowledgeArchiveFile(path string, src io.Reader, maxBytes int64) (int64, error) {
+	if maxBytes <= 0 {
+		return 0, fmt.Errorf("archive exceeds extracted size limit")
+	}
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	defer out.Close()
+	written, err := io.Copy(out, io.LimitReader(src, maxBytes+1))
+	if err != nil {
+		return written, err
+	}
+	if written > maxBytes {
+		return written, fmt.Errorf("archive exceeds extracted size limit")
+	}
+	return written, nil
 }
 
 func (s *HTTPServer) handleKnowledgeImportURL(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -161,6 +331,85 @@ func (s *HTTPServer) handleKnowledgeImportURL(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (s *HTTPServer) handleKnowledgeImportURLs(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var req struct {
+		URLs           []string `json:"urls"`
+		Text           string   `json:"text"`
+		MaxDepth       int      `json:"max_depth"`
+		SameDomainOnly *bool    `json:"same_domain_only"`
+		TopicHint      string   `json:"topic_hint"`
+		Labels         string   `json:"labels"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	urls := normalizeKnowledgeImportURLs(append(req.URLs, req.Text))
+	if len(urls) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "urls are required"})
+		return
+	}
+	if req.MaxDepth < 0 || req.MaxDepth > 5 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "max_depth must be between 0 and 5"})
+		return
+	}
+	sameDomainOnly := true
+	if req.SameDomainOnly != nil {
+		sameDomainOnly = *req.SameDomainOnly
+	}
+
+	job := s.jobs.createUserJob("knowledge_import_urls", p, func(ctx context.Context) (any, error) {
+		store := s.knowledgeMgr.Store()
+		labels := splitLabels(req.Labels)
+		if req.MaxDepth == 0 {
+			result := store.SaveURLs(ctx, knowledge.URLBatchSaveRequest{
+				URLs:      urls,
+				OwnerID:   p.UserID,
+				TenantID:  p.TenantID,
+				TopicHint: req.TopicHint,
+				Labels:    labels,
+			})
+			return result, nil
+		}
+		results := make([]knowledge.DeepCrawlResult, 0, len(urls))
+		for _, rawURL := range urls {
+			engine := knowledge.NewDeepCrawlEngine(store, nil)
+			result, err := engine.StartCrawl(ctx, knowledge.DeepCrawlRequest{
+				SeedURL:        rawURL,
+				MaxDepth:       req.MaxDepth,
+				SameDomainOnly: sameDomainOnly,
+				OwnerID:        p.UserID,
+				TenantID:       p.TenantID,
+				TopicHint:      req.TopicHint,
+				Labels:         labels,
+			})
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, err
+				}
+				results = append(results, knowledge.DeepCrawlResult{
+					Status: "failed",
+					Failed: 1,
+					Items:  []knowledge.DeepCrawlItem{{URL: rawURL, Status: "failed", Error: err.Error()}},
+				})
+				continue
+			}
+			results = append(results, result)
+		}
+		return map[string]any{"results": results}, nil
+	})
+
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"job_id":    job.ID,
+		"status":    string(job.Status),
+		"url_count": len(urls),
+		"max_depth": req.MaxDepth,
+	})
+}
+
 func (s *HTTPServer) handleKnowledgeImportText(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if !s.requireKnowledge(w) {
 		return
@@ -197,10 +446,161 @@ func (s *HTTPServer) handleKnowledgeImportText(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"status":    "completed",
 		"source_id": source.ID,
 		"title":     source.Title,
 		"kind":      string(source.Kind),
 	})
+}
+
+type uploadedKnowledgeFile struct {
+	Name string
+	Path string
+}
+
+func saveKnowledgeMultipartFiles(r *http.Request, tmpDir, patternPrefix string, maxFileSize int64, maxFiles int) ([]uploadedKnowledgeFile, error) {
+	if r.MultipartForm == nil || len(r.MultipartForm.File["file"]) == 0 {
+		return nil, fmt.Errorf("file field is required")
+	}
+	if maxFiles <= 0 {
+		maxFiles = maxKnowledgeUploadFiles
+	}
+	if len(r.MultipartForm.File["file"]) > maxFiles {
+		return nil, fmt.Errorf("too many files: maximum is %d", maxFiles)
+	}
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create temp directory")
+	}
+	uploads := make([]uploadedKnowledgeFile, 0, len(r.MultipartForm.File["file"]))
+	for _, header := range r.MultipartForm.File["file"] {
+		upload, err := saveKnowledgeMultipartFile(tmpDir, patternPrefix, header, maxFileSize)
+		if err != nil {
+			removeUploadedKnowledgeFiles(uploads)
+			return nil, err
+		}
+		uploads = append(uploads, upload)
+	}
+	return uploads, nil
+}
+
+func saveKnowledgeMultipartFile(tmpDir, patternPrefix string, header *multipart.FileHeader, maxFileSize int64) (uploadedKnowledgeFile, error) {
+	if header == nil {
+		return uploadedKnowledgeFile{}, fmt.Errorf("file field is required")
+	}
+	if maxFileSize <= 0 {
+		maxFileSize = defaultMaxFileSize
+	}
+	if header.Size > maxFileSize {
+		return uploadedKnowledgeFile{}, fmt.Errorf("file too large: maximum is %d bytes", maxFileSize)
+	}
+	file, err := header.Open()
+	if err != nil {
+		return uploadedKnowledgeFile{}, fmt.Errorf("file field is required")
+	}
+	defer file.Close()
+	uploadName := filepath.Base(header.Filename)
+	if uploadName == "." || uploadName == string(filepath.Separator) || strings.TrimSpace(uploadName) == "" {
+		uploadName = "upload"
+	}
+	tmpFile, err := os.CreateTemp(tmpDir, patternPrefix+"-"+uploadName)
+	if err != nil {
+		return uploadedKnowledgeFile{}, fmt.Errorf("failed to create temp file")
+	}
+	tmpPath := tmpFile.Name()
+	limited := &io.LimitedReader{R: file, N: maxFileSize + 1}
+	written, err := io.Copy(tmpFile, limited)
+	if err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return uploadedKnowledgeFile{}, fmt.Errorf("failed to save uploaded file")
+	}
+	if written > maxFileSize {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return uploadedKnowledgeFile{}, fmt.Errorf("file too large: maximum is %d bytes", maxFileSize)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return uploadedKnowledgeFile{}, fmt.Errorf("failed to save uploaded file")
+	}
+	return uploadedKnowledgeFile{Name: uploadName, Path: tmpPath}, nil
+}
+
+func importKnowledgeUploadedFiles(ctx context.Context, store *knowledge.SQLiteStore, uploads []uploadedKnowledgeFile, tmpDir string, maxSize int64, baseReq knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error) {
+	merged := knowledge.DirectoryImportResult{Status: "completed"}
+	for _, upload := range uploads {
+		defer os.Remove(upload.Path)
+		importReq := baseReq
+		importReq.RootPath = filepath.Dir(upload.Path)
+		importReq.Recursive = false
+		var result knowledge.DirectoryImportResult
+		var err error
+		if isKnowledgeArchivePath(upload.Name) {
+			extractDir, extracted, err := extractKnowledgeArchive(ctx, upload.Path, upload.Name, tmpDir, archiveExtractLimit(maxSize))
+			if err != nil {
+				return merged, err
+			}
+			defer os.RemoveAll(extractDir)
+			importReq.RootPath = extractDir
+			importReq.Recursive = true
+			result, err = store.ImportFiles(ctx, importReq, extracted)
+		} else {
+			result, err = store.ImportFiles(ctx, importReq, []string{upload.Path})
+		}
+		if err != nil {
+			return merged, err
+		}
+		merged = mergeKnowledgeDirectoryImportResults(merged, result)
+	}
+	return merged, nil
+}
+
+func mergeKnowledgeDirectoryImportResults(a, b knowledge.DirectoryImportResult) knowledge.DirectoryImportResult {
+	if a.RootPath == "" {
+		a.RootPath = b.RootPath
+	}
+	if a.BatchID == "" && len(a.Items) == 0 {
+		a.BatchID = b.BatchID
+	} else if b.BatchID != "" && a.BatchID != b.BatchID {
+		a.BatchID = ""
+	}
+	if b.Status != "" && b.Status != "completed" {
+		a.Status = b.Status
+	}
+	a.TotalFiles += b.TotalFiles
+	a.QueuedFiles += b.QueuedFiles
+	a.DuplicateFiles += b.DuplicateFiles
+	a.SkippedFiles += b.SkippedFiles
+	a.ImportedFiles += b.ImportedFiles
+	a.FailedFiles += b.FailedFiles
+	a.ProcessedFiles += b.ProcessedFiles
+	a.EstimatedBytes += b.EstimatedBytes
+	a.Warnings = append(a.Warnings, b.Warnings...)
+	a.Items = append(a.Items, b.Items...)
+	if b.CurrentFile != "" {
+		a.CurrentFile = b.CurrentFile
+	}
+	if b.CurrentStep != "" {
+		a.CurrentStep = b.CurrentStep
+		a.StepProgress = b.StepProgress
+		a.TotalSteps = b.TotalSteps
+		a.CurrentStepNum = b.CurrentStepNum
+	}
+	return a
+}
+
+func uploadedKnowledgeFileNames(uploads []uploadedKnowledgeFile) []string {
+	names := make([]string, 0, len(uploads))
+	for _, upload := range uploads {
+		names = append(names, upload.Name)
+	}
+	return names
+}
+
+func removeUploadedKnowledgeFiles(uploads []uploadedKnowledgeFile) {
+	for _, upload := range uploads {
+		_ = os.Remove(upload.Path)
+	}
 }
 
 func (s *HTTPServer) handleKnowledgeImportDirectory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -778,6 +1178,27 @@ func knowledgeStatKey(value string) string {
 	return value
 }
 
+func normalizeKnowledgeImportURLs(values []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == '\n' || r == '\r' || r == '\t' || r == ' ' || r == ',' || r == ';' || r == '，' || r == '；'
+		}) {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 func (s *HTTPServer) handleKnowledgeClearAll(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if !s.requireKnowledge(w) {
 		return
@@ -798,6 +1219,295 @@ func (s *HTTPServer) handleKnowledgeClearAll(w http.ResponseWriter, r *http.Requ
 }
 
 // --- Admin endpoints ---
+
+func (s *HTTPServer) handleAdminPublicKnowledgeLibraries(w http.ResponseWriter, r *http.Request) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	libraries, err := s.knowledgeMgr.Access().ListPublicLibraries(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	views, err := s.publicKnowledgeLibraryViews(r.Context(), libraries)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"libraries": views})
+}
+
+func (s *HTTPServer) publicKnowledgeLibraryViews(ctx context.Context, libraries []publicKnowledgeLibrary) ([]publicKnowledgeLibraryView, error) {
+	views := make([]publicKnowledgeLibraryView, 0, len(libraries))
+	store := s.knowledgeMgr.Store()
+	for _, library := range libraries {
+		sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: maxReadableKnowledgeSourcesPerScope})
+		if err != nil {
+			return nil, err
+		}
+		view := publicKnowledgeLibraryView{publicKnowledgeLibrary: library, SourceCount: len(sources)}
+		for _, source := range sources {
+			if source.Status == knowledge.StatusDistilled || source.Status == knowledge.StatusStale {
+				view.DistilledSources++
+			}
+			updated := source.UpdatedAt
+			if updated.IsZero() {
+				updated = source.CreatedAt
+			}
+			if !updated.IsZero() && (view.LatestSourceAt == nil || updated.After(*view.LatestSourceAt)) {
+				copyTime := updated
+				view.LatestSourceAt = &copyTime
+			}
+		}
+		views = append(views, view)
+	}
+	return views, nil
+}
+
+func (s *HTTPServer) handleAdminPublicKnowledgeSources(w http.ResponseWriter, r *http.Request) {
+	if !s.requireKnowledge(w) {
+		return
+	}
+	library, ok := s.publicKnowledgeLibraryForRequest(w, r)
+	if !ok {
+		return
+	}
+	sources, err := s.knowledgeMgr.Store().ListSources(r.Context(), knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: maxReadableKnowledgeSourcesPerScope})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"library": library, "sources": sanitizeKnowledgeSourcesForAPI(s.svc.DataRoot(), sources), "total": len(sources)})
+}
+
+func (s *HTTPServer) handleAdminPublicKnowledgeCreate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	if !s.requireKnowledge(w) {
+		return
+	}
+	var req struct {
+		TenantID string `json:"tenant_id"`
+		Name     string `json:"name"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if !s.requireExistingKnowledgeTenant(w, r, req.TenantID) {
+		return
+	}
+	library, created, err := s.knowledgeMgr.Access().EnsurePublicLibrary(r.Context(), req.TenantID, req.Name)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if created {
+		s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_library_created", library, map[string]string{})
+		writeJSON(w, http.StatusCreated, library)
+		return
+	}
+	writeJSON(w, http.StatusOK, library)
+}
+
+func (s *HTTPServer) handleAdminPublicKnowledgeDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	if !s.requireKnowledge(w) {
+		return
+	}
+	library, ok, err := s.knowledgeMgr.Access().GetPublicLibrary(r.Context(), r.PathValue("libraryId"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "library not found"})
+		return
+	}
+	deleted, err := s.knowledgeMgr.Store().DeleteSourcesByFilter(r.Context(), knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	library, ok, removedScopes, err := s.knowledgeMgr.Access().DeletePublicLibrary(r.Context(), library.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "library not found"})
+		return
+	}
+	s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_library_deleted", library, map[string]string{"deleted_sources": strconv.Itoa(deleted), "removed_scopes": strconv.Itoa(removedScopes)})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "library": library, "deleted_sources": deleted, "removed_scopes": removedScopes})
+}
+
+func (s *HTTPServer) recordPublicKnowledgeAudit(r *http.Request, action string, library publicKnowledgeLibrary, extra map[string]string) {
+	metadata := map[string]string{
+		"tenant_id":    library.TenantID,
+		"owner_id":     library.OwnerID,
+		"library_id":   library.ID,
+		"library_name": library.Name,
+		"remote_ip":    requestClientIP(r),
+	}
+	for key, value := range extra {
+		metadata[key] = value
+	}
+	_ = s.recordAdminAudit(r.Context(), action, "public_knowledge_library", library.ID, metadata)
+}
+
+func (s *HTTPServer) requireExistingKnowledgeTenant(w http.ResponseWriter, r *http.Request, tenantID string) bool {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tenant_id is required"})
+		return false
+	}
+	if _, err := s.svc.GetTenant(r.Context(), tenantID); err != nil {
+		if errors.Is(err, agentservice.ErrTenantNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+			return false
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return false
+	}
+	return true
+}
+
+func (s *HTTPServer) publicKnowledgeLibraryForRequest(w http.ResponseWriter, r *http.Request) (publicKnowledgeLibrary, bool) {
+	library, ok, err := s.knowledgeMgr.Access().GetPublicLibrary(r.Context(), r.PathValue("libraryId"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return publicKnowledgeLibrary{}, false
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "library not found"})
+		return publicKnowledgeLibrary{}, false
+	}
+	return library, true
+}
+
+func (s *HTTPServer) handleAdminPublicKnowledgeImportText(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) || !s.requireKnowledge(w) {
+		return
+	}
+	library, ok := s.publicKnowledgeLibraryForRequest(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Text      string `json:"text"`
+		Title     string `json:"title"`
+		TopicHint string `json:"topic_hint"`
+		Labels    string `json:"labels"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+	source, err := s.knowledgeMgr.Store().SaveText(r.Context(), knowledge.TextSaveRequest{Text: req.Text, Title: req.Title, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: splitLabels(req.Labels)})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_text", library, map[string]string{"source_id": source.ID, "kind": source.Kind})
+	writeJSON(w, http.StatusCreated, map[string]any{"status": "completed", "library": library, "source_id": source.ID, "title": source.Title, "kind": source.Kind})
+}
+
+func (s *HTTPServer) handleAdminPublicKnowledgeImportURLs(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) || !s.requireKnowledge(w) {
+		return
+	}
+	library, ok := s.publicKnowledgeLibraryForRequest(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		URLs           []string `json:"urls"`
+		Text           string   `json:"text"`
+		MaxDepth       int      `json:"max_depth"`
+		SameDomainOnly *bool    `json:"same_domain_only"`
+		TopicHint      string   `json:"topic_hint"`
+		Labels         string   `json:"labels"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	urls := normalizeKnowledgeImportURLs(append(req.URLs, req.Text))
+	if len(urls) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "urls are required"})
+		return
+	}
+	if req.MaxDepth < 0 || req.MaxDepth > 5 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "max_depth must be between 0 and 5"})
+		return
+	}
+	sameDomainOnly := true
+	if req.SameDomainOnly != nil {
+		sameDomainOnly = *req.SameDomainOnly
+	}
+	job := s.jobs.createUserJob("public_knowledge_import_urls", agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}, func(ctx context.Context) (any, error) {
+		store := s.knowledgeMgr.Store()
+		labels := splitLabels(req.Labels)
+		if req.MaxDepth == 0 {
+			return store.SaveURLs(ctx, knowledge.URLBatchSaveRequest{URLs: urls, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: labels}), nil
+		}
+		results := make([]knowledge.DeepCrawlResult, 0, len(urls))
+		for _, rawURL := range urls {
+			result, err := knowledge.NewDeepCrawlEngine(store, nil).StartCrawl(ctx, knowledge.DeepCrawlRequest{SeedURL: rawURL, MaxDepth: req.MaxDepth, SameDomainOnly: sameDomainOnly, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: labels})
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, err
+				}
+				results = append(results, knowledge.DeepCrawlResult{Status: "failed", Failed: 1, Items: []knowledge.DeepCrawlItem{{URL: rawURL, Status: "failed", Error: err.Error()}}})
+				continue
+			}
+			results = append(results, result)
+		}
+		return map[string]any{"results": results}, nil
+	})
+	s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_urls", library, map[string]string{"job_id": job.ID, "url_count": strconv.Itoa(len(urls)), "max_depth": strconv.Itoa(req.MaxDepth)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "status": string(job.Status), "library": library, "url_count": len(urls), "max_depth": req.MaxDepth})
+}
+
+func (s *HTTPServer) handleAdminPublicKnowledgeImportFile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) || !s.requireKnowledge(w) {
+		return
+	}
+	library, ok := s.publicKnowledgeLibraryForRequest(w, r)
+	if !ok {
+		return
+	}
+	maxSize := knowledgeMaxUploadSize
+	r.Body = http.MaxBytesReader(w, r.Body, knowledgeMultipartRequestLimit(maxSize))
+	if err := r.ParseMultipartForm(maxSize); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file too large or invalid multipart form"})
+		return
+	}
+	tmpDir := filepath.Join(s.svc.DataRoot(), "knowledge", "tmp")
+	uploads, err := saveKnowledgeMultipartFiles(r, tmpDir, "public-import-*", maxSize, maxKnowledgeUploadFiles)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
+	}
+	topicHint := strings.TrimSpace(r.FormValue("topic_hint"))
+	labels := strings.TrimSpace(r.FormValue("labels"))
+	job := s.jobs.createUserJob("public_knowledge_import_file", agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}, func(ctx context.Context) (any, error) {
+		store := s.knowledgeMgr.Store()
+		importReq := knowledge.DirectoryImportRequest{OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: topicHint, Labels: splitLabels(labels)}
+		result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
+		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), err
+	})
+	s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_file", library, map[string]string{"job_id": job.ID, "filename": uploads[0].Name, "file_count": strconv.Itoa(len(uploads))})
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "status": string(job.Status), "library": library, "filename": uploads[0].Name, "filenames": uploadedKnowledgeFileNames(uploads), "file_count": len(uploads)})
+}
 
 func (s *HTTPServer) handleAdminKnowledgeStats(w http.ResponseWriter, r *http.Request) {
 	if !s.requireKnowledge(w) {

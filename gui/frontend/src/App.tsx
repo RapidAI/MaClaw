@@ -53,7 +53,7 @@ import { ProxySettingsPanel } from './components/settings/ProxySettingsPanel';
 import { IMSettingsPanel } from './components/settings/IMSettingsPanel';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
-import { countActiveSshBackgroundTasks, isActiveManageableBackgroundStatus } from './components/layout/backgroundTaskCount';
+import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
 import { FavoriteEmployeeSettingsPanel } from './components/settings/FavoriteEmployeeSettingsPanel';
 import { MAX_FAVORITE_EMPLOYEES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { VirtualEmployeeSettingsPanel } from './components/settings/VirtualEmployeeSettingsPanel';
@@ -387,8 +387,8 @@ function App() {
         if (ve) {
             setPendingVEOpen(ve);
         } else {
-            // VE not in list yet (still loading or removed): create a minimal entry to open the tab
-            setPendingVEOpen({ id: veId, name: veId.slice(0, 8), skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' });
+            // VE not in list yet (still loading or removed): create a minimal entry and let Hub/runtime decide reachability.
+            setPendingVEOpen({ id: veId, name: veId.slice(0, 8), skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' });
         }
     }, [veList]);
 
@@ -1702,7 +1702,11 @@ function App() {
             try {
                 const loops = await ListBackgroundLoops();
                 if (!cancelled) setSidebarBgLoops(Array.isArray(loops) ? loops : []);
-            } catch { if (!cancelled) setSidebarBgLoops([]); }
+            } catch {
+                if (!cancelled) {
+                    setSidebarBgLoops([]);
+                }
+            }
         };
         refresh();
         const cleanup = EventsOn("background-loops-changed", refresh);
@@ -1714,17 +1718,25 @@ function App() {
         };
     }, []);
 
+    const activeBackgroundLoopCount = useMemo(() => countActiveBackgroundLoops(sidebarBgLoops), [sidebarBgLoops]);
+
     // Count running (non-terminal) sessions + background loops for the sidebar badge
     const runningTaskCount = useMemo(() => {
         const remoteCount = remoteSessions.filter((session) => {
             const status = String(session.status || session.summary?.status || "").toLowerCase();
             return !TERMINAL_SESSION_STATUSES.has(status);
         }).length;
-        const bgCount = sidebarBgLoops.filter((loop: any) => isActiveManageableBackgroundStatus(loop?.status ?? loop?.Status)).length;
-        return remoteCount + bgCount;
-    }, [remoteSessions, sidebarBgLoops]);
+        return remoteCount + activeBackgroundLoopCount;
+    }, [remoteSessions, activeBackgroundLoopCount]);
 
-    const sshBackgroundTaskCount = useMemo(() => countActiveSshBackgroundTasks(sidebarBgLoops), [sidebarBgLoops]);
+    const backgroundTaskCount = useMemo(() => {
+        const aiSessionCount = remoteSessions.filter((session) => {
+            if ((session.launch_source || "") !== "ai") return false;
+            const status = String(session.status || session.summary?.status || "").toLowerCase();
+            return !TERMINAL_SESSION_STATUSES.has(status);
+        }).length;
+        return activeBackgroundLoopCount + aiSessionCount;
+    }, [remoteSessions, activeBackgroundLoopCount]);
 
     // Show onboarding wizard if remote registration is not done (checked once on startup).
     const onboardingRegCheckDone = useRef(false);
@@ -2422,7 +2434,7 @@ ${instruction}`;
                 weixinStatus={weixinStatus}
                 lansengerStatus={lansengerStatus}
                 runningTaskCount={runningTaskCount}
-                sshBackgroundTaskCount={sshBackgroundTaskCount}
+                backgroundTaskCount={backgroundTaskCount}
                 t={t}
                 gossipAllowed={gossipAllowed}
                 config={config}
@@ -2752,7 +2764,7 @@ ${instruction}`;
                                         <FavoriteEmployeeSettingsPanel
                                             favoriteEmployeeIds={favoriteEmployeeIds}
                                             veList={veList}
-                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' })}
+                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
                                             onRemove={handleRemoveFavoriteEmployee}
                                             onReorder={handleReorderFavorites}
                                             lang={lang}
@@ -2808,6 +2820,7 @@ ${instruction}`;
                             appVersion={APP_VERSION}
                             buildNumber={buildNumber}
                             thanksContent={thanksContent}
+                            config={config}
                             t={t}
                             onOpenWebsite={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
                             onCheckUpdate={() => {
@@ -3033,39 +3046,16 @@ ${instruction}`;
                                             )}
                                         </select>
                                         <button
+                                            type="button"
                                             onClick={() => switchTool('projects')}
                                             className="coding-launch-manage"
+                                            title={t("projectManagement")}
+                                            aria-label={t("projectManagement")}
                                         >
                                             ...
                                         </button>
                                     </div>
                                 </div>
-                                {/* Handoff: local to remote icon button */}
-                                {!launchRemoteEnabled && isRemoteCapableActiveTool && (
-                                    <button
-                                        type="button"
-                                        title={lang === 'zh-Hans' ? '切换到远程' : lang === 'zh-Hant' ? '切換到遠端' : 'Switch to Remote'}
-                                        className="coding-launch-handoff"
-                                        onClick={async () => {
-                                            if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
-                                                openRemoteActivationModal(activeTool);
-                                                return;
-                                            }
-                                            setStatus(lang === 'zh-Hans' ? '正在切换到远程...' : lang === 'zh-Hant' ? '正在切換到遠端...' : 'Switching to remote...');
-                                            setLaunchingTool(activeTool);
-                                            try {
-                                                await setLaunchMode('remote');
-                                                await quickStartRemoteSession(activeTool as any, "handoff");
-                                                setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
-                                            } catch (err) {
-                                                setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
-                                                setLaunchingTool("");
-                                            }
-                                        }}
-                                    >
-                                        ↗
-                                    </button>
-                                )}
                                 <button
                                     className="btn-launch coding-launch-button"
                                     disabled={onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool || launchingTool === activeTool}
@@ -3826,7 +3816,3 @@ ${instruction}`;
 }
 
 export default App;
-
-
-
-

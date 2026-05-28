@@ -60,6 +60,28 @@ func TestIntentUnderstanding_StartAndHandleInput(t *testing.T) {
 	}
 }
 
+func TestIntentUnderstanding_UsesThirtySecondLLMTimeout(t *testing.T) {
+	llm := &MockLLMCaller{
+		Response: `{"intent":{"category":"coding","summary":"test","confidence":0.7,"ready":false},"reply":"ok","ready":false}`,
+	}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, NewWorkflowRegistry())
+
+	if _, err := mgr.Start("u-timeout", "build an app"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if llm.LastTimeout != 30*time.Second {
+		t.Fatalf("Start timeout = %s, want 30s", llm.LastTimeout)
+	}
+
+	llm.LastTimeout = 0
+	if _, _, _, _, err := mgr.HandleInput("u-timeout", "continue"); err != nil {
+		t.Fatalf("HandleInput failed: %v", err)
+	}
+	if llm.LastTimeout != 30*time.Second {
+		t.Fatalf("HandleInput timeout = %s, want 30s", llm.LastTimeout)
+	}
+}
+
 func TestIntentUnderstanding_CancelIntentClassification(t *testing.T) {
 	llm := &MockLLMCaller{
 		Response: `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":false}`,

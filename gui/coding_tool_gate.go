@@ -204,9 +204,9 @@ func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, g
 	}
 
 	// Fallback: GIC is nil (test code or edge case without App).
-	// Try UIC directly via the package-level variable.
+	// Try UIC directly via the package-level pointer.
 	if uic == nil {
-		uic = unifiedClassifier
+		uic = unifiedClassifierPtr.Load()
 	}
 	if uic != nil {
 		uicResult := uic.Classify(intent.MessageContext{Text: userText})

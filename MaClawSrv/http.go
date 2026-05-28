@@ -236,6 +236,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/runtime/profiles/{profileName}", s.withAdmin(s.handleAdminRuntimeProfile))
 	s.mux.HandleFunc("GET /api/v1/admin/scheduler/status", s.withAdmin(s.handleAdminSchedulerStatus))
 	s.mux.HandleFunc("GET /api/v1/admin/jobs", s.withAdmin(s.handleAdminJobs))
+	s.mux.HandleFunc("GET /api/v1/admin/jobs/{jobId}", s.withAdmin(s.handleAdminJob))
 	s.mux.HandleFunc("POST /api/v1/admin/jobs/{jobId}/cancel", s.withAdmin(s.handleAdminCancelJob))
 	s.mux.HandleFunc("GET /api/v1/admin/logs/sources", s.withAdmin(s.handleAdminLogSources))
 	s.mux.HandleFunc("GET /api/v1/admin/logs/errors/recent", s.withAdmin(s.handleAdminRecentLogErrors))
@@ -279,7 +280,9 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
 	s.mux.HandleFunc("GET /api/platform/runtime/report", s.withPlatformAdmin(s.handlePlatformRuntimeReport))
 	s.mux.HandleFunc("POST /api/platform/virtual-employees", s.withPlatformAdmin(s.handlePlatformCreateVirtualEmployee))
+	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/config", s.withPlatformAdmin(s.handlePlatformUpdateVirtualEmployeeConfig))
 	s.mux.HandleFunc("DELETE /api/platform/virtual-employees/{employeeId}", s.withPlatformAdmin(s.handlePlatformDeleteVirtualEmployee))
+	s.mux.HandleFunc("POST /api/runtime/virtual-employees/{employeeId}/discussion-messages", s.withPlatformAdmin(s.handleRuntimeVirtualEmployeeDiscussionMessage))
 	s.mux.HandleFunc("POST /api/platform/source-users/runtime-status", s.withPlatformAdmin(s.handlePlatformSourceUsersRuntimeStatus))
 	s.mux.HandleFunc("GET /api/platform/source-users/{sourceUserId}/runtime-status", s.withPlatformAdmin(s.handlePlatformSourceUserRuntimeStatus))
 	s.mux.HandleFunc("GET /api/platform/source-users/{sourceUserId}/assistant-instances", s.withPlatformAdmin(s.handlePlatformSourceUserAssistantInstances))
@@ -339,6 +342,8 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/config/test", s.withPrincipal(s.handleTestConfig))
 	s.mux.HandleFunc("GET /api/v1/usage/summary", s.withPrincipal(s.handleGetUsageSummary))
 	s.mux.HandleFunc("GET /api/v1/mcp/servers", s.withPrincipal(s.handleListMCPServers))
+	s.mux.HandleFunc("GET /api/v1/mcp/market", s.withPrincipal(s.handleSearchMCPMarket))
+	s.mux.HandleFunc("POST /api/v1/mcp/market/install", s.withPrincipal(s.handleInstallMCPMarket))
 	s.mux.HandleFunc("POST /api/v1/mcp/servers", s.withPrincipal(s.handleCreateMCPServer))
 	s.mux.HandleFunc("GET /api/v1/mcp/servers/{serverId}", s.withPrincipal(s.handleGetMCPServer))
 	s.mux.HandleFunc("PATCH /api/v1/mcp/servers/{serverId}", s.withPrincipal(s.handleUpdateMCPServer))
@@ -399,6 +404,7 @@ func (s *HTTPServer) routes() {
 	// Knowledge base endpoints
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/file", s.withPrincipal(s.handleKnowledgeImportFile))
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/url", s.withPrincipal(s.handleKnowledgeImportURL))
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/urls", s.withPrincipal(s.handleKnowledgeImportURLs))
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/text", s.withPrincipal(s.handleKnowledgeImportText))
 	s.mux.HandleFunc("POST /api/v1/knowledge/import/directory", s.withPrincipal(s.handleKnowledgeImportDirectory))
 	s.mux.HandleFunc("GET /api/v1/knowledge/import/jobs/{jobId}", s.withPrincipal(s.handleKnowledgeImportJobStatus))
@@ -414,6 +420,13 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/knowledge/stats", s.withPrincipal(s.handleKnowledgeStats))
 	s.mux.HandleFunc("GET /api/v1/knowledge/access", s.withPrincipal(s.handleKnowledgeAccessGetMe))
 	s.mux.HandleFunc("DELETE /api/v1/knowledge", s.withPrincipal(s.handleKnowledgeClearAll))
+	s.mux.HandleFunc("GET /api/v1/admin/public-knowledge-libraries", s.withAdmin(s.handleAdminPublicKnowledgeLibraries))
+	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries", s.withAdmin(s.handleAdminPublicKnowledgeCreate))
+	s.mux.HandleFunc("DELETE /api/v1/admin/public-knowledge-libraries/{libraryId}", s.withAdmin(s.handleAdminPublicKnowledgeDelete))
+	s.mux.HandleFunc("GET /api/v1/admin/public-knowledge-libraries/{libraryId}/sources", s.withAdmin(s.handleAdminPublicKnowledgeSources))
+	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/text", s.withAdmin(s.handleAdminPublicKnowledgeImportText))
+	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/file", s.withAdmin(s.handleAdminPublicKnowledgeImportFile))
+	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/urls", s.withAdmin(s.handleAdminPublicKnowledgeImportURLs))
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge/stats", s.withAdmin(s.handleAdminKnowledgeStats))
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge/sources", s.withAdmin(s.handleAdminKnowledgeListSources))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/knowledge", s.withAdmin(s.handleAdminKnowledgeClearTenant))
@@ -422,6 +435,8 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessGetUser))
 	s.mux.HandleFunc("PUT /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessSetUser))
 	s.mux.HandleFunc("DELETE /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessDeleteUser))
+	s.mux.HandleFunc("POST /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", s.withAdmin(s.handleAdminKnowledgeAccessAttachPublicLibrary))
+	s.mux.HandleFunc("DELETE /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", s.withAdmin(s.handleAdminKnowledgeAccessDetachPublicLibrary))
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/resolve", s.withAdmin(s.handleAdminKnowledgeAccessResolveUser))
 
 	// Skill source control admin API (global / tenant / user).
@@ -1040,8 +1055,10 @@ func riskEventFromAudit(dataRoot string, event agentservice.AuditEvent) (adminRi
 		severity, kind, summary = "high", "sandbox_install_changed", "Sandbox installation was requested or completed from Admin Web."
 	case "admin.service_config_draft_updated", "admin.service_config_draft_cleared", "admin.service_config_export_plan":
 		severity, kind, summary = "medium", "service_config_changed", "Service configuration draft or export plan was changed."
-	case "admin.knowledge_access_cross_tenant_updated", "admin.knowledge_access_user_updated", "admin.knowledge_access_user_deleted", "admin.knowledge_tenant_cleared":
+	case "admin.knowledge_access_cross_tenant_updated", "admin.knowledge_access_user_updated", "admin.knowledge_access_user_deleted", "admin.knowledge_access_public_library_attached", "admin.knowledge_access_public_library_detached", "admin.knowledge_tenant_cleared":
 		severity, kind, summary = "medium", "knowledge_policy_changed", "Knowledge access policy or tenant knowledge data was changed."
+	case "admin.public_knowledge_library_created", "admin.public_knowledge_library_deleted", "admin.public_knowledge_import_text", "admin.public_knowledge_import_urls", "admin.public_knowledge_import_file":
+		severity, kind, summary = "medium", "public_knowledge_changed", "A public knowledge library or its imported sources were changed."
 	case "admin.skill_sources_global_updated", "admin.skill_sources_tenant_updated", "admin.skill_sources_tenant_deleted", "admin.skill_sources_user_updated", "admin.skill_sources_user_deleted":
 		severity, kind, summary = "medium", "skill_source_policy_changed", "Skill source policy was changed."
 	case "admin.support_bundle_downloaded", "admin.sandbox_support_bundle_downloaded":
@@ -2515,6 +2532,26 @@ func (s *HTTPServer) handleListMCPServers(w http.ResponseWriter, r *http.Request
 	}
 	items, meta := paginateMCPServers(sanitizeMCPServerViewsForAPI(s.svc.DataRoot(), out), page)
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
+}
+func (s *HTTPServer) handleSearchMCPMarket(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.SearchMCPMarket(r.Context(), p, strings.TrimSpace(r.URL.Query().Get("q")))
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+func (s *HTTPServer) handleInstallMCPMarket(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.MCPCapabilitySummary
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.InstallMCPMarketCapability(r.Context(), p, in)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusCreated, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleCreateMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.MCPServerCreateInput

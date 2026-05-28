@@ -277,17 +277,22 @@ func TestBuildLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 		MaclawLLMCurrentProvider: "Corp Gateway",
 		MaclawLLMUrl:             "https://llm.example/v1",
 		MaclawLLMModel:           "cloud-model",
+		MaclawLLMTimeoutSec:      300,
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
-			Name:     "Corp Gateway",
-			URL:      "https://llm.example/v1",
-			Key:      "sk-provider",
-			Model:    "cloud-model",
-			AuthType: "apikey",
+			Name:       "Corp Gateway",
+			URL:        "https://llm.example/v1",
+			Key:        "sk-provider",
+			Model:      "cloud-model",
+			AuthType:   "apikey",
+			TimeoutSec: 510,
 		}},
 	}
 	llm := buildLLMConfigFromAppConfig(cfg)
 	if llm.Key != "sk-provider" {
 		t.Fatalf("LLM key = %q, want provider key fallback", llm.Key)
+	}
+	if llm.TimeoutSec != 510 {
+		t.Fatalf("LLM timeout = %d, want current provider timeout", llm.TimeoutSec)
 	}
 	if !tuiConfigLLMReady(cfg) {
 		t.Fatal("provider key fallback should make the LLM ready")
@@ -1507,6 +1512,104 @@ func TestMCPAddResultRefreshesConfigBackedViews(t *testing.T) {
 	got.root.Tools.FocusMCP()
 	if view := got.root.Tools.View(); !strings.Contains(view, "filesystem") {
 		t.Fatalf("Tools MCP view should show reloaded server:\n%s", view)
+	}
+}
+
+func TestMCPAddHonorsSecurityPolicy(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	store := commands.NewFileConfigStore(dataDir)
+	cfg := corelib.AppConfig{Language: "en", HubSecurityCentralized: true, SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: true, ImageOutboundEnabled: true}
+	if err := store.SaveConfig(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	m := &tuiModel{app: &TUIApp{appConfig: cfg}, root: views.NewRootModel("en")}
+
+	localMsg := m.addLocalMCP(corelib.LocalMCPServerEntry{Name: "local", Command: "node", Args: []string{"server.js"}})()
+	localResult, ok := localMsg.(views.ToolOperationResultMsg)
+	if !ok {
+		t.Fatalf("local message = %T, want ToolOperationResultMsg", localMsg)
+	}
+	if localResult.Success || !strings.Contains(localResult.Message, "sandbox") {
+		t.Fatalf("local result = %#v, want sandbox rejection", localResult)
+	}
+
+	remoteMsg := m.addRemoteMCP(corelib.MCPServerEntry{Name: "remote", EndpointURL: "https://mcp.example/rpc"})()
+	remoteResult, ok := remoteMsg.(views.ToolOperationResultMsg)
+	if !ok {
+		t.Fatalf("remote message = %T, want ToolOperationResultMsg", remoteMsg)
+	}
+	if remoteResult.Success || !strings.Contains(remoteResult.Message, "network") {
+		t.Fatalf("remote result = %#v, want network rejection", remoteResult)
+	}
+
+	loaded, err := store.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.LocalMCPServers) != 0 || len(loaded.MCPServers) != 0 {
+		t.Fatalf("blocked MCP entries persisted: local=%d remote=%d", len(loaded.LocalMCPServers), len(loaded.MCPServers))
+	}
+}
+
+func TestConfigSaveRejectsHubManagedSecurityKey(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	store := commands.NewFileConfigStore(dataDir)
+	cfg := corelib.AppConfig{Language: "en", HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: true, ImageOutboundEnabled: true}
+	if err := store.SaveConfig(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	m := &tuiModel{app: &TUIApp{appConfig: cfg}, root: views.NewRootModel("en")}
+
+	msg := m.saveConfig(views.ConfigSaveMsg{Key: "security_policy_mode", Value: "developer"})()
+	failed, ok := msg.(views.ConfigSaveFailedMsg)
+	if !ok {
+		t.Fatalf("message = %T, want ConfigSaveFailedMsg", msg)
+	}
+	if !strings.Contains(failed.Error, "Hub") {
+		t.Fatalf("failure = %#v, want Hub-managed reason", failed)
+	}
+	loaded, err := store.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.SecurityPolicyMode != "strict" || loaded.SandboxMode != "os" || loaded.NetworkLevel != "none" {
+		t.Fatalf("managed security config changed: %#v", loaded)
+	}
+}
+
+func TestConfigSaveSnapshotPreservesHubManagedSecurity(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	store := commands.NewFileConfigStore(dataDir)
+	current := corelib.AppConfig{Language: "zh", HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: false, ImageOutboundEnabled: false}
+	if err := store.SaveConfig(current); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	m := &tuiModel{app: &TUIApp{appConfig: current}, root: views.NewRootModel("en")}
+	snapshot := current
+	snapshot.Language = "en"
+	snapshot.HubSecurityCentralized = false
+	snapshot.SecurityPolicyMode = "developer"
+	snapshot.SandboxMode = "none"
+	snapshot.NetworkLevel = "full"
+	snapshot.FileOutboundEnabled = true
+	snapshot.ImageOutboundEnabled = true
+
+	msg := m.saveConfig(views.ConfigSaveMsg{Key: "language", Value: "en", Config: snapshot, HasConfig: true})()
+	if _, ok := msg.(views.ConfigSavedMsg); !ok {
+		t.Fatalf("message = %T, want ConfigSavedMsg", msg)
+	}
+	loaded, err := store.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.Language != "en" {
+		t.Fatalf("language = %q, want en", loaded.Language)
+	}
+	if !loaded.HubSecurityCentralized || loaded.SecurityPolicyMode != "strict" || loaded.SandboxMode != "os" || loaded.NetworkLevel != "none" || loaded.FileOutboundEnabled || loaded.ImageOutboundEnabled {
+		t.Fatalf("managed security config was overwritten by snapshot: %#v", loaded)
 	}
 }
 

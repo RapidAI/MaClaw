@@ -46,13 +46,13 @@ func (a *App) initEarlyClassifier() {
 		// Create UIC with noop embedder; no local keyword fallback is enabled.
 		uic := intent.New(intent.Config{
 			Embedder:   embedding.NoopEmbedder{},
-			LLMTimeout: 15 * time.Second,
+			LLMTimeout: 30 * time.Second,
 		})
 		a.unifiedClassifier = uic
 
 		// Create GIC with nil embedder; it delegates to UIC or LLM when available.
 		gic := NewGateIntentClassifier(nil)
-		gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
+		gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 35 * time.Second})
 		gic.SetUnifiedClassifier(uic)
 		a.gateIntentClassifier = gic
 
@@ -618,8 +618,8 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 		messages := []interface{}{
 			map[string]string{"role": "user", "content": prompt},
 		}
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 5*time.Second)
+		client := &http.Client{Timeout: 35 * time.Second}
+		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 30*time.Second)
 		if err != nil {
 			return "", err
 		}
@@ -631,14 +631,8 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 // app's current LLM config to make a classification request with system + user
 // messages. Used by the UnifiedIntentClassifier's Layer 3.
 //
-// Timeout: 5s. Reasoning models (deepseek-reasoner) have a thinking phase that
-// typically takes 3-8s before producing any content, making them unsuitable for
-// the tree channel's latency budget. When the tree channel times out, UIC
-// gracefully degrades to embedding-only mode (already implemented in
-// classifyWithFusion). This is acceptable because:
-//   - Embedding channel alone provides sufficient accuracy for gate decisions
-//   - Tree channel's main value (WorkflowType) has a definition-based fallback
-//   - 5s is enough for fast models (deepseek-chat, glm-4-flash) to respond
+// Timeout: 30s. Classification is on the workflow control path, so remote LLM
+// routing jitter should not force a degraded semantic decision.
 func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 	return func(systemPrompt, userText string) (string, error) {
 		cfg := a.GetMaclawLLMConfig()
@@ -649,11 +643,8 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 			map[string]string{"role": "system", "content": systemPrompt},
 			map[string]string{"role": "user", "content": userText},
 		}
-		// 5s timeout: reasoning models will timeout here (their thinking phase
-		// alone takes 3-8s), causing graceful degradation to embedding-only.
-		// Fast models (deepseek-chat, glm-4-flash) respond in 1-3s.
-		client := &http.Client{Timeout: 8 * time.Second}
-		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 5*time.Second)
+		client := &http.Client{Timeout: 35 * time.Second}
+		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 30*time.Second)
 		if err != nil {
 			return "", err
 		}

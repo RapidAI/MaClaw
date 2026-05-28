@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,18 +24,95 @@ func (s *SkillStore) SetSyncRecorder(rec SyncRecorder) {
 	if s == nil {
 		return
 	}
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
 	s.sync = rec
 }
 
 func (s *SkillStore) emitSync(ctx context.Context) {
-	if s == nil || s.sync == nil {
+	if s == nil || s.currentSyncRecorder() == nil {
 		return
 	}
-	snap, err := s.DumpSnapshot()
-	if err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
+	if !s.beginSyncEmission() {
 		return
 	}
-	s.sync.AppendSkillHubSnapshot(ctx, snap)
+	go s.runSyncEmission(ctx)
+}
+
+func (s *SkillStore) currentSyncRecorder() SyncRecorder {
+	if s == nil {
+		return nil
+	}
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	return s.sync
+}
+
+func (s *SkillStore) beginSyncEmission() bool {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	if s.syncRunning {
+		s.syncPending = true
+		return false
+	}
+	s.syncRunning = true
+	return true
+}
+
+func (s *SkillStore) finishOrContinueSyncEmission() bool {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	if s.syncPending {
+		s.syncPending = false
+		return true
+	}
+	s.syncRunning = false
+	return false
+}
+
+func (s *SkillStore) runSyncEmission(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[hubcenter][skillhub] sync emission recovered: %v", r)
+			s.recoverSyncEmission(ctx)
+		}
+	}()
+	for {
+		snap, err := s.DumpSnapshot()
+		if err != nil {
+			log.Printf("[hubcenter][skillhub] dump sync snapshot: %v", err)
+		} else if rec := s.currentSyncRecorder(); rec != nil {
+			rec.AppendSkillHubSnapshot(ctx, snap)
+		}
+		if !s.finishOrContinueSyncEmission() {
+			return
+		}
+	}
+}
+
+func (s *SkillStore) recoverSyncEmission(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	restart := false
+	s.syncMu.Lock()
+	if s.syncPending && s.sync != nil {
+		s.syncPending = false
+		s.syncRunning = true
+		restart = true
+	} else {
+		s.syncRunning = false
+		s.syncPending = false
+	}
+	s.syncMu.Unlock()
+	if restart {
+		go s.runSyncEmission(ctx)
+	}
 }
 
 func (s *SkillStore) DumpSnapshot() (*Snapshot, error) {
@@ -93,6 +171,19 @@ func (s *SkillStore) DumpSnapshot() (*Snapshot, error) {
 		snap.Ratings[id] = cp
 	}
 	return snap, nil
+}
+
+func (s *SkillStore) CountSnapshotRecords() int64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := int64(len(s.skills))
+	for _, items := range s.ratings {
+		count += int64(len(items))
+	}
+	return count
 }
 
 func (s *SkillStore) LoadSnapshot(snap *Snapshot) error {

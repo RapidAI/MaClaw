@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/backgroundrole"
 )
 
 // SSHBackgroundTask 表示一个在远程服务器上通过 nohup 运行的后台任务。
@@ -14,6 +16,7 @@ type SSHBackgroundTask struct {
 	TaskID    string                  `json:"task_id"`
 	SessionID string                  `json:"session_id"`
 	Command   string                  `json:"command"`
+	TaskRole  string                  `json:"task_role,omitempty"`
 	LogFile   string                  `json:"log_file"`
 	PIDFile   string                  `json:"pid_file"`
 	Status    SSHBackgroundTaskStatus `json:"status"` // pending, running, completed, failed, unknown
@@ -26,17 +29,19 @@ type SSHBackgroundTask struct {
 // 长时间运行的命令（pip install、apt、make 等）通过 nohup + 日志文件执行，
 // 避免 SSH 断连导致任务丢失。
 type SSHBackgroundTaskManager struct {
-	mu      sync.RWMutex
-	tasks   map[string]*SSHBackgroundTask
-	sshMgr  *SSHSessionManager
-	counter int
+	mu         sync.RWMutex
+	tasks      map[string]*SSHBackgroundTask
+	refreshing map[string]struct{}
+	sshMgr     *SSHSessionManager
+	counter    int
 }
 
 // NewSSHBackgroundTaskManager 创建后台任务管理器。
 func NewSSHBackgroundTaskManager(sshMgr *SSHSessionManager) *SSHBackgroundTaskManager {
 	return &SSHBackgroundTaskManager{
-		tasks:  make(map[string]*SSHBackgroundTask),
-		sshMgr: sshMgr,
+		tasks:      make(map[string]*SSHBackgroundTask),
+		refreshing: make(map[string]struct{}),
+		sshMgr:     sshMgr,
 	}
 }
 
@@ -49,10 +54,15 @@ func NewSSHBackgroundTaskManager(sshMgr *SSHSessionManager) *SSHBackgroundTaskMa
 // 3. 有免密 → 正常执行
 // 4. 无免密 → 尝试自动降级为非 sudo 替代命令，并在日志中记录原因
 func (m *SSHBackgroundTaskManager) Submit(sessionID, command string) (*SSHBackgroundTask, error) {
+	return m.SubmitWithRole(sessionID, command, "")
+}
+
+func (m *SSHBackgroundTaskManager) SubmitWithRole(sessionID, command, role string) (*SSHBackgroundTask, error) {
 	session, ok := m.sshMgr.Get(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("ssh session %s not found", sessionID)
 	}
+	role = normalizeSSHBackgroundTaskRole(role, command)
 
 	// sudo 检测与降级
 	if containsSudo(command) {
@@ -100,8 +110,9 @@ func (m *SSHBackgroundTaskManager) Submit(sessionID, command string) (*SSHBackgr
 		taskID, strings.ReplaceAll(command, "'", "'\\''"), command,
 	)
 
-	// 先写脚本文件
-	writeScript := fmt.Sprintf("cat > %s << 'MACLAW_SCRIPT_EOF'\n%sMACLAW_SCRIPT_EOF\nchmod +x %s", scriptFile, scriptContent, scriptFile)
+	// 先写脚本文件。delimiter 会按脚本内容动态选择，避免命令内容
+	// 碰撞 heredoc 终止行后截断脚本并把剩余内容当成远端 shell 输入。
+	writeScript := buildWriteBackgroundScriptCommand(scriptFile, scriptContent)
 	if _, err := m.sshMgr.WriteInputChecked(sessionID, writeScript); err != nil {
 		return nil, fmt.Errorf("write script: %w", err)
 	}
@@ -129,6 +140,7 @@ func (m *SSHBackgroundTaskManager) Submit(sessionID, command string) (*SSHBackgr
 		TaskID:    taskID,
 		SessionID: sessionID,
 		Command:   command,
+		TaskRole:  role,
 		LogFile:   logFile,
 		PIDFile:   pidFile,
 		Status:    SSHBackgroundTaskStatusRunning,
@@ -200,6 +212,7 @@ func (m *SSHBackgroundTaskManager) CheckTask(taskID string, tailLines int) (*Bac
 	result := parseCheckOutput(newLines)
 	result.TaskID = taskID
 	result.Command = task.Command
+	result.TaskRole = task.TaskRole
 	result.StartedAt = task.StartedAt
 	result.Elapsed = time.Since(task.StartedAt).Round(time.Second).String()
 
@@ -230,9 +243,61 @@ func (m *SSHBackgroundTaskManager) ListTasks() []*SSHBackgroundTask {
 	defer m.mu.RUnlock()
 	result := make([]*SSHBackgroundTask, 0, len(m.tasks))
 	for _, t := range m.tasks {
-		result = append(result, t)
+		t.mu.Lock()
+		snapshot := &SSHBackgroundTask{
+			TaskID:    t.TaskID,
+			SessionID: t.SessionID,
+			Command:   t.Command,
+			TaskRole:  t.TaskRole,
+			LogFile:   t.LogFile,
+			PIDFile:   t.PIDFile,
+			Status:    t.Status,
+			PID:       t.PID,
+			StartedAt: t.StartedAt,
+			LastCheck: t.LastCheck,
+		}
+		t.mu.Unlock()
+		result = append(result, snapshot)
 	}
 	return result
+}
+
+// RefreshTaskStatusAsync schedules a bounded background status refresh for a
+// task. It is used by UI status surfaces so task counts eventually converge
+// after remote processes exit without making list calls block on SSH output.
+func (m *SSHBackgroundTaskManager) RefreshTaskStatusAsync(taskID string, tailLines int) bool {
+	taskID = strings.TrimSpace(taskID)
+	if m == nil || m.sshMgr == nil || taskID == "" {
+		return false
+	}
+	m.mu.Lock()
+	if m.refreshing == nil {
+		m.refreshing = make(map[string]struct{})
+	}
+	task, ok := m.tasks[taskID]
+	if !ok {
+		m.mu.Unlock()
+		return false
+	}
+	if _, ok := m.refreshing[taskID]; ok {
+		m.mu.Unlock()
+		return false
+	}
+	m.refreshing[taskID] = struct{}{}
+	task.mu.Lock()
+	task.LastCheck = time.Now()
+	task.mu.Unlock()
+	m.mu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			delete(m.refreshing, taskID)
+			m.mu.Unlock()
+		}()
+		_, _ = m.CheckTask(taskID, tailLines)
+	}()
+	return true
 }
 
 // KillTask 终止后台任务。
@@ -265,12 +330,44 @@ func (m *SSHBackgroundTaskManager) KillTask(taskID string) error {
 type BackgroundTaskStatus struct {
 	TaskID    string                  `json:"task_id"`
 	Command   string                  `json:"command"`
+	TaskRole  string                  `json:"task_role,omitempty"`
 	Status    SSHBackgroundTaskStatus `json:"status"`
 	IsAlive   bool                    `json:"is_alive"`
 	LogTail   string                  `json:"log_tail"`
 	LogSize   string                  `json:"log_size"`
 	StartedAt time.Time               `json:"started_at"`
 	Elapsed   string                  `json:"elapsed"`
+}
+
+func normalizeSSHBackgroundTaskRole(role, command string) string {
+	return backgroundrole.Normalize(role, command)
+}
+
+func buildWriteBackgroundScriptCommand(scriptFile, scriptContent string) string {
+	delimiter := backgroundScriptHeredocDelimiter(scriptContent)
+	quotedScriptFile := shellQuote(scriptFile)
+	if !strings.HasSuffix(scriptContent, "\n") {
+		scriptContent += "\n"
+	}
+	return fmt.Sprintf("cat > %s << '%s'\n%s%s\nchmod +x %s", quotedScriptFile, delimiter, scriptContent, delimiter, quotedScriptFile)
+}
+
+func backgroundScriptHeredocDelimiter(scriptContent string) string {
+	const base = "MACLAW_SCRIPT_EOF"
+	delimiter := base
+	for i := 1; heredocDelimiterLineExists(scriptContent, delimiter); i++ {
+		delimiter = fmt.Sprintf("%s_%d", base, i)
+	}
+	return delimiter
+}
+
+func heredocDelimiterLineExists(content, delimiter string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSuffix(line, "\r") == delimiter {
+			return true
+		}
+	}
+	return false
 }
 
 // --- 辅助函数 ---

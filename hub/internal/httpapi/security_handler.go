@@ -276,6 +276,10 @@ func UpdateGroupPolicyHandler(svc *security.SecurityService, audits ...store.Adm
 		}
 
 		if err := svc.UpdateGroupPolicy(ctx, id, req.Policy); err != nil {
+			if strings.Contains(err.Error(), "must be") || strings.Contains(err.Error(), "invalid value") || strings.Contains(err.Error(), "unknown policy field") {
+				writeError(w, http.StatusBadRequest, "INVALID_POLICY", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "UPDATE_POLICY_FAILED", err.Error())
 			return
 		}

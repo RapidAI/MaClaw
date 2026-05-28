@@ -14,11 +14,14 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -33,10 +36,10 @@ type SkillSearchResult struct {
 // --- Shared HubCenter infrastructure (singleton pattern) ---
 
 var (
-	sharedCacheOnce      sync.Once
-	sharedCache          *remote.HubCenterSelectionCache
-	sharedPersisterOnce  sync.Once
-	sharedPersister      *HubCenterPersister
+	sharedCacheOnce     sync.Once
+	sharedCache         *remote.HubCenterSelectionCache
+	sharedPersisterOnce sync.Once
+	sharedPersister     *HubCenterPersister
 )
 
 // SharedHubCenterCache returns the package-level singleton cache.
@@ -156,6 +159,9 @@ func SearchSkillMarket(baseURL, query string, topN int) ([]SkillSearchResult, er
 	// Multi-node failover using shared infrastructure.
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, _ := store.LoadConfig()
+	if ok, reason := clientsecurity.EnforceConfig(cfg, "search_and_install_skill", skillSearchAPIArgs(cfg, query, "skillhub", baseURL)); !ok {
+		return nil, fmt.Errorf("%s", reason)
+	}
 	resolvedURL := ResolveHubCenterWithFailover(cfg, baseURL, nil, nil)
 
 	client := skill.DefaultHubClient()
@@ -187,7 +193,11 @@ func SearchSkillHub(query string) ([]SkillSearchResult, error) {
 
 	client := skill.DefaultHubClient()
 	// Filter by allowed sources from local config.
-	results := client.SearchAllFiltered(ctx, hubURL, query, cfg.SkillSourcesAllowed)
+	allowedSources, err := skillSearchAPIAllowedSourcesForPolicy(cfg, query, hubURL)
+	if err != nil {
+		return nil, err
+	}
+	results := client.SearchAllFiltered(ctx, hubURL, query, allowedSources)
 
 	var out []SkillSearchResult
 	for _, r := range results {
@@ -198,4 +208,75 @@ func SearchSkillHub(query string) ([]SkillSearchResult, error) {
 		})
 	}
 	return out, nil
+}
+
+func skillSearchAPIAllowedSourcesForPolicy(cfg corelib.AppConfig, query, hubURL string) ([]string, error) {
+	if clientsecurity.IsDeveloperMode(cfg) {
+		return nil, nil
+	}
+	candidates := []string{"skillhub", "clawhub", "github"}
+	allowed := make([]string, 0, len(candidates))
+	var blocked []string
+	for _, source := range candidates {
+		if !skill.IsSourceAllowed(source, cfg.SkillSourcesAllowed) {
+			continue
+		}
+		if ok, reason := clientsecurity.EnforceConfig(cfg, "search_and_install_skill", skillSearchAPIArgs(cfg, query, source, hubURL)); !ok {
+			blocked = append(blocked, source+": "+reason)
+			continue
+		}
+		allowed = append(allowed, source)
+	}
+	if len(allowed) == len(candidates) && len(cfg.SkillSourcesAllowed) == 0 {
+		return nil, nil
+	}
+	if len(allowed) == 0 && len(blocked) > 0 {
+		return nil, fmt.Errorf("skill search blocked by security policy: %s", strings.Join(blocked, "; "))
+	}
+	return allowed, nil
+}
+
+func skillSearchAPIArgs(cfg corelib.AppConfig, query, source, hubURL string) map[string]interface{} {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "skillhub"
+	}
+	args := map[string]interface{}{"query": query, "source": source}
+	switch normalizeSkillSearchAPISource(source) {
+	case "github":
+		args["url"] = "https://github.com"
+	case "clawhub":
+		args["url"] = skill.ClawHubMirrorURL
+	default:
+		if strings.TrimSpace(hubURL) == "" {
+			hubURL = cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
+		}
+		args["hub_url"] = hubURL
+	}
+	return args
+}
+
+func firstAllowedSkillSearchSource(cfg corelib.AppConfig) string {
+	if clientsecurity.IsDeveloperMode(cfg) {
+		return "skillhub"
+	}
+	for _, source := range cfg.SkillSourcesAllowed {
+		if strings.TrimSpace(source) != "" {
+			return source
+		}
+	}
+	return "skillhub"
+}
+
+func normalizeSkillSearchAPISource(source string) string {
+	switch strings.TrimSpace(strings.ToLower(source)) {
+	case "skillmarket", "market", "hubcenter", "hub_center", "skill_hub":
+		return "skillhub"
+	case "claw_hub":
+		return "clawhub"
+	case "git_hub":
+		return "github"
+	default:
+		return strings.TrimSpace(strings.ToLower(source))
+	}
 }

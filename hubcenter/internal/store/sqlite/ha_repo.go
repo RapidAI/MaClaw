@@ -3,7 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"time"
 
@@ -30,7 +32,25 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 		}
 	}()
 
+	var latestPayloadJSON string
+	var latestPayloadHash string
 	var current sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `
+		SELECT payload_json, payload_hash
+		FROM ha_sync_ops INDEXED BY idx_ha_sync_ops_entity_seq
+		WHERE entity_type = ? AND entity_id = ? AND op_type = ?
+		ORDER BY seq DESC
+		LIMIT 1
+	`, op.EntityType, op.EntityID, op.OpType).Scan(&latestPayloadJSON, &latestPayloadHash); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	} else if err == nil && haPayloadEquivalent(op.EntityType, op.OpType, op.PayloadJSON, op.PayloadHash, latestPayloadJSON, latestPayloadHash) {
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return 0, err
+		}
+		committed = true
+		return 0, nil
+	}
+
 	if err := conn.QueryRowContext(ctx, `
 		SELECT version
 		FROM ha_entity_versions
@@ -80,6 +100,41 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 	}
 	committed = true
 	return version, nil
+}
+
+func haPayloadEquivalent(entityType, opType, currentJSON, currentHash, previousJSON, previousHash string) bool {
+	if strings.TrimSpace(currentHash) != "" && currentHash == previousHash {
+		return true
+	}
+	if opType != "upsert" {
+		return false
+	}
+	current, ok := normalizedNoisyHAPayload(entityType, currentJSON)
+	if !ok {
+		return false
+	}
+	previous, ok := normalizedNoisyHAPayload(entityType, previousJSON)
+	if !ok {
+		return false
+	}
+	return reflect.DeepEqual(current, previous)
+}
+
+func normalizedNoisyHAPayload(entityType, payloadJSON string) (map[string]any, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, false
+	}
+	delete(payload, "updated_at")
+	switch entityType {
+	case "hub_user_link", "hub_domain_route":
+		return payload, true
+	case "hub_instance":
+		delete(payload, "last_seen_at")
+		return payload, true
+	default:
+		return nil, false
+	}
 }
 
 func (r *haSyncOpRepo) Append(ctx context.Context, op *store.HASyncOp) error {
@@ -242,6 +297,146 @@ func (r *haSyncOpRepo) GetMaxSeq(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return seq.Int64, nil
+}
+
+func (r *haSyncOpRepo) Count(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(1) FROM ha_sync_ops`).Scan(&count)
+	return count, err
+}
+
+func (r *haSyncOpRepo) PruneHistory(ctx context.Context, cutoff time.Time, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error) {
+	if batchSize <= 0 {
+		batchSize = 50000
+	}
+	if batchSize > 200000 {
+		batchSize = 200000
+	}
+	maxSeq, err := r.GetMaxSeq(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seqFloor := int64(-1)
+	if maxRetainedOps > 0 && maxSeq > maxRetainedOps {
+		seqFloor = maxSeq - maxRetainedOps
+	}
+	cutoffText := cutoff.UTC().Format(time.RFC3339)
+	deleteByTime := !cutoff.IsZero()
+	result := &store.HAPruneResult{MaxSeq: maxSeq}
+	if deleteByTime {
+		deleted, err := r.pruneSyncOpsBefore(ctx, cutoffText, batchSize)
+		if err != nil {
+			return nil, err
+		}
+		result.DeletedOps += deleted
+	}
+	if seqFloor >= 0 {
+		deleted, err := r.pruneSyncOpsAtOrBeforeSeq(ctx, seqFloor, batchSize)
+		if err != nil {
+			return nil, err
+		}
+		result.DeletedOps += deleted
+	}
+	if deleteByTime {
+		for {
+			res, err := r.db.ExecContext(ctx, `
+				DELETE FROM ha_applied_ops
+				WHERE op_id IN (
+					SELECT op_id
+					FROM ha_applied_ops
+					WHERE applied_at < ?
+					ORDER BY applied_at ASC
+					LIMIT ?
+				)
+			`, cutoffText, batchSize)
+			if err != nil {
+				return nil, err
+			}
+			rows, _ := res.RowsAffected()
+			result.DeletedAppliedOps += rows
+			if rows == 0 || rows < batchSize {
+				break
+			}
+		}
+	}
+	remaining, err := r.Count(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result.RemainingOps = remaining
+	return result, nil
+}
+
+func (r *haSyncOpRepo) pruneSyncOpsBefore(ctx context.Context, cutoffText string, batchSize int64) (int64, error) {
+	return r.pruneSyncOps(ctx, batchSize, `
+		SELECT candidate.seq
+		FROM ha_sync_ops candidate INDEXED BY idx_ha_sync_ops_occurred_at
+		WHERE candidate.occurred_at < ?
+		  AND EXISTS (
+			SELECT 1
+			FROM ha_sync_ops newer INDEXED BY idx_ha_sync_ops_entity_seq
+			WHERE newer.entity_type = candidate.entity_type
+			  AND newer.entity_id = candidate.entity_id
+			  AND newer.seq > candidate.seq
+			LIMIT 1
+		  )
+		ORDER BY candidate.occurred_at ASC, candidate.seq ASC
+		LIMIT ?
+	`, cutoffText, batchSize)
+}
+
+func (r *haSyncOpRepo) pruneSyncOpsAtOrBeforeSeq(ctx context.Context, seqFloor int64, batchSize int64) (int64, error) {
+	return r.pruneSyncOps(ctx, batchSize, `
+		SELECT candidate.seq
+		FROM ha_sync_ops candidate
+		WHERE candidate.seq <= ?
+		  AND EXISTS (
+			SELECT 1
+			FROM ha_sync_ops newer INDEXED BY idx_ha_sync_ops_entity_seq
+			WHERE newer.entity_type = candidate.entity_type
+			  AND newer.entity_id = candidate.entity_id
+			  AND newer.seq > candidate.seq
+			LIMIT 1
+		  )
+		ORDER BY candidate.seq ASC
+		LIMIT ?
+	`, seqFloor, batchSize)
+}
+
+func (r *haSyncOpRepo) pruneSyncOps(ctx context.Context, batchSize int64, selectSQL string, args ...any) (int64, error) {
+	var deleted int64
+	for {
+		queryArgs := append([]any(nil), args...)
+		res, err := r.db.ExecContext(ctx, `DELETE FROM ha_sync_ops WHERE seq IN (`+selectSQL+`)`, queryArgs...)
+		if err != nil {
+			return deleted, err
+		}
+		rows, _ := res.RowsAffected()
+		deleted += rows
+		if rows == 0 || rows < batchSize {
+			break
+		}
+	}
+	return deleted, nil
+}
+
+func PruneHAHistory(ctx context.Context, db *sql.DB, cutoff time.Time, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error) {
+	if db == nil {
+		return nil, errors.New("nil sqlite database")
+	}
+	repo := &haSyncOpRepo{db: db, readDB: db}
+	return repo.PruneHistory(ctx, cutoff, maxRetainedOps, batchSize)
+}
+
+func Vacuum(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return errors.New("nil sqlite database")
+	}
+	if _, err := db.ExecContext(ctx, `VACUUM`); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
 }
 
 func (r *haSyncOpRepo) HasApplied(ctx context.Context, opID string) (bool, error) {

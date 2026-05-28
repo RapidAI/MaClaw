@@ -13,8 +13,12 @@ func TestClassifySubCategory(t *testing.T) {
 		expected WorkflowSubCategory
 	}{
 		{"审批类", SubCategoryApproval},
+		{" approval_workflow ", SubCategoryApproval},
+		{"APPROVAL", SubCategoryApproval},
 		{"自动化类", SubCategoryAutomation},
+		{"AUTOMATION", SubCategoryAutomation},
 		{"协作类", SubCategoryCollaboration},
+		{"COLLABORATION", SubCategoryCollaboration},
 		{"approval", SubCategoryApproval},
 		{"automation", SubCategoryAutomation},
 		{"collaboration", SubCategoryCollaboration},

@@ -27,7 +27,7 @@ type KVStore interface {
 
 // AllSkillSources is the canonical list of valid skill source identifiers.
 // This is the single source of truth — all other packages reference this.
-var AllSkillSources = []string{"skillhub", "clawhub", "github"}
+var AllSkillSources = []string{"skillhub", "clawhub", "github", "enterprise_hub"}
 
 // SourceControlConfig represents the allowed sources at one level.
 type SourceControlConfig struct {
@@ -279,7 +279,7 @@ func (s *SourceControlService) save(ctx context.Context, key string, cfg *Source
 func ValidateSourceNames(sources []string) error {
 	for _, s := range sources {
 		if !validSourceName(s) {
-			return fmt.Errorf("invalid skill source: %q (valid: skillhub, clawhub, github)", s)
+			return fmt.Errorf("invalid skill source: %q (valid: skillhub, clawhub, github, enterprise_hub)", s)
 		}
 	}
 	return nil
@@ -290,28 +290,48 @@ func ValidateSourceNames(sources []string) error {
 // The intersection of two non-nil lists is the set intersection.
 func IntersectSources(a, b []string) []string {
 	if len(a) == 0 {
-		return b
+		return canonicalSourceList(b)
 	}
 	if len(b) == 0 {
-		return a
+		return canonicalSourceList(a)
 	}
 	set := make(map[string]bool, len(b))
 	for _, s := range b {
-		set[s] = true
+		set[normalizeHubSearchSource(s)] = true
 	}
+	seen := make(map[string]bool, len(a))
 	var result []string
 	for _, s := range a {
-		if set[s] {
-			result = append(result, s)
+		canon := normalizeHubSearchSource(s)
+		if canon != "" && set[canon] && !seen[canon] {
+			seen[canon] = true
+			result = append(result, canon)
 		}
 	}
 	return result
 }
 
 func validSourceName(s string) bool {
-	switch s {
-	case "skillhub", "clawhub", "github":
+	switch normalizeHubSearchSource(s) {
+	case "skillhub", "clawhub", "github", "enterprise_hub":
 		return true
 	}
 	return false
+}
+
+func canonicalSourceList(sources []string) []string {
+	if len(sources) == 0 {
+		return sources
+	}
+	result := make([]string, 0, len(sources))
+	seen := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		canon := normalizeHubSearchSource(source)
+		if canon == "" || seen[canon] {
+			continue
+		}
+		seen[canon] = true
+		result = append(result, canon)
+	}
+	return result
 }

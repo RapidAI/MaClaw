@@ -282,7 +282,7 @@ func (c *HubClient) SendDiscussionMessage(ctx context.Context, consultationID st
 	if consultationID == "" {
 		return fmt.Errorf("consultation id is required")
 	}
-	if !groupDiscussionMessageHasPayload(msg) {
+	if !GroupDiscussionMessageHasPayload(msg) {
 		return fmt.Errorf("discussion message content or attachment payload is required")
 	}
 	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/messages", msg, nil)

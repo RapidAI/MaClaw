@@ -74,8 +74,13 @@ type HAConfig struct {
 	AdvertiseURL                    string         `yaml:"advertise_url"`
 	ClusterSecret                   string         `yaml:"cluster_secret"`
 	SyncIntervalSeconds             int            `yaml:"sync_interval_seconds"`
+	PushDebounceSeconds             int            `yaml:"push_debounce_seconds"`
 	PullBatchSize                   int            `yaml:"pull_batch_size"`
 	HeartbeatSyncMinIntervalSeconds int            `yaml:"heartbeat_sync_min_interval_seconds"`
+	HistoryRetentionDays            float64        `yaml:"history_retention_days"`
+	HistoryMaxRetainedOps           int            `yaml:"history_max_retained_ops"`
+	HistoryPruneIntervalMinutes     int            `yaml:"history_prune_interval_minutes"`
+	HistoryPruneBatchSize           int            `yaml:"history_prune_batch_size"`
 	Nodes                           []HANodeConfig `yaml:"nodes"`
 	Peers                           []HAPeerConfig `yaml:"peers"`
 }
@@ -85,14 +90,19 @@ func Default() *Config {
 	cfg.Server.ListenHost = "0.0.0.0"
 	cfg.Server.ListenPort = 9388
 	cfg.Server.PublicBaseURL = "http://127.0.0.1:9388"
-	cfg.HA.SyncIntervalSeconds = 3
+	cfg.HA.SyncIntervalSeconds = 180
+	cfg.HA.PushDebounceSeconds = 180
 	cfg.HA.PullBatchSize = 200
-	cfg.HA.HeartbeatSyncMinIntervalSeconds = 10
+	cfg.HA.HeartbeatSyncMinIntervalSeconds = 600
+	cfg.HA.HistoryRetentionDays = 0.5
+	cfg.HA.HistoryMaxRetainedOps = 50000
+	cfg.HA.HistoryPruneIntervalMinutes = 10
+	cfg.HA.HistoryPruneBatchSize = 20000
 	cfg.Database.Driver = "sqlite"
 	cfg.Database.DSN = "./data/MaClaw-hubcenter.db"
 	cfg.Database.WAL = true
-	cfg.Database.BusyTimeoutMS = 5000
-	cfg.Database.MaxReadOpenConns = 8
+	cfg.Database.BusyTimeoutMS = 10000
+	cfg.Database.MaxReadOpenConns = 4
 	cfg.Database.MaxReadIdleConns = 4
 	cfg.Database.MaxWriteOpenConns = 1
 	cfg.Database.MaxWriteIdleConns = 1

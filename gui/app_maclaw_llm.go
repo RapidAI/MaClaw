@@ -37,10 +37,7 @@ var obsoleteProviderNames = map[string]bool{
 }
 
 func normalizeLLMTimeoutSec(timeoutSec int) int {
-	if timeoutSec > 0 {
-		return timeoutSec
-	}
-	return corelib.DefaultLLMTimeoutSec
+	return corelib.NormalizeAgentTimeoutSec(timeoutSec)
 }
 
 func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
@@ -781,8 +778,8 @@ func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
 			},
 		},
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, messages, client, 15*time.Second)
+	client := &http.Client{Timeout: 35 * time.Second}
+	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe OpenAI error: %v", err)
 		return false
@@ -858,8 +855,8 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 			},
 		},
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, messages, client, 15*time.Second)
+	client := &http.Client{Timeout: 35 * time.Second}
+	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe Anthropic error: %v", err)
 		return false
@@ -877,8 +874,8 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 // probeVisionResponsesAPI sends a tiny 4x4 PNG via the Responses API format
 // and returns true if the model responds with a vision-aware answer.
 func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
-	client := &http.Client{Timeout: 15 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	client := &http.Client{Timeout: 35 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	endpoint := strings.TrimRight(baseURL, "/")

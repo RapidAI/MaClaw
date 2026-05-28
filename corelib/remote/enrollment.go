@@ -39,6 +39,8 @@ type EnrollConfig struct {
 // EnrollResult holds the output of a successful enrollment.
 type EnrollResult struct {
 	Status       string `json:"status"`
+	TenantID     string `json:"tenant_id,omitempty"`
+	TenantName   string `json:"tenant_name,omitempty"`
 	Message      string `json:"message,omitempty"`
 	Code         string `json:"code,omitempty"`
 	UserID       string `json:"user_id,omitempty"`

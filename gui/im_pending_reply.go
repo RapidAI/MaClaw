@@ -156,17 +156,17 @@ func conversationExtensionHasUserMessage(current []agent.ConversationEntry, pref
 	return false
 }
 
-func isPendingReplyBoundToCurrentHistory(pending []agent.ConversationEntry, current []agent.ConversationEntry) bool {
+func isPendingReplyBoundToCurrentHistory(pending []agent.ConversationEntry, current []agent.ConversationEntry, question string) bool {
 	if len(pending) == 0 {
-		return len(current) == 0
+		return pendingQuestionIsAwaitingAnswer(question, current)
 	}
 	if len(current) == 0 {
 		return true
 	}
-	if !conversationHistoryHasPrefix(current, pending) {
-		return false
+	if conversationHistoryHasPrefix(current, pending) {
+		return !conversationExtensionHasUserMessage(current, len(pending))
 	}
-	return !conversationExtensionHasUserMessage(current, len(pending))
+	return pendingQuestionIsAwaitingAnswer(question, current)
 }
 
 func pendingUserReplyForCurrentHistory(raw interface{}, current []agent.ConversationEntry) (*pendingUserReplyState, bool) {
@@ -174,7 +174,7 @@ func pendingUserReplyForCurrentHistory(raw interface{}, current []agent.Conversa
 	if !ok || pending == nil || time.Since(pending.Timestamp) >= pendingReplyTTL {
 		return nil, false
 	}
-	return pending, isPendingReplyBoundToCurrentHistory(pending.History, current)
+	return pending, isPendingReplyBoundToCurrentHistory(pending.History, current, pending.Question)
 }
 
 func pendingAskUserForCurrentHistory(raw interface{}, current []agent.ConversationEntry) (*pendingAskUserState, bool) {
@@ -182,7 +182,46 @@ func pendingAskUserForCurrentHistory(raw interface{}, current []agent.Conversati
 	if !ok || pending == nil || time.Since(pending.Timestamp) >= pendingReplyTTL {
 		return nil, false
 	}
-	return pending, isPendingReplyBoundToCurrentHistory(pending.History, current)
+	return pending, isPendingReplyBoundToCurrentHistory(pending.History, current, pending.Question)
+}
+
+func pendingQuestionIsAwaitingAnswer(question string, current []agent.ConversationEntry) bool {
+	question = strings.TrimSpace(question)
+	if question == "" || len(current) == 0 {
+		return false
+	}
+	for i := len(current) - 1; i >= 0; i-- {
+		entry := current[i]
+		if entry.Role == "user" {
+			return false
+		}
+		if entry.Role != "assistant" {
+			continue
+		}
+		text, ok := entry.Content.(string)
+		if !ok {
+			continue
+		}
+		if pendingQuestionMatchesAssistant(question, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func pendingQuestionMatchesAssistant(question, assistantText string) bool {
+	q := strings.TrimSpace(question)
+	a := strings.TrimSpace(assistantText)
+	if q == "" || a == "" {
+		return false
+	}
+	if q == a {
+		return true
+	}
+	if len([]rune(q)) < 16 {
+		return false
+	}
+	return strings.Contains(a, q)
 }
 
 func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed string, entries *[]agent.ConversationEntry, unfinishedSlot **agent.UnfinishedTaskSlot) (string, bool) {
@@ -196,6 +235,13 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	pending, pendingFresh := pendingUserReplyForCurrentHistory(raw, *entries)
 	if !pendingFresh && pending != nil {
 		log.Printf("[PendingUserReply] discarded stale pending reply for user=%s currentLen=%d boundLen=%d answer=%q", msg.UserID, len(*entries), len(pending.History), truncateRunes(trimmed, 80))
+		if len(pending.History) > 0 && conversationHistoryHasPrefix(*entries, pending.History) && conversationExtensionHasUserMessage(*entries, len(pending.History)) {
+			currentTaskEntries := cloneConversationEntries((*entries)[len(pending.History):])
+			h.memory.Save(msg.UserID, currentTaskEntries)
+			*entries = currentTaskEntries
+			*unfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
+			log.Printf("[PendingUserReply] removed stale bound prefix for user=%s restoredLen=%d answer=%q", msg.UserID, len(currentTaskEntries), truncateRunes(trimmed, 80))
+		}
 	}
 	isPendingAnswer, classifiedPendingAnswer := false, true
 	if pendingFresh {

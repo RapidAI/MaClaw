@@ -70,9 +70,6 @@ func simulateSteeringNeedsConfirmGate(
 	if trimmed == "" {
 		return false
 	}
-	if testLooksLikeNoToolStallReply(msgContent) {
-		return false
-	}
 	if !testIsSubstantivePhaseDocument(trimmed) {
 		return false
 	}
@@ -84,7 +81,7 @@ func simulateSteeringNeedsConfirmGate(
 // Sub-property 2a: Post-Output Confirmation Force-Returns
 //
 // For all inputs where needsConfirmFromEngine=true AND HasPhaseOutput=true
-// AND isSubstantivePhaseDocument=true AND !looksLikeNoToolStallReply
+// AND isSubstantivePhaseDocument=true
 // → gate force-returns
 //
 // This tests the post-output confirmation path which MUST be preserved.
@@ -126,9 +123,6 @@ func TestPreservation2a_PostOutput_SubstantiveText_ForceReturns(t *testing.T) {
 			if !testIsSubstantivePhaseDocument(trimmed) {
 				t.Fatalf("precondition failed: %q should be substantive", tc.msgContent)
 			}
-			if testLooksLikeNoToolStallReply(tc.msgContent) {
-				t.Fatalf("precondition failed: %q should not be a stall reply", tc.msgContent)
-			}
 
 			// Simulate gate with hasOutput=true (post-output confirmation)
 			forceReturn := simulateNeedsConfirmGate(
@@ -159,7 +153,7 @@ func TestPreservation2a_PBT_PostOutput_AlwaysForceReturns(t *testing.T) {
 		input := generateSubstantivePreamble(seed)
 
 		trimmed := strings.TrimSpace(input)
-		if trimmed == "" || testLooksLikeNoToolStallReply(input) || !testIsSubstantivePhaseDocument(trimmed) {
+		if trimmed == "" || !testIsSubstantivePhaseDocument(trimmed) {
 			return true // skip invalid generator output
 		}
 
@@ -223,7 +217,7 @@ func TestPreservation2b_NeedsConfirmFalse_GateNeverActivates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			forceReturn := simulateNeedsConfirmGate(
-				false,     // needsConfirmFromEngine = false (NeedsConfirm=false phase)
+				false, // needsConfirmFromEngine = false (NeedsConfirm=false phase)
 				tc.hasOutput,
 				tc.msgContent,
 			)
@@ -255,7 +249,7 @@ func TestPreservation2b_PBT_NeedsConfirmFalse_NeverForceReturns(t *testing.T) {
 		}
 
 		forceReturn := simulateNeedsConfirmGate(
-			false,    // needsConfirmFromEngine = false
+			false, // needsConfirmFromEngine = false
 			hasOutput,
 			input,
 		)
@@ -309,10 +303,10 @@ func TestPreservation2c_SteeringPath_NoEngineWorkflow_GateActivates(t *testing.T
 			expectGate: false, // not substantive
 		},
 		{
-			name:       "iteration=1, stall reply — gate does not fire",
+			name:       "iteration=1, short non-substantive text variant — gate does not fire",
 			iteration:  1,
 			msgContent: "让我先想想这个问题。",
-			expectGate: false, // stall reply
+			expectGate: false, // not substantive
 		},
 		{
 			name:       "iteration=1, empty text — gate does not fire",
@@ -325,7 +319,7 @@ func TestPreservation2c_SteeringPath_NoEngineWorkflow_GateActivates(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			forceReturn := simulateSteeringNeedsConfirmGate(
-				true,  // gateActive (coding intent detected)
+				true, // gateActive (coding intent detected)
 				tc.iteration,
 				false, // hasEngineWorkflow = false (pure steering)
 				tc.msgContent,
@@ -375,7 +369,7 @@ func TestPreservation2c_PBT_SteeringPath_SubstantiveText_ForceReturns(t *testing
 		input := generateSubstantivePreamble(seed)
 
 		trimmed := strings.TrimSpace(input)
-		if trimmed == "" || testLooksLikeNoToolStallReply(input) || !testIsSubstantivePhaseDocument(trimmed) {
+		if trimmed == "" || !testIsSubstantivePhaseDocument(trimmed) {
 			return true // skip invalid generator output
 		}
 
@@ -383,7 +377,7 @@ func TestPreservation2c_PBT_SteeringPath_SubstantiveText_ForceReturns(t *testing
 		iteration := int(abs64(seed)%10) + 1
 
 		forceReturn := simulateSteeringNeedsConfirmGate(
-			true,  // gateActive
+			true, // gateActive
 			iteration,
 			false, // no engine workflow
 			input,
@@ -536,11 +530,11 @@ func TestPreservation_PBT_CrossCutting_VaryingWorkflowStates(t *testing.T) {
 		case 2:
 			input = "" // empty
 		case 3:
-			// stall reply
-			stalls := []string{
+			// short non-substantive text
+			shortTexts := []string{
 				"让我先想想", "let me think about this", "先分析一下",
 			}
-			input = stalls[abs64(seed)%int64(len(stalls))]
+			input = shortTexts[abs64(seed)%int64(len(shortTexts))]
 		}
 
 		forceReturn := simulateNeedsConfirmGate(
@@ -561,26 +555,21 @@ func TestPreservation_PBT_CrossCutting_VaryingWorkflowStates(t *testing.T) {
 			return false
 		}
 
-		// 3. stall reply → never force-return
-		if testLooksLikeNoToolStallReply(input) && forceReturn {
-			return false
-		}
-
-		// 4. non-substantive text → never force-return
+		// 3. non-substantive text → never force-return
 		if trimmed != "" && !testIsSubstantivePhaseDocument(trimmed) && forceReturn {
 			return false
 		}
 
-		// 5. needsConfirm=true + substantive + not stall + hasOutput=true → force-return
+		// 4. needsConfirm=true + substantive + hasOutput=true → force-return
 		//    (on FIXED code, this only holds for hasOutput=true; hasOutput=false skips the gate)
-		if needsConfirm && hasOutput && trimmed != "" && !testLooksLikeNoToolStallReply(input) &&
+		if needsConfirm && hasOutput && trimmed != "" &&
 			testIsSubstantivePhaseDocument(trimmed) && !forceReturn {
 			return false
 		}
 
-		// 6. needsConfirm=true + substantive + not stall + hasOutput=false → NO force-return
+		// 5. needsConfirm=true + substantive + hasOutput=false → NO force-return
 		//    (on FIXED code, first execution skips the gate)
-		if needsConfirm && !hasOutput && trimmed != "" && !testLooksLikeNoToolStallReply(input) &&
+		if needsConfirm && !hasOutput && trimmed != "" &&
 			testIsSubstantivePhaseDocument(trimmed) && forceReturn {
 			return false
 		}

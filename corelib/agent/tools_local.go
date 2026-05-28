@@ -49,6 +49,10 @@ func ToolBash(args map[string]interface{}, onProgress func(string)) string {
 		return "缺少 command 参数"
 	}
 
+	if rejection, rejected := tool.RejectRawSSHCommand(command); rejected {
+		return rejection
+	}
+
 	timeout := ResolveBashTimeout(args, command)
 	workDir := ResolvePath(StringArg(args, "working_dir"))
 
@@ -1563,12 +1567,15 @@ func ResolveFileToolPath(path string) (string, error) {
 func ResolveBashTimeout(args map[string]interface{}, command string) int {
 	if t, ok := args["timeout"].(float64); ok && t > 0 {
 		timeout := int(t)
-		if timeout > 120 {
-			timeout = 120
+		if timeout < 240 {
+			timeout = 240
+		}
+		if timeout > 600 {
+			timeout = 600
 		}
 		return timeout
 	}
-	return 30
+	return 240
 }
 
 // HideCommandWindow is a platform-specific function to hide the console

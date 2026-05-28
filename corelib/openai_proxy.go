@@ -40,7 +40,7 @@ func NewOpenAIProxy(cfg OpenAIProxyConfig) *OpenAIProxy {
 	return &OpenAIProxy{
 		config: cfg,
 		client: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: time.Duration(DefaultLLMTimeoutSec) * time.Second,
 		},
 	}
 }

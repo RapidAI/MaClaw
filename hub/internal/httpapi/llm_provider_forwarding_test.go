@@ -134,8 +134,8 @@ func TestLLMProviderUpstreamHTTPClientUsesConfiguredTimeout(t *testing.T) {
 	if client == nil {
 		t.Fatal("client is nil")
 	}
-	if client.Timeout != 7*time.Second {
-		t.Fatalf("client.Timeout = %s, want 7s", client.Timeout)
+	if client.Timeout != time.Duration(corelib.MinAgentTimeoutSec)*time.Second {
+		t.Fatalf("client.Timeout = %s, want %ds", client.Timeout, corelib.MinAgentTimeoutSec)
 	}
 
 	defaultClient := llmProviderUpstreamHTTPClient(corelib.MaclawLLMConfig{})

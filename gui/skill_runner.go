@@ -2143,82 +2143,13 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 	step.Action = cskill.NormalizeStepActionName(step.Action)
 	switch classifySkillStepAction(step.Action) {
 	case skillStepActionCreateSession:
-		tool, _ := step.Params["tool"].(string)
-		projectPath, _ := step.Params["project_path"].(string)
-		projectID, _ := step.Params["project_id"].(string)
-		provider, _ := step.Params["provider"].(string)
-		resumeSessionID, _ := step.Params["resume_session_id"].(string)
-		if tool == "" {
-			return "", fmt.Errorf("missing tool parameter")
-		}
-		starter := r.executor.app.sessionStarter
-		if starter == nil {
-			r.executor.app.ensureInteractionInfra()
-			starter = r.executor.app.sessionStarter
-		}
-		if starter == nil {
-			return "", fmt.Errorf("session starter not initialized")
-		}
-		startResult, err := starter.Start(CodingSessionStartRequest{
-			Tool:               tool,
-			ProjectID:          projectID,
-			ProjectPath:        projectPath,
-			Provider:           provider,
-			ResumeSessionID:    resumeSessionID,
-			InjectResumePrompt: false,
-			LaunchSource:       RemoteLaunchSourceAI,
-			ParentRunID:        runID,
-		})
-		if err != nil {
-			return "", err
-		}
-		resolvedProjectPath := projectPath
-		if strings.TrimSpace(startResult.ResolvedProjectPath) != "" {
-			resolvedProjectPath = startResult.ResolvedProjectPath
-		}
-		r.SetRunSessionMeta(runID, SkillRunSessionMeta{
-			SessionID:       startResult.View.ID,
-			Tool:            startResult.View.Tool,
-			ProjectPath:     resolvedProjectPath,
-			Status:          startResult.View.Status,
-			JobID:           startResult.View.JobID,
-			RunID:           startResult.View.RunID,
-			ResumeSessionID: strings.TrimSpace(resumeSessionID),
-			LaunchSource:    string(normalizeRemoteLaunchSource(RemoteLaunchSourceAI)),
-		})
-		return fmt.Sprintf("session created: ID=%s", startResult.View.ID), nil
+		return "", fmt.Errorf("external coding sessions are disabled; coding tasks must run through CodingSubAgent")
 
 	case skillStepActionSendInput:
-		sessionID := r.resolveStepSessionID(runID, step)
-		text, _ := step.Params["text"].(string)
-		if sessionID == "" || text == "" {
-			return "", fmt.Errorf("missing session_id or text parameter")
-		}
-		if r.executor.manager == nil {
-			return "", fmt.Errorf("session manager not initialized")
-		}
-		if err := r.executor.manager.WriteInput(sessionID, text); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("已发送到会话 %s", sessionID), nil
+		return "", fmt.Errorf("external coding-session input steps are disabled; coding tasks must run through CodingSubAgent")
 
 	case skillStepActionSendAndObserve:
-		sessionID := r.resolveStepSessionID(runID, step)
-		text, _ := step.Params["text"].(string)
-		timeoutSeconds, _ := step.Params["timeout_seconds"].(float64)
-		if sessionID == "" || text == "" {
-			return "", fmt.Errorf("missing session_id or text parameter")
-		}
-		if r.executor.manager == nil {
-			return "", fmt.Errorf("session manager not initialized")
-		}
-		return SendAndObserveSession(r.executor.manager, sessionID, text, SessionObserveOptions{
-			TimeoutSeconds: timeoutSeconds,
-			Lines:          40,
-		}, func(renderArgs map[string]interface{}) string {
-			h := &IMMessageHandler{app: r.executor.app, manager: r.executor.manager}
-			return h.toolGetSessionOutput(renderArgs)
-		}), nil
+		return "", fmt.Errorf("external coding-session observe steps are disabled; coding tasks must run through CodingSubAgent")
 
 	case skillStepActionCallMCPTool:
 		serverRef, _ := step.Params["server_id"].(string)
@@ -2310,7 +2241,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	// "'@echo" is not recognized as an internal or external command.
 	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
 
-	timeout := cskill.RunnerStepTimeoutSeconds(params, 120, 600)
+	timeout := cskill.RunnerStepTimeoutSeconds(params, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
 
 	// Expand portable home placeholders before Windows shell dispatch.
 	// AutoFixPortability intentionally writes $HOME to keep skill.yaml portable,

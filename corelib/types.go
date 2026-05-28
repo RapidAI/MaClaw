@@ -22,9 +22,28 @@ const DefaultContextTokens = 110_000
 //   - http.Client.Timeout: total request timeout (connect + headers + body)
 //   - context.WithTimeout: single operation deadline
 //
-// 120s is sufficient for the slowest models (e.g. deepseek-reasoner thinking
-// phase). If no response arrives in 120s, the API is likely down.
-const DefaultLLMTimeoutSec = 120
+// 240s leaves enough room for slower coding/reasoning models and is the lower
+// bound for user-configurable agent timeouts.
+const DefaultLLMTimeoutSec = 240
+
+const (
+	MinAgentTimeoutSec     = 240
+	DefaultAgentTimeoutSec = 240
+	MaxAgentTimeoutSec     = 600
+)
+
+func NormalizeAgentTimeoutSec(seconds int) int {
+	if seconds <= 0 {
+		return DefaultAgentTimeoutSec
+	}
+	if seconds < MinAgentTimeoutSec {
+		return MinAgentTimeoutSec
+	}
+	if seconds > MaxAgentTimeoutSec {
+		return MaxAgentTimeoutSec
+	}
+	return seconds
+}
 
 // ModelConfig 描述一个 LLM 模型的配置。
 type ModelConfig struct {
@@ -478,12 +497,9 @@ func (c MaclawLLMConfig) UserAgent() string {
 }
 
 // EffectiveTimeoutSec returns the configured response-header timeout in seconds,
-// falling back to DefaultLLMTimeoutSec when unset or invalid.
+// clamped to the supported agent range.
 func (c MaclawLLMConfig) EffectiveTimeoutSec() int {
-	if c.TimeoutSec > 0 {
-		return c.TimeoutSec
-	}
-	return DefaultLLMTimeoutSec
+	return NormalizeAgentTimeoutSec(c.TimeoutSec)
 }
 
 // AnthropicMessagesEndpoint returns the Anthropic Messages API endpoint

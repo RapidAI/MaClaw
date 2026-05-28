@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/gorilla/websocket"
@@ -81,6 +82,40 @@ type testSessionService struct {
 	snapshot         *session.SessionCacheEntry
 	events           []string
 	offlineMachineID string
+}
+
+type testSecurityProvider struct {
+	tenantID string
+	userID   string
+}
+
+func (p *testSecurityProvider) GetEffectivePolicyByUserID(ctx context.Context, userID string) (*security.EffectivePolicy, error) {
+	return &security.EffectivePolicy{}, nil
+}
+
+func (p *testSecurityProvider) IsCentralizedEnabled(ctx context.Context) (bool, error) {
+	return true, nil
+}
+
+func (p *testSecurityProvider) GetHeartbeatPolicy(ctx context.Context, userID string) (*security.HeartbeatSecurityPayload, error) {
+	p.tenantID = security.TenantIDFromContext(ctx)
+	p.userID = userID
+	return &security.HeartbeatSecurityPayload{CentralizedSecurity: true, Policy: &security.EffectivePolicy{GossipEnabled: false}}, nil
+}
+
+func TestGatewayInjectSecurityPolicyUsesConnectionTenant(t *testing.T) {
+	provider := &testSecurityProvider{}
+	gateway := &Gateway{SecurityProvider: provider}
+	ack := map[string]any{"ok": true}
+
+	gateway.injectSecurityPolicy(ack, "alice@example.com", "tenant_acme", "test")
+
+	if provider.tenantID != "tenant_acme" || provider.userID != "alice@example.com" {
+		t.Fatalf("security provider got tenant/user = %q/%q, want tenant_acme/alice@example.com", provider.tenantID, provider.userID)
+	}
+	if _, ok := ack["security_policy"]; !ok {
+		t.Fatal("expected security_policy in ack payload")
+	}
 }
 
 func (s *testSessionService) OnSessionCreated(ctx context.Context, machineID, userID, sessionID string, payload map[string]any) error {

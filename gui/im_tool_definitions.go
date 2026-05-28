@@ -148,7 +148,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		// --- 本机直接操作工具 ---
 		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。禁止通过 bash 执行 ssh/scp/rsync 命令——请使用内置 ssh 工具。支持 background=true 后台执行长时间命令（翻译、编译、下载等），返回 task_id 后可用 async_wait 查询状态。",
 			map[string]interface{}{
-				"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
+				"command":     map[string]interface{}{"type": "string", "description": "要执行的 shell 命令", "maxLength": maxAgentLoopInlineBashCommandRunes},
 				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
 				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120。background 模式下忽略）"},
 				"background":  map[string]string{"type": "boolean", "description": "后台执行（可选，默认 false）。设为 true 时命令在后台运行，立即返回 task_id，用 async_wait 查询进度。适用于翻译、编译、下载等长时间任务"},
@@ -162,7 +162,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDef("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。大文件请分块写入：先 overwrite 第一部分，再 append 后续部分）",
 			map[string]interface{}{
 				"path":     map[string]string{"type": "string", "description": "文件路径"},
-				"content":  map[string]string{"type": "string", "description": "文件内容，可为空字符串"},
+				"content":  map[string]interface{}{"type": "string", "description": "文件内容，可为空字符串", "maxLength": maxAgentLoopInlineWriteFileContentRunes},
 				"mode":     map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
 				"phase_id": map[string]string{"type": "string", "description": workflowDocPhaseIDSchemaDescription()},
 				"doc_type": map[string]string{"type": "string", "description": workflowDocTypeSchemaDescription()},
@@ -219,10 +219,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"delegate_to": map[string]string{"type": "string", "description": "委派给哪个会话或 Agent（delegate 时必填）"},
 			}, []string{"action"}),
 		// --- 子 Agent 委派工具 ---
-		toolDef("delegate_task", "将任务委派给专业子 Agent 处理。不传 agent 参数时列出可用的子 Agent。可用子 Agent: coding_workflow（编码工作流：需求→设计→任务拆分）、help（MaClaw 使用帮助）。",
+		toolDef("delegate_task", "将任务委派给专业子 Agent 处理。不传 agent 参数时列出可用的子 Agent。coding_workflow 会同步运行内部 CodingSubAgent 完成编码任务，不返回占位激活文本；help 用于 MaClaw 使用帮助。",
 			map[string]interface{}{
-				"agent":   map[string]string{"type": "string", "description": "子 Agent 名称: coding_workflow / help。不传则列出所有可用子 Agent"},
-				"request": map[string]string{"type": "string", "description": "要委派的任务描述（用户的原始需求）"},
+				"agent":        map[string]string{"type": "string", "description": "子 Agent 名称: coding_workflow / help。不传则列出所有可用子 Agent"},
+				"request":      map[string]string{"type": "string", "description": "要委派的任务描述（用户的原始需求）"},
+				"project_path": map[string]string{"type": "string", "description": "target project path for coding_workflow (optional)"},
 			}, nil),
 		// --- 语音合成工具 ---
 		toolDef("tts", "将文本转换为语音消息发送给用户。文本会自动清理 Markdown 格式并截断到合适长度（最长 300 字）。桌面面板播放语音，IM 通道（企微/QQ）以语音消息（语音气泡，非文件附件）形式发送。适用于：状态通知、简短回复摘要、任务完成汇报、问候等场景。不适用于长文本音频化。",
@@ -335,7 +336,3 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 func toolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
 	return agent.ToolDef(name, desc, props, required)
 }
-
-// ---------------------------------------------------------------------------
-// Tool Execution
-// ---------------------------------------------------------------------------

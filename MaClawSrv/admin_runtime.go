@@ -218,6 +218,15 @@ func (s *HTTPServer) handleAdminJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "counts": s.jobs.snapshotCounts()})
 }
 
+func (s *HTTPServer) handleAdminJob(w http.ResponseWriter, r *http.Request) {
+	job, ok := s.jobs.getAnyJob(r.PathValue("jobId"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
 func (s *HTTPServer) handleAdminCancelJob(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdminOwner(w, r) {
 		return

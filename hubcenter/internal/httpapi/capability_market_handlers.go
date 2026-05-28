@@ -273,7 +273,10 @@ type capabilityMarketMCPPurchaseRequest struct {
 func CapabilityMarketMCPPurchaseHandler(settings store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req capabilityMarketMCPPurchaseRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := decodeOptionalLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "invalid request body")
+			return
+		}
 		catalog, err := loadCapabilityMarketMCPCatalog(r.Context(), settings)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MCP_CATALOG_LOAD_FAILED", err.Error())
@@ -334,8 +337,8 @@ func AdminCapabilityMarketMCPUpsertHandler(settings store.SystemSettingsReposito
 			return
 		}
 		var req CapabilityMarketMCPEntry
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "invalid request body")
 			return
 		}
 		item := normalizeCapabilityMarketMCPEntry(req)
@@ -728,8 +731,8 @@ func AdminMCPValidateHandler() http.HandlerFunc {
 			APIKey      string            `json:"api_key,omitempty"`
 			Checks      []string          `json:"checks"` // ["all"] or subset of ["connectivity","tools","schema","health"]
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "invalid request body")
 			return
 		}
 		if strings.TrimSpace(req.EndpointURL) == "" {
@@ -767,8 +770,8 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 			Description    string `json:"description"`
 			EndpointURL    string `json:"endpoint_url,omitempty"` // for MCP imports
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "invalid request body")
 			return
 		}
 

@@ -10,13 +10,36 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
+const systemKeyHubRegistrationPolicies = "hub_registration_policies"
+
 const (
-	rankDefaultLink = 0
-	rankLinkedHub   = 1
-	rankDomainRoute = 2
-	rankPublicHub   = 3
-	rankPrivateLink = 4
+	rankDefaultLink       = 0
+	rankLinkedHub         = 1
+	rankDomainRoute       = 2
+	rankPublicHub         = 3
+	rankPrivateLink       = 4
+	routeSnapshotPageSize = 1000
 )
+
+type hubPageLister interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.HubInstance, error)
+}
+
+type hubUserLinkPageLister interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.HubUserLink, error)
+}
+
+type hubDomainRoutePageLister interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.HubDomainRoute, error)
+}
+
+type blockedEmailPageLister interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.BlockedEmail, error)
+}
+
+type blockedIPPageLister interface {
+	ListPage(ctx context.Context, offset, limit int) ([]*store.BlockedIP, error)
+}
 
 type snapshotCandidate struct {
 	hub           *store.HubInstance
@@ -43,28 +66,113 @@ type routeSnapshot struct {
 	publicHubs      []snapshotCandidate
 }
 
-func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository, includeOwnerLinks bool) (*routeSnapshot, error) {
-	hubItems, err := hubs.ListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-	linkItems, err := links.ListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-	routeItems, err := routes.ListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-	blockedEmailItems, err := blockedEmails.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	blockedIPItems, err := blockedIPs.List(ctx)
-	if err != nil {
-		return nil, err
-	}
+type registrationPolicyConfig struct {
+	HubOrigin          string                                       `json:"hub_origin"`
+	DefaultSignupScope string                                       `json:"default_signup_scope"`
+	Tenants            map[string]store.HubTenantRegistrationPolicy `json:"tenants"`
+}
 
+type registrationPolicyStore struct {
+	Hubs map[string]registrationPolicyConfig `json:"hubs"`
+}
+
+func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository, settings store.SystemSettingsRepository, includeOwnerLinks bool) (*routeSnapshot, error) {
+	hubItems, err := listSnapshotHubs(ctx, hubs)
+	if err != nil {
+		return nil, err
+	}
+	linkItems, err := listSnapshotUserLinks(ctx, links)
+	if err != nil {
+		return nil, err
+	}
+	routeItems, err := listSnapshotDomainRoutes(ctx, routes)
+	if err != nil {
+		return nil, err
+	}
+	blockedEmailItems, err := listSnapshotBlockedEmails(ctx, blockedEmails)
+	if err != nil {
+		return nil, err
+	}
+	blockedIPItems, err := listSnapshotBlockedIPs(ctx, blockedIPs)
+	if err != nil {
+		return nil, err
+	}
+	policies := loadSnapshotRegistrationPolicies(ctx, settings)
+	return buildRouteSnapshotFromItems(hubItems, linkItems, routeItems, blockedEmailItems, blockedIPItems, policies, includeOwnerLinks), nil
+}
+
+func loadSnapshotRegistrationPolicies(ctx context.Context, settings store.SystemSettingsRepository) map[string]registrationPolicyConfig {
+	if settings == nil {
+		return nil
+	}
+	raw, err := settings.Get(ctx, systemKeyHubRegistrationPolicies)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var state registrationPolicyStore
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return nil
+	}
+	if len(state.Hubs) == 0 {
+		return nil
+	}
+	out := make(map[string]registrationPolicyConfig, len(state.Hubs))
+	for hubID, cfg := range state.Hubs {
+		out[strings.TrimSpace(hubID)] = normalizeRegistrationPolicyConfig(cfg)
+	}
+	return out
+}
+
+func listSnapshotHubs(ctx context.Context, repo store.HubRepository) ([]*store.HubInstance, error) {
+	if lister, ok := repo.(hubPageLister); ok {
+		return listSnapshotPages(ctx, lister.ListPage)
+	}
+	return repo.ListAll(ctx)
+}
+
+func listSnapshotUserLinks(ctx context.Context, repo store.HubUserLinkRepository) ([]*store.HubUserLink, error) {
+	if lister, ok := repo.(hubUserLinkPageLister); ok {
+		return listSnapshotPages(ctx, lister.ListPage)
+	}
+	return repo.ListAll(ctx)
+}
+
+func listSnapshotDomainRoutes(ctx context.Context, repo store.HubDomainRouteRepository) ([]*store.HubDomainRoute, error) {
+	if lister, ok := repo.(hubDomainRoutePageLister); ok {
+		return listSnapshotPages(ctx, lister.ListPage)
+	}
+	return repo.ListAll(ctx)
+}
+
+func listSnapshotBlockedEmails(ctx context.Context, repo store.BlockedEmailRepository) ([]*store.BlockedEmail, error) {
+	if lister, ok := repo.(blockedEmailPageLister); ok {
+		return listSnapshotPages(ctx, lister.ListPage)
+	}
+	return repo.List(ctx)
+}
+
+func listSnapshotBlockedIPs(ctx context.Context, repo store.BlockedIPRepository) ([]*store.BlockedIP, error) {
+	if lister, ok := repo.(blockedIPPageLister); ok {
+		return listSnapshotPages(ctx, lister.ListPage)
+	}
+	return repo.List(ctx)
+}
+
+func listSnapshotPages[T any](ctx context.Context, listPage func(context.Context, int, int) ([]T, error)) ([]T, error) {
+	out := make([]T, 0)
+	for offset := 0; ; offset += routeSnapshotPageSize {
+		items, err := listPage(ctx, offset, routeSnapshotPageSize)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if len(items) < routeSnapshotPageSize {
+			return out, nil
+		}
+	}
+}
+
+func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*store.HubUserLink, routeItems []*store.HubDomainRoute, blockedEmailItems []*store.BlockedEmail, blockedIPItems []*store.BlockedIP, policies map[string]registrationPolicyConfig, includeOwnerLinks bool) *routeSnapshot {
 	activeHubs := make(map[string]*store.HubInstance, len(hubItems))
 	for _, hub := range hubItems {
 		if hub == nil || hub.IsDisabled || hub.Status != "online" {
@@ -122,7 +230,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		if hub == nil {
 			continue
 		}
-		candidate := snapshotCandidate{hub: hub, tenantID: strings.TrimSpace(link.TenantID), rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink}
+		candidate := snapshotCandidate{hub: hub, tenantID: normalizeCapabilityTenantID(link.TenantID), rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink}
 		email := strings.TrimSpace(strings.ToLower(link.Email))
 		if candidate.tenantID == "" {
 			candidate.tenantID = tenantIDForHubEmail(hub, email)
@@ -131,7 +239,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 			continue
 		}
 		snap.emailRoutes[email] = append(snap.emailRoutes[email], candidate)
-		if link.IsDefault && strings.TrimSpace(link.TenantID) == "" {
+		if link.IsDefault && normalizeCapabilityTenantID(link.TenantID) == "" {
 			snap.defaultHubIDs[email] = link.HubID
 		}
 	}
@@ -160,7 +268,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		if domain == "" {
 			continue
 		}
-		tenantID := strings.TrimSpace(route.TenantID)
+		tenantID := normalizeCapabilityTenantID(route.TenantID)
 		key := route.HubID + "|" + tenantID + "|" + domain
 		seenDomainRoute[key] = struct{}{}
 		if isAdminDomainRoute(route) {
@@ -178,7 +286,15 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 				snap.domainRoutes[legacyDomain] = append(snap.domainRoutes[legacyDomain], snapshotCandidate{hub: hub, routeDomain: legacyDomain, routePriority: 100, rank: rankDomainRoute})
 			}
 		}
-		if hub.AcceptPublicSignup || (legacyDomain == "" && isPubliclyDiscoverable(hub)) {
+		if cfg, configured := policies[hub.ID]; configured {
+			appendPolicyPublicFallbacks(snap, hub, cfg)
+			continue
+		}
+		if cfg, configured := registrationPolicyConfigFromHubRow(hub); configured {
+			appendPolicyPublicFallbacks(snap, hub, cfg)
+			continue
+		}
+		if hub.AcceptPublicSignup {
 			snap.publicHubs = append(snap.publicHubs, snapshotCandidate{hub: hub, rank: rankPublicHub, routePriority: 1000})
 		}
 	}
@@ -197,7 +313,112 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		return compareSnapshotCandidate(snap.publicHubs[i], snap.publicHubs[j])
 	})
 
-	return snap, nil
+	return snap
+}
+
+func registrationPolicyConfigFromHubRow(hub *store.HubInstance) (registrationPolicyConfig, bool) {
+	if hub == nil {
+		return registrationPolicyConfig{}, false
+	}
+	cfg := registrationPolicyConfig{
+		HubOrigin:          strings.ToLower(strings.TrimSpace(hub.HubOrigin)),
+		DefaultSignupScope: strings.ToLower(strings.TrimSpace(hub.DefaultSignupScope)),
+		Tenants:            map[string]store.HubTenantRegistrationPolicy{},
+	}
+	if cfg.HubOrigin == "" {
+		cfg.HubOrigin = "self_hosted"
+	}
+	if cfg.DefaultSignupScope == "" {
+		cfg.DefaultSignupScope = "domain_restricted"
+	}
+	if strings.TrimSpace(hub.RegistrationPolicyJSON) != "" {
+		var state store.HubRegistrationPolicyState
+		if err := json.Unmarshal([]byte(hub.RegistrationPolicyJSON), &state); err == nil {
+			for tenantID, policy := range state.Tenants {
+				if strings.TrimSpace(policy.TenantID) == "" {
+					policy.TenantID = tenantID
+				}
+				cfg.Tenants[normalizeCapabilityTenantID(policy.TenantID)] = policy
+			}
+		}
+	}
+	cfg = normalizeRegistrationPolicyConfig(cfg)
+	configured := cfg.HubOrigin == "official" || cfg.DefaultSignupScope != "domain_restricted" || len(cfg.Tenants) > 0
+	return cfg, configured
+}
+
+func normalizeRegistrationPolicyConfig(cfg registrationPolicyConfig) registrationPolicyConfig {
+	cfg.HubOrigin = strings.ToLower(strings.TrimSpace(cfg.HubOrigin))
+	if cfg.HubOrigin != "official" {
+		cfg.HubOrigin = "self_hosted"
+	}
+	cfg.DefaultSignupScope = normalizeRegistrationSignupScope(cfg.DefaultSignupScope)
+	normalizedTenants := make(map[string]store.HubTenantRegistrationPolicy, len(cfg.Tenants))
+	for tenantID, policy := range cfg.Tenants {
+		if strings.TrimSpace(policy.TenantID) == "" {
+			policy.TenantID = tenantID
+		}
+		policy.TenantID = normalizeCapabilityTenantID(policy.TenantID)
+		rawSignupScope := policy.SignupScope
+		policy.SignupScope = normalizeRegistrationSignupScope(rawSignupScope)
+		if strings.EqualFold(strings.TrimSpace(rawSignupScope), "inherit") {
+			policy.SignupScope = "inherit"
+		}
+		policy.Status = strings.ToLower(strings.TrimSpace(policy.Status))
+		if policy.Status == "" {
+			policy.Status = "active"
+		}
+		normalizedTenants[policy.TenantID] = policy
+	}
+	cfg.Tenants = normalizedTenants
+	return cfg
+}
+
+func normalizeRegistrationSignupScope(scope string) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "public", "invite_only", "inherit":
+		return strings.ToLower(strings.TrimSpace(scope))
+	default:
+		return "domain_restricted"
+	}
+}
+
+func appendPolicyPublicFallbacks(snap *routeSnapshot, hub *store.HubInstance, cfg registrationPolicyConfig) bool {
+	if snap == nil || hub == nil || len(cfg.Tenants) == 0 {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(cfg.HubOrigin)) != "official" {
+		return false
+	}
+	added := false
+	tenantIDs := make([]string, 0, len(cfg.Tenants))
+	for tenantID := range cfg.Tenants {
+		tenantIDs = append(tenantIDs, tenantID)
+	}
+	sort.Strings(tenantIDs)
+	for _, tenantID := range tenantIDs {
+		policy := cfg.Tenants[tenantID]
+		if !policy.IsPublicFallback || strings.EqualFold(strings.TrimSpace(policy.Status), "disabled") {
+			continue
+		}
+		if effectivePolicySignupScope(cfg, policy) != "public" {
+			continue
+		}
+		snap.publicHubs = append(snap.publicHubs, snapshotCandidate{hub: hub, tenantID: normalizeCapabilityTenantID(tenantID), rank: rankPublicHub, routePriority: 1000})
+		added = true
+	}
+	return added
+}
+
+func effectivePolicySignupScope(cfg registrationPolicyConfig, policy store.HubTenantRegistrationPolicy) string {
+	scope := strings.ToLower(strings.TrimSpace(policy.SignupScope))
+	if scope == "inherit" || scope == "" {
+		scope = strings.ToLower(strings.TrimSpace(cfg.DefaultSignupScope))
+	}
+	if scope == "" {
+		return "domain_restricted"
+	}
+	return scope
 }
 
 func hubInventoryEmails(hub *store.HubInstance) []string {
@@ -208,22 +429,36 @@ func hubInventoryEmails(hub *store.HubInstance) []string {
 	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
 		return nil
 	}
-	values, ok := caps["user_emails"].([]any)
-	if !ok {
-		return nil
-	}
 	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		email := strings.TrimSpace(strings.ToLower(fmt.Sprint(value)))
-		if email == "" {
-			continue
+	out := make([]string, 0)
+	values, ok := caps["user_emails"].([]any)
+	if ok {
+		for _, value := range values {
+			email := strings.TrimSpace(strings.ToLower(fmt.Sprint(value)))
+			if email == "" {
+				continue
+			}
+			if _, ok := seen[email]; ok {
+				continue
+			}
+			seen[email] = struct{}{}
+			out = append(out, email)
 		}
-		if _, ok := seen[email]; ok {
-			continue
+	}
+	if tenantEmails, ok := caps["tenant_user_emails"].(map[string]any); ok {
+		for _, rawEmails := range tenantEmails {
+			for _, rawEmail := range capabilityStringList(rawEmails) {
+				email := strings.TrimSpace(strings.ToLower(rawEmail))
+				if email == "" {
+					continue
+				}
+				if _, ok := seen[email]; ok {
+					continue
+				}
+				seen[email] = struct{}{}
+				out = append(out, email)
+			}
 		}
-		seen[email] = struct{}{}
-		out = append(out, email)
 	}
 	return out
 }
@@ -242,7 +477,7 @@ func tenantIDForHubEmail(hub *store.HubInstance, email string) string {
 		return ""
 	}
 	for rawTenantID, rawEmails := range tenantEmails {
-		tenantID := strings.TrimSpace(rawTenantID)
+		tenantID := normalizeCapabilityTenantID(rawTenantID)
 		if tenantID == "" {
 			continue
 		}
@@ -253,6 +488,14 @@ func tenantIDForHubEmail(hub *store.HubInstance, email string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeCapabilityTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "tenant_default" {
+		return ""
+	}
+	return tenantID
 }
 
 func tenantNameForHubTenant(hub *store.HubInstance, tenantID string) string {
@@ -426,12 +669,12 @@ func (s *routeSnapshot) hasAdminUserRoute(email string) bool {
 }
 
 func emailTenantRouteKey(email, tenantID string) string {
-	tenantID = strings.TrimSpace(tenantID)
+	tenantID = normalizeCapabilityTenantID(tenantID)
 	return strings.TrimSpace(strings.ToLower(email)) + "\x00" + tenantID
 }
 
 func domainTenantRouteKey(domain, tenantID string) string {
-	tenantID = strings.TrimSpace(tenantID)
+	tenantID = normalizeCapabilityTenantID(tenantID)
 	return normalizeCorporateEmailDomain(domain) + "\x00" + tenantID
 }
 

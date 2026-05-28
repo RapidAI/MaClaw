@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -41,6 +42,23 @@ func newSecurityHandlerTestService(t *testing.T, dbName string) (*securitysvc.Se
 		t.Fatalf("init root group: %v", err)
 	}
 	return securitysvc.NewSecurityService(secStore, &testSystemSettings{data: map[string]string{}}, nil), secStore
+}
+
+func TestUpdateGroupPolicyHandlerRejectsInvalidValues(t *testing.T) {
+	svc, secStore := newSecurityHandlerTestService(t, "security-policy-invalid.db")
+	root, err := secStore.GetRootGroup(t.Context())
+	if err != nil || root == nil {
+		t.Fatalf("get root: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/security/groups/"+root.ID+"/policy", bytes.NewBufferString(`{"policy":{"sandbox_mode":"strict"}}`))
+	req.SetPathValue("id", root.ID)
+	rr := httptest.NewRecorder()
+	UpdateGroupPolicyHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid policy status = %d body=%s", rr.Code, rr.Body.String())
+	}
 }
 
 func TestSecurityUserEffectivePolicyResponseIncludesGroupPathAndSources(t *testing.T) {

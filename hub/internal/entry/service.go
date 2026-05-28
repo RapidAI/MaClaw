@@ -15,6 +15,8 @@ type InvitationCodeChecker interface {
 
 type ProbeResult struct {
 	Email                  string `json:"email"`
+	TenantID               string `json:"tenant_id,omitempty"`
+	TenantName             string `json:"tenant_name,omitempty"`
 	Status                 string `json:"status"`
 	Bound                  bool   `json:"bound"`
 	CanLogin               bool   `json:"can_login"`
@@ -35,10 +37,15 @@ func NewService(identity *auth.IdentityService, invitationCode InvitationCodeChe
 
 func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
+	tenantID := auth.TenantIDFromContext(ctx)
+	tenantName := ""
+	if s != nil && s.identity != nil {
+		tenantName = s.identity.TenantDisplayName(ctx, tenantID)
+	}
 
 	invCodeRequired := false
 	if s.invitationCode != nil {
-		req, err := s.invitationCode.IsRequiredForTenant(ctx, auth.TenantIDFromContext(ctx))
+		req, err := s.invitationCode.IsRequiredForTenant(ctx, tenantID)
 		if err == nil {
 			invCodeRequired = req
 		}
@@ -47,6 +54,8 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 	if email == "" {
 		return &ProbeResult{
 			Email:                  email,
+			TenantID:               tenantID,
+			TenantName:             tenantName,
 			Status:                 "invalid_email",
 			Message:                "Email is required",
 			InvitationCodeRequired: invCodeRequired,
@@ -58,6 +67,8 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 		if err == auth.ErrInvalidEmail {
 			return &ProbeResult{
 				Email:                  email,
+				TenantID:               tenantID,
+				TenantName:             tenantName,
 				Status:                 "invalid_email",
 				Message:                err.Error(),
 				InvitationCodeRequired: invCodeRequired,
@@ -68,6 +79,8 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 	if blocked {
 		return &ProbeResult{
 			Email:                  email,
+			TenantID:               tenantID,
+			TenantName:             tenantName,
 			Status:                 "blocked",
 			Message:                "Email is blocked",
 			InvitationCodeRequired: invCodeRequired,
@@ -79,6 +92,8 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 		if err == auth.ErrInvalidEmail {
 			return &ProbeResult{
 				Email:                  email,
+				TenantID:               tenantID,
+				TenantName:             tenantName,
 				Status:                 "invalid_email",
 				Message:                err.Error(),
 				InvitationCodeRequired: invCodeRequired,
@@ -95,6 +110,8 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 	if user == nil {
 		return &ProbeResult{
 			Email:                  email,
+			TenantID:               tenantID,
+			TenantName:             tenantName,
 			Status:                 "not_found",
 			Bound:                  false,
 			CanLogin:               false,
@@ -107,6 +124,8 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 	if strings.EqualFold(user.EnrollmentStatus, "pending") || !strings.EqualFold(user.Status, "active") {
 		return &ProbeResult{
 			Email:                  email,
+			TenantID:               user.TenantID,
+			TenantName:             s.identity.TenantDisplayName(ctx, user.TenantID),
 			Status:                 "pending_approval",
 			Bound:                  false,
 			CanLogin:               false,
@@ -118,6 +137,8 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 
 	return &ProbeResult{
 		Email:                  email,
+		TenantID:               user.TenantID,
+		TenantName:             s.identity.TenantDisplayName(ctx, user.TenantID),
 		Status:                 "bound",
 		Bound:                  true,
 		CanLogin:               true,

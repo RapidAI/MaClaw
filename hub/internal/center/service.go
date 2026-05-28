@@ -132,6 +132,16 @@ type syncUserLinkRequest struct {
 	IsDefault bool   `json:"is_default"`
 }
 
+type entryResolveRequest struct {
+	Email    string `json:"email,omitempty"`
+	Domain   string `json:"domain,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+type entryResolveResponse struct {
+	DefaultHubID string `json:"default_hub_id"`
+}
+
 type UserCounter interface {
 	ListUsers(ctx context.Context) ([]*store.User, error)
 }
@@ -1168,6 +1178,149 @@ func (s *Service) SyncUserRoute(ctx context.Context, email string, tenantIDOpt .
 	}
 	if lastErr != nil {
 		s.recordFailure(ctx, "sync", "user_route_sync_failed", lastErr.Error(), record.HubID, email, nil)
+	}
+	return lastErr
+}
+
+func (s *Service) AllowsUserRoute(ctx context.Context, email string, tenantIDOpt ...string) (bool, string, error) {
+	if s == nil {
+		return true, "", nil
+	}
+	email = normalizeEmail(email)
+	if email == "" {
+		return true, "", nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return true, "", nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return false, "", err
+	}
+	if len(baseURLs) == 0 {
+		return false, "", fmt.Errorf("hub center base url is required")
+	}
+	tenantID := store.DefaultTenantID
+	if len(tenantIDOpt) > 0 && strings.TrimSpace(tenantIDOpt[0]) != "" {
+		tenantID = store.NormalizeTenantID(tenantIDOpt[0])
+	}
+	payload, err := json.Marshal(entryResolveRequest{Email: email, Domain: extractEmailDomain(email), TenantID: tenantID})
+	if err != nil {
+		return false, "", err
+	}
+
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/entry/resolve-domain", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("hub center entry resolve failed with status %d", resp.StatusCode)
+			continue
+		}
+		var resolved entryResolveResponse
+		if err := json.Unmarshal(body, &resolved); err != nil {
+			lastErr = err
+			continue
+		}
+		if record.LastBaseURL != baseURL {
+			record.LastBaseURL = baseURL
+			_ = s.saveRegistration(context.Background(), record)
+		}
+		targetHubID := strings.TrimSpace(resolved.DefaultHubID)
+		if targetHubID == "" || targetHubID == strings.TrimSpace(record.HubID) {
+			return true, targetHubID, nil
+		}
+		return false, targetHubID, nil
+	}
+	return false, "", lastErr
+}
+
+func (s *Service) DeleteUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error {
+	if s == nil {
+		return nil
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	tenantID := store.DefaultTenantID
+	if len(tenantIDOpt) > 0 && strings.TrimSpace(tenantIDOpt[0]) != "" {
+		tenantID = store.NormalizeTenantID(tenantIDOpt[0])
+	}
+	if email == "" {
+		return nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return err
+	}
+	if len(baseURLs) == 0 {
+		return fmt.Errorf("hub center base url is required")
+	}
+	payload, err := json.Marshal(syncUserLinkRequest{HubSecret: record.HubSecret, TenantID: tenantID, Email: email, IsDefault: tenantID == store.DefaultTenantID})
+	if err != nil {
+		return err
+	}
+
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/user-links/sync", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			if record.LastBaseURL != baseURL {
+				record.LastBaseURL = baseURL
+				_ = s.saveRegistration(context.Background(), record)
+			}
+			return nil
+		}
+		var apiErr centerErrorPayload
+		_ = json.Unmarshal(body, &apiErr)
+		message := strings.TrimSpace(apiErr.Message)
+		if message == "" {
+			message = fmt.Sprintf("hub center user-route delete failed with status %d", resp.StatusCode)
+		}
+		lastErr = errors.New(message)
+	}
+	if lastErr != nil {
+		s.recordFailure(ctx, "sync", "user_route_delete_failed", lastErr.Error(), record.HubID, email, nil)
 	}
 	return lastErr
 }

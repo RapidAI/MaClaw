@@ -19,12 +19,13 @@ import (
 const capabilityManagedSyncMinRetry = 5 * time.Minute
 
 type CapabilitySyncStatus struct {
-	ManagedChecked   int      `json:"managed_checked"`
-	ManagedInstalled int      `json:"managed_installed"`
-	Updated          int      `json:"updated"`
-	RecommendedCount int      `json:"recommended_count"`
-	NeedsUserConfig  []string `json:"needs_user_config,omitempty"`
-	Errors           []string `json:"errors,omitempty"`
+	ManagedChecked    int      `json:"managed_checked"`
+	ManagedInstalled  int      `json:"managed_installed"`
+	Updated           int      `json:"updated"`
+	InventoryReported int      `json:"inventory_reported"`
+	RecommendedCount  int      `json:"recommended_count"`
+	NeedsUserConfig   []string `json:"needs_user_config,omitempty"`
+	Errors            []string `json:"errors,omitempty"`
 }
 
 func (a *App) TriggerHubManagedCapabilitySync(reason string) {
@@ -34,10 +35,7 @@ func (a *App) TriggerHubManagedCapabilitySync(reason string) {
 			return
 		}
 	}
-	// Fast path: if hub was probed and doesn't support marketplace, skip.
-	// The goroutine will re-check with the actual URL from config (which it
-	// already loads for creating the client) and invalidate if URL changed.
-	if a.hubMarketplaceUnsupported.Load() {
+	if a.capabilityMarketplaceUnsupportedForCurrentHub() {
 		return
 	}
 	if a.capabilitySyncRunning.Swap(true) {
@@ -46,29 +44,19 @@ func (a *App) TriggerHubManagedCapabilitySync(reason string) {
 	go func() {
 		defer a.capabilitySyncRunning.Store(false)
 
-		// Re-check inside goroutine: between the fast-path check above and
-		// entering the goroutine, another goroutine may have set the flag.
-		// Also handles URL-change invalidation without LoadConfig on the hot path.
-		if a.hubMarketplaceUnsupported.Load() {
-			cfg, err := a.LoadConfig()
-			if err != nil {
-				return
-			}
-			currentURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
-			if cachedURL, _ := a.hubMarketplace404URL.Load().(string); cachedURL == currentURL {
-				return // same hub, still unsupported
-			}
-			// URL changed — reset discovery state, re-probe.
-			a.hubMarketplaceUnsupported.Store(false)
+		// Re-check inside goroutine: another goroutine may have cached a 404
+		// between the fast-path check above and entering this worker.
+		if a.capabilityMarketplaceUnsupportedForCurrentHub() {
+			return
 		}
 
 		status := a.SyncHubManagedCapabilities()
 		if len(status.Errors) > 0 {
 			// Detect "hub doesn't support marketplace" (404 on the endpoint).
-			// Cache the result keyed by hub URL — this is a permanent condition
+			// Cache the result keyed by hub URL; this is a permanent condition
 			// for a given hub version at a given URL.
 			for _, e := range status.Errors {
-				if strings.Contains(e, "status=404") {
+				if isCapabilityMarketplaceUnsupportedError(e) {
 					cfg, _ := a.LoadConfig()
 					probeURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 					a.hubMarketplace404URL.Store(probeURL)
@@ -87,6 +75,23 @@ func (a *App) TriggerHubManagedCapabilitySync(reason string) {
 	}()
 }
 
+func (a *App) capabilityMarketplaceUnsupportedForCurrentHub() bool {
+	if !a.hubMarketplaceUnsupported.Load() {
+		return false
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return true
+	}
+	currentURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	if cachedURL, _ := a.hubMarketplace404URL.Load().(string); cachedURL == currentURL {
+		return true
+	}
+	a.hubMarketplaceUnsupported.Store(false)
+	a.capabilitySyncNextAttempt.Store(time.Time{})
+	return false
+}
+
 func isCapabilitySyncImmediateReason(reason string) bool {
 	switch strings.TrimSpace(strings.ToLower(reason)) {
 	case "hub-connect", "hub-config-update", "manual", "user", "install", "startup":
@@ -99,6 +104,13 @@ func isCapabilitySyncImmediateReason(reason string) bool {
 func capabilityManagedSyncRetryDelay(errs []string) time.Duration {
 	return capabilityManagedSyncMinRetry
 }
+
+func isCapabilityMarketplaceUnsupportedError(errText string) bool {
+	errText = strings.TrimSpace(errText)
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, "managed deployments") && strings.Contains(lower, "status=404")
+}
+
 func (a *App) SyncHubManagedCapabilities() CapabilitySyncStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -136,8 +148,17 @@ func (a *App) InstallHubCapability(capabilityRef string) CapabilitySyncStatus {
 			status.Errors = append(status.Errors, err.Error())
 			return status
 		}
+		present := a.isHubSkillCapabilityInstalled(*item)
 		if installed {
 			status.ManagedInstalled = 1
+		}
+		if !present {
+			status.Errors = append(status.Errors, fmt.Sprintf("capability %s skill was not installed", item.ID))
+		}
+		if err := a.reportHubCapabilityInventoryItem(ctx, c, *item, item.CurrentVersionKey, skillInstallStatus(present), present); err != nil {
+			status.Errors = append(status.Errors, err.Error())
+		} else {
+			status.InventoryReported = 1
 		}
 		a.emitEvent("hub-capability-installed", status)
 		return status
@@ -156,6 +177,11 @@ func (a *App) InstallHubCapability(capabilityRef string) CapabilitySyncStatus {
 	}
 	if needsConfig {
 		status.NeedsUserConfig = append(status.NeedsUserConfig, item.ID)
+	}
+	if err := a.reportHubCapabilityInventoryItem(ctx, c, *item, item.CurrentVersionKey, mcpInstallStatus(needsConfig), !needsConfig); err != nil {
+		status.Errors = append(status.Errors, err.Error())
+	} else {
+		status.InventoryReported = 1
 	}
 	a.emitEvent("hub-capability-installed", status)
 	return status
@@ -334,12 +360,12 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 	c, err := a.newCapabilityMarketClientFromConfig()
 	if err != nil {
 		status.Errors = append(status.Errors, err.Error())
-		return status
+		return a.finishHubManagedCapabilitySync(status)
 	}
 	deployments, err := c.listManagedDeployments(ctx)
 	if err != nil {
-		status.Errors = append(status.Errors, err.Error())
-		return status
+		status.Errors = append(status.Errors, fmt.Sprintf("managed deployments request failed: %v", err))
+		return a.finishHubManagedCapabilitySync(status)
 	}
 	// Cache managed deployment IDs for isManagedCapability lookups.
 	// Clear old entries and repopulate from the fresh list.
@@ -348,9 +374,8 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 		return true
 	})
 	for _, dep := range deployments {
-		ref := strings.TrimSpace(dep.CapabilityRef)
-		if ref != "" && dep.ReinstallIfRemoved {
-			a.managedDeploymentIDs.Store(ref, true)
+		if shouldTrackManagedCapabilityDeployment(dep) {
+			a.managedDeploymentIDs.Store(strings.TrimSpace(dep.CapabilityRef), true)
 		}
 	}
 	recommendations, err := c.listRecommendations(ctx)
@@ -361,6 +386,9 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 		status.ManagedChecked++
 		capabilityRef := strings.TrimSpace(dep.CapabilityRef)
 		if capabilityRef == "" {
+			continue
+		}
+		if normalizeManagedCapabilityPolicy(dep.DeploymentPolicy) != "required" {
 			continue
 		}
 		item, err := c.getCapability(ctx, capabilityRef)
@@ -376,6 +404,8 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 			}
 			if installed {
 				status.ManagedInstalled++
+			} else if !a.isHubSkillCapabilityInstalled(*item) {
+				status.Errors = append(status.Errors, fmt.Sprintf("managed capability %s skill was not installed", item.ID))
 			}
 			continue
 		}
@@ -399,10 +429,141 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 	status.Updated += updateStatus.Updated
 	status.NeedsUserConfig = append(status.NeedsUserConfig, updateStatus.NeedsUserConfig...)
 	status.Errors = append(status.Errors, updateStatus.Errors...)
-	if status.ManagedInstalled > 0 || status.Updated > 0 || len(status.NeedsUserConfig) > 0 {
+	if reported, err := a.reportHubCapabilityInventorySnapshot(ctx, c); err != nil {
+		status.Errors = append(status.Errors, fmt.Sprintf("inventory report failed: %v", err))
+	} else {
+		status.InventoryReported = reported
+	}
+	return a.finishHubManagedCapabilitySync(status)
+}
+
+func (a *App) finishHubManagedCapabilitySync(status CapabilitySyncStatus) CapabilitySyncStatus {
+	a.emitHubManagedCapabilitySyncEvent(status)
+	return status
+}
+
+func (a *App) emitHubManagedCapabilitySyncEvent(status CapabilitySyncStatus) {
+	if shouldEmitHubManagedCapabilitySyncEvent(status) {
 		a.emitEvent("hub-managed-capabilities-synced", status)
 	}
-	return status
+}
+
+func shouldEmitHubManagedCapabilitySyncEvent(status CapabilitySyncStatus) bool {
+	return status.ManagedInstalled > 0 || status.Updated > 0 || len(status.NeedsUserConfig) > 0 || len(status.Errors) > 0
+}
+
+func (a *App) reportHubCapabilityInventoryItem(ctx context.Context, client *capabilityMarketClient, item HubCapabilitySummary, versionKey string, installStatus string, installed bool) error {
+	if client == nil || strings.TrimSpace(item.ID) == "" {
+		return nil
+	}
+	return client.reportInventory(ctx, HubCapabilityInventoryReport{Items: []HubCapabilityInventoryItem{{
+		CapabilityRef:        item.ID,
+		CapabilityVersionKey: firstCapabilityNonEmpty(versionKey, item.CurrentVersionKey),
+		CapabilityType:       item.CapabilityType,
+		InstallStatus:        firstCapabilityNonEmpty(installStatus, "installed"),
+		Installed:            installed,
+		LastSeenAt:           time.Now().UTC().Format(time.RFC3339),
+	}}})
+}
+
+func (a *App) reportHubCapabilityInventorySnapshot(ctx context.Context, client *capabilityMarketClient) (int, error) {
+	if client == nil {
+		return 0, nil
+	}
+	items, err := a.collectHubCapabilityInventorySnapshot(ctx, client)
+	if err != nil {
+		return 0, err
+	}
+	if err := client.reportInventory(ctx, HubCapabilityInventoryReport{Items: items, FullSnapshot: true}); err != nil {
+		return 0, err
+	}
+	return len(items), nil
+}
+
+func (a *App) collectHubCapabilityInventorySnapshot(ctx context.Context, client *capabilityMarketClient) ([]HubCapabilityInventoryItem, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	items := []HubCapabilityInventoryItem{}
+	seen := map[string]bool{}
+	add := func(capabilityRef, versionKey, capabilityType, installStatus string, installed bool, metadata map[string]any) {
+		capabilityRef = strings.TrimSpace(capabilityRef)
+		if capabilityRef == "" || seen[capabilityRef] {
+			return
+		}
+		seen[capabilityRef] = true
+		items = append(items, HubCapabilityInventoryItem{CapabilityRef: capabilityRef, CapabilityVersionKey: strings.TrimSpace(versionKey), CapabilityType: capabilityType, InstallStatus: firstCapabilityNonEmpty(installStatus, "installed"), Installed: installed, Metadata: metadata, LastSeenAt: now})
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range cfg.MCPServers {
+		if server.Capability == nil {
+			continue
+		}
+		installStatus := "installed"
+		installed := true
+		if hubMCPNeedsUserConfig(ctx, client, server) {
+			installStatus = "needs_config"
+			installed = false
+		}
+		add(server.Capability.CapabilityID, server.Capability.VersionKey, corelib.CapabilityTypeMCP, installStatus, installed, map[string]any{"name": server.Name, "server_id": server.ID, "transport": "remote"})
+	}
+	for _, server := range cfg.LocalMCPServers {
+		if server.Capability == nil {
+			continue
+		}
+		installed := !server.Disabled
+		status := "installed"
+		if !installed {
+			status = "disabled"
+		}
+		add(server.Capability.CapabilityID, server.Capability.VersionKey, corelib.CapabilityTypeMCP, status, installed, map[string]any{"name": server.Name, "server_id": server.ID, "transport": "stdio"})
+	}
+	if a.skillExecutor != nil {
+		for _, skill := range a.skillExecutor.loadSkills() {
+			if skill.Capability == nil {
+				continue
+			}
+			installed := !strings.EqualFold(strings.TrimSpace(skill.Status), "disabled")
+			status := "installed"
+			if !installed {
+				status = "disabled"
+			}
+			add(skill.Capability.CapabilityID, skill.Capability.VersionKey, corelib.CapabilityTypeSkill, status, installed, map[string]any{"name": skill.Name, "hub_skill_id": skill.HubSkillID})
+		}
+	}
+	return items, nil
+}
+
+func hubMCPNeedsUserConfig(ctx context.Context, client *capabilityMarketClient, server corelib.MCPServerEntry) bool {
+	if client == nil || server.Capability == nil || strings.TrimSpace(server.Capability.CapabilityID) == "" {
+		return false
+	}
+	requirements, err := client.listMCPSecretRequirements(ctx, server.Capability.CapabilityID, server.Capability.VersionKey)
+	if err != nil {
+		log.Printf("[capability-market] inventory secret requirement check failed for %s: %v", server.Capability.CapabilityID, err)
+		return false
+	}
+	return mcpSecretRequirementsNeedUserConfig(ctx, client, server, requirements)
+}
+
+func mcpInstallStatus(needsConfig bool) string {
+	if needsConfig {
+		return "needs_config"
+	}
+	return "installed"
+}
+
+func normalizeManagedCapabilityPolicy(policy string) string {
+	policy = strings.TrimSpace(strings.ToLower(policy))
+	if policy == "blocked" || policy == "recommended" {
+		return policy
+	}
+	return "required"
+}
+
+func shouldTrackManagedCapabilityDeployment(dep HubCapabilityDeployment) bool {
+	return strings.TrimSpace(dep.CapabilityRef) != "" && dep.ReinstallIfRemoved && normalizeManagedCapabilityPolicy(dep.DeploymentPolicy) == "required"
 }
 
 func (a *App) syncHubInstalledCapabilityUpdates(ctx context.Context, client *capabilityMarketClient) CapabilitySyncStatus {
@@ -608,11 +769,30 @@ func (a *App) ensureHubSkillInstalled(ctx context.Context, item HubCapabilitySum
 	return a.installManagedHubSkill(ctx, skillID, hubURL, item.ID, firstCapabilityNonEmpty(versionKey, item.CurrentVersionKey), item.Source, item.GlobalKey)
 }
 
+func (a *App) isHubSkillCapabilityInstalled(item HubCapabilitySummary) bool {
+	if a == nil {
+		return false
+	}
+	metadata := capabilityMetadataMap(item.MetadataJSON)
+	skillID := firstCapabilityNonEmpty(stringFromMap(metadata, "skill_id"), stringFromMap(metadata, "hub_skill_id"), item.CapabilityID, item.ID)
+	return a.findManagedCapabilitySkill(item.ID, skillID, "") != nil
+}
+
+func skillInstallStatus(installed bool) string {
+	if installed {
+		return "installed"
+	}
+	return "missing"
+}
+
 func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilitySummary, metadata map[string]any, versionKey string, originSource string) (bool, error) {
 	if a.skillExecutor == nil {
 		return false, fmt.Errorf("skill executor not initialized")
 	}
 	skillID := firstCapabilityNonEmpty(stringFromMap(metadata, "skill_id"), item.CapabilityID, item.ID)
+	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "install", "source": originSource, "skill_id": skillID, "install_ref": stringFromMap(metadata, "install_ref")}); !ok {
+		return false, fmt.Errorf("%s", reason)
+	}
 	versionKey = firstCapabilityNonEmpty(versionKey, item.CurrentVersionKey, stringFromMap(metadata, "version_key"), stringFromMap(metadata, "version"))
 	if existing := a.findManagedCapabilitySkill(item.ID, skillID, ""); existing != nil && managedSkillVersionCurrent(*existing, versionKey) {
 		return false, nil
@@ -714,6 +894,9 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 	}
 	if len(capabilityMeta) > 2 {
 		globalKey = capabilityMeta[2]
+	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "install", "source": firstCapabilityNonEmpty(source, "skillhub"), "skill_id": skillID, "hub_url": hubURL}); !ok {
+		return false, fmt.Errorf("%s", reason)
 	}
 	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
@@ -897,6 +1080,9 @@ func (a *App) ensureHubMCPInstalledLocal(_ context.Context, item HubCapabilitySu
 			}
 		}
 	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("bash", map[string]interface{}{"command": strings.Join(append([]string{command}, args...), " ")}); !ok {
+		return false, false, fmt.Errorf("%s", reason)
+	}
 	envRaw := metadata["env"]
 	env := map[string]string{}
 	if m, ok := envRaw.(map[string]interface{}); ok {
@@ -947,6 +1133,9 @@ func (a *App) ensureHubMCPInstalledLocal(_ context.Context, item HubCapabilitySu
 
 // ensureHubMCPInstalledRemote installs an HTTP-type MCP capability as a remote MCP server.
 func (a *App) ensureHubMCPInstalledRemote(ctx context.Context, client *capabilityMarketClient, item HubCapabilitySummary, metadata map[string]any, versionKey string, endpointURL string) (bool, bool, error) {
+	if ok, reason := a.enforceHubSecurityAppPolicy("web_fetch", map[string]interface{}{"url": endpointURL}); !ok {
+		return false, false, fmt.Errorf("%s", reason)
+	}
 	server := corelib.MCPServerEntry{
 		ID:          firstCapabilityNonEmpty(stringFromMap(metadata, "server_id"), item.ID),
 		Name:        firstCapabilityNonEmpty(stringFromMap(metadata, "name"), item.DisplayName, item.CapabilityID),

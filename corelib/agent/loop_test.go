@@ -772,13 +772,13 @@ func (c *timeoutToolCallbacks) ExecuteTool(name, args string) string {
 	*c.toolCallCount++
 	c.mockCallbacks.toolCalls = append(c.mockCallbacks.toolCalls, name)
 	if *c.toolCallCount == 1 {
-		return "\n[错误] 命令超时（120 秒）"
+		return "\n[错误] 命令超时（240 秒）"
 	}
 	return "process running"
 }
 
 func TestBuildEmptyResponseRecovery_Timeout(t *testing.T) {
-	outcome := classifyToolResult("[错误] 命令超时（120 秒）")
+	outcome := classifyToolResult("[错误] 命令超时（240 秒）")
 	if outcome.kind != toolOutcomeTimeout {
 		t.Fatalf("expected toolOutcomeTimeout, got %d", outcome.kind)
 	}
@@ -881,7 +881,7 @@ func TestClassifyToolResult(t *testing.T) {
 		want   toolOutcomeKind
 	}{
 		// Timeout cases — our tools produce these exact markers.
-		{"bash timeout", "\n[错误] 命令超时（120 秒）", toolOutcomeTimeout},
+		{"bash timeout", "\n[错误] 命令超时（240 秒）", toolOutcomeTimeout},
 		{"bash timeout with output", "partial output\n[错误] 命令超时（30 秒）", toolOutcomeTimeout},
 
 		// Error cases — structured prefixes from our tool code.

@@ -91,6 +91,42 @@ func TestUsageTracker_FailurePenalty(t *testing.T) {
 	}
 }
 
+func TestUsageTracker_UncertainOutcomesAreNeutral(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	now := time.Now()
+	tracker.mu.Lock()
+	for i := 0; i < 3; i++ {
+		tracker.records = append(tracker.records, UsageRecord{
+			ToolName:     "ssh",
+			QueryTokens:  []string{"server", "cpu"},
+			Success:      false,
+			FinalOutcome: "uncertain",
+			Timestamp:    now,
+		})
+	}
+	for i := 0; i < 3; i++ {
+		tracker.records = append(tracker.records, UsageRecord{
+			ToolName:    "ssh",
+			QueryTokens: []string{"server", "cpu"},
+			Success:     true,
+			Timestamp:   now,
+		})
+	}
+	tracker.mu.Unlock()
+
+	if score := tracker.OutcomeScore("ssh"); score != 1 {
+		t.Fatalf("uncertain records should not dilute decisive successes, score %.4f", score)
+	}
+	adj := tracker.ExplainRoutingHintAdjustment("ssh", []string{"server", "cpu"})
+	if adj.MatchingRecords != 3 || adj.Failures != 0 || adj.Direction != "prefer" {
+		t.Fatalf("uncertain records should be ignored by routing hints, got %+v", adj)
+	}
+	hints := tracker.DistillRoutingHints(7, 3)
+	if len(hints) != 1 || hints[0].Evidence != 3 || len(hints[0].PreferTools) != 1 || hints[0].PreferTools[0] != "ssh" {
+		t.Fatalf("uncertain records should not inflate distilled hint evidence, got %+v", hints)
+	}
+}
+
 func TestUsageTracker_IgnoresUnrelatedSameToolHistory(t *testing.T) {
 	tracker, _ := NewUsageTracker("")
 	now := time.Now()

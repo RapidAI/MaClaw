@@ -163,6 +163,30 @@ func usageRecordOutcome(r UsageRecord) string {
 	return "failure"
 }
 
+func usageRecordSucceeded(r UsageRecord) bool {
+	switch strings.ToLower(strings.TrimSpace(r.FinalOutcome)) {
+	case "success", "succeeded", "ok", "completed", "complete", "recovered", "resolved":
+		return true
+	case "failed", "failure", "abandoned", "abandon", "uncertain", "unknown":
+		return false
+	}
+	return r.Success
+}
+
+func usageRecordFailed(r UsageRecord) bool {
+	switch strings.ToLower(strings.TrimSpace(r.FinalOutcome)) {
+	case "failed", "failure", "abandoned", "abandon":
+		return true
+	case "success", "succeeded", "ok", "completed", "complete", "recovered", "resolved", "uncertain", "unknown":
+		return false
+	}
+	return !r.Success
+}
+
+func usageRecordDecisive(r UsageRecord) bool {
+	return usageRecordSucceeded(r) || usageRecordFailed(r)
+}
+
 func normalizeUsageQueryTokens(queryTokens []string) []string {
 	tokens := make([]string, 0, 5)
 	for _, tok := range queryTokens {
@@ -278,8 +302,11 @@ func (t *UsageTracker) outcomeScoreWithCount(toolName string, querySet map[strin
 				continue
 			}
 		}
+		if !usageRecordDecisive(r) {
+			continue
+		}
 		total++
-		if r.Success {
+		if usageRecordSucceeded(r) {
 			successes++
 		}
 		switch r.FollowUp {
@@ -374,7 +401,10 @@ func (t *UsageTracker) ExperienceScore(toolName string, queryTokens []string) fl
 }
 
 func usageOutcomeWeight(r UsageRecord) float64 {
-	if r.Success {
+	if !usageRecordDecisive(r) {
+		return 0
+	}
+	if usageRecordSucceeded(r) {
 		switch r.FollowUp {
 		case "retry":
 			return 0.6
@@ -562,6 +592,9 @@ func (t *UsageTracker) DistillRoutingHints(windowDays int, minRecords int) []Too
 		if record.Timestamp.Before(cutoff) || strings.TrimSpace(record.ToolName) == "" {
 			continue
 		}
+		if !usageRecordDecisive(record) {
+			continue
+		}
 		key, taskType := usageRoutingContextKey(record)
 		if key == "" {
 			continue
@@ -583,7 +616,7 @@ func (t *UsageTracker) DistillRoutingHints(windowDays int, minRecords int) []Too
 			ctx.tools[record.ToolName] = stats
 		}
 		stats.total++
-		if record.Success {
+		if usageRecordSucceeded(record) {
 			stats.successes++
 		} else {
 			stats.failures++
@@ -694,8 +727,11 @@ func (t *UsageTracker) DistillSkillNudgeCandidates(windowDays int, minRecords in
 			acc = &sequenceAccum{contextKey: key, taskType: taskType, sequence: sequence, tokens: map[string]int{}}
 			sequences[seqKey] = acc
 		}
+		if !usageRecordDecisive(record) {
+			continue
+		}
 		acc.total++
-		if record.Success && strings.ToLower(strings.TrimSpace(record.FinalOutcome)) != "failed" {
+		if usageRecordSucceeded(record) {
 			acc.successes++
 		}
 		for _, tok := range record.QueryTokens {
@@ -859,7 +895,7 @@ func recoveryOutcomeSucceeded(record UsageRecord) bool {
 	switch strings.ToLower(strings.TrimSpace(record.FinalOutcome)) {
 	case "recovered", "completed", "complete", "success", "succeeded", "ok", "resolved":
 		return true
-	case "failed", "failure", "abandoned", "abandon":
+	case "failed", "failure", "abandoned", "abandon", "uncertain", "unknown":
 		return false
 	default:
 		return record.Success
@@ -989,8 +1025,11 @@ func (t *UsageTracker) ExplainRoutingHintAdjustment(toolName string, queryTokens
 			continue
 		}
 		if record.ToolName == toolName {
+			if !usageRecordDecisive(record) {
+				continue
+			}
 			total++
-			if record.Success {
+			if usageRecordSucceeded(record) {
 				successes++
 			} else {
 				failures++
@@ -1092,13 +1131,16 @@ func (t *UsageTracker) contextToolStats(queryTokens []string, excludeTool string
 		if sim < contextOutcomeMinJaccard {
 			continue
 		}
+		if !usageRecordDecisive(r) {
+			continue
+		}
 		s, ok := m[r.ToolName]
 		if !ok {
 			s = &toolCtxAccum{}
 			m[r.ToolName] = s
 		}
 		s.total++
-		if r.Success {
+		if usageRecordSucceeded(r) {
 			s.successes++
 		} else {
 			s.failures++
@@ -1194,13 +1236,16 @@ func (t *UsageTracker) ExtractPatterns(windowDays int) []UsagePattern {
 		if r.Timestamp.Before(cutoff) {
 			continue
 		}
+		if !usageRecordDecisive(r) {
+			continue
+		}
 		s, ok := stats[r.ToolName]
 		if !ok {
 			s = &toolStats{tokens: make(map[string]int)}
 			stats[r.ToolName] = s
 		}
 		s.total++
-		if r.Success {
+		if usageRecordSucceeded(r) {
 			s.success++
 		}
 		for _, tok := range r.QueryTokens {

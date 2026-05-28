@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -174,6 +180,112 @@ func TestGroupDiscussionDownloadAttachmentSavesUnderDiscussionDir(t *testing.T) 
 	}
 }
 
+func TestGroupDiscussionAttachmentPreviewDataURL(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	dir := app.groupDiscussionAttachmentRoot("disc-preview")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(dir, "photo.png")
+	img := image.NewRGBA(image.Rect(0, 0, 320, 120))
+	for y := 0; y < 120; y++ {
+		for x := 0; x < 320; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x % 255), G: uint8(y % 255), B: 80, A: 255})
+		}
+	}
+	out, err := os.Create(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(out, img); err != nil {
+		_ = out.Close()
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := app.GroupDiscussionAttachmentPreviewDataURL("disc-preview", localPath)
+	if err != nil {
+		t.Fatalf("GroupDiscussionAttachmentPreviewDataURL: %v", err)
+	}
+	if !strings.HasPrefix(got, "data:image/jpeg;base64,") {
+		t.Fatalf("preview data URL = %q", got)
+	}
+	jpegData, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(got, "data:image/jpeg;base64,"))
+	if err != nil {
+		t.Fatalf("decode thumbnail base64: %v", err)
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(jpegData))
+	if err != nil {
+		t.Fatalf("decode thumbnail image: %v", err)
+	}
+	if decoded.Bounds().Dx() != veImageAttachmentThumbnailMaxSide || decoded.Bounds().Dy() >= 120 {
+		t.Fatalf("thumbnail size = %dx%d", decoded.Bounds().Dx(), decoded.Bounds().Dy())
+	}
+}
+
+func TestGroupDiscussionAttachmentPreviewDataURLRejectsOutsidePath(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	outsidePath := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(outsidePath, []byte{0x89, 'P', 'N', 'G'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GroupDiscussionAttachmentPreviewDataURL("disc-preview", outsidePath); err == nil {
+		t.Fatal("expected preview outside discussion attachment directory to be rejected")
+	}
+}
+
+func TestGroupDiscussionAttachmentPreviewDataURLRejectsSymlinkEscape(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	dir := app.groupDiscussionAttachmentRoot("disc-preview")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "photo.png")
+	if err := os.WriteFile(outsidePath, []byte{0x89, 'P', 'N', 'G'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "linked-outside")
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := app.GroupDiscussionAttachmentPreviewDataURL("disc-preview", filepath.Join(linkDir, "photo.png")); err == nil {
+		t.Fatal("expected preview symlink escape to be rejected")
+	}
+}
+
+func TestGroupDiscussionAttachmentPreviewDataURLRejectsNonImage(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	dir := app.groupDiscussionAttachmentRoot("disc-preview")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(localPath, []byte("pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GroupDiscussionAttachmentPreviewDataURL("disc-preview", localPath); err == nil {
+		t.Fatal("expected non-image preview to be rejected")
+	}
+}
+
+func TestGroupDiscussionAttachmentPreviewDataURLRejectsInvalidImageBytes(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	dir := app.groupDiscussionAttachmentRoot("disc-preview")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(dir, "not-image.png")
+	if err := os.WriteFile(localPath, []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GroupDiscussionAttachmentPreviewDataURL("disc-preview", localPath); err == nil {
+		t.Fatal("expected invalid image bytes to be rejected")
+	}
+}
+
 func TestGroupDiscussionDownloadAttachmentRejectsOversizedRemoteFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/ve/files/download/file-big" {
@@ -294,6 +406,216 @@ func TestGroupDiscussionDownloadAttachmentIgnoresCachedPathOutsideDiscussionDir(
 	}
 	if filepath.Dir(result.LocalPath) != app.groupDiscussionAttachmentRoot("disc-safe") {
 		t.Fatalf("local dir = %q, want %q", filepath.Dir(result.LocalPath), app.groupDiscussionAttachmentRoot("disc-safe"))
+	}
+}
+
+func TestGroupDiscussionDownloadAttachmentIgnoresCachedSymlinkEscape(t *testing.T) {
+	hitCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount++
+		_, _ = w.Write([]byte("fresh symlink-safe attachment"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:       server.URL,
+			RemoteMachineID:    "machine-1",
+			RemoteMachineToken: "token-1",
+		},
+	}
+	dir := app.groupDiscussionAttachmentRoot("disc-symlink-cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "cached.pdf")
+	if err := os.WriteFile(outsidePath, []byte("poisoned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "linked-outside")
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	cachedPath := filepath.Join(linkDir, "cached.pdf")
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	if err := store.UpsertDownloadedAttachment(context.Background(), GroupDiscussionAttachmentRecord{AttachmentID: "file-symlink-cache", DiscussionID: "disc-symlink-cache", Filename: "safe.pdf", HubURL: "/api/ve/files/file-symlink-cache", LocalPath: cachedPath, DownloadState: "downloaded"}); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpsertDownloadedAttachment: %v", err)
+	}
+	_ = store.Close()
+
+	result, err := app.GroupDiscussionDownloadAttachment("disc-symlink-cache", "/api/ve/files/file-symlink-cache", "safe.pdf")
+	if err != nil {
+		t.Fatalf("GroupDiscussionDownloadAttachment: %v", err)
+	}
+	if hitCount != 1 {
+		t.Fatalf("expected symlink cached path to be ignored and refetched, hits=%d", hitCount)
+	}
+	if result.LocalPath == cachedPath {
+		t.Fatalf("symlink cached path was reused: %q", result.LocalPath)
+	}
+	data, err := os.ReadFile(outsidePath)
+	if err != nil || string(data) != "poisoned" {
+		t.Fatalf("outside data = %q err=%v", string(data), err)
+	}
+}
+
+func TestGroupDiscussionDownloadAttachmentRejectsLocalSymlinkTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("should not overwrite outside"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:       server.URL,
+			RemoteMachineID:    "machine-1",
+			RemoteMachineToken: "token-1",
+		},
+	}
+	dir := app.groupDiscussionAttachmentRoot("disc-local-symlink")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "outside.pdf")
+	if err := os.WriteFile(outsidePath, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(dir, "file-local-symlink-safe.pdf")
+	if err := os.Symlink(outsidePath, localPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := app.GroupDiscussionDownloadAttachment("disc-local-symlink", "/api/ve/files/file-local-symlink", "safe.pdf"); err == nil {
+		t.Fatal("expected local symlink target to be rejected")
+	}
+	data, err := os.ReadFile(outsidePath)
+	if err != nil || string(data) != "keep me" {
+		t.Fatalf("outside data = %q err=%v", string(data), err)
+	}
+}
+
+func TestGroupDiscussionDownloadAttachmentAvoidsExistingRegularTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fresh body"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:       server.URL,
+			RemoteMachineID:    "machine-1",
+			RemoteMachineToken: "token-1",
+		},
+	}
+	dir := app.groupDiscussionAttachmentRoot("disc-existing-target")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(dir, "file-existing-safe.pdf")
+	if err := os.WriteFile(localPath, []byte("stale body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := app.GroupDiscussionDownloadAttachment("disc-existing-target", "/api/ve/files/file-existing", "safe.pdf")
+	if err != nil {
+		t.Fatalf("GroupDiscussionDownloadAttachment: %v", err)
+	}
+	if result.LocalPath == localPath {
+		t.Fatalf("existing target path was overwritten: %q", result.LocalPath)
+	}
+	stale, err := os.ReadFile(localPath)
+	if err != nil || string(stale) != "stale body" {
+		t.Fatalf("stale target data = %q err=%v", string(stale), err)
+	}
+	data, err := os.ReadFile(result.LocalPath)
+	if err != nil || string(data) != "fresh body" {
+		t.Fatalf("new local data = %q err=%v", string(data), err)
+	}
+}
+
+func TestGroupDiscussionCommitTempAttachmentDoesNotOverwriteRaceWinner(t *testing.T) {
+	dir := t.TempDir()
+	tmp, err := os.CreateTemp(dir, ".download-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write([]byte("downloaded body")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	claimedPath := filepath.Join(dir, "safe.pdf")
+	if err := os.WriteFile(claimedPath, []byte("race winner"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	localPath, localName, err := groupDiscussionCommitTempAttachment(tmpPath, dir, "safe.pdf")
+	if err != nil {
+		t.Fatalf("groupDiscussionCommitTempAttachment: %v", err)
+	}
+	if localPath == claimedPath || localName == "safe.pdf" {
+		t.Fatalf("race winner target reused: path=%q name=%q", localPath, localName)
+	}
+	stale, err := os.ReadFile(claimedPath)
+	if err != nil || string(stale) != "race winner" {
+		t.Fatalf("race winner data = %q err=%v", string(stale), err)
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil || string(data) != "downloaded body" {
+		t.Fatalf("committed data = %q err=%v", string(data), err)
+	}
+}
+
+func TestCopyTempAttachmentNoOverwriteKeepsExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	tmpPath := filepath.Join(dir, "download.tmp")
+	if err := os.WriteFile(tmpPath, []byte("downloaded body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(dir, "safe.pdf")
+	if err := os.WriteFile(localPath, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyTempAttachmentNoOverwrite(tmpPath, localPath); !os.IsExist(err) {
+		t.Fatalf("expected existing target error, got %v", err)
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil || string(data) != "keep me" {
+		t.Fatalf("existing data = %q err=%v", string(data), err)
+	}
+	newPath := filepath.Join(dir, "safe (1).pdf")
+	if err := copyTempAttachmentNoOverwrite(tmpPath, newPath); err != nil {
+		t.Fatalf("copyTempAttachmentNoOverwrite: %v", err)
+	}
+	data, err = os.ReadFile(newPath)
+	if err != nil || string(data) != "downloaded body" {
+		t.Fatalf("new data = %q err=%v", string(data), err)
 	}
 }
 

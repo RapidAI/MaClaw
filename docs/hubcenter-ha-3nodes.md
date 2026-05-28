@@ -52,9 +52,14 @@ ha:
   node_name: hubcenter-1
   advertise_url: https://hubs.mypapers.top
   cluster_secret: replace-with-a-long-random-shared-secret
-  sync_interval_seconds: 3
+  sync_interval_seconds: 180
+  push_debounce_seconds: 180
   pull_batch_size: 200
-  heartbeat_sync_min_interval_seconds: 10
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  history_max_retained_ops: 50000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
   peers:
     - node_id: hc-2
       name: hubcenter-2
@@ -85,9 +90,14 @@ ha:
   node_name: hubcenter-2
   advertise_url: https://hubs.maclaw.top
   cluster_secret: replace-with-a-long-random-shared-secret
-  sync_interval_seconds: 3
+  sync_interval_seconds: 180
+  push_debounce_seconds: 180
   pull_batch_size: 200
-  heartbeat_sync_min_interval_seconds: 10
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  history_max_retained_ops: 50000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
   peers:
     - node_id: hc-1
       name: hubcenter-1
@@ -118,9 +128,14 @@ ha:
   node_name: hubcenter-3
   advertise_url: https://hubs2.maclaw.top
   cluster_secret: replace-with-a-long-random-shared-secret
-  sync_interval_seconds: 3
+  sync_interval_seconds: 180
+  push_debounce_seconds: 180
   pull_batch_size: 200
-  heartbeat_sync_min_interval_seconds: 10
+  heartbeat_sync_min_interval_seconds: 600
+  history_retention_days: 0.5
+  history_max_retained_ops: 50000
+  history_prune_interval_minutes: 10
+  history_prune_batch_size: 20000
   peers:
     - node_id: hc-1
       name: hubcenter-1

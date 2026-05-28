@@ -1137,26 +1137,33 @@ func TestBuildCommandEnvDoesNotOverrideRequiredEnvWithPlaceholders(t *testing.T)
 }
 
 func TestRunnerStepTimeoutSecondsParsesAndCapsTimeout(t *testing.T) {
-	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "700"}, 120, 600)
+	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "700"}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
 	if got != 600 {
 		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want capped 600", got)
 	}
 }
 
 func TestRunnerStepTimeoutSecondsIgnoresInvalidStringTimeout(t *testing.T) {
-	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "30s"}, 120, 600)
-	if got != 120 {
-		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want default 120", got)
+	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "30s"}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
+	if got != corelib.DefaultAgentTimeoutSec {
+		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want default %d", got, corelib.DefaultAgentTimeoutSec)
 	}
 }
 
-func TestRunnerStepTimeoutSecondsAllowsGlobalTimeoutToRaiseCap(t *testing.T) {
+func TestRunnerStepTimeoutSecondsClampsBelowDefaultTimeout(t *testing.T) {
+	got := RunnerStepTimeoutSeconds(map[string]interface{}{"timeout": "120"}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
+	if got != corelib.DefaultAgentTimeoutSec {
+		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want minimum %d", got, corelib.DefaultAgentTimeoutSec)
+	}
+}
+
+func TestRunnerStepTimeoutSecondsCapsGlobalTimeout(t *testing.T) {
 	got := RunnerStepTimeoutSeconds(map[string]interface{}{
 		"timeout":        float64(700),
 		"global_timeout": "900",
-	}, 120, 600)
-	if got != 900 {
-		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want global timeout 900", got)
+	}, corelib.DefaultAgentTimeoutSec, corelib.MaxAgentTimeoutSec)
+	if got != corelib.MaxAgentTimeoutSec {
+		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want capped %d", got, corelib.MaxAgentTimeoutSec)
 	}
 }
 

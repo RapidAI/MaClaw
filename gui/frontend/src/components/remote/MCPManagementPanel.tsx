@@ -164,7 +164,7 @@ export function MCPManagementPanel({ translate }: Props) {
     useEffect(() => { void refreshInstalledCapabilities(); }, [refreshInstalledCapabilities]);
     const handleMarketplaceChanged = useCallback(async () => { await refreshInstalledCapabilities(); }, [refreshInstalledCapabilities]);
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", textAlign: "left", minWidth: 0 }}>
             <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}` }}>
                 <button style={activeTab === "local" ? tabActiveStyle : tabStyle} onClick={() => setActiveTab("local")}>{translate("mcpTabLocal")}</button>
                 <button style={activeTab === "remote" ? tabActiveStyle : tabStyle} onClick={() => setActiveTab("remote")}>{translate("mcpTabRemote")}</button>
@@ -353,7 +353,7 @@ function LocalMCPPanel({ translate }: Props) {
         }
     };
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", textAlign: "left", minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                     {servers.length} {translate("mcpLocalCount")}
@@ -427,19 +427,19 @@ function LocalMCPPanel({ translate }: Props) {
                 </div>
             )}
             {!loading && servers.length === 0 && !error && (
-                <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: colors.textMuted }}>
+                <div style={mcpEmptyDescriptionStateStyle}>
                     {translate("mcpNoLocalServers")}
                 </div>
             )}
             {deleteTarget && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setDeleteTarget(null), backdropRef)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "280px" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(280px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
                             <button className="btn-close" onClick={() => setDeleteTarget(null)}>&times;</button>
                         </div>
                         <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: colors.textSecondary, margin: 0 }}>
+                            <p style={{ ...mcpDescriptionTextStyle, fontSize: "0.8rem", margin: 0 }}>
                                 {translate("mcpConfirmDeleteLocal").replace("{name}", deleteTarget.name)}
                             </p>
                         </div>
@@ -454,13 +454,13 @@ function LocalMCPPanel({ translate }: Props) {
             )}
             {showJsonImport && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setShowJsonImport(false), backdropRef)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "480px", textAlign: "left" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(480px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpImportJsonTitle")}</h3>
                             <button className="btn-close" onClick={() => setShowJsonImport(false)}>&times;</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                            <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
+                            <div style={mcpDescriptionTextStyle}>
                                 {translate("mcpImportJsonDesc")}
                             </div>
                             <pre style={{ fontSize: "0.68rem", background: colors.surfaceMuted, padding: "6px 8px", borderRadius: "4px", margin: 0, whiteSpace: "pre-wrap", color: colors.textSecondary }}>
@@ -497,7 +497,7 @@ function LocalMCPPanel({ translate }: Props) {
             )}
             {showForm && (
                 <div className="modal-backdrop" {...makeBackdropProps(closeForm, backdropRef)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "440px", textAlign: "left" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(440px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditLocalServer") : translate("mcpAddLocalServer")}</h3>
                             <button className="btn-close" onClick={closeForm}>&times;</button>
@@ -1066,7 +1066,7 @@ function RemoteMCPPanel({ translate }: Props) {
         }
     };
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", textAlign: "left", minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                     {servers.length} {translate("mcpServersRegistered")}
@@ -1121,19 +1121,19 @@ function RemoteMCPPanel({ translate }: Props) {
                 </div>
             )}
             {!loading && servers.length === 0 && !error && (
-                <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: colors.textMuted }}>
+                <div style={mcpEmptyDescriptionStateStyle}>
                     {translate("mcpNoRemoteServers")}
                 </div>
             )}
             {deleteTarget && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setDeleteTarget(null), backdropRef)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "280px" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(280px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
                             <button className="btn-close" onClick={() => setDeleteTarget(null)}>&times;</button>
                         </div>
                         <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: colors.textSecondary, margin: 0 }}>
+                            <p style={{ ...mcpDescriptionTextStyle, fontSize: "0.8rem", margin: 0 }}>
                                 {translate("mcpConfirmDeleteRemote").replace("{name}", deleteTarget.name)}
                             </p>
                         </div>
@@ -1148,7 +1148,7 @@ function RemoteMCPPanel({ translate }: Props) {
             )}
             {showForm && (
                 <div className="modal-backdrop" {...makeBackdropProps(closeForm, backdropRef)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "420px", textAlign: "left" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(420px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditServer") : translate("mcpRegisterServerTitle")}</h3>
                             <button className="btn-close" onClick={closeForm}>&times;</button>
@@ -1233,7 +1233,7 @@ function RemoteMCPPanel({ translate }: Props) {
                                         ))}
                                     </div>
                                 ) : (
-                                    <div style={{ fontSize: "0.72rem", color: colors.textMuted, padding: "4px 0" }}>
+                                    <div style={mcpDescriptionTextStyle}>
                                         {translate("mcpNoCustomHeaders")}
                                     </div>
                                 )}
@@ -1253,13 +1253,13 @@ function RemoteMCPPanel({ translate }: Props) {
             )}
             {showJsonImport && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setShowJsonImport(false), backdropRef)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "500px", textAlign: "left" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(500px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpRemoteImportJsonTitle")}</h3>
                             <button className="btn-close" onClick={() => setShowJsonImport(false)}>&times;</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                            <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
+                            <div style={mcpDescriptionTextStyle}>
                                 {translate("mcpRemoteImportJsonDesc")}
                             </div>
                             <pre style={{ fontSize: "0.68rem", background: colors.surfaceMuted, padding: "6px 8px", borderRadius: "4px", margin: 0, whiteSpace: "pre-wrap", color: colors.textSecondary }}>
@@ -1308,8 +1308,6 @@ const thStyle: CSSProperties = {
     color: colors.textSecondary,
     borderBottom: `1px solid ${colors.border}`,
 };
-const smallBtnStyle: CSSProperties = {
-    fontSize: "0.72rem",
-    padding: "2px 8px",
-};
-
+const smallBtnStyle: CSSProperties = { fontSize: "0.72rem", padding: "2px 8px" };
+const mcpDescriptionTextStyle: CSSProperties = { fontSize: "0.72rem", color: colors.textSecondary, lineHeight: 1.5, textAlign: "left", overflowWrap: "anywhere" };
+const mcpEmptyDescriptionStateStyle: CSSProperties = { padding: "20px", fontSize: "0.78rem", color: colors.textMuted, textAlign: "left", lineHeight: 1.5 };

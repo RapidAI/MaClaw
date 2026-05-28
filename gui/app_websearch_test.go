@@ -13,8 +13,9 @@ func TestGetWebSearchProviders_Defaults(t *testing.T) {
 
 	app := &App{testHomeDir: tmpHome}
 	data := app.GetWebSearchProviders()
-	if len(data.Providers) != 3 {
-		t.Fatalf("provider count = %d, want 3", len(data.Providers))
+	wantCount := len(defaultWebSearchProviders())
+	if len(data.Providers) != wantCount {
+		t.Fatalf("provider count = %d, want %d", len(data.Providers), wantCount)
 	}
 	if data.Current != "duckduckgo" {
 		t.Fatalf("current = %q, want duckduckgo", data.Current)
@@ -41,8 +42,9 @@ func TestSaveWebSearchProviders_NormalizesAndPersistsCurrent(t *testing.T) {
 	if saved.WebSearchCurrentProvider != "brave" {
 		t.Fatalf("WebSearchCurrentProvider = %q, want brave", saved.WebSearchCurrentProvider)
 	}
-	if len(saved.WebSearchProviders) != 3 {
-		t.Fatalf("saved provider count = %d, want 3", len(saved.WebSearchProviders))
+	wantCount := len(defaultWebSearchProviders())
+	if len(saved.WebSearchProviders) != wantCount {
+		t.Fatalf("saved provider count = %d, want %d", len(saved.WebSearchProviders), wantCount)
 	}
 	if saved.WebSearchProviders[0].Type != "brave" {
 		t.Fatalf("provider[0].Type = %q, want brave", saved.WebSearchProviders[0].Type)
@@ -70,14 +72,15 @@ func TestGetWebSearchProviders_BackfillsMissingDefaults(t *testing.T) {
 	}
 
 	data := app.GetWebSearchProviders()
-	if len(data.Providers) != 3 {
-		t.Fatalf("provider count = %d, want 3", len(data.Providers))
+	wantCount := len(defaultWebSearchProviders())
+	if len(data.Providers) != wantCount {
+		t.Fatalf("provider count = %d, want %d", len(data.Providers), wantCount)
 	}
 	seen := map[string]bool{}
 	for _, p := range data.Providers {
 		seen[p.Type] = true
 	}
-	for _, want := range []string{"brave", "serper", "duckduckgo"} {
+	for _, want := range []string{"brave", "serper", "tinyfish", "duckduckgo"} {
 		if !seen[want] {
 			t.Fatalf("missing provider %q", want)
 		}

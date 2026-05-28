@@ -29,17 +29,29 @@ func TestNormalizeLoopConfig_PreservesExplicit(t *testing.T) {
 		Goal:                     "fix",
 		VerifyCmd:                "npm test",
 		MaxIterations:            5,
-		VerifyTimeout:            30 * time.Second,
+		VerifyTimeout:            300 * time.Second,
 		MaxLLMIterationsPerCycle: 15,
 	})
 	if cfg.MaxIterations != 5 {
 		t.Errorf("MaxIterations = %d, want 5", cfg.MaxIterations)
 	}
-	if cfg.VerifyTimeout != 30*time.Second {
-		t.Errorf("VerifyTimeout = %v, want 30s", cfg.VerifyTimeout)
+	if cfg.VerifyTimeout != 300*time.Second {
+		t.Errorf("VerifyTimeout = %v, want 300s", cfg.VerifyTimeout)
 	}
 	if cfg.MaxLLMIterationsPerCycle != 15 {
 		t.Errorf("MaxLLMIterationsPerCycle = %d, want 15", cfg.MaxLLMIterationsPerCycle)
+	}
+}
+
+func TestNormalizeLoopConfig_ClampsVerifyTimeout(t *testing.T) {
+	low := NormalizeLoopConfig(LoopCommandConfig{VerifyTimeout: 30 * time.Second})
+	if low.VerifyTimeout != minLoopVerifyTimeout {
+		t.Errorf("low VerifyTimeout = %v, want %v", low.VerifyTimeout, minLoopVerifyTimeout)
+	}
+
+	high := NormalizeLoopConfig(LoopCommandConfig{VerifyTimeout: 900 * time.Second})
+	if high.VerifyTimeout != maxLoopVerifyTimeout {
+		t.Errorf("high VerifyTimeout = %v, want %v", high.VerifyTimeout, maxLoopVerifyTimeout)
 	}
 }
 
@@ -64,12 +76,16 @@ func (f *fakeLoopCallbacks) RunModifyCycle(_ context.Context, _ string, _ int) L
 	return r
 }
 
-func (f *fakeLoopCallbacks) OnIterationStart(i, _ int)          { f.iterationsStarted = append(f.iterationsStarted, i) }
-func (f *fakeLoopCallbacks) OnVerifyStart(_ string, i int)      { f.verifyStarted = append(f.verifyStarted, i) }
+func (f *fakeLoopCallbacks) OnIterationStart(i, _ int) {
+	f.iterationsStarted = append(f.iterationsStarted, i)
+}
+func (f *fakeLoopCallbacks) OnVerifyStart(_ string, i int) {
+	f.verifyStarted = append(f.verifyStarted, i)
+}
 func (f *fakeLoopCallbacks) OnVerifyDone(_ VerifyCommandResult, _ int) {}
-func (f *fakeLoopCallbacks) OnSuccess(_ *LoopCommandState)      { f.successCalled = true }
-func (f *fakeLoopCallbacks) OnFailure(_ *LoopCommandState)      { f.failureCalled = true }
-func (f *fakeLoopCallbacks) IsCancelled() bool                  { return f.cancelled }
+func (f *fakeLoopCallbacks) OnSuccess(_ *LoopCommandState)             { f.successCalled = true }
+func (f *fakeLoopCallbacks) OnFailure(_ *LoopCommandState)             { f.failureCalled = true }
+func (f *fakeLoopCallbacks) IsCancelled() bool                         { return f.cancelled }
 
 func TestRunLoopCommand_ImmediateSuccess(t *testing.T) {
 	// Verify command: "echo ok" always exits 0.

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -51,6 +52,8 @@ type FailureEventLogFilter struct {
 type HubInstance struct {
 	ID                                    string     `json:"id"`
 	InstallationID                        string     `json:"installation_id"`
+	HubOrigin                             string     `json:"hub_origin"`
+	DefaultSignupScope                    string     `json:"default_signup_scope"`
 	OwnerEmail                            string     `json:"owner_email"`
 	Name                                  string     `json:"name"`
 	Description                           string     `json:"description"`
@@ -65,6 +68,7 @@ type HubInstance struct {
 	IsDisabled                            bool       `json:"is_disabled"`
 	DisabledReason                        string     `json:"disabled_reason"`
 	CapabilitiesJSON                      string     `json:"capabilities_json,omitempty"`
+	RegistrationPolicyJSON                string     `json:"registration_policy_json,omitempty"`
 	HubSecretHash                         string     `json:"hub_secret_hash,omitempty"`
 	InvitationCodeRequired                bool       `json:"invitation_code_required"`
 	DigitalEmployeeQuota                  int        `json:"digital_employee_quota"`
@@ -75,6 +79,42 @@ type HubInstance struct {
 	UpdatedAt                             time.Time  `json:"updated_at"`
 }
 
+type HubTenantRegistrationPolicy struct {
+	TenantID                string `json:"tenant_id,omitempty"`
+	TenantName              string `json:"tenant_name,omitempty"`
+	SignupScope             string `json:"signup_scope"`
+	IsPublicFallback        bool   `json:"is_public_fallback"`
+	InviteEnabled           bool   `json:"invite_enabled"`
+	MaxActiveInvites        int    `json:"max_active_invites"`
+	MonthlyInviteQuota      int    `json:"monthly_invite_quota"`
+	PerInviteMaxUsesDefault int    `json:"per_invite_max_uses_default"`
+	PerInviteMaxUsesMax     int    `json:"per_invite_max_uses_max"`
+	Status                  string `json:"status"`
+}
+
+func (p *HubTenantRegistrationPolicy) UnmarshalJSON(data []byte) error {
+	type alias HubTenantRegistrationPolicy
+	var next alias
+	if err := json.Unmarshal(data, &next); err != nil {
+		return err
+	}
+	var probe struct {
+		InviteEnabled *bool `json:"invite_enabled"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if probe.InviteEnabled == nil {
+		next.InviteEnabled = true
+	}
+	*p = HubTenantRegistrationPolicy(next)
+	return nil
+}
+
+type HubRegistrationPolicyState struct {
+	Tenants map[string]HubTenantRegistrationPolicy `json:"tenants"`
+}
+
 type HubUserLink struct {
 	ID        string    `json:"id"`
 	HubID     string    `json:"hub_id"`
@@ -83,6 +123,20 @@ type HubUserLink struct {
 	IsDefault bool      `json:"is_default"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type HubTenantUserCount struct {
+	HubID      string `json:"hub_id"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	Count      int    `json:"count"`
+	AllTenants bool   `json:"all_tenants,omitempty"`
+}
+
+type HubUserFirstSeen struct {
+	HubID     string    `json:"hub_id"`
+	TenantID  string    `json:"tenant_id,omitempty"`
+	Email     string    `json:"email"`
+	FirstSeen time.Time `json:"first_seen"`
 }
 
 type HubDomainRoute struct {
@@ -131,6 +185,13 @@ type HAAppliedOp struct {
 	EntityType   string    `json:"entity_type"`
 	EntityID     string    `json:"entity_id"`
 	AppliedAt    time.Time `json:"applied_at"`
+}
+
+type HAPruneResult struct {
+	DeletedOps        int64 `json:"deleted_ops"`
+	DeletedAppliedOps int64 `json:"deleted_applied_ops"`
+	RemainingOps      int64 `json:"remaining_ops"`
+	MaxSeq            int64 `json:"max_seq"`
 }
 
 type HAPeerCursor struct {
@@ -188,6 +249,7 @@ type HubRepository interface {
 	Create(ctx context.Context, hub *HubInstance) error
 	GetByID(ctx context.Context, id string) (*HubInstance, error)
 	GetByInstallationID(ctx context.Context, installationID string) (*HubInstance, error)
+	GetByEndpoint(ctx context.Context, host string, port int, baseURL string) (*HubInstance, error)
 	UpdateHeartbeat(ctx context.Context, hubID string, at time.Time) error
 	ListByEmail(ctx context.Context, email string) ([]*HubInstance, error)
 	ListAll(ctx context.Context) ([]*HubInstance, error)

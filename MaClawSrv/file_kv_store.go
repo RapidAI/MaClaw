@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -36,6 +38,19 @@ func (s *fileKVStore) Set(_ context.Context, key, value string) error {
 		s.data[key] = value
 	}
 	return s.saveToDisk()
+}
+
+func (s *fileKVStore) Keys(prefix string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.data))
+	for key := range s.data {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (s *fileKVStore) loadFromDisk() {

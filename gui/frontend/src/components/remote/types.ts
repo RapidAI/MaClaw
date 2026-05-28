@@ -193,6 +193,8 @@ export interface RemoteSuggestedAction {
 export interface RemoteActivationStatus {
     activated?: boolean;
     email?: string;
+    tenant_id?: string;
+    tenant_name?: string;
     machine_id?: string;
     sn?: string;
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -40,8 +39,8 @@ func generateID() string {
 func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache, settings store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req gossipPublishRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid JSON")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "BAD_REQUEST", "Invalid JSON")
 			return
 		}
 		machineID := strings.TrimSpace(req.MachineID)
@@ -86,7 +85,7 @@ func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache, set
 			writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
 			return
 		}
-		go cache.Refresh(context.Background())
+		cache.RefreshAsync(context.Background())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true,
 			"post": map[string]any{
@@ -157,8 +156,8 @@ type gossipCommentRequest struct {
 func GossipCommentHandler(gossip store.GossipRepository, cache *GossipCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req gossipCommentRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid JSON")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "BAD_REQUEST", "Invalid JSON")
 			return
 		}
 		machineID := strings.TrimSpace(req.MachineID)
@@ -209,7 +208,7 @@ func GossipCommentHandler(gossip store.GossipRepository, cache *GossipCache) htt
 				writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
 				return
 			}
-			go cache.Refresh(context.Background())
+			cache.RefreshAsync(context.Background())
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok": true,
 				"comment": map[string]any{
@@ -257,8 +256,8 @@ func GossipRateHandler(gossip store.GossipRepository, cache *GossipCache) http.H
 			PostID    string `json:"post_id"`
 			Rating    int    `json:"rating"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid JSON")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "BAD_REQUEST", "Invalid JSON")
 			return
 		}
 		machineID := strings.TrimSpace(req.MachineID)
@@ -303,7 +302,7 @@ func GossipRateHandler(gossip store.GossipRepository, cache *GossipCache) http.H
 			writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
 			return
 		}
-		go cache.Refresh(context.Background())
+		cache.RefreshAsync(context.Background())
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -380,7 +379,11 @@ func AdminDeleteGossipHandler(gossip store.GossipRepository, cache *GossipCache)
 		var req struct {
 			ID string `json:"id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil || req.ID == "" {
+			if err != nil {
+				writeJSONDecodeError(w, err, "BAD_REQUEST", "id required")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "id required")
 			return
 		}
@@ -388,7 +391,7 @@ func AdminDeleteGossipHandler(gossip store.GossipRepository, cache *GossipCache)
 			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
 			return
 		}
-		go cache.Refresh(context.Background())
+		cache.RefreshAsync(context.Background())
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -401,7 +404,7 @@ func AdminDeleteFlaggedGossipHandler(gossip store.GossipRepository, cache *Gossi
 			return
 		}
 		if deleted > 0 {
-			go cache.Refresh(context.Background())
+			cache.RefreshAsync(context.Background())
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
 	}
@@ -413,7 +416,11 @@ func AdminLockGossipHandler(gossip store.GossipRepository, cache *GossipCache) h
 			ID     string `json:"id"`
 			Locked bool   `json:"locked"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil || req.ID == "" {
+			if err != nil {
+				writeJSONDecodeError(w, err, "BAD_REQUEST", "id required")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "id required")
 			return
 		}
@@ -421,7 +428,7 @@ func AdminLockGossipHandler(gossip store.GossipRepository, cache *GossipCache) h
 			writeError(w, http.StatusInternalServerError, "LOCK_FAILED", err.Error())
 			return
 		}
-		go cache.Refresh(context.Background())
+		cache.RefreshAsync(context.Background())
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -469,7 +476,11 @@ func AdminDeleteGossipCommentHandler(gossip store.GossipRepository, cache *Gossi
 			ID     string `json:"id"`
 			PostID string `json:"post_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil || req.ID == "" {
+			if err != nil {
+				writeJSONDecodeError(w, err, "BAD_REQUEST", "id required")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "id required")
 			return
 		}
@@ -479,7 +490,7 @@ func AdminDeleteGossipCommentHandler(gossip store.GossipRepository, cache *Gossi
 		}
 		if req.PostID != "" {
 			_ = gossip.UpdatePostScore(r.Context(), req.PostID)
-			go cache.Refresh(context.Background())
+			cache.RefreshAsync(context.Background())
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
@@ -491,7 +502,11 @@ func AdminFlagGossipHandler(gossip store.GossipRepository, cache *GossipCache) h
 			ID      string `json:"id"`
 			Flagged bool   `json:"flagged"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil || req.ID == "" {
+			if err != nil {
+				writeJSONDecodeError(w, err, "BAD_REQUEST", "id required")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "id required")
 			return
 		}
@@ -499,7 +514,7 @@ func AdminFlagGossipHandler(gossip store.GossipRepository, cache *GossipCache) h
 			writeError(w, http.StatusInternalServerError, "FLAG_FAILED", err.Error())
 			return
 		}
-		go cache.Refresh(context.Background())
+		cache.RefreshAsync(context.Background())
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -47,7 +49,7 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 		return codingCommandExecutionResult{Text: "missing command parameter", Kind: codingCommandResultStartError, ExitCode: -1}
 	}
 
-	timeout := resolveBashTimeout(args, command)
+	timeout := resolveCodingCommandTimeout(args, command)
 	workDir := resolvePath(stringVal(args, "working_dir"))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -122,6 +124,36 @@ func executeCodingBash(args map[string]interface{}, onProgress coretool.Progress
 	}
 	output = appendCodingCommandStatus(output, fmt.Sprintf("command exited with code %d", exitCode))
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
+}
+
+func resolveCodingCommandTimeout(args map[string]interface{}, command string) int {
+	timeout := corelib.DefaultAgentTimeoutSec
+	switch v := args["timeout"].(type) {
+	case float64:
+		if v > 0 {
+			timeout = int(v)
+		}
+	case float32:
+		if v > 0 {
+			timeout = int(v)
+		}
+	case int:
+		if v > 0 {
+			timeout = v
+		}
+	case int64:
+		if v > 0 {
+			timeout = int(v)
+		}
+	case json.Number:
+		if i, err := v.Int64(); err == nil && i > 0 {
+			timeout = int(i)
+		}
+	}
+	if timeout > corelib.MaxAgentTimeoutSec {
+		return corelib.MaxAgentTimeoutSec
+	}
+	return timeout
 }
 
 func formatCodingCommandOutput(stdoutText, stderrText string) string {

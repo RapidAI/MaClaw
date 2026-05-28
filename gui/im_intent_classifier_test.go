@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	cagent "github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
@@ -35,6 +36,19 @@ func TestClassifyTaskIntent_WithoutUIC_ReturnsUnknown(t *testing.T) {
 				t.Fatalf("expected semantic-unavailable source, got %q", result.Source)
 			}
 		})
+	}
+}
+
+func TestSetUnifiedClassifierForIMWiresCoreAgentClassifier(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
+	uic := intent.New(intent.Config{Embedder: embedding.NoopEmbedder{}, LLMTimeout: time.Second})
+
+	setUnifiedClassifierForIM(uic)
+
+	result := cagent.ClassifyTaskIntent("anything")
+	if result.Source != "uic" {
+		t.Fatalf("expected core agent classifier to use shared UIC, got %#v", result)
 	}
 }
 

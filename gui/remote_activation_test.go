@@ -334,6 +334,8 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":        "approved",
 				"user_id":       "u_123",
+				"tenant_id":     "tenant_123",
+				"tenant_name":   "Acme Team",
 				"email":         "user@example.com",
 				"sn":            "SN-2026-000001",
 				"machine_id":    "m_123",
@@ -385,6 +387,7 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	app := &App{testHomeDir: tmpHome}
 	cfg := corelib.AppConfig{
 		RemoteHubCenterURL: center.URL,
+		RemoteNickname:     "Old Desk",
 	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -396,6 +399,9 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	}
 	if result.MachineID != "m_123" || result.MachineToken != "mt_123" {
 		t.Fatalf("unexpected activation result: %+v", result)
+	}
+	if result.TenantID != "tenant_123" || result.TenantName != "Acme Team" {
+		t.Fatalf("unexpected tenant result: %+v", result)
 	}
 
 	saved, err := app.LoadConfig()
@@ -410,6 +416,15 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	}
 	if saved.RemoteMachineID != "m_123" || saved.RemoteMachineToken != "mt_123" {
 		t.Fatalf("saved machine identity mismatch: %+v", saved)
+	}
+	if saved.RemoteTenantID != "tenant_123" || saved.RemoteTenantName != "Acme Team" {
+		t.Fatalf("saved tenant identity mismatch: %+v", saved)
+	}
+	if saved.RemoteMachineName == "" {
+		t.Fatal("RemoteMachineName should be saved after activation")
+	}
+	if saved.RemoteNickname != "" {
+		t.Fatalf("RemoteNickname = %q, want cleared until Hub assigns current nickname", saved.RemoteNickname)
 	}
 	// Verify RemoteEnabled is set
 	if !saved.RemoteEnabled {
@@ -627,8 +642,12 @@ func TestClearRemoteActivation_DisconnectsHubClient(t *testing.T) {
 		RemoteEmail:        "user@example.com",
 		RemoteSN:           "SN-2026-000345",
 		RemoteUserID:       "u_345",
+		RemoteTenantID:     "tenant_345",
+		RemoteTenantName:   "Old Team",
 		RemoteMachineID:    "m_345",
+		RemoteMachineName:  "old-machine",
 		RemoteMachineToken: "mt_345",
+		RemoteNickname:     "Old Desk",
 	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -665,5 +684,8 @@ func TestClearRemoteActivation_DisconnectsHubClient(t *testing.T) {
 	}
 	if saved.RemoteMachineID != "" || saved.RemoteMachineToken != "" || saved.RemoteEmail != "" || saved.RemoteSN != "" {
 		t.Fatalf("expected activation identity to be cleared, got %+v", saved)
+	}
+	if saved.RemoteTenantID != "" || saved.RemoteTenantName != "" || saved.RemoteMachineName != "" || saved.RemoteNickname != "" {
+		t.Fatalf("expected hub identity metadata to be cleared, got %+v", saved)
 	}
 }

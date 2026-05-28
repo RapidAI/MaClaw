@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -18,14 +17,18 @@ import (
 // can monitor them in the GUI "任务后台" panel without direct interaction.
 // ---------------------------------------------------------------------------
 
-// sshMgrOnce guards lazy initialisation of the SSH session manager.
-var sshMgrOnce sync.Once
-
 // ensureSSHManager lazily initialises the SSH session manager (thread-safe).
 func (h *IMMessageHandler) ensureSSHManager() *remote.SSHSessionManager {
-	sshMgrOnce.Do(func() {
-		h.sshMgr = remote.NewSSHSessionManager(nil)
-		h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(h.sshMgr)
+	if h == nil {
+		return nil
+	}
+	h.sshMgrOnce.Do(func() {
+		if h.sshMgr == nil {
+			h.sshMgr = remote.NewSSHSessionManager(nil)
+		}
+		if h.bgTaskMgr == nil {
+			h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(h.sshMgr)
+		}
 
 		// When an SSH session exits (abnormal disconnect, remote close, etc.)
 		// automatically mark the corresponding background loop as completed.
@@ -113,6 +116,15 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	if p, ok := args["port"].(float64); ok && p > 0 {
 		port = int(p)
 	}
+	cfg := remote.SSHHostConfig{
+		Host:       host,
+		User:       user,
+		Port:       port,
+		AuthMethod: sshStrArg(args, "auth_method"),
+		KeyPath:    sshStrArg(args, "key_path"),
+		Password:   sshStrArg(args, "password"),
+		Label:      label,
+	}
 
 	// Check if a running session already exists for this host.
 	// Reuse it instead of creating duplicate sessions — this prevents
@@ -131,6 +143,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 				// Connection is alive, but shell might be stuck (e.g. sqlite3 lock,
 				// interactive program). Verify shell responsiveness.
 				if mgr.CheckShellResponsive(existing.ID) {
+					h.registerSSHBackgroundLoop(existing, cfg)
 					summary := existing.GetSummary()
 					result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
 						existing.ID, summary.HostID, summary.Status)
@@ -145,6 +158,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 			} else {
 				// Connection is dead. Try to reconnect the existing session.
 				if err := mgr.ReconnectByID(existing.ID); err == nil {
+					h.registerSSHBackgroundLoop(existing, cfg)
 					// Wait for shell init after reconnect.
 					time.Sleep(2 * time.Second)
 					preview := strings.Join(existing.PreviewTail(10), "\n")
@@ -163,16 +177,6 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		}
 	}
 
-	cfg := remote.SSHHostConfig{
-		Host:       host,
-		User:       user,
-		Port:       port,
-		AuthMethod: sshStrArg(args, "auth_method"),
-		KeyPath:    sshStrArg(args, "key_path"),
-		Password:   sshStrArg(args, "password"),
-		Label:      label,
-	}
-
 	spec := remote.SSHSessionSpec{
 		HostConfig:     cfg,
 		InitialCommand: sshStrArg(args, "initial_command"),
@@ -185,9 +189,9 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		errMsg := fmt.Sprintf("SSH 连接失败: %v", err)
 		if classifySSHError(err) == sshErrorAuthentication {
 			if cfg.Password == "" {
-				errMsg += "\n\n💡 认证失败且未提供密码。请使用 password 参数重试，例如：\nssh connect host=... user=... port=... password=<密码> auth_method=password"
+				errMsg += "\n\nSSH password was not provided; retry with password or key_path/auth_method."
 			} else {
-				errMsg += "\n\n💡 已提供密码但认证仍失败，请检查密码是否正确"
+				errMsg += "\n\npassword was provided but authentication still failed; check that the password is correct"
 			}
 		}
 		return errMsg
@@ -263,6 +267,7 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 		time.Sleep(2 * time.Second)
 	}
 
+	h.registerSSHBackgroundLoop(session, session.Spec.HostConfig)
 	linesBefore := session.LineCount()
 
 	if sessionDead {
@@ -330,6 +335,7 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	}
 
 	// Update background loop iteration count.
+	h.registerSSHBackgroundLoop(session, session.Spec.HostConfig)
 	h.bumpSSHLoopIteration(sessionID)
 
 	return fmt.Sprintf("%s[%s] 状态: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output)
@@ -344,6 +350,7 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 
 	sessionID, _ := args["session_id"].(string)
 	command, _ := args["command"].(string)
+	taskRole, _ := args["task_role"].(string)
 	if sessionID == "" || command == "" {
 		return "错误: exec_background 需要 session_id 和 command 参数"
 	}
@@ -357,11 +364,16 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 		time.Sleep(2 * time.Second)
 	}
 
-	task, err := h.bgTaskMgr.Submit(sessionID, command)
+	if session, ok := mgr.Get(sessionID); ok {
+		h.registerSSHBackgroundLoop(session, session.Spec.HostConfig)
+	}
+
+	task, err := h.bgTaskMgr.SubmitWithRole(sessionID, command, taskRole)
 	if err != nil {
 		return fmt.Sprintf("提交后台任务失败: %v", err)
 	}
 
+	h.emitAppEvent("background-loops-changed")
 	h.bumpSSHLoopIteration(sessionID)
 
 	return fmt.Sprintf("✅ 后台任务已提交\n"+
@@ -396,15 +408,18 @@ func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 		return fmt.Sprintf("检查任务失败: %v", err)
 	}
 
+	h.emitAppEvent("background-loops-changed")
 	return formatSSHBackgroundTaskStatus(result)
 }
 
 // sshWaitTask polls a background task until it reaches a terminal state or timeout.
 func (h *IMMessageHandler) sshWaitTask(args map[string]interface{}) string {
-	return waitSSHBackgroundTask(h.bgTaskMgr, args, "error: no SSH background task manager", "error: wait_task requires task_id")
+	return waitSSHBackgroundTask(h.bgTaskMgr, args, "error: no SSH background task manager", "error: wait_task requires task_id", func() {
+		h.emitAppEvent("background-loops-changed")
+	})
 }
 
-func waitSSHBackgroundTask(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[string]interface{}, noManagerMsg, missingTaskMsg string) string {
+func waitSSHBackgroundTask(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[string]interface{}, noManagerMsg, missingTaskMsg string, onStatusChange func()) string {
 	if bgTaskMgr == nil {
 		return noManagerMsg
 	}
@@ -426,6 +441,9 @@ func waitSSHBackgroundTask(bgTaskMgr *remote.SSHBackgroundTaskManager, args map[
 		}
 		formatted := formatSSHBackgroundTaskStatus(result)
 		if !normalizeRuntimeTaskStatus(result.Status).IsActive() {
+			if onStatusChange != nil {
+				onStatusChange()
+			}
 			return fmt.Sprintf("wait_task reached terminal status %q after %d check(s).\n\n%s", result.Status, checks, formatted)
 		}
 		remaining := time.Until(deadline)
@@ -550,6 +568,7 @@ func (h *IMMessageHandler) sshKillTask(args map[string]interface{}) string {
 	if err := h.bgTaskMgr.KillTask(taskID); err != nil {
 		return fmt.Sprintf("终止任务失败: %v", err)
 	}
+	h.emitAppEvent("background-loops-changed")
 	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
 }
 
@@ -685,8 +704,15 @@ func (h *IMMessageHandler) sshCloseAll() string {
 // registerSSHBackgroundLoop creates a BackgroundLoopManager entry for an SSH
 // session so it appears in the GUI "任务后台" panel.
 func (h *IMMessageHandler) registerSSHBackgroundLoop(session *remote.SSHManagedSession, cfg remote.SSHHostConfig) {
-	if h.bgManager == nil {
+	if h == nil || h.bgManager == nil || session == nil || session.ID == "" {
 		return
+	}
+	for _, ctx := range h.bgManager.List() {
+		if ctx.SlotKind == SlotKindSSH && ctx.SessionID == session.ID {
+			ctx.SetLoopState(LoopStateRunning)
+			h.bgManager.NotifyChange()
+			return
+		}
 	}
 	desc := fmt.Sprintf("SSH: %s", cfg.SSHHostID())
 	if cfg.Label != "" {

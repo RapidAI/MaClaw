@@ -160,6 +160,8 @@
     guardrailMode: { zh: '\u62a4\u680f\u6a21\u5f0f', en: 'Guardrail Mode' },
     sandboxMode: { zh: '\u6c99\u7bb1\u6a21\u5f0f', en: 'Sandbox Mode' },
     networkLevel: { zh: '\u7f51\u7edc\u7ea7\u522b', en: 'Network Level' },
+    networkAllowlist: { zh: '\u7f51\u7edc\u5141\u8bb8\u5217\u8868', en: 'Network Allowlist' },
+    skillSourcesAllowed: { zh: 'Skill \u6765\u6e90\u5141\u8bb8\u5217\u8868', en: 'Allowed Skill Sources' },
     custom: { zh: '\u81ea\u5b9a\u4e49', en: 'Custom' },
     inheritedFrom: { zh: '\u7ee7\u627f\u81ea ', en: 'Inherited from ' },
     inheritPolicy: { zh: '\u7ee7\u627f', en: 'Inherit' },
@@ -245,11 +247,15 @@
     capabilityRequired: { zh: '\u5fc5\u88c5', en: 'Required' },
     capabilityRecommended: { zh: '\u63a8\u8350', en: 'Recommended' },
     capabilityBlocked: { zh: '\u7981\u6b62', en: 'Blocked' },
+    capabilityPackageName: { zh: '\u80fd\u529b\u5305\u540d', en: 'Package name' },
+    capabilityType: { zh: '\u80fd\u529b\u5305\u7c7b\u578b', en: 'Package type' },
+    capabilityReference: { zh: '\u80fd\u529b\u5305\u5f15\u7528', en: 'Package ref' },
     capabilitySourceGlobal: { zh: '\u5168\u5c40\u4e0b\u53d1', en: 'Global rollout' },
     capabilitySourceGroup: { zh: '\u90e8\u95e8/\u7ec4\u4e0b\u53d1', en: 'Department/group rollout' },
     capabilitySourceUser: { zh: '\u7528\u6237\u4e0b\u53d1', en: 'User rollout' },
     capabilityCompliant: { zh: '\u5df2\u5408\u89c4', en: 'Compliant' },
     capabilityMissing: { zh: '\u7f3a\u5931', en: 'Missing' },
+    capabilityNeedsConfig: { zh: '\u5f85\u914d\u7f6e', en: 'Needs config' },
     capabilityVersionMismatch: { zh: '\u7248\u672c\u4e0d\u7b26', en: 'Version mismatch' },
     capabilityBlockedInstalled: { zh: '\u7981\u6b62\u4f46\u5df2\u5b89\u88c5', en: 'Blocked but installed' },
     capabilityPendingReport: { zh: '\u5f85\u5ba2\u6237\u7aef\u4e0a\u62a5', en: 'Pending client report' },
@@ -258,7 +264,7 @@
     capabilityRequiredCount: { zh: '\u5e94\u88c5', en: 'Required' },
     capabilityRecommendedCount: { zh: '\u63a8\u8350', en: 'Recommended' },
     capabilityBlockedCount: { zh: '\u7981\u6b62', en: 'Blocked' },
-    capabilityTelemetryHint: { zh: '\u7528\u6237\u7aef\u5b89\u88c5\u6e05\u5355\u4e0a\u62a5\u63a5\u5165\u540e\uff0c\u6b64\u5904\u5c06\u663e\u793a\u5df2\u88c5\u3001\u7f3a\u5931\u3001\u7248\u672c\u4e0d\u7b26\u548c\u7981\u6b62\u4f46\u5df2\u5b89\u88c5\u3002', en: 'When client install inventory reporting is wired, this view will show installed, missing, version mismatch, and blocked-but-installed states.' },
+    capabilityTelemetryHint: { zh: '\u5ba2\u6237\u7aef\u4e0b\u6b21\u8fde\u63a5\u6216\u5fc3\u8df3\u540e\u4f1a\u4e0a\u62a5\u5b89\u88c5\u6e05\u5355\uff0c\u6b64\u5904\u663e\u793a\u5df2\u88c5\u3001\u7f3a\u5931\u3001\u5f85\u914d\u7f6e\u3001\u7248\u672c\u4e0d\u7b26\u548c\u7981\u6b62\u4f46\u5df2\u5b89\u88c5\u3002', en: 'Clients report install inventory on the next connection or heartbeat; this view shows installed, missing, needs config, version mismatch, and blocked-but-installed states.' },
     capabilityInstalledVersion: { zh: '\u5df2\u88c5\u7248\u672c', en: 'Installed version' },
     capabilityExpectedVersion: { zh: '\u671f\u671b\u7248\u672c', en: 'Expected version' },
     capabilityLastSeen: { zh: '\u6700\u540e\u4e0a\u62a5', en: 'Last seen' },
@@ -420,9 +426,9 @@
 
   function policyOptionLabel(policyKey, option) {
     var labels = {
-      guardrail_mode: { none: text('\u65e0', 'None'), standard: text('\u6807\u51c6', 'Standard'), strict: text('\u4e25\u683c', 'Strict') },
-      sandbox_mode: { none: text('\u65e0', 'None'), basic: text('\u57fa\u7840', 'Basic'), strict: text('\u4e25\u683c', 'Strict') },
-      network_level: { none: text('\u65e0', 'None'), limited: text('\u53d7\u9650', 'Limited'), full: text('\u5b8c\u5168\u5f00\u653e', 'Full') }
+      guardrail_mode: { none: text('\u65e0', 'None'), standard: text('\u6807\u51c6', 'Standard'), relaxed: text('\u5bbd\u677e', 'Relaxed'), strict: text('\u4e25\u683c', 'Strict'), developer: text('\u5f00\u53d1', 'Developer') },
+      sandbox_mode: { none: text('\u65e0', 'None'), os: text('\u7cfb\u7edf\u6c99\u7bb1', 'OS sandbox'), docker: text('Docker', 'Docker') },
+      network_level: { none: text('\u7981\u6b62', 'None'), intranet: text('\u5185\u7f51', 'Intranet'), allowlist: text('\u5141\u8bb8\u5217\u8868', 'Allowlist'), full: text('\u5b8c\u5168\u5f00\u653e', 'Full') }
     };
     return labels[policyKey] && labels[policyKey][option] ? labels[policyKey][option] : option;
   }
@@ -949,9 +955,11 @@
       { key: 'gossip_enabled', label: st('gossip'), type: 'bool' },
       { key: 'yolo_mode_allowed', label: st('yoloMode'), type: 'bool' },
       { key: 'smart_route_enabled', label: st('smartRoute'), type: 'bool' },
-      { key: 'guardrail_mode', label: st('guardrailMode'), type: 'select', options: ['none', 'standard', 'strict'] },
-      { key: 'sandbox_mode', label: st('sandboxMode'), type: 'select', options: ['none', 'basic', 'strict'] },
-      { key: 'network_level', label: st('networkLevel'), type: 'select', options: ['none', 'limited', 'full'] }
+      { key: 'guardrail_mode', label: st('guardrailMode'), type: 'select', options: ['none', 'standard', 'relaxed', 'strict', 'developer'] },
+      { key: 'sandbox_mode', label: st('sandboxMode'), type: 'select', options: ['none', 'os', 'docker'] },
+      { key: 'network_level', label: st('networkLevel'), type: 'select', options: ['none', 'intranet', 'allowlist', 'full'] },
+      { key: 'network_allowlist', label: st('networkAllowlist'), type: 'string_array', placeholder: 'api.example.com, *.corp.local' },
+      { key: 'skill_sources_allowed', label: st('skillSourcesAllowed'), type: 'string_array', placeholder: 'skillhub, clawhub, github, enterprise_hub' }
     ];
   }
 
@@ -1224,18 +1232,20 @@
       html += '<div style="display:grid;grid-template-columns:minmax(160px,1.2fr) auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">';
       html += '<div style="font-size:12px;font-weight:600">' + escapeHtml(pk.label) + sourceTag + '</div>';
       if (!editable) {
-        html += '<div class="item-meta" style="justify-self:end">' + escapeHtml(pk.type === 'bool' ? (value ? st('enabled') : st('disabled')) : policyOptionLabel(pk.key, value)) + '</div>';
+        html += '<div class="item-meta" style="justify-self:end">' + escapeHtml(policyDisplayValue(pk, value)) + '</div>';
       } else {
         html += '<div style="display:flex;align-items:center;gap:10px;justify-self:end">';
         html += '<label class="item-meta" style="display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap"><input type="checkbox" data-policy-inherit-key="' + pk.key + '" onchange="toggleSecPolicyInherit(this)" ' + (inherited ? 'checked' : '') + '> ' + escapeHtml(st('inheritPolicy')) + '</label>';
         if (pk.type === 'bool') {
           html += '<label style="cursor:pointer"><input type="checkbox" data-policy-key="' + pk.key + '" data-policy-type="bool" ' + (value ? 'checked' : '') + ' ' + (inherited ? 'disabled' : '') + '></label>';
-        } else {
+        } else if (pk.type === 'select') {
           html += '<select data-policy-key="' + pk.key + '" data-policy-type="select" style="font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line)" ' + (inherited ? 'disabled' : '') + '>';
           pk.options.forEach(function(option) {
             html += '<option value="' + option + '"' + (value === option ? ' selected' : '') + '>' + escapeHtml(policyOptionLabel(pk.key, option)) + '</option>';
           });
           html += '</select>';
+        } else {
+          html += '<input data-policy-key="' + pk.key + '" data-policy-type="string_array" value="' + escapeHtml(arrayPolicyInputValue(value)) + '" placeholder="' + escapeHtml(pk.placeholder || '') + '" style="font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);width:220px" ' + (inherited ? 'disabled' : '') + '>';
         }
         html += '</div>';
       }
@@ -1347,9 +1357,9 @@
     var cache = { capabilities: [], deployments: [], recommendations: [], inventory: [] };
     try {
       var results = await Promise.all([
-        api('/api/capabilities').catch(function() { return { items: [] }; }),
-        api('/api/capabilities/managed-deployments').catch(function() { return { items: [] }; }),
-        api('/api/capabilities/recommended').catch(function() { return { items: [] }; })
+        api('/api/admin/capabilities').catch(function() { return { items: [] }; }),
+        api('/api/admin/capability-market/managed-deployments').catch(function() { return { items: [] }; }),
+        api('/api/admin/capability-market/recommendations').catch(function() { return { items: [] }; })
       ]);
       cache.capabilities = Array.isArray(results[0].items) ? results[0].items : [];
       cache.deployments = Array.isArray(results[1].items) ? results[1].items : [];
@@ -1379,7 +1389,7 @@
 
   function normalizeCapabilityComplianceStatusFilter(status) {
     status = String(status || '').trim().toLowerCase();
-    var allowed = { all: true, issues: true, risks: true, compliant: true, missing: true, version_mismatch: true, blocked_installed: true, stale: true, unmanaged_installed: true };
+    var allowed = { all: true, issues: true, risks: true, compliant: true, missing: true, needs_config: true, version_mismatch: true, blocked_installed: true, stale: true, unmanaged_installed: true };
     return allowed[status] && status !== 'all' ? status : '';
   }
 
@@ -1666,26 +1676,31 @@
     scope = scope || {};
     var type = String(scope.type || scope.scope || '').trim().toLowerCase();
     var ids = [];
-    if (Array.isArray(scope.group_ids)) ids = ids.concat(scope.group_ids);
-    if (Array.isArray(scope.user_emails)) ids = ids.concat(scope.user_emails);
-    if (scope.group_id) ids.push(scope.group_id);
-    if (scope.user_email) ids.push(scope.user_email);
+    var groupIds = [];
+    var userEmails = [];
+    if (Array.isArray(scope.group_ids)) groupIds = groupIds.concat(scope.group_ids);
+    if (Array.isArray(scope.user_emails)) userEmails = userEmails.concat(scope.user_emails);
+    if (scope.group_id) groupIds.push(scope.group_id);
+    if (scope.user_email) userEmails.push(scope.user_email);
+    if (!type && userEmails.length) type = 'user';
+    if (!type && groupIds.length) type = 'group';
+    ids = type === 'user' ? userEmails : groupIds;
     if (type === 'global' || (!type && !ids.length)) return (objectType === 'global' || objectType === 'group' || objectType === 'user') ? 0 : -1;
     if (objectType === 'global') return -1;
     if (objectType === 'group') {
       if (type !== 'group' && type !== 'department') return -1;
       var groupChain = selectedGroupChainIds(objectId).map(String);
-      var bestGroupIndex = -1;
-      ids.map(String).forEach(function(id) { bestGroupIndex = Math.max(bestGroupIndex, groupChain.indexOf(id)); });
-      return bestGroupIndex >= 0 ? 100 + bestGroupIndex : -1;
+      var bestGroupScore = -1;
+      ids.map(String).forEach(function(id) { var idx = groupChain.indexOf(id); if (idx >= 0) bestGroupScore = Math.max(bestGroupScore, 100 + idx); });
+      return bestGroupScore;
     }
     if (objectType === 'user') {
       if (type === 'user') return ids.map(function(v) { return normalizeEmailKey(v); }).indexOf(normalizeEmailKey(objectId)) >= 0 ? 1000 : -1;
       if (type === 'group' || type === 'department') {
         var userGroupChain = selectedGroupChainIds(state().selectedGroupId).map(String);
-        var bestUserGroupIndex = -1;
-        ids.map(String).forEach(function(id) { bestUserGroupIndex = Math.max(bestUserGroupIndex, userGroupChain.indexOf(id)); });
-        return bestUserGroupIndex >= 0 ? 100 + bestUserGroupIndex : -1;
+        var bestUserGroupScore = -1;
+        ids.map(String).forEach(function(id) { var idx = userGroupChain.indexOf(id); if (idx >= 0) bestUserGroupScore = Math.max(bestUserGroupScore, 100 + idx); });
+        return bestUserGroupScore;
       }
     }
     return -1;
@@ -1722,6 +1737,8 @@
   function scopeLabel(scope, objectType) {
     scope = scope || {};
     var type = String(scope.type || scope.scope || '').trim().toLowerCase();
+    if (!type && (scope.user_email || (Array.isArray(scope.user_emails) && scope.user_emails.length))) type = 'user';
+    if (!type && (scope.group_id || (Array.isArray(scope.group_ids) && scope.group_ids.length))) type = 'group';
     if (type === 'user') return st('capabilitySourceUser');
     if (type === 'group' || type === 'department') return st('capabilitySourceGroup');
     if (objectType === 'global') return st('capabilitySourceGlobal');
@@ -1734,9 +1751,55 @@
     return '<option value="">' + escapeHtml(st('capabilitySelect')) + '</option>' + caps.map(function(item) {
       var id = String(item.id || item.capability_ref || '').trim();
       if (!id) return '';
-      var label = item.display_name || item.capability_id || id;
+      var label = capabilityDisplayName(item, id);
       return '<option value="' + escapeHtml(id) + '" data-version="' + escapeHtml(item.current_version_key || '') + '">' + escapeHtml(label + ' (' + (item.capability_type || '-') + ')') + '</option>';
     }).join('');
+  }
+
+  function policyDisplayValue(pk, value) {
+    if (pk.type === 'bool') return value ? st('enabled') : st('disabled');
+    if (pk.type === 'string_array') return arrayPolicyInputValue(value) || '-';
+    return policyOptionLabel(pk.key, value);
+  }
+
+  function arrayPolicyInputValue(value) {
+    return Array.isArray(value) ? value.join(', ') : String(value || '');
+  }
+
+  function capabilityDisplayName(cap, fallback) {
+    cap = cap || {};
+    var meta = capabilityMetadata(cap);
+    var manifest = meta && typeof meta.manifest === 'object' ? meta.manifest : {};
+    return firstText(
+      cap.display_name,
+      cap.name,
+      meta.display_name,
+      meta.name,
+      manifest.display_name,
+      manifest.name,
+      cap.capability_id,
+      fallback,
+      cap.id,
+      '-'
+    );
+  }
+
+  function capabilityMetadata(cap) {
+    if (!cap || !cap.metadata_json) return {};
+    try {
+      var parsed = typeof cap.metadata_json === 'string' ? JSON.parse(cap.metadata_json) : cap.metadata_json;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function firstText() {
+    for (var i = 0; i < arguments.length; i += 1) {
+      var value = String(arguments[i] === undefined || arguments[i] === null ? '' : arguments[i]).trim();
+      if (value) return value;
+    }
+    return '';
   }
 
   function capabilityScopePreviewLabel(objectType) {
@@ -1836,14 +1899,15 @@
     var addControls = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilitySelect')) + '</label><select id="secCapabilitySelect" onchange="syncSecCapabilityVersionFromSelect()" style="height:36px">' + capabilityOptions(cache) + '</select></div><div><label>' + escapeHtml(st('version')) + '</label><input id="secCapabilityVersion" style="height:36px" placeholder="auto"></div><div class="actions" style="gap:6px;padding:0;flex-wrap:wrap"><button class="btn-secondary" style="height:32px;font-size:12px;padding:0 10px" onclick="saveSecCapabilityPolicy(\'required\')">' + escapeHtml(st('addRequiredCapability')) + '</button><button class="btn-ghost" style="height:32px;font-size:12px;padding:0 10px" onclick="saveSecCapabilityPolicy(\'recommended\')">' + escapeHtml(st('addRecommendedCapability')) + '</button><button class="btn-ghost" style="height:32px;font-size:12px;padding:0 10px;color:var(--danger)" onclick="saveSecCapabilityPolicy(\'blocked\')">' + escapeHtml(st('addBlockedCapability')) + '</button></div></div>' + scopePreview;
     var body = rows.length ? rows.map(function(row) {
       var cap = row.capability || {};
-      var title = cap.display_name || cap.capability_id || row.item.capability_ref || '-';
+      var title = capabilityDisplayName(cap, row.item.capability_ref || '-');
       var type = cap.capability_type || '-';
       var version = row.item.capability_version_key || cap.current_version_key || 'auto';
       var rowPolicy = normalizeCapabilityDeploymentPolicy(row.policy);
       var badge = rowPolicy === 'required' ? st('capabilityRequired') : (rowPolicy === 'blocked' ? st('capabilityBlocked') : st('capabilityRecommended'));
       var meta = [
-        row.item.capability_ref || '-',
-        type,
+        st('capabilityPackageName') + ': ' + title,
+        st('capabilityType') + ': ' + type,
+        st('capabilityReference') + ': ' + (row.item.capability_ref || '-'),
         st('version') + ': ' + version,
         st('capabilityPolicySource') + ': ' + row.source,
         st('capabilitySpecificity') + ': ' + String(row.specificity || 0),
@@ -1872,6 +1936,7 @@
     var requiredVersion = row.item.capability_version_key || (row.capability && row.capability.current_version_key) || '';
     var policy = normalizeCapabilityDeploymentPolicy(row.policy);
     if (policy === 'blocked') return inv && inv.installed ? 'blocked_installed' : 'compliant';
+    if (inv && String(inv.install_status || '').toLowerCase() === 'needs_config') return 'needs_config';
     if (!inv || !inv.installed) return 'missing';
     if (inv && inv.last_seen_at) {
       var ts = Date.parse(inv.last_seen_at);
@@ -1885,6 +1950,7 @@
   function complianceBadge(status) {
     if (status === 'compliant') return '<span class="badge ok">' + escapeHtml(st('capabilityCompliant')) + '</span>';
     if (status === 'missing') return '<span class="badge warn">' + escapeHtml(st('capabilityMissing')) + '</span>';
+    if (status === 'needs_config') return '<span class="badge warn">' + escapeHtml(st('capabilityNeedsConfig')) + '</span>';
     if (status === 'version_mismatch') return '<span class="badge warn">' + escapeHtml(st('capabilityVersionMismatch')) + '</span>';
     if (status === 'blocked_installed') return '<span class="badge danger">' + escapeHtml(st('capabilityBlockedInstalled')) + '</span>';
     if (status === 'stale') return '<span class="badge warn">' + escapeHtml(st('capabilityReportStale')) + '</span>';
@@ -1904,6 +1970,7 @@
     var mismatch = 0;
     var blockedInstalled = 0;
     var stale = 0;
+    var needsConfig = 0;
     (rows || []).forEach(function(row) {
       var policy = normalizeCapabilityDeploymentPolicy(row.policy);
       if (policy === 'required') required += 1;
@@ -1912,14 +1979,15 @@
       var status = capabilityComplianceStatus(row, invMap);
       if (status === 'compliant') compliant += 1;
       else if (status === 'missing') missing += 1;
+      else if (status === 'needs_config') needsConfig += 1;
       else if (status === 'version_mismatch') mismatch += 1;
       else if (status === 'blocked_installed') blockedInstalled += 1;
       else if (status === 'stale') stale += 1;
     });
-    var metrics = '<div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('capabilityRequiredCount')) + '</label><strong>' + String(required) + '</strong><span>' + escapeHtml(st('capabilityRecommendedCount') + ': ' + recommended) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityCompliant')) + '</label><strong>' + String(compliant) + '</strong><span>' + escapeHtml(st('capabilityMissing') + ': ' + missing + ' | ' + st('capabilityReportStale') + ': ' + stale) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityBlockedCount')) + '</label><strong>' + String(blocked) + '</strong><span>' + escapeHtml(st('capabilityVersionMismatch') + ': ' + mismatch + ' | ' + st('capabilityBlockedInstalled') + ': ' + blockedInstalled) + '</span></div></div>';
+    var metrics = '<div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('capabilityRequiredCount')) + '</label><strong>' + String(required) + '</strong><span>' + escapeHtml(st('capabilityRecommendedCount') + ': ' + recommended) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityCompliant')) + '</label><strong>' + String(compliant) + '</strong><span>' + escapeHtml(st('capabilityMissing') + ': ' + missing + ' | ' + st('capabilityNeedsConfig') + ': ' + needsConfig) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityBlockedCount')) + '</label><strong>' + String(blocked) + '</strong><span>' + escapeHtml(st('capabilityVersionMismatch') + ': ' + mismatch + ' | ' + st('capabilityReportStale') + ': ' + stale) + '</span></div></div>';
     var list = (rows || []).length ? '<div style="display:grid;gap:6px;margin-top:8px">' + rows.map(function(row) {
       var cap = row.capability || {};
-      var title = cap.display_name || cap.capability_id || row.item.capability_ref || '-';
+      var title = capabilityDisplayName(cap, row.item.capability_ref || '-');
       var inv = row.compliance || invMap[String(row.item.capability_ref || '')] || null;
       var status = capabilityComplianceStatus(row, invMap);
       var installedVersion = inv && (inv.capability_version_key || inv.installed_version) ? (inv.capability_version_key || inv.installed_version) : '-';
@@ -1948,14 +2016,14 @@
     var severity = cleanSnapshotSeverityCounts(exportSummary.warning_severity_counts);
     var qualityText = st('snapshotQuality', { quality: snapshotQualityLabel(exportSummary.quality) + ' ' + snapshotRegistryQualityScore(exportSummary.quality_score) + '/100' });
     var severityText = snapshotRegistrySeveritySummary(severity);
-    var metrics = '<div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('capabilityTotal')) + '</label><strong>' + String(summary.total || 0) + '</strong><span>' + escapeHtml(st('capabilityUnmanagedInstalled') + ': ' + (summary.unmanaged_installed || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityCompliant')) + '</label><strong>' + String(summary.compliant || 0) + '</strong><span>' + escapeHtml(st('capabilityMissing') + ': ' + (summary.missing || 0) + ' | ' + st('capabilityReportStale') + ': ' + (summary.stale || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityBlockedCount')) + '</label><strong>' + String(summary.blocked_installed || 0) + '</strong><span>' + escapeHtml(st('capabilityVersionMismatch') + ': ' + (summary.version_mismatch || 0)) + '</span></div></div>';
+    var metrics = '<div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('capabilityTotal')) + '</label><strong>' + String(summary.total || 0) + '</strong><span>' + escapeHtml(st('capabilityUnmanagedInstalled') + ': ' + (summary.unmanaged_installed || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityCompliant')) + '</label><strong>' + String(summary.compliant || 0) + '</strong><span>' + escapeHtml(st('capabilityMissing') + ': ' + (summary.missing || 0) + ' | ' + st('capabilityNeedsConfig') + ': ' + (summary.needs_config || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityBlockedCount')) + '</label><strong>' + String(summary.blocked_installed || 0) + '</strong><span>' + escapeHtml(st('capabilityVersionMismatch') + ': ' + (summary.version_mismatch || 0) + ' | ' + st('capabilityReportStale') + ': ' + (summary.stale || 0)) + '</span></div></div>';
     var filteredMeta = hasFilteredSummary ? (' | ' + st('capabilityFilteredMeta', { shown: snapshotRegistryNonNegativeNumber(filteredSummary.total), total: snapshotRegistryNonNegativeNumber(summary.total), unmanagedShown: snapshotRegistryNonNegativeNumber(filteredSummary.unmanaged_installed), unmanagedTotal: snapshotRegistryNonNegativeNumber(summary.unmanaged_installed) })) : '';
     var meta = '<div class="item-meta" style="margin-top:6px">' + escapeHtml(st('capabilityGeneratedAt') + ': ' + (compliance.generated_at || '-') + ' | ' + st('capabilityStaleAfterHours') + ': ' + (compliance.stale_after_hours || 168) + 'h' + filteredMeta) + '</div>';
     var quality = '<div class="item-meta" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px"><span style="font-weight:650;color:var(--text)">' + escapeHtml(qualityText) + '</span><span style="color:var(--muted)">' + escapeHtml(st('snapshotWarnings', { count: exportSummary.warning_count + ' / warn ' + severity.warn + ' / error ' + severity.error })) + '</span><span style="color:var(--muted)">' + escapeHtml(severityText) + '</span></div>';
-    var filters = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilityStatusFilter')) + '</label><select id="secCapabilityComplianceStatus" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"><option value="">' + escapeHtml(st('capabilityAllStatuses')) + '</option><option value="issues"' + (sec.capabilityComplianceStatusFilter === 'issues' ? ' selected' : '') + '>' + escapeHtml(st('capabilityRiskStatuses')) + '</option><option value="compliant"' + (sec.capabilityComplianceStatusFilter === 'compliant' ? ' selected' : '') + '>' + escapeHtml(st('capabilityCompliant')) + '</option><option value="missing"' + (sec.capabilityComplianceStatusFilter === 'missing' ? ' selected' : '') + '>' + escapeHtml(st('capabilityMissing')) + '</option><option value="version_mismatch"' + (sec.capabilityComplianceStatusFilter === 'version_mismatch' ? ' selected' : '') + '>' + escapeHtml(st('capabilityVersionMismatch')) + '</option><option value="blocked_installed"' + (sec.capabilityComplianceStatusFilter === 'blocked_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityBlockedInstalled')) + '</option><option value="stale"' + (sec.capabilityComplianceStatusFilter === 'stale' ? ' selected' : '') + '>' + escapeHtml(st('capabilityReportStale')) + '</option><option value="unmanaged_installed"' + (sec.capabilityComplianceStatusFilter === 'unmanaged_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityUnmanagedInstalled')) + '</option></select></div><div><label>' + escapeHtml(st('capabilityStaleAfterHours')) + '</label><input id="secCapabilityStaleAfterHours" type="number" min="1" max="8760" step="1" value="' + escapeHtml(String(sec.capabilityStaleAfterHours || 168)) + '" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"></div><div style="display:flex;align-items:center;gap:10px;justify-content:space-between"><label style="display:flex;align-items:center;gap:8px;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="secCapabilityIncludeUnmanaged" onchange="changeSecCapabilityComplianceFilter()"' + (sec.capabilityIncludeUnmanaged === false ? '' : ' checked') + '> ' + escapeHtml(st('capabilityShowUnmanaged')) + '</label><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityCompliance()">' + escapeHtml(st('capabilityExportJson')) + '</button><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityComplianceCsv()">' + escapeHtml(st('capabilityExportCsv')) + '</button></div></div>';
+    var filters = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilityStatusFilter')) + '</label><select id="secCapabilityComplianceStatus" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"><option value="">' + escapeHtml(st('capabilityAllStatuses')) + '</option><option value="issues"' + (sec.capabilityComplianceStatusFilter === 'issues' ? ' selected' : '') + '>' + escapeHtml(st('capabilityRiskStatuses')) + '</option><option value="compliant"' + (sec.capabilityComplianceStatusFilter === 'compliant' ? ' selected' : '') + '>' + escapeHtml(st('capabilityCompliant')) + '</option><option value="missing"' + (sec.capabilityComplianceStatusFilter === 'missing' ? ' selected' : '') + '>' + escapeHtml(st('capabilityMissing')) + '</option><option value="needs_config"' + (sec.capabilityComplianceStatusFilter === 'needs_config' ? ' selected' : '') + '>' + escapeHtml(st('capabilityNeedsConfig')) + '</option><option value="version_mismatch"' + (sec.capabilityComplianceStatusFilter === 'version_mismatch' ? ' selected' : '') + '>' + escapeHtml(st('capabilityVersionMismatch')) + '</option><option value="blocked_installed"' + (sec.capabilityComplianceStatusFilter === 'blocked_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityBlockedInstalled')) + '</option><option value="stale"' + (sec.capabilityComplianceStatusFilter === 'stale' ? ' selected' : '') + '>' + escapeHtml(st('capabilityReportStale')) + '</option><option value="unmanaged_installed"' + (sec.capabilityComplianceStatusFilter === 'unmanaged_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityUnmanagedInstalled')) + '</option></select></div><div><label>' + escapeHtml(st('capabilityStaleAfterHours')) + '</label><input id="secCapabilityStaleAfterHours" type="number" min="1" max="8760" step="1" value="' + escapeHtml(String(sec.capabilityStaleAfterHours || 168)) + '" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"></div><div style="display:flex;align-items:center;gap:10px;justify-content:space-between"><label style="display:flex;align-items:center;gap:8px;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="secCapabilityIncludeUnmanaged" onchange="changeSecCapabilityComplianceFilter()"' + (sec.capabilityIncludeUnmanaged === false ? '' : ' checked') + '> ' + escapeHtml(st('capabilityShowUnmanaged')) + '</label><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityCompliance()">' + escapeHtml(st('capabilityExportJson')) + '</button><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityComplianceCsv()">' + escapeHtml(st('capabilityExportCsv')) + '</button></div></div>';
     var list = (rows || []).length ? '<div style="display:grid;gap:6px;margin-top:8px">' + rows.map(function(row) {
       var cap = row.capability || {};
-      var title = cap.display_name || cap.capability_id || row.item.capability_ref || '-';
+      var title = capabilityDisplayName(cap, row.item.capability_ref || '-');
       var cmp = row.compliance || {};
       var expectedVersion = row.item.capability_version_key || (row.capability && row.capability.current_version_key) || 'auto';
       var detail = [
@@ -3098,7 +3166,8 @@
     var filteredTotal = snapshotRegistryNonNegativeNumber(summary.total);
     var fullTotal = snapshotRegistryNonNegativeNumber(fullSummary.total);
     var blockedInstalledCount = snapshotRegistryNonNegativeNumber(summary.blocked_installed);
-    var warnCount = snapshotRegistryNonNegativeNumber(summary.missing) + snapshotRegistryNonNegativeNumber(summary.version_mismatch) + snapshotRegistryNonNegativeNumber(summary.stale) + snapshotRegistryNonNegativeNumber(summary.unmanaged_installed);
+    var needsConfigCount = snapshotRegistryNonNegativeNumber(summary.needs_config);
+    var warnCount = snapshotRegistryNonNegativeNumber(summary.missing) + needsConfigCount + snapshotRegistryNonNegativeNumber(summary.version_mismatch) + snapshotRegistryNonNegativeNumber(summary.stale) + snapshotRegistryNonNegativeNumber(summary.unmanaged_installed);
     var riskCount = warnCount + blockedInstalledCount;
     var totalCount = snapshotRegistryNonNegativeNumber(summary.total);
     var compliantCount = snapshotRegistryNonNegativeNumber(summary.compliant);
@@ -3116,6 +3185,7 @@
       total: totalCount,
       compliant: compliantCount,
       missing: snapshotRegistryNonNegativeNumber(summary.missing),
+      needs_config: needsConfigCount,
       version_mismatch: snapshotRegistryNonNegativeNumber(summary.version_mismatch),
       blocked_installed: blockedInstalledCount,
       stale: snapshotRegistryNonNegativeNumber(summary.stale),
@@ -3131,7 +3201,7 @@
     var summary = hasFilteredSummary ? compliance.filtered_summary : (compliance.summary || {});
     var fullSummary = compliance.summary || summary;
     var summaryScope = hasFilteredSummary ? 'filtered' : 'all';
-    var header = ['exported_at', 'snapshot_id', 'snapshot_checksum', 'snapshot_checksum_algorithm', 'user_email', 'status_filter', 'include_unmanaged', 'stale_after_hours', 'summary_scope', 'filtered_total', 'full_total', 'total', 'compliant', 'missing', 'version_mismatch', 'blocked_installed', 'stale', 'unmanaged_installed', 'quality', 'quality_score', 'warning_count', 'warn_count', 'error_count', 'row_type', 'status', 'policy', 'source', 'capability_ref', 'capability_version_key', 'installed_version', 'install_status', 'last_seen_at', 'policy_id', 'capability_type', 'display_name'];
+    var header = ['exported_at', 'snapshot_id', 'snapshot_checksum', 'snapshot_checksum_algorithm', 'user_email', 'status_filter', 'include_unmanaged', 'stale_after_hours', 'summary_scope', 'filtered_total', 'full_total', 'total', 'compliant', 'missing', 'needs_config', 'version_mismatch', 'blocked_installed', 'stale', 'unmanaged_installed', 'quality', 'quality_score', 'warning_count', 'warn_count', 'error_count', 'row_type', 'status', 'policy', 'source', 'capability_ref', 'capability_version_key', 'installed_version', 'install_status', 'last_seen_at', 'policy_id', 'capability_type', 'display_name'];
     var rows = [];
     (compliance.items || []).forEach(function(item) {
       var cap = item.capability || {};
@@ -3150,6 +3220,7 @@
         snapshotRegistryNonNegativeNumber(summary.total),
         snapshotRegistryNonNegativeNumber(summary.compliant),
         snapshotRegistryNonNegativeNumber(summary.missing),
+        snapshotRegistryNonNegativeNumber(summary.needs_config),
         snapshotRegistryNonNegativeNumber(summary.version_mismatch),
         snapshotRegistryNonNegativeNumber(summary.blocked_installed),
         snapshotRegistryNonNegativeNumber(summary.stale),
@@ -3189,6 +3260,7 @@
         snapshotRegistryNonNegativeNumber(summary.total),
         snapshotRegistryNonNegativeNumber(summary.compliant),
         snapshotRegistryNonNegativeNumber(summary.missing),
+        snapshotRegistryNonNegativeNumber(summary.needs_config),
         snapshotRegistryNonNegativeNumber(summary.version_mismatch),
         snapshotRegistryNonNegativeNumber(summary.blocked_installed),
         snapshotRegistryNonNegativeNumber(summary.stale),
@@ -3646,7 +3718,9 @@
       var key = el.dataset.policyKey;
       var inherit = document.querySelector('#secPolicyPanel [data-policy-inherit-key="' + key + '"]');
       if (inherit && inherit.checked) return;
-      policy[key] = el.dataset.policyType === 'bool' ? el.checked : el.value;
+      if (el.dataset.policyType === 'bool') policy[key] = el.checked;
+      else if (el.dataset.policyType === 'string_array') policy[key] = String(el.value || '').split(/[\n,]+/).map(function(item) { return item.trim(); }).filter(Boolean);
+      else policy[key] = el.value;
     });
     return policy;
   }

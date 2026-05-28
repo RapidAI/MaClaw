@@ -115,10 +115,10 @@ export const SkillInstallProgressPanel = ({ active, localizeText }: SkillInstall
     const label = baseLabel + (level ? " - " + eventText("risk", "风险", "風險") + " " + level : "");
     const status = localizeStatus(progress.status, progress.phase, eventText);
     return (
-        <div style={{ ...remoteInfoPanelStyle, fontSize: "0.78rem", display: "grid", gap: "6px" }}>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center", minWidth: 0 }}>
+        <div role="status" aria-live="polite" style={{ ...remoteInfoPanelStyle, fontSize: "0.78rem", display: "grid", gap: "6px", textAlign: "left" }}>
+            <div style={{ display: "flex", gap: "8px", alignItems: "flex-start", minWidth: 0, textAlign: "left" }}>
                 {!terminal && <span style={{ width: "12px", height: "12px", border: "2px solid " + tone, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite", flex: "0 0 auto" }} />}
-                <span style={{ color: colors.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}: {status}</span>
+                <span style={{ minWidth: 0, color: colors.textSecondary, lineHeight: 1.45, overflowWrap: "anywhere", textAlign: "left" }}>{label}: {status}</span>
             </div>
             <div style={{ height: "4px", borderRadius: "999px", background: colors.border, overflow: "hidden" }} aria-hidden="true">
                 <div style={{ width: (progress.percent ?? 25) + "%", height: "100%", background: tone, transition: "width 0.25s ease" }} />

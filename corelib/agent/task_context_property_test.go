@@ -9,14 +9,13 @@ import (
 )
 
 // ============================================================================
-// Feature: gui-startup-response-optimization, Property 13: Task-Context skip for short history
-// For any conversation with fewer than 5 history entries, the Entry_Context resolver
-// SHALL skip the Task_Context_LLM call and default to TaskNew action without any
-// LLM invocation.
+// Feature: task-context semantic classifier coverage for short history.
+// Any non-empty conversation history is semantically ambiguous, even when short,
+// so the resolver SHALL use the Task_Context_LLM instead of keyword cues.
 // **Validates: Requirements 5.1**
 // ============================================================================
 
-func TestProperty13_TaskContextSkipForShortHistory(t *testing.T) {
+func TestProperty13_TaskContextUsesLLMForShortHistory(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate a random number of history entries (0 to 4)
 		numEntries := rapid.IntRange(0, 4).Draw(t, "numEntries")
@@ -33,9 +32,9 @@ func TestProperty13_TaskContextSkipForShortHistory(t *testing.T) {
 		userMsg := rapid.OneOf(
 			rapid.StringMatching(`[a-zA-Z ]{5,50}`),
 			rapid.StringMatching(`[\x{4e00}-\x{9fff}]{3,20}`),
-			rapid.Just("帮我搜索论文"),
-			rapid.Just("开发一个游戏"),
-			rapid.Just("继续"),
+			rapid.Just("search paper"),
+			rapid.Just("develop a game"),
+			rapid.Just("continue"),
 		).Draw(t, "userMsg")
 
 		// Create a mock LLM classifier that tracks calls
@@ -49,21 +48,24 @@ func TestProperty13_TaskContextSkipForShortHistory(t *testing.T) {
 			LastAccess:  time.Now().Add(-5 * time.Minute),
 		})
 
-		// Property 1: LLM classifier is NOT called for short history
-		if llm.calls != 0 {
-			t.Fatalf("LLM classifier called %d times for history with %d entries (< 5) — should be skipped",
-				llm.calls, numEntries)
+		if numEntries == 0 {
+			if llm.calls != 0 {
+				t.Fatalf("LLM called for empty history")
+			}
+			if d.Action != TaskNew {
+				t.Fatalf("expected TaskNew for empty history, got %s", d.Action)
+			}
+			return
 		}
 
-		// Property 2: default action is TaskNew
-		if d.Action != TaskNew {
-			t.Fatalf("expected TaskNew for short history (%d entries), got %s (source=%s)",
-				numEntries, d.Action, d.Source)
+		if llm.calls != 1 {
+			t.Fatalf("LLM classifier called %d times for short non-empty history; want 1", llm.calls)
 		}
-
-		// Property 3: source indicates structural decision (not LLM)
-		if d.Source == "llm" {
-			t.Fatalf("source should not be 'llm' for short history skip, got %s", d.Source)
+		if d.Action != TaskContinue {
+			t.Fatalf("expected TaskContinue from classifier for short history (%d entries), got %s", numEntries, d.Action)
+		}
+		if d.Source != "llm" {
+			t.Fatalf("expected source=llm for short history, got %s", d.Source)
 		}
 	})
 }
@@ -81,7 +83,7 @@ func TestProperty13_EmptyHistory(t *testing.T) {
 			History:     nil, // empty
 		})
 
-		// Property: empty history → TaskNew, no LLM call
+		// Property: empty history -> TaskNew, no LLM call
 		if llm.calls != 0 {
 			t.Fatalf("LLM called for nil history")
 		}
@@ -119,7 +121,7 @@ func TestProperty13_ExactlyFiveEntries_UsesLLM(t *testing.T) {
 
 		// Property: with exactly 5 entries, LLM IS called
 		if llm.calls == 0 {
-			t.Fatal("LLM not called for exactly 5 history entries — should be called")
+			t.Fatal("LLM not called for exactly 5 history entries; should be called")
 		}
 
 		// Property: result reflects LLM decision
@@ -131,9 +133,9 @@ func TestProperty13_ExactlyFiveEntries_UsesLLM(t *testing.T) {
 
 // ============================================================================
 // Feature: gui-startup-response-optimization, Property 14: Task-Context failure fallback
-// For any Task_Context_LLM invocation that times out (exceeds 2 seconds) or returns
-// an error, the Entry_Context resolver SHALL default to TaskContinue action as the
-// conservative assumption.
+// For any Task_Context_LLM invocation that times out or returns an error,
+// the Entry_Context resolver SHALL preserve current context. Only an explicit
+// classifier result may destructively switch tasks.
 // **Validates: Requirements 5.4**
 // ============================================================================
 
@@ -182,10 +184,10 @@ func TestProperty14_TaskContextFailureFallback(t *testing.T) {
 			t.Fatalf("LLM not called for history with %d entries", numEntries)
 		}
 
-		// Property 2: on error, default to TaskContinue (conservative)
+		// Property 2: on error, preserve current context instead of clearing history.
 		if d.Action != TaskContinue {
-			t.Fatalf("expected TaskContinue on LLM error %q, got %s (source=%s)",
-				errMsg, d.Action, d.Source)
+			t.Fatalf("expected TaskContinue on LLM error %q for message %q, got %s (source=%s)",
+				errMsg, userMsg, d.Action, d.Source)
 		}
 
 		// Property 3: source indicates fallback
@@ -219,12 +221,12 @@ func TestProperty14_TaskContextTimeout(t *testing.T) {
 		mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
 
 		d := mgr.Resolve(ResolveInput{
-			UserMessage: "继续处理",
+			UserMessage: "continue",
 			History:     history,
 			LastAccess:  time.Now().Add(-5 * time.Minute),
 		})
 
-		// Property: timeout errors default to TaskContinue
+		// Property: timeout errors preserve current context.
 		if d.Action != TaskContinue {
 			t.Fatalf("expected TaskContinue on timeout error %q, got %s", errMsg, d.Action)
 		}
@@ -232,7 +234,7 @@ func TestProperty14_TaskContextTimeout(t *testing.T) {
 }
 
 // TestProperty14_VariousErrorTypes verifies that ALL error types (not just timeout)
-// result in TaskContinue fallback.
+// use non-destructive fallback semantics.
 func TestProperty14_VariousErrorTypes(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate completely random error messages
@@ -251,12 +253,12 @@ func TestProperty14_VariousErrorTypes(t *testing.T) {
 		mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
 
 		d := mgr.Resolve(ResolveInput{
-			UserMessage: "做点什么",
+			UserMessage: "new standalone task",
 			History:     history,
 			LastAccess:  time.Now().Add(-10 * time.Minute),
 		})
 
-		// Property: ANY error type defaults to TaskContinue
+		// Property: ANY error type preserves context; no clear without explicit "new".
 		if d.Action != TaskContinue {
 			t.Fatalf("expected TaskContinue for error %q, got %s (source=%s)",
 				errMsg, d.Action, d.Source)

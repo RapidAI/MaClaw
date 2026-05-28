@@ -267,6 +267,13 @@ func (a *App) RecommendTool(taskDescription string) (string, string) {
 
 // SearchSkillHub searches configured SkillHubs for Skills matching the query (Wails binding).
 func (a *App) SearchSkillHub(query string) ([]HubSkillMeta, error) {
+	hubURL := ""
+	if cfg, err := a.LoadConfig(); err == nil {
+		hubURL = cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
+	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "search", "query": query, "source": "skillhub", "hub_url": hubURL}); !ok {
+		return nil, fmt.Errorf("%s", reason)
+	}
 	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
 		return nil, fmt.Errorf("skill hub client not initialized")
@@ -286,6 +293,22 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 	a.ensureInteractionInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
+	}
+	guardArgs := map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}
+	switch skillSearchSourceFromStatus(source) {
+	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
+		guardArgs["hub_url"] = NewSkillMarketClient(a).baseURL()
+	case skillSearchSourceClawHub:
+		guardArgs["hub_url"] = cskill.ClawHubMirrorURL
+	case skillSearchSourceGitHub:
+		guardArgs["hub_url"] = "github"
+	case skillSearchSourceEnterpriseHub:
+		if cfg, err := a.LoadConfig(); err == nil {
+			guardArgs["hub_url"] = cfg.RemoteHubURL
+		}
+	}
+	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
+		return fmt.Errorf("%s", reason)
 	}
 	// Invalidate update cache - installed skill set changed.
 	defer func() {
@@ -417,6 +440,9 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 
 // InstallHubSkill downloads a Skill from the specified Hub and registers it locally (Wails binding).
 func (a *App) InstallHubSkill(skillID, hubURL string) error {
+	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "install", "source": "skillhub", "skill_id": skillID, "hub_url": hubURL}); !ok {
+		return fmt.Errorf("%s", reason)
+	}
 	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
 		return fmt.Errorf("skill hub client not initialized")
@@ -501,7 +527,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 		// Has package.json - check if node_modules exists.
 		if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
 			log.Printf("[skill-deps] installing npm dependencies for %s...", skillName)
-			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "npm", "install", "--production")
 			cmd.Dir = skillDir
@@ -516,7 +542,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 	}
 	if _, err := os.Stat(reqTxt); err == nil {
 		// Has requirements.txt - run pip install.
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "pip", "install", "-r", reqTxt)
 		cmd.Dir = skillDir
@@ -1917,6 +1943,26 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 	return hubClient.ensureIMHandler().CancelCurrentSession()
 }
 
+// CancelAIAssistantSessionForSession cancels the selected desktop/project AI
+// assistant session instead of whichever loop most recently updated global
+// legacy state.
+func (a *App) CancelAIAssistantSessionForSession(userID string) (string, error) {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	targetUserID, err := normalizeAIAssistantSessionUserID(userID)
+	if err != nil {
+		return "", err
+	}
+	if targetUserID == "" {
+		return handler.CancelCurrentSession()
+	}
+	return handler.CancelSessionForUser(targetUserID)
+}
+
 // InjectAIAssistantSupplementary injects a supplementary message into the
 // currently running agent loop without cancelling it. The message is consumed
 // at the start of the next iteration as a system-level "[用户补充]" entry.
@@ -2022,6 +2068,16 @@ func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 // Background Loop Wails bindings
 // ---------------------------------------------------------------------------
 
+// SSHBackgroundTaskView is the frontend-safe shape for SSH exec_background
+// tasks. It intentionally describes commands, not SSH session loops.
+type SSHBackgroundTaskView struct {
+	TaskID    string                         `json:"task_id"`
+	SessionID string                         `json:"session_id"`
+	TaskRole  string                         `json:"task_role,omitempty"`
+	Status    remote.SSHBackgroundTaskStatus `json:"status"`
+	StartedAt string                         `json:"started_at"`
+}
+
 // ListBackgroundLoops returns all active background loops for the frontend.
 func (a *App) ListBackgroundLoops() []BackgroundLoopView {
 	hubClient := a.hubClient()
@@ -2029,10 +2085,37 @@ func (a *App) ListBackgroundLoops() []BackgroundLoopView {
 		return nil
 	}
 	handler := hubClient.ensureIMHandler()
-	if handler.bgManager == nil {
+	if handler == nil || handler.bgManager == nil {
 		return nil
 	}
 	return handler.bgManager.ListViews()
+}
+
+// ListSSHBackgroundTasks returns SSH exec_background tasks for the frontend.
+func (a *App) ListSSHBackgroundTasks() []SSHBackgroundTaskView {
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.bgTaskMgr == nil {
+		return nil
+	}
+	tasks := handler.bgTaskMgr.ListTasks()
+	views := make([]SSHBackgroundTaskView, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Status.IsActive() && (task.LastCheck.IsZero() || time.Since(task.LastCheck) > 15*time.Second) {
+			handler.bgTaskMgr.RefreshTaskStatusAsync(task.TaskID, 5)
+		}
+		views = append(views, SSHBackgroundTaskView{
+			TaskID:    task.TaskID,
+			SessionID: task.SessionID,
+			TaskRole:  task.TaskRole,
+			Status:    task.Status,
+			StartedAt: task.StartedAt.Format(time.RFC3339),
+		})
+	}
+	return views
 }
 
 // StopAllBackgroundLoops stops all running background loops.
@@ -2043,7 +2126,7 @@ func (a *App) StopAllBackgroundLoops() []string {
 		return nil
 	}
 	handler := hubClient.ensureIMHandler()
-	if handler.bgManager == nil {
+	if handler == nil || handler.bgManager == nil {
 		return nil
 	}
 	// Snapshot IDs of running/paused loops before stopping.
@@ -2096,7 +2179,7 @@ func (a *App) StopBackgroundLoop(loopID string) error {
 		return fmt.Errorf("background loop manager not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
-	if handler.bgManager == nil {
+	if handler == nil || handler.bgManager == nil {
 		return fmt.Errorf("background loop manager not initialized")
 	}
 	handler.bgManager.Stop(loopID)
@@ -2110,7 +2193,7 @@ func (a *App) ContinueBackgroundLoop(loopID string, additionalRounds int) error 
 		return fmt.Errorf("background loop manager not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
-	if handler.bgManager == nil {
+	if handler == nil || handler.bgManager == nil {
 		return fmt.Errorf("background loop manager not initialized")
 	}
 	return handler.bgManager.SendContinue(loopID, additionalRounds)

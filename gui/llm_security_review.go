@@ -23,10 +23,10 @@ const (
 // LLMSecurityReview performs LLM-assisted security review on tool invocations.
 type LLMSecurityReview struct {
 	llmConfig corelib.MaclawLLMConfig
-	client    *http.Client // 5-second timeout
+	client    *http.Client // per-request timeout via context
 }
 
-// NewLLMSecurityReview creates a new LLMSecurityReview with a 5-second HTTP timeout.
+// NewLLMSecurityReview creates a new LLMSecurityReview.
 func NewLLMSecurityReview(cfg corelib.MaclawLLMConfig) *LLMSecurityReview {
 	return &LLMSecurityReview{
 		llmConfig: cfg,
@@ -73,7 +73,7 @@ func (r *LLMSecurityReview) callLLM(riskCtx RiskContext, assessment security.Ris
 		map[string]string{"role": "user", "content": prompt},
 	}
 
-	result, err := doSimpleLLMRequest(context.Background(), r.llmConfig, messages, r.client, 5*time.Second)
+	result, err := doSimpleLLMRequest(context.Background(), r.llmConfig, messages, r.client, 30*time.Second)
 	if err != nil {
 		return "", "", err
 	}

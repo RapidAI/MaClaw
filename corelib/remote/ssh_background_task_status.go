@@ -30,6 +30,10 @@ func (s SSHBackgroundTaskStatus) IsKilled() bool {
 	return s == SSHBackgroundTaskStatusKilled
 }
 
+func (s SSHBackgroundTaskStatus) IsActive() bool {
+	return s == SSHBackgroundTaskStatusPending || s == SSHBackgroundTaskStatusRunning
+}
+
 func (s SSHBackgroundTaskStatus) IsUnknown() bool {
 	return s == "" || s == SSHBackgroundTaskStatusUnknown
 }

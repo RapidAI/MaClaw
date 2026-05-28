@@ -4,11 +4,40 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	uicintent "github.com/RapidAI/CodeClaw/corelib/intent"
 )
+
+type sshBiasedEmbedder struct{}
+
+func (sshBiasedEmbedder) Embed(text string) ([]float32, error) {
+	return sshBiasedVector(text), nil
+}
+
+func (sshBiasedEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	vecs := make([][]float32, len(texts))
+	for i, text := range texts {
+		vecs[i] = sshBiasedVector(text)
+	}
+	return vecs, nil
+}
+
+func (sshBiasedEmbedder) Dim() int { return 2 }
+func (sshBiasedEmbedder) Close()   {}
+
+func sshBiasedVector(text string) []float32 {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "ssh") || strings.Contains(lower, "remote") ||
+		strings.Contains(lower, "production server") || strings.Contains(lower, "server logs") ||
+		strings.Contains(lower, "gpu server") {
+		return []float32{1, 0}
+	}
+	return []float32{0, 1}
+}
 
 // loadTestEmbedder loads the Gemma embedding model for tests that need
 // semantic classification. Returns nil if the model is not available.
@@ -44,6 +73,26 @@ func makeToolDef(name, description string) map[string]interface{} {
 			"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 	}
+}
+
+func makeCoreSSHRouteTools(extraCount int) []map[string]interface{} {
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("ssh", "connect to a remote server and run commands"))
+	for i := 0; i < extraCount; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+	return tools
+}
+
+func routedToolNames(result []map[string]interface{}) map[string]bool {
+	names := make(map[string]bool, len(result))
+	for _, r := range result {
+		names[ExtractToolName(r)] = true
+	}
+	return names
 }
 
 func TestRouter_BM25_ChineseQuery(t *testing.T) {
@@ -513,18 +562,234 @@ func TestRouter_UICHighConfidenceActivatesConditionalTools(t *testing.T) {
 	t.Fatalf("browser should be included for high-confidence UIC browser intent, got: %v", names)
 }
 
+func TestRouter_UICDegradedConcreteIntentStillActivatesTools(t *testing.T) {
+	result := uicintent.ClassificationResult{
+		Primary:    uicintent.LabelSSH,
+		Confidence: 0.95,
+		Degraded:   true,
+		ToolNames:  []string{"ssh"},
+	}
+
+	if !uicResultUsableForToolActivation(result) {
+		t.Fatalf("degraded but concrete UIC result should remain usable for tool activation")
+	}
+}
+
+func TestRouter_UICDegradedUnknownOrAmbiguousDoesNotActivateTools(t *testing.T) {
+	for _, label := range []uicintent.IntentLabel{uicintent.LabelUnknown, uicintent.LabelAmbiguous} {
+		result := uicintent.ClassificationResult{
+			Primary:    label,
+			Confidence: 0.95,
+			Degraded:   true,
+			ToolNames:  []string{"ssh"},
+		}
+
+		if uicResultUsableForToolActivation(result) {
+			t.Fatalf("degraded %s UIC result should not be usable for tool activation", label)
+		}
+	}
+}
+
+func TestRouter_UICHighConfidenceSSHDoesNotEagerPin(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"ssh","score":0.95},{"skill":"coding","score":0.10}]}`, nil
+		},
+	}))
+
+	result := router.Route("SSH into the GPU server and check usage.", makeCoreSSHRouteTools(20))
+	names := routedToolNames(result)
+	if !names["ssh"] {
+		t.Fatalf("ssh should be included for high-confidence UIC SSH intent; got %#v", names)
+	}
+	if router.IsSessionPinned("ssh") {
+		t.Fatalf("UIC SSH intent should not eager-pin ssh before successful tool use")
+	}
+}
+
+func TestRouter_UICActivatableToolNamesAreAllowlisted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{name: "ssh", want: true},
+		{name: "browser", want: true},
+		{name: "knowledge_save_text", want: true},
+		{name: "manage_skill", want: false},
+		{name: "discover_tool", want: false},
+		{name: "call_mcp_tool", want: false},
+	} {
+		if got := uicToolNameActivatable(tc.name); got != tc.want {
+			t.Fatalf("uicToolNameActivatable(%q)=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRouter_UICDegradedSSHRouteKeepsBuiltinAndSuppressesFallbacks(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	uic := uicintent.New(uicintent.Config{
+		Embedder: sshBiasedEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return "not json", nil
+		},
+	})
+	for i := 0; i < 50 && !uic.Ready(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !uic.Ready() {
+		t.Fatalf("test UIC did not become ready")
+	}
+	router.SetUnifiedClassifier(uic)
+	message := "SSH into the GPU server and check usage."
+	classification := uic.Classify(uicintent.MessageContext{Text: message})
+	if classification.Primary != uicintent.LabelSSH || !classification.Degraded {
+		t.Fatalf("test UIC should produce degraded SSH classification, got primary=%s degraded=%v confidence=%.2f reason=%q",
+			classification.Primary, classification.Degraded, classification.Confidence, classification.Reason)
+	}
+
+	tools := makeCoreSSHRouteTools(20)
+
+	result := router.Route(message, tools)
+	names := routedToolNames(result)
+
+	if !names["ssh"] {
+		t.Fatalf("builtin ssh should be included for degraded-but-concrete UIC SSH intent; got %#v", names)
+	}
+	for _, fallback := range []string{"call_mcp_tool", "manage_skill", "discover_tool", "search_and_install_skill"} {
+		if names[fallback] {
+			t.Fatalf("%s should be suppressed for degraded-but-concrete UIC SSH intent; got %#v", fallback, names)
+		}
+	}
+	if router.IsSessionPinned("ssh") {
+		t.Fatalf("degraded UIC SSH intent should not eager-pin ssh to the session")
+	}
+}
+
+func TestRouter_SSHIntentSuppressesFallbackTooling(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.sessionTools = make(map[string]bool)
+	ic := NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentSSH, nil })
+	router.SetIntentClassifier(ic)
+
+	tools := makeCoreSSHRouteTools(20)
+
+	result := router.Route("Check the remote server resource usage.", tools)
+	names := routedToolNames(result)
+
+	if !names["ssh"] {
+		t.Fatalf("ssh should be included for SSH intent")
+	}
+	for _, fallback := range []string{"call_mcp_tool", "manage_skill", "discover_tool", "search_and_install_skill"} {
+		if names[fallback] {
+			t.Fatalf("%s should be suppressed when builtin ssh is selected; got %#v", fallback, names)
+		}
+	}
+	if router.IsSessionPinned("ssh") {
+		t.Fatalf("fallback semantic SSH intent should not eager-pin ssh before successful tool use")
+	}
+}
+
+func TestRouter_SSHSessionPinOnlySuppressesMCPGateway(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.ActivateSessionTool("ssh")
+
+	tools := makeCoreSSHRouteTools(20)
+
+	result := router.Route("Search for a PDF conversion skill.", tools)
+	names := routedToolNames(result)
+
+	if names["call_mcp_tool"] {
+		t.Fatalf("call_mcp_tool should remain suppressed while ssh is session-pinned")
+	}
+	for _, fallback := range []string{"manage_skill", "discover_tool"} {
+		if !names[fallback] {
+			t.Fatalf("%s should remain available for topic changes when ssh is only session-pinned; got %#v", fallback, names)
+		}
+	}
+}
+
+func TestRouter_ActivateSessionToolOnlyPinsAllowedConditionalTools(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	router.ActivateSessionTool("ssh")
+	router.ActivateSessionTool("bash")
+	router.ActivateSessionTool("generate_pdf")
+	router.ActivateSessionTool("office")
+
+	if !router.IsSessionPinned("ssh") {
+		t.Fatalf("ssh should be pinned after successful use")
+	}
+	for _, name := range []string{"bash", "generate_pdf", "office"} {
+		if router.IsSessionPinned(name) {
+			t.Fatalf("%s should not be session-pinned by ActivateSessionTool", name)
+		}
+	}
+}
+
+func TestRouter_CoreOverflowIsTrimmedButKeepsIntentTool(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.sessionTools = make(map[string]bool)
+	ic := NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentSSH, nil })
+	router.SetIntentClassifier(ic)
+
+	tools := makeCoreSSHRouteTools(20)
+	for i := 0; i < MaxToolBudget; i++ {
+		name := fmt.Sprintf("pinned_tool_%d", i)
+		router.sessionTools[name] = true
+		tools = append(tools, makeToolDef(name, "session pinned test tool"))
+	}
+
+	result := router.Route("Check the remote server resource usage.", tools)
+	names := routedToolNames(result)
+	if len(result) > MaxToolBudget {
+		t.Fatalf("route result should respect MaxToolBudget after core overflow trimming, got %d", len(result))
+	}
+	if !names["ssh"] {
+		t.Fatalf("intent-selected ssh should survive core overflow trimming; got %#v", names)
+	}
+}
+
+func TestRouter_CoreOverflowKeepsEssentialCoreBeforeStalePins(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.sessionTools = make(map[string]bool)
+
+	tools := makeCoreSSHRouteTools(20)
+	for i := 0; i < MaxToolBudget; i++ {
+		name := fmt.Sprintf("stale_pinned_tool_%d", i)
+		router.sessionTools[name] = true
+		tools = append(tools, makeToolDef(name, "stale session pinned test tool"))
+	}
+
+	result := router.Route("Read files and inspect the project.", tools)
+	names := routedToolNames(result)
+	if len(result) > MaxToolBudget {
+		t.Fatalf("route result should respect MaxToolBudget after stale pin trimming, got %d", len(result))
+	}
+	for _, essential := range []string{"bash", "read_file", "ripgrep", "edit_file"} {
+		if !names[essential] {
+			t.Fatalf("essential core tool %q should survive stale session pin overflow; got %#v", essential, names)
+		}
+	}
+}
+
 func TestRouter_Route_NoLocalSSHFallbackWithoutClassifier(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
 
-	var tools []map[string]interface{}
-	for name := range CoreToolNames {
-		tools = append(tools, makeToolDef(name, "core "+name))
-	}
-	tools = append(tools, makeToolDef("ssh", "connect to a remote server and run commands"))
-	for i := 0; i < 20; i++ {
-		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
-	}
+	tools := makeCoreSSHRouteTools(20)
 
 	if len(tools) <= MaxToolBudget {
 		t.Fatalf("need more than %d tools to test routing, got %d", MaxToolBudget, len(tools))
@@ -546,14 +811,7 @@ func TestRouter_Route_SemanticallyKeepsSSHForSSHIntent(t *testing.T) {
 	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentSSH, nil })
 	router.SetIntentClassifier(ic)
 
-	var tools []map[string]interface{}
-	for name := range CoreToolNames {
-		tools = append(tools, makeToolDef(name, "core "+name))
-	}
-	tools = append(tools, makeToolDef("ssh", "connect to a remote server and run commands"))
-	for i := 0; i < 20; i++ {
-		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
-	}
+	tools := makeCoreSSHRouteTools(20)
 
 	result := router.Route("Check the remote server resource usage.", tools)
 	for _, r := range result {

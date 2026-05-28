@@ -93,6 +93,46 @@ func TestCoreSearchToolsExposeLargeRepoSearchOptions(t *testing.T) {
 	)
 }
 
+func TestRegisterCoreToolsSecurityGuardBlocksBeforeHandler(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{
+		SecurityGuard: func(name string, args map[string]interface{}) (bool, string) {
+			if name == "web_fetch" {
+				return false, "network disabled"
+			}
+			return true, ""
+		},
+		WebFetchHandler: func(args map[string]interface{}) string {
+			return "handler ran"
+		},
+	})
+
+	got := reg.Execute("web_fetch", map[string]interface{}{"url": "https://example.com"})
+	if got != "[system rejected] network disabled" {
+		t.Fatalf("guarded web_fetch = %q", got)
+	}
+}
+
+func TestRegisterCoreToolsSecurityGuardWrapsExtraHandlers(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{
+		SecurityGuard: func(name string, args map[string]interface{}) (bool, string) {
+			if name == "manage_skill" {
+				return false, "network disabled"
+			}
+			return true, ""
+		},
+		ExtraHandlers: map[string]ToolHandler{
+			"manage_skill": func(args map[string]interface{}) string { return "handler ran" },
+		},
+	})
+
+	got := reg.Execute("manage_skill", map[string]interface{}{"action": "search", "query": "deploy"})
+	if got != "[system rejected] network disabled" {
+		t.Fatalf("guarded manage_skill = %q", got)
+	}
+}
+
 func TestCoreKnowledgeImportToolsAreRegistered(t *testing.T) {
 	reg := NewCoreToolRegistry()
 	RegisterCoreTools(reg, CoreToolDeps{})

@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
@@ -114,12 +117,19 @@ func CenterUserMigrationImportHandler(centerSvc *center.Service, identity *auth.
 			userID := pkg.User.ID
 			if existing == nil {
 				copy := *pkg.User
+				copy.ID = centerMigrationNewUserID()
 				copy.TenantID = tenantID
 				copy.Email = email
+				copy.SN = centerMigrationNewUserSN()
+				if copy.CreatedAt.IsZero() {
+					copy.CreatedAt = time.Now()
+				}
+				copy.UpdatedAt = time.Now()
 				if err := identity.UsersRepo().Create(r.Context(), &copy); err != nil {
 					writeError(w, http.StatusInternalServerError, "USER_IMPORT_FAILED", err.Error())
 					return
 				}
+				userID = copy.ID
 				imported++
 			} else {
 				userID = existing.ID
@@ -215,4 +225,20 @@ func centerMigrationPackageTenantID(requestTenantID string, pkg centerUserDataPa
 		return strings.TrimSpace(pkg.User.TenantID)
 	}
 	return store.DefaultTenantID
+}
+
+func centerMigrationNewUserID() string {
+	return "u_mig_" + centerMigrationRandomHex()
+}
+
+func centerMigrationNewUserSN() string {
+	return "SN-MIG-" + centerMigrationRandomHex()
+}
+
+func centerMigrationRandomHex() string {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err == nil {
+		return hex.EncodeToString(buf)
+	}
+	return hex.EncodeToString([]byte(time.Now().Format("20060102150405.000000000")))
 }

@@ -60,7 +60,10 @@ type AppConfig struct {
 	RemoteMobile            string   `json:"remote_mobile"`
 	RemoteSN                string   `json:"remote_sn"`
 	RemoteUserID            string   `json:"remote_user_id"`
+	RemoteTenantID          string   `json:"remote_tenant_id,omitempty"`
+	RemoteTenantName        string   `json:"remote_tenant_name,omitempty"`
 	RemoteMachineID         string   `json:"remote_machine_id"`
+	RemoteMachineName       string   `json:"remote_machine_name,omitempty"`
 	RemoteMachineToken      string   `json:"remote_machine_token"`
 	RemoteViewerToken       string   `json:"remote_viewer_token,omitempty"`
 	SkillMarketSessionToken string   `json:"skill_market_session_token,omitempty"`
@@ -75,6 +78,7 @@ type AppConfig struct {
 	MaclawLLMProtocol        string              `json:"maclaw_llm_protocol,omitempty"`
 	MaclawLLMContextLength   int                 `json:"maclaw_llm_context_length,omitempty"`
 	MaclawLLMTimeoutSec      int                 `json:"maclaw_llm_timeout_sec,omitempty"`
+	AgentResponseTimeoutSec  int                 `json:"agent_response_timeout_sec,omitempty"`
 	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
 	WebSearchProviders       []WebSearchProvider `json:"web_search_providers,omitempty"`
@@ -100,9 +104,12 @@ type AppConfig struct {
 	MemoryMaxBackups   int  `json:"memory_max_backups,omitempty"` // 0 means use default (20)
 	// Security
 	SecurityPolicyMode     string                 `json:"security_policy_mode,omitempty"`
+	HubSecurityCentralized bool                   `json:"hub_security_centralized,omitempty"`
 	SandboxMode            string                 `json:"sandbox_mode,omitempty"`          // "none" (default), "os", "docker"
-	NetworkLevel           string                 `json:"network_level,omitempty"`         // "none", "intranet", "full" (default)
+	NetworkLevel           string                 `json:"network_level,omitempty"`         // "none", "intranet", "allowlist", "full" (default)
+	NetworkAllowlist       []string               `json:"network_allowlist,omitempty"`     // hostnames/IPs allowed when network_level="allowlist"
 	YoloModeAllowed        bool                   `json:"yolo_mode_allowed"`               // default true
+	SmartRouteEnabled      bool                   `json:"smart_route_enabled"`             // default true (Hub smart routing allowed)
 	GossipEnabled          bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
 	FileOutboundEnabled    bool                   `json:"file_outbound_enabled"`           // default true
 	ImageOutboundEnabled   bool                   `json:"image_outbound_enabled"`          // default true
@@ -516,8 +523,13 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	type appConfigAlias AppConfig
 	type rawAppConfig struct {
 		appConfigAlias
-		ShowAssistantEntry *bool                  `json:"show_assistant_entry"`
-		GroupDiscussion    *GroupDiscussionConfig `json:"group_discussion,omitempty"`
+		ShowAssistantEntry   *bool                  `json:"show_assistant_entry"`
+		YoloModeAllowed      *bool                  `json:"yolo_mode_allowed"`
+		SmartRouteEnabled    *bool                  `json:"smart_route_enabled"`
+		GossipEnabled        *bool                  `json:"gossip_enabled"`
+		FileOutboundEnabled  *bool                  `json:"file_outbound_enabled"`
+		ImageOutboundEnabled *bool                  `json:"image_outbound_enabled"`
+		GroupDiscussion      *GroupDiscussionConfig `json:"group_discussion,omitempty"`
 	}
 
 	var raw rawAppConfig
@@ -530,6 +542,21 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		c.ShowAssistantEntry = true
 	} else {
 		c.ShowAssistantEntry = *raw.ShowAssistantEntry
+	}
+	if raw.YoloModeAllowed == nil {
+		c.YoloModeAllowed = true
+	}
+	if raw.SmartRouteEnabled == nil {
+		c.SmartRouteEnabled = true
+	}
+	if raw.GossipEnabled == nil {
+		c.GossipEnabled = true
+	}
+	if raw.FileOutboundEnabled == nil {
+		c.FileOutboundEnabled = true
+	}
+	if raw.ImageOutboundEnabled == nil {
+		c.ImageOutboundEnabled = true
 	}
 	if raw.GroupDiscussion == nil {
 		c.GroupDiscussion = defaultGroupDiscussionConfig()

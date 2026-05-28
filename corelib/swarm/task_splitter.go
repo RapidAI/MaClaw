@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // TaskSplitter decomposes user requirements or task lists into executable
@@ -154,7 +156,7 @@ func (s *TaskSplitter) callLLM(prompt string) ([]byte, error) {
 	if s.caller == nil {
 		return nil, fmt.Errorf("LLM caller not configured")
 	}
-	return s.caller.CallLLM(prompt, 0.2, 120*time.Second)
+	return s.caller.CallLLM(prompt, 0.2, time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 }
 
 // SplitViaAgent delegates task decomposition to a programming tool instance

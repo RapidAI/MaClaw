@@ -40,8 +40,8 @@ type OrchestratorResult struct {
 	Summary string
 }
 
-// Orchestrator coordinates queued execution of multiple programming-tool
-// sessions, tracks their status, and aggregates results.
+// Orchestrator coordinates legacy queued execution requests. New coding work
+// is routed through the internal CodingSubAgent instead of external sessions.
 type Orchestrator struct {
 	app          *App
 	manager      *RemoteSessionManager
@@ -64,12 +64,12 @@ func NewOrchestrator(app *App, manager *RemoteSessionManager, sharedCtx *SharedC
 	}
 }
 
-// maxQueuedSessions is the upper bound on sessions per ExecuteParallel call.
-// Tasks are dispatched in bounded batches controlled by SubAgentConcurrency.
+// maxQueuedSessions is the legacy upper bound per ExecuteParallel call.
+// ExecuteParallel is retained only to reject old callers consistently.
 const maxQueuedSessions = 5
 
-// ExecuteParallel queues up to 5 sessions, runs them with configured bounded
-// concurrency, and returns an aggregated result.
+// ExecuteParallel handles legacy queued-session calls and returns an aggregated
+// rejection result. Coding tasks should use CodingSubAgent.
 //
 // If a session fails the remaining queued sessions continue, except when the
 // failure is a rate limit; rate limits stop the queue to avoid request bursts.
@@ -201,92 +201,13 @@ func markQueuedTasksSkippedAfterRateLimit(results map[string]SessionResult, task
 	}
 }
 
-// executeOneTask creates a remote session for a single TaskRequest, sends the
-// task description as input, and returns a SessionResult.
+// executeOneTask rejects legacy external queued-session work.
 func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
-	sr := SessionResult{
-		Tool: tr.Tool,
+	return SessionResult{
+		Tool:   tr.Tool,
+		Status: orchestratorSessionStatusFailed,
+		Error:  "external queued coding sessions are disabled; use internal CodingSubAgent",
 	}
-	toolName := normalizeRemoteToolName(tr.Tool)
-	if !remoteToolSupported(toolName) {
-		sr.Status = orchestratorSessionStatusFailed
-		sr.Error = queuedExecuteUnsupportedToolError(toolName)
-		if o.sharedCtx != nil {
-			o.sharedCtx.Put(ContextEntry{
-				Key:       "session_create_failed",
-				Value:     fmt.Sprintf("tool=%s project=%s error=%s", toolName, tr.ProjectPath, sr.Error),
-				SessionID: "",
-				CreatedAt: time.Now(),
-			})
-		}
-		return sr
-	}
-
-	view, err := o.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-		Tool:         toolName,
-		ProjectPath:  tr.ProjectPath,
-		LaunchSource: RemoteLaunchSourceAI,
-	})
-	if err != nil {
-		sr.Status = orchestratorSessionStatusFailed
-		sr.Error = err.Error()
-		// Record failure in shared context so other sessions can see it.
-		if o.sharedCtx != nil {
-			o.sharedCtx.Put(ContextEntry{
-				Key:       "session_create_failed",
-				Value:     fmt.Sprintf("tool=%s project=%s error=%s", tr.Tool, tr.ProjectPath, err.Error()),
-				SessionID: "",
-				CreatedAt: time.Now(),
-			})
-		}
-		return sr
-	}
-
-	sr.SessionID = view.ID
-
-	// Write session-started event to shared context (requirement 13.2).
-	if o.sharedCtx != nil {
-		o.sharedCtx.Put(ContextEntry{
-			Key:       "session_started",
-			Value:     fmt.Sprintf("tool=%s project=%s", tr.Tool, tr.ProjectPath),
-			SessionID: view.ID,
-			CreatedAt: time.Now(),
-		})
-	}
-
-	// Build input: prepend relevant shared context (requirement 13.3).
-	input := o.buildInputWithContext(view.ID, tr.Description)
-
-	// Send the task description as the first input to the session.
-	if err := o.manager.WriteInput(view.ID, input); err != nil {
-		sr.Status = orchestratorSessionStatusFailed
-		sr.Error = fmt.Sprintf("failed to send input: %v", err)
-		// Record send-failure in shared context.
-		if o.sharedCtx != nil {
-			o.sharedCtx.Put(ContextEntry{
-				Key:       "task_result",
-				Value:     fmt.Sprintf("tool=%s status=failed error=%s", tr.Tool, err.Error()),
-				SessionID: view.ID,
-				CreatedAt: time.Now(),
-			})
-		}
-		return sr
-	}
-
-	sr.Status = orchestratorSessionStatusSuccess
-	sr.Output = fmt.Sprintf("session %s started for tool %s", view.ID, tr.Tool)
-
-	// Record successful task dispatch in shared context.
-	if o.sharedCtx != nil {
-		o.sharedCtx.Put(ContextEntry{
-			Key:       "task_result",
-			Value:     fmt.Sprintf("tool=%s status=success session=%s", tr.Tool, view.ID),
-			SessionID: view.ID,
-			CreatedAt: time.Now(),
-		})
-	}
-
-	return sr
 }
 
 func queuedExecuteUnsupportedToolError(toolName string) string {

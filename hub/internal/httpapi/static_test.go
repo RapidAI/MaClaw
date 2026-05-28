@@ -221,10 +221,65 @@ func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
 		`id="centerAcceptPublicSignup"`,
 		`id="centerCorporateEmailDomainsHero"`,
 		`id="centerAcceptPublicSignupHero"`,
+		`id="subtab-workflows" type="button" onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"`,
+		`id="marketplace-subtab-workflows"`,
+		`id="marketplaceWorkflowReviewsList"`,
+		`id="marketplaceWorkflowReviewDetail"`,
+		`id="workflowRejectOverlay" class="session-modal-overlay"`,
+		`id="workflowRejectReason" maxlength="2000"`,
+		`id="workflowRejectReasonError" class="hint" role="alert"`,
+		`<option value="approval_workflow">approval_workflow</option>`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("admin index missing %s", want)
 		}
+	}
+}
+
+func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "marketplace-tab.js"))
+	if err != nil {
+		t.Fatalf("read marketplace tab: %v", err)
+	}
+	marketplace := string(body)
+	for _, want := range []string{
+		`marketplaceSubtabWorkflowReviews: 'Workflow Reviews'`,
+		`workflowReviewsTitle: 'Approval Workflow Reviews'`,
+		`workflowReviewsTitle: '\u5ba1\u6279\u5de5\u4f5c\u6d41\u5ba1\u6838'`,
+		`workflowReviewOpenDesigner: 'Open Designer'`,
+		`workflowReviewOpenDesigner: '\u6253\u5f00\u8bbe\u8ba1\u5668'`,
+		`workflowReviewRejectTitle: 'Reject workflow submission'`,
+		`workflowReviewRejectReasonInvalid: 'Reason must be 10-2000 characters.'`,
+		`marketplaceCancel: 'Cancel'`,
+		`async function loadWorkflowReviewsInternal()`,
+		`api('/api/v1/admin/reviews?page=1')`,
+		`api('/api/v1/admin/reviews/' + encodeURIComponent(id))`,
+		`global.openWorkflowRejectDialog = function(id)`,
+		`global.closeWorkflowRejectDialog = function()`,
+		`global.submitWorkflowRejectDialog = async function()`,
+		`function validateWorkflowRejectReason()`,
+		`reason.length < 10 || reason.length > 2000`,
+		`href="/approval_workflow/?workflow_id=' + encodeURIComponent(workflowId) + '"`,
+		`function metadataOf(item)`,
+		`JSON.parse(item.metadata_json)`,
+		`metadata.workflow_id || item.capability_id`,
+		`href="/approval_workflow/?review_version_id=' + encodeURIComponent(ver.id) + '"`,
+		`href="/approval_workflow/?review_version_id=' + encodeURIComponent(detail.version.id) + '"`,
+		`item.capability_type === 'approval_workflow'`,
+		`'/approve'`,
+		`'/reject'`,
+		`loadCapabilities()`,
+		`state.workflowReviews = Array.isArray(data.submissions) ? data.submissions : [];`,
+		`global.loadWorkflowReviews = async function()`,
+		`workflowsPanel.style.display = '';`,
+		`var mcpAction = item.capability_type === 'mcp'`,
+	} {
+		if !strings.Contains(marketplace, want) {
+			t.Fatalf("admin marketplace workflow review contract missing %q", want)
+		}
+	}
+	if strings.Contains(marketplace, `global.prompt(mp('workflowReviewRejectPrompt'))`) {
+		t.Fatal("workflow review reject should use inline dialog instead of browser prompt")
 	}
 }
 
@@ -332,23 +387,288 @@ func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 
 	approval := read(t, "approval_workflow", "index.html")
 	for _, want := range []string{
+		`<button type="button" id="btnNew"><span data-i18n="newWorkflow">New</span></button>`,
 		`<button type="button" id="btnValidate">`,
 		`<button type="button" id="btnSubmit" class="btn-primary">`,
+		`<input class="workflow-meta-field name" id="workflowName" data-i18n-placeholder="workflowNamePlaceholder"`,
+		`<input class="workflow-meta-field description" id="workflowDescription" data-i18n-placeholder="workflowDescriptionPlaceholder"`,
+		`<span class="workflow-status" id="workflowStatus" role="status" aria-live="polite" data-i18n="statusDraft">`,
+		`<section class="workflow-library" aria-label="Workflow designs" data-i18n-aria="workflowLibrary">`,
+		`id="btnRefreshWorkflows" data-i18n="refreshWorkflows"`,
+		`id="workflowSearch" data-i18n-placeholder="workflowSearchPlaceholder"`,
+		`id="workflowStatusFilter" aria-label="Workflow status" data-i18n-aria="workflowStatusFilter"`,
+		`<option value="published" data-i18n="statusPublishedShort">Published</option>`,
+		`<option value="superseded" data-i18n="statusSupersededShort">Superseded</option>`,
+		`<option value="unknown" data-i18n="statusUnknownShort">Unknown</option>`,
+		`id="workflowList" role="list" aria-live="polite"`,
+		`<button type="button" class="canvas-tool-btn active" id="toolSelect" data-tool-mode="select" data-i18n="selectTool">`,
+		`<button type="button" class="canvas-tool-btn" id="toolConnect" data-tool-mode="connect" data-i18n="connectTool">`,
+		`<button type="button" class="canvas-tool-btn" id="toolDeleteEdge" data-tool-mode="delete_edge" data-i18n="deleteEdgeTool">`,
+		`<div class="review-preview-banner" id="reviewPreviewBanner" hidden data-i18n="reviewPreviewMode">`,
+		`.canvas-tool-btn:disabled`,
+		`<script src="/approval_workflow/i18n.js"></script>`,
+		`<div class="lang-switch" role="group" aria-label="Language" data-i18n-aria="language">`,
+		`data-set-lang="zh"`,
+		`data-set-lang="en"`,
 		`role="button" tabindex="0" data-node-type="trigger"`,
 		`role="button" tabindex="0" data-node-type="terminal"`,
 		`aria-label="Close node configuration"`,
+		`data-i18n="nodeTypes"`,
+		`.config-field textarea.config-field-invalid`,
 	} {
 		if !strings.Contains(approval, want) {
 			t.Fatalf("approval workflow page missing accessibility contract %q", want)
 		}
 	}
 
+	approvalI18n := read(t, "approval_workflow", "i18n.js")
+	for _, want := range []string{
+		`maclaw-approval-workflow-lang`,
+		`pageTitle: 'Approval Workflow Designer'`,
+		`edgeConnectorLabel: 'Connector from {source} to {target}'`,
+		`reviewPreviewMode: 'Review preview mode. This workflow is read-only here.'`,
+		`adminAuthRequired: 'Admin authorization required. Sign in to the Hub admin console first.'`,
+		`pageTitle: '审批工作流设计器'`,
+		`newWorkflowConfirm: '要新建工作流吗？未保存的更改将会丢失。'`,
+		`openWorkflowConfirm: '要打开这个工作流设计吗？未保存的更改将会丢失。'`,
+		`workflowLibrary: '我的工作流'`,
+		`workflowSearchPlaceholder: '搜索工作流'`,
+		`workflowStatusAll: '全部状态'`,
+		`workflowListNoMatches: '没有符合筛选条件的工作流设计。'`,
+		`statusUnknownShort: '未知'`,
+		`deleteWorkflowConfirm: '要删除工作流设计“{name}”吗？这里不会删除已发布到能力市场的 skill。'`,
+		`deleteWorkflowBlocked: '已发布或曾经发布的工作流不能在设计器中删除。'`,
+		`deleteWorkflowUnavailable: '无法确认发布历史。删除前请先刷新。'`,
+		`workflowVersionUnknown: '版本历史不可用'`,
+		`submitReview: '提交审核'`,
+		`workflowNamePlaceholder: '工作流名称'`,
+		`statusLoaded: '已加载 {version}'`,
+		`statusUnsaved: '有未保存更改'`,
+		`statusPendingReview: '待审核 {version}'`,
+		`authRequired: '需要机器授权。请使用 machine_id 和 token 查询参数打开，或先写入 localStorage。'`,
+		`nodeTypes: '节点类型'`,
+		`mustBeBetween: '必须介于 {min} 和 {max} 之间'`,
+		`window.ApprovalWorkflowI18n`,
+		`hasTranslation: hasTranslation`,
+	} {
+		if !strings.Contains(approvalI18n, want) {
+			t.Fatalf("approval workflow i18n missing contract %q", want)
+		}
+	}
+
+	terminalConfig := read(t, "approval_workflow", "terminal-node-config.js")
+	for _, want := range []string{
+		`window.attachTerminalNodeConfigListeners = function (node, searchUsers, onChange)`,
+		`var markChanged = typeof onChange === 'function' ? onChange : function () {};`,
+		`attachItemListeners(node, 'executor', markChanged);`,
+		`parseInt(btn.getAttribute('data-index'), 10)`,
+		`markChanged();`,
+		`var items = type === 'executor' ? config.result_executors : config.notifiers;`,
+		`input.setAttribute('aria-invalid', error !== '' ? 'true' : 'false');`,
+	} {
+		if !strings.Contains(terminalConfig, want) {
+			t.Fatalf("approval workflow terminal config missing contract %q", want)
+		}
+	}
+
+	approvalCSS := read(t, "approval_workflow", "professional.css")
+	for _, want := range []string{
+		`.workflow-app{grid-template-columns:260px 1fr auto`,
+		`.workflow-header,.node-palette,.config-panel`,
+		`.config-panel{box-shadow`,
+	} {
+		if !strings.Contains(approvalCSS, want) {
+			t.Fatalf("approval workflow professional css missing contract %q", want)
+		}
+	}
+	if strings.Contains(approvalCSS, `.properties-panel`) {
+		t.Fatal("approval workflow professional css should target config-panel, not stale properties-panel")
+	}
+
+	workflowEditorTest := read(t, "approval_workflow", "workflow-editor.test.js")
+	for _, want := range []string{
+		`selects highest semantic version before timestamp`,
+		`compares numeric patch values`,
+		`uses timestamp only as same-version tie breaker`,
+		`shows unknown status when version history failed`,
+		`blocks delete when published history exists`,
+	} {
+		if !strings.Contains(workflowEditorTest, want) {
+			t.Fatalf("approval workflow editor test missing contract %q", want)
+		}
+	}
+
 	editor := read(t, "approval_workflow", "workflow-editor.js")
 	for _, want := range []string{
 		`function addNodeToCanvas(nodeType, position)`,
+		`el.setAttribute('role', 'button');`,
+		`el.tabIndex = 0;`,
+		`el.setAttribute('aria-pressed', 'false');`,
+		`el.setAttribute('aria-label', node.label + ' ' + nodeTypeLabel(node.type));`,
+		`pageTitle: 'Approval Workflow Designer'`,
+		`state.reviewVersionId = getUrlParam('review_version_id') || null;`,
+		`async function loadWorkflowReviewPreview()`,
+		`adminWorkflowApi('/api/v1/admin/reviews/' + encodeURIComponent(state.reviewVersionId))`,
+		`function setReadOnlyPreviewMode(enabled)`,
+		`function isReadOnlyPreview()`,
+		`getAdminToken()`,
+		`maclawHubAdminToken`,
+		`tr('reviewPreviewStatus', { version: version })`,
+		`function resetWorkflowDesigner()`,
+		`storageRemove('maclaw-approval-workflow-id');`,
+		`btnNew.addEventListener('click', function ()`,
+		`confirm(tr('newWorkflowConfirm'))`,
+		`confirm(tr('openWorkflowConfirm'))`,
+		`if (hasUnsavedChanges() && !confirm(tr('newWorkflowConfirm'))) return;`,
+		`if (hasUnsavedChanges() && !confirm(tr('openWorkflowConfirm'))) return;`,
+		`async function workflowApi(path, options)`,
+		`'X-Machine-ID': auth.machineID`,
+		`headers.Authorization = 'Bearer ' + auth.token;`,
+		`apiErr.code = data.code || '';`,
+		`if (err && err.code === 'VALIDATION_FAILED')`,
+		`async function ensureWorkflowDefinition()`,
+		`async function syncWorkflowDefinition()`,
+		`method: 'PUT'`,
+		`async function loadWorkflowFromApi(workflowId)`,
+		`var targetWorkflowId = workflowId || state.workflowId;`,
+		`state.workflowId = targetWorkflowId;`,
+		`storageSet('maclaw-approval-workflow-id', targetWorkflowId);`,
+		`return false;`,
+		`return true;`,
+		`async function loadWorkflowLibrary()`,
+		`async function openWorkflowDesign(workflowId)`,
+		`async function deleteWorkflowDesign(workflowId)`,
+		`function workflowHasPublishedHistory(workflowId)`,
+		`function workflowVersionBlocksDesignerDelete(status)`,
+		`function workflowVersionHistoryUnavailable(workflowId)`,
+		`if (workflowVersionHistoryUnavailable(workflowId)) return 'unknown';`,
+		`unknown: 'statusUnknownShort'`,
+		`versionsById[wf.id] = null;`,
+		`alert(tr('deleteWorkflowUnavailable'))`,
+		`status === 'published' || status === 'superseded' || status === 'unpublished'`,
+		`function workflowStatusLabel(status)`,
+		`function workflowPrimaryActionLabel(status)`,
+		`function filteredWorkflowSummaries()`,
+		`<div role="listitem" class="workflow-library-empty">`,
+		`<div role="listitem" class="' + (isError ? 'workflow-library-error' : 'workflow-library-empty') + '">`,
+		`function markDirty()`,
+		`function clearDirty(savedRevision)`,
+		`function hasUnsavedChanges()`,
+		`isBusy: false`,
+		`isLibraryLoading: false`,
+		`libraryRequestId: 0`,
+		`state.isBusy = !!isBusy;`,
+		`function setControlDisabled(control, disabled)`,
+		`control.setAttribute('aria-disabled', disabled ? 'true' : 'false');`,
+		`function workflowLibraryControlsDisabled()`,
+		`return !!(state.isBusy || state.isLibraryLoading || isReadOnlyPreview());`,
+		`var requestId = ++state.libraryRequestId;`,
+		`if (requestId !== state.libraryRequestId) return;`,
+		`var versionsById = {};`,
+		`if (workflowLibraryControlsDisabled()) return;`,
+		`var openIsDisabled = workflowLibraryControlsDisabled();`,
+		`var openDisabled = openIsDisabled ? ' disabled aria-disabled="true"' : ' aria-disabled="false"';`,
+		`function updateDocumentTitle()`,
+		`document.title = (state.isDirty ? '* ' : '') + tr('pageTitle');`,
+		`state.isDirty = true;`,
+		`dirtyRevision: 0`,
+		`state.dirtyRevision++;`,
+		`if (savedRevision !== undefined && savedRevision !== state.dirtyRevision)`,
+		`var savedRevision = state.dirtyRevision;`,
+		`var graph = getWorkflowGraph();`,
+		`clearDirty(savedRevision);`,
+		`alert(tr('submitChangedDuringSave'))`,
+		`invalidConfigFields: {}`,
+		`state.invalidConfigFields[fieldKey] = el.previousElementSibling && el.previousElementSibling.textContent || id;`,
+		`function clearInvalidConfigFieldsForNode(nodeId)`,
+		`clearInvalidConfigFieldsForNode(nodeId);`,
+		`function getInvalidConfigErrors()`,
+		`tr('invalidJsonField', { field: state.invalidConfigFields[key] || key })`,
+		`invalidConfigField: 'Invalid value in {field}.'`,
+		`? 'invalidJsonField' : 'invalidConfigField'`,
+		`configPanelBody.querySelectorAll('[aria-invalid="true"], .terminal-field-invalid, .config-field-invalid')`,
+		`function configFieldLabel(el)`,
+		`updateVersionStatus('dirty');`,
+		`dirty: 'statusUnsaved'`,
+		`workflowStatusLabel(latest.status || 'draft')`,
+		`historyUnavailable ? tr('workflowVersionUnknown')`,
+		`return tr('reviseWorkflow');`,
+		`return tr('continueWorkflow');`,
+		`workflow-library-status`,
+		`workflowSearchInput.addEventListener('input', function ()`,
+		`workflowStatusFilter.addEventListener('change', function ()`,
+		`state.workflowStatusFilter = workflowStatusFilter.value || '';`,
+		`workflowApi('/api/v1/workflows');`,
+		`await workflowApi('/api/v1/workflows/' + encodeURIComponent(workflowId), { method: 'DELETE' });`,
+		`workflowList.addEventListener('click', function (e)`,
+		`if (workflowHasPublishedHistory(workflowId))`,
+		`await workflowApi('/api/v1/workflows/' + encodeURIComponent(targetWorkflowId));`,
+		`await workflowApi('/api/v1/workflows/' + encodeURIComponent(targetWorkflowId) + '/versions');`,
+		`applyWorkflowVersion(ver);`,
+		`applyWorkflowGraph(ver.graph);`,
+		`function applyWorkflowGraph(graph)`,
+		`state.nextNodeId = nextNumberFromIds(state.nodes, 'node');`,
+		`loadWorkflowFromApi();`,
+		`function compareWorkflowVersions(a, b)`,
+		`function parseVersionNumber(version)`,
+		`parseInt(part, 10)`,
+		`await workflowApi('/api/v1/workflows'`,
+		`await workflowApi('/api/v1/workflows/' + encodeURIComponent(workflowID) + '/versions'`,
+		`'/submit'`,
+		`function updateVersionStatus(statusKey)`,
+		`function reachableNodeIds(triggerId)`,
+		`var reachable = reachableNodeIds(triggerNodes[0].id);`,
+		`if (edge.source_id !== current || reachable[edge.target_id]) return;`,
 		`el.addEventListener('keydown', function (e)`,
 		`if (e.key !== 'Enter' && e.key !== ' ') return;`,
+		`handleConnectNodeClick(node.id, el);`,
 		`addNodeToCanvas(el.getAttribute('data-node-type')`,
+		`window.addEventListener('approval-workflow-language-change', refreshLocalizedUI);`,
+		`workflowNameInput.addEventListener('input', markDirty);`,
+		`workflowDescriptionInput.addEventListener('input', markDirty);`,
+		`window.addEventListener('beforeunload', function (e)`,
+		`if (!hasUnsavedChanges()) return;`,
+		`e.returnValue = tr('newWorkflowConfirm');`,
+		`window.attachTerminalNodeConfigListeners(node, null, markDirty);`,
+		`renderWorkflowLibrary();`,
+		`function setToolMode(mode)`,
+		`if (isToolModeDisabled(mode)) mode = 'select';`,
+		`if (isToolModeDisabled(state.toolMode)) {`,
+		`if (mode === 'connect') return state.nodes.length < 2;`,
+		`if (mode === 'delete_edge') return state.edges.length === 0;`,
+		`if (mode !== 'select') clearSelectedNode();`,
+		`function selectNode(nodeId)`,
+		`if (state.selectedNodeId && state.selectedNodeId !== nodeId) clearInvalidConfigFieldsForNode(state.selectedNodeId);`,
+		`state.selectedEdgeId = null;`,
+		`function updateCanvasNodeSelection()`,
+		`el.setAttribute('aria-pressed', selected ? 'true' : 'false');`,
+		`nodeFrame.setAttribute('aria-label', node.label + ' ' + nodeTypeLabel(node.type));`,
+		`if (state.nodes.length < 2) return;`,
+		`btn.disabled = disabled;`,
+		`if (state.toolMode !== 'select') setToolMode('select');`,
+		`function clearSelectedNode()`,
+		`function deselectNode()`,
+		`if (state.selectedNodeId) clearInvalidConfigFieldsForNode(state.selectedNodeId);`,
+		`clearConnectingState();`,
+		`function deleteEdge(edgeId)`,
+		`if (state.connectingFrom === nodeId) clearConnectingState();`,
+		`function isEditingField()`,
+		`function bindJsonTextarea(id, cb)`,
+		`el.classList.add('config-field-invalid');`,
+		`el.classList.remove('config-field-invalid');`,
+		`el.setAttribute('aria-invalid', 'true');`,
+		`el.setAttribute('aria-invalid', 'false');`,
+		`parseInt(v, 10)`,
+		`e.preventDefault();`,
+		`edge-hit-path`,
+		`hitPath.setAttribute('role', 'button');`,
+		`hitPath.setAttribute('tabindex', state.toolMode === 'connect' ? '-1' : '0');`,
+		`hitPath.setAttribute('aria-disabled', state.toolMode === 'connect' ? 'true' : 'false');`,
+		`hitPath.setAttribute('aria-label', edgeAriaLabel(edge));`,
+		`hitPath.addEventListener('keydown', function (e)`,
+		`if (state.toolMode === 'connect') return;`,
+		`if (state.toolMode === 'delete_edge')`,
+		`if (state.toolMode === 'delete_edge') return;`,
 	} {
 		if !strings.Contains(editor, want) {
 			t.Fatalf("approval workflow editor missing keyboard contract %q", want)

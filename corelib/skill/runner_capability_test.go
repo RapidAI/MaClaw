@@ -32,11 +32,21 @@ func TestCheckStepActionSupport_GUIRunsCraftTool(t *testing.T) {
 	}
 }
 
-func TestCheckStepActionSupport_GUISessionAndMCPActions(t *testing.T) {
-	for _, action := range []string{"create_session", "send_input", "send_and_observe", "call_mcp_tool"} {
+func TestCheckStepActionSupport_GUIMCPActionSupported(t *testing.T) {
+	support := CheckStepActionSupport(RunnerBackendGUI, "call_mcp_tool")
+	if !support.Supported {
+		t.Fatalf("call_mcp_tool should be supported by GUI: %#v", support)
+	}
+}
+
+func TestCheckStepActionSupport_GUIExternalSessionActionsDisabled(t *testing.T) {
+	for _, action := range []string{"create_session", "send_input", "send_and_observe"} {
 		support := CheckStepActionSupport(RunnerBackendGUI, action)
-		if !support.Supported {
-			t.Fatalf("%s should be supported by GUI: %#v", action, support)
+		if support.Supported {
+			t.Fatalf("%s should not be supported by GUI", action)
+		}
+		if !strings.Contains(support.Message(), "external coding sessions") {
+			t.Fatalf("message = %q", support.Message())
 		}
 	}
 }

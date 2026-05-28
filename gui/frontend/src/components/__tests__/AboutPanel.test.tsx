@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 
 const BrowserOpenURLMock = vi.fn();
 
@@ -10,9 +10,11 @@ vi.mock('../../../wailsjs/runtime', () => ({
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     ReadErrorLog: vi.fn().mockResolvedValue([]),
+    ProbeRemoteHub: vi.fn().mockResolvedValue({}),
 }));
 
 import { AboutPanel } from '../AboutPanel';
+import { ProbeRemoteHub } from '../../../wailsjs/go/main/App';
 
 const baseProps = {
     currentIcon: '/logo.png',
@@ -20,6 +22,7 @@ const baseProps = {
     appVersion: '1.2.3',
     buildNumber: '10001',
     thanksContent: '',
+    config: null,
     t: (key: string) => ({
         aboutProductName: 'MaClaw Bedrock',
         slogan: 'Master your code, seize the machine.',
@@ -27,6 +30,17 @@ const baseProps = {
         buildLabel: 'Build',
         author: 'Author',
         businessCooperation: 'Contact: WeChat znsoft',
+        aboutUnsetValue: 'Not configured',
+        aboutIdentityTitle: 'Hub Identity',
+        aboutIdentityDesc: 'Current tenant and registered instance on Hub.',
+        aboutNotRegistered: 'Not registered',
+        aboutTenantName: 'Tenant',
+        aboutRegisteredName: 'Registered Name',
+        aboutHubUrl: 'Hub URL',
+        aboutAccountEmail: 'Account',
+        aboutMachineId: 'Machine ID',
+        remoteActivation: 'Registration',
+        remoteActivated: 'Registered',
         quickActionsTitle: 'Quick Actions',
         quickActionsDesc: 'Open official resources, check updates, or report issues.',
         officialWebsite: 'Official Website',
@@ -91,6 +105,53 @@ describe('AboutPanel', () => {
         fireEvent.click(screen.getByText('Code Repository'));
 
         expect(baseProps.onOpenGithub).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders current tenant and registered hub instance name', () => {
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        expect(screen.getByText('Acme Team')).toBeTruthy();
+        expect(screen.getByText('Build Desk')).toBeTruthy();
+        expect(screen.getByText('https://hub.example')).toBeTruthy();
+    });
+
+    it('uses saved machine name when hub nickname is not available', () => {
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_id: 'tenant_acme', remote_machine_name: 'workstation-01', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
+
+        expect(screen.getByText('tenant_acme')).toBeTruthy();
+        expect(screen.getByText('workstation-01')).toBeTruthy();
+    });
+
+    it('does not show stale hub nickname when machine is not registered', () => {
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Old Desk' }} />);
+
+        expect(screen.getByText('Acme Team')).toBeTruthy();
+        expect(screen.queryByText('Old Desk')).toBeNull();
+        expect(screen.getAllByText('Not configured').length).toBeGreaterThan(0);
+    });
+
+    it('does not show registered state when machine token is missing', () => {
+        render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Old Desk', remote_machine_id: 'm_123' }} />);
+
+        expect(screen.getAllByText('Not registered').length).toBeGreaterThan(0);
+        expect(screen.queryByText('Old Desk')).toBeNull();
+    });
+
+    it('refreshes probed tenant when hub identity changes', async () => {
+        vi.mocked(ProbeRemoteHub)
+            .mockResolvedValueOnce({ tenant_name: 'Team One' })
+            .mockResolvedValueOnce({ tenant_name: 'Team Two' });
+
+        const { rerender } = render(<AboutPanel {...baseProps} config={{ remote_hub_url: 'https://hub-one.example', remote_email: 'dev@example.com' }} />);
+
+        expect(await screen.findByText('Team One')).toBeTruthy();
+
+        rerender(<AboutPanel {...baseProps} config={{ remote_hub_url: 'https://hub-two.example', remote_email: 'dev@example.com' }} />);
+
+        await waitFor(() => {
+            expect(ProbeRemoteHub).toHaveBeenLastCalledWith('https://hub-two.example', 'dev@example.com');
+        });
+        expect(await screen.findByText('Team Two')).toBeTruthy();
     });
 
     it('hides thanks section when content is empty', () => {

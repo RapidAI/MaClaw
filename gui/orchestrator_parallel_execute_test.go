@@ -7,19 +7,19 @@ import (
 	"time"
 )
 
-func TestOrchestratorRejectsLocalBuiltinToolsBeforeRemoteLaunch(t *testing.T) {
+func TestOrchestratorRejectsExternalQueuedCodingSessions(t *testing.T) {
 	o := &Orchestrator{}
 
 	got := o.executeOneTask(TaskRequest{
-		Tool:        "write_file",
-		Description: "write a local file",
+		Tool:        "codex",
+		Description: "fix code",
 		ProjectPath: t.TempDir(),
 	})
 
 	if !got.Status.IsFailed() {
 		t.Fatalf("status = %q, want failed", got.Status)
 	}
-	if !strings.Contains(got.Error, "local built-in tool") || !strings.Contains(got.Error, "call it directly") {
+	if !strings.Contains(got.Error, "external queued coding sessions are disabled") || !strings.Contains(got.Error, "CodingSubAgent") {
 		t.Fatalf("unexpected error: %q", got.Error)
 	}
 }

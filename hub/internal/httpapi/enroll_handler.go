@@ -77,6 +77,8 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		}(), err)
 		if err != nil {
 			switch {
+			case errors.Is(err, auth.ErrRoutedToAnotherHub):
+				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
 			case errors.Is(err, auth.ErrRegistrationDisabled):
 				writeError(w, http.StatusForbidden, "REGISTRATION_DISABLED", err.Error())
 			case errors.Is(err, auth.ErrInvitationExpired):
@@ -109,6 +111,9 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		}
 		if resp.TenantID != "" {
 			respMap["tenant_id"] = resp.TenantID
+		}
+		if resp.TenantName != "" {
+			respMap["tenant_name"] = resp.TenantName
 		}
 		if resp.Message != "" {
 			respMap["message"] = resp.Message
@@ -252,6 +257,8 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 		resp, err := identity.RequestEmailLogin(ctx, req.Email)
 		if err != nil {
 			switch {
+			case errors.Is(err, auth.ErrRoutedToAnotherHub):
+				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
 			case errors.Is(err, auth.ErrRegistrationDisabled):
 				writeError(w, http.StatusForbidden, "REGISTRATION_DISABLED", err.Error())
 			case errors.Is(err, auth.ErrEmailBlocked):

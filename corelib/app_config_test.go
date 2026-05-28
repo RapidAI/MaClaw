@@ -103,6 +103,45 @@ func TestAppConfigSubAgentConcurrencyDefaultsAndClamps(t *testing.T) {
 	}
 }
 
+func TestAppConfigSecurityBoolDefaults(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !cfg.YoloModeAllowed || !cfg.SmartRouteEnabled || !cfg.GossipEnabled || !cfg.FileOutboundEnabled || !cfg.ImageOutboundEnabled {
+		t.Fatalf("security booleans should default true: %+v", cfg)
+	}
+
+	var disabled AppConfig
+	if err := json.Unmarshal([]byte(`{"yolo_mode_allowed":false,"smart_route_enabled":false,"gossip_enabled":false,"file_outbound_enabled":false,"image_outbound_enabled":false}`), &disabled); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if disabled.YoloModeAllowed || disabled.SmartRouteEnabled || disabled.GossipEnabled || disabled.FileOutboundEnabled || disabled.ImageOutboundEnabled {
+		t.Fatalf("explicit false security booleans should be preserved: %+v", disabled)
+	}
+}
+
+func TestNormalizeAgentTimeoutSec(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "missing", in: 0, want: DefaultAgentTimeoutSec},
+		{name: "below min", in: 120, want: MinAgentTimeoutSec},
+		{name: "valid", in: 360, want: 360},
+		{name: "above max", in: 900, want: MaxAgentTimeoutSec},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeAgentTimeoutSec(tt.in); got != tt.want {
+				t.Fatalf("NormalizeAgentTimeoutSec(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsWorkflowEnabled verifies the three-state behavior of the workflow toggle:
 // nil (default) → true, explicit true → true, explicit false → false.
 // Also verifies JSON round-trip: *bool with omitempty serializes false correctly.

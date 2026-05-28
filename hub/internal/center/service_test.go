@@ -117,6 +117,133 @@ func TestSyncUserRouteUsesStoredRegistration(t *testing.T) {
 	}
 }
 
+func TestDeleteUserRouteUsesStoredRegistration(t *testing.T) {
+	var (
+		gotMethod string
+		gotPath   string
+		gotSecret string
+		gotEmail  string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		gotSecret, _ = payload["hub_secret"].(string)
+		gotEmail, _ = payload["email"].(string)
+		if tenantID, _ := payload["tenant_id"].(string); tenantID != "tenant_acme" {
+			t.Fatalf("tenant_id = %q, want tenant_acme", tenantID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		HubID:      "hub_sync",
+		HubSecret:  "secret_sync",
+	}))
+	if err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := svc.DeleteUserRoute(context.Background(), "User@Example.com", "tenant_acme"); err != nil {
+		t.Fatalf("DeleteUserRoute() error = %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %q, want DELETE", gotMethod)
+	}
+	if gotPath != "/api/hubs/hub_sync/user-links/sync" {
+		t.Fatalf("sync path = %q, want %q", gotPath, "/api/hubs/hub_sync/user-links/sync")
+	}
+	if gotSecret != "secret_sync" {
+		t.Fatalf("hub_secret = %q, want %q", gotSecret, "secret_sync")
+	}
+	if gotEmail != "user@example.com" {
+		t.Fatalf("email = %q, want %q", gotEmail, "user@example.com")
+	}
+}
+
+func TestAllowsUserRouteRejectsEmailRoutedToDifferentHub(t *testing.T) {
+	var gotEmail string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/entry/resolve-domain" {
+			t.Fatalf("path = %q, want /api/entry/resolve-domain", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		gotEmail, _ = payload["email"].(string)
+		if domain, _ := payload["domain"].(string); domain != "qianxin.com" {
+			t.Fatalf("domain = %q, want qianxin.com", domain)
+		}
+		if tenantID, _ := payload["tenant_id"].(string); tenantID != "tenant_acme" {
+			t.Fatalf("tenant_id = %q, want tenant_acme", tenantID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"default_hub_id":"hub_target"}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{Registered: true, HubID: "hub_current", HubSecret: "secret"})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	allowed, targetHubID, err := svc.AllowsUserRoute(context.Background(), "User@Qianxin.com", "tenant_acme")
+	if err != nil {
+		t.Fatalf("AllowsUserRoute() error = %v", err)
+	}
+	if allowed || targetHubID != "hub_target" {
+		t.Fatalf("allowed=%t target=%q, want false hub_target", allowed, targetHubID)
+	}
+	if gotEmail != "user@qianxin.com" {
+		t.Fatalf("email = %q, want user@qianxin.com", gotEmail)
+	}
+}
+
+func TestAllowsUserRouteAllowsCurrentOrUnroutedHub(t *testing.T) {
+	responses := []string{`{"default_hub_id":"hub_current"}`, `{}`}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body := responses[0]
+		responses = responses[1:]
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{Registered: true, HubID: "hub_current", HubSecret: "secret"})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		allowed, _, err := svc.AllowsUserRoute(context.Background(), "user@example.com")
+		if err != nil || !allowed {
+			t.Fatalf("AllowsUserRoute #%d allowed=%t err=%v", i, allowed, err)
+		}
+	}
+}
+
 func TestRegistrationCapabilitiesIncludesTenantCounts(t *testing.T) {
 	svc := NewService(config.Default(), newFakeSettingsRepo())
 	svc.users = fakeCenterUsers{items: []*store.User{

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,7 +51,9 @@ func TestRequestGroupDiscussionTenantIDUsesAuthenticatedContextAndDefaultTenant(
 }
 
 type captureGroupDiscussionSender struct {
+	mu       sync.Mutex
 	messages []sentGroupDiscussionMessage
+	err      error
 }
 
 type sentGroupDiscussionMessage struct {
@@ -60,8 +63,16 @@ type sentGroupDiscussionMessage struct {
 
 func (s *captureGroupDiscussionSender) SendToMachine(machineID string, msg any) error {
 	mapped, _ := msg.(map[string]any)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.messages = append(s.messages, sentGroupDiscussionMessage{machineID: machineID, msg: mapped})
-	return nil
+	return s.err
+}
+
+func (s *captureGroupDiscussionSender) snapshotMessages() []sentGroupDiscussionMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]sentGroupDiscussionMessage(nil), s.messages...)
 }
 
 func TestGroupDiscussionMessagePushesToOtherParticipants(t *testing.T) {

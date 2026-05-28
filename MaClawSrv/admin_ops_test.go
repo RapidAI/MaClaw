@@ -751,6 +751,7 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 		{ActorType: "admin", Action: "admin.sandbox_config_updated", ResourceType: "sandbox", ResourceID: "bwrap"},
 		{ActorType: "admin", Action: "admin.service_config_draft_updated", ResourceType: "service_config", ResourceID: "draft"},
 		{ActorType: "admin", Action: "admin.knowledge_access_cross_tenant_updated", ResourceType: "knowledge_access", ResourceID: "cross_tenant"},
+		{ActorType: "admin", Action: "admin.public_knowledge_library_created", ResourceType: "public_knowledge_library", ResourceID: "public-library-1"},
 		{ActorType: "admin", Action: "admin.skill_sources_global_updated", ResourceType: "skill_source_policy", ResourceID: "global"},
 		{ActorType: "admin", Action: "admin.support_bundle_downloaded", ResourceType: "support_bundle", ResourceID: "service"},
 		{ActorType: "admin", Action: "admin.logs_rotate", ResourceType: "log_source", ResourceID: "service"},
@@ -949,7 +950,7 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 			t.Fatalf("unrelated audit event should not become a risk event: %#v", item)
 		}
 	}
-	for _, kind := range []string{"auth_failed", "web_launch_token_rejected", "admin_authorization_denied", "credential_created", "credential_rotated", "sandbox_admin_changed", "service_config_changed", "knowledge_policy_changed", "skill_source_policy_changed", "diagnostics_bundle_downloaded", "log_rotated", "job_canceled", "runtime_gc"} {
+	for _, kind := range []string{"auth_failed", "web_launch_token_rejected", "admin_authorization_denied", "credential_created", "credential_rotated", "sandbox_admin_changed", "service_config_changed", "knowledge_policy_changed", "public_knowledge_changed", "skill_source_policy_changed", "diagnostics_bundle_downloaded", "log_rotated", "job_canceled", "runtime_gc"} {
 		if !seenKinds[kind] {
 			t.Fatalf("expected %s risk in unfiltered list, got %#v", kind, all.Items)
 		}

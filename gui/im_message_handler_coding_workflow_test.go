@@ -83,24 +83,19 @@ func quickConfig() *quick.Config {
 }
 
 // ---------------------------------------------------------------------------
-// Feature: coding-interaction-workflow, Property 1: Confirmation Phase appears before create_session
+// Feature: coding-interaction-workflow, Property 1: Confirmation Phase gates CodingSubAgent
 //
 // Validates: Requirements 1.1, 6.1
 // For any valid system configuration, the Confirmation Phase instructions
-// (需求确认 / Confirmation Phase) must appear BEFORE the create_session
+// (需求确认 / Confirmation Phase) must appear BEFORE the CodingSubAgent
 // execution instructions in buildSystemPrompt() output.
 // ---------------------------------------------------------------------------
-func TestCodingWorkflowProperty1_ConfirmationBeforeCreateSession(t *testing.T) {
+func TestCodingWorkflowProperty1_ConfirmationBeforeCodingSubAgent(t *testing.T) {
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
 
-		// The workflow has 5 steps. The Confirmation Phase (第三步/Step 3)
-		// must appear before the execution step (第四步/Step 4) which calls
-		// create_session. We verify the structural ordering by checking that
-		// the confirmation rule "后才调用 create_session" (only call
-		// create_session after user confirms) appears in the prompt, AND
-		// that the confirmation step (第三步) appears before the execution
-		// step (第四步).
+		// The workflow has 5 steps. Confirmation must appear before execution,
+		// and execution must route through CodingSubAgent instead of external sessions.
 		confirmStepIdx := strings.Index(prompt, "第三步")
 		if confirmStepIdx < 0 {
 			t.Logf("prompt does not contain '第三步' (Confirmation Phase step)")
@@ -118,11 +113,10 @@ func TestCodingWorkflowProperty1_ConfirmationBeforeCreateSession(t *testing.T) {
 			return false
 		}
 
-		// Also verify the confirmation rule explicitly gates create_session
-		hasGate := strings.Contains(prompt, "后才调用 create_session") ||
-			(strings.Contains(prompt, "确认") && strings.Contains(prompt, "create_session"))
+		// Also verify the confirmation rule explicitly gates CodingSubAgent execution.
+		hasGate := strings.Contains(prompt, "CodingSubAgent") && !strings.Contains(prompt, "create_session")
 		if !hasGate {
-			t.Logf("prompt missing confirmation gate for create_session")
+			t.Logf("prompt missing confirmation gate for CodingSubAgent or still mentions create_session")
 			return false
 		}
 
@@ -133,6 +127,7 @@ func TestCodingWorkflowProperty1_ConfirmationBeforeCreateSession(t *testing.T) {
 		t.Errorf("Property 1 failed: %v", err)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Feature: coding-interaction-workflow, Property 2: Requirements Phase document components
 //
@@ -142,16 +137,20 @@ func TestCodingWorkflowProperty2_ConfirmationContainsAllComponents(t *testing.T)
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
 		if !strings.Contains(prompt, "需求背景与目标") {
-			t.Logf("missing 需求背景与目标"); return false
+			t.Logf("missing 需求背景与目标")
+			return false
 		}
 		if !strings.Contains(prompt, "功能需求列表") {
-			t.Logf("missing 功能需求列表"); return false
+			t.Logf("missing 功能需求列表")
+			return false
 		}
 		if !strings.Contains(prompt, "非功能需求") {
-			t.Logf("missing 非功能需求"); return false
+			t.Logf("missing 非功能需求")
+			return false
 		}
 		if !strings.Contains(prompt, "约束与假设") {
-			t.Logf("missing 约束与假设"); return false
+			t.Logf("missing 约束与假设")
+			return false
 		}
 		return true
 	}
@@ -159,6 +158,7 @@ func TestCodingWorkflowProperty2_ConfirmationContainsAllComponents(t *testing.T)
 		t.Errorf("Property 2 failed: %v", err)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Feature: coding-interaction-workflow, Property 3: Coding vs non-coding task distinction
 //
@@ -188,9 +188,9 @@ func TestCodingWorkflowProperty3_CodingVsNonCodingDistinction(t *testing.T) {
 
 		// Must explicitly list SSH/server task concept and conservative routing.
 		hasSSH := strings.Contains(prompt, "SSH/服务器操作任务")
-		hasNoCreateSessionOnUnclear := strings.Contains(prompt, "如果不能确定是编程任务，不要调用 create_session")
-		if !hasSSH || !hasNoCreateSessionOnUnclear {
-			t.Logf("prompt missing ssh routing guidance (ssh=%v unclear_guard=%v)", hasSSH, hasNoCreateSessionOnUnclear)
+		hasNoExternalSessionOnUnclear := strings.Contains(prompt, "CodingSubAgent") && !strings.Contains(prompt, "create_session")
+		if !hasSSH || !hasNoExternalSessionOnUnclear {
+			t.Logf("prompt missing ssh routing guidance (ssh=%v unclear_guard=%v)", hasSSH, hasNoExternalSessionOnUnclear)
 			return false
 		}
 
@@ -259,6 +259,7 @@ func TestCodingWorkflowProperty4_SkipSignalBilingualPatterns(t *testing.T) {
 		t.Errorf("Property 4 failed: %v", err)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Feature: coding-interaction-workflow, Property 5: Verification Phase completeness
 //
@@ -268,22 +269,28 @@ func TestCodingWorkflowProperty5_RFOWorkflowCompleteness(t *testing.T) {
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
 		if !strings.Contains(prompt, "全量回归测试") {
-			t.Logf("missing 全量回归测试"); return false
+			t.Logf("missing 全量回归测试")
+			return false
 		}
 		if !(strings.Contains(prompt, "总任务数") || strings.Contains(prompt, "成功/失败数")) {
-			t.Logf("missing report task count"); return false
+			t.Logf("missing report task count")
+			return false
 		}
 		if !strings.Contains(prompt, "每个任务的执行结果") {
-			t.Logf("missing per-task result"); return false
+			t.Logf("missing per-task result")
+			return false
 		}
 		if !strings.Contains(prompt, "全量测试运行结果") {
-			t.Logf("missing full test result"); return false
+			t.Logf("missing full test result")
+			return false
 		}
 		if !strings.Contains(prompt, "全部通过") {
-			t.Logf("missing success report"); return false
+			t.Logf("missing success report")
+			return false
 		}
 		if !(strings.Contains(prompt, "有失败") || strings.Contains(prompt, "列出失败项")) {
-			t.Logf("missing failure report"); return false
+			t.Logf("missing failure report")
+			return false
 		}
 		return true
 	}
@@ -291,6 +298,7 @@ func TestCodingWorkflowProperty5_RFOWorkflowCompleteness(t *testing.T) {
 		t.Errorf("Property 5 failed: %v", err)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Feature: coding-interaction-workflow, Property 6: Task failure handling with retry
 //
@@ -300,13 +308,16 @@ func TestCodingWorkflowProperty6_SkipRFOOnTaskFailure(t *testing.T) {
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
 		if !(strings.Contains(prompt, "最多 3 次") || strings.Contains(prompt, "最多3次")) {
-			t.Logf("missing retry limit"); return false
+			t.Logf("missing retry limit")
+			return false
 		}
 		if !strings.Contains(prompt, "跳到下一个任务") {
-			t.Logf("missing skip-to-next"); return false
+			t.Logf("missing skip-to-next")
+			return false
 		}
 		if !(strings.Contains(prompt, "完成 ✅") || strings.Contains(prompt, "失败 ❌")) {
-			t.Logf("missing progress format"); return false
+			t.Logf("missing progress format")
+			return false
 		}
 		return true
 	}
@@ -314,6 +325,7 @@ func TestCodingWorkflowProperty6_SkipRFOOnTaskFailure(t *testing.T) {
 		t.Errorf("Property 6 failed: %v", err)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Feature: coding-interaction-workflow, Property 7: Existing workflow rules preserved
 //

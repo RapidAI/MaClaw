@@ -33,3 +33,24 @@ func TestEmitAgentViewAdvancesLifecycleSequenceWithoutContext(t *testing.T) {
 		t.Fatalf("agentViewSeq = %d, want %d", got, before+1)
 	}
 }
+
+func TestDirectAgentViewLifecycleAdvancesSequenceWithoutContext(t *testing.T) {
+	app := &App{}
+	before := app.agentViewSeq()
+	if app.emitAgentViewLifecycle(agentViewLifecycleSubmit, map[string]interface{}{"view_id": "workflow:form:requirements"}) {
+		t.Fatal("lifecycle should not publish without a Wails context")
+	}
+	if got := app.agentViewSeq(); got != before+1 {
+		t.Fatalf("agentViewSeq = %d, want %d", got, before+1)
+	}
+}
+
+func TestAgentViewLifecyclePreservesCallerSequenceWithoutContext(t *testing.T) {
+	app := &App{}
+	if app.emitAgentViewLifecycle(agentViewLifecycleDismiss, map[string]interface{}{"seq": int64(7), "view_id": "workflow:form:requirements"}) {
+		t.Fatal("lifecycle should not publish without a Wails context")
+	}
+	if got := app.agentViewSeq(); got != 0 {
+		t.Fatalf("agentViewSeq = %d, want 0", got)
+	}
+}

@@ -109,12 +109,6 @@ func ResolveSSHHostByLabel(hosts []corelib.SSHHostEntry, label string) *corelib.
 			return &hosts[i]
 		}
 	}
-	// Fuzzy fallback: label contains keyword.
-	for i := range hosts {
-		if strings.Contains(strings.ToLower(hosts[i].Label), label) {
-			return &hosts[i]
-		}
-	}
 	return nil
 }
 

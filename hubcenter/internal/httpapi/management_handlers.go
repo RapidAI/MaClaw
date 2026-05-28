@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -31,18 +30,21 @@ type UpdateHubVisibilityRequest struct {
 }
 
 type MigrateHubUserRequest struct {
-	Mode      string `json:"mode"`
-	Email     string `json:"email"`
-	TenantID  string `json:"tenant_id,omitempty"`
-	Domain    string `json:"domain"`
-	FromHubID string `json:"from_hub_id"`
-	ToHubID   string `json:"to_hub_id"`
+	Mode           string `json:"mode"`
+	Email          string `json:"email"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	SourceTenantID string `json:"source_tenant_id,omitempty"`
+	TargetTenantID string `json:"target_tenant_id,omitempty"`
+	Domain         string `json:"domain"`
+	FromHubID      string `json:"from_hub_id"`
+	ToHubID        string `json:"to_hub_id"`
 }
 
 type adminHubView struct {
 	*store.HubInstance
 	Tenants                       []hubs.HubUserDashboardItem                      `json:"tenants,omitempty"`
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
+	RegistrationPolicy            hubs.HubRegistrationPolicyConfig                 `json:"registration_policy"`
 }
 
 func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
@@ -58,6 +60,11 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 			return
 		}
 		tenantsByHub := map[string][]hubs.HubUserDashboardItem{}
+		policyByHub, err := service.HubRegistrationPolicies(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LIST_HUBS_FAILED", err.Error())
+			return
+		}
 		for _, item := range dashboard {
 			if strings.TrimSpace(item.TenantID) == "" {
 				continue
@@ -89,9 +96,38 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 				}
 				tenantItems = append(tenantItems, hubs.HubUserDashboardItem{HubID: item.ID, TenantID: tenantID, HubName: item.Name, BaseURL: item.BaseURL, Status: item.Status, IsDisabled: item.IsDisabled, AcceptPublicSignup: item.AcceptPublicSignup, SignupMode: item.EnrollmentMode, LastSeenAt: item.LastSeenAt})
 			}
-			views = append(views, adminHubView{HubInstance: item, Tenants: tenantItems, DigitalEmployeeAuthorizations: auths})
+			views = append(views, adminHubView{HubInstance: item, Tenants: tenantItems, DigitalEmployeeAuthorizations: auths, RegistrationPolicy: policyByHub[item.ID]})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"hubs": views})
+	}
+}
+
+func UpdateHubRegistrationPolicyHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		var req hubs.UpdateHubRegistrationPolicyRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		cfg, err := service.UpdateHubRegistrationPolicy(r.Context(), hubID, req)
+		if err != nil {
+			if errors.Is(err, hubs.ErrHubNotFound) {
+				writeError(w, http.StatusNotFound, "HUB_NOT_FOUND", "Hub not found")
+				return
+			}
+			if errors.Is(err, hubs.ErrInvalidRegistrationPolicy) {
+				writeError(w, http.StatusBadRequest, "INVALID_REGISTRATION_POLICY", "registration policy conflicts with public fallback rules")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "UPDATE_REGISTRATION_POLICY_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "registration_policy": cfg})
 	}
 }
 
@@ -127,8 +163,8 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 			return
 		}
 		var req UpdateDigitalEmployeeAuthorizationRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.Quota < 0 {
@@ -182,8 +218,8 @@ func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {
 		}
 
 		var req UpdateHubVisibilityRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if strings.TrimSpace(req.Visibility) == "" {
@@ -203,7 +239,10 @@ func DisableHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hubID := r.PathValue("id")
 		var req ToggleHubRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := decodeOptionalLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
 		if hubID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
@@ -274,8 +313,8 @@ func RefreshHubUserInventoryHandler(service *hubs.Service) http.HandlerFunc {
 func MigrateHubUserHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req MigrateHubUserRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		mode := strings.ToLower(strings.TrimSpace(req.Mode))
@@ -293,9 +332,9 @@ func MigrateHubUserHandler(service *hubs.Service) http.HandlerFunc {
 		)
 		switch mode {
 		case "email", "user":
-			result, err = service.MigrateUser(r.Context(), hubs.MigrateUserRequest{Email: req.Email, TenantID: strings.TrimSpace(req.TenantID), FromHubID: req.FromHubID, ToHubID: req.ToHubID})
+			result, err = service.MigrateUser(r.Context(), hubs.MigrateUserRequest{Email: req.Email, TenantID: strings.TrimSpace(req.TenantID), SourceTenantID: strings.TrimSpace(req.SourceTenantID), TargetTenantID: strings.TrimSpace(req.TargetTenantID), FromHubID: req.FromHubID, ToHubID: req.ToHubID})
 		case "domain":
-			result, err = service.MigrateDomain(r.Context(), hubs.MigrateDomainRequest{Domain: req.Domain, TenantID: strings.TrimSpace(req.TenantID), FromHubID: req.FromHubID, ToHubID: req.ToHubID})
+			result, err = service.MigrateDomain(r.Context(), hubs.MigrateDomainRequest{Domain: req.Domain, TenantID: strings.TrimSpace(req.TenantID), SourceTenantID: strings.TrimSpace(req.SourceTenantID), TargetTenantID: strings.TrimSpace(req.TargetTenantID), FromHubID: req.FromHubID, ToHubID: req.ToHubID})
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_MIGRATION_MODE", "Migration mode must be email or domain")
 			return
@@ -330,8 +369,8 @@ func ListBlockedEmailsHandler(service *hubs.Service) http.HandlerFunc {
 func AddBlockedEmailHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req BlockEmailRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.Email == "" {
@@ -375,8 +414,8 @@ func ListBlockedIPsHandler(service *hubs.Service) http.HandlerFunc {
 func AddBlockedIPHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req BlockIPRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.IP == "" {

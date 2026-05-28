@@ -1743,7 +1743,7 @@ func groupDiscussionClassifyHumanAuthorization(app *App, handler *IMMessageHandl
 	}
 	client := handler.client
 	if client == nil {
-		client = &http.Client{Timeout: 12 * time.Second}
+		client = &http.Client{Timeout: 35 * time.Second}
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
 		resp, err := handler.doAnthropicLLMRequest(cfg, messages, nil, client)
@@ -1756,7 +1756,7 @@ func groupDiscussionClassifyHumanAuthorization(app *App, handler *IMMessageHandl
 }
 
 func requestGroupDiscussionAuthorizationOpenAI(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (groupDiscussionAuthorizationDecision, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	responseFormat := map[string]interface{}{
 		"type": "json_schema",

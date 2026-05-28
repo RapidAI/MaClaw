@@ -50,6 +50,8 @@ type PassthroughCommand struct {
 	LastStatus      passthroughRunStatus `json:"last_status,omitempty"`
 }
 
+const defaultPassthroughTimeoutSeconds = 240
+
 type PassthroughRunResult struct {
 	CommandName string               `json:"command_name"`
 	Status      passthroughRunStatus `json:"status"`
@@ -361,7 +363,7 @@ func (r *PassthroughRegistry) RunExecWithSource(ctx context.Context, text string
 		_ = r.recordControlAuditArgs("exec", program, source, redactPassthroughCLIArgs(append([]string{program}, args...)), passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
-	result, runErr := executePassthroughProcess(ctx, time.Now(), program, resolvedProgram, args, "", 120*time.Second)
+	result, runErr := executePassthroughProcess(ctx, time.Now(), program, resolvedProgram, args, "", time.Duration(defaultPassthroughTimeoutSeconds)*time.Second)
 	_ = r.recordAudit("exec", source, result, runErr)
 	return result, runErr
 }
@@ -632,7 +634,7 @@ func validatePassthroughCommand(cmd *PassthroughCommand) error {
 		return fmt.Errorf("unsupported runtime %q", cmd.Runtime)
 	}
 	if cmd.TimeoutSeconds <= 0 {
-		cmd.TimeoutSeconds = 120
+		cmd.TimeoutSeconds = defaultPassthroughTimeoutSeconds
 	}
 	if cmd.TimeoutSeconds > 3600 {
 		return fmt.Errorf("timeout cannot exceed 3600 seconds")
@@ -856,7 +858,7 @@ func resolvePassthroughProgram(program string, runtimeName string) (resolved str
 
 func executePassthroughProcess(ctx context.Context, start time.Time, commandName, program string, args []string, cwd string, timeout time.Duration) (PassthroughRunResult, error) {
 	if timeout <= 0 {
-		timeout = 120 * time.Second
+		timeout = time.Duration(defaultPassthroughTimeoutSeconds) * time.Second
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1373,7 +1375,7 @@ func parsePassthroughSaveText(text string) (PassthroughCommand, bool, bool, erro
 	cmd := PassthroughCommand{
 		Name:            strings.TrimSpace(fields[2]),
 		Runtime:         "direct",
-		TimeoutSeconds:  120,
+		TimeoutSeconds:  defaultPassthroughTimeoutSeconds,
 		ConfirmRequired: true,
 		Enabled:         true,
 	}

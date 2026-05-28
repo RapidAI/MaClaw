@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"testing"
 	"time"
@@ -18,6 +19,30 @@ type testInvitationCodeValidator struct {
 	required bool
 	code     string
 	consumed int
+}
+
+type testUserRouteSyncer struct {
+	allowed     bool
+	targetHubID string
+	syncCalls   int
+}
+
+type testUserRouteSyncOnly struct {
+	syncCalls int
+}
+
+func (s *testUserRouteSyncer) SyncUserRoute(context.Context, string, ...string) error {
+	s.syncCalls++
+	return nil
+}
+
+func (s *testUserRouteSyncer) AllowsUserRoute(context.Context, string, ...string) (bool, string, error) {
+	return s.allowed, s.targetHubID, nil
+}
+
+func (s *testUserRouteSyncOnly) SyncUserRoute(context.Context, string, ...string) error {
+	s.syncCalls++
+	return nil
 }
 
 func (v *testInvitationCodeValidator) IsRequired(context.Context) (bool, error) {
@@ -130,6 +155,99 @@ func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 	}
 	if user == nil || user.Email != "user@example.com" || user.SN != enroll.SN {
 		t.Fatalf("unexpected user after confirm: %+v", user)
+	}
+}
+
+func TestIdentityServiceRejectsNewUserWhenCenterRoutesEmailElsewhere(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetUserRouteSyncer(&testUserRouteSyncer{allowed: false, targetHubID: "hub_maclaw"})
+
+	if _, err := svc.RequestEmailLogin(context.Background(), "user@qianxin.com"); err == nil || !errors.Is(err, ErrRoutedToAnotherHub) {
+		t.Fatalf("RequestEmailLogin error = %v, want ErrRoutedToAnotherHub", err)
+	}
+	user, err := deps.store.Users.GetByTenantEmail(context.Background(), store.DefaultTenantID, "user@qianxin.com")
+	if err != nil || user != nil {
+		t.Fatalf("routed-away login should not create local user, user=%+v err=%v", user, err)
+	}
+
+	if _, err := svc.StartEnrollment(context.Background(), "user@qianxin.com", "pc", "windows", "client", ""); err == nil || !errors.Is(err, ErrRoutedToAnotherHub) {
+		t.Fatalf("StartEnrollment error = %v, want ErrRoutedToAnotherHub", err)
+	}
+	if _, err := svc.ManualBindForTenant(context.Background(), store.DefaultTenantID, "user@qianxin.com"); err == nil || !errors.Is(err, ErrRoutedToAnotherHub) {
+		t.Fatalf("ManualBindForTenant error = %v, want ErrRoutedToAnotherHub", err)
+	}
+}
+
+func TestIdentityServiceDoesNotResyncExistingUserWhenCenterRoutesEmailElsewhere(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	now := time.Now()
+	if err := deps.store.Users.Create(context.Background(), &store.User{ID: "u_existing", TenantID: store.DefaultTenantID, Email: "user@qianxin.com", SN: "SN-EXISTING", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	syncer := &testUserRouteSyncer{allowed: false, targetHubID: "hub_maclaw"}
+	svc.SetUserRouteSyncer(syncer)
+
+	if _, err := svc.AdminConfirmLoginByEmail(context.Background(), "user@qianxin.com"); err != nil {
+		t.Fatalf("AdminConfirmLoginByEmail existing user: %v", err)
+	}
+	if syncer.syncCalls != 0 {
+		t.Fatalf("existing routed-away user should not resync route, syncCalls=%d", syncer.syncCalls)
+	}
+}
+
+func TestIdentityServiceSetUserRouteSyncerClearsStaleValidator(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetUserRouteSyncer(&testUserRouteSyncer{allowed: false, targetHubID: "hub_maclaw"})
+	syncOnly := &testUserRouteSyncOnly{}
+	svc.SetUserRouteSyncer(syncOnly)
+
+	if _, err := svc.ManualBindForTenant(context.Background(), store.DefaultTenantID, "user@qianxin.com"); err != nil {
+		t.Fatalf("ManualBindForTenant should not use stale route validator: %v", err)
+	}
+	if syncOnly.syncCalls != 1 {
+		t.Fatalf("expected replacement syncer to sync once, got %d", syncOnly.syncCalls)
 	}
 }
 

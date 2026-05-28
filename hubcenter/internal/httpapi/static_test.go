@@ -50,8 +50,103 @@ func TestRegisterSharedStaticAssetsServesProUI(t *testing.T) {
 	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/css") {
 		t.Fatalf("content-type = %q, want text/css", contentType)
 	}
+	assertStaticAssetHeaders(t, rec)
+}
+
+func TestAdminStaticRoutesServeSplitAssets(t *testing.T) {
+	root := t.TempDir()
+	assetsDir := filepath.Join(root, "assets")
+	if err := os.MkdirAll(filepath.Join(assetsDir, "css"), 0o755); err != nil {
+		t.Fatalf("mkdir css assets: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(assetsDir, "js"), 0o755); err != nil {
+		t.Fatalf("mkdir js assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<html>admin shell</html>"), 0o644); err != nil {
+		t.Fatalf("write admin index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "settings.html"), []byte("<html>settings</html>"), 0o644); err != nil {
+		t.Fatalf("write admin html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "css", "admin-shell.css"), []byte(".hub-route-list{display:grid}"), 0o644); err != nil {
+		t.Fatalf("write admin css: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "js", "admin-core.js"), []byte("const hubRoutePreviewPageSize=20;"), 0o644); err != nil {
+		t.Fatalf("write admin js: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAdminStaticRoutes(mux, root, "/admin")
+
+	for _, tc := range []struct {
+		path            string
+		want            string
+		wantContentType string
+	}{
+		{path: "/admin/assets/css/admin-shell.css", want: ".hub-route-list{display:grid}", wantContentType: "text/css"},
+		{path: "/admin/assets/js/admin-core.js", want: "const hubRoutePreviewPageSize=20;", wantContentType: "text/javascript"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			assertStatus(t, rec, http.StatusOK)
+			if body := rec.Body.String(); body != tc.want {
+				t.Fatalf("body = %q, want split asset %q", body, tc.want)
+			}
+			if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, tc.wantContentType) {
+				t.Fatalf("content-type = %q, want %s", contentType, tc.wantContentType)
+			}
+			assertStaticAssetHeaders(t, rec)
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/settings.html", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	assertStaticHTMLHeaders(t, rec)
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/assets/js/missing.js", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/deep/link", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	if body := rec.Body.String(); body != "<html>admin shell</html>" {
+		t.Fatalf("spa fallback body = %q, want index html", body)
+	}
+	assertStaticHTMLHeaders(t, rec)
+}
+
+func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	if rec.Code != want {
+		t.Fatalf("status = %d, want %d", rec.Code, want)
+	}
+}
+
+func assertStaticAssetHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
 	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "max-age=300") {
 		t.Fatalf("cache-control = %q, want max-age=300", cacheControl)
+	}
+	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Fatalf("x-content-type-options = %q, want nosniff", nosniff)
+	}
+}
+
+func assertStaticHTMLHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if cacheControl := rec.Header().Get("Cache-Control"); cacheControl != staticHTMLCacheControl {
+		t.Fatalf("html cache-control = %q, want %q", cacheControl, staticHTMLCacheControl)
+	}
+	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "" {
+		t.Fatalf("html x-content-type-options = %q, want empty", nosniff)
 	}
 }
 
@@ -113,7 +208,7 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		return string(body)
 	}
 
-	admin := read(t, "admin", "index.html")
+	admin := readAdminPageBundle(t)
 	if !strings.Contains(admin, `id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"`) {
 		t.Fatalf("admin toast stack must announce status changes")
 	}
@@ -188,11 +283,11 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		`function setHubTenantSelection`,
 		`id="hubTenantSelect-`,
 		`select.disabled=shown===0`,
-		`邮件域只按租户展示`,
-		`数字员工授权按当前租户处理。`,
+		`Mail domains are shown per tenant.`,
+		`Digital employee authorization applies to the selected tenant.`,
 		`h.tenant_name||h.tenant_id||'-'`,
 		`routeQueryHubTenant:'Tenant'`,
-		`${tr('routeQueryHubCardTitle')} ${idx+1} · ${escapeHtml(tenant)}`,
+		`${tr('routeQueryHubCardTitle')} ${idx+1}`,
 		`${tr('routeQueryHubTenant')}:</strong> ${escapeHtml(tenant)}`,
 		`function enhanceUserMgmtRegions`,
 		`'userMgmtRegistrationReport','userMgmtDashboard','userMgmtFromHub','userMgmtResult'`,

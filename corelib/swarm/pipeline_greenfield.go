@@ -5,6 +5,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // RunGreenfieldBridge is an exported entry point for the greenfield pipeline,
@@ -527,7 +529,7 @@ func (o *SwarmOrchestrator) generateRequirements(run *SwarmRun, req SwarmRunRequ
 		return "", fmt.Errorf("render requirements prompt: %w", err)
 	}
 
-	body, err := o.llmCaller.CallLLM(prompt, 0.2, 120*time.Second)
+	body, err := o.llmCaller.CallLLM(prompt, 0.2, time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("LLM call for requirements: %w", err)
 	}
@@ -581,7 +583,7 @@ func (o *SwarmOrchestrator) generateDesign(run *SwarmRun, req SwarmRunRequest) (
 		return "", fmt.Errorf("render design prompt: %w", err)
 	}
 
-	body, err := o.llmCaller.CallLLM(prompt, 0.2, 120*time.Second)
+	body, err := o.llmCaller.CallLLM(prompt, 0.2, time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("LLM call for design: %w", err)
 	}
@@ -607,7 +609,7 @@ func (o *SwarmOrchestrator) runSingleAgent(run *SwarmRun, role AgentRole, taskIn
 		LaunchSource: "ai",
 		Env: map[string]string{
 			"SWARM_SYSTEM_PROMPT": prompt,
-			"SWARM_ROLE":         string(role),
+			"SWARM_ROLE":          string(role),
 		},
 	}
 	if spec.Tool == "" {

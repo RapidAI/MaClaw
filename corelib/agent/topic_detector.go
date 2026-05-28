@@ -82,7 +82,7 @@ func NewTopicSwitchDetector(llmClient func() (*http.Client, corelib.MaclawLLMCon
 		ActiveConversationMinutes: 2,
 		MinTurnsForDetection:      3,
 		ShortMessageWords:         4,
-		LLMTimeout:                5 * time.Second,
+		LLMTimeout:                30 * time.Second,
 		LLMClient:                 llmClient,
 	}
 }

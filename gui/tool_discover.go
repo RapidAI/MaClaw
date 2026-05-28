@@ -4,32 +4,29 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// toolDiscoverTool handles the "discover_tool" tool call.
-// It searches the full registry for tools matching the user's described need,
-// activates matched tools in the current session, and returns their descriptions
-// so the LLM can use them in subsequent turns.
+// toolDiscoverTool searches for matching tools and unlocks deferred tools that
+// are explicitly selected through discovery.
 func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string {
 	need, _ := args["need"].(string)
 	if need == "" {
 		return "Missing 'need' parameter. Describe what capability you need."
 	}
 
-	if h.registry == nil {
+	if h.registry == nil && h.toolDefGen == nil {
 		return "Tool registry not available."
 	}
 
-	// Collect all available tools from the GUI registry.
-	allTools := h.registry.ListAvailable()
-	if len(allTools) == 0 {
-		return "No tools available in registry."
+	var allTools []RegisteredTool
+	if h.registry != nil {
+		allTools = h.registry.ListAvailable()
 	}
 
-	// Build BM25 index over all tools (including those not currently routed).
 	idx := bm25.New()
 	docs := make([]bm25.Doc, 0, len(allTools))
 	toolMap := make(map[string]RegisteredTool, len(allTools))
@@ -43,13 +40,11 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 		toolMap[t.Name] = t
 	}
 
-	// Also include deferred tool definitions from the generator.
 	if h.toolDefGen != nil {
-		deferred := h.toolDefGen.GenerateDeferred()
-		for _, def := range deferred {
+		for _, def := range h.toolDefGen.GenerateDeferred() {
 			name := extractToolName(def)
 			if name == "" || toolMap[name].Name != "" {
-				continue // already in registry
+				continue
 			}
 			desc := extractToolDescription(def)
 			docs = append(docs, bm25.Doc{ID: name, Text: name + " " + desc})
@@ -64,19 +59,21 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	idx.RebuildIfChanged(docs)
 	scores := idx.Score(need)
 
-	// Rank by score, take top 5.
 	type scored struct {
 		name  string
 		score float64
 	}
 	var ranked []scored
-	for name, s := range scores {
-		if s > 0 {
-			ranked = append(ranked, scored{name: name, score: s})
+	for name, score := range scores {
+		if score > 0 {
+			ranked = append(ranked, scored{name: name, score: score})
 		}
 	}
 	sort.Slice(ranked, func(i, j int) bool {
-		return ranked[i].score > ranked[j].score
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].name < ranked[j].name
 	})
 	if len(ranked) > 5 {
 		ranked = ranked[:5]
@@ -86,31 +83,46 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 		return fmt.Sprintf("No matching tools found for: %q. Try rephrasing your need or use craft_tool to create a custom script.", need)
 	}
 
-	// Activate matched tools in the session so they appear in subsequent turns.
-	// Core tools are already available — no need to activate them.
-	if h.toolRouter != nil {
-		for _, r := range ranked {
-			if !tool.CoreToolNames[r.name] {
-				h.toolRouter.ActivateSessionTool(r.name)
+	activatedDeferred := make(map[string]bool)
+	if h.toolDefGen != nil {
+		for _, item := range ranked {
+			if h.toolDefGen.ActivateDeferredTool(item.name) {
+				activatedDeferred[item.name] = true
 			}
+		}
+		if len(activatedDeferred) > 0 {
+			h.toolsMu.Lock()
+			h.cachedTools = nil
+			h.toolsCacheTime = time.Time{}
+			h.toolsMu.Unlock()
 		}
 	}
 
-	// Format result.
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
-	for i, r := range ranked {
-		t := toolMap[r.name]
+	for i, item := range ranked {
+		t := toolMap[item.name]
 		desc := t.Description
 		if runes := []rune(desc); len(runes) > 120 {
 			desc = string(runes[:120]) + "..."
 		}
-		if tool.CoreToolNames[r.name] {
-			b.WriteString(fmt.Sprintf("%d. **%s** (core, already available) — %s\n", i+1, r.name, desc))
-		} else {
-			b.WriteString(fmt.Sprintf("%d. **%s** (activated) — %s\n", i+1, r.name, desc))
-		}
+		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, tool.CoreToolNames[item.name], activatedDeferred[item.name]))
 	}
-	b.WriteString("\nThese tools are available. Call them directly in your next action.")
+	if len(activatedDeferred) > 0 {
+		b.WriteString("\nActivated deferred tools will be available on the next routed turn.")
+	} else {
+		b.WriteString("\nUse the matched tool name when the next step needs that capability.")
+	}
 	return b.String()
+}
+
+func discoverToolStatusLine(index int, name, desc string, coreTool, activated bool) string {
+	switch {
+	case coreTool:
+		return fmt.Sprintf("%d. **%s** (core, already available) - %s\n", index, name, desc)
+	case activated:
+		return fmt.Sprintf("%d. **%s** (activated) - %s\n", index, name, desc)
+	default:
+		return fmt.Sprintf("%d. **%s** (matched) - %s\n", index, name, desc)
+	}
 }

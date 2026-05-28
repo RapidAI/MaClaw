@@ -167,6 +167,34 @@ func newTestService(t *testing.T) (*SecurityService, *mockAuditRepo) {
 	return svc, audit
 }
 
+func TestServiceUpdateGroupPolicyValidatesCanonicalValues(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	root, err := svc.store.GetRootGroup(ctx)
+	if err != nil || root == nil {
+		t.Fatalf("root group: %v", err)
+	}
+
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"sandbox_mode": "docker", "network_level": "allowlist", "network_allowlist": []interface{}{"api.example.com"}, "guardrail_mode": "relaxed"}); err != nil {
+		t.Fatalf("valid policy rejected: %v", err)
+	}
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"sandbox_mode": "strict"}); err == nil {
+		t.Fatal("expected legacy UI sandbox value to be rejected")
+	}
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"network_level": "limited"}); err == nil {
+		t.Fatal("expected legacy UI network value to be rejected")
+	}
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"network_allowlist": []interface{}{"ok.example", 42}}); err == nil {
+		t.Fatal("expected non-string network allowlist entry to be rejected")
+	}
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"skill_sources_allowed": []interface{}{"skillhub", "unknown"}}); err == nil {
+		t.Fatal("expected invalid skill source to be rejected")
+	}
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"skill_sources_allowed": []interface{}{"hubcenter", "git_hub", "enterprise"}}); err != nil {
+		t.Fatalf("valid skill source aliases rejected: %v", err)
+	}
+}
+
 // --- CreateGroup tests ---
 
 func TestServiceCreateGroup(t *testing.T) {
@@ -1080,6 +1108,36 @@ func TestServiceGetHeartbeatPolicy_Enabled(t *testing.T) {
 	}
 }
 
+func TestServiceGetHeartbeatPolicyResolvesUserIDToEmail(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if err := st.InitRootGroup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sys := newMockSystemSettings()
+	users := &mockUserRepo{items: []*store.User{{ID: "u-1", TenantID: store.DefaultTenantID, Email: "user@test.com"}}}
+	svc := NewSecurityService(st, sys, &mockAuditRepo{}, users)
+
+	if err := svc.UpdateSettings(ctx, &SecuritySettings{CentralizedSecurityEnabled: true}, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	root, _ := svc.store.GetRootGroup(ctx)
+	if err := svc.AssignUser(ctx, "user@test.com", root.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"smart_route_enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "u-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Policy == nil || payload.Policy.SmartRouteEnabled {
+		t.Fatalf("policy smart_route_enabled = %#v, want false", payload.Policy)
+	}
+}
+
 // --- IsCentralizedEnabled tests ---
 
 func TestServiceIsCentralizedEnabled(t *testing.T) {
@@ -1215,6 +1273,30 @@ func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOn_Merge(t *testing.T
 	// Intersection of [skillhub, clawhub] and [skillhub, github] = [skillhub].
 	if !reflect.DeepEqual(payload.Policy.SkillSourcesAllowed, []string{"skillhub"}) {
 		t.Fatalf("expected intersection [skillhub], got %v", payload.Policy.SkillSourcesAllowed)
+	}
+}
+
+func TestServiceGetHeartbeatPolicy_SkillSources_MergeNormalizesAliases(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	svc.UpdateSettings(ctx, &SecuritySettings{CentralizedSecurityEnabled: true}, "admin")
+	root, _ := svc.store.GetRootGroup(ctx)
+	svc.AssignUser(ctx, "user@test.com", root.ID)
+
+	svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{
+		"skill_sources_allowed": []interface{}{"hubcenter", "git_hub"},
+	})
+	svc.InvalidateCache("user@test.com")
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: []string{"skillhub", "github"}})
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"skillhub", "github"}
+	if !reflect.DeepEqual(payload.Policy.SkillSourcesAllowed, want) {
+		t.Fatalf("expected normalized intersection %v, got %v", want, payload.Policy.SkillSourcesAllowed)
 	}
 }
 

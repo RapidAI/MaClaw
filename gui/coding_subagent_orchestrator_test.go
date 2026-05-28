@@ -36,16 +36,15 @@ func TestShouldUseSubAgent_ActiveDirectMode(t *testing.T) {
 	}
 }
 
-func TestShouldUseSubAgent_ActiveExternalMode(t *testing.T) {
+func TestShouldUseSubAgent_ExternalCheckerStillUsesSubAgent(t *testing.T) {
 	o := NewTaskExecutionOrchestrator()
-	// Provide an ExternalChecker that says external tool is available.
 	o.ExternalChecker = &mockExternalChecker{available: true}
 	o.Activate([]*TaskItem{
 		{Index: 1, Title: "test task", Status: TaskExecPending},
 	}, "req", "design", "/project", "claude")
 
-	if ShouldUseSubAgent(o) {
-		t.Error("active orchestrator with external mode should return false")
+	if !ShouldUseSubAgent(o) {
+		t.Error("external checker availability should still route to SubAgent")
 	}
 }
 
@@ -63,7 +62,7 @@ func TestShouldUseSubAgent_UsesNextReadyTaskMode(t *testing.T) {
 	}
 }
 
-func TestShouldUseSubAgent_DoesNotRouteReadyExternalTask(t *testing.T) {
+func TestShouldUseSubAgent_RoutesReadyLegacyExternalTask(t *testing.T) {
 	o := NewTaskExecutionOrchestrator()
 	o.Activate([]*TaskItem{
 		{Index: 0, Title: "blocked direct task", Status: TaskExecPending, DependsOn: []int{1}},
@@ -72,8 +71,8 @@ func TestShouldUseSubAgent_DoesNotRouteReadyExternalTask(t *testing.T) {
 	o.Tasks[0].ExecMode = TaskExecModeDirect
 	o.Tasks[1].ExecMode = TaskExecModeExternal
 
-	if ShouldUseSubAgent(o) {
-		t.Error("ready external task should not route to SubAgent")
+	if !ShouldUseSubAgent(o) {
+		t.Error("legacy external task should route to SubAgent")
 	}
 }
 

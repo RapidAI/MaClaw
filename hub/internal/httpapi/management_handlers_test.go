@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,10 +12,25 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
+
+type fakeBoundUserRouteDeleter struct {
+	email    string
+	tenantID string
+	err      error
+}
+
+func (f *fakeBoundUserRouteDeleter) DeleteUserRoute(_ context.Context, email string, tenantIDOpt ...string) error {
+	f.email = email
+	if len(tenantIDOpt) > 0 {
+		f.tenantID = tenantIDOpt[0]
+	}
+	return f.err
+}
 
 func TestManualBindHandlerCreatesUser(t *testing.T) {
 	router, _ := newAdminRouterTestServices(t)
@@ -194,6 +210,170 @@ func TestDeleteBoundUserHandlerRemovesUser(t *testing.T) {
 	}
 	if strings.Contains(listResp.Body.String(), "delete-bound@example.com") {
 		t.Fatalf("expected deleted user to be absent, body=%s", listResp.Body.String())
+	}
+}
+
+func TestDeleteBoundUserHandlerUsesTenantID(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for _, user := range []*store.User{
+		{ID: "delete-same-a", TenantID: "tenant_a", Email: "delete-same@example.com", SN: "sn-a", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "delete-same-b", TenantID: "tenant_b", Email: "delete-same@example.com", SN: "sn-b", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := services.store.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+
+	deleteResp := doHubAdminJSONRequest(t, services.handler, http.MethodDelete, "/api/admin/users?tenant_id=tenant_b&email=delete-same@example.com", nil, token)
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	if body := deleteResp.Body.String(); !containsAll(body, `"tenant_id":"tenant_b"`, `"email":"delete-same@example.com"`) {
+		t.Fatalf("expected deleted tenant in response, body=%s", body)
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, "tenant_b", "delete-same@example.com"); err != nil || got != nil {
+		t.Fatalf("expected tenant_b user deleted, got=%#v err=%v", got, err)
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, "tenant_a", "delete-same@example.com"); err != nil || got == nil {
+		t.Fatalf("expected tenant_a user kept, got=%#v err=%v", got, err)
+	}
+	ambiguousResp := doHubAdminJSONRequest(t, services.handler, http.MethodDelete, "/api/admin/users?email=delete-same@example.com", nil, token)
+	if ambiguousResp.Code != http.StatusOK {
+		t.Fatalf("single remaining tenant delete should still work, got %d body=%s", ambiguousResp.Code, ambiguousResp.Body.String())
+	}
+}
+
+func TestDeleteBoundUserHandlerDeletesCenterRouteWithTenantID(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "delete-route", TenantID: "tenant_route", Email: "route-delete@example.com", SN: "sn-route", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	routeDeleter := &fakeBoundUserRouteDeleter{}
+	handler := DeleteBoundUserHandler(identity, nil, nil, nil, nil, routeDeleter)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_route&email=route-delete@example.com", nil)
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if routeDeleter.email != "route-delete@example.com" || routeDeleter.tenantID != "tenant_route" {
+		t.Fatalf("route delete got email=%q tenant=%q", routeDeleter.email, routeDeleter.tenantID)
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, "tenant_route", "route-delete@example.com"); err != nil || got != nil {
+		t.Fatalf("expected user deleted after route delete, got=%#v err=%v", got, err)
+	}
+}
+
+func TestDeleteBoundUserHandlerStillSucceedsWhenCenterRouteDeleteFailsAfterLocalDelete(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "delete-route-fail", TenantID: "tenant_route", Email: "route-fail@example.com", SN: "sn-route-fail", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	routeDeleter := &fakeBoundUserRouteDeleter{err: errors.New("center unavailable")}
+	handler := DeleteBoundUserHandler(identity, nil, nil, nil, nil, routeDeleter)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/users?tenant_id=tenant_route&email=route-fail@example.com", nil)
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "route_delete_warning") {
+		t.Fatalf("expected delete success with route warning, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, "tenant_route", "route-fail@example.com"); err != nil || got != nil {
+		t.Fatalf("expected local user deleted before route failure is reported, got=%#v err=%v", got, err)
+	}
+}
+
+func TestDeleteBoundUserHandlerFallsBackToDefaultTenantWhenUnique(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+	token := issueHubAdminToken(t, router)
+
+	bindResp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/users/manual-bind", map[string]any{
+		"email": "default-unique@example.com",
+	}, token)
+	if bindResp.Code != http.StatusOK {
+		t.Fatalf("expected bind 200, got %d body=%s", bindResp.Code, bindResp.Body.String())
+	}
+
+	deleteResp := doHubAdminJSONRequest(t, router, http.MethodDelete, "/api/admin/users?email=default-unique@example.com", nil, token)
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	if body := deleteResp.Body.String(); !containsAll(body, `"tenant_id":"`+store.DefaultTenantID+`"`, `"email":"default-unique@example.com"`) {
+		t.Fatalf("expected deleted tenant in response, body=%s", body)
+	}
+}
+
+func TestDeleteBoundUserHandlerAcceptsTenantIDFromBody(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "delete-body-tenant", TenantID: "tenant_body", Email: "body-delete@example.com", SN: "sn-body", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodDelete, "/api/admin/users", map[string]any{"tenant_id": "tenant_body", "email": "BODY-DELETE@example.com"}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, "tenant_body", "body-delete@example.com"); err != nil || got != nil {
+		t.Fatalf("expected body tenant user deleted, got=%#v err=%v", got, err)
+	}
+}
+
+func TestDeleteBoundUserHandlerDeletesLegacyMixedCaseEmail(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &store.User{ID: "delete-mixed-case", TenantID: "tenant_mixed", Email: "Mixed-Delete@Example.com", SN: "sn-mixed", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodDelete, "/api/admin/users?tenant_id=tenant_mixed&email=mixed-delete@example.com", nil, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, "tenant_mixed", "mixed-delete@example.com"); err != nil || got != nil {
+		t.Fatalf("expected mixed-case user deleted, got=%#v err=%v", got, err)
+	}
+}
+
+func TestDeleteBoundUserHandlerRejectsAmbiguousTenantEmail(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for _, user := range []*store.User{
+		{ID: "ambiguous-a", TenantID: "tenant_a", Email: "ambiguous-delete@example.com", SN: "sn-a", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "ambiguous-b", TenantID: "tenant_b", Email: "ambiguous-delete@example.com", SN: "sn-b", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := services.store.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodDelete, "/api/admin/users?email=ambiguous-delete@example.com", nil, token)
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "TENANT_ID_REQUIRED") {
+		t.Fatalf("expected tenant_id required, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }
 func TestBlockedEmailHandlersPersistEntries(t *testing.T) {

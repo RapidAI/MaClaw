@@ -14,6 +14,7 @@ type DeepCrawlRequest struct {
 	AutoLabels     bool     `json:"auto_labels,omitempty"`
 	PreviewOnly    bool     `json:"preview_only"` // true=仅预览不保存
 	OwnerID        string   `json:"owner_id,omitempty"`
+	TenantID       string   `json:"tenant_id,omitempty"`
 	ProjectPath    string   `json:"project_path,omitempty"`
 	ClientRunID    string   `json:"client_run_id,omitempty"`
 }

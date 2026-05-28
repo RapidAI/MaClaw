@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 )
 
 // MaxAgentIterationsCap is the hard safety ceiling for agent loops.
@@ -515,6 +516,11 @@ func mergeImport(current, incoming map[string]interface{}, report *ImportReport,
 			report.Warnings = append(report.Warnings, fmt.Sprintf("skipped machine-specific key: %s", fullKey))
 			continue
 		}
+		if isHubManagedImportKey(current, k) {
+			report.Skipped++
+			report.Warnings = append(report.Warnings, fmt.Sprintf("skipped Hub-managed security key: %s", fullKey))
+			continue
+		}
 
 		if strVal, ok := inVal.(string); ok && strings.Contains(strVal, "****") {
 			report.Skipped++
@@ -546,6 +552,11 @@ func mergeImport(current, incoming map[string]interface{}, report *ImportReport,
 		current[k] = inVal
 		report.Applied++
 	}
+}
+
+func isHubManagedImportKey(current map[string]interface{}, key string) bool {
+	centralized, _ := current["hub_security_centralized"].(bool)
+	return centralized && clientsecurity.IsHubManagedSecurityConfigKey(key)
 }
 
 // GetSchema returns the full configuration schema.

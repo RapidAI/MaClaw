@@ -93,7 +93,7 @@ Classify the user's response into exactly one category. Reply with ONLY the cate
 
 When in doubt between "confirm" and "modify", prefer "confirm" if the response is short and doesn't contain specific change requests.`,
 		UserMessage: userMessage,
-		TimeoutSec:  8,
+		TimeoutSec:  30,
 		Tag:         "confirmation-intent",
 	})
 
@@ -202,6 +202,10 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 	var summary string
 	var enhancedSummary string
 	var enhancedInstruction string
+	lang := "zh-Hans"
+	if app != nil && strings.TrimSpace(app.CurrentLanguage) != "" {
+		lang = app.CurrentLanguage
+	}
 
 	if understanding != nil && strings.TrimSpace(understanding.Summary) != "" {
 		enhancedSummary = formatTaskUnderstandingSummary(understanding, projectPath)
@@ -209,12 +213,24 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		summary = enhancedSummary
 	} else {
 		// Fallback: raw-text echo (previous behavior).
-		summary = fmt.Sprintf("I understand you want me to handle this task: %s", strings.TrimSpace(text))
+		if strings.HasPrefix(strings.ToLower(lang), "en") {
+			summary = fmt.Sprintf("I understand you want me to handle this task: %s", strings.TrimSpace(text))
+		} else {
+			summary = fmt.Sprintf("我理解你想让我处理这项任务：%s", strings.TrimSpace(text))
+		}
 		if projectPath != "" {
-			summary += fmt.Sprintf("\nDefault workspace: %s", projectPath)
+			if strings.HasPrefix(strings.ToLower(lang), "en") {
+				summary += fmt.Sprintf("\nDefault workspace: %s", projectPath)
+			} else {
+				summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
+			}
 		}
 		if label := strings.TrimSpace(confirmationTaskLabel(result.Intent)); label != "" {
-			summary += fmt.Sprintf("\nDetected task type: %s", label)
+			if strings.HasPrefix(strings.ToLower(lang), "en") {
+				summary += fmt.Sprintf("\nDetected task type: %s", label)
+			} else {
+				summary += fmt.Sprintf("\n识别任务类型：%s", label)
+			}
 		}
 		if reason := strings.TrimSpace(result.Reason); reason != "" {
 			summary += fmt.Sprintf(" (reason: %s)", reason)
@@ -223,10 +239,6 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		}
 	}
 
-	lang := ""
-	if app != nil {
-		lang = app.CurrentLanguage
-	}
 	plannedActions := confirmationPlannedActions(result.Intent, lang)
 	if understanding != nil && len(understanding.ExecutionPlan) > 0 {
 		plannedActions = understanding.ExecutionPlan

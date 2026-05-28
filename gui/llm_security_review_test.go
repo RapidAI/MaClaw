@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 func TestReview_LLMNotConfigured_ReturnsSafe(t *testing.T) {
@@ -92,7 +92,7 @@ func TestReview_LLMReturnsVerdict(t *testing.T) {
 }
 
 func TestReview_LLMTimeout_FallsBackToRules(t *testing.T) {
-	// Server that sleeps longer than the 5-second timeout.
+	// Server that sleeps longer than the injected client timeout.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(10 * time.Second)
 	}))

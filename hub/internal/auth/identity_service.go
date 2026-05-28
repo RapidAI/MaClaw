@@ -27,6 +27,7 @@ var (
 	ErrInvalidInvitationCode  = errors.New("invalid or used invitation code")
 	ErrInvitationExpired      = errors.New("invitation code has expired")
 	ErrRegistrationDisabled   = errors.New("new user registration is disabled for this tenant")
+	ErrRoutedToAnotherHub     = errors.New("email is routed to another hub")
 	identitySNCounter         atomic.Uint64
 	tenantEmailDomainPattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 )
@@ -52,6 +53,10 @@ type UserRouteSyncer interface {
 	SyncUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error
 }
 
+type UserRouteValidator interface {
+	AllowsUserRoute(ctx context.Context, email string, tenantIDOpt ...string) (bool, string, error)
+}
+
 const (
 	systemKeyEnrollmentMode = "identity_enrollment_mode"
 	systemKeyPublicBaseURL  = "server_public_base_url"
@@ -60,6 +65,7 @@ const (
 type EnrollmentResult struct {
 	Status       string `json:"status"`
 	TenantID     string `json:"tenant_id,omitempty"`
+	TenantName   string `json:"tenant_name,omitempty"`
 	Message      string `json:"message,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
 	Email        string `json:"email,omitempty"`
@@ -68,6 +74,24 @@ type EnrollmentResult struct {
 	MachineToken string `json:"machine_token,omitempty"`
 	ViewerToken  string `json:"viewer_token,omitempty"`
 	ExpiresAt    string `json:"expires_at,omitempty"`
+}
+
+func (s *IdentityService) TenantDisplayName(ctx context.Context, tenantID string) string {
+	tenantID = normalizeTenantIDValue(tenantID)
+	if s == nil || s.tenants == nil {
+		return tenantID
+	}
+	tenant, err := s.tenants.GetByID(ctx, tenantID)
+	if err != nil || tenant == nil {
+		return tenantID
+	}
+	if name := strings.TrimSpace(tenant.Name); name != "" {
+		return name
+	}
+	if slug := strings.TrimSpace(tenant.Slug); slug != "" {
+		return slug
+	}
+	return tenantID
 }
 
 type EmailLoginRequestResult struct {
@@ -138,21 +162,22 @@ type ViewerPrincipal struct {
 }
 
 type IdentityService struct {
-	users           store.UserRepository
-	enrollments     store.EnrollmentRepository
-	blocks          store.EmailBlocklistRepository
-	machines        store.MachineRepository
-	viewerTok       store.ViewerTokenRepository
-	loginTok        store.LoginTokenRepository
-	tenants         store.TenantRepository
-	settings        SystemSettingsRepository
-	invitationSvc   InvitationCodeValidator
-	enrollmentMode  string
-	allowSelfEnroll bool
-	mailer          mail.Mailer
-	publicBaseURL   string
-	loginNotifier   LoginNotifier
-	userRouteSyncer UserRouteSyncer
+	users              store.UserRepository
+	enrollments        store.EnrollmentRepository
+	blocks             store.EmailBlocklistRepository
+	machines           store.MachineRepository
+	viewerTok          store.ViewerTokenRepository
+	loginTok           store.LoginTokenRepository
+	tenants            store.TenantRepository
+	settings           SystemSettingsRepository
+	invitationSvc      InvitationCodeValidator
+	enrollmentMode     string
+	allowSelfEnroll    bool
+	mailer             mail.Mailer
+	publicBaseURL      string
+	loginNotifier      LoginNotifier
+	userRouteSyncer    UserRouteSyncer
+	userRouteValidator UserRouteValidator
 }
 
 func (s *IdentityService) UsersRepo() store.UserRepository {
@@ -160,6 +185,13 @@ func (s *IdentityService) UsersRepo() store.UserRepository {
 		return nil
 	}
 	return s.users
+}
+
+func (s *IdentityService) MachinesRepo() store.MachineRepository {
+	if s == nil {
+		return nil
+	}
+	return s.machines
 }
 
 func (s *IdentityService) UpdateMachineMetadata(ctx context.Context, machineID string, metadata MachineMetadata) error {
@@ -221,11 +253,35 @@ func (s *IdentityService) SetLoginNotifier(n LoginNotifier) {
 
 func (s *IdentityService) SetUserRouteSyncer(syncer UserRouteSyncer) {
 	s.userRouteSyncer = syncer
+	s.userRouteValidator = nil
+	if validator, ok := syncer.(UserRouteValidator); ok {
+		s.userRouteValidator = validator
+	}
+}
+
+func (s *IdentityService) ensureUserRouteAllowed(ctx context.Context, email string) error {
+	if s == nil || s.userRouteValidator == nil || strings.TrimSpace(email) == "" {
+		return nil
+	}
+	allowed, targetHubID, err := s.userRouteValidator.AllowsUserRoute(ctx, email, tenantIDFromContext(ctx))
+	if err != nil || allowed {
+		return err
+	}
+	if strings.TrimSpace(targetHubID) != "" {
+		return fmt.Errorf("%w: %s", ErrRoutedToAnotherHub, targetHubID)
+	}
+	return ErrRoutedToAnotherHub
 }
 
 func (s *IdentityService) syncUserRoute(ctx context.Context, email string) {
 	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(email) == "" {
 		return
+	}
+	if s.userRouteValidator != nil {
+		allowed, _, err := s.userRouteValidator.AllowsUserRoute(ctx, email, tenantIDFromContext(ctx))
+		if err != nil || !allowed {
+			return
+		}
 	}
 	_ = s.userRouteSyncer.SyncUserRoute(ctx, email, tenantIDFromContext(ctx))
 }
@@ -290,6 +346,9 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 	}
 
 	if user == nil {
+		if err := s.ensureUserRouteAllowed(ctx, email); err != nil {
+			return nil, err
+		}
 		if !invitationAccepted {
 			allowed, err := s.tenantAllowsNewUserRegistration(ctx, tenantID)
 			if err != nil {
@@ -348,6 +407,9 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		return nil, err
 	}
 	if user == nil {
+		if err := s.ensureUserRouteAllowed(ctx, email); err != nil {
+			return nil, err
+		}
 		allowed, err := s.tenantAllowsNewUserRegistration(ctx, tenantID)
 		if err != nil {
 			return nil, err
@@ -688,6 +750,8 @@ func tenantAllowsNewUserRegistration(tenant *store.Tenant) bool {
 }
 
 func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
+	tenantID = normalizeTenantIDValue(tenantID)
+	ctx = WithTenant(ctx, tenantID)
 	email = normalizeEmail(email)
 	if email == "" {
 		return nil, ErrInvalidEmail
@@ -701,6 +765,9 @@ func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, ema
 	}
 	if user != nil {
 		return user, nil
+	}
+	if err := s.ensureUserRouteAllowed(ctx, email); err != nil {
+		return nil, err
 	}
 	return s.createApprovedUserForTenant(ctx, tenantID, email)
 }
@@ -1107,6 +1174,9 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 		tenantID = target.TenantID
 		ctx = WithTenant(ctx, tenantID)
 	}
+	if err := s.ensureUserRouteAllowed(ctx, target.Email); err != nil {
+		return nil, nil, err
+	}
 	if err := s.enrollments.Approve(ctx, id, time.Now()); err != nil {
 		return nil, nil, err
 	}
@@ -1293,6 +1363,7 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 	return &EnrollmentResult{
 		Status:       "approved",
 		TenantID:     user.TenantID,
+		TenantName:   s.TenantDisplayName(ctx, user.TenantID),
 		UserID:       user.ID,
 		Email:        user.Email,
 		SN:           user.SN,

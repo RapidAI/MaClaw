@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -12,7 +13,7 @@ func inferToolResultMetadata(kind agentToolKind, text string) toolResultMetadata
 	switch kind {
 	case agentToolKindRunSkill, agentToolKindGetSkillRun, agentToolKindManageSkill:
 		return toolResultMetadata{
-			SkillRunID:     extractSkillRunIDFromToolText(text),
+			SkillRunID:       extractSkillRunIDFromToolText(text),
 			SkillRunTerminal: isSkillRunTerminalFromText(text),
 		}
 	default:
@@ -35,6 +36,15 @@ func extractSkillRunIDFromToolText(text string) string {
 	if text == "" {
 		return ""
 	}
+	var payload map[string]interface{}
+	if json.Unmarshal([]byte(text), &payload) == nil {
+		if runID, _ := payload["run_id"].(string); strings.TrimSpace(runID) != "" {
+			return strings.TrimSpace(runID)
+		}
+		if runID, _ := payload["runID"].(string); strings.TrimSpace(runID) != "" {
+			return strings.TrimSpace(runID)
+		}
+	}
 	if matches := skillRunIDMetadataPattern.FindStringSubmatch(text); len(matches) == 2 {
 		return strings.TrimSpace(matches[1])
 	}
@@ -48,5 +58,20 @@ func isSkillRunTerminalFromText(text string) bool {
 	if text == "" {
 		return false
 	}
+	var payload map[string]interface{}
+	if json.Unmarshal([]byte(strings.TrimSpace(text)), &payload) == nil {
+		if status, _ := payload["status"].(string); isTerminalSkillRunStatus(status) {
+			return true
+		}
+	}
 	return skillRunStatusPattern.MatchString(text)
+}
+
+func isTerminalSkillRunStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "failed", "error", "cancelled", "timeout":
+		return true
+	default:
+		return false
+	}
 }

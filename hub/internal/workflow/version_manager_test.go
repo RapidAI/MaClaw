@@ -411,7 +411,7 @@ func TestIsValidTransition(t *testing.T) {
 		{VersionPublished, VersionSuperseded, true},
 		{VersionPublished, VersionUnpublished, true},
 		{VersionPublished, VersionDraft, false},
-		{VersionRejected, VersionDraft, false},   // terminal
+		{VersionRejected, VersionDraft, false},    // terminal
 		{VersionSuperseded, VersionDraft, false},  // terminal
 		{VersionUnpublished, VersionDraft, false}, // terminal
 	}
@@ -490,6 +490,23 @@ func TestValidateGraphStructure_SingleNodeTrigger(t *testing.T) {
 	err := ValidateGraphStructure(graph)
 	if err != nil {
 		t.Errorf("single trigger node should be valid, got: %v", err)
+	}
+}
+
+func TestValidateGraphStructure_RejectsIncomingEdgeToTrigger(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "t1", Type: NodeTrigger, Label: "Start"},
+			{ID: "a1", Type: NodeApproval, Label: "Approve"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "t1", TargetID: "a1"},
+			{ID: "e2", SourceID: "a1", TargetID: "t1"},
+		},
+	}
+	err := ValidateGraphStructure(graph)
+	if err != ErrTriggerHasIncoming {
+		t.Errorf("error = %v, want ErrTriggerHasIncoming", err)
 	}
 }
 

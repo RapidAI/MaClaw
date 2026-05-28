@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -54,7 +55,7 @@ func TestEnsureTruncationFallbackToolsDoesNotAddUnroutedFallback(t *testing.T) {
 
 func TestEnsureTruncationFallbackToolsDoesNotDuplicate(t *testing.T) {
 	current := []map[string]interface{}{
-		toolDef("bash", "shell", nil, nil),
+		toolDef("read_file", "read", nil, nil),
 		toolDef("craft_tool", "craft", nil, nil),
 	}
 	catalog := []map[string]interface{}{
@@ -91,20 +92,228 @@ func TestEnsureTruncationFallbackToolsRespectsBlockedSet(t *testing.T) {
 	}
 }
 
+func TestBashTruncationKeepsBashAvailableAndAddsRecoveryHint(t *testing.T) {
+	if !classifyAgentToolKind("bash").IsTruncationBlockSafe() {
+		t.Fatal("bash should remain available; oversized payloads are handled by schema and pre-execution limits")
+	}
+
+	current := []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+	}
+	catalog := []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("craft_tool", "craft", nil, nil),
+	}
+	conversation := []interface{}{}
+	recorded := false
+	result := (&IMMessageHandler{}).handleAgentLoopTruncatedToolCalls(
+		7,
+		llm.Choice{TruncatedToolNames: []string{"bash"}},
+		&agentLoopPhase{TruncationRetries: maxTruncationRetries},
+		conversation,
+		append([]map[string]interface{}{toolDef("bash", "shell", nil, nil)}, current...),
+		catalog,
+		func(int, []interface{}) { recorded = true },
+	)
+	names := map[string]bool{}
+	for _, td := range result.Tools {
+		names[tool.ExtractToolName(td)] = true
+	}
+	if !names["bash"] {
+		t.Fatalf("bash should remain available after truncation recovery: %v", names)
+	}
+	if !names["read_file"] {
+		t.Fatalf("existing safe tools should remain available: %v", names)
+	}
+	if !recorded || len(result.Conversation) != 1 {
+		t.Fatalf("expected recovery hint to be recorded, recorded=%v conversation=%#v", recorded, result.Conversation)
+	}
+	hint, _ := result.Conversation[0].(map[string]string)
+	if !containsText(hint["content"], "bash only for short commands") {
+		t.Fatalf("expected bash recovery hint, got %#v", hint)
+	}
+}
+
+func TestHandleTruncatedToolCallsDoesNotBlockRepeatedBashTruncation(t *testing.T) {
+	phase := &agentLoopPhase{}
+	tools := []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+	}
+	catalog := []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+		toolDef("craft_tool", "craft", nil, nil),
+	}
+
+	result := (&IMMessageHandler{}).handleAgentLoopTruncatedToolCalls(
+		7,
+		llm.Choice{TruncatedToolNames: []string{"bash"}},
+		phase,
+		nil,
+		tools,
+		catalog,
+		func(int, []interface{}) {},
+	)
+
+	if !result.ContinueLoop {
+		t.Fatal("expected loop to continue after applying truncation block")
+	}
+	if phase.TruncationBlockedTools["bash"] {
+		t.Fatalf("bash should not be marked blocked after repeated truncation: %#v", phase.TruncationBlockedTools)
+	}
+	if phase.TruncationRetries != 0 {
+		t.Fatalf("essential truncation should not consume generic truncation retries, got %d", phase.TruncationRetries)
+	}
+	if phase.EssentialTruncationHints != 1 {
+		t.Fatalf("essential truncation hint count = %d, want 1", phase.EssentialTruncationHints)
+	}
+	names := map[string]bool{}
+	for _, td := range result.Tools {
+		names[tool.ExtractToolName(td)] = true
+	}
+	if !names["bash"] {
+		t.Fatalf("bash should remain available after repeated truncation: %v", names)
+	}
+	if !names["read_file"] {
+		t.Fatalf("safe tools should remain available: %v", names)
+	}
+}
+
+func TestRepeatedEssentialTruncationFallsThroughAfterOneHint(t *testing.T) {
+	phase := &agentLoopPhase{TruncationRetries: maxTruncationRetries, EssentialTruncationHints: maxEssentialTruncationHints}
+	tools := []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+	}
+
+	result := (&IMMessageHandler{}).handleAgentLoopTruncatedToolCalls(
+		8,
+		llm.Choice{TruncatedToolNames: []string{"bash"}},
+		phase,
+		nil,
+		tools,
+		nil,
+		func(int, []interface{}) { t.Fatal("second essential truncation should not inject another hint") },
+	)
+
+	if result.ContinueLoop {
+		t.Fatal("expected repeated essential truncation to fall through to no-tool recovery instead of looping")
+	}
+	if phase.TruncationBlockedTools["bash"] {
+		t.Fatalf("bash should remain unblocked: %#v", phase.TruncationBlockedTools)
+	}
+	if len(result.Tools) != len(tools) {
+		t.Fatalf("tools changed unexpectedly: %#v", result.Tools)
+	}
+}
+
+func TestMixedEssentialAndBlockableTruncationBlocksOnlyBlockableTool(t *testing.T) {
+	phase := &agentLoopPhase{TruncationRetries: maxTruncationRetries}
+	tools := []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+	}
+	catalog := []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+		toolDef("read_file", "read", nil, nil),
+		toolDef("craft_tool", "craft", nil, nil),
+	}
+
+	result := (&IMMessageHandler{}).handleAgentLoopTruncatedToolCalls(
+		9,
+		llm.Choice{TruncatedToolNames: []string{"bash", "write_file"}},
+		phase,
+		nil,
+		tools,
+		catalog,
+		func(int, []interface{}) {},
+	)
+
+	if !result.ContinueLoop {
+		t.Fatal("expected loop to continue after blocking write_file")
+	}
+	if phase.TruncationBlockedTools["bash"] {
+		t.Fatalf("bash should remain unblocked: %#v", phase.TruncationBlockedTools)
+	}
+	if !phase.TruncationBlockedTools["write_file"] {
+		t.Fatalf("write_file should be blocked: %#v", phase.TruncationBlockedTools)
+	}
+	names := map[string]bool{}
+	for _, td := range result.Tools {
+		names[tool.ExtractToolName(td)] = true
+	}
+	if !names["bash"] || !names["read_file"] || !names["craft_tool"] {
+		t.Fatalf("expected bash/read_file/craft_tool to remain available: %v", names)
+	}
+	if names["write_file"] {
+		t.Fatalf("write_file should be removed after truncation block: %v", names)
+	}
+}
+
+func TestValidToolBranchResetsTruncationRecoveryCounters(t *testing.T) {
+	phase := &agentLoopPhase{
+		TruncationRetries:        maxTruncationRetries,
+		EssentialTruncationHints: maxEssentialTruncationHints,
+		TruncationBlockedTools:   map[string]bool{"write_file": true},
+	}
+	choice := llm.Choice{Message: llm.Message{ToolCalls: []llm.ToolCall{{ID: "call_read", Function: llm.ToolCallFunction{Name: "read_file", Arguments: `{"path":"x"}`}}}}}
+
+	(&IMMessageHandler{}).startAgentLoopToolBranch(agentLoopToolBranchStartOptions{Choice: choice, Phase: phase})
+
+	if phase.TruncationRetries != 0 || phase.EssentialTruncationHints != 0 {
+		t.Fatalf("truncation counters not reset: retries=%d essential_hints=%d", phase.TruncationRetries, phase.EssentialTruncationHints)
+	}
+	if !phase.TruncationBlockedTools["write_file"] {
+		t.Fatalf("blocked tools should persist until loop end: %#v", phase.TruncationBlockedTools)
+	}
+}
+
+func TestPartialTruncationDoesNotResetTruncationRecoveryCounters(t *testing.T) {
+	phase := &agentLoopPhase{TruncationRetries: 2, EssentialTruncationHints: 1}
+	choice := llm.Choice{
+		Message:            llm.Message{ToolCalls: []llm.ToolCall{{ID: "call_read", Function: llm.ToolCallFunction{Name: "read_file", Arguments: `{"path":"x"}`}}}},
+		TruncatedToolNames: []string{"bash"},
+	}
+
+	(&IMMessageHandler{}).startAgentLoopToolBranch(agentLoopToolBranchStartOptions{Choice: choice, Phase: phase})
+
+	if phase.TruncationRetries != 2 || phase.EssentialTruncationHints != 1 {
+		t.Fatalf("partial truncation should keep counters: retries=%d essential_hints=%d", phase.TruncationRetries, phase.EssentialTruncationHints)
+	}
+}
+
+func TestTruncationRetryHintStatesHardInlineLimits(t *testing.T) {
+	got := buildTruncationRetryHint("write_file, bash", []map[string]interface{}{
+		toolDef("write_file", "write", nil, nil),
+		toolDef("bash", "shell", nil, nil),
+	})
+	for _, want := range []string{"write_file.content <= 3000", "bash.command <= 4000", "mode=append", "do not embed generated file bodies"} {
+		if !containsText(got, want) {
+			t.Fatalf("hint %q missing %q", got, want)
+		}
+	}
+}
+
 func TestBuildTruncationRetryHintOnlyMentionsAvailableAlternates(t *testing.T) {
 	got := buildTruncationRetryHint("write_file", []map[string]interface{}{
 		toolDef("read_file", "read", nil, nil),
 		toolDef("write_file", "write", nil, nil),
 	})
-	if containsText(got, "craft_tool") || containsText(got, "bash") {
+	if containsText(got, "craft_tool") {
 		t.Fatalf("hint mentioned unavailable alternates: %q", got)
 	}
 
 	got = buildTruncationRetryHint("write_file", []map[string]interface{}{
 		toolDef("craft_tool", "craft", nil, nil),
 	})
-	if !containsText(got, "craft_tool") || containsText(got, "bash") {
+	if !containsText(got, "craft_tool") {
 		t.Fatalf("hint did not match available alternates: %q", got)
+	}
+	if containsText(got, "mode=append") {
+		t.Fatalf("hint should not suggest unavailable write_file chunking: %q", got)
 	}
 }
 

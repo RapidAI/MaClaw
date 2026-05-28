@@ -121,6 +121,79 @@ func (a *App) skillInstallScanShouldBlock(report *cskill.ScanReport) bool {
 	return a.securityPolicyMode() == "strict" && (report.IsDangerous() || report.NeedsUserReview())
 }
 
+func (a *App) skillInstallFinalAuditAction(report *cskill.ScanReport) security.PolicyAction {
+	if report == nil {
+		return security.PolicyAllow
+	}
+	if a != nil && a.isSecurityDeveloperMode() {
+		if report.IsDangerous() || report.NeedsUserReview() {
+			return security.PolicyAudit
+		}
+		return security.PolicyAllow
+	}
+	if a != nil && a.skillInstallReviewNeedsConfirmation(report) {
+		return security.PolicyUserOverride
+	}
+	if report.NeedsUserReview() {
+		return security.PolicyAudit
+	}
+	return security.PolicyAllow
+}
+
+func (a *App) skillSearchPolicySource() string {
+	if a == nil {
+		return "skillhub"
+	}
+	allowed := a.GetAllowedSkillSources()
+	if len(allowed) == 0 {
+		return "skillhub"
+	}
+	for _, source := range allowed {
+		if strings.TrimSpace(source) != "" {
+			return source
+		}
+	}
+	return "skillhub"
+}
+
+func (a *App) skillSearchPolicyArgs(query string) map[string]interface{} {
+	source := a.skillSearchPolicySource()
+	args := map[string]interface{}{"query": query, "source": source}
+	switch normalizeSkillSearchPolicySource(source) {
+	case "github":
+		args["url"] = "https://github.com"
+	case "clawhub":
+		args["url"] = cskill.ClawHubMirrorURL
+	case corelib.CapabilitySourceEnterpriseHub:
+		if a != nil {
+			if cfg, err := a.LoadConfig(); err == nil && strings.TrimSpace(cfg.RemoteHubURL) != "" {
+				args["url"] = strings.TrimSpace(cfg.RemoteHubURL)
+			}
+		}
+	default:
+		if a != nil {
+			args["hub_url"] = NewSkillMarketClient(a).baseURL()
+		}
+	}
+	return args
+}
+
+func normalizeSkillSearchPolicySource(source string) string {
+	source = strings.TrimSpace(strings.ToLower(source))
+	switch source {
+	case "skillmarket", "market", "hubcenter", "hub_center", "skill_hub":
+		return "skillhub"
+	case "enterprise", "hub", "enterprisehub":
+		return corelib.CapabilitySourceEnterpriseHub
+	case "claw_hub":
+		return "clawhub"
+	case "git_hub":
+		return "github"
+	default:
+		return source
+	}
+}
+
 func (a *App) skillInstallMissingScanShouldBlock() bool {
 	return a.securityPolicyMode() == "strict"
 }
@@ -233,7 +306,7 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 			security.AuditActionHubSkillInstall,
 			"manual_skill_install",
 			level,
-			security.PolicyAllow,
+			security.PolicyAudit,
 			fmt.Sprintf("developer mode allowed skill %s after pre-install scan: %s", entry.Name, summary),
 		)
 		return nil

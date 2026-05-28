@@ -6,16 +6,21 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	cagent "github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
-var unifiedClassifier *intent.UnifiedIntentClassifier
+var unifiedClassifierPtr atomic.Pointer[intent.UnifiedIntentClassifier]
 
-func setUnifiedClassifierForIM(uic *intent.UnifiedIntentClassifier) { unifiedClassifier = uic }
+func setUnifiedClassifierForIM(uic *intent.UnifiedIntentClassifier) {
+	unifiedClassifierPtr.Store(uic)
+	cagent.SetUnifiedClassifier(uic)
+}
 
 type taskIntentResult struct {
 	Intent     taskIntent
@@ -34,7 +39,7 @@ type llmIntentClassification struct {
 }
 
 func classifyTaskIntent(text string) taskIntentResult {
-	if uic := unifiedClassifier; uic != nil {
+	if uic := unifiedClassifierPtr.Load(); uic != nil {
 		result := uic.Classify(intent.MessageContext{Text: text})
 		intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
 		return taskIntentResult{Intent: normalizeTaskIntent(taskIntent(intentStr)), Matched: matched, Evidence: evidence, Reason: reason, Confidence: confidence, Source: taskIntentSourceUIC}
@@ -195,7 +200,7 @@ func (h *IMMessageHandler) requestIntentClassification(cfg corelib.MaclawLLMConf
 }
 
 func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	responseFormat := map[string]interface{}{
 		"type": "json_schema",

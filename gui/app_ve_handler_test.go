@@ -419,23 +419,15 @@ func TestVEStreamingResponse_ChunkSequence(t *testing.T) {
 }
 
 func TestVEStreamingResponse_EmptyChunksFiltered(t *testing.T) {
-	// The handler should not send empty chunks
-	handler := NewVEMessageHandler(&App{})
-
-	// SendStreamChunk with empty content should still call sendMessage
-	// but the runAgentWithStreaming onToken callback filters empty chunks
-	// Verify the filtering logic
-	emptyChunk := strings.TrimSpace("")
-	if emptyChunk != "" {
-		t.Error("empty chunk should be filtered")
+	if a2a.GroupDiscussionMessageHasPayload(a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk}) {
+		t.Fatal("empty stream_chunk should not be sent to Hub")
 	}
-
-	nonEmptyChunk := strings.TrimSpace("hello")
-	if nonEmptyChunk == "" {
-		t.Error("non-empty chunk should not be filtered")
+	if !a2a.GroupDiscussionMessageHasPayload(a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamEnd}) {
+		t.Fatal("stream_end without content should still be sent to Hub")
 	}
-
-	_ = handler
+	if !a2a.GroupDiscussionMessageHasPayload(a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: "hello"}) {
+		t.Fatal("non-empty stream_chunk should be sent to Hub")
+	}
 }
 
 func TestBuildVEConversationHistoryFromMessagesRestoresPriorTurns(t *testing.T) {

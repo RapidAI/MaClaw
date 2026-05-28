@@ -185,13 +185,14 @@
 
   global.renderBoundUsers = function renderBoundUsers(items) {
     const root = document.getElementById('boundUsers');
-    if (!items.length) {
+    const allItems = Array.isArray(items) ? items : [];
+    global._boundUsersAll = allItems;
+    global._boundUsersPage = global._boundUsersPage || 1;
+    global._boundUsersSearch = global._boundUsersSearch || '';
+    if (!allItems.length) {
       root.innerHTML = hint(tr('emptyBoundUsers'));
       return;
     }
-    global._boundUsersAll = items;
-    global._boundUsersPage = global._boundUsersPage || 1;
-    global._boundUsersSearch = global._boundUsersSearch || '';
     const smartAllEl = document.getElementById('smartRouteAllToggle');
     if (smartAllEl && !smartAllEl.dataset.loaded) {
       smartAllEl.dataset.loaded = '1';
@@ -218,7 +219,7 @@
       var smartRoute = item.smart_route;
       var toggleId = 'sr_' + item.id;
       var serviceBadge = item.has_service_access ? '<span class="badge ok" title="' + escapeHtml(serviceAccessTooltip(item)) + '" style="padding:4px 8px;font-size:10px">' + escapeHtml(serviceAccessLabel()) + '</span>' : '<span class="badge info" style="padding:4px 8px;font-size:10px">-</span>';
-      var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" onclick="unbindBoundUser(this.dataset.email)">' + escapeHtml(gt('unbindUser')) + '</button>';
+      var unbindBtn = '<button class="btn-danger" style="height:24px;font-size:10px;padding:0 8px" data-email="' + escapeHtml(String(item.email || '')) + '" data-tenant-id="' + escapeHtml(String(item.tenant_id || '')) + '" onclick="unbindBoundUser(this.dataset.email, this.dataset.tenantId)">' + escapeHtml(gt('unbindUser')) + '</button>';
       return '<div class="item" style="padding:10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06);box-shadow:none">'
         + '<div style="display:flex;flex-direction:column;gap:8px;min-width:0">'
         + '<div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(item.email) + '</div>'
@@ -266,14 +267,17 @@
     }
   };
 
-  global.unbindBoundUser = async function unbindBoundUser(email) {
+  global.unbindBoundUser = async function unbindBoundUser(email, tenantID) {
     email = String(email || '').trim();
+    tenantID = String(tenantID || '').trim();
     if (!email) return;
     if (!confirm(gt('unbindConfirm').replace('{email}', email))) return;
     try {
-      const data = await api('/api/admin/users?email=' + encodeURIComponent(email), { method: 'DELETE' });
+      const query = '?email=' + encodeURIComponent(email) + (tenantID ? '&tenant_id=' + encodeURIComponent(tenantID) : '');
+      const data = await api('/api/admin/users' + query, { method: 'DELETE' });
       const removedEmail = data.email || email;
-      const msg = gt('unbindSuccess').replace('{email}', removedEmail);
+      let msg = gt('unbindSuccess').replace('{email}', removedEmail);
+      if (data.route_delete_warning) msg += ' Route sync warning: ' + data.route_delete_warning;
       setOutput(msg);
       showToast(msg, 'success');
       await Promise.all([global.loadBoundUsers(), global.loadMachines()]);

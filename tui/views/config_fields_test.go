@@ -1094,7 +1094,7 @@ func TestConfigFields_LoadFromAppConfigMaterializesStandardSecurityDefaults(t *t
 	if m.cfg.SecurityPolicyMode != "standard" || m.cfg.SandboxMode != "none" || m.cfg.NetworkLevel != "full" {
 		t.Fatalf("implicit standard security defaults not materialized: %#v", m.cfg)
 	}
-	if !m.cfg.YoloModeAllowed || !m.cfg.FileOutboundEnabled || !m.cfg.ImageOutboundEnabled {
+	if !m.cfg.YoloModeAllowed || !m.cfg.SmartRouteEnabled || !m.cfg.FileOutboundEnabled || !m.cfg.ImageOutboundEnabled {
 		t.Fatalf("implicit standard security booleans not materialized: %#v", m.cfg)
 	}
 	_, _, profile := findConfigEntryForTest(t, m, "security_profile")
@@ -1110,7 +1110,7 @@ func TestConfigFields_SecurityProfileAppliesStrictAndHidesDetails(t *testing.T) 
 	if cfg.SecurityPolicyMode != "strict" || cfg.SandboxMode != "os" || cfg.NetworkLevel != "intranet" {
 		t.Fatalf("strict security profile not applied: %#v", cfg)
 	}
-	if cfg.YoloModeAllowed || cfg.FileOutboundEnabled || cfg.ImageOutboundEnabled {
+	if cfg.YoloModeAllowed || cfg.SmartRouteEnabled || cfg.FileOutboundEnabled || cfg.ImageOutboundEnabled {
 		t.Fatalf("strict security profile should disable risky outbound flags: %#v", cfg)
 	}
 	got, _ := LoadConfigValue(&cfg, "security_profile")
@@ -1135,10 +1135,10 @@ func TestConfigFields_SecurityProfileAppliesStrictAndHidesDetails(t *testing.T) 
 func TestConfigFields_SecurityProfileCustomShowsDetails(t *testing.T) {
 	m := NewConfigModel("zh")
 	m.activeTab = CfgTabSecurity
-	m.LoadFromAppConfig(corelib.AppConfig{SecurityPolicyMode: "standard", SandboxMode: "docker", NetworkLevel: "full", YoloModeAllowed: true, FileOutboundEnabled: true, ImageOutboundEnabled: true})
+	m.LoadFromAppConfig(corelib.AppConfig{SecurityPolicyMode: "standard", SandboxMode: "docker", NetworkLevel: "full", YoloModeAllowed: true, SmartRouteEnabled: true, FileOutboundEnabled: true, ImageOutboundEnabled: true})
 
 	entries := m.currentEntries()
-	for _, visible := range []string{"security_profile", "security_policy_mode", "sandbox_mode", "network_level", "yolo_mode_allowed", "file_outbound_enabled", "image_outbound_enabled"} {
+	for _, visible := range []string{"security_profile", "security_policy_mode", "sandbox_mode", "network_level", "yolo_mode_allowed", "smart_route_enabled", "file_outbound_enabled", "image_outbound_enabled"} {
 		if !visibleConfigEntryExists(entries, visible) {
 			t.Fatalf("%s should be visible for custom security profile", visible)
 		}

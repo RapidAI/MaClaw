@@ -11,7 +11,7 @@ type SidebarSystemStatusProps = {
     telegramStatus: string;
     weixinStatus: string;
     lansengerStatus: string;
-    sshBackgroundTaskCount?: number;
+    backgroundTaskCount?: number;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     formatSidebarTokens: (value: number) => string;
@@ -79,7 +79,7 @@ export const SidebarSystemStatus = ({
     telegramStatus,
     weixinStatus,
     lansengerStatus,
-    sshBackgroundTaskCount = 0,
+    backgroundTaskCount = 0,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -110,7 +110,7 @@ export const SidebarSystemStatus = ({
     const imOnline = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || (showLansenger && lansengerStatus === 'connected');
     const backgroundTaskLabel = textForLang(lang, 'Background tasks', '\u540e\u53f0\u4efb\u52a1', '\u5f8c\u53f0\u4efb\u52d9');
     const isChineseLang = lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'zh';
-    const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${sshBackgroundTaskCount}`;
+    const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${backgroundTaskCount}`;
     const renderStatusSignal = (label: string, on: boolean) => (
         <span className="sidebar-system-status__signal" data-online={on ? 'true' : 'false'} title={`${STATUS_DOT} ${label} ${on ? onlineText : offlineText}`}>
             <span className="sidebar-system-status__dot" aria-hidden="true" />

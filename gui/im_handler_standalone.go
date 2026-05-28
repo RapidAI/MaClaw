@@ -61,7 +61,7 @@ type StandaloneConfig struct {
 	// Defaults to true if nil.
 	IsProMode *bool
 
-	// ResponseHeaderTimeout for the HTTP client. Defaults to 120s.
+	// ResponseHeaderTimeout for the HTTP client. Defaults to the LLM timeout.
 	ResponseHeaderTimeout time.Duration
 
 	// ConversationStorePath is the file path for persisting conversation history.
@@ -83,7 +83,7 @@ type StandaloneConfig struct {
 func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	timeout := cfg.ResponseHeaderTimeout
 	if timeout == 0 {
-		timeout = 120 * time.Second
+		timeout = time.Duration(corelib.DefaultLLMTimeoutSec) * time.Second
 	}
 
 	chatTransport := &http.Transport{
@@ -123,7 +123,7 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	if localClassifier == nil {
 		localClassifier = intent.New(intent.Config{
 			Embedder:   embedding.NoopEmbedder{},
-			LLMTimeout: 15 * time.Second,
+			LLMTimeout: 30 * time.Second,
 		})
 	}
 

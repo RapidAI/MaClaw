@@ -207,7 +207,7 @@ func redactToolCallMap(m map[string]interface{}, toolCallID, redactedID string) 
 }
 
 func (h *IMMessageHandler) pinConditionalToolAfterSuccess(toolName string, execResult toolExecutionResult) {
-	if h == nil || h.toolRouter == nil || execResult.FailureKind != toolFailureNone || !tool.ShouldPinConditionalTool(toolName) {
+	if h == nil || h.toolRouter == nil || execResult.Outcome != toolOutcomeSucceeded || execResult.FailureKind != toolFailureNone || !tool.ShouldPinConditionalTool(toolName) {
 		return
 	}
 	h.toolRouter.ActivateSessionTool(toolName)

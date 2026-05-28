@@ -86,7 +86,7 @@ const emptyForm: PassthroughCommand = {
     template_args: [],
     runtime: "direct",
     cwd: "",
-    timeout_seconds: 120,
+    timeout_seconds: 240,
     confirm_required: true,
     enabled: true,
     params: [],

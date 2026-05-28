@@ -28,12 +28,362 @@ func TestPlatformVirtualEmployeeProvisionCreatesRuntimeInstance(t *testing.T) {
 	if inst.Metadata["ve_employee_id"] != "emp-001" || inst.Metadata["llm_service_group_id"] != "group-legal" {
 		t.Fatalf("unexpected instance metadata: %#v", inst.Metadata)
 	}
+	if inst.Metadata["ve_name"] != "Contract Reviewer" || inst.Metadata["ve_skill_description"] != "Review contract risks" || inst.Metadata["ve_skill_tags"] != "contract, review" {
+		t.Fatalf("expected platform identity metadata for system prompt, got %#v", inst.Metadata)
+	}
 	cfg, err := svc.GetUserConfig(t.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
 	if err != nil {
 		t.Fatalf("GetUserConfig: %v", err)
 	}
 	if cfg.AppConfig.MaclawLLMCurrentProvider != "hub-llm" || len(cfg.AppConfig.MaclawLLMProviders) != 1 || cfg.AppConfig.MaclawLLMProviders[0].URL != "https://hub.example.test/llm" || cfg.AppConfig.MaclawLLMProviders[0].Key == "" || cfg.AppConfig.MaclawLLMProviders[0].Key == "managed-by-hub" || cfg.AppConfig.MaclawLLMProviders[0].Model != "auto" {
 		t.Fatalf("expected Hub LLM provider config, got %#v", cfg.AppConfig)
+	}
+}
+
+func TestPlatformVirtualEmployeeConfigUpdatesIMSettingsAndClearsAutoMode(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	tenant, user, _ := platformRuntimeForTest(t, svc, "emp-001")
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees/emp-001/config", map[string]any{
+		"tenant_id":     "hub-tenant-001",
+		"virtual_email": "contract_reviewer@example.test",
+		"maclawsrv_config": map[string]any{
+			"telegram_bot_enabled": true,
+			"telegram_bot_token":   "telegram-secret",
+			"telegram_local_mode":  true,
+		},
+	}, http.StatusOK)
+	cfg, err := svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
+		t.Fatalf("GetUserConfig: %v", err)
+	}
+	maskedToken := cfg.AppConfig.TelegramBotToken
+	if !cfg.AppConfig.TelegramBotEnabled || maskedToken == "" || maskedToken == "telegram-secret" || cfg.AppConfig.TelegramLocalMode == nil || !*cfg.AppConfig.TelegramLocalMode {
+		t.Fatalf("expected telegram settings applied, got %#v", cfg.AppConfig)
+	}
+
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees/emp-001/config", map[string]any{
+		"tenant_id":     "hub-tenant-001",
+		"virtual_email": "contract_reviewer@example.test",
+		"maclawsrv_config": map[string]any{
+			"telegram_bot_token":  "********",
+			"telegram_local_mode": nil,
+		},
+	}, http.StatusOK)
+	cfg, err = svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
+		t.Fatalf("GetUserConfig after clear: %v", err)
+	}
+	if cfg.AppConfig.TelegramBotToken != maskedToken || cfg.AppConfig.TelegramLocalMode != nil {
+		t.Fatalf("expected masked token preserved and local mode cleared to auto, got %#v", cfg.AppConfig)
+	}
+	badPort := 70000
+	if err := server.updatePlatformUserMaclawSrvConfig(httptest.NewRequest(http.MethodPost, "/", nil), principal, platformMaclawSrvConfig{ThirdPartyGatewayPort: &badPort}); err == nil {
+		t.Fatalf("expected invalid gateway port error")
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageRunsBoundRuntime(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	payload := map[string]any{"employee_id": "emp-001", "tenant_id": "hub-tenant-001", "hub_discussion_id": "discussion-1", "hub_message_id": "message-1", "request_id": "request-1", "content": "hello from Hub"}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/emp-001/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime discussion message status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		EmployeeID string `json:"employee_id"`
+		Message    struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if out.EmployeeID != "emp-001" || !strings.Contains(out.Message.Content, "hello from Hub") {
+		t.Fatalf("unexpected message response: %#v", out)
+	}
+}
+
+func TestPlatformRuntimeLogIDRedactsEmployeeID(t *testing.T) {
+	redacted := platformRuntimeLogID("platform-employee-1")
+	if redacted == "" || strings.Contains(redacted, "platform-employee-1") || !strings.HasPrefix(redacted, "sha256:") {
+		t.Fatalf("platform runtime log id was not redacted: %q", redacted)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageMatchesRuntimeBindingCaseInsensitive(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	body, _ := json.Marshal(map[string]any{"hub_discussion_id": "discussion-case", "hub_message_id": "message-case", "request_id": "request-case", "content": "hello mixed case"})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/EMP-001/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("X-VE-Hub-Tenant-ID", "HUB-TENANT-001")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime discussion mixed-case binding status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if !strings.Contains(out.Message.Content, "hello mixed case") {
+		t.Fatalf("unexpected message response: %#v", out)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageAcceptsPayloadEnvelope(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	payload := map[string]any{"payload": map[string]any{"envelope": map[string]any{"id": "env-1", "session_id": "discussion-1", "message": map[string]any{"id": "message-1", "content": "hello from envelope"}}}}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/emp-001/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime envelope message status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Session struct {
+			Metadata map[string]string `json:"metadata"`
+		} `json:"session"`
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if !strings.Contains(out.Message.Content, "hello from envelope") {
+		t.Fatalf("unexpected message response: %#v", out)
+	}
+	if out.Session.Metadata["client_session_key"] != "discussion-1" {
+		t.Fatalf("runtime session not bound to envelope discussion: %#v", out.Session.Metadata)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageDedupesByHubMessageID(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	post := func(requestID string) {
+		t.Helper()
+		payload := map[string]any{"employee_id": "emp-001", "tenant_id": "hub-tenant-001", "hub_discussion_id": "discussion-1", "hub_message_id": "message-stable-1", "request_id": requestID, "content": "hello once"}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/emp-001/discussion-messages", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("runtime discussion message status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	post("env-retry-1")
+	post("env-retry-2")
+	tenant, user, inst := platformRuntimeForTest(t, svc, "emp-001")
+	sessions, err := svc.ListSessions(t.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, inst.ID, agentservice.ListSessionsInput{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected one runtime session, got %#v", sessions)
+	}
+	messages, err := svc.ListMessages(t.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, inst.ID, sessions[0].ID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("same Hub message should not create duplicate runtime turns, got %#v", messages)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageHonorsHubTenantHeader(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provision := func(hubTenantID, platformTenantID, name string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{
+			"employee_id":          "emp-shared",
+			"tenant_id":            hubTenantID,
+			"platform_tenant_id":   platformTenantID,
+			"name":                 name,
+			"virtual_email":        platformTenantID + "@example.test",
+			"hub_llm_endpoint":     "https://hub.example.test/llm",
+			"hub_llm_api_key":      "test-hub-key",
+			"llm_service_group_id": "group-legal",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/platform/virtual-employees", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("provision %s status=%d body=%s", hubTenantID, w.Code, w.Body.String())
+		}
+	}
+	provision("hub-tenant-a", "tenant-a", "Shared A")
+	provision("hub-tenant-b", "tenant-b", "Shared B")
+	wantTenantID := platformRuntimeTenantIDForTest(t, svc, "hub-tenant-b")
+
+	body, _ := json.Marshal(map[string]any{"hub_discussion_id": "discussion-b", "hub_message_id": "message-b", "request_id": "request-b", "content": "hello tenant b"})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/emp-shared/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("X-VE-Hub-Tenant-ID", "hub-tenant-b")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime discussion message status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Session struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"session"`
+		Message struct {
+			TenantID string `json:"tenant_id"`
+			Content  string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Session.TenantID != wantTenantID || out.Message.TenantID != wantTenantID || !strings.Contains(out.Message.Content, "hello tenant b") {
+		t.Fatalf("runtime message routed to wrong tenant, want=%s got=%#v", wantTenantID, out)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageHonorsBodyTenantID(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	for _, item := range []struct{ hubTenantID, platformTenantID, name string }{{"hub-tenant-a", "tenant-a", "Shared A"}, {"hub-tenant-b", "tenant-b", "Shared B"}} {
+		body, _ := json.Marshal(map[string]any{"employee_id": "emp-shared", "tenant_id": item.hubTenantID, "platform_tenant_id": item.platformTenantID, "name": item.name, "virtual_email": item.platformTenantID + "@example.test", "hub_llm_endpoint": "https://hub.example.test/llm", "hub_llm_api_key": "test-hub-key", "llm_service_group_id": "group-legal"})
+		req := httptest.NewRequest(http.MethodPost, "/api/platform/virtual-employees", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("provision %s status=%d body=%s", item.hubTenantID, w.Code, w.Body.String())
+		}
+	}
+	wantTenantID := platformRuntimeTenantIDForTest(t, svc, "hub-tenant-b")
+
+	body, _ := json.Marshal(map[string]any{"tenant_id": "hub-tenant-b", "hub_discussion_id": "discussion-b", "hub_message_id": "message-b", "request_id": "request-b", "content": "hello body tenant"})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/emp-shared/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime discussion message status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Session struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"session"`
+		Message struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Session.TenantID != wantTenantID || out.Message.TenantID != wantTenantID {
+		t.Fatalf("runtime message routed to wrong tenant from body tenant_id, want=%s got=%#v", wantTenantID, out)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageRunsSourceUserRuntime(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	tenant, err := svc.CreateTenant(t.Context(), agentservice.CreateTenantInput{Name: "Runtime Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(t.Context(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Runtime User", Email: "runtime@example.test"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(t.Context(), principal, corelib.AppConfig{MaclawLLMUrl: "https://llm.example.test", MaclawLLMKey: "key", MaclawLLMModel: "auto"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(t.Context(), principal, agentservice.CreateInstanceInput{Name: "Source user VE", Metadata: map[string]string{"ve_source_user_id": "src-ve-001"}})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	payload := map[string]any{"employee_id": "src-ve-001", "tenant_id": "hub-tenant-001", "hub_discussion_id": "discussion-1", "hub_message_id": "message-1", "request_id": "request-1", "content": "hello source runtime"}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/src-ve-001/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime source-user message status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		EmployeeID string `json:"employee_id"`
+		Session    struct {
+			Metadata map[string]string `json:"metadata"`
+		} `json:"session"`
+		Message struct {
+			InstanceID string `json:"instance_id"`
+			Content    string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if out.EmployeeID != "src-ve-001" || out.Message.InstanceID != inst.ID || !strings.Contains(out.Message.Content, "hello source runtime") {
+		t.Fatalf("unexpected source-user message response: %#v", out)
+	}
+	if out.Session.Metadata["client_session_key"] != "discussion-1" {
+		t.Fatalf("source-user runtime session not bound to Hub discussion: %#v", out.Session.Metadata)
 	}
 }
 
@@ -103,7 +453,7 @@ func TestPlatformLLMModelDoesNotTreatServiceGroupAsModel(t *testing.T) {
 	}
 }
 
-func TestPlatformVirtualEmployeeSourceUserRepairsLegacyServiceGroupModel(t *testing.T) {
+func TestPlatformVirtualEmployeeSourceUserRepairsLegacyServiceGroupModelOnProvisioningPath(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -134,6 +484,24 @@ func TestPlatformVirtualEmployeeSourceUserRepairsLegacyServiceGroupModel(t *test
 	}
 	cfg, err = svc.GetUserConfig(t.Context(), principal)
 	if err != nil {
+		t.Fatalf("GetUserConfig after read-only status: %v", err)
+	}
+	if cfg.AppConfig.MaclawLLMModel != "group-legal" {
+		t.Fatalf("read-only runtime status should not repair legacy model, got %#v", cfg.AppConfig.MaclawLLMModel)
+	}
+
+	payload := map[string]any{"tenant_id": "tenant-001", "source_user": map[string]any{"id": "emp-001", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
+	body, _ := json.Marshal(payload)
+	req = httptest.NewRequest(http.MethodPost, "/api/platform/source-users/emp-001/settings-link", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("settings link status=%d body=%s", w.Code, w.Body.String())
+	}
+	cfg, err = svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
 		t.Fatalf("GetUserConfig repaired: %v", err)
 	}
 	if cfg.AppConfig.MaclawLLMModel != "auto" {
@@ -153,7 +521,7 @@ func TestPlatformVirtualEmployeeSourceUserReusesProvisionedRuntimeUser(t *testin
 	provisionPlatformEmployeeForTest(t, server)
 	provisionedTenant, provisionedUser, provisionedInstance := platformRuntimeForTest(t, svc, "emp-001")
 
-	payload := map[string]any{"tenant_id": "tenant-001", "source_user": map[string]any{"id": "emp-001", "external_id": "contract_reviewer", "email": "contract_reviewer@example.test", "display_name": "Contract Reviewer", "title": "Review contract risks", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
+	payload := map[string]any{"tenant_id": "tenant-001", "source_user": map[string]any{"id": "emp-001", "external_id": "contract_reviewer", "email": "contract_reviewer@example.test", "display_name": "Updated Contract Reviewer", "title": "Review updated contract risks", "skill_tags": "contract, compliance", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/emp-001/assistant-link", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -180,6 +548,69 @@ func TestPlatformVirtualEmployeeSourceUserReusesProvisionedRuntimeUser(t *testin
 	}
 	if len(users) != 1 {
 		t.Fatalf("expected no duplicate runtime user, got %#v", users)
+	}
+	updated, err := svc.GetInstance(t.Context(), agentservice.Principal{TenantID: provisionedTenant.ID, UserID: provisionedUser.ID}, provisionedInstance.ID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if updated.Metadata["ve_name"] != "Updated Contract Reviewer" || updated.Metadata["ve_skill_description"] != "Review updated contract risks" || updated.Metadata["ve_skill_tags"] != "contract, compliance" {
+		t.Fatalf("source-user launch should sync latest virtual employee profile metadata, got %#v", updated.Metadata)
+	}
+}
+
+func TestPlatformVirtualEmployeeSourceUserMinimalPayloadPreservesProfileMetadata(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	provisionedTenant, provisionedUser, provisionedInstance := platformRuntimeForTest(t, svc, "emp-001")
+
+	payload := map[string]any{"tenant_id": "tenant-001", "source_user": map[string]any{"id": "emp-001", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/emp-001/settings-link", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("settings link status=%d body=%s", w.Code, w.Body.String())
+	}
+	updated, err := svc.GetInstance(t.Context(), agentservice.Principal{TenantID: provisionedTenant.ID, UserID: provisionedUser.ID}, provisionedInstance.ID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if updated.Metadata["ve_name"] != "Contract Reviewer" || updated.Metadata["ve_skill_description"] != "Review contract risks" || updated.Metadata["ve_skill_tags"] != "contract, review" {
+		t.Fatalf("minimal source-user payload should preserve existing profile metadata, got %#v", updated.Metadata)
+	}
+}
+
+func TestPlatformVirtualEmployeeSourceUserExplicitEmptySkillTagsClearsMetadata(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	provisionedTenant, provisionedUser, provisionedInstance := platformRuntimeForTest(t, svc, "emp-001")
+
+	payload := map[string]any{"tenant_id": "tenant-001", "source_user": map[string]any{"id": "emp-001", "display_name": "Contract Reviewer", "external_id": "contract_reviewer", "title": "Review contract risks", "skill_tags": "", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/emp-001/settings-link", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("settings link status=%d body=%s", w.Code, w.Body.String())
+	}
+	updated, err := svc.GetInstance(t.Context(), agentservice.Principal{TenantID: provisionedTenant.ID, UserID: provisionedUser.ID}, provisionedInstance.ID)
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if _, ok := updated.Metadata["ve_skill_tags"]; ok {
+		t.Fatalf("explicit empty source-user skill_tags should clear metadata, got %#v", updated.Metadata)
 	}
 }
 
@@ -304,11 +735,14 @@ func TestPlatformVirtualEmployeeSourceUserInstanceCanBeProvisionedLater(t *testi
 		t.Fatalf("NewService: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
-	sourceUser := map[string]any{"id": "emp-001", "external_id": "contract_reviewer", "email": "contract_reviewer@example.test", "display_name": "Contract Reviewer", "title": "Review contract risks", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}
+	sourceUser := map[string]any{"id": "emp-001", "external_id": "contract_reviewer", "email": "contract_reviewer@example.test", "display_name": "Contract Reviewer", "title": "Review contract risks", "skill_tags": "contract, review", "account_type": "virtual_employee", "provider": "virtualemployee-platform", "is_virtual_employee": true}
 	postPlatformJSONForTest(t, server, "/api/platform/source-users/emp-001/assistant-instances", map[string]any{"tenant_id": "tenant-001", "source_user": sourceUser, "name": "Early assistant"}, http.StatusCreated)
 	_, _, early := platformRuntimeForTest(t, svc, "emp-001")
 	if early.Metadata["ve_source_user_id"] != "emp-001" || early.Metadata["ve_employee_id"] != "emp-001" {
 		t.Fatalf("early virtual source-user instance missing dual identity metadata: %#v", early.Metadata)
+	}
+	if early.Metadata["ve_name"] != "Contract Reviewer" || early.Metadata["ve_handle"] != "contract_reviewer" || early.Metadata["ve_skill_description"] != "Review contract risks" || early.Metadata["ve_skill_tags"] != "contract, review" {
+		t.Fatalf("early virtual source-user instance missing profile metadata: %#v", early.Metadata)
 	}
 
 	provisionPlatformEmployeeForTest(t, server)
@@ -365,6 +799,57 @@ func TestPlatformDeleteVirtualEmployeeDeletesAllAssistantInstances(t *testing.T)
 	}
 }
 
+func TestPlatformDeleteVirtualEmployeeHonorsBodyTenantID(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	for _, item := range []struct{ hubTenantID, platformTenantID, name string }{{"hub-tenant-a", "tenant-a", "Shared A"}, {"hub-tenant-b", "tenant-b", "Shared B"}} {
+		body, _ := json.Marshal(map[string]any{"employee_id": "emp-shared", "tenant_id": item.hubTenantID, "platform_tenant_id": item.platformTenantID, "name": item.name, "virtual_email": item.platformTenantID + "@example.test", "hub_llm_endpoint": "https://hub.example.test/llm", "hub_llm_api_key": "test-hub-key", "llm_service_group_id": "group-legal"})
+		req := httptest.NewRequest(http.MethodPost, "/api/platform/virtual-employees", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("provision %s status=%d body=%s", item.hubTenantID, w.Code, w.Body.String())
+		}
+	}
+	tenantAID := platformRuntimeTenantIDForTest(t, svc, "hub-tenant-a")
+	tenantBID := platformRuntimeTenantIDForTest(t, svc, "hub-tenant-b")
+	body, _ := json.Marshal(map[string]any{"employee_id": "emp-shared", "tenant_id": "hub-tenant-b", "platform_tenant_id": "tenant-b", "virtual_email": "tenant-b@example.test"})
+	req := httptest.NewRequest(http.MethodDelete, "/api/platform/virtual-employees/emp-shared", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete tenant b status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		TenantID    string `json:"tenant_id"`
+		UserDeleted bool   `json:"user_deleted"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if out.TenantID != tenantBID || !out.UserDeleted {
+		t.Fatalf("delete should target tenant b, want=%s got=%#v", tenantBID, out)
+	}
+	usersA, err := svc.ListUsers(t.Context(), tenantAID, agentservice.ListUsersAdminInput{})
+	if err != nil {
+		t.Fatalf("ListUsers tenant A: %v", err)
+	}
+	usersB, err := svc.ListUsers(t.Context(), tenantBID, agentservice.ListUsersAdminInput{})
+	if err != nil {
+		t.Fatalf("ListUsers tenant B: %v", err)
+	}
+	if len(usersA) != 1 || len(usersB) != 0 {
+		t.Fatalf("delete should keep tenant A and remove tenant B, usersA=%#v usersB=%#v", usersA, usersB)
+	}
+}
+
 func TestPlatformDeleteVirtualEmployeeDeletesManagedUserWhenInstanceAlreadyMissing(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -397,6 +882,51 @@ func TestPlatformDeleteVirtualEmployeeDeletesManagedUserWhenInstanceAlreadyMissi
 	}
 	if _, err := svc.GetUser(t.Context(), tenant.ID, user.ID); err == nil {
 		t.Fatal("managed user should be deleted")
+	}
+}
+
+func TestPlatformDeleteVirtualEmployeeDeletesLegacyUnprotectedRuntimeUser(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(t.Context(), agentservice.CreateTenantInput{Name: "VE Platform Legacy"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(t.Context(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "Legacy VE User", Email: "legacy-ve@example.test"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(t.Context(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	if _, err := svc.CreateInstance(t.Context(), principal, agentservice.CreateInstanceInput{Name: "Legacy VE Instance", Metadata: map[string]string{"ve_employee_id": "emp-legacy", "ve_platform_tenant_id": "tenant-legacy"}}); err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/platform/virtual-employees/emp-legacy", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		DeletedInstances   int  `json:"deleted_instances"`
+		RemainingInstances int  `json:"remaining_instances"`
+		UserDeleted        bool `json:"user_deleted"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if out.DeletedInstances != 1 || out.RemainingInstances != 0 || !out.UserDeleted {
+		t.Fatalf("legacy unprotected platform-only user should be deleted, got %#v", out)
+	}
+	if _, err := svc.GetUser(t.Context(), tenant.ID, user.ID); err == nil {
+		t.Fatal("legacy unprotected platform-only user should be deleted")
 	}
 }
 func TestPlatformRuntimeReportAcceptsBearerAdminSecret(t *testing.T) {
@@ -634,9 +1164,12 @@ func TestPlatformSourceUserDefaultConfigPreservesExistingNonLLMConfig(t *testing
 	if err := json.Unmarshal(body, &in); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	binding, err := server.platformSourceUserBindingFromRequest(httptest.NewRequest(http.MethodPost, "/api/platform/source-users/src-001/assistant-instances", bytes.NewReader(body)), in)
+	binding, found, err := server.platformSourceUserBindingFromRequest(httptest.NewRequest(http.MethodPost, "/api/platform/source-users/src-001/assistant-instances", bytes.NewReader(body)), in, true)
 	if err != nil {
 		t.Fatalf("source binding: %v", err)
+	}
+	if !found {
+		t.Fatal("source binding was not created")
 	}
 	principal := agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}
 	preserved := corelib.AppConfig{
@@ -661,6 +1194,113 @@ func TestPlatformSourceUserDefaultConfigPreservesExistingNonLLMConfig(t *testing
 		t.Fatalf("expected source user default LLM placeholders, got %#v", cfg.AppConfig)
 	}
 }
+
+func TestPlatformSourceUserProvisioningPersistsSSHHosts(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	sourceUser := map[string]any{"id": "src-ssh", "external_id": "real-ssh", "email": "ssh@example.test", "display_name": "SSH User"}
+	payload := map[string]any{
+		"tenant_id":            "ve-tenant-a",
+		"source_user":          sourceUser,
+		"name":                 "SSH assistant",
+		"hub_llm_endpoint":     "https://hub.example.test/api/llm/v1",
+		"hub_llm_viewer_token": "viewer-token",
+		"llm_service_group_id": "default-group",
+		"ssh_hosts": []map[string]any{
+			{"label": "prod-web", "host": "10.0.0.10", "port": 22, "user": "deploy", "auth_method": "agent"},
+			{"label": "prod-web", "host": "ignored.example.test", "user": "root"},
+			{"label": "broken", "host": "", "user": "deploy"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/src-ssh/assistant-instances", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create source-user instance status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		TenantID string `json:"tenant_id"`
+		UserID   string `json:"user_id"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	cfg, err := svc.GetUserConfig(t.Context(), agentservice.Principal{TenantID: out.TenantID, UserID: out.UserID})
+	if err != nil {
+		t.Fatalf("GetUserConfig: %v", err)
+	}
+	if len(cfg.AppConfig.SSHHosts) != 1 || cfg.AppConfig.SSHHosts[0].Label != "prod-web" || cfg.AppConfig.SSHHosts[0].Host != "10.0.0.10" || cfg.AppConfig.SSHHosts[0].User != "deploy" {
+		t.Fatalf("expected normalized ssh host config, got %#v", cfg.AppConfig.SSHHosts)
+	}
+}
+
+func TestPlatformSourceUserProvisioningTrimsSourceUserID(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	sourceUser := map[string]any{"id": " src-trim ", "external_id": "real-trim", "email": "trim@example.test", "display_name": "Trim User"}
+	body, _ := json.Marshal(map[string]any{"tenant_id": "ve-tenant-a", "source_user": sourceUser, "name": "Trim assistant", "hub_llm_endpoint": "https://hub.example.test/api/llm/v1", "hub_llm_viewer_token": "viewer-token", "llm_service_group_id": "default-group"})
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/src-trim/assistant-instances", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create source-user instance status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Instance struct {
+			Metadata map[string]string `json:"metadata"`
+		} `json:"instance"`
+		SourceUserID string `json:"source_user_id"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if out.SourceUserID != "src-trim" || out.Instance.Metadata["ve_source_user_id"] != "src-trim" {
+		t.Fatalf("source user id should be trimmed before provisioning, got %#v", out)
+	}
+}
+
+func TestPlatformUserSSHHostsCanBeClearedExplicitly(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	tenant, err := svc.CreateTenant(t.Context(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(t.Context(), agentservice.CreateUserInput{TenantID: tenant.ID, Email: "clear@example.test", Name: "Clear"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(t.Context(), principal, corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "prod", Host: "10.0.0.10", User: "deploy"}}}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	if err := server.updatePlatformUserSSHHosts(req, principal, []corelib.SSHHostEntry{}); err != nil {
+		t.Fatalf("updatePlatformUserSSHHosts: %v", err)
+	}
+	cfg, err := svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
+		t.Fatalf("GetUserConfig: %v", err)
+	}
+	if len(cfg.AppConfig.SSHHosts) != 0 {
+		t.Fatalf("expected ssh hosts cleared, got %#v", cfg.AppConfig.SSHHosts)
+	}
+}
+
 func TestPlatformSourceUserAssistantLinkRejectsUnknownInstance(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -717,6 +1357,164 @@ func TestPlatformSourceUserRuntimeStatusSummarizesInstancesAndConfig(t *testing.
 	}
 	if out.SourceUserID != "src-001" || out.InstanceCount != 2 || !out.ConfigStatus.Valid {
 		t.Fatalf("unexpected runtime status: %#v", out)
+	}
+}
+
+func TestPlatformSourceUserRuntimeStatusDoesNotProvisionRuntimeUser(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/platform/source-users/src-ghost/runtime-status?tenant_id=ve-tenant-a", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Status       string `json:"status"`
+		SourceUserID string `json:"source_user_id"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode runtime status: %v", err)
+	}
+	if out.Status != "not_provisioned" || out.SourceUserID != "src-ghost" {
+		t.Fatalf("unexpected runtime status: %#v", out)
+	}
+	tenants, err := svc.ListTenants(t.Context(), agentservice.ListTenantsInput{})
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	if len(tenants) != 0 {
+		t.Fatalf("runtime status should not create tenants/users, got tenants=%#v", tenants)
+	}
+}
+
+func TestPlatformSourceUserRuntimeStatusDoesNotCreateUserInExistingTenant(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	tenant, err := svc.CreateTenant(t.Context(), agentservice.CreateTenantInput{Name: platformTenantDisplayName("ve-tenant-a", platformVirtualEmployeeRequest{TenantID: "ve-tenant-a", PlatformTenantID: "ve-tenant-a", TenantName: "ve-tenant-a"})})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/platform/source-users/src-ghost/runtime-status?tenant_id=ve-tenant-a", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime status=%d body=%s", w.Code, w.Body.String())
+	}
+	users, err := svc.ListUsers(t.Context(), tenant.ID, agentservice.ListUsersAdminInput{})
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("runtime status should not create users in existing tenant, got users=%#v", users)
+	}
+}
+
+func TestPlatformSourceUserAssistantInstancesDoesNotProvisionRuntimeUser(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/platform/source-users/src-ghost/assistant-instances?tenant_id=ve-tenant-a", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("assistant instances=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Status       string                  `json:"status"`
+		SourceUserID string                  `json:"source_user_id"`
+		Items        []agentservice.Instance `json:"items"`
+		ConfigStatus struct {
+			Valid  bool   `json:"valid"`
+			Reason string `json:"reason"`
+		} `json:"config_status"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode assistant instances: %v", err)
+	}
+	if out.Status != "not_provisioned" || out.SourceUserID != "src-ghost" || len(out.Items) != 0 || out.ConfigStatus.Valid || out.ConfigStatus.Reason != "not_provisioned" {
+		t.Fatalf("unexpected assistant instances response: %#v", out)
+	}
+	tenants, err := svc.ListTenants(t.Context(), agentservice.ListTenantsInput{})
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	if len(tenants) != 0 {
+		t.Fatalf("assistant instances should not create tenants/users, got tenants=%#v", tenants)
+	}
+}
+
+func TestPlatformSourceUserExplicitAssistantLinkStillProvisionsAfterReadOnlyStatus(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/platform/source-users/src-001/runtime-status?tenant_id=ve-tenant-a", nil)
+	statusReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	statusRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK || !strings.Contains(statusRec.Body.String(), `"status":"not_provisioned"`) {
+		t.Fatalf("read-only runtime status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+
+	sourceUser := map[string]any{"id": "src-001", "external_id": "real-a", "email": "real-a@example.test", "display_name": "Real A"}
+	postPlatformJSONForTest(t, server, "/api/platform/source-users/src-001/assistant-link", map[string]any{"tenant_id": "ve-tenant-a", "source_user": sourceUser}, http.StatusOK)
+	tenant, user := platformSourceRuntimeUserForTest(t, svc, "src-001")
+	instances, err := svc.ListInstances(t.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+	if err != nil {
+		t.Fatalf("ListInstances: %v", err)
+	}
+	if len(instances) != 1 || instances[0].Metadata["ve_source_user_id"] != "src-001" {
+		t.Fatalf("explicit assistant link should provision source runtime, got instances=%#v", instances)
+	}
+}
+
+func TestPlatformSourceUserRuntimeStatusIgnoresOrphanRuntimeUserWithoutBinding(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	sourceUser := platformSourceUser{ID: "src-orphan", ExternalID: "real-orphan", Email: "orphan@example.test", DisplayName: "Orphan User"}
+	seedReq := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/src-orphan/assistant-instances", nil)
+	if _, found, err := server.platformSourceUserBindingFromRequest(seedReq, platformSourceUserRequest{TenantID: "ve-tenant-a", SourceUser: sourceUser}, true); err != nil {
+		t.Fatalf("seed orphan runtime user: %v", err)
+	} else if !found {
+		t.Fatal("seed orphan runtime user was not created")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/platform/source-users/src-orphan/runtime-status?tenant_id=ve-tenant-a", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Status       string `json:"status"`
+		SourceUserID string `json:"source_user_id"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode runtime status: %v", err)
+	}
+	if out.Status != "not_provisioned" || out.SourceUserID != "src-orphan" {
+		t.Fatalf("orphan runtime user should not count as provisioned source binding: %#v", out)
 	}
 }
 
@@ -804,6 +1602,77 @@ func TestPlatformSourceUsersRuntimeStatusBatch(t *testing.T) {
 	second, _ := items[1].(map[string]any)
 	if first["source_user_id"] != "src-001" || second["source_user_id"] != "src-002" || first["instance_count"].(float64) != 1 || second["instance_count"].(float64) != 1 {
 		t.Fatalf("unexpected batch items: %#v", items)
+	}
+}
+
+func TestPlatformSourceUsersRuntimeStatusBatchDoesNotProvisionRuntimeUsers(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	sources := []map[string]any{{"id": "src-001", "external_id": "real-a", "email": "real-a@example.test", "display_name": "Real A"}}
+	body, _ := json.Marshal(map[string]any{"tenant_id": "ve-tenant-a", "source_users": sources})
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/runtime-status", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch runtime status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"status":"not_provisioned"`) {
+		t.Fatalf("expected not_provisioned response, body=%s", w.Body.String())
+	}
+	tenants, err := svc.ListTenants(t.Context(), agentservice.ListTenantsInput{})
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	if len(tenants) != 0 {
+		t.Fatalf("batch runtime status should not create tenants/users, got tenants=%#v", tenants)
+	}
+}
+
+func TestPlatformSourceUsersRuntimeStatusBatchDoesNotProvisionMixedUnboundUsers(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	sources := []map[string]any{
+		{"id": "src-001", "external_id": "real-a", "email": "real-a@example.test", "display_name": "Real A"},
+		{"id": "src-ghost", "external_id": "real-ghost", "email": "ghost@example.test", "display_name": "Ghost"},
+	}
+	postPlatformJSONForTest(t, server, "/api/platform/source-users/src-001/assistant-instances", map[string]any{"tenant_id": "ve-tenant-a", "source_user": sources[0], "name": "One"}, http.StatusCreated)
+	tenant, _ := platformSourceRuntimeUserForTest(t, svc, "src-001")
+
+	body, _ := json.Marshal(map[string]any{"tenant_id": "ve-tenant-a", "source_users": sources})
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/source-users/runtime-status", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch runtime status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Items []struct {
+			Status       string `json:"status"`
+			SourceUserID string `json:"source_user_id"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode batch response: %v", err)
+	}
+	if len(out.Items) != 2 || out.Items[0].SourceUserID != "src-001" || out.Items[1].SourceUserID != "src-ghost" || out.Items[1].Status != "not_provisioned" {
+		t.Fatalf("unexpected mixed batch response: %#v", out.Items)
+	}
+	users, err := svc.ListUsers(t.Context(), tenant.ID, agentservice.ListUsersAdminInput{})
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("batch runtime status should not create user for unbound source user, got users=%#v", users)
 	}
 }
 
@@ -1209,7 +2078,7 @@ func TestPlatformVirtualEmployeeProvisionDoesNotReuseUnmanagedTenantByName(t *te
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	manual, err := svc.CreateTenant(t.Context(), agentservice.CreateTenantInput{Name: "VE Platform 缂傚倸鍊搁崐鎼佸磹妞嬪孩濯奸柡灞诲劚绾惧鏌熼幑鎰靛殭缂佺嫏鍥ㄧ厽闁归偊鍘界紞鎴炪亜閵夈儺鍎忛棁澶愭煕韫囨洖甯跺┑顔碱槺缁辨帗娼忛妸銉х懖閻庡灚婢樼€氼喗绂掗敃鍌涘殟闁靛／鈧崑鎾淬偅閸愨斁鎷?(sample-hub)"})
+	manual, err := svc.CreateTenant(t.Context(), agentservice.CreateTenantInput{Name: "VE Platform Tenant Display (sample-hub)"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -1261,7 +2130,7 @@ func TestPlatformVirtualEmployeeProvisionAcceptsStringSkillTags(t *testing.T) {
 		"name":                 "String Tags Employee",
 		"handle":               "string_tags_employee",
 		"virtual_email":        "string_tags_employee@example.test",
-		"skill_tags":           "contract, review闂傚倸鍊搁崐鐑芥倿閿旈敮鍋撶粭娑樻噽閻瑩鏌熼悜姗嗘畷闁稿孩顨婇弻锝嗘償閳惰姤妾痳act",
+		"skill_tags":           "contract, review; redact",
 		"hub_llm_endpoint":     "https://hub.example.test/llm",
 		"hub_llm_api_key":      "test-hub-key",
 		"llm_service_group_id": "group-tags",
@@ -1448,9 +2317,12 @@ func seedPlatformSourceUserConfigForTest(t *testing.T, server *HTTPServer, path 
 		return
 	}
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
-	binding, err := server.platformSourceUserBindingFromRequest(req, in)
+	binding, found, err := server.platformSourceUserBindingFromRequest(req, in, true)
 	if err != nil {
 		t.Fatalf("seed source-user binding: %v", err)
+	}
+	if !found {
+		t.Fatal("seed source-user binding was not created")
 	}
 	if _, err := server.svc.UpdateUserConfig(t.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, testLLMConfig()); err != nil {
 		t.Fatalf("seed source-user config: %v", err)

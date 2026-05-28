@@ -93,6 +93,7 @@ type AdminClusterView struct {
 type AdminSyncView struct {
 	Enabled                         bool                    `json:"enabled"`
 	MaxOpSeq                        int64                   `json:"max_op_seq"`
+	PushDebounceSeconds             int64                   `json:"push_debounce_seconds"`
 	HeartbeatSyncMinIntervalSeconds int64                   `json:"heartbeat_sync_min_interval_seconds"`
 	LastSuccessAt                   *time.Time              `json:"last_success_at,omitempty"`
 	Details                         []AdminSyncCategoryView `json:"details,omitempty"`

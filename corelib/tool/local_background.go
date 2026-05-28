@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/backgroundrole"
 )
 
 // LocalBackgroundTask represents a process running in the background.
@@ -31,6 +33,7 @@ type LocalBackgroundTask struct {
 	mu        sync.Mutex
 	TaskID    string                    `json:"task_id"`
 	Command   string                    `json:"command"`
+	TaskRole  string                    `json:"task_role,omitempty"`
 	WorkDir   string                    `json:"work_dir,omitempty"`
 	LogFile   string                    `json:"log_file"`
 	PID       int                       `json:"pid"`
@@ -75,9 +78,18 @@ func NewLocalBackgroundTaskManager(logDir string) *LocalBackgroundTaskManager {
 // The command's stdout/stderr are redirected to a log file.
 // Returns the task with PID and log file path.
 func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBackgroundTask, error) {
+	return m.SubmitWithRole(command, workDir, "")
+}
+
+func (m *LocalBackgroundTaskManager) SubmitWithRole(command, workDir, role string) (*LocalBackgroundTask, error) {
 	if command == "" {
 		return nil, fmt.Errorf("command is empty")
 	}
+
+	if rejection, rejected := RejectRawSSHCommand(command); rejected {
+		return nil, fmt.Errorf("%s", rejection)
+	}
+	role = NormalizeBackgroundTaskRole(role, command)
 
 	seq := m.counter.Add(1)
 	taskID := fmt.Sprintf("local_%d_%d", time.Now().Unix(), seq)
@@ -120,6 +132,7 @@ func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBack
 	task := &LocalBackgroundTask{
 		TaskID:    taskID,
 		Command:   command,
+		TaskRole:  role,
 		WorkDir:   workDir,
 		LogFile:   logFile,
 		PID:       cmd.Process.Pid,
@@ -166,6 +179,7 @@ func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBack
 type LocalTaskStatus struct {
 	TaskID   string                    `json:"task_id"`
 	Command  string                    `json:"command"`
+	TaskRole string                    `json:"task_role,omitempty"`
 	Status   LocalBackgroundTaskStatus `json:"status"`
 	PID      int                       `json:"pid"`
 	ExitCode int                       `json:"exit_code"`
@@ -193,6 +207,7 @@ func (m *LocalBackgroundTaskManager) Check(taskID string, tailLines int) (*Local
 	startedAt := task.StartedAt
 	pid := task.PID
 	command := task.Command
+	taskRole := task.TaskRole
 	task.mu.Unlock()
 
 	elapsed := time.Since(startedAt).Round(time.Second).String()
@@ -202,6 +217,7 @@ func (m *LocalBackgroundTaskManager) Check(taskID string, tailLines int) (*Local
 	return &LocalTaskStatus{
 		TaskID:   taskID,
 		Command:  command,
+		TaskRole: taskRole,
 		Status:   status,
 		PID:      pid,
 		ExitCode: exitCode,
@@ -275,9 +291,27 @@ func (m *LocalBackgroundTaskManager) List() []*LocalBackgroundTask {
 	defer m.mu.RUnlock()
 	result := make([]*LocalBackgroundTask, 0, len(m.tasks))
 	for _, t := range m.tasks {
-		result = append(result, t)
+		t.mu.Lock()
+		snapshot := &LocalBackgroundTask{
+			TaskID:    t.TaskID,
+			Command:   t.Command,
+			TaskRole:  t.TaskRole,
+			WorkDir:   t.WorkDir,
+			LogFile:   t.LogFile,
+			PID:       t.PID,
+			Status:    t.Status,
+			ExitCode:  t.ExitCode,
+			StartedAt: t.StartedAt,
+			EndedAt:   t.EndedAt,
+		}
+		t.mu.Unlock()
+		result = append(result, snapshot)
 	}
 	return result
+}
+
+func NormalizeBackgroundTaskRole(role, command string) string {
+	return backgroundrole.Normalize(role, command)
 }
 
 // Cleanup removes completed/failed tasks older than maxAge.

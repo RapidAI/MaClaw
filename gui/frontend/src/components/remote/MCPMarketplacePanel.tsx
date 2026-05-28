@@ -250,14 +250,14 @@ function CapabilityRow({ title, meta, installed, busy, translate, onInstall }: {
 }) {
     return (
         <div style={recommendationStyle}>
-            <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: "2px" }}>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: colors.text }}>{title}</span>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta}</span>
+            <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: "2px", textAlign: "left", flex: "1 1 auto" }}>
+                <span style={capabilityTitleTextStyle}>{title}</span>
+                <span style={capabilityMetaTextStyle}>{meta}</span>
             </div>
             {installed ? (
                 <span style={installedBadgeStyle}>{translate("mcpMarketplaceInstalledState")}</span>
             ) : (
-                <button className="btn-primary" style={smallBtnStyle} onClick={onInstall} disabled={busy}>
+                <button className="btn-primary" style={{ ...smallBtnStyle, flexShrink: 0 }} onClick={onInstall} disabled={busy}>
                     {translate("mcpInstallRecommended")}
                 </button>
             )}
@@ -357,11 +357,12 @@ const panelStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
     gap: "6px",
+    textAlign: "left",
 };
 
 const policyRowStyle: CSSProperties = {
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-start",
     flexWrap: "wrap",
     gap: "6px",
 };
@@ -383,10 +384,32 @@ const searchRowStyle: CSSProperties = {
 const recommendationStyle: CSSProperties = {
     display: "flex",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: "8px",
     fontSize: "0.72rem",
     color: colors.textSecondary,
+    textAlign: "left",
+};
+
+const capabilityMetaTextStyle: CSSProperties = {
+    textAlign: "left",
+    lineHeight: 1.45,
+    display: "-webkit-box",
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: "vertical",
+    overflow: "hidden",
+    overflowWrap: "anywhere",
+};
+
+const capabilityTitleTextStyle: CSSProperties = {
+    color: colors.text,
+    textAlign: "left",
+    lineHeight: 1.35,
+    display: "-webkit-box",
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: "vertical",
+    overflow: "hidden",
+    overflowWrap: "anywhere",
 };
 
 const installedBadgeStyle: CSSProperties = {
@@ -395,6 +418,7 @@ const installedBadgeStyle: CSSProperties = {
     borderRadius: "999px",
     padding: "2px 8px",
     fontSize: "0.68rem",
+    flexShrink: 0,
     whiteSpace: "nowrap",
 };
 
@@ -402,5 +426,3 @@ const smallBtnStyle: CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 8px",
 };
-
-

@@ -4,7 +4,7 @@ import { GetHubSecurityPolicy, IsHubSecurityReadOnly } from "../../../wailsjs/go
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { colors } from "./styles";
 
-type SecurityPolicyMode = "relaxed" | "standard" | "strict" | "developer";
+type SecurityPolicyMode = "none" | "relaxed" | "standard" | "strict" | "developer";
 
 type Props = {
     config: main.AppConfig | null;
@@ -13,6 +13,15 @@ type Props = {
 };
 
 const SECURITY_MODES: { value: SecurityPolicyMode; labelZh: string; labelZhHant: string; labelEn: string; descZh: string; descZhHant: string; descEn: string }[] = [
+    {
+        value: "none",
+        labelZh: "无",
+        labelZhHant: "無",
+        labelEn: "None",
+        descZh: "不启用护栏规则；仅保留其他安全开关与网络/沙箱策略",
+        descZhHant: "不啟用護欄規則；僅保留其他安全開關與網路/沙箱策略",
+        descEn: "guardrail rules disabled; other security toggles plus network/sandbox policy still apply",
+    },
     {
         value: "relaxed",
         labelZh: "宽松",
@@ -52,7 +61,7 @@ const SECURITY_MODES: { value: SecurityPolicyMode; labelZh: string; labelZhHant:
 ];
 
 const SANDBOX_OPTIONS = ["none", "os", "docker"] as const;
-const NETWORK_OPTIONS = ["none", "intranet", "full"] as const;
+const NETWORK_OPTIONS = ["none", "intranet", "allowlist", "full"] as const;
 
 export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Props) {
     const [readOnly, setReadOnly] = useState(false);
@@ -97,13 +106,21 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
         return value === undefined ? fallback : !!value;
     };
 
+    const getArray = (key: string): string[] => {
+        const value = readOnly && hubPolicy && hubPolicy[key] !== undefined ? hubPolicy[key] : (config as any)?.[key];
+        return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+    };
+
     const securityMode = getStr("security_policy_mode", "guardrail_mode", "standard") as SecurityPolicyMode;
     const sandboxMode = getStr("sandbox_mode", "sandbox_mode", "none");
     const networkLevel = getStr("network_level", "network_level", "full");
+    const networkAllowlist = getArray("network_allowlist");
     const yoloAllowed = getBool("yolo_mode_allowed", true);
+    const smartRouteEnabled = getBool("smart_route_enabled", true);
     const gossipEnabled = getBool("gossip_enabled", true);
     const fileOutboundEnabled = getBool("file_outbound_enabled", true);
     const imageOutboundEnabled = getBool("image_outbound_enabled", true);
+    const skillSourcesAllowed = getArray("skill_sources_allowed");
 
     const currentMode = SECURITY_MODES.find((item) => item.value === securityMode) || SECURITY_MODES[1];
     const disabledStyle: React.CSSProperties = readOnly ? { opacity: 0.65, pointerEvents: "none" } : {};
@@ -211,11 +228,22 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                 labels={[
                     t("None", "禁止", "禁止"),
                     t("Intranet", "内网", "內網"),
+                    t("Allowlist", "允许列表", "允許列表"),
                     t("Full", "全部", "全部"),
                 ]}
                 disabled={readOnly}
                 onChange={(value) => saveRemoteConfigField({ network_level: value } as any)}
             />
+
+            {networkLevel === "allowlist" && (
+                <PolicyTextList
+                    label={t("Network Allowlist", "网络允许列表", "網路允許列表")}
+                    desc={t("Allowed hosts for web tools", "Web 工具允许访问的主机", "Web 工具允許訪問的主機")}
+                    value={networkAllowlist}
+                    disabled={readOnly}
+                    onChange={(value) => saveRemoteConfigField({ network_allowlist: value } as any)}
+                />
+            )}
 
             <PolicyToggle
                 label={t("YOLO Mode", "YOLO 模式", "YOLO 模式")}
@@ -223,6 +251,13 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                 value={yoloAllowed}
                 disabled={readOnly}
                 onChange={(value) => saveRemoteConfigField({ yolo_mode_allowed: value } as any)}
+            />
+            <PolicyToggle
+                label={t("Smart Route", "智能路由", "智能路由")}
+                desc={t("Allow Hub LLM smart routing for IM messages", "允许 Hub LLM 对 IM 消息做智能路由", "允許 Hub LLM 對 IM 訊息做智能路由")}
+                value={smartRouteEnabled}
+                disabled={readOnly}
+                onChange={(value) => saveRemoteConfigField({ smart_route_enabled: value } as any)}
             />
             <PolicyToggle
                 label={t("Gossip", "Gossip 模块", "Gossip 模組")}
@@ -244,6 +279,15 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                 value={imageOutboundEnabled}
                 disabled={readOnly}
                 onChange={(value) => saveRemoteConfigField({ image_outbound_enabled: value } as any)}
+            />
+
+            <PolicyTextList
+                label={t("Allowed Skill Sources", "Skill 来源允许列表", "Skill 來源允許列表")}
+                desc={t("Leave empty to allow all sources", "留空表示允许所有来源", "留空表示允許所有來源")}
+                value={skillSourcesAllowed}
+                disabled={readOnly}
+                placeholder="skillhub, clawhub, github, enterprise_hub"
+                onChange={(value) => saveRemoteConfigField({ skill_sources_allowed: value } as any)}
             />
 
             <div style={{ marginTop: "14px", fontSize: "0.78rem", color: colors.textSecondary, lineHeight: 1.7 }}>
@@ -311,6 +355,38 @@ function PolicyToggle({ label, desc, value, disabled, onChange }: {
                 >
                     {value ? "ON" : "OFF"}
                 </button>
+            </div>
+        </div>
+    );
+}
+
+function PolicyTextList({ label, desc, value, disabled, placeholder, onChange }: {
+    label: string;
+    desc: string;
+    value: string[];
+    disabled: boolean;
+    placeholder?: string;
+    onChange: (value: string[]) => void;
+}) {
+    const text = value.join(", ");
+    const [draft, setDraft] = useState(text);
+    useEffect(() => setDraft(text), [text]);
+    const parse = (raw: string) => raw.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean);
+    return (
+        <div className="form-group" style={{ marginBottom: "12px", ...(disabled ? { opacity: 0.6, pointerEvents: "none" as const } : {}) }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+                <div>
+                    <label className="form-label" style={{ fontSize: "0.82rem", marginBottom: 0 }}>{label}</label>
+                    <div style={{ fontSize: "0.72rem", color: colors.textMuted }}>{desc}</div>
+                </div>
+                <input
+                    value={draft}
+                    disabled={disabled}
+                    placeholder={placeholder || "api.example.com, *.corp.local"}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onBlur={(event) => onChange(parse(event.target.value))}
+                    style={{ width: "220px", height: "32px", fontSize: "0.8rem", borderRadius: "6px", border: `1px solid ${colors.border}`, padding: "0 8px", background: colors.surface, color: colors.text }}
+                />
             </div>
         </div>
     );

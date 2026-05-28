@@ -456,7 +456,7 @@ landlock wrapper -> bwrap -> nsjail -> none
     "extra_read_paths": [],
     "extra_write_paths": [],
     "resource_limits": {
-      "timeout_seconds": 120,
+      "timeout_seconds": 240,
       "max_processes": 128,
       "memory_mb": 0,
       "cpu_seconds": 0,

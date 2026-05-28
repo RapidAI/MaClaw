@@ -20,6 +20,10 @@ type CoreToolDeps struct {
 	MemoryStore *memory.Store
 	TaskStore   *task.Store
 
+	// SecurityGuard can reject a tool call before the handler runs.
+	// Hosts use this to apply centrally managed security policy.
+	SecurityGuard func(name string, args map[string]interface{}) (bool, string)
+
 	// SSHHandler is injected by the host to avoid import cycles.
 	// The host can wrap its own SSH implementation and expose it here.
 	SSHHandler ToolHandler
@@ -55,10 +59,10 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Properties: map[string]interface{}{
 			"command":     map[string]string{"type": "string", "description": "Shell command to execute"},
 			"working_dir": map[string]string{"type": "string", "description": "Working directory (optional)"},
-			"timeout":     map[string]string{"type": "integer", "description": "Timeout seconds, default 30, max 120"},
+			"timeout":     map[string]string{"type": "integer", "description": "Timeout seconds, default 240, range 240-600"},
 		},
 		Required: []string{"command"},
-		Handler:  func(args map[string]interface{}) string { return ToolBash(args, deps.OnBashProgress) },
+		Handler:  guardedHandler(deps, "bash", func(args map[string]interface{}) string { return ToolBash(args, deps.OnBashProgress) }),
 	})
 
 	r.Register(ToolEntry{
@@ -181,7 +185,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"doc_type":      map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
 		},
 		Required: []string{"path"},
-		Handler:  func(args map[string]interface{}) string { return ToolSendFile(args) },
+		Handler:  guardedHandler(deps, "send_file", func(args map[string]interface{}) string { return ToolSendFile(args) }),
 	})
 
 	r.Register(ToolEntry{
@@ -191,7 +195,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"target": map[string]string{"type": "string", "description": "File path or URL"},
 		},
 		Required: []string{"target"},
-		Handler:  func(args map[string]interface{}) string { return ToolOpen(args) },
+		Handler:  guardedHandler(deps, "open", func(args map[string]interface{}) string { return ToolOpen(args) }),
 	})
 
 	memoryTool := memory.ToolDefinitionSchema()
@@ -225,14 +229,14 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"remote_path":     map[string]string{"type": "string", "description": "Remote file path"},
 		},
 		Required: []string{"action"},
-		Handler: func() ToolHandler {
+		Handler: guardedHandler(deps, "ssh", func() ToolHandler {
 			if deps.SSHHandler != nil {
 				return deps.SSHHandler
 			}
 			return func(args map[string]interface{}) string {
 				return "SSH handler is not initialized. Please configure SSH support first."
 			}
-		}(),
+		}()),
 	})
 
 	r.Register(ToolEntry{
@@ -306,14 +310,14 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"max_results": map[string]string{"type": "integer", "description": "Max results, default 8, max 20"},
 		},
 		Required: []string{"query"},
-		Handler: func() ToolHandler {
+		Handler: guardedHandler(deps, "web_search", func() ToolHandler {
 			if deps.WebSearchHandler != nil {
 				return deps.WebSearchHandler
 			}
 			return func(args map[string]interface{}) string {
 				return "Web search is not configured. Please set up a web search provider."
 			}
-		}(),
+		}()),
 	})
 
 	r.Register(ToolEntry{
@@ -323,19 +327,19 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"url":       map[string]string{"type": "string", "description": "URL to fetch"},
 			"render_js": map[string]string{"type": "boolean", "description": "Use Chrome to render JS (optional, default false)"},
 			"save_path": map[string]string{"type": "string", "description": "Save file path (optional, downloads file instead of returning text)"},
-			"timeout":   map[string]string{"type": "integer", "description": "Timeout seconds, default 30, max 120"},
+			"timeout":   map[string]string{"type": "integer", "description": "Timeout seconds, default 240, range 240-600"},
 			"offset":    map[string]string{"type": "integer", "description": "Character offset for pagination (default 0)"},
 			"max_chars": map[string]string{"type": "integer", "description": "Max characters to return (optional)"},
 		},
 		Required: []string{"url"},
-		Handler: func() ToolHandler {
+		Handler: guardedHandler(deps, "web_fetch", func() ToolHandler {
 			if deps.WebFetchHandler != nil {
 				return deps.WebFetchHandler
 			}
 			return func(args map[string]interface{}) string {
 				return "Web fetch is not configured."
 			}
-		}(),
+		}()),
 	})
 
 	// --- Tools requiring host-injected handlers via ExtraHandlers ---
@@ -506,13 +510,31 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 }
 
+func guardedHandler(deps CoreToolDeps, name string, next ToolHandler) ToolHandler {
+	return func(args map[string]interface{}) string {
+		if deps.SecurityGuard != nil {
+			if ok, reason := deps.SecurityGuard(name, args); !ok {
+				if reason == "" {
+					reason = "blocked by security policy"
+				}
+				return "[system rejected] " + reason
+			}
+		}
+		return next(args)
+	}
+}
+
 // extraHandler returns the host-injected handler for the given tool name,
 // or a stub that returns the fallback message.
 func extraHandler(deps CoreToolDeps, name, fallback string) ToolHandler {
+	var handler ToolHandler
 	if deps.ExtraHandlers != nil {
 		if h, ok := deps.ExtraHandlers[name]; ok && h != nil {
-			return h
+			handler = h
 		}
 	}
-	return func(args map[string]interface{}) string { return fallback }
+	if handler == nil {
+		handler = func(args map[string]interface{}) string { return fallback }
+	}
+	return guardedHandler(deps, name, handler)
 }

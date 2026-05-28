@@ -239,6 +239,93 @@ console.log('\nTest: Config initialization');
   assert(Array.isArray(node.config.notifiers), 'initializes notifiers array');
 })();
 
+// Test 11: i18n hook localizes dynamic terminal config text
+console.log('\nTest: i18n localized terminal config');
+(function () {
+  window.ApprovalWorkflowI18n = {
+    t: function (key, vars) {
+      var zh = {
+        noExecutorWarning: '未配置结果执行人。',
+        resultExecutors: '结果执行人',
+        resultExecutorsDesc: '工作流完成后需要采取行动的人员',
+        notifiers: '通知人',
+        notifiersDesc: '需要获知工作流结果的人员',
+        searchUsers: '按姓名或 ID 搜索用户...',
+        noExecutorsAdded: '尚未添加执行人。',
+        noNotifiersAdded: '尚未添加通知人。',
+        remove: '移除',
+        timeoutShort: '超时（小时）',
+        maxReminders: '最多提醒次数',
+        noUsersFound: '未找到用户',
+        mustBeBetween: '必须介于 ' + (vars && vars.min || '{min}') + ' 和 ' + (vars && vars.max || '{max}') + ' 之间',
+      };
+      return zh[key] || key;
+    },
+  };
+  var node = {
+    id: 'node_1',
+    type: 'terminal',
+    label: 'End',
+    config: { result_executors: [], notifiers: [] },
+  };
+  var html = window.buildTerminalNodeConfigForm(node);
+  assert(html.indexOf('未配置结果执行人。') !== -1, 'localizes warning banner');
+  assert(html.indexOf('结果执行人') !== -1, 'localizes executor title');
+  assert(html.indexOf('通知人') !== -1, 'localizes notifier title');
+  assert(html.indexOf('按姓名或 ID 搜索用户...') !== -1, 'localizes search placeholder');
+  assert(html.indexOf('尚未添加执行人。') !== -1, 'localizes empty executor list');
+  assert(html.indexOf('尚未添加通知人。') !== -1, 'localizes empty notifier list');
+  delete window.ApprovalWorkflowI18n;
+})();
+
+// Test 12: malformed i18n object falls back to English safely
+console.log('\nTest: malformed i18n fallback');
+(function () {
+  window.ApprovalWorkflowI18n = {};
+  var node = {
+    id: 'node_1',
+    type: 'terminal',
+    label: 'End',
+    config: { result_executors: [], notifiers: [] },
+  };
+  var html = window.buildTerminalNodeConfigForm(node);
+  assert(html.indexOf('No Result Executor configured.') !== -1, 'falls back when i18n.t is missing');
+  assert(html.indexOf('Search users by name or ID...') !== -1, 'fallback keeps search placeholder readable');
+  delete window.ApprovalWorkflowI18n;
+})();
+
+// Test 13: attribute values escape ampersands before other entities
+console.log('\nTest: attribute escaping');
+(function () {
+  window.ApprovalWorkflowI18n = {
+    t: function (key) {
+      return key === 'remove' ? 'A&B"<>' : key;
+    },
+  };
+  var node = {
+    id: 'node_1',
+    type: 'terminal',
+    label: 'End',
+    config: {
+      result_executors: [{ user_id: 'u&"<>', user_name: 'User & "Name"', timeout_hours: 48, max_reminders: 3, reminder_interval_hours: 24 }],
+      notifiers: [],
+    },
+  };
+  var html = window.buildTerminalNodeConfigForm(node);
+  assert(html.indexOf('title="A&amp;B&quot;&lt;&gt;"') !== -1, 'escapes translated title attribute entities');
+  delete window.ApprovalWorkflowI18n;
+})();
+
+// Test 14: invalid number input is not committed to node config
+console.log('\nTest: invalid number input guard');
+(function () {
+  var source = fs.readFileSync(path.join(__dirname, 'terminal-node-config.js'), 'utf8');
+  assert(source.indexOf('if (validateField(input, field, value) && idx >= 0 && idx < items.length)') !== -1, 'validates before committing numeric fields');
+  assert(source.indexOf('return error === \'\';') !== -1, 'validateField returns validity flag');
+  assert(source.indexOf("input.setAttribute('aria-invalid', error !== '' ? 'true' : 'false')") !== -1, 'sets aria-invalid for numeric validation');
+  assert(source.indexOf("parseInt(btn.getAttribute('data-index'), 10)") !== -1, 'remove index parse uses radix');
+})();
+
 // --- Summary ---
 console.log('\n=== Results: ' + passCount + '/' + testCount + ' passed ===\n');
 if (passCount < testCount) {

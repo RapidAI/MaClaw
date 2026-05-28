@@ -47,6 +47,8 @@ func (s *CodingSessionStarter) Start(req CodingSessionStartRequest) (CodingSessi
 	if s == nil || s.app == nil {
 		return CodingSessionStartResult{}, fmt.Errorf("app not initialized")
 	}
+	return CodingSessionStartResult{}, fmt.Errorf("external coding session start is disabled; use CodingSubAgent for agent coding work")
+
 	toolName := strings.TrimSpace(req.Tool)
 	if toolName == "" {
 		return CodingSessionStartResult{}, fmt.Errorf("missing tool parameter")

@@ -38,7 +38,7 @@ interface AppSidebarShellProps {
     weixinStatus: string;
     lansengerStatus: string;
     runningTaskCount: number;
-    sshBackgroundTaskCount?: number;
+    backgroundTaskCount?: number;
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
@@ -109,7 +109,7 @@ export const AppSidebarShell = ({
     weixinStatus,
     lansengerStatus,
     runningTaskCount,
-    sshBackgroundTaskCount = 0,
+    backgroundTaskCount = 0,
     t,
     gossipAllowed,
     config,
@@ -202,7 +202,7 @@ export const AppSidebarShell = ({
                         telegramStatus={telegramStatus}
                         weixinStatus={weixinStatus}
                         lansengerStatus={lansengerStatus}
-                        sshBackgroundTaskCount={sshBackgroundTaskCount}
+                        backgroundTaskCount={backgroundTaskCount}
                         config={config}
                         activeTool={activeTool}
                         toolDropdownOpen={toolDropdownOpen}

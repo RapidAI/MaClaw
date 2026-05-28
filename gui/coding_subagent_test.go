@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
@@ -1117,8 +1118,13 @@ func TestCodingSubAgentNormalizesBashTimeout(t *testing.T) {
 	}
 
 	normalArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test ./...", "timeout": 90})
-	if got, _ := normalArgs["timeout"].(float64); got != 90 {
-		t.Fatalf("normal timeout = %v, want 90", got)
+	if got, _ := normalArgs["timeout"].(float64); got != float64(corelib.MinAgentTimeoutSec) {
+		t.Fatalf("normal timeout = %v, want %d", got, corelib.MinAgentTimeoutSec)
+	}
+
+	midArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test ./...", "timeout": 300})
+	if got, _ := midArgs["timeout"].(float64); got != 300 {
+		t.Fatalf("mid timeout = %v, want 300", got)
 	}
 }
 

@@ -87,13 +87,10 @@ func TestProperty1_BugCondition_SelfConfirmedResponsesTruncated(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			trimmed := strings.TrimSpace(stripThinkingTags(tc.input))
 
-			// Pre-condition: input is non-empty, not a stall reply, and
+			// Pre-condition: input is non-empty and
 			// is a substantive phase document.
 			if trimmed == "" {
 				t.Fatal("precondition failed: input must be non-empty")
-			}
-			if looksLikeNoToolStallReply(tc.input) {
-				t.Fatalf("precondition failed: %q should not be a stall reply", tc.input[:min(80, len(tc.input))])
 			}
 			if !isSubstantivePhaseDocument(trimmed) {
 				t.Fatalf("precondition failed: input must be a substantive phase document (len=%d runes)", utf8.RuneCountInString(trimmed))
@@ -153,7 +150,7 @@ func TestProperty1_BugCondition_PBT_SelfConfirmedAlwaysDetected(t *testing.T) {
 		trimmed := strings.TrimSpace(stripThinkingTags(input))
 
 		// Pre-conditions must hold.
-		if trimmed == "" || looksLikeNoToolStallReply(input) {
+		if trimmed == "" {
 			return true // skip degenerate inputs
 		}
 		if !isSubstantivePhaseDocument(trimmed) {
@@ -260,5 +257,3 @@ func generateSelfConfirmedDocument(seed int64) (fullText string, selfAnswer stri
 
 	return prefix + confirm + sa.text, sa.keyword
 }
-
-

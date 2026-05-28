@@ -385,6 +385,67 @@ func TestSaveConfigSanitizesSubAgentConcurrency(t *testing.T) {
 	}
 }
 
+func TestSaveConfigSanitizesAgentTimeouts(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.AgentResponseTimeoutSec = 120
+	cfg.MaclawLLMTimeoutSec = 900
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "slow", TimeoutSec: 120}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.AgentResponseTimeoutSec != corelib.MinAgentTimeoutSec {
+		t.Fatalf("AgentResponseTimeoutSec = %d, want %d", reloaded.AgentResponseTimeoutSec, corelib.MinAgentTimeoutSec)
+	}
+	if reloaded.MaclawLLMTimeoutSec != corelib.MaxAgentTimeoutSec {
+		t.Fatalf("MaclawLLMTimeoutSec = %d, want %d", reloaded.MaclawLLMTimeoutSec, corelib.MaxAgentTimeoutSec)
+	}
+	if got := reloaded.MaclawLLMProviders[0].TimeoutSec; got != corelib.MinAgentTimeoutSec {
+		t.Fatalf("provider TimeoutSec = %d, want %d", got, corelib.MinAgentTimeoutSec)
+	}
+}
+
+func TestPatchConfigSanitizesAgentTimeouts(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.AgentResponseTimeoutSec = 120
+		cfg.MaclawLLMTimeoutSec = 900
+		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "slow", TimeoutSec: 120}}
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.AgentResponseTimeoutSec != corelib.MinAgentTimeoutSec {
+		t.Fatalf("AgentResponseTimeoutSec = %d, want %d", reloaded.AgentResponseTimeoutSec, corelib.MinAgentTimeoutSec)
+	}
+	if reloaded.MaclawLLMTimeoutSec != corelib.MaxAgentTimeoutSec {
+		t.Fatalf("MaclawLLMTimeoutSec = %d, want %d", reloaded.MaclawLLMTimeoutSec, corelib.MaxAgentTimeoutSec)
+	}
+	if got := reloaded.MaclawLLMProviders[0].TimeoutSec; got != corelib.MinAgentTimeoutSec {
+		t.Fatalf("provider TimeoutSec = %d, want %d", got, corelib.MinAgentTimeoutSec)
+	}
+}
+
 func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -738,6 +799,113 @@ func TestSaveConfigPreservesDefaultLaunchModeFromStaleSnapshot(t *testing.T) {
 	}
 	if saved.DefaultLaunchMode != "local" {
 		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
+	}
+}
+
+func TestSaveConfigPreservesHubManagedSecurityFromStaleSnapshot(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	current := corelib.AppConfig{
+		Language:               "zh",
+		HubSecurityCentralized: true,
+		SecurityPolicyMode:     "strict",
+		SandboxMode:            "os",
+		NetworkLevel:           "none",
+		NetworkAllowlist:       []string{"api.example.com"},
+		YoloModeAllowed:        false,
+		SmartRouteEnabled:      false,
+		GossipEnabled:          false,
+		FileOutboundEnabled:    false,
+		ImageOutboundEnabled:   false,
+		SkillSourcesAllowed:    []string{"skillhub"},
+	}
+	if err := app.SaveConfig(current); err != nil {
+		t.Fatalf("SaveConfig(current) error = %v", err)
+	}
+
+	stale := current
+	stale.Language = "en"
+	stale.HubSecurityCentralized = false
+	stale.SecurityPolicyMode = "developer"
+	stale.SandboxMode = "none"
+	stale.NetworkLevel = "full"
+	stale.NetworkAllowlist = []string{"evil.example"}
+	stale.YoloModeAllowed = true
+	stale.SmartRouteEnabled = true
+	stale.GossipEnabled = true
+	stale.FileOutboundEnabled = true
+	stale.ImageOutboundEnabled = true
+	stale.SkillSourcesAllowed = []string{"github"}
+	if err := app.SaveConfig(stale); err != nil {
+		t.Fatalf("SaveConfig(stale) error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.Language != "en" {
+		t.Fatalf("Language = %q, want en", saved.Language)
+	}
+	if !saved.HubSecurityCentralized || saved.SecurityPolicyMode != "strict" || saved.SandboxMode != "os" || saved.NetworkLevel != "none" {
+		t.Fatalf("managed security scalar fields overwritten: %#v", saved)
+	}
+	if len(saved.NetworkAllowlist) != 1 || saved.NetworkAllowlist[0] != "api.example.com" || len(saved.SkillSourcesAllowed) != 1 || saved.SkillSourcesAllowed[0] != "skillhub" {
+		t.Fatalf("managed security slices overwritten: allow=%v sources=%v", saved.NetworkAllowlist, saved.SkillSourcesAllowed)
+	}
+	if saved.YoloModeAllowed || saved.SmartRouteEnabled || saved.GossipEnabled || saved.FileOutboundEnabled || saved.ImageOutboundEnabled {
+		t.Fatalf("managed security bool fields overwritten: %#v", saved)
+	}
+}
+
+func TestPatchConfigPreservesHubManagedSecurityUnlessExplicitBypass(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	current := corelib.AppConfig{HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: false, ImageOutboundEnabled: false}
+	if err := app.SaveConfig(current); err != nil {
+		t.Fatalf("SaveConfig(current) error = %v", err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.Language = "en"
+		cfg.HubSecurityCentralized = false
+		cfg.SecurityPolicyMode = "developer"
+		cfg.SandboxMode = "none"
+		cfg.NetworkLevel = "full"
+		cfg.FileOutboundEnabled = true
+		cfg.ImageOutboundEnabled = true
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.Language != "en" || !saved.HubSecurityCentralized || saved.SecurityPolicyMode != "strict" || saved.SandboxMode != "os" || saved.NetworkLevel != "none" || saved.FileOutboundEnabled || saved.ImageOutboundEnabled {
+		t.Fatalf("PatchConfig did not preserve managed security: %#v", saved)
+	}
+
+	if err := app.patchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HubSecurityCentralized = false
+		cfg.SecurityPolicyMode = "developer"
+		cfg.SandboxMode = "none"
+		cfg.NetworkLevel = "full"
+		cfg.FileOutboundEnabled = true
+		cfg.ImageOutboundEnabled = true
+	}, true); err != nil {
+		t.Fatalf("patchConfig bypass error = %v", err)
+	}
+	saved, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after bypass error = %v", err)
+	}
+	if saved.HubSecurityCentralized || saved.SecurityPolicyMode != "developer" || saved.SandboxMode != "none" || saved.NetworkLevel != "full" || !saved.FileOutboundEnabled || !saved.ImageOutboundEnabled {
+		t.Fatalf("patchConfig bypass did not update managed security: %#v", saved)
 	}
 }
 

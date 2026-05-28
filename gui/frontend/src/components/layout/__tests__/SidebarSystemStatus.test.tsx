@@ -96,7 +96,7 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(cacheTitles[0].getAttribute('title')).toContain('Write 30');
     });
 
-    it('shows ssh background task count immediately after IM status', () => {
+    it('shows background task count immediately after IM status', () => {
         render(
             <SidebarSystemStatus
                 lang="zh-Hans"
@@ -106,7 +106,7 @@ describe('SidebarSystemStatus Hub credits', () => {
                 telegramStatus=""
                 weixinStatus=""
                 lansengerStatus=""
-                sshBackgroundTaskCount={3}
+                backgroundTaskCount={3}
                 sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 12, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
                 sidebarHubCredits={baseCredits}
                 formatSidebarTokens={(value) => String(value)}

@@ -8,7 +8,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func TestSkillRunnerCreateSessionStoresSessionMeta(t *testing.T) {
+func TestSkillRunnerCreateSessionDisabled(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -52,38 +52,36 @@ func TestSkillRunnerCreateSessionStoresSessionMeta(t *testing.T) {
 			"resume_session_id": "resume-xyz",
 		},
 	}, "")
-	if err != nil {
-		t.Fatalf("executeStepWithContext(create_session) error = %v", err)
+	if err == nil {
+		t.Fatalf("expected create_session to be disabled, got output %q", output)
 	}
-	if output == "" {
-		t.Fatal("expected non-empty output")
+	if !strings.Contains(err.Error(), "external coding sessions") {
+		t.Fatalf("err = %v", err)
 	}
 
 	status, err := runner.GetRunStatus(runID)
 	if err != nil {
 		t.Fatalf("GetRunStatus() error = %v", err)
 	}
-	if status.Session == nil {
-		t.Fatal("expected session metadata to be set")
+	if status.Session != nil {
+		t.Fatalf("session metadata should not be set: %#v", status.Session)
 	}
-	if status.Session.SessionID == "" {
-		t.Fatal("expected session_id to be set")
+}
+
+func TestCodingSessionStarterDisabled(t *testing.T) {
+	starter := NewCodingSessionStarter(&App{})
+	_, err := starter.Start(CodingSessionStartRequest{Tool: "claude"})
+	if err == nil {
+		t.Fatal("expected external coding session start to be disabled")
 	}
-	if status.Session.Tool != "claude" {
-		t.Fatalf("Tool = %q, want %q", status.Session.Tool, "claude")
-	}
-	if status.Session.ProjectPath == "" {
-		t.Fatal("expected project path to be recorded")
-	}
-	if status.Session.ResumeSessionID != "resume-xyz" {
-		t.Fatalf("ResumeSessionID = %q, want %q", status.Session.ResumeSessionID, "resume-xyz")
-	}
-	if status.Session.RunID == "" {
-		t.Fatal("expected remote run id to be recorded")
+	if !strings.Contains(err.Error(), "disabled") || !strings.Contains(err.Error(), "CodingSubAgent") {
+		t.Fatalf("expected disabled CodingSubAgent guidance, got: %v", err)
 	}
 }
 
 func TestCodingSessionStarterLinksTraceRuns(t *testing.T) {
+	t.Skip("legacy external coding session start is disabled; covered by TestCodingSessionStarterDisabled")
+
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -148,6 +146,8 @@ func TestCodingSessionStarterLinksTraceRuns(t *testing.T) {
 }
 
 func TestCodingSessionStarterAppliesCodexResumeSessionID(t *testing.T) {
+	t.Skip("legacy external coding session start is disabled; covered by TestCodingSessionStarterDisabled")
+
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)

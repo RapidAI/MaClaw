@@ -1,18 +1,24 @@
 package httpapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
 
@@ -83,6 +89,167 @@ func decodeJSON(t *testing.T, body []byte) map[string]any {
 		t.Fatalf("decode json: %v\nbody: %s", err, string(body))
 	}
 	return m
+}
+
+type slowGossipCacheRepo struct {
+	mu           sync.Mutex
+	listCalls    int
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+}
+
+type pagedGossipCacheRepo struct {
+	slowGossipCacheRepo
+	posts  []*store.GossipPost
+	mu     sync.Mutex
+	limits []int
+}
+
+func (r *pagedGossipCacheRepo) ListPosts(_ context.Context, offset, limit int) ([]*store.GossipPost, int, error) {
+	r.mu.Lock()
+	r.limits = append(r.limits, limit)
+	r.mu.Unlock()
+	if offset >= len(r.posts) {
+		return nil, len(r.posts), nil
+	}
+	end := offset + limit
+	if end > len(r.posts) {
+		end = len(r.posts)
+	}
+	return r.posts[offset:end], len(r.posts), nil
+}
+
+func (r *pagedGossipCacheRepo) seenLimits() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.limits...)
+}
+
+func (r *slowGossipCacheRepo) ListPosts(context.Context, int, int) ([]*store.GossipPost, int, error) {
+	r.mu.Lock()
+	r.listCalls++
+	n := r.listCalls
+	if n == 1 {
+		close(r.firstStarted)
+	}
+	r.mu.Unlock()
+	if n == 1 {
+		<-r.releaseFirst
+	}
+	return nil, 0, nil
+}
+
+func (r *slowGossipCacheRepo) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listCalls
+}
+
+func (r *slowGossipCacheRepo) CreatePost(context.Context, *store.GossipPost) error { return nil }
+func (r *slowGossipCacheRepo) ListAllPosts(context.Context, int, int) ([]*store.GossipPost, int, error) {
+	return nil, 0, nil
+}
+func (r *slowGossipCacheRepo) ListFlaggedPosts(context.Context, int, int) ([]*store.GossipPost, int, error) {
+	return nil, 0, nil
+}
+func (r *slowGossipCacheRepo) GetPost(context.Context, string) (*store.GossipPost, error) {
+	return nil, nil
+}
+func (r *slowGossipCacheRepo) DeletePost(context.Context, string) error        { return nil }
+func (r *slowGossipCacheRepo) DeleteFlaggedPosts(context.Context) (int, error) { return 0, nil }
+func (r *slowGossipCacheRepo) LockPost(context.Context, string, bool) error    { return nil }
+func (r *slowGossipCacheRepo) FlagPost(context.Context, string, bool) error    { return nil }
+func (r *slowGossipCacheRepo) ReplaceAll(context.Context, []*store.GossipPost, []*store.GossipComment) error {
+	return nil
+}
+func (r *slowGossipCacheRepo) CreateComment(context.Context, *store.GossipComment) error { return nil }
+func (r *slowGossipCacheRepo) ListComments(context.Context, string, int, int) ([]*store.GossipComment, int, error) {
+	return nil, 0, nil
+}
+func (r *slowGossipCacheRepo) DeleteComment(context.Context, string) error   { return nil }
+func (r *slowGossipCacheRepo) UpdatePostScore(context.Context, string) error { return nil }
+func (r *slowGossipCacheRepo) HasRated(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (r *slowGossipCacheRepo) RateComment(context.Context, *store.GossipComment) error { return nil }
+
+func TestGossipCacheRefreshAsyncCoalescesConcurrentRequests(t *testing.T) {
+	repo := &slowGossipCacheRepo{firstStarted: make(chan struct{}), releaseFirst: make(chan struct{})}
+	cache := NewGossipCache(repo, filepath.Join(t.TempDir(), "gossip_snapshot.json.gz"))
+
+	cache.RefreshAsync(context.Background())
+	select {
+	case <-repo.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first async refresh did not start")
+	}
+	for i := 0; i < 20; i++ {
+		cache.RefreshAsync(context.Background())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if calls := repo.calls(); calls != 1 {
+		t.Fatalf("refresh calls while first is running = %d, want 1", calls)
+	}
+	close(repo.releaseFirst)
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if calls := repo.calls(); calls == 2 {
+			return
+		} else if calls > 2 {
+			t.Fatalf("refresh calls = %d, want coalesced to 2", calls)
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("second coalesced refresh did not run, calls=%d", repo.calls())
+		}
+	}
+}
+
+func TestGossipCacheRefreshStreamsPagedSnapshot(t *testing.T) {
+	posts := make([]*store.GossipPost, snapshotRefreshPageSize+5)
+	now := time.Now().UTC()
+	for i := range posts {
+		posts[i] = &store.GossipPost{ID: "post-" + strconv.Itoa(i), MachineID: "machine", Nickname: "nick", Content: "content", Category: "owner", CreatedAt: now}
+	}
+	repo := &pagedGossipCacheRepo{posts: posts}
+	cachePath := filepath.Join(t.TempDir(), "gossip_snapshot.json.gz")
+	cache := NewGossipCache(repo, cachePath)
+
+	if err := cache.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	plain, err := io.ReadAll(gr)
+	if closeErr := gr.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatalf("read gzip: %v", err)
+	}
+	var payload struct {
+		Posts []map[string]any `json:"posts"`
+		Total int              `json:"total"`
+	}
+	if err := json.Unmarshal(plain, &payload); err != nil {
+		t.Fatalf("decode snapshot: %v body=%s", err, string(plain))
+	}
+	if payload.Total != len(posts) || len(payload.Posts) != len(posts) {
+		t.Fatalf("snapshot total=%d posts=%d, want %d", payload.Total, len(payload.Posts), len(posts))
+	}
+	limits := repo.seenLimits()
+	if len(limits) < 2 || limits[0] != snapshotRefreshPageSize || limits[1] != snapshotRefreshPageSize {
+		t.Fatalf("expected paged refresh limits, got %+v", limits)
+	}
 }
 
 // TestGossipPublishBrowseCommentRateSnapshot covers the full gossip lifecycle:

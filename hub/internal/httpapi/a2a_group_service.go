@@ -589,6 +589,10 @@ func (s *GroupDiscussionService) AddDiscussionMessage(tenantID, sessionID string
 		kind = corea2a.MessageStatement
 	}
 	fromID := strings.TrimSpace(msg.FromID)
+	messageID := strings.TrimSpace(msg.ID)
+	if messageID == "" {
+		messageID = newGroupDiscussionID("a2amsg")
+	}
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
 		if err := requireGroupDiscussionWritableParticipant(session, fromID); err != nil {
 			return err
@@ -597,8 +601,51 @@ func (s *GroupDiscussionService) AddDiscussionMessage(tenantID, sessionID string
 		if err != nil {
 			return err
 		}
-		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: fromID, ToIDs: toIDs, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments, CreatedAt: time.Now().UTC()})
+		for _, existing := range session.Messages {
+			if strings.TrimSpace(existing.ID) == messageID {
+				return nil
+			}
+		}
+		return session.AddMessage(corea2a.Message{ID: messageID, FromID: fromID, ToIDs: toIDs, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments, CreatedAt: time.Now().UTC()})
 	})
+}
+
+func (s *GroupDiscussionService) HasDiscussionMessage(tenantID, sessionID, messageID string) bool {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" || s == nil {
+		return false
+	}
+	tenantID = normalizeTenantID(tenantID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	session := s.sessions[tenantID][strings.TrimSpace(sessionID)]
+	if session == nil {
+		return false
+	}
+	for _, existing := range session.Messages {
+		if strings.TrimSpace(existing.ID) == messageID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *GroupDiscussionService) RemoveDiscussionMessage(tenantID, sessionID, messageID string) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return nil
+	}
+	_, err := s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
+		for i := len(session.Messages) - 1; i >= 0; i-- {
+			if strings.TrimSpace(session.Messages[i].ID) != messageID {
+				continue
+			}
+			session.Messages = append(session.Messages[:i], session.Messages[i+1:]...)
+			return nil
+		}
+		return nil
+	})
+	return err
 }
 
 func normalizeGroupDiscussionTargetIDs(session *corea2a.Session, toIDs []string) ([]string, error) {

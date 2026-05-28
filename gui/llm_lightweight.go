@@ -18,7 +18,7 @@ import (
 //	result, err := h.LLMClassify(ctx, LLMClassifyRequest{
 //	    SystemPrompt: "Classify intent. Reply: confirm, modify, or other.",
 //	    UserMessage:  "开工",
-//	    TimeoutSec:   10,
+//	    TimeoutSec:   30,
 //	})
 //
 // Token budget: ~100-300 input + ~10-20 output
@@ -34,7 +34,7 @@ type LLMClassifyRequest struct {
 	// UserMessage is the user input to classify.
 	UserMessage string
 
-	// TimeoutSec is the request timeout in seconds. Default: 15.
+	// TimeoutSec is the request timeout in seconds. Default: 30.
 	TimeoutSec int
 
 	// Tag is a short label for logging (e.g. "workflow-confirm", "intent-detect").
@@ -69,7 +69,7 @@ type LLMClassifyResult struct {
 //   - No tool definitions (saves ~2000-5000 tokens)
 //   - No conversation history (saves ~10000-50000 tokens)
 //   - No streaming (simpler, lower overhead for short responses)
-//   - Dedicated timeout (default 15s)
+//   - Dedicated timeout (default 30s)
 //
 // Reusable for any classification task: workflow confirm/modify detection,
 // intent classification, content categorization, etc.
@@ -80,7 +80,7 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 
 	// Defaults.
 	if req.TimeoutSec <= 0 {
-		req.TimeoutSec = 15
+		req.TimeoutSec = 30
 	}
 	if req.Tag == "" {
 		req.Tag = "llm-classify"

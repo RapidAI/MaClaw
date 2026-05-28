@@ -118,7 +118,7 @@ export function MCPRemoteServerRow({
             </tr>
             {showHealthDetail && (
                 <tr>
-                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
+                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}`, textAlign: "left" }}>
                         <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                             <div style={{ fontWeight: 600, marginBottom: "4px" }}>{translate("mcpHealthRecord")}</div>
                             <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
@@ -137,23 +137,23 @@ export function MCPRemoteServerRow({
             )}
             {isExpanded && (
                 <tr>
-                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
+                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}`, textAlign: "left" }}>
                         {toolsLoading ? (
-                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0" }}>{translate("mcpLoadingTools")}</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0", textAlign: "left" }}>{translate("mcpLoadingTools")}</div>
                         ) : expandedTools.length > 0 ? (
-                            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                                <div style={{ fontSize: "0.72rem", fontWeight: 600, color: colors.textSecondary, marginBottom: "2px" }}>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "4px", textAlign: "left" }}>
+                                <div style={{ fontSize: "0.72rem", fontWeight: 600, color: colors.textSecondary, marginBottom: "2px", textAlign: "left" }}>
                                     {translate("mcpToolList")} ({expandedTools.length})
                                 </div>
                                 {expandedTools.map((tool) => (
-                                    <div key={tool.name} style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", padding: "4px 8px" }}>
-                                        <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{tool.name}</div>
-                                        <div style={{ fontSize: "0.7rem", color: colors.textSecondary }}>{tool.description || translate("mcpNoDescription")}</div>
+                                    <div key={tool.name} style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", padding: "6px 8px", textAlign: "left" }}>
+                                        <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text, textAlign: "left" }}>{tool.name}</div>
+                                        <div style={toolDescriptionStyle}>{tool.description || translate("mcpNoDescription")}</div>
                                     </div>
                                 ))}
                             </div>
                         ) : (
-                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0" }}>{translate("mcpNoTools")}</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0", textAlign: "left" }}>{translate("mcpNoTools")}</div>
                         )}
                     </td>
                 </tr>
@@ -203,4 +203,14 @@ const managedBadgeStyle: CSSProperties = {
     border: `1px solid ${colors.border}`,
     background: colors.surfaceMuted,
     cursor: "default",
+};
+
+const toolDescriptionStyle: CSSProperties = {
+    fontSize: "0.7rem",
+    color: colors.textSecondary,
+    lineHeight: 1.45,
+    marginTop: "2px",
+    textAlign: "left",
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
 };

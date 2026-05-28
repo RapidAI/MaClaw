@@ -280,7 +280,7 @@ function learnedSourceIcon(source: string): string {
     return "📁";
 }
 
-const LEARNED_DESCRIPTION_PREVIEW_CHARS = 20;
+const LEARNED_DESCRIPTION_PREVIEW_CHARS = 80;
 export function getLearnedSkillDescriptionPreview(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS): string {
     const normalized = description.trim().replace(/\s+/g, " ");
     if (!normalized) return "-"; const chars = Array.from(normalized);
@@ -1223,7 +1223,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!loading && installedSkills.length === 0 && !error && (
-                        <div style={remoteEmptyStateStyle}>
+                        <div style={skillsEmptyStateStyle}>
                             {localizeText("No registered Skills yet", "暂无已注册的 Skill", "暫無已註冊的 Skill")}
                         </div>
                     )}
@@ -1297,13 +1297,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Results */}
                     {!hubSearching && hubSearched && hubResults.length === 0 && !hubError && (
-                        <div style={{
-                            ...remoteLoadingStateStyle,
-                            minHeight: "120px",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                        }}>
+                        <div style={skillsEmptyStateStyle}>
                             {localizeText("No results found", "无搜索结果", "無搜尋結果")}
                         </div>
                     )}
@@ -1361,7 +1355,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     {skill.file_path && <span>{skill.file_path}</span>}
                                                 </div>
                                             )}
-                                            <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginTop: "4px", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={skill.description || undefined}>
+                                            <div style={hubSkillDescriptionStyle} title={skill.description || undefined}>
                                                 {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
                                             </div>
                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
@@ -1426,7 +1420,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>v{skill.version}</span>
                                                         )}
                                                     </div>
-                                                    <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginTop: "4px", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={skill.description || undefined}>
+                                                    <div style={hubSkillDescriptionStyle} title={skill.description || undefined}>
                                                         {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
                                                     </div>
                                                     <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", fontSize: "0.68rem", color: colors.textMuted }}>
@@ -1447,13 +1441,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </div>
                             )}
                             {!hubRecsLoading && hubRecommendations.length === 0 && (
-                                <div style={{
-                                    ...remoteLoadingStateStyle,
-                                    minHeight: "120px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                }}>
+                                <div style={skillsEmptyStateStyle}>
                                     {localizeText("Enter keywords to search the Capability Market", "输入关键词搜索能力市场上的 Skill", "輸入關鍵詞搜尋能力市場上的 Skill")}
                                 </div>
                             )}
@@ -1560,7 +1548,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             {localizeText("Candidates", "\u5019\u9009", "\u5019\u9078")}: {summary.total_candidates} / {localizeText("Registered", "\u5df2\u6ce8\u518c", "\u5df2\u8a3b\u518a")}: {summary.registered} / {localizeText("Updated", "\u5df2\u66f4\u65b0", "\u5df2\u66f4\u65b0")}: {summary.updated} / {localizeText("Skipped", "\u5df2\u8df3\u8fc7", "\u5df2\u8df3\u904e")}: {summary.skipped}
                                         </div>
                                         {record.error && (
-                                            <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: "3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={record.error}>
+                                            <div style={{ ...auditWrapLineStyle, color: colors.danger }} title={record.error}>
                                                 {localizeText("Extraction error", "Extraction error", "Extraction error")}: {record.error}
                                             </div>
                                         )}
@@ -1589,7 +1577,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         typeof evidenceScore === "number" ? `E:${evidenceScore}` : "",
                                                     ].filter(Boolean).join(" / ");
                                                     return (
-                                                        <div key={`${record.timestamp}-${decisionIndex}-${decision.pattern_name}`} style={{ fontSize: "0.7rem", color: decision.action === "skipped" ? colors.textMuted : colors.success, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={detail || undefined}>
+                                                        <div key={`${record.timestamp}-${decisionIndex}-${decision.pattern_name}`} style={{ ...auditWrapLineStyle, fontSize: "0.7rem", color: decision.action === "skipped" ? colors.textMuted : colors.success }} title={detail || undefined}>
                                                             {decision.action}: {decision.pattern_name || localizeText("unnamed", "unnamed", "unnamed")}{detail ? ` - ${detail}` : ""}
                                                         </div>
                                                     );
@@ -1715,7 +1703,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!loading && learnedSkills.length === 0 && !error && (
-                        <div style={remoteEmptyStateStyle}>
+                        <div style={skillsEmptyStateStyle}>
                             {localizeText("No learned skills yet. MaClaw automatically learns and generates skills during use.", "暂无自学习技能。MaClaw 在使用过程中会自动学习并生成技能。", "暫無自學習技能。MaClaw 在使用過程中會自動學習並生成技能。")}
                         </div>
                     )}
@@ -1843,7 +1831,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!extDirsLoading && extDirs.length === 0 && !extDirError && (
-                        <div style={remoteEmptyStateStyle}>
+                        <div style={skillsEmptyStateStyle}>
                             {localizeText(
                                 "No external skill directories configured. Add a directory above to scan for skills.",
                                 "暂无外部技能目录。在上方添加目录以扫描技能。",
@@ -1864,7 +1852,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     }
                     backdropMouseDownRef.current = false;
                 }}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "560px", maxWidth: "92vw", textAlign: "left" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(560px, 92vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{localizeText("Skill Details", "技能详情", "技能詳情")}</h3>
                             <button className="btn-close" onClick={() => setDetailSkill(null)}>×</button>
@@ -1918,7 +1906,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     }
                     backdropMouseDownRef.current = false;
                 }}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "420px", textAlign: "left" }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(420px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingSkill ? localizeText("Edit Skill", "编辑 Skill", "編輯 Skill") : localizeText("New Skill", "新建 Skill", "新建 Skill")}</h3>
                             <button className="btn-close" onClick={closeForm}>×</button>
@@ -1975,7 +1963,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     className="form-input"
                                     value={stepsYaml}
                                     onChange={(e) => setStepsYaml(e.target.value)}
-                                    placeholder={'- action: "send_input"\n  params:\n    text: "hello"\n  on_error: "stop"'}
+                                    placeholder={'- action: "bash"\n  params:\n    command: "echo hello"\n  on_error: "stop"'}
                                     spellCheck={false}
                                     style={{ minHeight: "120px", fontFamily: "monospace", fontSize: "0.76rem", resize: "vertical" }}
                                 />
@@ -2011,8 +1999,12 @@ const tdStyle: CSSProperties = {
 const descCellStyle: CSSProperties = {
     maxWidth: "100%",
     overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
+    display: "-webkit-box",
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: "vertical",
+    textAlign: "left",
+    lineHeight: 1.45,
+    overflowWrap: "anywhere",
 };
 
 const tagStyle: CSSProperties = {
@@ -2046,10 +2038,11 @@ const deleteIconBtnStyle: CSSProperties = {
 
 const detailGridStyle: CSSProperties = {
     display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))",
     gap: "10px 14px",
     fontSize: "0.76rem",
     color: colors.text,
+    overflowWrap: "anywhere",
 };
 
 const detailTextBlockStyle: CSSProperties = {
@@ -2059,6 +2052,7 @@ const detailTextBlockStyle: CSSProperties = {
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
     lineHeight: 1.5,
+    textAlign: "left",
 };
 
 const detailPreStyle: CSSProperties = {
@@ -2067,7 +2061,22 @@ const detailPreStyle: CSSProperties = {
 
 const learnedSkillsTableStyle: CSSProperties = { width: "100%", minWidth: 674, tableLayout: "fixed", borderCollapse: "collapse", fontSize: "0.76rem" };
 
-const learnedDescriptionPreviewStyle: CSSProperties = { maxWidth: "20ch", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" };
+const learnedDescriptionPreviewStyle: CSSProperties = { overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", cursor: "help", textAlign: "left", lineHeight: 1.45, overflowWrap: "anywhere" };
+
+const auditWrapLineStyle: CSSProperties = { fontSize: "0.72rem", marginTop: "3px", lineHeight: 1.45, textAlign: "left", overflowWrap: "anywhere" };
+
+const hubSkillDescriptionStyle: CSSProperties = {
+    fontSize: "0.76rem",
+    color: colors.textSecondary,
+    marginTop: "4px",
+    lineHeight: 1.45,
+    display: "-webkit-box",
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: "vertical",
+    overflow: "hidden",
+    textAlign: "left",
+    overflowWrap: "anywhere",
+};
 
 const skillsPanelShellStyle: CSSProperties = {
     display: "flex",
@@ -2076,6 +2085,7 @@ const skillsPanelShellStyle: CSSProperties = {
     height: "100%",
     minHeight: 0,
     minWidth: 0,
+    textAlign: "left",
 };
 
 const skillsTabBarStyle: CSSProperties = {
@@ -2099,6 +2109,7 @@ const skillsTabContentStyle: CSSProperties = {
     overflowY: "auto",
     overflowX: "hidden",
     padding: "0 0 4px 0",
+    textAlign: "left",
 };
 
 const localSkillsToolbarStyle: CSSProperties = {
@@ -2117,9 +2128,15 @@ const localSkillsActionBarStyle: CSSProperties = {
 const localSkillsHintStyle: CSSProperties = {
     fontSize: "0.74rem",
     color: colors.textMuted,
-    textAlign: "center",
+    textAlign: "left",
     lineHeight: 1.5,
     margin: "2px 0 4px",
+    maxWidth: "72ch",
+};
+const skillsEmptyStateStyle: CSSProperties = {
+    ...remoteEmptyStateStyle,
+    textAlign: "left",
+    lineHeight: 1.5,
 };
 const localSkillsTableContainerStyle: CSSProperties = {
     ...remoteTableContainerStyle,

@@ -41,17 +41,81 @@
       border-bottom: 1px solid var(--line);
       z-index: 10;
     }
+    .workflow-title-block {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
     .workflow-header h1 {
       font-size: 15px;
       font-weight: 700;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
+    }
+    .workflow-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1 1 420px;
+      max-width: 720px;
+      margin: 0 14px;
+    }
+    .workflow-meta-field {
+      min-width: 140px;
+      height: 32px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font-size: 13px;
+    }
+    .workflow-meta-field.name { flex: 0 1 220px; font-weight: 700; }
+    .workflow-meta-field.description { flex: 1 1 260px; }
+    .workflow-meta-field:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .workflow-status {
+      min-width: 120px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .header-actions {
       display: flex;
       gap: 8px;
       align-items: center;
     }
+    .lang-switch {
+      display: inline-flex;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f9fafb;
+    }
+    .lang-switch button {
+      min-height: 32px;
+      padding: 4px 9px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .lang-switch button.active {
+      background: var(--panel);
+      color: var(--accent);
+      box-shadow: var(--shadow);
+    }
     .header-actions button {
+      min-height: 32px;
       padding: 7px 14px;
       border-radius: 8px;
       border: 1px solid var(--line);
@@ -62,6 +126,12 @@
       transition: all 0.15s ease;
     }
     .header-actions button:hover { border-color: var(--accent); color: var(--accent); }
+    .header-actions button:focus-visible,
+    .palette-node:focus-visible,
+    .config-panel-close:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     .header-actions .btn-primary {
       background: var(--accent);
       color: #fff;
@@ -96,6 +166,139 @@
       color: var(--muted);
       margin-bottom: 10px;
     }
+    .workflow-library {
+      padding-bottom: 12px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .workflow-library-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .workflow-library-refresh {
+      min-height: 28px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .workflow-library-refresh:hover { color: var(--accent); border-color: var(--accent); }
+    .workflow-library-list {
+      display: grid;
+      gap: 8px;
+    }
+    .workflow-library-filters {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .workflow-library-filters input,
+    .workflow-library-filters select {
+      width: 100%;
+      min-height: 30px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+    }
+    .workflow-library-filters input:focus,
+    .workflow-library-filters select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .workflow-library-empty,
+    .workflow-library-error {
+      padding: 10px;
+      border: 1px dashed var(--line);
+      border-radius: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      background: #f9fafb;
+    }
+    .workflow-library-error { color: #c5221f; border-color: rgba(193, 34, 31, 0.22); }
+    .workflow-library-item {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      display: grid;
+      gap: 7px;
+    }
+    .workflow-library-item.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .workflow-library-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .workflow-library-name {
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.3;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .workflow-library-status {
+      flex: 0 0 auto;
+      max-width: 96px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #eef2f7;
+      color: #475569;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.5;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .workflow-library-status.pending_review { background: #fff4e5; color: #b45309; }
+    .workflow-library-status.published { background: #e6f4ea; color: #137333; }
+    .workflow-library-status.rejected { background: #fce8e6; color: #c5221f; }
+    .workflow-library-status.unpublished,
+    .workflow-library-status.superseded,
+    .workflow-library-status.unknown { background: #f1f5f9; color: #64748b; }
+    .workflow-library-meta {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .workflow-library-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .workflow-library-actions button {
+      min-height: 28px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .workflow-library-actions button:hover { border-color: var(--accent); color: var(--accent); }
+    .workflow-library-actions .danger { color: #c5221f; border-color: rgba(193, 34, 31, 0.22); }
+    .workflow-library-actions button:disabled { cursor: not-allowed; opacity: 0.55; }
     .palette-node {
       display: flex;
       align-items: center;
@@ -160,6 +363,76 @@
       height: 100%;
       position: relative;
     }
+    .canvas-toolbar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--shadow);
+    }
+    .canvas-tool-btn {
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .canvas-tool-btn.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .canvas-tool-btn:disabled {
+      color: #9aa3b2;
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+    .canvas-tool-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .canvas-tool-hint {
+      position: absolute;
+      top: 58px;
+      left: 12px;
+      z-index: 4;
+      display: none;
+      max-width: 360px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12px;
+      box-shadow: var(--shadow);
+    }
+    .canvas-tool-hint.visible { display: block; }
+    .review-preview-banner {
+      position: absolute;
+      top: 58px;
+      right: 12px;
+      z-index: 4;
+      max-width: 360px;
+      padding: 8px 12px;
+      border: 1px solid #f6c66a;
+      border-radius: 8px;
+      background: #fff8e5;
+      color: #7a4f01;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: var(--shadow);
+    }
+    .review-preview-banner[hidden] { display: none; }
     .canvas-grid {
       position: absolute;
       inset: 0;
@@ -171,6 +444,8 @@
     .canvas-nodes {
       position: absolute;
       inset: 0;
+      z-index: 2;
+      pointer-events: none;
     }
     .canvas-node {
       position: absolute;
@@ -183,6 +458,11 @@
       cursor: move;
       user-select: none;
       transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      pointer-events: auto;
+    }
+    .canvas-node.connecting-source {
+      border-color: #e65100;
+      box-shadow: 0 0 0 3px rgba(230, 81, 0, 0.18), var(--shadow);
     }
     .canvas-node:hover { border-color: var(--accent); }
     .canvas-node.selected {
@@ -222,8 +502,7 @@
     .canvas-edges {
       position: absolute;
       inset: 0;
-      pointer-events: none;
-      z-index: 0;
+      z-index: 1;
     }
     .canvas-edges svg {
       width: 100%;
@@ -233,10 +512,23 @@
       fill: none;
       stroke: #94a3b8;
       stroke-width: 2;
+      pointer-events: none;
+    }
+    .edge-hit-path {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 14;
       pointer-events: stroke;
       cursor: pointer;
     }
+    .edge-hit-path:hover + .edge-path,
+    .edge-hit-path:focus-visible + .edge-path,
     .edge-path:hover { stroke: var(--accent); stroke-width: 3; }
+    .edge-hit-path:focus-visible { outline: none; }
+    .edge-path.selected {
+      stroke: #c5221f;
+      stroke-width: 3;
+    }
 
     /* Config Panel */
     .config-panel {
@@ -257,8 +549,8 @@
       justify-content: space-between;
     }
     .config-panel-close {
-      width: 28px;
-      height: 28px;
+      width: 32px;
+      height: 32px;
       border-radius: 8px;
       border: 1px solid var(--line);
       background: none;
@@ -301,6 +593,24 @@
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(15, 79, 214, 0.08);
     }
+    .config-field textarea.config-field-invalid {
+      border-color: #c5221f;
+      box-shadow: 0 0 0 3px rgba(193, 62, 53, 0.08);
+    }
+    .config-error-summary {
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border: 1px solid rgba(193, 62, 53, 0.24);
+      border-radius: 8px;
+      background: rgba(193, 62, 53, 0.06);
+      color: #8f1d19;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .config-error-summary[hidden] { display: none; }
+    .config-error-summary strong { display: block; margin-bottom: 6px; }
+    .config-error-summary ul { margin: 0; padding-left: 18px; }
+    .config-error-summary li + li { margin-top: 4px; }
     .config-field textarea { min-height: 80px; resize: vertical; }
 
     /* Empty state */
@@ -330,7 +640,20 @@
       line-height: 1.4;
       color: #6d4c00;
     }
-    .terminal-warning-icon { font-size: 14px; flex-shrink: 0; }
+    .terminal-warning-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #b77900;
+      color: #fff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1;
+      flex-shrink: 0;
+    }
     .terminal-section {
       margin-bottom: 18px;
       padding-bottom: 14px;
@@ -498,74 +821,104 @@
     <div class="workflow-app">
       <!-- Header -->
       <header class="workflow-header">
-        <div style="display:flex;align-items:center;gap:12px;">
-          <h1>Approval Workflow Designer</h1>
-          <span class="version-badge draft" id="versionBadge">DRAFT</span>
+        <div class="workflow-title-block">
+          <h1 data-i18n="appTitle">Approval Workflow Designer</h1>
+          <span class="version-badge draft" id="versionBadge" data-i18n="draft">DRAFT</span>
+        </div>
+        <div class="workflow-meta" aria-label="Workflow metadata" data-i18n-aria="workflowMetadata">
+          <input class="workflow-meta-field name" id="workflowName" data-i18n-placeholder="workflowNamePlaceholder" placeholder="Workflow name" autocomplete="off">
+          <input class="workflow-meta-field description" id="workflowDescription" data-i18n-placeholder="workflowDescriptionPlaceholder" placeholder="Short description" autocomplete="off">
+          <span class="workflow-status" id="workflowStatus" role="status" aria-live="polite" data-i18n="statusDraft">Draft not saved</span>
         </div>
         <div class="header-actions">
-          <button type="button" id="btnValidate">Validate</button>
-          <button type="button" id="btnSave">Save</button>
-          <button type="button" id="btnSubmit" class="btn-primary">Submit for Review</button>
+          <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria="language">
+            <button type="button" data-set-lang="zh">中文</button>
+            <button type="button" data-set-lang="en">EN</button>
+          </div>
+          <button type="button" id="btnNew"><span data-i18n="newWorkflow">New</span></button>
+          <button type="button" id="btnValidate"><span data-i18n="validate">Validate</span></button>
+          <button type="button" id="btnSave"><span data-i18n="save">Save</span></button>
+          <button type="button" id="btnSubmit" class="btn-primary"><span data-i18n="submitReview">Submit for Review</span></button>
         </div>
       </header>
 
       <!-- Node Palette (Left Sidebar) -->
       <aside class="node-palette">
-        <div class="palette-title">Node Types</div>
+        <section class="workflow-library" aria-label="Workflow designs" data-i18n-aria="workflowLibrary">
+          <div class="workflow-library-head">
+            <div class="palette-title" data-i18n="workflowLibrary">My Workflows</div>
+            <button type="button" class="workflow-library-refresh" id="btnRefreshWorkflows" data-i18n="refreshWorkflows">Refresh</button>
+          </div>
+          <div class="workflow-library-filters">
+            <input id="workflowSearch" data-i18n-placeholder="workflowSearchPlaceholder" placeholder="Search workflows" autocomplete="off">
+            <select id="workflowStatusFilter" aria-label="Workflow status" data-i18n-aria="workflowStatusFilter">
+              <option value="" data-i18n="workflowStatusAll">All statuses</option>
+              <option value="draft" data-i18n="statusDraftShort">Draft</option>
+              <option value="pending_review" data-i18n="statusPendingReviewShort">Pending</option>
+              <option value="published" data-i18n="statusPublishedShort">Published</option>
+              <option value="rejected" data-i18n="statusRejectedShort">Rejected</option>
+              <option value="unpublished" data-i18n="statusUnpublishedShort">Unpublished</option>
+              <option value="superseded" data-i18n="statusSupersededShort">Superseded</option>
+              <option value="unknown" data-i18n="statusUnknownShort">Unknown</option>
+            </select>
+          </div>
+          <div class="workflow-library-list" id="workflowList" role="list" aria-live="polite"></div>
+        </section>
+        <div class="palette-title" data-i18n="nodeTypes">Node Types</div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="trigger">
           <div class="palette-node-icon trigger">&#9654;</div>
           <div class="palette-node-info">
-            <strong>Trigger</strong>
-            <span>Workflow entry point</span>
+            <strong data-i18n="trigger">Trigger</strong>
+            <span data-i18n="triggerDesc">Workflow entry point</span>
           </div>
         </div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="form">
           <div class="palette-node-icon form">&#9998;</div>
           <div class="palette-node-info">
-            <strong>Form</strong>
-            <span>Collect input data</span>
+            <strong data-i18n="form">Form</strong>
+            <span data-i18n="formDesc">Collect input data</span>
           </div>
         </div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="approval">
           <div class="palette-node-icon approval">&#10003;</div>
           <div class="palette-node-info">
-            <strong>Approval</strong>
-            <span>VE approval decision</span>
+            <strong data-i18n="approval">Approval</strong>
+            <span data-i18n="approvalDesc">VE approval decision</span>
           </div>
         </div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="condition_branch">
           <div class="palette-node-icon condition">&#9830;</div>
           <div class="palette-node-info">
-            <strong>Condition Branch</strong>
-            <span>Route by conditions</span>
+            <strong data-i18n="conditionBranch">Condition Branch</strong>
+            <span data-i18n="conditionBranchDesc">Route by conditions</span>
           </div>
         </div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="action">
           <div class="palette-node-icon action">&#9881;</div>
           <div class="palette-node-info">
-            <strong>Action</strong>
-            <span>Execute automated task</span>
+            <strong data-i18n="action">Action</strong>
+            <span data-i18n="actionDesc">Execute automated task</span>
           </div>
         </div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="notification">
           <div class="palette-node-icon notification">&#9993;</div>
           <div class="palette-node-info">
-            <strong>Notification</strong>
-            <span>Send notifications</span>
+            <strong data-i18n="notification">Notification</strong>
+            <span data-i18n="notificationDesc">Send notifications</span>
           </div>
         </div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="sub_process">
           <div class="palette-node-icon subprocess">&#8644;</div>
           <div class="palette-node-info">
-            <strong>Sub-Process</strong>
-            <span>Invoke nested workflow</span>
+            <strong data-i18n="subProcess">Sub-Process</strong>
+            <span data-i18n="subProcessDesc">Invoke nested workflow</span>
           </div>
         </div>
         <div class="palette-node" draggable="true" role="button" tabindex="0" data-node-type="terminal">
           <div class="palette-node-icon terminal">&#9632;</div>
           <div class="palette-node-info">
-            <strong>Terminal</strong>
-            <span>Workflow end point</span>
+            <strong data-i18n="terminal">Terminal</strong>
+            <span data-i18n="terminalDesc">Workflow end point</span>
           </div>
         </div>
       </aside>
@@ -573,6 +926,13 @@
       <!-- Canvas -->
       <main class="canvas-container" id="canvasContainer">
         <div class="canvas-area" id="canvasArea">
+          <div class="review-preview-banner" id="reviewPreviewBanner" hidden data-i18n="reviewPreviewMode">Review preview mode. This workflow is read-only here.</div>
+          <div class="canvas-toolbar" role="toolbar" aria-label="Workflow canvas tools" data-i18n-aria="canvasTools">
+            <button type="button" class="canvas-tool-btn active" id="toolSelect" data-tool-mode="select" data-i18n="selectTool">Select</button>
+            <button type="button" class="canvas-tool-btn" id="toolConnect" data-tool-mode="connect" data-i18n="connectTool">Connect</button>
+            <button type="button" class="canvas-tool-btn" id="toolDeleteEdge" data-tool-mode="delete_edge" data-i18n="deleteEdgeTool">Delete Line</button>
+          </div>
+          <div class="canvas-tool-hint" id="canvasToolHint"></div>
           <div class="canvas-grid"></div>
           <div class="canvas-edges" id="canvasEdges">
             <svg></svg>
@@ -580,8 +940,8 @@
           <div class="canvas-nodes" id="canvasNodes"></div>
           <div class="canvas-drop-indicator" id="dropIndicator"></div>
           <div class="canvas-empty" id="canvasEmpty">
-            <h2>Design Your Workflow</h2>
-            <p>Drag nodes from the left panel onto the canvas<br>to start building your approval workflow.</p>
+            <h2 data-i18n="designWorkflow">Design Your Workflow</h2>
+            <p data-i18n="emptyHint" data-i18n-multiline="true">Drag nodes from the left panel onto the canvas<br>to start building your approval workflow.</p>
           </div>
         </div>
       </main>
@@ -589,14 +949,15 @@
       <!-- Config Panel (Right) -->
       <aside class="config-panel" id="configPanel">
         <div class="config-panel-title">
-          <span id="configPanelTitle">Node Configuration</span>
-          <button type="button" class="config-panel-close" id="configPanelClose" aria-label="Close node configuration">&times;</button>
+          <span id="configPanelTitle" data-i18n="nodeConfiguration">Node Configuration</span>
+          <button type="button" class="config-panel-close" id="configPanelClose" aria-label="Close node configuration" data-i18n-aria="closeNodeConfiguration">&times;</button>
         </div>
         <div id="configPanelBody"></div>
       </aside>
     </div>
   </div>
 
+  <script src="/approval_workflow/i18n.js"></script>
   <script src="/approval_workflow/terminal-node-config.js"></script>
   <script src="/approval_workflow/workflow-editor.js"></script>
 </body>

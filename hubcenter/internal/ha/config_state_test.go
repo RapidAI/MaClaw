@@ -20,7 +20,7 @@ func newHAConfigServiceTestStore(t *testing.T) (*ConfigService, *sqlite.Provider
 		t.Fatalf("run migrations: %v", err)
 	}
 	st := sqlite.NewStore(provider)
-	fallback := config.HAConfig{Enabled: false, SyncIntervalSeconds: 3, PullBatchSize: 200, HeartbeatSyncMinIntervalSeconds: 10}
+	fallback := config.HAConfig{Enabled: false, SyncIntervalSeconds: 3, PushDebounceSeconds: 4, PullBatchSize: 200, HeartbeatSyncMinIntervalSeconds: 10}
 	return NewConfigService(fallback, st.System), provider
 }
 
@@ -31,7 +31,7 @@ func TestConfigServiceCurrentConfigFallsBackToDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentConfig() error = %v", err)
 	}
-	if cfg.SyncIntervalSeconds != 3 || cfg.PullBatchSize != 200 || cfg.HeartbeatSyncMinIntervalSeconds != 10 {
+	if cfg.SyncIntervalSeconds != 3 || cfg.PushDebounceSeconds != 4 || cfg.PullBatchSize != 200 || cfg.HeartbeatSyncMinIntervalSeconds != 10 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -46,6 +46,7 @@ func TestConfigServiceSaveAndLoad(t *testing.T) {
 		AdvertiseURL:                    "https://hubs.mypapers.top",
 		ClusterSecret:                   "shared-secret",
 		SyncIntervalSeconds:             5,
+		PushDebounceSeconds:             6,
 		PullBatchSize:                   300,
 		HeartbeatSyncMinIntervalSeconds: 9,
 		Peers: []config.HAPeerConfig{
@@ -60,7 +61,7 @@ func TestConfigServiceSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentConfig() error = %v", err)
 	}
-	if got.NodeID != want.NodeID || got.AdvertiseURL != want.AdvertiseURL || len(got.Peers) != 2 {
+	if got.NodeID != want.NodeID || got.AdvertiseURL != want.AdvertiseURL || got.PushDebounceSeconds != 6 || len(got.Peers) != 2 {
 		t.Fatalf("unexpected config: %+v", got)
 	}
 }
@@ -85,6 +86,7 @@ func TestConfigServiceSaveNormalizesURLsAndPeers(t *testing.T) {
 		AdvertiseURL:                    "https://hubs.mypapers.top/ ",
 		ClusterSecret:                   " shared-secret ",
 		SyncIntervalSeconds:             0,
+		PushDebounceSeconds:             0,
 		PullBatchSize:                   0,
 		HeartbeatSyncMinIntervalSeconds: 0,
 		Peers: []config.HAPeerConfig{
@@ -104,7 +106,7 @@ func TestConfigServiceSaveNormalizesURLsAndPeers(t *testing.T) {
 	if got.ClusterSecret != "shared-secret" {
 		t.Fatalf("ClusterSecret = %q", got.ClusterSecret)
 	}
-	if got.SyncIntervalSeconds != 3 || got.PullBatchSize != 200 || got.HeartbeatSyncMinIntervalSeconds != 10 {
+	if got.SyncIntervalSeconds != 3 || got.PushDebounceSeconds != 4 || got.PullBatchSize != 200 || got.HeartbeatSyncMinIntervalSeconds != 10 {
 		t.Fatalf("unexpected defaults after normalize: %+v", got)
 	}
 	if len(got.Peers) != 1 || got.Peers[0].NodeID != "hc-2" || got.Peers[0].BaseURL != "https://hubs.maclaw.top" {

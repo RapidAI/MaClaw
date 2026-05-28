@@ -16,12 +16,15 @@ const pageSize = 40
 
 // SkillStore manages Hub Center skill storage on disk.
 type SkillStore struct {
-	mu      sync.RWMutex
-	dir     string
-	index   []HubSkillMeta
-	skills  map[string]*HubSkillFull
-	ratings map[string][]SkillRating
-	sync    SyncRecorder
+	mu          sync.RWMutex
+	dir         string
+	index       []HubSkillMeta
+	skills      map[string]*HubSkillFull
+	ratings     map[string][]SkillRating
+	syncMu      sync.Mutex
+	sync        SyncRecorder
+	syncRunning bool
+	syncPending bool
 }
 
 func NewSkillStore(dir string) *SkillStore {

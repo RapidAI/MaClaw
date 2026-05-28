@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"sync"
 	"testing"
@@ -15,10 +17,12 @@ import (
 )
 
 type fakeHASyncOpRepo struct {
-	mu        sync.Mutex
-	ops       []*store.HASyncOp
-	remoteOps []*store.HASyncOp
-	applied   map[string]bool
+	mu         sync.Mutex
+	ops        []*store.HASyncOp
+	remoteOps  []*store.HASyncOp
+	applied    map[string]bool
+	listCalls  int
+	listLimits []int
 }
 
 func (r *fakeHASyncOpRepo) Append(_ context.Context, op *store.HASyncOp) error {
@@ -32,6 +36,8 @@ func (r *fakeHASyncOpRepo) Append(_ context.Context, op *store.HASyncOp) error {
 func (r *fakeHASyncOpRepo) ListAfterSeq(_ context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.listCalls++
+	r.listLimits = append(r.listLimits, limit)
 	out := make([]*store.HASyncOp, 0, len(r.ops))
 	for _, op := range r.ops {
 		if op.Seq > afterSeq || op.Seq == 0 {
@@ -43,6 +49,12 @@ func (r *fakeHASyncOpRepo) ListAfterSeq(_ context.Context, afterSeq int64, limit
 		}
 	}
 	return out, nil
+}
+
+func (r *fakeHASyncOpRepo) ListStats() (int, []int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listCalls, append([]int(nil), r.listLimits...)
 }
 
 func (r *fakeHASyncOpRepo) GetMaxSeq(_ context.Context) (int64, error) { return 0, nil }
@@ -83,11 +95,30 @@ type fakeHAEntityVersionRepo struct {
 }
 
 type fakeHAPeerCursorRepo struct {
+	mu    sync.Mutex
 	items map[string]*store.HAPeerCursor
 }
 
 type fakeHANewsRepo struct {
 	items map[string]*store.NewsArticle
+}
+
+type fakeRouteSnapshotRefresher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *fakeRouteSnapshotRefresher) Rebuild(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return nil
+}
+
+func (r *fakeRouteSnapshotRefresher) Calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
 }
 
 func (r *fakeHANewsRepo) Create(_ context.Context, article *store.NewsArticle) error {
@@ -133,6 +164,8 @@ func (r *fakeHANewsRepo) CountPinned(_ context.Context) (int, error) {
 }
 
 func (r *fakeHAPeerCursorRepo) Get(_ context.Context, peerNodeID string) (*store.HAPeerCursor, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r == nil || r.items == nil {
 		return nil, nil
 	}
@@ -145,6 +178,8 @@ func (r *fakeHAPeerCursorRepo) Get(_ context.Context, peerNodeID string) (*store
 }
 
 func (r *fakeHAPeerCursorRepo) Upsert(_ context.Context, item *store.HAPeerCursor) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.items == nil {
 		r.items = map[string]*store.HAPeerCursor{}
 	}
@@ -260,7 +295,7 @@ func TestAppendOpSerializesLocalEntityVersions(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := svc.AppendUpsert(context.Background(), EntityNewsArticle, "news-1", map[string]any{"i": i}, time.Now().UTC().Add(time.Duration(i)*time.Millisecond)); err != nil {
+			if err := svc.AppendUpsert(context.Background(), EntityNewsArticle, "news-1", map[string]any{"id": "news-1", "i": i}, time.Now().UTC().Add(time.Duration(i)*time.Millisecond)); err != nil {
 				errCh <- err
 			}
 		}(i)
@@ -286,6 +321,36 @@ func TestAppendOpSerializesLocalEntityVersions(t *testing.T) {
 		if version != want {
 			t.Fatalf("sorted version[%d] = %d, want %d; all=%v", i, version, want, versions)
 		}
+	}
+}
+
+func TestAppendUpsertRejectsMissingLocalPayloadID(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+
+	err := svc.AppendUpsert(context.Background(), EntityNewsArticle, "news-1", map[string]any{"title": "missing id"}, time.Now().UTC())
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("AppendUpsert() error = %v, want InvalidRemoteOpError", err)
+	}
+	if len(opsRepo.ops) != 0 {
+		t.Fatalf("invalid local op was appended: %+v", opsRepo.ops)
+	}
+}
+
+func TestAppendDeleteRejectsUnsupportedLocalEntityOp(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+
+	err := svc.AppendDelete(context.Background(), EntitySystemSetting, "admin_initialized", systemSettingPayload{Key: "admin_initialized"}, time.Now().UTC())
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("AppendDelete() error = %v, want InvalidRemoteOpError", err)
+	}
+	if len(opsRepo.ops) != 0 {
+		t.Fatalf("invalid local delete op was appended: %+v", opsRepo.ops)
 	}
 }
 
@@ -411,12 +476,284 @@ func TestApplyRemoteOpsValidatesBatchBeforeApplying(t *testing.T) {
 	}
 }
 
+func TestApplyRemoteOpsRebuildsRouteSnapshotOncePerBatch(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	refresher := &fakeRouteSnapshotRefresher{}
+	svc := &Service{
+		nodeID:    "hc-1",
+		ops:       opsRepo,
+		versions:  versionsRepo,
+		news:      &fakeHANewsRepo{},
+		refresher: refresher,
+	}
+	now := time.Now().UTC()
+	newsPayload := `{"id":"news-1","title":"hello","content":"","category":"notice","pinned":false,"created_at":"2026-05-10T00:00:00Z","updated_at":"2026-05-10T00:00:00Z"}`
+	hubPayload := `{"id":"hub-1","installation_id":"inst-1","owner_email":"owner@example.com","name":"Hub","description":"","base_url":"https://hub.example.com","host":"hub.example.com","port":443,"visibility":"public","enrollment_mode":"open","corporate_email_domain":"","accept_public_signup":false,"status":"online","is_disabled":false,"disabled_reason":"","capabilities_json":"{}","hub_secret_hash":"","invitation_code_required":false,"digital_employee_quota":0,"digital_employee_authorization_enabled":false,"last_seen_at":null,"created_at":"2026-05-10T00:00:00Z","updated_at":"2026-05-10T00:00:00Z"}`
+	ops := []*store.HASyncOp{
+		{OpID: "op-news", SourceNodeID: "hc-2", EntityType: EntityNewsArticle, EntityID: "news-1", OpType: OpUpsert, EntityVersion: 1, OccurredAt: now, PayloadJSON: newsPayload, PayloadHash: testPayloadHash(newsPayload)},
+		{OpID: "op-hub-1", SourceNodeID: "hc-2", EntityType: EntityHubInstance, EntityID: "hub-1", OpType: OpUpsert, EntityVersion: 1, OccurredAt: now.Add(time.Second), PayloadJSON: hubPayload, PayloadHash: testPayloadHash(hubPayload)},
+		{OpID: "op-hub-2", SourceNodeID: "hc-2", EntityType: EntityHubInstance, EntityID: "hub-1", OpType: OpUpsert, EntityVersion: 2, OccurredAt: now.Add(2 * time.Second), PayloadJSON: hubPayload, PayloadHash: testPayloadHash(hubPayload)},
+	}
+
+	if err := svc.ApplyRemoteOps(context.Background(), ops); err != nil {
+		t.Fatalf("ApplyRemoteOps() error = %v", err)
+	}
+	if refresher.Calls() != 1 {
+		t.Fatalf("route snapshot rebuild calls = %d, want 1", refresher.Calls())
+	}
+}
+
 func TestApplyRemoteOpsRejectsNilOp(t *testing.T) {
 	svc := NewService("node-a", "Node A", "", "", nil)
 	err := svc.ApplyRemoteOps(context.Background(), []*store.HASyncOp{nil})
 	var invalid InvalidRemoteOpError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("ApplyRemoteOps() error = %v, want InvalidRemoteOpError", err)
+	}
+}
+
+func TestApplyRemoteOpsRejectsMismatchedHubPayloadBeforeRecording(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	payload := `{"id":"hub-other","base_url":"https://hub.example.com"}`
+	op := &store.HASyncOp{
+		OpID:          "op-bad-hub",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityHubInstance,
+		EntityID:      "hub-1",
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	err := svc.ApplyRemoteOps(context.Background(), []*store.HASyncOp{op})
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("ApplyRemoteOps() error = %v, want InvalidRemoteOpError", err)
+	}
+	if len(opsRepo.remoteOps) != 0 {
+		t.Fatalf("invalid op was recorded before rejection: %+v", opsRepo.remoteOps)
+	}
+}
+
+func TestApplyRemoteOpsRejectsUnsupportedEntityBeforeRecording(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	payload := `{"id":"mystery-1"}`
+	op := &store.HASyncOp{
+		OpID:          "op-unsupported",
+		SourceNodeID:  "hc-2",
+		EntityType:    "mystery_entity",
+		EntityID:      "mystery-1",
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	err := svc.ApplyRemoteOps(context.Background(), []*store.HASyncOp{op})
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("ApplyRemoteOps() error = %v, want InvalidRemoteOpError", err)
+	}
+	if len(opsRepo.remoteOps) != 0 {
+		t.Fatalf("unsupported op was recorded before rejection: %+v", opsRepo.remoteOps)
+	}
+}
+
+func TestApplyRemoteOpsRejectsUnsupportedEntityOpBeforeRecording(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	payload := `{"key":"admin_initialized"}`
+	op := &store.HASyncOp{
+		OpID:          "op-delete-setting",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntitySystemSetting,
+		EntityID:      "admin_initialized",
+		OpType:        OpDelete,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	err := svc.ApplyRemoteOps(context.Background(), []*store.HASyncOp{op})
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("ApplyRemoteOps() error = %v, want InvalidRemoteOpError", err)
+	}
+	if len(opsRepo.remoteOps) != 0 {
+		t.Fatalf("unsupported entity op was recorded before rejection: %+v", opsRepo.remoteOps)
+	}
+}
+
+func TestValidateRemoteOpPayloadIdentityRejectsMismatchedRoutingPayload(t *testing.T) {
+	payload := `{"id":"route-other","hub_id":"hub-1","domain":"example.com"}`
+	op := &store.HASyncOp{
+		OpID:          "op-bad-route",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityHubDomainRoute,
+		EntityID:      "route-1",
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	err := validateRemoteOp(op)
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("validateRemoteOp() error = %v, want InvalidRemoteOpError", err)
+	}
+}
+
+func TestValidateRemoteOpPayloadIdentityRejectsMissingRoutingPayloadID(t *testing.T) {
+	payload := `{"hub_id":"hub-1","domain":"example.com"}`
+	op := &store.HASyncOp{
+		OpID:          "op-missing-route-id",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityHubDomainRoute,
+		EntityID:      "route-1",
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	err := validateRemoteOp(op)
+	var invalid InvalidRemoteOpError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("validateRemoteOp() error = %v, want InvalidRemoteOpError", err)
+	}
+}
+
+func TestValidateRemoteOpPayloadIdentityAllowsMissingHubPayloadID(t *testing.T) {
+	payload := `{"base_url":"https://hub.example.com"}`
+	op := &store.HASyncOp{
+		OpID:          "op-hub-no-id",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityHubInstance,
+		EntityID:      "hub-1",
+		OpType:        OpUpsert,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	if err := validateRemoteOp(op); err != nil {
+		t.Fatalf("validateRemoteOp() error = %v", err)
+	}
+}
+
+func TestValidateRemoteOpPayloadIdentityAllowsCaseInsensitiveBlockedEmail(t *testing.T) {
+	payload := `{"email":"User@Example.com"}`
+	op := &store.HASyncOp{
+		OpID:          "op-block-email",
+		SourceNodeID:  "hc-2",
+		EntityType:    EntityBlockedEmail,
+		EntityID:      "user@example.com",
+		OpType:        OpDelete,
+		EntityVersion: 1,
+		OccurredAt:    time.Now().UTC(),
+		PayloadJSON:   payload,
+		PayloadHash:   testPayloadHash(payload),
+	}
+
+	if err := validateRemoteOp(op); err != nil {
+		t.Fatalf("validateRemoteOp() error = %v", err)
+	}
+}
+
+func TestNormalizeHubPayloadID(t *testing.T) {
+	item := &store.HubInstance{}
+	if err := normalizeHubPayloadID(item, "hub-1"); err != nil {
+		t.Fatalf("normalizeHubPayloadID() error = %v", err)
+	}
+	if item.ID != "hub-1" {
+		t.Fatalf("ID = %q, want hub-1", item.ID)
+	}
+	if err := normalizeHubPayloadID(&store.HubInstance{ID: "hub-other"}, "hub-1"); err == nil {
+		t.Fatal("normalizeHubPayloadID() succeeded with mismatched id")
+	}
+}
+
+func TestHasEntityTypeOpsFallbackScansPaged(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	for i := 1; i <= haOpsFallbackPageSize+25; i++ {
+		entityType := EntityNewsArticle
+		if i == haOpsFallbackPageSize+25 {
+			entityType = EntitySkillMarketSnapshot
+		}
+		opsRepo.ops = append(opsRepo.ops, &store.HASyncOp{Seq: int64(i), EntityType: entityType, EntityID: fmt.Sprintf("entity-%d", i), OccurredAt: time.Now().UTC().Add(time.Duration(i) * time.Millisecond)})
+	}
+	svc := &Service{ops: opsRepo}
+
+	found, err := svc.HasEntityTypeOps(context.Background(), EntitySkillMarketSnapshot)
+	if err != nil {
+		t.Fatalf("HasEntityTypeOps() error = %v", err)
+	}
+	if !found {
+		t.Fatal("expected fallback scan to find entity type after first page")
+	}
+	_, limits := opsRepo.ListStats()
+	if len(limits) < 2 || limits[0] != haOpsFallbackPageSize || limits[1] != haOpsFallbackPageSize {
+		t.Fatalf("expected paged ListAfterSeq calls, limits=%+v", limits)
+	}
+}
+
+func TestListAdminSyncDetailOpsFallbackKeepsLatestPerEntityType(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	for i := 1; i <= haOpsFallbackPageSize+10; i++ {
+		opsRepo.ops = append(opsRepo.ops, &store.HASyncOp{Seq: int64(i), EntityType: EntityHubInstance, EntityID: "hub-1", OccurredAt: time.Now().UTC().Add(time.Duration(i) * time.Millisecond)})
+	}
+	opsRepo.ops = append(opsRepo.ops, &store.HASyncOp{Seq: int64(haOpsFallbackPageSize + 11), EntityType: EntityBlockedEmail, EntityID: "blocked@example.com", OccurredAt: time.Now().UTC().Add(time.Hour)})
+	svc := &Service{ops: opsRepo}
+
+	ops, err := svc.listAdminSyncDetailOps(context.Background())
+	if err != nil {
+		t.Fatalf("listAdminSyncDetailOps() error = %v", err)
+	}
+	latest := map[string]int64{}
+	for _, op := range ops {
+		latest[op.EntityType] = op.Seq
+	}
+	if latest[EntityHubInstance] != int64(haOpsFallbackPageSize+10) || latest[EntityBlockedEmail] != int64(haOpsFallbackPageSize+11) {
+		t.Fatalf("unexpected latest ops: %+v", latest)
+	}
+	_, limits := opsRepo.ListStats()
+	if len(limits) < 2 || limits[0] != haOpsFallbackPageSize {
+		t.Fatalf("expected paged fallback calls, limits=%+v", limits)
+	}
+}
+
+func TestAppendSnapshotSkipsUnchangedPayload(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	svc := NewService("hc-1", "hc-1", "https://hc-1.example.com", "secret", nil)
+	svc.ops = opsRepo
+	svc.versions = &fakeHAEntityVersionRepo{items: map[string]*store.HAEntityVersion{}}
+	ctx := context.Background()
+
+	svc.AppendGossipSnapshot(ctx, &GossipSnapshot{Posts: []*store.GossipPost{{ID: "post-1", Content: "hello"}}})
+	svc.AppendGossipSnapshot(ctx, &GossipSnapshot{Posts: []*store.GossipPost{{ID: "post-1", Content: "hello"}}})
+	svc.AppendGossipSnapshot(ctx, &GossipSnapshot{Posts: []*store.GossipPost{{ID: "post-1", Content: "changed"}}})
+
+	opsRepo.mu.Lock()
+	defer opsRepo.mu.Unlock()
+	if len(opsRepo.ops) != 2 {
+		t.Fatalf("ops len = %d, want 2", len(opsRepo.ops))
+	}
+	if opsRepo.ops[0].EntityType != EntityGossipSnapshot || opsRepo.ops[1].EntityType != EntityGossipSnapshot {
+		t.Fatalf("unexpected ops: %+v", opsRepo.ops)
 	}
 }
 
@@ -545,6 +882,61 @@ func TestUpdatePeerPushSuccessPreservesDeferredBacklog(t *testing.T) {
 	}
 }
 
+func TestRunPeerPushQueueDefersWhenSemaphoreSaturated(t *testing.T) {
+	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: "http://hc-2"}})
+	svc.pushSem = make(chan struct{}, 1)
+	svc.pushSem <- struct{}{}
+	op := &store.HASyncOp{OpID: "op-1", EntityType: EntityNewsArticle, EntityID: "news-1", EntityVersion: 1, OccurredAt: time.Now().UTC()}
+	svc.pushMu.Lock()
+	svc.pushPending["hc-2"] = []*store.HASyncOp{op}
+	svc.pushRunning["hc-2"] = true
+	svc.pushMu.Unlock()
+
+	svc.runPeerPushQueue(PeerRuntimeState{NodeID: "hc-2", BaseURL: "http://hc-2"})
+
+	svc.pushMu.Lock()
+	pending := append([]*store.HASyncOp(nil), svc.pushPending["hc-2"]...)
+	running := svc.pushRunning["hc-2"]
+	svc.pushMu.Unlock()
+	if len(pending) != 1 || pending[0].OpID != "op-1" {
+		t.Fatalf("pending = %+v, want requeued op", pending)
+	}
+	if running {
+		t.Fatal("push queue still marked running after deferred batch")
+	}
+	peer := svc.listPeerStates()[0]
+	if peer.Backlog < 1 || peer.LastError == "" {
+		t.Fatalf("peer deferred state not recorded: %+v", peer)
+	}
+}
+
+func TestRunPeerPushQueueRequeuesHTTPFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: server.URL}})
+	op := &store.HASyncOp{OpID: "op-http-fail", EntityType: EntityNewsArticle, EntityID: "news-1", EntityVersion: 1, OccurredAt: time.Now().UTC()}
+	svc.pushMu.Lock()
+	svc.pushPending["hc-2"] = []*store.HASyncOp{op}
+	svc.pushRunning["hc-2"] = true
+	svc.pushMu.Unlock()
+
+	svc.runPeerPushQueue(PeerRuntimeState{NodeID: "hc-2", BaseURL: server.URL})
+
+	svc.pushMu.Lock()
+	pending := append([]*store.HASyncOp(nil), svc.pushPending["hc-2"]...)
+	running := svc.pushRunning["hc-2"]
+	svc.pushMu.Unlock()
+	if len(pending) != 1 || pending[0].OpID != "op-http-fail" {
+		t.Fatalf("pending = %+v, want failed op retained", pending)
+	}
+	if running {
+		t.Fatal("push queue still marked running after HTTP failure")
+	}
+}
+
 func testPayloadHash(payload string) string {
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])
@@ -592,6 +984,7 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 		ops:                      opsRepo,
 		cursors:                  &fakeHAPeerCursorRepo{items: map[string]*store.HAPeerCursor{"hc-2": {PeerNodeID: "hc-2", LastPulledSeq: 12, LastSuccessAt: &cursorTime}, "hc-3": {PeerNodeID: "hc-3", LastPulledSeq: 8, LastSuccessAt: &cursorTime, LastError: "pull failed"}}},
 		heartbeatSyncMinInterval: 10 * time.Second,
+		pushDebounce:             3 * time.Minute,
 		peers: map[string]*PeerRuntimeState{
 			"hc-2": {NodeID: "hc-2", NodeName: "HubCenter 2", BaseURL: "https://hubs.maclaw.top", Reachable: true, QualityScore: 95, ServiceStatus: "healthy", ClusterStatus: "healthy", LastSuccessAt: &now},
 			"hc-3": {NodeID: "hc-3", NodeName: "HubCenter 3", BaseURL: "https://hubs2.maclaw.top", Reachable: true, QualityScore: 90, ServiceStatus: "healthy", ClusterStatus: "healthy", LastSuccessAt: &now},
@@ -604,6 +997,9 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 	}
 	if len(status.Sync.Details) != 6 {
 		t.Fatalf("sync details len = %d, want 6", len(status.Sync.Details))
+	}
+	if status.Sync.PushDebounceSeconds != 180 {
+		t.Fatalf("push debounce seconds = %d, want 180", status.Sync.PushDebounceSeconds)
 	}
 
 	find := func(key string) *AdminSyncCategoryView {

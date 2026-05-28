@@ -83,6 +83,37 @@ func TestRouter_Reranker_Error(t *testing.T) {
 	}
 }
 
+func TestRouter_Reranker_UsesRemainingCandidateSlots(t *testing.T) {
+	reg := NewRegistry()
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.SetRegistry(reg)
+	mock := &mockReranker{returnNames: []string{"slot_tool_0"}}
+	router.SetReranker(mock)
+
+	remainingSlots := MaxToolBudget - len(CoreToolNames)
+	if remainingSlots <= 0 {
+		t.Fatalf("test requires core tool count below budget, core=%d budget=%d", len(CoreToolNames), MaxToolBudget)
+	}
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		reg.Register(RegisteredTool{Name: name, Description: "core " + name, Category: CategoryBuiltin})
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	for i := 0; i < remainingSlots+1; i++ {
+		name := fmt.Sprintf("slot_tool_%d", i)
+		desc := fmt.Sprintf("slot test tool %d", i)
+		reg.Register(RegisteredTool{Name: name, Description: desc, Category: CategoryNonCode})
+		tools = append(tools, makeToolDef(name, desc))
+	}
+
+	_ = router.Route("slot test query", tools)
+	if mock.callCount == 0 {
+		t.Fatalf("reranker should run when candidate count exceeds remaining slots")
+	}
+}
+
 func TestRouter_Reranker_PartialResults(t *testing.T) {
 	reg := NewRegistry()
 	gen := NewDefinitionGenerator(nil, nil)

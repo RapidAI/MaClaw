@@ -140,7 +140,10 @@ func runPrompt(promptText string) {
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
-		SSHHandler:  sshHandler,
+		SecurityGuard: tuiSecurityGuard(func() corelib.AppConfig {
+			return app.appConfig
+		}),
+		SSHHandler: sshHandler,
 		WebSearchHandler: func(args map[string]interface{}) string {
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {

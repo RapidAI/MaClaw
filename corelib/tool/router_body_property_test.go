@@ -82,10 +82,10 @@ func TestProperty_EmbeddingTextContainsBodySummary(t *testing.T) {
 // --- Mock reranker for property tests ---
 
 type countingReranker struct {
-	callCount  int
-	lastCount  int
-	lastTopK   int
-	returnErr  error
+	callCount   int
+	lastCount   int
+	lastTopK    int
+	returnErr   error
 	returnNames []string
 }
 
@@ -112,8 +112,10 @@ func (m *countingReranker) Rerank(userMessage string, candidates []CandidateSumm
 }
 
 // buildLargeToolSet creates a tool set large enough to trigger reranking.
-// The reranker condition is len(scoredList) > MaxToolBudget, where scoredList
-// contains only non-core candidates. So we need > MaxToolBudget non-core tools.
+// The reranker condition is len(scoredList) > remainingSlots, where
+// remainingSlots is MaxToolBudget minus already-selected core/session/intent
+// tools. Adding > MaxToolBudget non-core tools keeps this helper safely above
+// that threshold even when the core set changes.
 func buildLargeToolSet(reg *Registry) []map[string]interface{} {
 	var tools []map[string]interface{}
 	// Register core tools.
@@ -139,7 +141,8 @@ func buildLargeToolSet(reg *Registry) []map[string]interface{} {
 }
 
 // Feature: skillrouter-body-aware-retrieval, Property 8: Reranker 调用契约
-// When reranker is configured and candidates > MaxToolBudget, Rerank is called with ≤ 20 candidates and topK=5.
+// When reranker is configured and candidates exceed remaining routed slots,
+// Rerank is called with ≤ 20 candidates and topK=5.
 // When not configured, no Rerank call.
 // **Validates: Requirements 8.1, 8.2, 8.4, 9.3**
 func TestProperty_RerankerCallContract(t *testing.T) {
@@ -161,9 +164,9 @@ func TestProperty_RerankerCallContract(t *testing.T) {
 		router.Route(query, tools)
 
 		if useReranker {
-			// Reranker should have been called (candidates > MaxToolBudget).
+			// Reranker should have been called (candidates exceed remaining slots).
 			if mock.callCount == 0 {
-				t.Fatal("reranker should have been called when configured and candidates > MaxToolBudget")
+				t.Fatal("reranker should have been called when configured and candidates exceed remaining slots")
 			}
 			if mock.lastCount > 20 {
 				t.Fatalf("reranker should receive ≤ 20 candidates, got %d", mock.lastCount)

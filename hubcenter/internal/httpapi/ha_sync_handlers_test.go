@@ -108,6 +108,36 @@ func TestHAOpsPullReturnsOpsWithValidAuth(t *testing.T) {
 	}
 }
 
+func TestHAOpsPullHasMoreUsesMaxSeq(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &fakeHASyncReader{
+		nodeID: "hc-a",
+		authFn: func(r *http.Request) error { return nil },
+		maxSeq: 7,
+		ops: []*store.HASyncOp{
+			{Seq: 6, OpID: "op-6", SourceNodeID: "hc-b", EntityType: "news_article", EntityID: "n-1", OpType: "upsert", EntityVersion: 1, OccurredAt: now, PayloadJSON: `{}`, PayloadHash: "hash"},
+			{Seq: 7, OpID: "op-7", SourceNodeID: "hc-b", EntityType: "hub_instance", EntityID: "h-1", OpType: "upsert", EntityVersion: 2, OccurredAt: now, PayloadJSON: `{}`, PayloadHash: "hash"},
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/ha/ops?after_seq=5&limit=2", nil)
+
+	HAOpsPullHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var payload struct {
+		HasMore bool `json:"has_more"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.HasMore {
+		t.Fatalf("has_more = true, want false when max_seq equals next_after_seq")
+	}
+}
+
 func TestHAOpsPullRejectsInvalidQuery(t *testing.T) {
 	svc := &fakeHASyncReader{nodeID: "hc-a", authFn: func(r *http.Request) error { return nil }}
 	rr := httptest.NewRecorder()

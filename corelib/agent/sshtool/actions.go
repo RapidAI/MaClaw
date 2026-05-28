@@ -266,7 +266,7 @@ func SSHExecBackground(deps SSHToolDeps, args map[string]interface{}) string {
 		time.Sleep(2 * time.Second)
 	}
 
-	task, err := bgMgr.Submit(sessionID, command)
+	task, err := bgMgr.SubmitWithRole(sessionID, command, strArg(args, "task_role"))
 	if err != nil {
 		return fmt.Sprintf("提交后台任务失败: %v", err)
 	}

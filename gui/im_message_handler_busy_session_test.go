@@ -54,6 +54,7 @@ func newTestIMHandler(sessions map[string]*RemoteSession) *IMMessageHandler {
 // value MUST contain busy-wait guidance (stall-state-aware hint).
 // ---------------------------------------------------------------------------
 func TestSendAndObserve_BusySession_HasBusyHint(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled; get_session_output covers busy hints")
 	session := newBusyTestSession("sess-busy-1")
 
 	h := newTestIMHandler(map[string]*RemoteSession{
@@ -166,6 +167,7 @@ func TestSystemPrompt_HasBusyPollingGuidance(t *testing.T) {
 // Validates: Requirements 2.1, 2.2
 // ---------------------------------------------------------------------------
 func TestSendAndObserve_BusySession_ReturnsBusyHint(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled; get_session_output covers busy hints")
 	session := newBusyTestSession("sess-fix-1")
 
 	h := newTestIMHandler(map[string]*RemoteSession{
@@ -196,6 +198,7 @@ func TestSendAndObserve_BusySession_ReturnsBusyHint(t *testing.T) {
 // Validates: Requirements 2.1
 // ---------------------------------------------------------------------------
 func TestSendAndObserve_ExtendedPolling(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled")
 	session := newBusyTestSession("sess-fix-2")
 
 	h := newTestIMHandler(map[string]*RemoteSession{
@@ -324,6 +327,7 @@ func TestSystemPrompt_ContainsLongRunningGuidance(t *testing.T) {
 // Validates: Requirements 3.1, 3.4
 // ---------------------------------------------------------------------------
 func TestSendAndObserve_ExitedSession_PreservesEarlyReturn(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled")
 	exitCode := 1
 	session := &RemoteSession{
 		ID:        "sess-exited-1",
@@ -374,6 +378,7 @@ func TestSendAndObserve_ExitedSession_PreservesEarlyReturn(t *testing.T) {
 // Validates: Requirements 3.2, 3.4
 // ---------------------------------------------------------------------------
 func TestSendAndObserve_WaitingInput_PreservesEarlyReturn(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled")
 	session := &RemoteSession{
 		ID:        "sess-waiting-1",
 		Tool:      "claude-code",
@@ -430,6 +435,7 @@ func TestSendAndObserve_WaitingInput_PreservesEarlyReturn(t *testing.T) {
 // Validates: Requirements 3.4
 // ---------------------------------------------------------------------------
 func TestSendAndObserve_FastOutput_PreservesEarlyReturn(t *testing.T) {
+	t.Skip("legacy external send_and_observe is disabled")
 	session := &RemoteSession{
 		ID:        "sess-fast-1",
 		Tool:      "claude-code",
@@ -516,7 +522,7 @@ func TestGetSessionOutput_ExitedError_PreservesStopLoss(t *testing.T) {
 // 7.5 TestGetSessionOutput_RunningNoOutput_PreservesHint
 //
 // Creates a session with Status=SessionRunning and no RawOutputLines.
-// Verifies toolGetSessionOutput still contains "编程工具在等待输入".
+// Verifies toolGetSessionOutput now points new coding work at CodingSubAgent.
 //
 // Validates: Requirements 3.2
 // ---------------------------------------------------------------------------
@@ -540,8 +546,8 @@ func TestGetSessionOutput_RunningNoOutput_PreservesHint(t *testing.T) {
 
 	t.Logf("toolGetSessionOutput result:\n%s", result)
 
-	if !strings.Contains(result, "编程工具在等待输入") {
-		t.Errorf("expected result to contain '编程工具在等待输入', got:\n%s", result)
+	if !strings.Contains(result, "CodingSubAgent") || strings.Contains(result, "send_and_observe") {
+		t.Errorf("expected result to contain CodingSubAgent guidance without send_and_observe, got:\n%s", result)
 	}
 }
 

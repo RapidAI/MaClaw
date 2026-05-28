@@ -6,7 +6,7 @@ const I18N = {
     assistantTitle: "AI Assistant", assistantHint: "Instances share user-level config, tools, knowledge, memory, and security policy.", instancesTitle: "Assistant instances", instancesHint: "Runtime state and sessions stay per instance. Configuration stays shared by user.", new: "New", noInstances: "No instances", unknown: "unknown", readyState: "ready", notReady: "not ready", instanceName: "Instance name", instanceCreated: "Instance created",
     sessions: "Sessions", noSessions: "No sessions", firstMessage: "Send the first message to create a session.", selectedMissing: "Selected assistant instance was not found or is unavailable. Open it again from VE Platform or select another instance.", createFirst: "No instance yet. Create an assistant instance first.", noMessages: "No messages", typeMessage: "Type a message...", message: "Message", send: "Send", webSession: "Web session", run: "Run", waitingUser: "waiting for user", continueWaiting: "Continue waiting", cancel: "Cancel", runCancelled: "Run cancelled", sent: "Sent", runStatus: "Run status: {status}", llmManagedByHub: "LLM is not fully configured. Ask VE Platform to pass the Hub LLM endpoint and viewer token, or fill in System Settings.",
     settingsTitle: "System Settings", settingsHint: "User-scoped settings shared by all assistant instances.", sharedConfig: "Shared config", sharedConfigHint: "LLM, MCP, tools, skills, knowledge, and security policy are shared at user scope.", configResponse: "Config response", secretHint: "Masked value keeps the existing secret. Enter a new value only when rotating it.", valid: "Valid", needsAttention: "Needs attention", currentConfigOk: "Current shared config can start instances.", save: "Save", validate: "Validate", test: "Test", saved: "Saved", validated: "Validated", testPassed: "Test passed", testFailed: "Test failed", unset: "Unset", trueValue: "True", falseValue: "False",
-    groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "Remote/local tool servers and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Installed skills, hubs, external directories, and source allow-list.", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupChannels: "Channels", groupChannelsHint: "IM, bot, gateway, and voice channel settings.", groupUI: "UI & Runtime", groupUIHint: "User interface, pet, launch, proxy, and local runtime preferences.", groupAdvanced: "Advanced", groupAdvancedHint: "All remaining AppConfig fields exposed by the service schema.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
+    groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "MCP capability install, compact add, and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Search, install, and view skills. Source details stay managed by the service.", installedSkills: "Installed skills", noSkills: "No skills installed", skillMarketSearch: "SkillMarket search", search: "Search", install: "Install", installed: "Installed", searchSkillsPlaceholder: "Search SkillMarket...", skillInstalled: "Skill installed", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupChannels: "Channels", groupChannelsHint: "IM, bot, MaClaw third-party integration protocol, and voice channel settings.", groupUI: "UI & Runtime", groupUIHint: "User interface, pet, launch, proxy, and local runtime preferences.", groupAdvanced: "Advanced", groupAdvancedHint: "All remaining AppConfig fields exposed by the service schema.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
   },
   zh: {
     userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
@@ -24,31 +24,154 @@ Object.assign(I18N.zh, {
   assistantTitle: "AI 助手", assistantHint: "多个实例共享用户级配置、工具、知识、记忆和安全策略。", instancesTitle: "助手实例", instancesHint: "运行状态和会话按实例保留，配置按用户共享。", new: "新建", noInstances: "暂无实例", unknown: "未知", readyState: "就绪", notReady: "未就绪", instanceName: "实例名称", instanceCreated: "实例已创建",
   sessions: "会话", noSessions: "暂无会话", firstMessage: "发送第一条消息后会自动创建会话。", selectedMissing: "选中的助手实例不存在或不可用。请从 VE Platform 重新打开，或选择其它实例。", createFirst: "还没有实例，请先创建助手实例。", noMessages: "暂无消息", typeMessage: "输入消息...", message: "消息", send: "发送", webSession: "网页会话", run: "运行", waitingUser: "等待用户", continueWaiting: "继续等待", cancel: "取消", runCancelled: "运行已取消", sent: "已发送", runStatus: "运行状态：{status}", llmManagedByHub: "LLM 未完成配置。请让 VE Platform 传入 Hub LLM 地址和 viewer token，或在系统设置里填写可用配置。",
   settingsTitle: "系统设置", settingsHint: "这些用户级设置会被所有助手实例共享。", sharedConfig: "共享配置", sharedConfigHint: "LLM、MCP、工具、技能、知识和安全策略按用户范围共享。", configResponse: "配置响应", secretHint: "显示为掩码时会保留现有密钥；只有需要轮换时才输入新值。", valid: "有效", needsAttention: "需要处理", currentConfigOk: "当前共享配置可以启动实例。", save: "保存", validate: "校验", test: "测试", saved: "已保存", validated: "已校验", testPassed: "测试通过", testFailed: "测试失败", unset: "未设置", trueValue: "是", falseValue: "否",
-  groupLLM: "LLM", groupLLMHint: "主模型服务商和旧版兜底字段。", groupTools: "MCP 与工具", groupToolsHint: "所有实例共享的远程/本地工具服务器和搜索服务商。", groupSkills: "技能", groupSkillsHint: "已安装技能、技能中心、外部目录和来源白名单。", groupMemory: "知识与记忆", groupMemoryHint: "记忆压缩和知识上下文预算。", groupSecurity: "安全", groupSecurityHint: "用户级执行边界和网络策略。", groupChannels: "渠道", groupChannelsHint: "IM、机器人、网关和语音渠道设置。", groupUI: "界面与运行时", groupUIHint: "用户界面、宠物、启动、代理和本地运行偏好。", groupAdvanced: "高级", groupAdvancedHint: "服务 schema 暴露的其余 AppConfig 字段。", numberInvalid: "{key} 必须是有效的{type}", jsonInvalid: "{key} 必须是有效 JSON"
+  groupLLM: "LLM", groupLLMHint: "主模型服务商和旧版兜底字段。", groupTools: "MCP 与工具", groupToolsHint: "安装 MCP 能力、精简添加 MCP，并管理所有实例共享的搜索服务商。", groupSkills: "技能", groupSkillsHint: "搜索、安装、查看技能；来源细节由服务端管理。", groupMemory: "知识与记忆", groupMemoryHint: "记忆压缩和知识上下文预算。", groupSecurity: "安全", groupSecurityHint: "用户级执行边界和网络策略。", groupChannels: "渠道", groupChannelsHint: "IM、机器人、Maclaw 第三方接入协议和语音渠道设置。", groupUI: "界面与运行时", groupUIHint: "用户界面、宠物、启动、代理和本地运行偏好。", groupAdvanced: "高级", groupAdvancedHint: "服务 schema 暴露的其余 AppConfig 字段。", numberInvalid: "{key} 必须是有效的{type}", jsonInvalid: "{key} 必须是有效 JSON"
 });
+Object.assign(I18N.zh, {
+  installedSkills: "\u5df2\u5b89\u88c5\u6280\u80fd",
+  noSkills: "\u6682\u65e0\u5df2\u5b89\u88c5\u6280\u80fd",
+  skillMarketSearch: "SkillMarket \u641c\u7d22",
+  search: "\u641c\u7d22",
+  install: "\u5b89\u88c5",
+  installed: "\u5df2\u5b89\u88c5",
+  searchSkillsPlaceholder: "\u641c\u7d22 SkillMarket...",
+  skillInstalled: "\u6280\u80fd\u5df2\u5b89\u88c5"
+});
+Object.assign(I18N.en, {
+  channelOverview: "Channel overview",
+  channelOverviewHint: "Configure per-user IM, bot, MaClaw third-party integration protocol, and voice reply settings. Enterprise WeCom, Feishu, and DingTalk are connected in Hub tenant settings; user settings only control local handling or Hub routing.",
+  channelLocalModeHint: "Local mode: true = local runtime, false = Hub/remote routing, unset = service default.",
+  channelCredentialHint: "Secrets are masked after saving. Leave masked values unchanged unless rotating credentials.",
+  channelQQ: "QQ Bot",
+  channelTelegram: "Telegram Bot",
+  channelWeixin: "Personal WeChat / iLink",
+  channelLansenger: "Lansenger",
+  channelThirdParty: "MaClaw Third-party Integration Protocol",
+  channelHubManaged: "Enterprise IM managed by Hub tenant",
+  channelHubManagedHint: "Enterprise WeCom, Feishu, and DingTalk are connected once at tenant scope in Hub. This page only sets this user's local channels and routing preference.",
+  channelEnterpriseWeCom: "Enterprise WeCom",
+  channelFeishu: "Feishu",
+  channelDingTalk: "DingTalk",
+  channelVoice: "Voice / ASR / TTS",
+  channelProtocolEndpoint: "Protocol endpoint",
+  channelCopyEndpoint: "Copy endpoint",
+  channelGenerateToken: "Generate token",
+  channelTokenGenerated: "Token generated. Save settings to apply it.",
+  generateSecret: "Generate",
+  channelTokenUnavailable: "Browser crypto API is unavailable.",
+  channelEnabled: "Enabled",
+  channelDisabled: "Disabled",
+  channelLocal: "Local",
+  channelHub: "Hub",
+  channelAuto: "Auto",
+  customValue: "Custom",
+  selectAll: "Select all",
+  clearSelection: "Clear"
+});
+Object.assign(I18N.zh, {
+  channelOverview: "渠道总览",
+  channelOverviewHint: "配置当前用户的 IM、机器人、Maclaw 第三方接入协议和语音回复。企业版微信、飞书、钉钉由 Hub 租户设置统一接入；用户设置只控制本机处理或 Hub 路由。",
+  channelLocalModeHint: "本地模式：true = 本机运行时处理，false = Hub/远程路由，未设置 = 服务默认。",
+  channelCredentialHint: "密钥保存后会脱敏显示。显示为掩码时请保持不变，只有轮换凭据时才重新填写。",
+  channelQQ: "QQ Bot",
+  channelTelegram: "Telegram Bot",
+  channelWeixin: "个人微信 / iLink",
+  channelLansenger: "蓝信 Lansenger",
+  channelThirdParty: "Maclaw 第三方接入协议",
+  channelHubManaged: "Hub 租户统一接入的企业 IM",
+  channelHubManagedHint: "企业版微信、飞书、钉钉在 Hub 租户设置中统一接入；本页只配置当前用户的本地通道和路由偏好。",
+  channelEnterpriseWeCom: "企业版微信",
+  channelFeishu: "飞书",
+  channelDingTalk: "钉钉",
+  channelVoice: "语音 / ASR / TTS",
+  channelProtocolEndpoint: "协议接入地址",
+  channelCopyEndpoint: "复制接入地址",
+  channelGenerateToken: "生成 Token",
+  channelTokenGenerated: "Token 已生成，保存设置后生效。",
+  generateSecret: "生成",
+  channelTokenUnavailable: "当前浏览器不可用安全随机数。",
+  channelEnabled: "已启用",
+  channelDisabled: "未启用",
+  channelLocal: "本地",
+  channelHub: "Hub",
+  channelAuto: "自动",
+  customValue: "\u81ea\u5b9a\u4e49",
+  selectAll: "\u5168\u9009",
+  clearSelection: "\u6e05\u7a7a"
+});
+Object.assign(I18N.en, { loading: "Loading...", knowledgeImport: "Knowledge import", knowledgeImportHint: "Add text, documents, document archives, or crawled URLs to this user's knowledge base.", connectedKnowledge: "Connected knowledge", connectedKnowledgeHint: "Effective readable scopes for this user, including public knowledge bases attached by admins.", noConnectedKnowledge: "No extra connected knowledge", selfKnowledge: "Own knowledge", publicKnowledge: "Public knowledge", knowledgeScopeIDs: "Raw IDs", importText: "Text", importFile: "File or archive", importURL: "URL crawl", title: "Title", topicHint: "Topic hint", labels: "Labels", textToImport: "Text to import", chooseFiles: "Choose documents, ZIP, or RAR", urlsToImport: "URLs to import", crawlDepth: "Crawl depth", sameDomainOnly: "Same domain only", import: "Import", importing: "Importing...", importStarted: "Knowledge import started", importedKnowledge: "Knowledge import completed", importCompleted: "Knowledge import completed", importStillRunning: "Knowledge import still running", importTextPlaceholder: "Paste text...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "Template", insertTemplate: "Insert template", urlExample: "URL example", addURL: "Add URL", importJob: "Import job", importStatus: "Status", importSource: "Source", importTitle: "Title", importKind: "Kind", importFiles: "Files", importUrls: "URLs", importProcessed: "Processed", importImported: "Imported", importFailed: "Failed", importSkipped: "Skipped", importDuplicates: "Duplicates", importWarnings: "Warnings" });
+Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u5df2\u63a5\u5165\u77e5\u8bc6", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u6709\u6548\u77e5\u8bc6\u8303\u56f4\uff0c\u5305\u62ec\u7ba1\u7406\u5458\u6302\u8f7d\u7684\u516c\u7528\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u989d\u5916\u63a5\u5165\u77e5\u8bc6", selfKnowledge: "\u81ea\u6709\u77e5\u8bc6", publicKnowledge: "\u516c\u7528\u77e5\u8bc6", knowledgeScopeIDs: "\u539f\u59cb ID", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
+Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
+Object.assign(I18N.zh, { mcpManager: "MCP", mcpManagerHint: "\u4f18\u5148\u4ece\u80fd\u529b\u5e02\u573a\u9009\uff1b\u53ea\u6709\u5fc5\u8981\u65f6\u518d\u7528 JSON \u6216\u7cbe\u7b80\u7f16\u8f91\u754c\u9762\u6dfb\u52a0 MCP \u914d\u7f6e\u3002", mcpMarketplace: "\u80fd\u529b\u5e02\u573a", mcpMarketplaceHint: "\u641c\u7d22\u5e76\u5b89\u88c5 Hub/HubCenter MCP \u80fd\u529b\uff1b\u624b\u52a8\u914d\u7f6e\u4fdd\u6301\u7cbe\u7b80\u3002", mcpInstalled: "\u5df2\u5b89\u88c5 MCP", mcpNoServers: "\u6682\u65e0 MCP \u670d\u52a1", mcpManualAdd: "\u6dfb\u52a0 MCP", mcpModeMarket: "\u80fd\u529b\u5e02\u573a", mcpModeRemote: "\u8fdc\u7a0b HTTP", mcpModeLocal: "\u672c\u5730 stdio", mcpModeJson: "JSON \u5bfc\u5165", mcpName: "\u540d\u79f0", mcpEndpoint: "\u63a5\u5165\u5730\u5740", mcpCommand: "\u547d\u4ee4", mcpArgs: "\u53c2\u6570", mcpEnv: "\u73af\u5883\u53d8\u91cf", mcpHeaders: "Headers", mcpAuthType: "\u8ba4\u8bc1", mcpSecret: "\u5bc6\u94a5", mcpAutoStart: "\u81ea\u52a8\u542f\u52a8", mcpDisabled: "\u7981\u7528", mcpAdd: "\u6dfb\u52a0", mcpEdit: "\u7f16\u8f91", mcpSave: "\u4fdd\u5b58 MCP", mcpClose: "\u6536\u8d77", mcpAddParam: "\u6dfb\u52a0\u53c2\u6570", mcpParamName: "\u53c2\u6570", mcpParamValue: "\u503c", mcpStart: "\u542f\u52a8", mcpStop: "\u505c\u6b62", mcpCheck: "\u68c0\u67e5", mcpDelete: "\u5220\u9664", mcpAdded: "MCP \u5df2\u6dfb\u52a0", mcpUpdated: "MCP \u5df2\u66f4\u65b0", mcpDeleted: "MCP \u5df2\u5220\u9664", mcpJson: "MCP JSON", mcpJsonHint: "\u7c98\u8d34 Claude \u98ce\u683c mcpServers JSON\uff0c\u6216 MaClaw MCP \u6761\u76ee\u6570\u7ec4/\u5bf9\u8c61\u3002", mcpOpenGui: "\u8bf7\u5728 MaClaw GUI > MCP > \u80fd\u529b\u5e02\u573a\u5b8c\u6210\u5e02\u573a\u5b89\u88c5\u3002" });
+Object.assign(I18N.en, { webSearchManager: "Web search", webSearchHint: "Choose current search service and add a provider from common presets. Details stay grouped.", webSearchNoProviders: "No search provider", webSearchCurrent: "Current search service", webSearchAdd: "Add search service", webSearchProviderName: "Name", webSearchProviderType: "Type", webSearchBaseURL: "Base URL", webSearchKey: "Key", webSearchDelete: "Delete" });
+Object.assign(I18N.zh, { webSearchManager: "\u8054\u7f51\u641c\u7d22\u670d\u52a1", webSearchHint: "\u9009\u62e9\u5f53\u524d\u641c\u7d22\u670d\u52a1\uff0c\u5e76\u4ece\u5e38\u7528\u9884\u8bbe\u6dfb\u52a0 provider\u3002\u7ec6\u8282\u4fdd\u6301\u6210\u7ec4\u3002", webSearchNoProviders: "\u6682\u65e0\u641c\u7d22\u670d\u52a1", webSearchCurrent: "\u5f53\u524d\u641c\u7d22\u670d\u52a1", webSearchAdd: "\u6dfb\u52a0\u641c\u7d22\u670d\u52a1", webSearchProviderName: "\u540d\u79f0", webSearchProviderType: "\u7c7b\u578b", webSearchBaseURL: "Base URL", webSearchKey: "Key", webSearchDelete: "\u5220\u9664" });
 const FIELD_I18N = {
   en: {
     maclaw_llm_url: ["LLM URL", "Legacy flat LLM endpoint URL."], maclaw_llm_key: ["LLM API Key", "Legacy flat API key or bearer token."], maclaw_llm_model: ["LLM Model", "Legacy flat default model. Use auto for VE Platform Hub LLM endpoints; service groups are platform metadata, not model names."], maclaw_llm_current_provider: ["Current Provider", "Selected provider name from maclaw_llm_providers."], maclaw_llm_providers: ["LLM Providers", "Provider list. When configured, MaClawSrv prefers the selected provider over legacy flat fields."],
-    mcp_servers: ["Remote MCP Servers", "Remote MCP server registry shared by all user assistant instances."], local_mcp_servers: ["Local MCP Servers", "Local MCP stdio server registry shared by all user assistant instances."], web_search_providers: ["Web Search Providers", "Search provider configuration shared by user assistant instances."], web_search_current_provider: ["Current Web Search Provider", "Selected provider name from web_search_providers."],
+    mcp_servers: ["Remote MCP Servers", "Remote MCP server registry shared by all user assistant instances."], local_mcp_servers: ["Local MCP Servers", "Local MCP stdio server registry shared by all user assistant instances."], ssh_hosts: ["SSH Hosts", "Preconfigured SSH host labels available to user assistant instances."], web_search_providers: ["Web Search Providers", "Search provider configuration shared by user assistant instances."], web_search_current_provider: ["Current Web Search Provider", "Selected provider name from web_search_providers."],
     nl_skills: ["Installed Skills", "User-level skill entries available to assistant instances."], skill_hub_urls: ["Skill Hubs", "Skill discovery sources for this user."], external_skill_dirs: ["External Skill Directories", "Additional user skill directories."], skill_sources_allowed: ["Allowed Skill Sources", "Optional allow-list for skill sources. Empty allows all configured sources."],
     memory_auto_compress: ["Memory Auto Compress", "Enable automatic conversation and memory compression."], memory_max_backups: ["Memory Max Backups", "Maximum memory backup count. Zero uses service default."], knowledge_skill_token_budget: ["Knowledge Skill Token Budget", "Token budget for knowledge skill context packs. Zero uses service default."],
     security_policy_mode: ["Security Policy Mode", "User-level security policy mode for tool and agent execution."], sandbox_mode: ["Sandbox Mode", "Execution sandbox preference for this user."], network_level: ["Network Level", "Network access level for user tools and agents."], yolo_mode_allowed: ["YOLO Mode Allowed", "Allow this user to enable broad tool execution mode."]
   },
   zh: {
     maclaw_llm_url: ["LLM 服务地址", "旧版平铺 LLM 服务端点地址。由 VE Platform 托管时通常自动填入。"], maclaw_llm_key: ["LLM 访问令牌", "旧版 API Key 或 Hub viewer Bearer token。"], maclaw_llm_model: ["LLM 模型", "旧版默认模型；接入 VE Platform Hub 时使用 auto，服务组由平台元数据管理，不填在这里。"], maclaw_llm_current_provider: ["当前服务商", "从 maclaw_llm_providers 中选择的服务商名称。"], maclaw_llm_providers: ["LLM 服务商列表", "服务商列表。配置后会优先使用选中的服务商，而不是旧版平铺字段。"],
-    mcp_servers: ["远程 MCP 服务", "所有助手实例共享的远程 MCP 服务注册表。"], local_mcp_servers: ["本地 MCP 服务", "所有助手实例共享的本地 stdio MCP 服务注册表。"], web_search_providers: ["联网搜索服务", "用户助手实例共享的搜索服务配置。"], web_search_current_provider: ["当前搜索服务", "从 web_search_providers 中选择的搜索服务名称。"],
+    mcp_servers: ["远程 MCP 服务", "所有助手实例共享的远程 MCP 服务注册表。"], local_mcp_servers: ["本地 MCP 服务", "所有助手实例共享的本地 stdio MCP 服务注册表。"], ssh_hosts: ["SSH 主机", "预配置给用户助手实例使用的 SSH 主机标签。"], web_search_providers: ["联网搜索服务", "用户助手实例共享的搜索服务配置。"], web_search_current_provider: ["当前搜索服务", "从 web_search_providers 中选择的搜索服务名称。"],
     nl_skills: ["已安装技能", "可供助手实例使用的用户级技能条目。"], skill_hub_urls: ["技能中心", "此用户的技能发现来源。"], external_skill_dirs: ["外部技能目录", "额外的用户技能目录。"], skill_sources_allowed: ["允许的技能来源", "可选的技能来源白名单。留空表示允许所有已配置来源。"],
     memory_auto_compress: ["自动压缩记忆", "启用会话与记忆的自动压缩。"], memory_max_backups: ["记忆备份上限", "最大记忆备份数量。0 表示使用服务默认值。"], knowledge_skill_token_budget: ["知识技能 Token 预算", "知识技能上下文包的 Token 预算。0 表示使用服务默认值。"],
     security_policy_mode: ["安全策略模式", "用户级工具和 Agent 执行安全策略模式。"], sandbox_mode: ["沙箱模式", "此用户的执行沙箱偏好。"], network_level: ["网络访问级别", "用户工具和 Agent 的网络访问级别。"], yolo_mode_allowed: ["允许 YOLO 模式", "允许此用户启用宽松工具执行模式。"]
   }
 };
+const HIDDEN_CONFIG_KEYS = new Set([
+  "claude", "gemini", "codex", "opencode", "codebuddy", "iflow", "kilo", "cursor",
+  "projects", "current_project", "active_tool", "default_tool", "default_tool_provider",
+  "show_gemini", "show_codex", "show_opencode", "show_codebuddy", "show_iflow", "show_kilo", "show_cursor",
+  "extra_tool_configs", "default_proxy_scope_coding_tools", "use_windows_terminal", "nl_skills", "llm_token_usage",
+  "mcp_servers", "local_mcp_servers", "ssh_hosts", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed", "web_search_providers", "web_search_current_provider",
+  "remote_user_id", "remote_tenant_id", "remote_tenant_name", "remote_machine_id", "remote_machine_name",
+  "remote_machine_token", "remote_viewer_token", "skill_market_session_token", "remote_client_id", "remote_sn",
+  "env_check_done", "last_env_check_time", "onboarding_done", "floating_btn_x", "floating_btn_y",
+  "floating_btn_position_set", "noise_floor_calibrated", "speech_level_calibrated"
+]);
 const requestedLocale = (params.get("lang") || localStorage.getItem("maclaw.user.lang") || document.documentElement.lang || navigator.language || "zh-CN").toLowerCase();
 Object.assign(FIELD_I18N.zh, {
   maclaw_llm_url: ["LLM 服务地址", "旧版平铺 LLM 服务端点地址。由 VE Platform 托管时通常自动填入。"], maclaw_llm_key: ["LLM 访问令牌", "旧版 API Key 或 Hub viewer Bearer token。"], maclaw_llm_model: ["LLM 模型", "旧版默认模型；接入 VE Platform Hub 时使用 auto，服务组由平台元数据管理，不填在这里。"], maclaw_llm_current_provider: ["当前服务商", "从 maclaw_llm_providers 中选择的服务商名称。"], maclaw_llm_providers: ["LLM 服务商列表", "服务商列表。配置后会优先使用选中的服务商，而不是旧版平铺字段。"],
-  mcp_servers: ["远程 MCP 服务", "所有助手实例共享的远程 MCP 服务注册表。"], local_mcp_servers: ["本地 MCP 服务", "所有助手实例共享的本地 stdio MCP 服务注册表。"], web_search_providers: ["联网搜索服务", "用户助手实例共享的搜索服务配置。"], web_search_current_provider: ["当前搜索服务", "从 web_search_providers 中选择的搜索服务名称。"],
+  mcp_servers: ["远程 MCP 服务", "所有助手实例共享的远程 MCP 服务注册表。"], local_mcp_servers: ["本地 MCP 服务", "所有助手实例共享的本地 stdio MCP 服务注册表。"], ssh_hosts: ["SSH 主机", "预配置给用户助手实例使用的 SSH 主机标签。"], web_search_providers: ["联网搜索服务", "用户助手实例共享的搜索服务配置。"], web_search_current_provider: ["当前搜索服务", "从 web_search_providers 中选择的搜索服务名称。"],
   nl_skills: ["已安装技能", "可供助手实例使用的用户级技能条目。"], skill_hub_urls: ["技能中心", "此用户的技能发现来源。"], external_skill_dirs: ["外部技能目录", "额外的用户技能目录。"], skill_sources_allowed: ["允许的技能来源", "可选的技能来源白名单。留空表示允许所有已配置来源。"],
   memory_auto_compress: ["自动压缩记忆", "启用会话与记忆的自动压缩。"], memory_max_backups: ["记忆备份上限", "最大记忆备份数量。0 表示使用服务默认值。"], knowledge_skill_token_budget: ["知识技能 Token 预算", "知识技能上下文包的 Token 预算。0 表示使用服务默认值。"],
   security_policy_mode: ["安全策略模式", "用户级工具和 Agent 执行安全策略模式。"], sandbox_mode: ["沙箱模式", "此用户的执行沙箱偏好。"], network_level: ["网络访问级别", "用户工具和 Agent 的网络访问级别。"], yolo_mode_allowed: ["允许 YOLO 模式", "允许此用户启用宽松工具执行模式。"]
+});
+Object.assign(FIELD_I18N.en, {
+  qqbot_enabled: ["Enable QQ Bot", "Enable the per-user QQ Bot channel."], qqbot_app_id: ["QQ Bot App ID", "QQ Bot application ID."], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot application secret."], qqbot_local_mode: ["QQ Bot local mode", "true = handle locally, false = route through Hub, unset = default."],
+  telegram_bot_enabled: ["Enable Telegram Bot", "Enable the per-user Telegram Bot channel."], telegram_bot_token: ["Telegram Bot Token", "BotFather token used by the Telegram Bot channel."], telegram_local_mode: ["Telegram local mode", "true = handle locally, false = route through Hub, unset = default."],
+  weixin_enabled: ["Enable personal WeChat", "Enable the per-user iLink/personal WeChat channel. Enterprise WeCom is configured in Hub tenant settings."], weixin_token: ["Personal WeChat Token", "iLink/personal WeChat session token."], weixin_base_url: ["Personal WeChat API Base URL", "iLink API base URL. Leave empty for default."], weixin_cdn_url: ["Personal WeChat CDN URL", "Media/CDN base URL. Leave empty for default."], weixin_account_id: ["Personal WeChat Account ID", "Bound personal WeChat account ID for diagnostics and routing."], weixin_local_mode: ["Personal WeChat local mode", "true = handle locally, false = route through Hub, unset = default."],
+  lansenger_enabled: ["Enable Lansenger", "Enable the Lansenger IM channel."], lansenger_app_id: ["Lansenger App ID", "Lansenger application ID."], lansenger_app_secret: ["Lansenger App Secret", "Lansenger application secret."], lansenger_gateway_url: ["Lansenger API URL", "API access URL, for example https://apigw.lx.qianxin.com."], lansenger_wss_url: ["Lansenger WSS URL", "Optional WebSocket access URL override."], lansenger_local_mode: ["Lansenger local mode", "true = handle locally, false = route through Hub, unset = default."],
+  thirdparty_gateway_enabled: ["Enable third-party integration protocol", "Enable MaClaw third-party integration protocol support for custom enterprise systems. Enterprise WeCom, Feishu, and DingTalk are connected in Hub tenant settings."], thirdparty_gateway_token: ["Integration Protocol Token", "Shared bearer token used when third-party systems call the MaClaw integration protocol."], thirdparty_gateway_host: ["Protocol Listen Host", "Host/IP bound by the MaClaw third-party integration protocol service."], thirdparty_gateway_port: ["Protocol Listen Port", "Port listened on by the MaClaw third-party integration protocol service."], thirdparty_gateway_local_mode: ["Third-party integration local mode", "true = handle locally, false = route through Hub, unset = default."],
+  asr_enabled: ["Enable ASR", "Enable speech recognition for voice messages."], tts_enabled: ["Enable TTS", "Enable text-to-speech replies."], tts_voice_id: ["TTS Voice", "Voice ID used for generated speech."], tts_auto_voice_summary: ["Auto voice summary", "Attach a short voice summary to IM replies."], audio_input_device: ["Audio input device", "Preferred microphone/input device."], audio_output_device: ["Audio output device", "Preferred speaker/output device."], voice_input_enabled: ["Voice input", "Enable voice input in supported channels."], voice_readback_enabled: ["Voice readback", "Read assistant replies aloud when supported."]
+});
+Object.assign(FIELD_I18N.zh, {
+  qqbot_enabled: ["启用 QQ Bot", "启用此用户的 QQ Bot 通道。"], qqbot_app_id: ["QQ Bot App ID", "QQ Bot 应用 ID。"], qqbot_app_secret: ["QQ Bot App Secret", "QQ Bot 应用密钥。"], qqbot_local_mode: ["QQ Bot 本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
+  telegram_bot_enabled: ["启用 Telegram Bot", "启用此用户的 Telegram Bot 通道。"], telegram_bot_token: ["Telegram Bot Token", "Telegram BotFather 颁发的机器人 Token。"], telegram_local_mode: ["Telegram 本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
+  weixin_enabled: ["启用个人微信", "启用此用户的 iLink/个人微信通道。企业版微信由 Hub 租户设置统一接入。"], weixin_token: ["个人微信 Token", "iLink/个人微信会话 Token。"], weixin_base_url: ["个人微信 API 地址", "iLink API 基础地址；留空使用默认。"], weixin_cdn_url: ["个人微信 CDN 地址", "媒体/CDN 基础地址；留空使用默认。"], weixin_account_id: ["个人微信账号 ID", "已绑定个人微信账号 ID，用于诊断和路由。"], weixin_local_mode: ["个人微信本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
+  lansenger_enabled: ["启用蓝信", "启用蓝信 Lansenger IM 通道。"], lansenger_app_id: ["蓝信 App ID", "蓝信应用 ID。"], lansenger_app_secret: ["蓝信 App Secret", "蓝信应用密钥。"], lansenger_gateway_url: ["蓝信 API 地址", "API 接入地址，例如 https://apigw.lx.qianxin.com。"], lansenger_wss_url: ["蓝信 WSS 地址", "可选 WebSocket 接入地址覆盖。"], lansenger_local_mode: ["蓝信本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
+  thirdparty_gateway_enabled: ["启用第三方接入协议", "启用 Maclaw 第三方接入协议支持，用于企业自定义系统接入。企业版微信、飞书、钉钉由 Hub 租户设置统一接入。"], thirdparty_gateway_token: ["接入协议 Token", "第三方系统调用 Maclaw 接入协议时使用的共享 Bearer Token。"], thirdparty_gateway_host: ["协议监听地址", "Maclaw 第三方接入协议服务绑定的 Host/IP。"], thirdparty_gateway_port: ["协议监听端口", "Maclaw 第三方接入协议服务监听端口。"], thirdparty_gateway_local_mode: ["第三方接入本地模式", "true = 本机处理，false = 走 Hub，未设置 = 默认。"],
+  asr_enabled: ["启用 ASR", "启用语音消息识别。"], tts_enabled: ["启用 TTS", "启用语音回复生成。"], tts_voice_id: ["TTS 音色", "生成语音时使用的音色 ID。"], tts_auto_voice_summary: ["自动语音摘要", "在 IM 回复中附加简短语音摘要。"], audio_input_device: ["音频输入设备", "优先使用的麦克风/输入设备。"], audio_output_device: ["音频输出设备", "优先使用的扬声器/输出设备。"], voice_input_enabled: ["语音输入", "在支持的渠道启用语音输入。"], voice_readback_enabled: ["语音朗读", "在支持的渠道朗读助手回复。"]
+});
+Object.assign(FIELD_I18N.en, {
+  audio_input_device_id: ["Audio input device", "Preferred microphone/input device."],
+  audio_output_device_id: ["Audio output device", "Preferred speaker/output device."],
+  pet_voice_input_enabled: ["Voice input", "Enable voice input in supported channels."],
+  pet_voice_readback_enabled: ["Voice readback", "Read assistant replies aloud when supported."],
+  working_directory: ["Working directory", "Default workspace used by assistant tasks."],
+  data_dir: ["Data directory", "Local MaClaw data directory. Changes take effect after restart."],
+  local_needle_model_path: ["Local Needle model path", "Optional local Needle model artifact path."]
+});
+Object.assign(FIELD_I18N.zh, {
+  audio_input_device_id: ["\u97f3\u9891\u8f93\u5165\u8bbe\u5907", "\u4f18\u5148\u4f7f\u7528\u7684\u9ea6\u514b\u98ce/\u8f93\u5165\u8bbe\u5907\u3002"],
+  audio_output_device_id: ["\u97f3\u9891\u8f93\u51fa\u8bbe\u5907", "\u4f18\u5148\u4f7f\u7528\u7684\u626c\u58f0\u5668/\u8f93\u51fa\u8bbe\u5907\u3002"],
+  pet_voice_input_enabled: ["\u8bed\u97f3\u8f93\u5165", "\u5728\u652f\u6301\u7684\u6e20\u9053\u542f\u7528\u8bed\u97f3\u8f93\u5165\u3002"],
+  pet_voice_readback_enabled: ["\u8bed\u97f3\u6717\u8bfb", "\u5728\u652f\u6301\u7684\u6e20\u9053\u6717\u8bfb\u52a9\u624b\u56de\u590d\u3002"],
+  working_directory: ["\u5de5\u4f5c\u76ee\u5f55", "\u52a9\u624b\u4efb\u52a1\u9ed8\u8ba4\u4f7f\u7528\u7684\u5de5\u4f5c\u533a\u3002"],
+  data_dir: ["\u6570\u636e\u76ee\u5f55", "MaClaw \u672c\u5730\u6570\u636e\u76ee\u5f55\uff0c\u91cd\u542f\u540e\u751f\u6548\u3002"],
+  local_needle_model_path: ["Local Needle \u6a21\u578b\u8def\u5f84", "\u53ef\u9009\u7684\u672c\u5730 Needle \u6a21\u578b\u6587\u4ef6\u8def\u5f84\u3002"]
 });
 const locale = requestedLocale.startsWith("en") ? "en" : "zh";
 const t = (key, vars = {}) => Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{${k}}`, String(v)), (I18N[locale] || I18N.zh)[key] || key);
@@ -56,7 +179,7 @@ function fieldMeta(def = {}) { const tr = FIELD_I18N[locale]?.[def.key]; return 
 function configTypeName(type) { if (locale !== "zh") return type; return type === "integer" ? "整数" : type === "number" ? "数字" : type; }
 function configIssueLabel(issue = {}) { const key = String(issue.key || ""); const base = key.split(".")[0]; const meta = fieldMeta({ key: base, title: base }); const suffix = key.includes(".") ? ` / ${key.split(".").slice(1).join(".")}` : ""; return `${meta.title || key}${suffix}`; }
 function configIssueMessage(issue = {}) { const msg = String(issue.message || ""); if (locale !== "zh") return msg; const key = issue.key || ""; if (msg.includes("managed-by-hub")) return "仍然使用 VE Platform managed-by-hub 占位符，请从 VE Platform 重新打开并传入 Hub LLM 地址和 viewer token。"; if (msg.includes("Selected provider URL is required") || msg.includes("URL is required")) return "必须填写 LLM 服务地址。"; if (msg.includes("API key is required") || msg.includes("credential is required")) return "必须填写 LLM 访问令牌。"; if (msg.includes("Selected provider model is required") || msg.includes("model is required")) return "必须填写 LLM 模型；接入 VE Platform Hub 时填写 auto。"; if (msg.includes("selected provider") && msg.includes("was not found")) return "当前服务商不在 LLM 服务商列表中。"; if (key === "maclaw_llm_current_provider") return msg.replace("maclaw_llm_current_provider is required when multiple providers are configured", "配置多个服务商时必须选择当前服务商"); return msg; }
-const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const launchToken = params.get("launch_token") || "";
 const hasLaunchToken = params.has("launch_token");
@@ -191,8 +314,7 @@ function renderInstanceList() {
   box.querySelectorAll("[data-instance]").forEach((b) => b.onclick = async () => { if (state.instanceId !== b.dataset.instance) resetRunState(); state.instanceId = b.dataset.instance; state.sessionId = ""; renderInstanceList(); await loadSessionsAndMessages(); });
 }
 async function createInstance() {
-  const name = prompt(t("instanceName"), "web-assistant");
-  if (!name) return;
+  const name = `web-assistant-${String(state.instances.length + 1).padStart(2, "0")}`;
   try {
     setBusy(true);
     const inst = await api("/api/v1/instances", { method: "POST", body: JSON.stringify({ name, description: "VE Platform user web assistant", metadata: { channel: "ve-platform-web" } }) });
@@ -571,9 +693,11 @@ async function renderSettings() {
   setTitle(t("settingsTitle"), t("settingsHint"));
   try {
     setBusy(true);
-    const [schema, cfgResp] = await Promise.all([api("/api/v1/config/schema"), api("/api/v1/config")]);
+    const [schema, cfgResp, skillsResp, mcpResp] = await Promise.all([api("/api/v1/config/schema"), api("/api/v1/config"), api("/api/v1/skills"), api("/api/v1/mcp/servers")]);
     state.schema = items(schema);
     state.config = cfgResp.app_config || {};
+    state.skills = items(skillsResp);
+    state.mcpServers = items(mcpResp);
     const validation = await api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: state.config }) });
     const valid = validation.valid ? "ok" : "error";
     $("content").innerHTML = `<section class="panel stack settings-panel"><div class="split"><div><h2>${t("sharedConfig")}</h2><p class="helper">${t("sharedConfigHint")}</p></div><span id="cfgStatus" class="badge ${valid}">${validation.valid ? t("valid") : t("needsAttention")}</span></div><div id="issues" class="stack"></div><div id="cfgTabs" class="cfg-tabs" role="tablist" aria-label="${esc(t("sharedConfig"))}"></div><form id="cfgForm" class="fields"></form><div class="row action-row"><button id="saveCfg" type="button" class="primary">${t("save")}</button><button id="validateCfg" type="button" class="secondary">${t("validate")}</button><button id="testCfg" type="button" class="secondary">${t("test")}</button></div><details class="cfg-output"><summary>${t("configResponse")}</summary><pre id="cfgOut" class="code"></pre></details></section>`;
@@ -583,36 +707,969 @@ async function renderSettings() {
   } catch (e) { if (!handleAPIError(e)) renderError(e); }
   finally { setBusy(false); }
 }
+function skillMarketURL() { return String(state.config?.remote_hubcenter_url || items(state.config?.remote_hubcenter_urls)[0] || "").trim(); }
+function renderSkillManager() {
+  const installed = items(state.skills).map((s) => `<div class="skill-row"><div><strong>${esc(s.name || s.Name || t("unknown"))}</strong><span class="helper">${esc(s.description || s.Description || "")}</span></div><span class="pill">${esc(s.status || s.Status || "active")}</span></div>`).join("") || `<p class="helper">${t("noSkills")}</p>`;
+  const installedNames = new Set(items(state.skills).map((s) => String(s.name || s.Name || "").toLowerCase()).filter(Boolean));
+  const results = items(state.skillResults).map((s) => {
+    const alreadyInstalled = Boolean(s.installed) || installedNames.has(String(s.name || "").toLowerCase());
+    const installAttrs = alreadyInstalled ? "disabled aria-disabled=\"true\"" : `data-install-skill="${esc(s.id || "")}" data-install-source="${esc(s.source || "skillmarket")}"`;
+    return `<div class="skill-row"><div><strong>${esc(s.name || t("unknown"))}</strong><span class="helper">${esc([s.source, s.description].filter(Boolean).join(" - "))}</span></div><button type="button" class="secondary" ${installAttrs}>${alreadyInstalled ? t("installed") : t("install")}</button></div>`;
+  }).join("");
+  return `<div class="skill-manager"><div class="split"><div><strong>${t("installedSkills")}</strong><span class="helper">/api/v1/skills</span></div><span class="pill">${items(state.skills).length}</span></div><div class="list">${installed}</div><div id="skillSearchForm" class="skill-search" role="search"><input id="skillSearchInput" type="search" value="${esc(state.skillQuery)}" placeholder="${t("searchSkillsPlaceholder")}" aria-label="${t("skillMarketSearch")}"><button id="skillSearchBtn" type="button" class="secondary">${t("search")}</button></div><div id="skillSearchResults" class="list">${results}</div></div>`;
+}
+function bindSkillManager() {
+  const form = $("skillSearchForm");
+  if (!form) return;
+  const input = $("skillSearchInput");
+  $("skillSearchBtn").onclick = searchSkills;
+  input.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); searchSkills(e); } };
+  document.querySelectorAll("[data-install-skill]").forEach((b) => { b.onclick = () => installSkill(b.dataset.installSkill, b.dataset.installSource); });
+}
+async function searchSkills(e) {
+  e?.preventDefault();
+  const input = $("skillSearchInput");
+  state.skillQuery = input?.value?.trim() || "";
+  if (!state.skillQuery) return;
+  try {
+    setBusy(true);
+    const out = await api("/api/v1/skills/search", { method: "POST", body: JSON.stringify({ query: state.skillQuery, sources: ["skillmarket"], skill_market_url: skillMarketURL(), include_installed: true }) });
+    state.skillResults = items(out);
+    renderConfigFields();
+  } catch (e2) { if (!handleAPIError(e2)) toast(e2.message); }
+  finally { setBusy(false); }
+}
+async function installSkill(skillID, source) {
+  if (!skillID) return;
+  try {
+    setBusy(true);
+    await api("/api/v1/skills/install", { method: "POST", body: JSON.stringify({ source: source || "skillmarket", skill_market_url: skillMarketURL(), skill_id: skillID, overwrite: true }) });
+    state.skills = items(await api("/api/v1/skills"));
+    state.skillResults = state.skillResults.map((x) => x.id === skillID ? { ...x, installed: true } : x);
+    renderConfigFields();
+    toast(t("skillInstalled"));
+  } catch (e2) { if (!handleAPIError(e2)) toast(e2.message); }
+  finally { setBusy(false); }
+}
+function mcpServerLabel(s) { return s.name || s.Name || s.id || s.ID || t("unknown"); }
+function mcpServerID(s) { return s.id || s.ID || ""; }
+function mcpServerKind(s) { return s.kind || s.Kind || (s.command || s.Command ? "local" : "remote"); }
+function normalizedMCPKey(value) { return String(value || "").trim().toLowerCase(); }
+function mcpServerMarketKeys(s) {
+  const cap = s.capability || s.Capability || {};
+  return [cap.capability_id, cap.CapabilityID, cap.global_key, cap.GlobalKey, s.id, s.ID].map(normalizedMCPKey).filter(Boolean);
+}
+function mcpMarketItemKeys(item) { return [item.capability_id, item.CapabilityID, item.global_key, item.GlobalKey, item.id, item.ID].map(normalizedMCPKey).filter(Boolean); }
+function isMCPMarketInstalled(item) {
+  const keys = new Set(items(state.mcpServers).flatMap(mcpServerMarketKeys));
+  return mcpMarketItemKeys(item).some((key) => keys.has(key));
+}
+function renderMCPManager() {
+  const servers = items(state.mcpServers);
+  const rows = servers.map((s) => {
+    const id = mcpServerID(s);
+    const kind = mcpServerKind(s);
+    const status = s.health_status || s.HealthStatus || (s.disabled || s.Disabled ? t("mcpDisabled") : "unknown");
+    const detail = kind === "local" ? [s.command || s.Command, ...(s.args || s.Args || [])].filter(Boolean).join(" ") : (s.endpoint_url || s.EndpointURL || "");
+    return `<div class="mcp-row"><div><strong>${esc(mcpServerLabel(s))}</strong><span class="helper">${esc([kind, status, detail].filter(Boolean).join(" - "))}</span></div><div class="row"><button type="button" class="secondary" data-mcp-edit="${esc(id)}">${t("mcpEdit")}</button><button type="button" class="secondary" data-mcp-action="health-check" data-mcp-id="${esc(id)}">${t("mcpCheck")}</button>${kind === "local" ? `<button type="button" class="secondary" data-mcp-action="start" data-mcp-id="${esc(id)}">${t("mcpStart")}</button><button type="button" class="secondary" data-mcp-action="stop" data-mcp-id="${esc(id)}">${t("mcpStop")}</button>` : ""}<button type="button" class="secondary" data-mcp-action="delete" data-mcp-id="${esc(id)}">${t("mcpDelete")}</button></div></div>${state.mcpEditingID === id ? renderMCPEditor(s) : ""}`;
+  }).join("") || `<p class="helper">${t("mcpNoServers")}</p>`;
+  return `<div class="mcp-manager"><div class="split"><div><strong>${t("mcpManager")}</strong><span class="helper">${t("mcpManagerHint")}</span></div><span class="pill">${servers.length}</span></div><div class="list">${rows}</div><div class="mcp-add"><div class="mcp-mode-row"><label for="mcpAddMode">${t("mcpManualAdd")}</label><select id="mcpAddMode"><option value="market" ${state.mcpAddMode === "market" ? "selected" : ""}>${t("mcpModeMarket")}</option><option value="remote" ${state.mcpAddMode === "remote" ? "selected" : ""}>${t("mcpModeRemote")}</option><option value="local" ${state.mcpAddMode === "local" ? "selected" : ""}>${t("mcpModeLocal")}</option><option value="json" ${state.mcpAddMode === "json" ? "selected" : ""}>${t("mcpModeJson")}</option></select></div><div id="mcpAddBody">${renderMCPAddBody()}</div></div></div>`;
+}
+function renderMCPParamRows(names = []) {
+  const rows = names.length ? names : [""];
+  return rows.map((name) => `<div class="mcp-param-row"><input data-mcp-param-key value="${esc(name)}" placeholder="${esc(t("mcpParamName"))}"><input data-mcp-param-value type="password" autocomplete="new-password" value="${name ? "******" : ""}" placeholder="${esc(t("mcpParamValue"))}"><button type="button" class="secondary" data-mcp-param-remove>${t("mcpDelete")}</button></div>`).join("");
+}
+function renderMCPEditor(s) {
+  const id = mcpServerID(s);
+  const kind = mcpServerKind(s);
+  if (kind === "local") {
+    const args = items(s.args || s.Args).join("\n");
+    const envKeys = items(s.env_keys || s.EnvKeys);
+    return `<div class="mcp-editor mcp-inline-editor" data-mcp-editor="${esc(id)}"><label>${t("mcpName")}<input id="mcpEditName" value="${esc(mcpServerLabel(s))}"></label><label>${t("mcpCommand")}<input id="mcpEditCommand" list="mcpEditCommandChoices" value="${esc(s.command || s.Command || "")}"><datalist id="mcpEditCommandChoices"><option value="npx"></option><option value="uvx"></option><option value="python"></option><option value="node"></option><option value="cmd"></option></datalist></label><label>${t("mcpArgs")}<textarea id="mcpEditArgs">${esc(args)}</textarea></label><label class="inline-check"><input id="mcpEditAutoStart" type="checkbox" ${s.auto_start || s.AutoStart ? "checked" : ""}>${t("mcpAutoStart")}</label><label class="inline-check"><input id="mcpEditDisabled" type="checkbox" ${s.disabled || s.Disabled ? "checked" : ""}>${t("mcpDisabled")}</label><div class="mcp-param-list"><div class="split"><strong>${t("mcpEnv")}</strong><button type="button" class="secondary" data-mcp-param-add>${t("mcpAddParam")}</button></div><div data-mcp-param-list>${renderMCPParamRows(envKeys)}</div></div><div class="row mcp-editor-actions"><button type="button" class="primary" data-mcp-save="${esc(id)}">${t("mcpSave")}</button><button type="button" class="secondary" data-mcp-close>${t("mcpClose")}</button></div></div>`;
+  }
+  const headers = items(s.header_names || s.HeaderNames);
+  return `<div class="mcp-editor mcp-inline-editor" data-mcp-editor="${esc(id)}"><label>${t("mcpName")}<input id="mcpEditName" value="${esc(mcpServerLabel(s))}"></label><label>${t("mcpEndpoint")}<input id="mcpEditEndpoint" type="url" value="${esc(s.endpoint_url || s.EndpointURL || "")}"></label><label>${t("mcpAuthType")}<select id="mcpEditAuth"><option value="none" ${(s.auth_type || s.AuthType) === "none" ? "selected" : ""}>none</option><option value="bearer" ${(s.auth_type || s.AuthType) === "bearer" ? "selected" : ""}>bearer</option><option value="api_key" ${(s.auth_type || s.AuthType) === "api_key" ? "selected" : ""}>api_key</option></select></label><label>${t("mcpSecret")}<input id="mcpEditSecret" type="password" autocomplete="new-password" value="${s.has_auth_secret || s.HasAuthSecret ? "******" : ""}" placeholder="${esc(t("secretHint"))}"></label><div class="mcp-param-list"><div class="split"><strong>${t("mcpHeaders")}</strong><button type="button" class="secondary" data-mcp-param-add>${t("mcpAddParam")}</button></div><div data-mcp-param-list>${renderMCPParamRows(headers)}</div></div><div class="row mcp-editor-actions"><button type="button" class="primary" data-mcp-save="${esc(id)}">${t("mcpSave")}</button><button type="button" class="secondary" data-mcp-close>${t("mcpClose")}</button></div></div>`;
+}
+function renderMCPAddBody() {
+  if (state.mcpAddMode === "remote") return `<div class="mcp-editor"><label>${t("mcpName")}<input id="mcpRemoteName" type="text" value=""></label><label>${t("mcpEndpoint")}<input id="mcpRemoteEndpoint" type="url" list="mcpEndpointChoices"><datalist id="mcpEndpointChoices"><option value="http://localhost:3000/mcp"></option><option value="http://localhost:8000/mcp"></option><option value="https://mcp.example.com/mcp"></option></datalist></label><label>${t("mcpAuthType")}<select id="mcpRemoteAuth"><option value="none">none</option><option value="bearer">bearer</option><option value="api_key">api_key</option></select></label><label>${t("mcpSecret")}<input id="mcpRemoteSecret" type="password" autocomplete="new-password"></label><button id="mcpAddRemoteBtn" type="button" class="primary">${t("mcpAdd")}</button></div>`;
+  if (state.mcpAddMode === "local") return `<div class="mcp-editor"><label>${t("mcpName")}<input id="mcpLocalName" type="text" value=""></label><label>${t("mcpCommand")}<select id="mcpLocalCommand"><option value="npx">npx</option><option value="uvx">uvx</option><option value="python">python</option><option value="node">node</option><option value="cmd">cmd</option></select></label><label>${t("mcpArgs")}<textarea id="mcpLocalArgs" placeholder="--transport\nstdio"></textarea></label><label class="inline-check"><input id="mcpLocalAutoStart" type="checkbox">${t("mcpAutoStart")}</label><button id="mcpAddLocalBtn" type="button" class="primary">${t("mcpAdd")}</button></div>`;
+  if (state.mcpAddMode === "json") return `<div class="mcp-editor"><span class="helper">${t("mcpJsonHint")}</span><textarea id="mcpJsonImport" placeholder='{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem"]}}}'></textarea><button id="mcpImportJsonBtn" type="button" class="primary">${t("mcpAdd")}</button></div>`;
+  const results = items(state.mcpMarketResults).map((item, idx) => {
+    const installed = isMCPMarketInstalled(item);
+    const attrs = installed ? "disabled aria-disabled=\"true\"" : `data-mcp-market-install="${idx}"`;
+    return `<div class="mcp-row"><div><strong>${esc(item.display_name || item.capability_id || item.id || t("unknown"))}</strong><span class="helper">${esc([item.source, item.description].filter(Boolean).join(" - "))}</span></div><button type="button" class="primary" ${attrs}>${installed ? t("installed") : t("install")}</button></div>`;
+  }).join("") || `<p class="helper">${t("mcpMarketplaceHint")}</p>`;
+  return `<div class="mcp-market"><div class="skill-search" role="search"><input id="mcpMarketSearchInput" type="search" value="${esc(state.mcpMarketQuery)}" placeholder="${t("mcpMarketplace")}" aria-label="${t("mcpMarketplace")}"><button id="mcpMarketSearchBtn" type="button" class="secondary">${t("search")}</button></div><div class="list">${results}</div></div>`;
+}
+function bindMCPManager() {
+  const mode = $("mcpAddMode");
+  if (!mode) return;
+  mode.onchange = () => { state.mcpAddMode = mode.value; $("mcpAddBody").innerHTML = renderMCPAddBody(); bindMCPManager(); };
+  document.querySelectorAll("[data-mcp-edit]").forEach((button) => { button.onclick = () => { state.mcpEditingID = button.dataset.mcpEdit || ""; renderConfigFields(); }; });
+  document.querySelectorAll("[data-mcp-close]").forEach((button) => { button.onclick = () => { state.mcpEditingID = ""; renderConfigFields(); }; });
+  document.querySelectorAll("[data-mcp-save]").forEach((button) => { button.onclick = () => updateMCPServer(button.dataset.mcpSave || "", button.closest("[data-mcp-editor]")); });
+  document.querySelectorAll("[data-mcp-param-add]").forEach((button) => { button.onclick = () => addMCPParamRow(button); });
+  document.querySelectorAll("[data-mcp-param-remove]").forEach((button) => { button.onclick = () => button.closest(".mcp-param-row")?.remove(); });
+  document.querySelectorAll("[data-mcp-action]").forEach((button) => { button.onclick = () => runMCPAction(button.dataset.mcpId, button.dataset.mcpAction); });
+  const remoteBtn = $("mcpAddRemoteBtn"); if (remoteBtn) remoteBtn.onclick = addRemoteMCP;
+  const localBtn = $("mcpAddLocalBtn"); if (localBtn) localBtn.onclick = addLocalMCP;
+  const jsonBtn = $("mcpImportJsonBtn"); if (jsonBtn) jsonBtn.onclick = importMCPJSON;
+  const marketBtn = $("mcpMarketSearchBtn"); if (marketBtn) marketBtn.onclick = searchMCPMarket;
+  const marketInput = $("mcpMarketSearchInput"); if (marketInput) marketInput.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); searchMCPMarket(); } };
+  document.querySelectorAll("[data-mcp-market-install]").forEach((button) => { button.onclick = () => installMCPMarket(Number(button.dataset.mcpMarketInstall || -1)); });
+}
+async function refreshMCPServers() {
+  state.mcpServers = items(await api("/api/v1/mcp/servers"));
+  renderConfigFields();
+}
+async function runMCPAction(id, action) {
+  if (!id || !action) return;
+  try {
+    setBusy(true);
+    if (action === "delete") await api(`/api/v1/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" });
+    else await api(`/api/v1/mcp/servers/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    await refreshMCPServers();
+    toast(action === "delete" ? t("mcpDeleted") : t("mcpUpdated"));
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+function addMCPParamRow(button) {
+  const list = button.closest(".mcp-param-list")?.querySelector("[data-mcp-param-list]");
+  if (!list) return;
+  list.insertAdjacentHTML("beforeend", renderMCPParamRows([""]));
+  const remove = list.lastElementChild?.querySelector("[data-mcp-param-remove]");
+  if (remove) remove.onclick = () => remove.closest(".mcp-param-row")?.remove();
+}
+function mcpEditorParamMap(editor) {
+  const out = {};
+  editor.querySelectorAll(".mcp-param-row").forEach((row) => {
+    const key = String(row.querySelector("[data-mcp-param-key]")?.value || "").trim();
+    const value = String(row.querySelector("[data-mcp-param-value]")?.value || "").trim();
+    if (key && value) out[key] = value;
+  });
+  return out;
+}
+async function updateMCPServer(id, editor) {
+  editor = editor || [...document.querySelectorAll("[data-mcp-editor]")].find((el) => el.dataset.mcpEditor === id);
+  const server = items(state.mcpServers).find((s) => mcpServerID(s) === id);
+  if (!editor || !server) return;
+  const kind = mcpServerKind(server);
+  const body = { name: editor.querySelector("#mcpEditName")?.value?.trim() || mcpServerLabel(server) };
+  if (kind === "local") {
+    body.command = editor.querySelector("#mcpEditCommand")?.value || "npx";
+    body.args = (editor.querySelector("#mcpEditArgs")?.value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    body.env = mcpEditorParamMap(editor);
+    body.auto_start = editor.querySelector("#mcpEditAutoStart")?.checked === true;
+    body.disabled = editor.querySelector("#mcpEditDisabled")?.checked === true;
+  } else {
+    body.endpoint_url = editor.querySelector("#mcpEditEndpoint")?.value?.trim() || "";
+    body.auth_type = editor.querySelector("#mcpEditAuth")?.value || "none";
+    body.auth_secret = editor.querySelector("#mcpEditSecret")?.value || "";
+    body.headers = mcpEditorParamMap(editor);
+  }
+  try {
+    setBusy(true);
+    await api(`/api/v1/mcp/servers/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+    state.mcpServers = items(await api("/api/v1/mcp/servers"));
+    state.mcpEditingID = id;
+    renderConfigFields();
+    toast(t("mcpUpdated"));
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+async function addRemoteMCP() {
+  const body = { kind: "remote", name: $("mcpRemoteName")?.value?.trim() || "Remote MCP", endpoint_url: $("mcpRemoteEndpoint")?.value?.trim() || "", auth_type: $("mcpRemoteAuth")?.value || "none", auth_secret: $("mcpRemoteSecret")?.value || "" };
+  if (!body.endpoint_url) return;
+  await createMCPServer(body);
+}
+async function addLocalMCP() {
+  const body = { kind: "local", name: $("mcpLocalName")?.value?.trim() || "Local MCP", command: $("mcpLocalCommand")?.value || "npx", args: ($("mcpLocalArgs")?.value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean), auto_start: $("mcpLocalAutoStart")?.checked === true };
+  await createMCPServer(body);
+}
+async function createMCPServer(body) {
+  try { setBusy(true); await api("/api/v1/mcp/servers", { method: "POST", body: JSON.stringify(body) }); await refreshMCPServers(); toast(t("mcpAdded")); }
+  catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+async function searchMCPMarket() {
+  state.mcpMarketQuery = $("mcpMarketSearchInput")?.value?.trim() || "";
+  try { setBusy(true); state.mcpMarketResults = items(await api(`/api/v1/mcp/market?q=${encodeURIComponent(state.mcpMarketQuery)}`)); renderConfigFields(); }
+  catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+async function installMCPMarket(index) {
+  const item = state.mcpMarketResults[index];
+  if (!item) return;
+  try { setBusy(true); await api("/api/v1/mcp/market/install", { method: "POST", body: JSON.stringify(item) }); state.mcpServers = items(await api("/api/v1/mcp/servers")); renderConfigFields(); toast(t("mcpAdded")); }
+  catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+function mcpEntriesFromJSON(raw) {
+  const parsed = JSON.parse(raw || "{}");
+  if (Array.isArray(parsed)) return parsed;
+  const source = parsed.mcpServers && typeof parsed.mcpServers === "object" ? parsed.mcpServers : parsed;
+  return Object.entries(source).map(([name, cfg]) => ({ kind: cfg.endpoint_url || cfg.url ? "remote" : "local", name, endpoint_url: cfg.endpoint_url || cfg.url || "", command: cfg.command || "npx", args: Array.isArray(cfg.args) ? cfg.args : [], env: cfg.env || {}, disabled: cfg.disabled === true, auto_start: cfg.auto_start === true }));
+}
+async function importMCPJSON() {
+  try {
+    setBusy(true);
+    for (const entry of mcpEntriesFromJSON($("mcpJsonImport")?.value || "")) await api("/api/v1/mcp/servers", { method: "POST", body: JSON.stringify(entry) });
+    await refreshMCPServers(); toast(t("mcpAdded"));
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+function webSearchProviders() { return items(state.config?.web_search_providers).map((p) => p && typeof p === "object" ? p : {}); }
+function webSearchTypeOptions(current = "") {
+  const all = Object.keys(WEB_SEARCH_PROVIDER_TYPES);
+  const value = current && !all.includes(current) ? current : "";
+  return `${all.map((type) => `<option value="${esc(type)}" ${current === type ? "selected" : ""}>${esc(type)}</option>`).join("")}${value ? `<option value="${esc(value)}" selected>${esc(value)}</option>` : ""}`;
+}
+function webSearchProviderRow(provider, index) {
+  const type = provider.type || "duckduckgo";
+  return `<div class="mcp-row web-search-row" data-web-search-row="${index}"><div class="web-search-fields"><label>${t("webSearchProviderName")}<input data-web-search-field="name" value="${esc(provider.name || "")}" placeholder="${esc(WEB_SEARCH_PROVIDER_TYPES[type]?.name || type)}"></label><label>${t("webSearchProviderType")}<select data-web-search-field="type">${webSearchTypeOptions(type)}</select></label><label>${t("webSearchBaseURL")}<input data-web-search-field="base_url" value="${esc(provider.base_url || "")}" placeholder="${esc(WEB_SEARCH_PROVIDER_TYPES[type]?.base_url || "")}"></label><label>${t("webSearchKey")}<input data-web-search-field="key" type="password" autocomplete="new-password" placeholder="${provider.key ? esc(t("secretHint")) : ""}"></label></div><button type="button" class="secondary" data-web-search-delete>${t("webSearchDelete")}</button></div>`;
+}
+function renderWebSearchManager() {
+  const providers = webSearchProviders();
+  const current = state.config?.web_search_current_provider || "";
+  const currentOptions = providers.map((p) => p.name).filter(Boolean).map((name) => `<option value="${esc(name)}" ${current === name ? "selected" : ""}>${esc(name)}</option>`).join("");
+  const rows = providers.map(webSearchProviderRow).join("") || `<p class="helper">${t("webSearchNoProviders")}</p>`;
+  return `<div class="mcp-manager web-search-manager" data-web-search-manager><div class="split"><div><strong>${t("webSearchManager")}</strong><span class="helper">${t("webSearchHint")}</span></div><span class="pill">${providers.length}</span></div><div class="mcp-mode-row"><label for="webSearchCurrentProvider">${t("webSearchCurrent")}</label><select id="webSearchCurrentProvider"><option value="">${t("unset")}</option>${currentOptions}</select></div><div id="webSearchProviderRows" class="list">${rows}</div><div class="mcp-mode-row"><label for="webSearchAddType">${t("webSearchAdd")}</label><select id="webSearchAddType">${webSearchTypeOptions("duckduckgo")}</select><button id="webSearchAddBtn" type="button" class="secondary">${t("webSearchAdd")}</button></div></div>`;
+}
+function bindWebSearchManager() {
+  const manager = document.querySelector("[data-web-search-manager]");
+  if (!manager) return;
+  manager.querySelectorAll("[data-web-search-delete]").forEach((button) => { button.onclick = () => { button.closest("[data-web-search-row]")?.remove(); refreshWebSearchCurrentOptions(); }; });
+  manager.querySelectorAll('[data-web-search-field="type"]').forEach((select) => {
+    select.onchange = () => {
+      const row = select.closest("[data-web-search-row]");
+      const preset = WEB_SEARCH_PROVIDER_TYPES[select.value] || {};
+      const name = row?.querySelector('[data-web-search-field="name"]');
+      const base = row?.querySelector('[data-web-search-field="base_url"]');
+      if (name && !name.value.trim()) name.placeholder = preset.name || select.value;
+      if (base && !base.value.trim()) base.placeholder = preset.base_url || "";
+    };
+  });
+  manager.querySelectorAll('[data-web-search-field="name"]').forEach((input) => { input.oninput = refreshWebSearchCurrentOptions; });
+  const addBtn = $("webSearchAddBtn");
+  if (addBtn) addBtn.onclick = addWebSearchProviderRow;
+}
+function addWebSearchProviderRow() {
+  const rows = $("webSearchProviderRows");
+  if (!rows) return;
+  const type = $("webSearchAddType")?.value || "duckduckgo";
+  const preset = WEB_SEARCH_PROVIDER_TYPES[type] || { name: type, base_url: "" };
+  const index = Math.max(-1, ...[...document.querySelectorAll("[data-web-search-row]")].map((row) => Number(row.dataset.webSearchRow || 0))) + 1;
+  rows.querySelector(".helper")?.remove();
+  rows.insertAdjacentHTML("beforeend", webSearchProviderRow({ name: preset.name, type, base_url: preset.base_url }, index));
+  bindWebSearchManager();
+  refreshWebSearchCurrentOptions();
+}
+function refreshWebSearchCurrentOptions() {
+  const select = $("webSearchCurrentProvider");
+  if (!select) return;
+  const current = select.value;
+  const names = [...document.querySelectorAll('[data-web-search-field="name"]')].map((el) => String(el.value || el.placeholder || "").trim()).filter(Boolean);
+  select.innerHTML = `<option value="">${t("unset")}</option>${names.map((name) => `<option value="${esc(name)}" ${current === name ? "selected" : ""}>${esc(name)}</option>`).join("")}`;
+}
+const KNOWLEDGE_TOPIC_SUGGESTIONS = ["project", "runbook", "api", "policy", "security", "troubleshooting", "design", "meeting-notes"];
+const KNOWLEDGE_LABEL_SUGGESTIONS = ["docs", "ops", "security", "product", "engineering", "faq", "reference", "archive"];
+const KNOWLEDGE_TITLE_SUGGESTIONS = ["Project notes", "Runbook", "API reference", "Troubleshooting guide", "Security policy", "Meeting notes"];
+const KNOWLEDGE_TEXT_TEMPLATES = [
+  { id: "project-notes", label: "Project notes", title: "Project notes", topic: "project", labels: "docs", text: "# Project notes\n\n## Goal\n- \n\n## Current status\n- \n\n## Key decisions\n- \n\n## Links\n- " },
+  { id: "runbook", label: "Runbook", title: "Runbook", topic: "runbook", labels: "ops", text: "# Runbook\n\n## Service\n\n## Start / stop\n- \n\n## Health checks\n- \n\n## Common fixes\n- " },
+  { id: "api-reference", label: "API reference", title: "API reference", topic: "api", labels: "reference", text: "# API reference\n\n## Endpoint\n- Method: GET\n- Path: /api/v1/...\n\n## Parameters\n- \n\n## Response\n- \n\n## Notes\n- " },
+  { id: "troubleshooting", label: "Troubleshooting", title: "Troubleshooting guide", topic: "troubleshooting", labels: "faq", text: "# Troubleshooting\n\n## Symptom\n\n## Likely causes\n- \n\n## Checks\n- \n\n## Resolution\n- " },
+  { id: "meeting-notes", label: "Meeting notes", title: "Meeting notes", topic: "meeting-notes", labels: "product", text: "# Meeting notes\n\n## Date\n\n## Attendees\n- \n\n## Decisions\n- \n\n## Action items\n- " }
+];
+const KNOWLEDGE_URL_SUGGESTIONS = [
+  { url: "https://example.com/docs", topic: "project", labels: "docs" },
+  { url: "https://example.com/api", topic: "api", labels: "reference" },
+  { url: "https://example.com/runbook", topic: "runbook", labels: "ops" },
+  { url: "https://example.com/troubleshooting", topic: "troubleshooting", labels: "faq" },
+  { url: "https://example.com/faq", topic: "troubleshooting", labels: "faq" }
+];
+function datalistTextInput(id, suggestions, value = "") {
+  const current = String(value || "");
+  const all = current && !suggestions.includes(current) ? [...suggestions, current] : suggestions;
+  const selected = all.includes(current) ? current : "";
+  const custom = selected ? "" : current;
+  return `<div class="choice-custom knowledge-choice ${custom ? "custom-active" : ""}"><select id="${esc(id)}" data-choice-suggest><option value="" ${selected === "" && !custom ? "selected" : ""}>${t("unset")}</option>${all.map((opt) => `<option value="${esc(opt)}" ${selected === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}<option value="__custom__" ${custom ? "selected" : ""}>${t("customValue")}</option></select><input id="${esc(id)}Custom" type="text" data-choice-custom value="${esc(custom)}" aria-label="${esc(id)} custom"></div>`;
+}
+function formChoiceValue(id) {
+  const selectValue = String($(id)?.value || "");
+  if (selectValue === "__custom__") return String($(`${id}Custom`)?.value || "").trim();
+  return selectValue.trim();
+}
+function setFormChoiceValue(id, value) {
+  const select = $(id);
+  if (!select || !value) return;
+  if ([...select.options].some((opt) => opt.value === value)) {
+    select.value = value;
+    select.closest(".choice-custom")?.classList.remove("custom-active");
+    return;
+  }
+  select.value = "__custom__";
+  if ($(`${id}Custom`)) $(`${id}Custom`).value = value;
+  select.closest(".choice-custom")?.classList.add("custom-active");
+}
+function knowledgeDepthInput() {
+  return `<select id="knowledgeURLDepth">${[0, 1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${n === 0 ? "selected" : ""}>${n}</option>`).join("")}</select>`;
+}
+function knowledgeTemplateInput() {
+  return `<div class="knowledge-picker-row"><select id="knowledgeTextTemplate" aria-label="${esc(t("knowledgeTemplate"))}"><option value="">${t("unset")}</option>${KNOWLEDGE_TEXT_TEMPLATES.map((tpl) => `<option value="${esc(tpl.id)}">${esc(tpl.label)}</option>`).join("")}</select><button id="insertKnowledgeTemplateBtn" type="button" class="secondary">${t("insertTemplate")}</button></div>`;
+}
+function knowledgeURLExampleInput() {
+  return `<div class="knowledge-picker-row"><select id="knowledgeURLExample" aria-label="${esc(t("urlExample"))}"><option value="">${t("unset")}</option>${KNOWLEDGE_URL_SUGGESTIONS.map((item) => `<option value="${esc(item.url)}">${esc(item.url)}</option>`).join("")}</select><button id="addKnowledgeURLBtn" type="button" class="secondary">${t("addURL")}</button></div>`;
+}
+function renderKnowledgeImporter() {
+  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="split"><div><strong>${t("connectedKnowledge")}</strong><span class="helper">${t("connectedKnowledgeHint")}</span></div></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="split"><div><strong>${t("knowledgeImport")}</strong><span class="helper">${t("knowledgeImportHint")}</span></div></div><div class="knowledge-import-grid"><section><h3>${t("importText")}</h3><label for="knowledgeTextTitle">${t("title")}</label>${datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)}<label for="knowledgeTextTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeTextTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeTextLabels">${t("labels")}</label>${datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeTextTemplate">${t("knowledgeTemplate")}</label>${knowledgeTemplateInput()}<label for="knowledgeTextBody">${t("textToImport")}</label><textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea><button id="knowledgeTextImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importFile")}</h3><label for="knowledgeFileTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeFileLabels">${t("labels")}</label>${datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeFileInput">${t("chooseFiles")}</label><input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar"><button id="knowledgeFileImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importURL")}</h3><label for="knowledgeURLTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeURLLabels">${t("labels")}</label>${datalistTextInput("knowledgeURLLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeURLExample">${t("urlExample")}</label>${knowledgeURLExampleInput()}<label for="knowledgeURLText">${t("urlsToImport")}</label><textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea><label for="knowledgeURLDepth">${t("crawlDepth")}</label>${knowledgeDepthInput()}<label class="inline-check"><input id="knowledgeSameDomain" type="checkbox" checked>${t("sameDomainOnly")}</label><button id="knowledgeURLImportBtn" type="button" class="secondary">${t("import")}</button></section></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
+}
+function bindKnowledgeImporter() {
+  if (!$('knowledgeTextImportBtn')) return;
+  bindChoiceCustomControls();
+  $('insertKnowledgeTemplateBtn').onclick = insertKnowledgeTemplate;
+  $('addKnowledgeURLBtn').onclick = addKnowledgeURLExample;
+  $('knowledgeTextImportBtn').onclick = importKnowledgeText;
+  $('knowledgeFileImportBtn').onclick = importKnowledgeFiles;
+  $('knowledgeURLImportBtn').onclick = importKnowledgeURLs;
+}
+function insertKnowledgeTemplate() {
+  const target = $('knowledgeTextBody');
+  if (!target) return;
+  const tpl = KNOWLEDGE_TEXT_TEMPLATES.find((item) => item.id === $('knowledgeTextTemplate')?.value);
+  if (!tpl) return;
+  setFormChoiceValue("knowledgeTextTitle", tpl.title);
+  setFormChoiceValue("knowledgeTextTopic", tpl.topic);
+  setFormChoiceValue("knowledgeTextLabels", tpl.labels);
+  target.value = target.value.trim() ? `${target.value.trim()}\n\n${tpl.text}` : tpl.text;
+  target.focus();
+}
+function addKnowledgeURLExample() {
+  const target = $('knowledgeURLText');
+  const url = $('knowledgeURLExample')?.value || "";
+  if (!target || !url) return;
+  const item = KNOWLEDGE_URL_SUGGESTIONS.find((x) => x.url === url);
+  if (item) {
+    setFormChoiceValue("knowledgeURLTopic", item.topic);
+    setFormChoiceValue("knowledgeURLLabels", item.labels);
+  }
+  const lines = target.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.includes(url)) lines.push(url);
+  target.value = lines.join("\n");
+  target.focus();
+}
+function setKnowledgeImportStatus(value) {
+  const el = $('knowledgeImportStatus');
+  if (el) el.textContent = formatKnowledgeImportStatus(value);
+  setConfigOutput(value);
+}
+function formatKnowledgeImportStatus(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return pretty(value);
+  const result = value.result && typeof value.result === "object" ? value.result : value;
+  const lines = [];
+  if (value.job_id || value.id) lines.push(`${t("importJob")}: ${value.job_id || value.id}`);
+  if (value.status) lines.push(`${t("importStatus")}: ${value.status}`);
+  if (value.source_id) lines.push(`${t("importSource")}: ${value.source_id}`);
+  if (value.title) lines.push(`${t("importTitle")}: ${value.title}`);
+  if (value.kind) lines.push(`${t("importKind")}: ${value.kind}`);
+  if (Number.isFinite(value.file_count)) lines.push(`${t("importFiles")}: ${value.file_count}`);
+  if (Array.isArray(value.filenames) && value.filenames.length) lines.push(`${t("importFiles")}: ${value.filenames.join(", ")}`);
+  if (Number.isFinite(value.url_count)) lines.push(`${t("importUrls")}: ${value.url_count}`);
+  const stats = [["processed_files", "importProcessed"], ["imported_files", "importImported"], ["failed_files", "importFailed"], ["skipped_files", "importSkipped"], ["duplicate_files", "importDuplicates"]];
+  stats.forEach(([key, label]) => { if (Number.isFinite(result[key])) lines.push(`${t(label)}: ${result[key]}`); });
+  if (Array.isArray(result.warnings) && result.warnings.length) lines.push(`${t("importWarnings")}: ${result.warnings.length}`);
+  if (value.error || result.error) lines.push(`${t("failed")}: ${value.error || result.error}`);
+  return lines.length ? lines.join("\n") : pretty(value);
+}
+function displayWithID(label, id) {
+  const text = String(label || "").trim();
+  const raw = String(id || "").trim();
+  if (!text || text === raw) return raw || "-";
+  return `${text} (${raw})`;
+}
+function userKnowledgeScopeDisplay(scope, selfScope) {
+  const tenantID = String(scope.tenant_id || "");
+  const ownerID = String(scope.owner_id || "");
+  const tenantLabel = scope.tenant_name || scope.tenant || state.me?.tenant_name || state.me?.remote_tenant_name || tenantID;
+  const ownerLabel = selfScope ? (state.me?.name || state.me?.email || state.me?.user_name || state.me?.user_id || ownerID) : (scope.owner_name || scope.user_name || scope.name || ownerID);
+  return { tenant: displayWithID(tenantLabel, tenantID), owner: displayWithID(ownerLabel, ownerID) };
+}
+function renderKnowledgeAccessScopes(access) {
+  const scopes = items(access?.scopes || []);
+  if (!scopes.length) return `<p class="helper">${esc(t("noConnectedKnowledge"))}</p>`;
+  return scopes.map((scope) => { const publicScope = String(scope.owner_id || "").startsWith("public:"); const selfScope = String(scope.name || "") === "self"; const label = selfScope ? t("selfKnowledge") : (scope.name || (publicScope ? t("publicKnowledge") : t("connectedKnowledge"))); const type = selfScope ? t("selfKnowledge") : (publicScope ? t("publicKnowledge") : t("connectedKnowledge")); const display = userKnowledgeScopeDisplay(scope, selfScope); return `<div class="knowledge-scope-chip"><strong>${esc(label)}</strong><span>${esc(type)}</span><code>${esc(display.tenant)} / ${esc(display.owner)}</code><small>${esc(t("knowledgeScopeIDs"))}: ${esc(scope.tenant_id || "-")} / ${esc(scope.owner_id || "-")}</small></div>`; }).join("");
+}
+async function loadKnowledgeAccessSummary() {
+  const el = $('knowledgeAccessSummary');
+  if (!el) return;
+  try { el.innerHTML = renderKnowledgeAccessScopes(await api("/api/v1/knowledge/access")); }
+  catch (e) { el.innerHTML = `<p class="error">${esc(e.message || t("loadFailed"))}</p>`; }
+}
+async function watchKnowledgeImportJob(jobID) {
+  if (!jobID) return null;
+  let latest = null;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((resolve) => setTimeout(resolve, i === 0 ? 400 : 1200));
+    latest = await api(`/api/v1/knowledge/import/jobs/${encodeURIComponent(jobID)}`);
+    setKnowledgeImportStatus(latest);
+    if (!["pending", "queued", "running"].includes(String(latest.status || "").toLowerCase())) return latest;
+  }
+  return latest;
+}
+function toastKnowledgeImportResult(job) {
+  const status = String(job?.status || "").toLowerCase();
+  if (status === "succeeded") toast(t("importCompleted"));
+  else if (status === "failed" || status === "canceled") toast(`${t("failed")}: ${job?.error || status}`);
+  else toast(t("importStillRunning"));
+}
+async function importKnowledgeText() {
+  const text = $('knowledgeTextBody')?.value?.trim() || "";
+  if (!text) return;
+  try {
+    setBusy(true); setKnowledgeImportStatus(t("importing"));
+    const out = await api("/api/v1/knowledge/import/text", { method: "POST", body: JSON.stringify({ text, title: formChoiceValue("knowledgeTextTitle"), topic_hint: formChoiceValue("knowledgeTextTopic"), labels: formChoiceValue("knowledgeTextLabels") }) });
+    setKnowledgeImportStatus(out); toast(t("importedKnowledge"));
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+async function importKnowledgeFiles() {
+  const files = [...($('knowledgeFileInput')?.files || [])];
+  if (!files.length) return;
+  try {
+    setBusy(true); setKnowledgeImportStatus(t("importing"));
+    const form = new FormData();
+    files.forEach((file) => form.append("file", file));
+    form.append("topic_hint", formChoiceValue("knowledgeFileTopic"));
+    form.append("labels", formChoiceValue("knowledgeFileLabels"));
+    const resp = await fetch("/api/v1/knowledge/import/file", { method: "POST", headers: headers(false), body: form });
+    const out = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(apiErrorMessage(out, `${resp.status} ${resp.statusText}`));
+    setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
+async function importKnowledgeURLs() {
+  const text = $('knowledgeURLText')?.value?.trim() || "";
+  if (!text) return;
+  try {
+    setBusy(true); setKnowledgeImportStatus(t("importing"));
+    const out = await api("/api/v1/knowledge/import/urls", { method: "POST", body: JSON.stringify({ text, max_depth: Number($('knowledgeURLDepth')?.value || 0), same_domain_only: $('knowledgeSameDomain')?.checked !== false, topic_hint: formChoiceValue("knowledgeURLTopic"), labels: formChoiceValue("knowledgeURLLabels") }) });
+    setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  finally { setBusy(false); }
+}
 function renderIssues(validation) { $("issues").innerHTML = (validation.issues || []).map((i) => `<p class="error"><strong>${esc(configIssueLabel(i))}</strong><span>${esc(configIssueMessage(i))}</span></p>`).join("") || `<p class="ok">${t("currentConfigOk")}</p>`; }
 function updateConfigStatus(validation) { const el = $("cfgStatus"); if (!el) return; const valid = validation.valid ? "ok" : "error"; el.className = `badge ${valid}`; el.textContent = validation.valid ? t("valid") : t("needsAttention"); }
 function setConfigOutput(value) { const el = $("cfgOut"); if (el) el.textContent = pretty(value); }
 function setSettingsActionsDisabled(on) { ["saveCfg", "validateCfg", "testCfg"].forEach((id) => { const el = $(id); if (el) el.disabled = on; }); }
+const CHANNEL_CONFIG_KEYS = [
+  "qqbot_enabled", "qqbot_app_id", "qqbot_app_secret", "qqbot_local_mode",
+  "telegram_bot_enabled", "telegram_bot_token", "telegram_local_mode",
+  "weixin_enabled", "weixin_token", "weixin_base_url", "weixin_cdn_url", "weixin_account_id", "weixin_local_mode",
+  "lansenger_enabled", "lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url", "lansenger_wss_url", "lansenger_local_mode",
+  "thirdparty_gateway_enabled", "thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port", "thirdparty_gateway_local_mode",
+  "asr_enabled", "tts_enabled", "tts_voice_id", "tts_auto_voice_summary",
+  "audio_input_device_id", "audio_output_device_id", "pet_voice_input_enabled", "pet_voice_readback_enabled"
+];
+const CONFIG_CHOICE_FIELDS = {
+  maclaw_llm_protocol: ["openai", "anthropic"],
+  default_proxy_protocol: ["http", "https", "socks5"],
+  default_launch_mode: ["local", "remote"],
+  language: ["zh-CN", "en-US"],
+  skill_purchase_mode: ["auto", "free_only"],
+  ui_mode: ["lite", "pro"],
+  security_policy_mode: ["none", "standard", "relaxed", "strict", "developer"],
+  sandbox_mode: ["none", "os", "docker"],
+  network_level: ["none", "intranet", "allowlist", "full"],
+  pet_skin: ["clawmate", "mini-claw", "dev-claw", "focus-claw"],
+  pet_interaction_mode: ["quiet", "balanced", "active"],
+  pet_conversation_mode: ["text-first", "voice-turn", "continuous"],
+  pet_readback_mode: ["off", "summary", "full", "done-only"],
+  pet_motion_sound_preset: ["classic", "bubble", "chime", "synth", "soft"]
+};
+const GENERIC_CHOICE_FIELDS = {
+  mode: ["auto", "local", "remote", "enabled", "disabled", "standard", "strict", "relaxed"],
+  policy: ["auto", "allow", "confirm", "reject", "notify_admin", "disabled"],
+  type: ["standard", "custom", "local", "remote", "http", "stdio"],
+  status: ["active", "inactive", "enabled", "disabled", "pending"],
+  source: ["enterprise_hub", "hubcenter", "skillhub", "clawhub", "github", "local"]
+};
+const CONFIG_NUMBER_CHOICE_FIELDS = {
+  maclaw_llm_context_length: [32000, 64000, 110000, 200000],
+  maclaw_llm_timeout_sec: [60, 120, 300, 480, 900],
+  agent_response_timeout_sec: [60, 120, 300, 480, 900],
+  maclaw_agent_max_iterations: [30, 60, 100, 150, 300],
+  subagent_concurrency: [1, 2, 3, 4],
+  memory_max_backups: [0, 5, 10, 20, 50],
+  knowledge_skill_token_budget: [0, 4000, 8000, 12000, 20000, 32000],
+  remote_heartbeat_sec: [5, 10, 30, 60, 120, 300],
+  screen_dim_timeout_min: [0, 3, 5, 10, 15, 30, 60],
+  env_check_interval: [2, 7, 14, 30],
+  pet_size: [56, 72, 88, 104, 120],
+  pet_continuous_timeout_sec: [5, 10, 30, 60, 120],
+  ui_zoom_factor: [0, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 2],
+  chat_font_size: [12, 13, 14, 16, 18, 20, 24],
+  auto_fetch_interval_min: [0, 5, 10, 20, 30, 60],
+  thirdparty_gateway_port: [0, 8080, 18080, 28080, 38080],
+  local_needle_min_confidence: [0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+  daily_llm_budget_usd: [0, 1, 3, 5, 10, 20, 50]
+};
+const CONFIG_ARRAY_CHOICE_FIELDS = {};
+const CONFIG_LINE_ARRAY_FIELDS = new Set([
+  "remote_hubcenter_urls",
+  "network_allowlist",
+  "auto_fetch_rss_feeds",
+  "auto_fetch_watch_dirs",
+  "favorite_employees",
+  "ve_allowed_directories"
+]);
+const CONFIG_STRING_LINE_FIELDS = new Set([
+  "default_proxy_bypass"
+]);
+const CONFIG_LINE_ARRAY_SUGGESTION_FIELDS = {
+  remote_hubcenter_urls: ["https://hubcenter.example.com", "https://hub.example.com"],
+  network_allowlist: ["localhost", "127.0.0.1", "::1", "*.local", "*.corp.example.com", "api.openai.com", "api.anthropic.com"],
+  auto_fetch_rss_feeds: ["https://github.blog/feed/", "https://openai.com/news/rss.xml"],
+  auto_fetch_watch_dirs: ["~/Downloads", "~/Documents", "D:/workprj"],
+  ve_allowed_directories: ["~/workspace", "~/Documents", "D:/workprj", "D:/workprj/aicoder"]
+};
+const CONFIG_STRING_LINE_SUGGESTION_FIELDS = {
+  default_proxy_bypass: ["localhost", "127.0.0.1", "::1", "*.local", "*.corp.example.com"]
+};
+const COMMON_SKILL_SUGGESTIONS = ["coding", "code_review", "security", "data_analysis", "ops", "docs", "testing", "planning"];
+const COMMON_ROLE_SUGGESTIONS = ["user", "developer", "operator", "admin", "security_admin", "auditor", "approver"];
+const COMMON_COMMAND_ARG_SUGGESTIONS = ["--help", "--version", "--transport", "stdio", "--port", "8080", "--config", "config.json"];
+const COMMON_TEXT_FALLBACK_SUGGESTIONS = ["default", "local", "remote", "auto", "enabled", "disabled"];
+const COMMON_LINE_FALLBACK_SUGGESTIONS = ["default", "local", "remote", "project", "ops", "security"];
+const COMMON_NUMBER_FALLBACK_SUGGESTIONS = [0, 1, 2, 3, 5, 10, 30, 60, 120, 300];
+const ROLE_NAME_SUGGESTIONS = ["developer", "security engineer", "ops engineer", "product manager", "data analyst", "support engineer"];
+const ROLE_DESCRIPTION_SUGGESTIONS = [
+  "Help with coding, debugging, testing, and technical planning.",
+  "Review security risk, permissions, network access, and operational changes.",
+  "Assist with operations, diagnostics, deployment checks, and incident response.",
+  "Support product analysis, documentation, research, and decision preparation."
+];
+const LLM_URL_SUGGESTIONS = [
+  "https://api.openai.com/v1",
+  "https://api.anthropic.com",
+  "https://open.bigmodel.cn/api/coding/paas/v4",
+  "https://open.bigmodel.cn/api/anthropic",
+  "https://api.minimaxi.com/v1",
+  "https://api.kimi.com/coding/v1",
+  "http://localhost:11434/v1",
+  "http://localhost:1234/v1"
+];
+const LLM_MODEL_SUGGESTIONS = ["auto", "gpt-4o", "claude-sonnet-4-20250514", "glm-5-turbo", "glm-5.1", "kimi-for-coding", "MiniMax-M2.7", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"];
+const WEB_SEARCH_PROVIDER_TYPES = {
+  duckduckgo: { name: "DuckDuckGo", base_url: "" },
+  brave: { name: "Brave Search", base_url: "https://api.search.brave.com" },
+  serper: { name: "Serper", base_url: "https://google.serper.dev" },
+  tinyfish: { name: "TinyFish", base_url: "" },
+  searxng: { name: "SearXNG", base_url: "http://localhost:8080" }
+};
+const CONFIG_OBJECT_LIST_FIELDS = {
+  maclaw_llm_providers: {
+    rows: 3,
+    fields: [
+      { key: "name", kind: "text" },
+      { key: "url", kind: "text", suggestions: LLM_URL_SUGGESTIONS },
+      { key: "key", kind: "password" },
+      { key: "model", kind: "text", suggestions: LLM_MODEL_SUGGESTIONS },
+      { key: "protocol", kind: "select", options: ["", "openai", "anthropic"] },
+      { key: "auth_type", kind: "select", options: ["", "apikey", "bearer", "oauth", "sso"] },
+      { key: "agent_type", kind: "select", options: ["", "openclaw", "claude"] },
+      { key: "wire_api", kind: "select", options: ["", "chat", "responses", "responses-ws"] },
+      { key: "supports_vision", kind: "bool" },
+      { key: "context_length", kind: "number", options: [32000, 64000, 110000, 200000] },
+      { key: "timeout_sec", kind: "number", options: [60, 120, 300, 480, 900] }
+    ]
+  }
+};
+const CONFIG_OBJECT_FIELDS = {
+  mis_data: {
+    fields: [
+      { key: "enabled", kind: "bool" },
+      { key: "endpoint", kind: "text", suggestions: ["https://mis.example.com/api", "http://localhost:8080/api"] },
+      { key: "token", kind: "password" },
+      { key: "tenant_id", kind: "text" },
+      { key: "user_id", kind: "text" },
+      { key: "role", kind: "select", options: ["", "data_user", "data_admin"] }
+    ]
+  },
+  group_discussion: {
+    fields: [
+      { key: "enabled", kind: "bool" },
+      { key: "discoverable", kind: "bool" },
+      { key: "availability", kind: "select", options: ["", "available", "busy", "dnd", "offline"] },
+      { key: "suggest_consultation", kind: "bool" },
+      { key: "confirm_before_start", kind: "bool" },
+      { key: "display_name", kind: "text" },
+      { key: "security_group_id", kind: "text" },
+      { key: "skills", kind: "lines", suggestions: COMMON_SKILL_SUGGESTIONS },
+      { key: "description", kind: "longtext", suggestions: ROLE_DESCRIPTION_SUGGESTIONS },
+      { key: "model_visibility", kind: "select", options: ["", "public", "security_group", "private"] },
+      { key: "languages", kind: "multi", options: ["zh-CN", "en-US", "ja-JP", "ko-KR"] },
+      { key: "invite_policy", kind: "select", options: ["", "auto_accept", "confirm", "reject"] },
+      { key: "allow_security_group_free_discussion", kind: "bool" },
+      { key: "use_cross_agent_experience", kind: "bool" },
+      { key: "allowed_roles", kind: "multi", options: COMMON_ROLE_SUGGESTIONS },
+      { key: "max_risk_level", kind: "select", options: ["", "low", "medium", "high"] },
+      { key: "context_policy", kind: "select", options: ["", "summary", "full", "minimal"] },
+      { key: "reject_when_dnd", kind: "bool" },
+      { key: "max_rounds", kind: "number", options: [1, 2, 3, 5, 8] },
+      { key: "timeout_seconds", kind: "number", options: [30, 60, 120, 300, 600] },
+      { key: "concurrent_limit", kind: "number", options: [1, 2, 3, 5, 10] },
+      { key: "contribution_score", kind: "number", options: [0, 0.5, 1, 2, 5] },
+      { key: "contribution_evidence", kind: "number", options: [0, 1, 3, 5, 10] },
+      { key: "sensitive_query_policy", kind: "select", options: ["", "allow", "confirm", "reject"] }
+    ]
+  },
+  auxiliary_llm: {
+    fields: [
+      { key: "url", kind: "text", suggestions: LLM_URL_SUGGESTIONS },
+      { key: "key", kind: "password" },
+      { key: "model", kind: "text", suggestions: LLM_MODEL_SUGGESTIONS },
+      { key: "protocol", kind: "select", options: ["", "openai", "anthropic"] }
+    ]
+  },
+  capability_market_policy: {
+    fields: [
+      { key: "view_mode", kind: "select", options: ["", "merged", "enterprise_only", "hubcenter_only"] },
+      { key: "enterprise_only_install", kind: "bool" },
+      { key: "enterprise_only_search", kind: "bool" },
+      { key: "managed_deployment.enabled", kind: "bool" },
+      { key: "managed_deployment.retry_interval_minutes", kind: "number", options: [15, 30, 60, 120, 240, 1440] },
+      { key: "managed_deployment.reinstall_if_removed", kind: "bool" },
+      { key: "recommended_capability.enabled", kind: "bool" },
+      { key: "recommended_capability.allow_user_dismiss", kind: "bool" },
+      { key: "update_policy.enterprise_hub.default", kind: "select", options: ["", "auto_update_approved", "auto_update", "auto_update_disabled", "notify_admin", "auto_update_patch_only", "auto_update_trusted_publisher"] },
+      { key: "update_policy.enterprise_hub.apply_to", kind: "multi", options: ["managed_deployments", "installed_enterprise_capabilities", "recommended_capabilities_installed_by_user"] },
+      { key: "update_policy.hubcenter.free_capability", kind: "select", options: ["", "auto_update", "auto_update_disabled", "notify_admin", "auto_import_pending_review", "auto_update_patch_only", "auto_update_trusted_publisher"] },
+      { key: "update_policy.hubcenter.paid_capability", kind: "select", options: ["", "require_license_and_purchase_policy", "notify_admin", "auto_import_pending_review", "auto_update_disabled"] },
+      { key: "update_policy.hubcenter.license_or_price_changed", kind: "select", options: ["", "require_admin_or_purchase_policy", "notify_admin", "auto_update_disabled"] },
+      { key: "source_priority.enterprise_hub", kind: "number", options: [0, 20, 40, 60, 80, 100] },
+      { key: "source_priority.hubcenter", kind: "number", options: [0, 20, 40, 60, 80, 100] },
+      { key: "source_priority.clawhub", kind: "number", options: [0, 20, 40, 60, 80, 100] },
+      { key: "source_priority.github", kind: "number", options: [0, 20, 40, 60, 80, 100] },
+      { key: "resource_types.skill.allowed_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
+      { key: "resource_types.skill.default_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
+      { key: "resource_types.skill.user_configurable_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
+      { key: "resource_types.mcp.allowed_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
+      { key: "resource_types.mcp.default_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
+      { key: "resource_types.mcp.user_configurable_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] }
+    ]
+  }
+};
+const CONFIG_OBJECT_MAP_FIELDS = {
+  model_routes: {
+    rows: 6,
+    keyName: "route",
+    keyOptions: ["intent", "fast", "reasoning", "vision", "summary", "default"],
+    fields: [
+      { key: "model", kind: "text", suggestions: LLM_MODEL_SUGGESTIONS },
+      { key: "url", kind: "text", suggestions: LLM_URL_SUGGESTIONS },
+      { key: "key", kind: "password" },
+      { key: "protocol", kind: "select", options: ["", "openai", "anthropic"] },
+      { key: "provider", kind: "provider" }
+    ]
+  }
+};
+const CONFIG_JSON_STRING_OBJECT_FIELDS = {
+  ve_approval_config: {
+    fields: [
+      { key: "enabled", kind: "bool" },
+      { key: "acl.mode", kind: "select", options: ["", "whitelist", "blacklist"] },
+      { key: "acl.departments", kind: "lines", suggestions: ["engineering", "product", "security", "ops", "finance", "legal", "hr"] },
+      { key: "acl.roles", kind: "lines", suggestions: COMMON_ROLE_SUGGESTIONS },
+      { key: "acl.skills", kind: "lines", suggestions: COMMON_SKILL_SUGGESTIONS },
+      { key: "acl.entities", kind: "lines", suggestions: ["all", "tenant", "department", "team", "user"] },
+      { key: "max_queue_size", kind: "number", options: [10, 50, 100, 200, 500, 1000] },
+      { key: "timeout_hours", kind: "number", options: [1, 4, 8, 24, 72, 168, 720] },
+      { key: "daily_quota", kind: "number", options: [10, 50, 100, 500, 1000, 5000, 10000] },
+      { key: "fallback_approver", kind: "text" }
+    ]
+  }
+};
+const CONFIG_SUGGESTION_FIELDS = {
+  maclaw_llm_url: LLM_URL_SUGGESTIONS,
+  maclaw_llm_model: LLM_MODEL_SUGGESTIONS,
+  tts_voice_id: ["default", "zf_xiaobei", "zf_xiaoni", "zm_yunjian", "zm_yunxi"],
+  default_proxy_host: ["127.0.0.1", "localhost"],
+  default_proxy_port: ["7890", "7897", "1080", "3128", "8080"],
+  working_directory: ["~/.maclaw/workspace", "~/workspace", "D:/workprj"],
+  data_dir: ["~/.maclaw", "D:/workprj/aicoder/data"],
+  local_needle_model_path: ["~/.maclaw/models/needle", "models/needle"],
+  remote_hub_url: ["https://hub.example.com"],
+  remote_hubcenter_url: ["https://hubcenter.example.com"],
+  lansenger_gateway_url: ["https://apigw.lx.qianxin.com"],
+  lansenger_wss_url: ["wss://apigw.lx.qianxin.com/ws", "wss://gateway.example.com/ws"],
+  weixin_base_url: ["https://api.weixin.qq.com"],
+  weixin_cdn_url: ["https://res.wx.qq.com", "https://cdn.example.com/weixin"],
+  skill_market_url: ["https://hubcenter.example.com", "https://hub.example.com"],
+  thirdparty_gateway_host: ["127.0.0.1", "0.0.0.0", "localhost"],
+  maclaw_role_name: ROLE_NAME_SUGGESTIONS,
+  maclaw_role_description: ROLE_DESCRIPTION_SUGGESTIONS
+};
+const GENERIC_TEXT_SUGGESTIONS = {
+  url: ["https://example.com", "http://localhost:8080", "http://localhost:3000"],
+  wss: ["wss://gateway.example.com/ws", "ws://localhost:8080/ws"],
+  host: ["127.0.0.1", "0.0.0.0", "localhost"],
+  path: ["~/.maclaw", "~/.maclaw/workspace", "~/workspace", "D:/workprj"],
+  name: ["default", "local", "development", "production", "security", "ops"],
+  id: ["default", "local", "hub", "dev", "prod"],
+  user: ["root", "ubuntu", "ec2-user", "deploy", "admin"],
+  email: ["user@example.com", "admin@example.com"],
+  mobile: ["+8613800138000", "+12025550123"],
+  nickname: ["developer", "operator", "assistant", "reviewer"],
+  model: LLM_MODEL_SUGGESTIONS
+};
+const GENERIC_OBJECT_KEY_SUGGESTIONS = ["name", "url", "endpoint", "enabled", "type", "mode", "token", "key", "secret", "path", "role", "source"];
+function userProfileSuggestions(keys) {
+  const out = [];
+  keys.forEach((key) => {
+    const value = state.me?.[key];
+    if (value !== undefined && value !== null && String(value).trim()) out.push(String(value).trim());
+  });
+  return out;
+}
+function genericSuggestionOptions(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.includes("email")) return [...new Set([...userProfileSuggestions(["email", "remote_email", "user_email"]), ...GENERIC_TEXT_SUGGESTIONS.email])];
+  if (k.includes("mobile") || k.includes("phone")) return [...new Set([...userProfileSuggestions(["mobile", "phone", "remote_mobile"]), ...GENERIC_TEXT_SUGGESTIONS.mobile])];
+  if (k.includes("nickname") || k.includes("display_name")) return [...new Set([...userProfileSuggestions(["name", "display_name", "user_name", "email"]), ...GENERIC_TEXT_SUGGESTIONS.nickname])];
+  if (k.includes("model")) return GENERIC_TEXT_SUGGESTIONS.model;
+  if (k.includes("wss") || k.includes("websocket")) return GENERIC_TEXT_SUGGESTIONS.wss;
+  if (k.endsWith("url") || k.includes("_url") || k.includes("endpoint")) return GENERIC_TEXT_SUGGESTIONS.url;
+  if (k.endsWith("host") || k.includes("_host")) return GENERIC_TEXT_SUGGESTIONS.host;
+  if (k.includes("path") || k.includes("dir") || k.includes("directory")) return GENERIC_TEXT_SUGGESTIONS.path;
+  if (k.endsWith("user") || k.includes("_user")) return GENERIC_TEXT_SUGGESTIONS.user;
+  if (k.endsWith("name") || k.includes("display_name") || k.endsWith("label") || k.endsWith("title")) return GENERIC_TEXT_SUGGESTIONS.name;
+  if (k.endsWith("id") && !k.includes("token") && !k.includes("secret") && !k.includes("key")) return GENERIC_TEXT_SUGGESTIONS.id;
+  return GENERIC_TEXT_SUGGESTIONS.name;
+}
+function genericLineSuggestions(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.includes("skill")) return COMMON_SKILL_SUGGESTIONS;
+  if (k.includes("role")) return COMMON_ROLE_SUGGESTIONS;
+  if (k.includes("source")) return ["enterprise_hub", "hubcenter", "skillhub", "clawhub", "github", "local"];
+  if (k.includes("employee") || k.includes("user") || k.includes("member") || k.includes("approver")) {
+    return [...new Set([...userProfileSuggestions(["name", "display_name", "user_name", "email", "remote_email"]), "admin", "operator", "developer", "approver"])];
+  }
+  if (k.includes("url") || k.includes("feed") || k.includes("endpoint")) return GENERIC_TEXT_SUGGESTIONS.url;
+  if (k.includes("host") || k.includes("allowlist")) return GENERIC_TEXT_SUGGESTIONS.host;
+  if (k.includes("path") || k.includes("dir") || k.includes("directory")) return GENERIC_TEXT_SUGGESTIONS.path;
+  return GENERIC_TEXT_SUGGESTIONS.name;
+}
+function genericNumberOptions(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.includes("port")) return [0, 22, 80, 443, 7890, 8080, 18080];
+  if (k.includes("timeout") || k.includes("interval")) return [0, 5, 10, 30, 60, 120, 300, 600];
+  if (k.includes("limit") || k.includes("max")) return [0, 1, 3, 5, 10, 50, 100, 500, 1000];
+  if (k.includes("score") || k.includes("confidence")) return [0, 0.5, 0.7, 0.8, 0.9, 0.95, 1];
+  return [0, 1, 2, 5, 10, 20, 50, 100];
+}
+const CONFIG_CHOICE_LABELS = {
+  en: {
+    maclaw_llm_protocol: { openai: "OpenAI compatible", anthropic: "Anthropic" },
+    default_proxy_protocol: { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" },
+    default_launch_mode: { local: "Local", remote: "Remote" },
+    language: { "zh-CN": "Simplified Chinese", "en-US": "English" },
+    skill_purchase_mode: { auto: "Auto", free_only: "Free only" },
+    ui_mode: { lite: "Lite", pro: "Pro" },
+    security_policy_mode: { none: "Off", standard: "Standard", relaxed: "Relaxed", strict: "Strict", developer: "Developer" },
+    sandbox_mode: { none: "Off", os: "OS sandbox", docker: "Docker" },
+    network_level: { none: "Offline", intranet: "Intranet only", allowlist: "Allowlist", full: "Full network" },
+    pet_skin: { clawmate: "Clawmate", "mini-claw": "Mini claw", "dev-claw": "Dev claw", "focus-claw": "Focus claw" },
+    pet_interaction_mode: { quiet: "Quiet", balanced: "Balanced", active: "Active" },
+    pet_conversation_mode: { "text-first": "Text first", "voice-turn": "Voice turn", continuous: "Continuous" },
+    pet_readback_mode: { off: "Off", summary: "Summary", full: "Full", "done-only": "Done only" },
+    pet_motion_sound_preset: { classic: "Classic", bubble: "Bubble", chime: "Chime", synth: "Synth", soft: "Soft" }
+  },
+  zh: {
+    maclaw_llm_protocol: { openai: "OpenAI \u517c\u5bb9", anthropic: "Anthropic" },
+    default_proxy_protocol: { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" },
+    default_launch_mode: { local: "\u672c\u5730", remote: "\u8fdc\u7a0b" },
+    language: { "zh-CN": "\u7b80\u4f53\u4e2d\u6587", "en-US": "\u82f1\u6587" },
+    skill_purchase_mode: { auto: "\u81ea\u52a8", free_only: "\u4ec5\u514d\u8d39" },
+    ui_mode: { lite: "\u7b80\u6d01", pro: "\u4e13\u4e1a" },
+    security_policy_mode: { none: "\u5173\u95ed", standard: "\u6807\u51c6", relaxed: "\u5bbd\u677e", strict: "\u4e25\u683c", developer: "\u5f00\u53d1\u8005" },
+    sandbox_mode: { none: "\u5173\u95ed", os: "\u7cfb\u7edf\u6c99\u7bb1", docker: "Docker" },
+    network_level: { none: "\u79bb\u7ebf", intranet: "\u4ec5\u5185\u7f51", allowlist: "\u5141\u8bb8\u5217\u8868", full: "\u5b8c\u6574\u7f51\u7edc" },
+    pet_skin: { clawmate: "Clawmate", "mini-claw": "Mini Claw", "dev-claw": "Dev Claw", "focus-claw": "Focus Claw" },
+    pet_interaction_mode: { quiet: "\u5b89\u9759", balanced: "\u5e73\u8861", active: "\u6d3b\u8dc3" },
+    pet_conversation_mode: { "text-first": "\u6587\u5b57\u4f18\u5148", "voice-turn": "\u8bed\u97f3\u8f6e\u6b21", continuous: "\u8fde\u7eed\u5bf9\u8bdd" },
+    pet_readback_mode: { off: "\u5173\u95ed", summary: "\u6458\u8981", full: "\u5b8c\u6574", "done-only": "\u4ec5\u5b8c\u6210\u65f6" },
+    pet_motion_sound_preset: { classic: "\u7ecf\u5178", bubble: "\u6c14\u6ce1", chime: "\u63d0\u793a\u97f3", synth: "\u5408\u6210", soft: "\u67d4\u548c" }
+  }
+};
+function configBoolLabel(value) {
+  if (value === true) return t("channelEnabled");
+  if (value === false) return t("channelDisabled");
+  return t("channelAuto");
+}
+function localModeLabel(value) {
+  if (value === true) return t("channelLocal");
+  if (value === false) return t("channelHub");
+  return t("channelAuto");
+}
+function thirdPartyProtocolEndpoint() {
+  const host = String($("cfg_thirdparty_gateway_host")?.value || state.config?.thirdparty_gateway_host || "127.0.0.1").trim() || "127.0.0.1";
+  const port = String($("cfg_thirdparty_gateway_port")?.value || state.config?.thirdparty_gateway_port || 18777).trim() || "18777";
+  return `http://${host}:${port}/api/im-gateway/v1`;
+}
+function updateThirdPartyEndpoint() {
+  const el = $("thirdPartyProtocolEndpoint");
+  if (el) el.textContent = thirdPartyProtocolEndpoint();
+}
+function generateThirdPartyToken() {
+  const input = $("cfg_thirdparty_gateway_token");
+  if (!input || !window.crypto?.getRandomValues) { toast(t("channelTokenUnavailable")); return; }
+  const bytes = new Uint8Array(32);
+  window.crypto.getRandomValues(bytes);
+  input.value = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  toast(t("channelTokenGenerated"));
+}
+function bindChannelTools() {
+  const copy = $("copyThirdPartyEndpoint");
+  if (copy) copy.onclick = () => copyTextImproved(thirdPartyProtocolEndpoint(), copy);
+  const generate = $("generateThirdPartyToken");
+  if (generate) generate.onclick = generateThirdPartyToken;
+  ["cfg_thirdparty_gateway_host", "cfg_thirdparty_gateway_port"].forEach((id) => {
+    const el = $(id);
+    if (el) el.addEventListener("input", updateThirdPartyEndpoint);
+  });
+  updateThirdPartyEndpoint();
+}
+function randomSecretValue() {
+  if (!window.crypto?.getRandomValues) return "";
+  const bytes = new Uint8Array(32);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+function isLikelySecretKey(key) {
+  return /(^|_)(api_?key|secret|token|password|passwd|pwd)(_|$)/i.test(String(key || ""));
+}
+function bindSecretGenerators() {
+  document.querySelectorAll("[data-generate-secret]").forEach((button) => {
+    button.onclick = () => {
+      const target = $(button.dataset.generateSecret || "");
+      const value = randomSecretValue();
+      if (!target || !value) { toast(t("channelTokenUnavailable")); return; }
+      target.value = value;
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      toast(t("channelTokenGenerated"));
+    };
+  });
+}
+function secretFieldMarkup(id, attrs, current, extra = "") {
+  return `<div class="secret-input"><input id="${esc(id)}" ${attrs} type="password" autocomplete="new-password" spellcheck="false" value="${esc(current)}" ${extra}><button type="button" class="secondary" data-generate-secret="${esc(id)}">${esc(t("generateSecret"))}</button></div>`;
+}
+function channelCard(title, enabledKey, localModeKey, fields = []) {
+  const enabled = state.config?.[enabledKey];
+  const local = localModeKey ? state.config?.[localModeKey] : undefined;
+  const meta = fields.map((key) => {
+    const d = fieldMeta({ key, title: key });
+    const value = state.config?.[key];
+    const present = value !== undefined && value !== null && String(value).trim() !== "";
+    return `<span class="channel-chip ${present ? "on" : ""}">${esc(d.title || key)}</span>`;
+  }).join("");
+  return `<article class="channel-card"><div class="split"><h3>${esc(title)}</h3><span class="badge ${enabled ? "ok" : ""}">${esc(configBoolLabel(enabled))}</span></div><div class="row"><span class="pill">${esc(localModeKey ? localModeLabel(local) : t("channelAuto"))}</span>${meta}</div></article>`;
+}
+function hubManagedChannelCard() {
+  return `<article class="channel-card managed"><div class="split"><h3>${esc(t("channelHubManaged"))}</h3><span class="badge ok">Hub</span></div><p class="helper">${esc(t("channelHubManagedHint"))}</p><div class="row"><span class="channel-chip on">${esc(t("channelEnterpriseWeCom"))}</span><span class="channel-chip on">${esc(t("channelFeishu"))}</span><span class="channel-chip on">${esc(t("channelDingTalk"))}</span></div></article>`;
+}
+function renderChannelOverview() {
+  return `<div class="channel-overview"><div class="split"><div><strong>${t("channelOverview")}</strong><span class="helper">${t("channelOverviewHint")}</span></div></div><div class="channel-grid">${[
+    hubManagedChannelCard(),
+    channelCard(t("channelQQ"), "qqbot_enabled", "qqbot_local_mode", ["qqbot_app_id", "qqbot_app_secret"]),
+    channelCard(t("channelTelegram"), "telegram_bot_enabled", "telegram_local_mode", ["telegram_bot_token"]),
+    channelCard(t("channelWeixin"), "weixin_enabled", "weixin_local_mode", ["weixin_token", "weixin_base_url", "weixin_cdn_url", "weixin_account_id"]),
+    channelCard(t("channelLansenger"), "lansenger_enabled", "lansenger_local_mode", ["lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url", "lansenger_wss_url"]),
+    channelCard(t("channelThirdParty"), "thirdparty_gateway_enabled", "thirdparty_gateway_local_mode", ["thirdparty_gateway_token", "thirdparty_gateway_host", "thirdparty_gateway_port"]),
+    channelCard(t("channelVoice"), "tts_enabled", "", ["asr_enabled", "tts_voice_id", "tts_auto_voice_summary"])
+  ].join("")}</div><div class="channel-protocol"><div><strong>${esc(t("channelProtocolEndpoint"))}</strong><code id="thirdPartyProtocolEndpoint">${esc(thirdPartyProtocolEndpoint())}</code></div><div class="row"><button type="button" class="secondary" id="copyThirdPartyEndpoint">${esc(t("channelCopyEndpoint"))}</button><button type="button" class="secondary" id="generateThirdPartyToken">${esc(t("channelGenerateToken"))}</button></div></div><p class="helper">${t("channelLocalModeHint")}</p><p class="helper">${t("channelCredentialHint")}</p></div>`;
+}
 function configGroups(defs) {
-  const byKey = Object.fromEntries(defs.map((x) => [x.key, x]));
-  const allKeys = [...new Set([...defs.map((x) => x.key), ...Object.keys(state.config || {})])];
+  const visibleDefs = defs.filter((x) => !HIDDEN_CONFIG_KEYS.has(x.key));
+  const byKey = Object.fromEntries(visibleDefs.map((x) => [x.key, x]));
+  const allKeys = [...new Set([...visibleDefs.map((x) => x.key), ...Object.keys(state.config || {}).filter((key) => !HIDDEN_CONFIG_KEYS.has(key))])];
   const groups = [
-    { id: "llm", title: t("groupLLM"), hint: t("groupLLMHint"), keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_current_provider", "maclaw_llm_providers"] },
-    { id: "tools", title: t("groupTools"), hint: t("groupToolsHint"), keys: ["mcp_servers", "local_mcp_servers", "web_search_providers", "web_search_current_provider"] },
-    { id: "skills", title: t("groupSkills"), hint: t("groupSkillsHint"), keys: ["nl_skills", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed"] },
+    { id: "llm", title: t("groupLLM"), hint: t("groupLLMHint"), keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes"] },
+    { id: "tools", title: t("groupTools"), hint: t("groupToolsHint"), keys: ["web_search_providers", "web_search_current_provider"] },
+    { id: "skills", title: t("groupSkills"), hint: t("groupSkillsHint"), keys: [] },
     { id: "memory", title: t("groupMemory"), hint: t("groupMemoryHint"), keys: ["memory_auto_compress", "memory_max_backups", "knowledge_skill_token_budget"] },
     { id: "security", title: t("groupSecurity"), hint: t("groupSecurityHint"), keys: ["security_policy_mode", "sandbox_mode", "network_level", "yolo_mode_allowed"] },
+    { id: "channels", title: t("groupChannels"), hint: t("groupChannelsHint"), keys: CHANNEL_CONFIG_KEYS },
   ];
   const used = new Set(groups.flatMap((g) => g.keys));
   const rest = allKeys.filter((key) => !used.has(key));
   const pick = (pred) => rest.filter(pred);
   groups.push(
-    { id: "channels", title: t("groupChannels"), hint: t("groupChannelsHint"), keys: pick((key) => /^(qqbot|telegram|weixin|lansenger|thirdparty|asr_|tts_|audio_|voice_|noise_|speech_)/.test(key)) },
+    { id: "channels_more", title: t("groupChannels"), hint: t("groupChannelsHint"), keys: pick((key) => /^(qqbot|telegram|weixin|lansenger|thirdparty|asr_|tts_|audio_|voice_|noise_|speech_)/.test(key)) },
     { id: "ui", title: t("groupUI"), hint: t("groupUIHint"), keys: pick((key) => /^(ui_|show_|hide_|pet_|floating_|default_|remote_|power_|screen_|workstation_|check_|pause_|env_|language$|active_tool$|current_project$|projects$|extra_tool_configs$)/.test(key)) },
     { id: "advanced", title: t("groupAdvanced"), hint: t("groupAdvancedHint"), keys: [] }
   );
   const grouped = new Set(groups.flatMap((g) => g.keys));
   groups[groups.length - 1].keys = rest.filter((key) => !grouped.has(key));
-  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key)) })).filter((g) => g.keys.length);
+  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key)) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "channels"].includes(g.id));
 }
 function setActiveConfigTab(tab) {
   state.settingsTab = tab;
   document.querySelectorAll("[data-cfg-tab]").forEach((b) => { const on = b.dataset.cfgTab === tab; b.classList.toggle("active", on); b.setAttribute("aria-selected", on ? "true" : "false"); });
   document.querySelectorAll("[data-cfg-panel]").forEach((p) => { const off = p.dataset.cfgPanel !== tab; p.hidden = off; p.setAttribute("aria-hidden", off ? "true" : "false"); });
+}
+function bindChoiceCustomControls() {
+  document.querySelectorAll(".choice-custom").forEach((box) => {
+    const select = box.querySelector("[data-choice-suggest]");
+    const input = box.querySelector("[data-choice-custom]");
+    if (!select || !input) return;
+    const sync = () => {
+      const custom = select.value === "__custom__";
+      box.classList.toggle("custom-active", custom);
+      input.disabled = !custom;
+      if (custom) input.removeAttribute("aria-hidden"); else input.setAttribute("aria-hidden", "true");
+    };
+    select.onchange = sync;
+    sync();
+  });
+  document.querySelectorAll("[data-list-kind='longtext-choice']").forEach((box) => {
+    const select = box.querySelector("[data-longtext-suggest]");
+    const detail = box.querySelector(".custom-lines");
+    if (!select || !detail) return;
+    const sync = () => { if (select.value === "__custom__") detail.open = true; };
+    select.onchange = sync;
+    sync();
+  });
+  document.querySelectorAll("[data-choice-lines-action]").forEach((button) => {
+    button.onclick = () => {
+      const box = button.closest("[data-list-kind='choice-lines']");
+      const select = box?.querySelector("[data-array-suggest]");
+      if (!select) return;
+      const on = button.dataset.choiceLinesAction === "all";
+      [...select.options].forEach((opt) => { opt.selected = on; });
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+  });
+  document.querySelectorAll(".kv-pair").forEach((pair) => {
+    const bind = (selectName, inputName, className) => {
+      const select = pair.querySelector(`[${selectName}]`);
+      const input = pair.querySelector(`[${inputName}]`);
+      if (!select || !input) return;
+      const sync = () => {
+        const custom = select.value === "__custom__";
+        pair.classList.toggle(className, custom);
+        input.disabled = !custom;
+        if (custom) input.removeAttribute("aria-hidden"); else input.setAttribute("aria-hidden", "true");
+      };
+      select.onchange = sync;
+      sync();
+    };
+    bind("data-kv-key", "data-kv-key-custom", "custom-key-active");
+    bind("data-kv-value", "data-kv-value-custom", "custom-value-active");
+    bind("data-generic-object-key", "data-generic-object-key-custom", "custom-key-active");
+    bind("data-generic-object-value", "data-generic-object-value-custom", "custom-value-active");
+  });
 }
 function moveConfigTab(current, delta) {
   const tabs = [...document.querySelectorAll("[data-cfg-tab]")];
@@ -628,12 +1685,289 @@ function fieldValue(key, def = {}) {
   if (def.type === "bool") return value === true ? "true" : value === false ? "false" : "";
   return value ?? "";
 }
+function configChoiceLabel(key, value) {
+  return CONFIG_CHOICE_LABELS[locale]?.[key]?.[value] || CONFIG_CHOICE_LABELS.en[key]?.[value] || value;
+}
+function genericChoiceOptions(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.endsWith("mode") || k.endsWith("_mode")) return GENERIC_CHOICE_FIELDS.mode;
+  if (k.endsWith("policy") || k.endsWith("_policy")) return GENERIC_CHOICE_FIELDS.policy;
+  if (k.endsWith("type") || k.endsWith("_type")) return GENERIC_CHOICE_FIELDS.type;
+  if (k.endsWith("status") || k.endsWith("_status")) return GENERIC_CHOICE_FIELDS.status;
+  if (k.endsWith("source") || k.endsWith("_source")) return GENERIC_CHOICE_FIELDS.source;
+  return [];
+}
+function providerChoiceOptions(key) {
+  const listKey = key === "maclaw_llm_current_provider" ? "maclaw_llm_providers" : key === "web_search_current_provider" ? "web_search_providers" : "";
+  if (!listKey) return null;
+  return items(state.config?.[listKey]).map((x) => String(x.name || x.Name || "").trim()).filter(Boolean);
+}
+function stringChoiceInput(key, value) {
+  const options = CONFIG_CHOICE_FIELDS[key] || providerChoiceOptions(key) || genericChoiceOptions(key) || [];
+  const current = String(value || "");
+  const all = current && !options.includes(current) ? [...options, current] : options;
+  return `<select id="cfg_${key}" data-key="${esc(key)}" data-type="string" data-unset-empty="true"><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${all.map((opt) => `<option value="${esc(opt)}" ${current === opt ? "selected" : ""}>${esc(configChoiceLabel(key, opt))}${options.includes(opt) ? "" : ` (${esc(opt)})`}</option>`).join("")}</select>`;
+}
+function numberChoiceInput(key, value, type) {
+  const options = CONFIG_NUMBER_CHOICE_FIELDS[key] || genericNumberOptions(key) || [];
+  const current = String(value ?? "");
+  const normalized = options.map((opt) => String(opt));
+  const all = current && !normalized.includes(current) ? [...normalized, current] : normalized;
+  return `<select id="cfg_${key}" data-key="${esc(key)}" data-type="${esc(type)}" data-unset-empty="true"><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${all.map((opt) => `<option value="${esc(opt)}" ${current === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`;
+}
+function numberChoiceCustomMarkup(id, attrs, current, suggestions) {
+  const value = String(current ?? "").trim();
+  const options = suggestions.map((opt) => String(opt));
+  const selected = options.includes(value) ? value : "";
+  const custom = selected ? "" : value;
+  return `<div id="${esc(id)}" ${attrs} data-list-kind="choice-custom" class="choice-custom ${custom ? "custom-active" : ""}"><select data-choice-suggest><option value="" ${selected === "" && !custom ? "selected" : ""}>${t("unset")}</option>${options.map((opt) => `<option value="${esc(opt)}" ${selected === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}<option value="__custom__" ${custom ? "selected" : ""}>${t("customValue")}</option></select><input type="number" data-choice-custom value="${esc(custom)}" aria-label="${esc(id)} custom"></div>`;
+}
+function arrayChoiceInput(key) {
+  const options = CONFIG_ARRAY_CHOICE_FIELDS[key] || [];
+  const current = items(state.config?.[key]).map((v) => String(v).trim()).filter(Boolean);
+  const all = [...new Set([...options, ...current])];
+  return `<select id="cfg_${key}" data-key="${esc(key)}" data-type="array-choice" multiple size="${Math.min(Math.max(all.length, 3), 6)}">${all.map((opt) => `<option value="${esc(opt)}" ${current.includes(opt) ? "selected" : ""}>${esc(configChoiceLabel(key, opt))}${options.includes(opt) ? "" : ` (${esc(opt)})`}</option>`).join("")}</select>`;
+}
+function choiceLinesMarkup(id, attrs, currentValues, suggestions, stringMode = false) {
+  const current = currentValues.map((v) => String(v).trim()).filter(Boolean);
+  const selected = current.filter((v) => suggestions.includes(v));
+  const custom = current.filter((v) => !suggestions.includes(v)).join("\n");
+  const type = stringMode ? "string-choice-lines" : "array-choice-lines";
+  return `<div id="${esc(id)}" ${attrs} data-type="${type}" data-list-kind="choice-lines" class="choice-lines"><div class="choice-select-stack"><select data-array-suggest multiple size="${Math.min(Math.max(suggestions.length, 3), 7)}">${suggestions.map((opt) => `<option value="${esc(opt)}" ${selected.includes(opt) ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select><div class="choice-actions"><button type="button" class="secondary" data-choice-lines-action="all">${t("selectAll")}</button><button type="button" class="secondary" data-choice-lines-action="clear">${t("clearSelection")}</button></div></div><details class="custom-lines" ${custom ? "open" : ""}><summary>${t("customValue")}</summary><textarea data-array-custom>${esc(custom)}</textarea></details></div>`;
+}
+function choiceCustomMarkup(id, attrs, current, suggestions) {
+  const value = String(current ?? "").trim();
+  const selected = suggestions.includes(value) ? value : "";
+  const custom = selected ? "" : value;
+  return `<div id="${esc(id)}" ${attrs} data-list-kind="choice-custom" class="choice-custom ${custom ? "custom-active" : ""}"><select data-choice-suggest><option value="" ${selected === "" && !custom ? "selected" : ""}>${t("unset")}</option>${suggestions.map((opt) => `<option value="${esc(opt)}" ${selected === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}<option value="__custom__" ${custom ? "selected" : ""}>${t("customValue")}</option></select><input type="text" data-choice-custom value="${esc(custom)}" aria-label="${esc(id)} custom"></div>`;
+}
+function kvChoiceSelect(attr, customAttr, current, suggestions, ariaLabel) {
+  const value = String(current ?? "").trim();
+  const options = [...new Set(suggestions.map((x) => String(x)).filter(Boolean))];
+  const selected = options.includes(value) ? value : "";
+  const custom = selected ? "" : value;
+  return `<select ${attr} aria-label="${esc(ariaLabel)}"><option value="" ${selected === "" && !custom ? "selected" : ""}>${t("unset")}</option>${options.map((opt) => `<option value="${esc(opt)}" ${selected === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}<option value="__custom__" ${custom ? "selected" : ""}>${t("customValue")}</option></select><input type="text" ${customAttr} value="${esc(custom)}" aria-label="${esc(ariaLabel)} custom">`;
+}
+function longTextChoiceMarkup(id, attrs, current, suggestions) {
+  const selected = suggestions.includes(current) ? current : "";
+  const custom = selected ? "" : current;
+  return `<div id="${esc(id)}" ${attrs} data-list-kind="longtext-choice" class="choice-lines"><select data-longtext-suggest><option value="" ${selected === "" && !custom ? "selected" : ""}>${t("unset")}</option>${suggestions.map((opt) => `<option value="${esc(opt)}" ${selected === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}<option value="__custom__" ${custom ? "selected" : ""}>${t("customValue")}</option></select><details class="custom-lines" ${custom ? "open" : ""}><summary>${t("customValue")}</summary><textarea data-longtext-custom>${esc(custom)}</textarea></details></div>`;
+}
+function lineArrayInput(key) {
+  const value = items(state.config?.[key]).map((v) => String(v)).join("\n");
+  const suggestions = CONFIG_LINE_ARRAY_SUGGESTION_FIELDS[key] || genericLineSuggestions(key);
+  if (suggestions.length) {
+    return choiceLinesMarkup(`cfg_${key}`, `data-key="${esc(key)}"`, items(state.config?.[key]), suggestions);
+  }
+  return choiceLinesMarkup(`cfg_${key}`, `data-key="${esc(key)}"`, value.split(/\r?\n/), COMMON_LINE_FALLBACK_SUGGESTIONS);
+}
+function stringLineInput(key) {
+  const value = String(state.config?.[key] || "").split(/[;\n]/).map((v) => v.trim()).filter(Boolean).join("\n");
+  const suggestions = CONFIG_STRING_LINE_SUGGESTION_FIELDS[key] || genericLineSuggestions(key);
+  if (suggestions.length) {
+    return choiceLinesMarkup(`cfg_${key}`, `data-key="${esc(key)}"`, value.split(/\r?\n/), suggestions, true);
+  }
+  return choiceLinesMarkup(`cfg_${key}`, `data-key="${esc(key)}"`, value.split(/\r?\n/), COMMON_LINE_FALLBACK_SUGGESTIONS, true);
+}
+function genericArrayInput(key) {
+  const value = items(state.config?.[key]).map((v) => String(v)).join("\n");
+  const suggestions = genericLineSuggestions(key);
+  if (suggestions.length) return choiceLinesMarkup(`cfg_${key}`, `data-key="${esc(key)}"`, items(state.config?.[key]), suggestions);
+  return choiceLinesMarkup(`cfg_${key}`, `data-key="${esc(key)}"`, value.split(/\r?\n/), COMMON_LINE_FALLBACK_SUGGESTIONS);
+}
+function shallowObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((v) => v === null || typeof v !== "object");
+}
+function scalarLeafObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value).every((v) => v === null || typeof v !== "object" || scalarLeafObject(v));
+}
+function flattenObjectLeaves(value, prefix = "") {
+  const out = [];
+  Object.entries(value || {}).forEach(([key, val]) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (val && typeof val === "object" && !Array.isArray(val)) out.push(...flattenObjectLeaves(val, path));
+    else out.push([path, String(val ?? "")]);
+  });
+  return out;
+}
+function setPlainObjectPath(target, field, value) {
+  const parts = String(field || "").split(".").filter(Boolean);
+  if (!parts.length) return;
+  let cur = target;
+  parts.slice(0, -1).forEach((part) => {
+    if (!cur[part] || typeof cur[part] !== "object" || Array.isArray(cur[part])) cur[part] = {};
+    cur = cur[part];
+  });
+  cur[parts[parts.length - 1]] = value;
+}
+function genericObjectInput(key) {
+  const raw = state.config?.[key];
+  const source = raw === undefined || raw === null ? {} : scalarLeafObject(raw) ? raw : null;
+  if (!source) return `<details class="raw-json-editor" open><summary>${t("customValue")}</summary><textarea id="cfg_${key}" data-key="${esc(key)}" data-type="object">${esc(fieldValue(key, { type: "object" }))}</textarea></details>`;
+  const pairs = shallowObject(source) ? Object.entries(source).map(([k, v]) => [String(k), String(v ?? "")]) : flattenObjectLeaves(source);
+  const rowCount = Math.max(4, pairs.length + 2);
+  const keyChoices = [...GENERIC_OBJECT_KEY_SUGGESTIONS, ...pairs.map(([k]) => k)];
+  const valueChoices = genericLineSuggestions(key).concat(genericSuggestionOptions(key));
+  const controls = Array.from({ length: rowCount }, (_, idx) => {
+    const [k, v] = pairs[idx] || ["", ""];
+    return `<div class="kv-pair ${keyChoices.includes(k) ? "" : k ? "custom-key-active" : ""} ${valueChoices.includes(v) ? "" : v ? "custom-value-active" : ""}">${kvChoiceSelect("data-generic-object-key", "data-generic-object-key-custom", k, keyChoices, `${key} key`)}${kvChoiceSelect("data-generic-object-value", "data-generic-object-value-custom", v, valueChoices, `${key} value`)}</div>`;
+  }).join("");
+  const deep = shallowObject(source) ? "" : ' data-deep-object="true"';
+  return `<div id="cfg_${key}" data-key="${esc(key)}" data-type="object-kv"${deep} class="kv-list">${controls}</div>`;
+}
+function objectFieldValue(item, field) {
+  if (!item || typeof item !== "object") return "";
+  if (field.includes(".")) return field.split(".").reduce((cur, part) => cur && typeof cur === "object" ? cur[part] : undefined, item) ?? "";
+  const camel = field.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());
+  const pascal = camel ? camel[0].toUpperCase() + camel.slice(1) : field;
+  return item[field] ?? item[camel] ?? item[pascal] ?? "";
+}
+function objectSubInput(scope, row, f, raw) {
+  const id = `cfg_${scope}_${row}_${f.key}`;
+  const current = Array.isArray(raw) ? raw.join("\n") : String(raw ?? "");
+  const attrs = `data-list-key="${esc(scope)}" data-list-row="${row}" data-list-field="${esc(f.key)}"`;
+  if (f.kind === "select") return `<label for="${esc(id)}">${esc(f.key)}<select id="${esc(id)}" ${attrs}><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${f.options.filter(Boolean).map((opt) => `<option value="${esc(opt)}" ${current === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select></label>`;
+  if (f.kind === "text" && genericChoiceOptions(f.key).length) {
+    const options = genericChoiceOptions(f.key);
+    const all = current && !options.includes(current) ? [...options, current] : options;
+    return `<label for="${esc(id)}">${esc(f.key)}<select id="${esc(id)}" ${attrs}><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${all.map((opt) => `<option value="${esc(opt)}" ${current === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select></label>`;
+  }
+  if (f.kind === "provider") {
+    const options = providerChoiceOptions("maclaw_llm_current_provider") || [];
+    const all = current && !options.includes(current) ? [...options, current] : options;
+    return `<label for="${esc(id)}">${esc(f.key)}<select id="${esc(id)}" ${attrs}><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${all.map((opt) => `<option value="${esc(opt)}" ${current === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select></label>`;
+  }
+  if (f.kind === "number" && f.options?.length) {
+    const normalized = f.options.map((opt) => String(opt));
+    const all = current && !normalized.includes(current) ? [...normalized, current] : normalized;
+    return `<label for="${esc(id)}">${esc(f.key)}<select id="${esc(id)}" ${attrs}><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${all.map((opt) => `<option value="${esc(opt)}" ${current === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select></label>`;
+  }
+  if (f.kind === "number" && genericNumberOptions(f.key).length) {
+    const options = genericNumberOptions(f.key).map((opt) => String(opt));
+    const all = current && !options.includes(current) ? [...options, current] : options;
+    return `<label for="${esc(id)}">${esc(f.key)}<select id="${esc(id)}" ${attrs}><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${all.map((opt) => `<option value="${esc(opt)}" ${current === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select></label>`;
+  }
+  if (f.kind === "number") return `<label>${esc(f.key)}${numberChoiceCustomMarkup(id, attrs, current, COMMON_NUMBER_FALLBACK_SUGGESTIONS)}</label>`;
+  if (f.kind === "bool") return `<label for="${esc(id)}">${esc(f.key)}<select id="${esc(id)}" ${attrs}><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option><option value="true" ${current === "true" ? "selected" : ""}>${t("trueValue")}</option><option value="false" ${current === "false" ? "selected" : ""}>${t("falseValue")}</option></select></label>`;
+  if (f.kind === "multi") {
+    const selected = Array.isArray(raw) ? raw.map((x) => String(x)) : current.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const all = [...new Set([...(f.options || []), ...selected])];
+    return `<label for="${esc(id)}">${esc(f.key)}<select id="${esc(id)}" ${attrs} multiple size="${Math.min(Math.max(all.length, 3), 6)}">${all.map((opt) => `<option value="${esc(opt)}" ${selected.includes(opt) ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select></label>`;
+  }
+  if (f.kind === "kv") {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const pairs = Object.entries(source).map(([k, v]) => [String(k), String(v ?? "")]);
+    const rowCount = Math.max(3, pairs.length + 1);
+    const keyChoices = [...(f.keySuggestions || []), ...pairs.map(([k]) => k)];
+    const valueChoices = [...(f.valueSuggestions || []), ...pairs.map(([, v]) => v)];
+    const controls = Array.from({ length: rowCount }, (_, idx) => {
+      const [k, v] = pairs[idx] || ["", ""];
+      return `<div class="kv-pair ${keyChoices.includes(k) ? "" : k ? "custom-key-active" : ""} ${valueChoices.includes(v) ? "" : v ? "custom-value-active" : ""}">${kvChoiceSelect("data-kv-key", "data-kv-key-custom", k, keyChoices, `${f.key} key`)}${kvChoiceSelect("data-kv-value", "data-kv-value-custom", v, valueChoices, `${f.key} value`)}</div>`;
+    }).join("");
+    return `<label>${esc(f.key)}<div id="${esc(id)}" ${attrs} data-list-kind="kv" class="kv-list">${controls}</div></label>`;
+  }
+  if (f.kind === "lines") {
+    const suggestions = f.suggestions?.length ? f.suggestions : genericLineSuggestions(f.key);
+    if (suggestions.length) return `<label>${esc(f.key)}${choiceLinesMarkup(id, attrs, Array.isArray(raw) ? raw : current.split(/\r?\n/), suggestions)}</label>`;
+    return `<label>${esc(f.key)}${choiceLinesMarkup(id, attrs, Array.isArray(raw) ? raw : current.split(/\r?\n/), COMMON_LINE_FALLBACK_SUGGESTIONS)}</label>`;
+  }
+  if (f.kind === "longtext" && f.suggestions?.length) return `<label>${esc(f.key)}${longTextChoiceMarkup(id, attrs, current, f.suggestions)}</label>`;
+  if (f.kind === "longtext") return `<label>${esc(f.key)}${longTextChoiceMarkup(id, attrs, current, ROLE_DESCRIPTION_SUGGESTIONS)}</label>`;
+  const suggestions = f.suggestions?.length ? f.suggestions : genericSuggestionOptions(f.key);
+  if (suggestions.length) {
+    const all = current && !suggestions.includes(current) ? [...suggestions, current] : suggestions;
+    return `<label>${esc(f.key)}${choiceCustomMarkup(id, attrs, current, all)}</label>`;
+  }
+  if (f.kind === "password") return `<label for="${esc(id)}">${esc(f.key)}${secretFieldMarkup(id, attrs, current)}</label>`;
+  return `<label>${esc(f.key)}${choiceCustomMarkup(id, attrs, current, COMMON_TEXT_FALLBACK_SUGGESTIONS)}</label>`;
+}
+function objectListInput(key) {
+  const def = CONFIG_OBJECT_LIST_FIELDS[key];
+  const existing = items(state.config?.[key]).map((v) => v && typeof v === "object" ? v : {});
+  const rowCount = Math.max(def.rows || 1, existing.length + 1);
+  const rows = Array.from({ length: rowCount }, (_, row) => {
+    const item = existing[row] || {};
+    return `<div class="object-row">${def.fields.map((f) => objectSubInput(key, row, f, objectFieldValue(item, f.key))).join("")}</div>`;
+  }).join("");
+  return `<div id="cfg_${key}" data-object-list="${esc(key)}" class="object-list">${rows}</div>`;
+}
+function objectFormInput(key) {
+  const def = CONFIG_OBJECT_FIELDS[key];
+  const item = state.config?.[key] && typeof state.config[key] === "object" ? state.config[key] : {};
+  return `<div id="cfg_${key}" data-object-form="${esc(key)}" class="object-list"><div class="object-row">${def.fields.map((f) => objectSubInput(key, 0, f, objectFieldValue(item, f.key))).join("")}</div></div>`;
+}
+function objectMapInput(key) {
+  const def = CONFIG_OBJECT_MAP_FIELDS[key];
+  const existing = state.config?.[key] && typeof state.config[key] === "object" ? state.config[key] : {};
+  const routeKeys = [...new Set([...def.keyOptions, ...Object.keys(existing)])];
+  const rowCount = Math.max(def.rows || 1, routeKeys.length + 1);
+  const rows = Array.from({ length: rowCount }, (_, row) => {
+    const route = routeKeys[row] || "";
+    const item = route ? existing[route] || {} : {};
+    const allRoutes = route && !def.keyOptions.includes(route) ? [...def.keyOptions, route] : def.keyOptions;
+    const routeInput = `<label for="cfg_${key}_${row}_route">${esc(def.keyName)}<select id="cfg_${key}_${row}_route" data-map-key="${esc(key)}" data-map-row="${row}"><option value="" ${route === "" ? "selected" : ""}>${t("unset")}</option>${allRoutes.map((opt) => `<option value="${esc(opt)}" ${route === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select></label>`;
+    return `<div class="object-row">${routeInput}${def.fields.map((f) => objectSubInput(key, row, f, objectFieldValue(item, f.key))).join("")}</div>`;
+  }).join("");
+  return `<div id="cfg_${key}" data-object-map="${esc(key)}" class="object-list">${rows}</div>`;
+}
+function jsonStringObjectInput(key) {
+  const def = CONFIG_JSON_STRING_OBJECT_FIELDS[key];
+  let item = {};
+  try { item = JSON.parse(state.config?.[key] || "{}"); } catch { item = {}; }
+  return `<div id="cfg_${key}" data-json-string-object="${esc(key)}" class="object-list"><div class="object-row">${def.fields.map((f) => objectSubInput(key, 0, f, objectFieldValue(item, f.key))).join("")}</div></div>`;
+}
+function suggestionInput(key, def, value) {
+  const options = CONFIG_SUGGESTION_FIELDS[key] || genericSuggestionOptions(key) || [];
+  const current = String(value ?? "").trim();
+  const all = current && !options.includes(current) ? [...options, current] : options;
+  const listID = `cfg_${key}_choices`;
+  if (def.secret) return `${secretFieldMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string"`, value, `list="${esc(listID)}"`)}<datalist id="${esc(listID)}">${all.map((opt) => `<option value="${esc(opt)}"></option>`).join("")}</datalist>`;
+  return choiceCustomMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string-choice-custom"`, current, all);
+}
+function audioDeviceInput(key, value) {
+  const current = String(value || "");
+  return `<select id="cfg_${key}" data-key="${esc(key)}" data-type="string" data-audio-device="${key === "audio_output_device_id" ? "audiooutput" : "audioinput"}"><option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>${current ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : ""}</select>`;
+}
+async function bindAudioDeviceInputs() {
+  const selects = [...document.querySelectorAll("[data-audio-device]")];
+  if (!selects.length || !navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    selects.forEach((select) => {
+      const kind = select.dataset.audioDevice;
+      const current = select.value;
+      const matches = devices.filter((device) => device.kind === kind);
+      const opts = [`<option value="" ${current === "" ? "selected" : ""}>${t("unset")}</option>`].concat(matches.map((device, idx) => {
+        const label = device.label || `${kind} ${idx + 1}`;
+        return `<option value="${esc(device.deviceId)}" ${current === device.deviceId ? "selected" : ""}>${esc(label)}</option>`;
+      }));
+      if (current && !matches.some((device) => device.deviceId === current)) opts.push(`<option value="${esc(current)}" selected>${esc(current)}</option>`);
+      select.innerHTML = opts.join("");
+    });
+  } catch {}
+}
 function fieldInput(key, def) {
   const value = esc(fieldValue(key, def));
-  if (def.type === "array" || def.type === "object") return `<textarea id="cfg_${key}" data-key="${esc(key)}" data-type="${esc(def.type)}">${value}</textarea>`;
+  const secret = def.secret || isLikelySecretKey(key);
+  if (def.type === "array" && CONFIG_OBJECT_LIST_FIELDS[key]) return objectListInput(key);
+  if (def.type === "object" && CONFIG_OBJECT_FIELDS[key]) return objectFormInput(key);
+  if (def.type === "object" && CONFIG_OBJECT_MAP_FIELDS[key]) return objectMapInput(key);
+  if (def.type === "array" && CONFIG_ARRAY_CHOICE_FIELDS[key]) return arrayChoiceInput(key);
+  if (def.type === "array" && CONFIG_LINE_ARRAY_FIELDS.has(key)) return lineArrayInput(key);
+  if (def.type === "array") return genericArrayInput(key);
+  if (def.type === "object") return genericObjectInput(key);
   if (def.type === "bool") return `<select id="cfg_${key}" data-key="${esc(key)}" data-type="bool"><option value="" ${value === "" ? "selected" : ""}>${t("unset")}</option><option value="true" ${value === "true" ? "selected" : ""}>${t("trueValue")}</option><option value="false" ${value === "false" ? "selected" : ""}>${t("falseValue")}</option></select>`;
-  if (def.type === "integer" || def.type === "number") return `<input id="cfg_${key}" data-key="${esc(key)}" data-type="${esc(def.type)}" type="number" value="${value}">`;
-  return `<input id="cfg_${key}" data-key="${esc(key)}" data-type="string" type="${def.secret ? "password" : "text"}" ${def.secret ? 'autocomplete="new-password" spellcheck="false"' : ""} value="${value}">`;
+  if ((def.type === "integer" || def.type === "number") && CONFIG_NUMBER_CHOICE_FIELDS[key]) return numberChoiceInput(key, fieldValue(key, def), def.type);
+  if ((def.type === "integer" || def.type === "number") && genericNumberOptions(key).length) return numberChoiceInput(key, fieldValue(key, def), def.type);
+  if (def.type === "integer" || def.type === "number") return numberChoiceCustomMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="${esc(def.type)}"`, fieldValue(key, def), COMMON_NUMBER_FALLBACK_SUGGESTIONS);
+  if (CONFIG_CHOICE_FIELDS[key] || providerChoiceOptions(key) || genericChoiceOptions(key).length) return stringChoiceInput(key, fieldValue(key, def));
+  if (CONFIG_JSON_STRING_OBJECT_FIELDS[key]) return jsonStringObjectInput(key);
+  if (CONFIG_STRING_LINE_FIELDS.has(key)) return stringLineInput(key);
+  if (key === "audio_input_device_id" || key === "audio_output_device_id") return audioDeviceInput(key, fieldValue(key, def));
+  if (secret) return secretFieldMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string"`, fieldValue(key, def));
+  if (CONFIG_SUGGESTION_FIELDS[key] || genericSuggestionOptions(key).length) return suggestionInput(key, def, fieldValue(key, def));
+  return choiceCustomMarkup(`cfg_${key}`, `data-key="${esc(key)}" data-type="string-choice-custom"`, fieldValue(key, def), COMMON_TEXT_FALLBACK_SUGGESTIONS);
 }
 function fieldHelper(d) {
   const text = d.description || d.example || "";
@@ -647,16 +1981,55 @@ function parseConfigNumber(key, value, integer) {
   if (!Number.isFinite(next) || (integer && !Number.isInteger(next))) throw new Error(t("numberInvalid", { key: configIssueLabel({ key }), type: configTypeName(integer ? "integer" : "number") }));
   return next;
 }
+function objectElementValue(el) {
+  if (el?.dataset?.listKind === "kv") {
+    const out = {};
+    el.querySelectorAll(".kv-pair").forEach((pair) => {
+      const keySelect = String(pair.querySelector("[data-kv-key]")?.value || "");
+      const valueSelect = String(pair.querySelector("[data-kv-value]")?.value || "");
+      const key = String(keySelect === "__custom__" ? pair.querySelector("[data-kv-key-custom]")?.value || "" : keySelect).trim();
+      const value = String(valueSelect === "__custom__" ? pair.querySelector("[data-kv-value-custom]")?.value || "" : valueSelect).trim();
+      if (key && value) out[key] = value;
+    });
+    return Object.keys(out).length ? out : null;
+  }
+  if (el?.dataset?.listKind === "choice-lines") {
+    const selected = [...(el.querySelector("[data-array-suggest]")?.selectedOptions || [])].map((x) => x.value).filter(Boolean);
+    const custom = String(el.querySelector("[data-array-custom]")?.value || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    return [...new Set([...selected, ...custom])].join("\n");
+  }
+  if (el?.dataset?.listKind === "choice-custom") {
+    const selectValue = String(el.querySelector("[data-choice-suggest]")?.value || "");
+    if (selectValue === "__custom__") return String(el.querySelector("[data-choice-custom]")?.value || "").trim();
+    return selectValue.trim();
+  }
+  if (el?.dataset?.listKind === "longtext-choice") {
+    const selectValue = String(el.querySelector("[data-longtext-suggest]")?.value || "");
+    if (selectValue === "__custom__") return String(el.querySelector("[data-longtext-custom]")?.value || "").trim();
+    return selectValue.trim();
+  }
+  if (el?.multiple) return [...el.selectedOptions].map((x) => x.value).filter(Boolean).join("\n");
+  return String(el?.value || "").trim();
+}
 function renderConfigFields() {
   const defs = Object.fromEntries(state.schema.map((x) => [x.key, x]));
   const groups = configGroups(state.schema);
   if (!groups.some((g) => g.id === state.settingsTab)) state.settingsTab = groups[0]?.id || "";
   $("cfgTabs").innerHTML = groups.map((group) => `<button id="cfg_tab_${esc(group.id)}" type="button" role="tab" class="cfg-tab ${group.id === state.settingsTab ? "active" : ""}" data-cfg-tab="${esc(group.id)}" aria-controls="cfg_panel_${esc(group.id)}" aria-selected="${group.id === state.settingsTab ? "true" : "false"}">${esc(group.title)}</button>`).join("");
-  $("cfgForm").innerHTML = groups.map((group) => `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${group.keys.map((key) => {
+  $("cfgForm").innerHTML = groups.map((group) => `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : ""}${group.id === "skills" ? renderSkillManager() : ""}${group.id === "memory" ? renderKnowledgeImporter() : ""}${group.id === "channels" ? renderChannelOverview() : ""}${group.keys.map((key) => {
     const d = fieldMeta(defs[key] || { key, title: key, type: Array.isArray(state.config[key]) ? "array" : typeof state.config[key] === "boolean" ? "bool" : typeof state.config[key] === "number" ? "number" : "string" });
     const label = `${esc(d.title || key)}${d.required ? " *" : ""}`;
     return `<div class="field"><label for="cfg_${key}">${label}</label>${fieldInput(key, d)}<span class="helper">${esc(fieldHelper(d))}</span></div>`;
   }).join("")}</fieldset>`).join("");
+  bindSkillManager();
+  bindMCPManager();
+  bindWebSearchManager();
+  bindKnowledgeImporter();
+  bindChoiceCustomControls();
+  bindChannelTools();
+  bindSecretGenerators();
+  bindAudioDeviceInputs();
+  loadKnowledgeAccessSummary();
   document.querySelectorAll("[data-cfg-tab]").forEach((b) => {
     b.onclick = () => setActiveConfigTab(b.dataset.cfgTab);
     b.onkeydown = (e) => { if (e.key === "ArrowRight") { e.preventDefault(); moveConfigTab(b, 1); } else if (e.key === "ArrowLeft") { e.preventDefault(); moveConfigTab(b, -1); } };
@@ -664,16 +2037,160 @@ function renderConfigFields() {
 }
 function collectConfig() {
   const next = { ...state.config };
+  const setObjectPath = (target, field, value) => {
+    if (!field.includes(".")) { target[field] = value; return; }
+    const parts = field.split(".");
+    let cur = target;
+    parts.slice(0, -1).forEach((part) => {
+      if (!cur[part] || typeof cur[part] !== "object" || Array.isArray(cur[part])) cur[part] = {};
+      cur = cur[part];
+    });
+    cur[parts[parts.length - 1]] = value;
+  };
+  const deleteObjectPath = (target, field) => {
+    if (!field.includes(".")) { delete target[field]; return; }
+    const parts = field.split(".");
+    let cur = target;
+    for (const part of parts.slice(0, -1)) {
+      if (!cur || typeof cur !== "object") return;
+      cur = cur[part];
+    }
+    if (cur && typeof cur === "object") delete cur[parts[parts.length - 1]];
+  };
+  const assignObjectField = (target, key, field, value) => {
+    const meta = (CONFIG_OBJECT_FIELDS[key]?.fields || CONFIG_OBJECT_MAP_FIELDS[key]?.fields || CONFIG_OBJECT_LIST_FIELDS[key]?.fields || CONFIG_JSON_STRING_OBJECT_FIELDS[key]?.fields || []).find((f) => f.key === field) || {};
+    if (meta.kind === "kv") {
+      if (value && typeof value === "object" && Object.keys(value).length) setObjectPath(target, field, value); else deleteObjectPath(target, field);
+      return;
+    }
+    if (!value) { deleteObjectPath(target, field); return; }
+    if (meta.kind === "number") {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) throw new Error(t("numberInvalid", { key: configIssueLabel({ key: `${key}.${field}` }), type: configTypeName("number") }));
+      setObjectPath(target, field, parsed);
+      return;
+    }
+    if (meta.kind === "bool") { setObjectPath(target, field, value === "true"); return; }
+    if (meta.kind === "lines" || meta.kind === "multi") {
+      const lines = value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      if (lines.length) setObjectPath(target, field, lines);
+      return;
+    }
+    setObjectPath(target, field, value);
+  };
+  document.querySelectorAll("[data-json-string-object]").forEach((box) => {
+    const key = box.dataset.jsonStringObject;
+    let out = {};
+    try { out = JSON.parse(state.config?.[key] || "{}"); } catch { out = {}; }
+    box.querySelectorAll("[data-list-key]").forEach((el) => assignObjectField(out, key, el.dataset.listField || "", objectElementValue(el)));
+    if (Object.keys(out).length) next[key] = JSON.stringify(out); else delete next[key];
+  });
+  document.querySelectorAll("[data-object-form]").forEach((box) => {
+    const key = box.dataset.objectForm;
+    const current = state.config?.[key] && typeof state.config[key] === "object" ? state.config[key] : {};
+    const out = { ...current };
+    box.querySelectorAll("[data-list-key]").forEach((el) => assignObjectField(out, key, el.dataset.listField || "", objectElementValue(el)));
+    if (Object.keys(out).length) next[key] = out; else delete next[key];
+  });
+  document.querySelectorAll("[data-object-map]").forEach((box) => {
+    const key = box.dataset.objectMap;
+    const current = state.config?.[key] && typeof state.config[key] === "object" ? state.config[key] : {};
+    const rows = new Map();
+    box.querySelectorAll("[data-map-key]").forEach((el) => {
+      const row = Number(el.dataset.mapRow || 0);
+      const route = String(el.value || "").trim();
+      if (route) rows.set(row, { route, value: { ...(current[route] || {}) } });
+    });
+    box.querySelectorAll("[data-list-key]").forEach((el) => {
+      const row = Number(el.dataset.listRow || 0);
+      const entry = rows.get(row);
+      if (!entry) return;
+      assignObjectField(entry.value, key, el.dataset.listField || "", objectElementValue(el));
+    });
+    const out = {};
+    [...rows.keys()].sort((a, b) => a - b).forEach((row) => {
+      const entry = rows.get(row);
+      if (Object.keys(entry.value).length) out[entry.route] = entry.value;
+    });
+    if (Object.keys(out).length) next[key] = out; else delete next[key];
+  });
+  document.querySelectorAll("[data-object-list]").forEach((box) => {
+    const key = box.dataset.objectList;
+    const def = CONFIG_OBJECT_LIST_FIELDS[key];
+    const existing = items(state.config?.[key]).map((v) => v && typeof v === "object" ? v : {});
+    const rows = new Map();
+    const visibleRows = new Set();
+    box.querySelectorAll("[data-list-key]").forEach((el) => {
+      const row = Number(el.dataset.listRow || 0);
+      const field = el.dataset.listField || "";
+      const value = objectElementValue(el);
+      if (!rows.has(row)) rows.set(row, { ...(existing[row] || {}) });
+      if (value) visibleRows.add(row);
+      assignObjectField(rows.get(row), key, field, value);
+    });
+    const out = [...rows.keys()].sort((a, b) => a - b).filter((row) => visibleRows.has(row)).map((row) => rows.get(row)).filter((item) => Object.keys(item).length);
+    if (out.length) next[key] = out; else delete next[key];
+  });
+  const webSearchBox = document.querySelector("[data-web-search-manager]");
+  if (webSearchBox) {
+    const existing = webSearchProviders();
+    const providers = [...webSearchBox.querySelectorAll("[data-web-search-row]")].map((row) => {
+      const index = Number(row.dataset.webSearchRow || 0);
+      const out = { ...(existing[index] || {}) };
+      row.querySelectorAll("[data-web-search-field]").forEach((el) => {
+        const field = el.dataset.webSearchField || "";
+        const value = String(el.value || "").trim();
+        if (field === "key" && !value) return;
+        if (value) out[field] = value; else delete out[field];
+      });
+      if (!out.name) out.name = WEB_SEARCH_PROVIDER_TYPES[out.type || ""]?.name || out.type || "";
+      return out;
+    }).filter((item) => item.name || item.type || item.base_url || item.key);
+    if (providers.length) next.web_search_providers = providers; else delete next.web_search_providers;
+    const names = new Set(providers.map((p) => p.name).filter(Boolean));
+    const current = String($("webSearchCurrentProvider")?.value || "").trim();
+    if (current && names.has(current)) next.web_search_current_provider = current;
+    else delete next.web_search_current_provider;
+  }
   document.querySelectorAll("[data-key]").forEach((el) => {
     const key = el.dataset.key; const type = el.dataset.type || "string";
     if (type === "array" || type === "object") {
       try { next[key] = JSON.parse(el.value || (type === "array" ? "[]" : "{}")); } catch { throw new Error(t("jsonInvalid", { key: configIssueLabel({ key }) })); }
+    } else if (type === "object-kv") {
+      const out = {};
+      el.querySelectorAll(".kv-pair").forEach((pair) => {
+        const keySelect = String(pair.querySelector("[data-generic-object-key]")?.value || "");
+        const valueSelect = String(pair.querySelector("[data-generic-object-value]")?.value || "");
+        const pairKey = String(keySelect === "__custom__" ? pair.querySelector("[data-generic-object-key-custom]")?.value || "" : keySelect).trim();
+        const pairValue = String(valueSelect === "__custom__" ? pair.querySelector("[data-generic-object-value-custom]")?.value || "" : valueSelect).trim();
+        if (pairKey && pairValue) {
+          if (el.dataset.deepObject === "true") setPlainObjectPath(out, pairKey, pairValue); else out[pairKey] = pairValue;
+        }
+      });
+      if (Object.keys(out).length) next[key] = out; else delete next[key];
+    } else if (type === "array-choice") {
+      const selected = [...el.selectedOptions].map((x) => x.value).filter(Boolean);
+      if (selected.length) next[key] = selected; else delete next[key];
+    } else if (type === "array-lines") {
+      const lines = el.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      if (lines.length) next[key] = lines; else delete next[key];
+    } else if (type === "array-choice-lines") {
+      const lines = objectElementValue(el).split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      if (lines.length) next[key] = lines; else delete next[key];
+    } else if (type === "string-lines") {
+      next[key] = el.value.split(/[;\r\n]+/).map((x) => x.trim()).filter(Boolean).join(";");
+    } else if (type === "string-choice-lines") {
+      next[key] = objectElementValue(el).split(/[;\r\n]+/).map((x) => x.trim()).filter(Boolean).join(";");
+    } else if (type === "string-choice-custom") {
+      const value = objectElementValue(el);
+      if (el.dataset.unsetEmpty === "true" && value === "") delete next[key]; else next[key] = value;
     } else if (type === "bool") {
       if (el.value === "") delete next[key]; else next[key] = el.value === "true";
     } else if (type === "integer") {
-      const parsed = parseConfigNumber(key, el.value, true); if (parsed === undefined) delete next[key]; else next[key] = parsed;
+      const parsed = parseConfigNumber(key, objectElementValue(el), true); if (parsed === undefined) delete next[key]; else next[key] = parsed;
     } else if (type === "number") {
-      const parsed = parseConfigNumber(key, el.value, false); if (parsed === undefined) delete next[key]; else next[key] = parsed;
+      const parsed = parseConfigNumber(key, objectElementValue(el), false); if (parsed === undefined) delete next[key]; else next[key] = parsed;
+    } else if (el.dataset.unsetEmpty === "true" && el.value === "") { delete next[key];
     } else { next[key] = el.value; }
   });
   return next;

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -334,12 +335,15 @@ func tui_executeStep(step corelib.NLSkillStep, skillDir string) (string, error) 
 
 // tui_executeBashStep 在 TUI 模式下执行 bash 命令。
 func tui_executeBashStep(command string, params map[string]interface{}, skillDir string) (string, error) {
-	timeout := 30
-	if t, ok := params["timeout"].(float64); ok && t > 0 {
-		timeout = int(t)
-		if timeout > 120 {
-			timeout = 120
+	cfg, err := NewFileConfigStore(ResolveDataDir()).LoadConfig()
+	if err == nil {
+		if ok, reason := clientsecurity.EnforceConfig(cfg, "bash", map[string]interface{}{"command": command}); !ok {
+			return "", fmt.Errorf("%s", reason)
 		}
+	}
+	timeout := corelib.DefaultAgentTimeoutSec
+	if t, ok := params["timeout"].(float64); ok && t > 0 {
+		timeout = corelib.NormalizeAgentTimeoutSec(int(t))
 	}
 
 	workDir, _ := params["working_dir"].(string)
@@ -369,7 +373,7 @@ func tui_executeBashStep(command string, params map[string]interface{}, skillDir
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	runErr := cmd.Run()
 
 	var b strings.Builder
 	if stdout.Len() > 0 {
@@ -390,13 +394,13 @@ func tui_executeBashStep(command string, params map[string]interface{}, skillDir
 		b.WriteString("[stderr] ")
 		b.WriteString(errOut)
 	}
-	if err != nil {
+	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			b.WriteString(fmt.Sprintf("\n[error] timeout after %ds", timeout))
 		} else {
-			b.WriteString(fmt.Sprintf("\n[error] %v", err))
+			b.WriteString(fmt.Sprintf("\n[error] %v", runErr))
 		}
-		return b.String(), err
+		return b.String(), runErr
 	}
 	if b.Len() == 0 {
 		return "(completed, no output)", nil

@@ -1016,6 +1016,10 @@ func (h *VEMessageHandler) updateSessionHistory(sessionID, userMessage, assistan
 
 // sendMessage sends a discussion message back through the Hub.
 func (h *VEMessageHandler) sendMessage(sessionID string, msg a2a.GroupDiscussionMessage) {
+	if !a2a.GroupDiscussionMessageHasPayload(msg) {
+		log.Printf("[ve-handler] skipped empty outbound message for session %s kind=%s", sessionID, msg.Kind)
+		return
+	}
 	if h.app == nil {
 		return
 	}

@@ -441,6 +441,63 @@ func TestUpdateHubSecurityPolicy_AppliesEnforcement(t *testing.T) {
 	}
 }
 
+func TestPersistHubSecurityPolicyClearsRemovedSliceSettings(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HubSecurityCentralized = true
+		cfg.NetworkAllowlist = []string{"api.example.com"}
+		cfg.SkillSourcesAllowed = []string{"github"}
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	app.persistHubSecurityPolicy(&HubSecurityPolicy{
+		CentralizedSecurity: true,
+		Policy: &HubEffectivePolicy{
+			NetworkLevel:         "allowlist",
+			FileOutboundEnabled:  true,
+			ImageOutboundEnabled: true,
+			GossipEnabled:        true,
+			SmartRouteEnabled:    false,
+			YoloModeAllowed:      true,
+		},
+	})
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.NetworkAllowlist) != 0 {
+		t.Fatalf("NetworkAllowlist = %#v, want cleared", cfg.NetworkAllowlist)
+	}
+	if len(cfg.SkillSourcesAllowed) != 0 {
+		t.Fatalf("SkillSourcesAllowed = %#v, want cleared", cfg.SkillSourcesAllowed)
+	}
+	if cfg.SmartRouteEnabled {
+		t.Fatal("SmartRouteEnabled = true, want persisted false")
+	}
+}
+
+func TestIsSkillSourceAllowedNormalizesAliases(t *testing.T) {
+	app := &App{}
+	app.hubSecurityCache.mu.Lock()
+	app.hubSecurityCache.policy = &HubSecurityPolicy{SkillSourcesAllowed: []string{"hubcenter", "git_hub", "enterprise"}}
+	app.hubSecurityCache.mu.Unlock()
+
+	for _, source := range []string{"skillhub", "github", corelib.CapabilitySourceEnterpriseHub} {
+		if !app.IsSkillSourceAllowed(source) {
+			t.Fatalf("source %q should be allowed by aliases", source)
+		}
+	}
+	if app.IsSkillSourceAllowed("clawhub") {
+		t.Fatal("clawhub should not be allowed")
+	}
+}
+
 // Gossip permission tests (Task 13.3)
 
 func TestIsGossipAllowed_NoCachedPolicy(t *testing.T) {

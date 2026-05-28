@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/capability"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 )
 
@@ -220,6 +222,38 @@ func TestWorkflowAdminReviewApproveHandler(t *testing.T) {
 	// Verify the previous published version was superseded
 	if store.versions["ver_2"].Status != workflow.VersionSuperseded {
 		t.Errorf("expected previous version status 'superseded', got %s", store.versions["ver_2"].Status)
+	}
+}
+
+func TestWorkflowAdminReviewApproveHandlerRegistersCapabilityInAdminTenant(t *testing.T) {
+	_, reviewStore := setupAdminReviewTest()
+	db := openCapabilityTestDB(t)
+	capSvc := capability.NewService(db)
+	svc := workflow.NewAdminReviewService(reviewStore, capSvc)
+	handler := WorkflowAdminReviewApproveHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/ver_1/approve", nil)
+	req.SetPathValue("id", "ver_1")
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	tenantItems, err := capSvc.List(capability.WithTenant(context.Background(), "tenant_a"), "approval_workflow")
+	if err != nil {
+		t.Fatalf("list tenant capabilities: %v", err)
+	}
+	defaultItems, err := capSvc.List(context.Background(), "approval_workflow")
+	if err != nil {
+		t.Fatalf("list default capabilities: %v", err)
+	}
+	if len(tenantItems) != 1 || tenantItems[0].CapabilityID != "wf_1" {
+		t.Fatalf("expected workflow capability in tenant_a, got %+v", tenantItems)
+	}
+	if len(defaultItems) != 0 {
+		t.Fatalf("workflow capability should not be registered in default tenant: %+v", defaultItems)
 	}
 }
 

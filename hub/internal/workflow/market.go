@@ -227,8 +227,8 @@ type workflowMarketMetadata struct {
 
 // classifySubCategory maps a category string from metadata to a WorkflowSubCategory.
 func classifySubCategory(category string) WorkflowSubCategory {
-	switch category {
-	case "审批类", "approval":
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "审批类", "approval", "approval_workflow":
 		return SubCategoryApproval
 	case "自动化类", "automation":
 		return SubCategoryAutomation

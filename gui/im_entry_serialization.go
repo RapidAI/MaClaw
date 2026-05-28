@@ -24,7 +24,7 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	// Only attempt interrupt/merge if the active loop belongs to the SAME
 	// userID. Project tabs use a different userID ("desktop-user:{path}"),
 	// so their messages must NOT be merged into the local tab's loop.
-	if h.interruptHandler != nil && msg.Text != "" && h.hasActiveLoopForUser(msg.UserID) {
+	if h.interruptHandler != nil && msg.Text != "" && !h.hasCancelledTaskBoundary(msg.UserID) && h.hasActiveLoopForUser(msg.UserID) {
 		interrupt := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
 		if interrupt.PendingConfirm || interrupt.Handled {
 			result.Handled = true

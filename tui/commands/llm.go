@@ -75,6 +75,9 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 			if strings.TrimSpace(llm.Key) == "" {
 				llm.Key = strings.TrimSpace(p.Key)
 			}
+			if p.TimeoutSec > 0 {
+				llm.TimeoutSec = p.TimeoutSec
+			}
 			llm.AgentType = p.AgentType
 			llm.SupportsVision = p.SupportsVision
 			llm.WireAPI = p.WireAPI

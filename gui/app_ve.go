@@ -619,9 +619,13 @@ func (a *App) sendVEA2AMessage(sessionID string, msg a2a.GroupDiscussionMessage)
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
+	started := time.Now()
+	log.Printf("[ve] send discussion message start session=%s from=%s to=%v kind=%s content_chars=%d", sessionID, msg.FromID, msg.ToIDs, msg.Kind, len([]rune(msg.Content)))
 	if err := client.SendDiscussionMessage(ctx, sessionID, msg); err != nil {
-		return err
+		log.Printf("[ve] send discussion message failed session=%s from=%s to=%v kind=%s duration=%s: %v", sessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started), err)
+		return fmt.Errorf("send digital employee message: %w", err)
 	}
+	log.Printf("[ve] send discussion message ok session=%s from=%s to=%v kind=%s duration=%s", sessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started))
 	if shouldRefreshVEA2ADetailAfterSend(msg) {
 		a.cacheVEA2ADetailAsync(client, sessionID, groupDiscussionAgentID(cfg))
 	}

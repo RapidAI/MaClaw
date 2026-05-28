@@ -1,12 +1,12 @@
 package agent
 
-// task_context.go — Unified task context management layer.
+// task_context.go - Unified task context management layer.
 //
 // TaskContextManager is the single decision point for "is this message a
 // continuation of the current task, a new task, or a recall of a past task?"
 //
 // It replaces the scattered decision logic that was spread across:
-//   - looksLikeFreshTaskRequest (keyword matching)
+//   - legacy fresh-task heuristics
 //   - shouldAutoClearIncompleteTaskContext (incomplete task marker)
 //   - TopicSwitchDetector (BM25 + embedding + LLM voting)
 //   - shouldRequireExecutionConfirmation (confirmation gate)
@@ -105,7 +105,7 @@ func DefaultTaskContextConfig() TaskContextConfig {
 	return TaskContextConfig{
 		MaxArchivedTasks:         10,
 		ActiveConversationWindow: 5 * time.Minute,
-		LLMTimeout:               2 * time.Second,
+		LLMTimeout:               30 * time.Second,
 	}
 }
 
@@ -146,11 +146,11 @@ type ResolveInput struct {
 	ArchivedTasks []ArchivedTask
 
 	// HasPendingAskUser is true if the previous assistant message was an
-	// ask_user question — the current message is almost certainly a response.
+	// ask_user question; the current message is almost certainly a response.
 	HasPendingAskUser bool
 
 	// IsConfirmedResume is true if this message is a confirmation approval
-	// (user clicked "确认" on the confirmation card). The message text has
+	// (user clicked confirm on the confirmation card). The message text has
 	// been replaced with the enhanced instruction.
 	IsConfirmedResume bool
 
@@ -176,7 +176,7 @@ type ResolveInput struct {
 //  1. Explicit bound-state signals (frontend flags, ask_user response, confirmed resume)
 //  2. Structural signals that need no interpretation (empty history = new task)
 //  3. LLM classification for every ambiguous message with history
-//  4. Conservative fallback when the classifier is unavailable
+//  4. Non-destructive fallback when the classifier is unavailable
 func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 	trimmed := strings.TrimSpace(input.UserMessage)
 
@@ -235,39 +235,23 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 
 	// --- Layer 3: LLM classification ---
 
-	// Short history optimization: when fewer than 5 entries exist, the
-	// conversation is too brief for meaningful task-context classification.
-	// Default to TaskNew — the user likely started a new topic.
-	// This avoids a 2s LLM call that adds latency without value.
-	if len(input.History) < 5 {
-		return TaskContextDecision{
-			Action: TaskNew,
-			Reason: fmt.Sprintf("short history (%d entries < 5), defaulting to new task", len(input.History)),
-			Source: "structural",
-		}
-	}
-
 	if m.llm != nil {
 		return m.classifyWithLLM(input)
 	}
 
-	// --- Layer 4: Conservative fallback ---
-	// History exists but no LLM available. Default to continue to avoid
-	// the amnesia bug — losing context is worse than keeping stale context.
-	return TaskContextDecision{
-		Action: TaskContinue,
-		Reason: "history exists, no LLM available, defaulting to continue",
-		Source: "fallback",
-	}
+	// --- Layer 4: Non-destructive fallback ---
+	// Ambiguous task switching is semantic. Without a classifier, preserve current
+	// context; only an explicit classifier result may destructively switch tasks.
+	return fallbackTaskContextDecision("history exists, no LLM available")
 }
 
 // classifyWithLLM uses a lightweight LLM call to determine the task action.
 // It is the only path for ambiguous messages with existing history; recency
 // and message length must not decide task continuity by themselves.
 //
-// The LLM call runs in a goroutine with a 2s deadline. If the call completes
-// before the deadline, the result is used immediately. If it times out,
-// we default to TaskContinue (conservative assumption).
+// The LLM call runs in a goroutine with a bounded deadline. If the call
+// completes before the deadline, the result is used immediately. If it times
+// out, fallback preserves context rather than destructively clearing history.
 func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDecision {
 	// Build a compact context summary for the LLM.
 	currentTaskSummary := buildCurrentTaskSummary(input.History)
@@ -276,14 +260,14 @@ func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDeci
 	systemPrompt := taskContextClassifierPrompt
 
 	var userMsg strings.Builder
-	fmt.Fprintf(&userMsg, "当前任务摘要：%s\n", currentTaskSummary)
+	fmt.Fprintf(&userMsg, "Current task summary: %s\n", currentTaskSummary)
 	if input.HasIncompleteTaskMarker {
-		userMsg.WriteString("当前任务状态：上一轮可能未完成或被中断。若用户明确要求继续/恢复则判为 continue；若用户提出无关新请求则判为 new。\n")
+		userMsg.WriteString("Current task status: previous turn may be incomplete or interrupted. If user asks to continue/resume, classify as continue; if unrelated, classify as new.\n")
 	}
 	if archivedSummaries != "" {
-		fmt.Fprintf(&userMsg, "\n历史任务：\n%s\n", archivedSummaries)
+		fmt.Fprintf(&userMsg, "\nArchived tasks:\n%s\n", archivedSummaries)
 	}
-	fmt.Fprintf(&userMsg, "\n用户新消息：%s", strings.TrimSpace(input.UserMessage))
+	fmt.Fprintf(&userMsg, "\nNew user message: %s", strings.TrimSpace(input.UserMessage))
 
 	// Run LLM call in a goroutine to allow parallel work by the caller.
 	type llmResult struct {
@@ -296,28 +280,24 @@ func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDeci
 		resultCh <- llmResult{resp: resp, err: err}
 	}()
 
-	// Wait for result with timeout (defensive — the LLM.Classify already
+	// Wait for result with timeout (defensive; the LLM.Classify already
 	// has its own timeout, but this ensures we never block longer than LLMTimeout + 500ms).
 	deadline := m.config.LLMTimeout + 500*time.Millisecond
 	select {
 	case r := <-resultCh:
 		if r.err != nil {
-			log.Printf("[TaskContext] LLM classification failed: %v, falling back to continue", r.err)
-			return TaskContextDecision{
-				Action: TaskContinue,
-				Reason: fmt.Sprintf("LLM failed: %v, defaulting to continue", r.err),
-				Source: "fallback",
-			}
+			log.Printf("[TaskContext] LLM classification failed: %v, preserving current task context", r.err)
+			return fallbackTaskContextDecision(fmt.Sprintf("LLM failed: %v", r.err))
 		}
 		return m.parseLLMResponse(r.resp, input.ArchivedTasks)
 	case <-time.After(deadline):
-		log.Printf("[TaskContext] LLM classification timed out after %v, falling back to continue", deadline)
-		return TaskContextDecision{
-			Action: TaskContinue,
-			Reason: fmt.Sprintf("LLM timed out after %v, defaulting to continue", deadline),
-			Source: "fallback",
-		}
+		log.Printf("[TaskContext] LLM classification timed out after %v, preserving current task context", deadline)
+		return fallbackTaskContextDecision(fmt.Sprintf("LLM timed out after %v", deadline))
 	}
+}
+
+func fallbackTaskContextDecision(cause string) TaskContextDecision {
+	return TaskContextDecision{Action: TaskContinue, Reason: cause + ", preserving current task context", Source: "fallback"}
 }
 
 // parseLLMResponse interprets the LLM's classification response.
@@ -359,39 +339,47 @@ func (m *TaskContextManager) parseLLMResponse(resp string, archived []ArchivedTa
 		}
 	}
 
-	// Default: continue (conservative).
+	if strings.HasPrefix(resp, "continue") {
+		return TaskContextDecision{
+			Action: TaskContinue,
+			Reason: "LLM classified as continuation",
+			Source: "llm",
+		}
+	}
+
+	// Invalid classifier output is classifier failure, not evidence of a new task.
+	// Keep current context unless the classifier explicitly says "new".
 	return TaskContextDecision{
 		Action: TaskContinue,
-		Reason: fmt.Sprintf("LLM response: %q, defaulting to continue", TruncateRunes(resp, 50)),
+		Reason: fmt.Sprintf("unrecognized LLM response %q; preserving current task context", TruncateRunes(resp, 50)),
 		Source: "llm",
 	}
 }
 
 // --- Prompt ---
 
-const taskContextClassifierPrompt = `你是一个任务上下文分类器。判断用户的新消息属于以下哪种情况：
+const taskContextClassifierPrompt = `You are a task context classifier. Decide whether the user's new message is:
 
-1. continue — 接续当前任务（对当前任务的后续请求、修改、补充、格式转换等）
-2. new — 开启一个全新的、与当前任务无关的任务
-3. recall:<task_id> — 想要恢复/继续某个历史任务
+1. continue - continuation of the current task.
+2. new - a new unrelated task.
+3. recall:<task_id> - resume a specific archived task.
 
-判断规则：
-- 如果新消息引用、修改、转换、补充当前任务的内容或结果，选 continue
-- 如果新消息与当前任务完全无关，选 new
-- 如果新消息提到要继续/恢复某个历史任务（不是当前任务），选 recall:<对应的task_id>
-- 当不确定时，优先选 continue（保留上下文比丢失上下文代价更小）
+Rules:
+- If the message modifies, converts, supplements, or refers to current task output, choose continue.
+- If the message is unrelated to the current task, choose new.
+- If the message asks to resume an archived task, choose recall:<task_id>.
+- When unsure, choose continue. Only a clear unrelated request should be classified as new.
 
-只回答 continue、new 或 recall:<task_id>，不要解释。`
+Reply only with continue, new, or recall:<task_id>. Do not explain.`
 
 // --- Helper functions ---
 
 // buildCurrentTaskSummary extracts a compact summary of the current conversation.
 func buildCurrentTaskSummary(history []ConversationEntry) string {
 	if len(history) == 0 {
-		return "(无)"
+		return "(none)"
 	}
 
-	// Extract the first user message (original task request).
 	var firstUserMsg string
 	for _, e := range history {
 		if e.Role == "user" {
@@ -402,7 +390,6 @@ func buildCurrentTaskSummary(history []ConversationEntry) string {
 		}
 	}
 
-	// Extract the last assistant message (most recent progress).
 	var lastAssistantMsg string
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].Role == "assistant" {
@@ -415,16 +402,16 @@ func buildCurrentTaskSummary(history []ConversationEntry) string {
 
 	var sb strings.Builder
 	if firstUserMsg != "" {
-		fmt.Fprintf(&sb, "用户原始请求：%s", firstUserMsg)
+		fmt.Fprintf(&sb, "Initial user request: %s", firstUserMsg)
 	}
 	if lastAssistantMsg != "" {
 		if sb.Len() > 0 {
 			sb.WriteString("\n")
 		}
-		fmt.Fprintf(&sb, "最近助手回复：%s", lastAssistantMsg)
+		fmt.Fprintf(&sb, "Recent assistant reply: %s", lastAssistantMsg)
 	}
 	if sb.Len() == 0 {
-		return "(对话历史存在但无文本内容)"
+		return "(history exists but has no text content)"
 	}
 	return sb.String()
 }
@@ -435,7 +422,6 @@ func buildArchivedTaskSummaries(tasks []ArchivedTask) string {
 		return ""
 	}
 	var sb strings.Builder
-	// Show at most 5 recent archived tasks to keep prompt compact.
 	limit := 5
 	if len(tasks) < limit {
 		limit = len(tasks)
@@ -445,7 +431,7 @@ func buildArchivedTaskSummaries(tasks []ArchivedTask) string {
 		if summary == "" {
 			summary = TruncateRunes(t.LastRequest, 80)
 		}
-		fmt.Fprintf(&sb, "- [%s] %s (状态: %s)\n", t.ID, summary, t.Status)
+		fmt.Fprintf(&sb, "- [%s] %s (status: %s)\n", t.ID, summary, t.Status)
 	}
 	return sb.String()
 }

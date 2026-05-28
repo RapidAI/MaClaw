@@ -52,6 +52,11 @@ function assertNotIncludes(str, substr, message) {
   }
 }
 
+function countOccurrences(str, substr) {
+  if (typeof str !== 'string' || !substr) return 0;
+  return str.split(substr).length - 1;
+}
+
 // --- Setup mock DOM and globals ---
 function createMockDOM() {
   var elements = {};
@@ -93,13 +98,15 @@ function createMockGlobal() {
       if (url === '/api/ve/list') {
         return {
           employees: [
-            { id: 've-001', name: 'Test VE 1', skill_description: 'Python expert', access_policy: 'public', online_status: 'online', status: 'pending', registered_at: '2024-01-15T10:30:00Z' },
-            { id: 've-002', name: 'Test VE 2', skill_description: 'Go developer with extensive backend experience', access_policy: 'whitelist', online_status: 'offline', status: 'active', registered_at: '2024-01-10T08:00:00Z' },
-            { id: 've-003', name: 'Test VE 3', skill_description: 'Data analyst', access_policy: 'per_request', online_status: 'online', status: 'active', registered_at: '2024-01-12T14:00:00Z' }
+            { id: 've-001', name: 'Test VE 1', employee_type: 'physical', skill_description: 'Python expert', access_policy: 'public', online_status: 'online', status: 'pending', registered_at: '2024-01-15T10:30:00Z' },
+            { id: 've-002', name: 'Test VE 2', employee_type: 'physical', skill_description: 'Go developer with extensive backend experience', access_policy: 'whitelist', online_status: 'offline', status: 'active', registered_at: '2024-01-10T08:00:00Z' },
+            { id: 've-003', name: 'Test VE 3', employee_type: 'physical', platform_id: 'maclawsrv', platform_employee_id: 'srv-user-1', skill_description: 'Data analyst', access_policy: 'per_request', online_status: 'online', status: 'active', registered_at: '2024-01-12T14:00:00Z' },
+            { id: 've-004', name: 'Test VE 4', runtime_provider_id: 'maclawsrv', skill_description: 'Runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-13T14:00:00Z' },
+            { id: 've-005', name: 'Test VE 5', runtime_provider_id: 'other-runtime', skill_description: 'Other runtime user', access_policy: 'public', online_status: 'online', status: 'active', registered_at: '2024-01-14T14:00:00Z' }
           ],
-          group_config: { max_group_participants: 5 },
+          group_config: { max_group_participants: 5, auto_approve: true },
           quota: 10,
-          active_count: 2
+          active_count: 4
         };
       }
       return {};
@@ -177,6 +184,24 @@ async function runTests() {
     assertIncludes(activeList.innerHTML, 'badge warn', 'Should have offline badge for offline VE');
   }
 
+  // Test 3a: List displays digital employee type
+  {
+    console.log('  Test: List displays physical and virtual digital employee type');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    var pendingList = g.document.elements['vePendingList'];
+    var activeList = g.document.elements['veActiveList'];
+    assertIncludes(pendingList.innerHTML, '\u7269\u7406\u5458\u5de5', 'Pending list should display physical employee label');
+    assertIncludes(activeList.innerHTML, '\u7269\u7406\u5458\u5de5', 'Active list should display physical employee label');
+    assertIncludes(activeList.innerHTML, '\u865a\u62df\u5458\u5de5', 'Active list should prefer platform fields when inferring virtual employee label');
+    assertIncludes(activeList.innerHTML, 'Test VE 4', 'Active list should contain runtime-provider digital employee');
+    assertIncludes(activeList.innerHTML, 'Test VE 5', 'Active list should contain non-maclawsrv runtime employee');
+    assertEqual(countOccurrences(activeList.innerHTML, '\u865a\u62df\u5458\u5de5'), 2, 'Active list should display platform and maclawsrv runtime employees as virtual');
+    assertEqual(countOccurrences(activeList.innerHTML, '\u7269\u7406\u5458\u5de5'), 2, 'Active list should display GUI and non-maclawsrv runtime employees as physical');
+    assertIncludes(activeList.innerHTML, 'var(--ve-list-grid', 'VE list should use responsive CSS grid variable');
+  }
+
   // Test 4: Empty pending list shows hint
   {
     console.log('  Test: Empty pending list shows hint message');
@@ -200,7 +225,7 @@ async function runTests() {
     var ctx = loadVETab(g);
     await ctx.loadVEList();
     var quotaInfo = g.document.elements['veQuotaInfo'];
-    assertIncludes(quotaInfo.textContent, '2', 'Quota info should show active count');
+    assertIncludes(quotaInfo.textContent, '4', 'Quota info should show active count');
     assertIncludes(quotaInfo.textContent, '10', 'Quota info should show quota');
   }
 
@@ -306,7 +331,7 @@ async function runTests() {
     g._apiCalls.length = 0;
     g._toasts.length = 0;
     await ctx.veSaveGroupConfig();
-    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config'; });
+    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
     assert(configCall !== undefined, 'Should call config API');
     assertEqual(configCall.opts.method, 'PUT', 'Should use PUT method');
     var body = JSON.parse(configCall.opts.body);
@@ -324,7 +349,7 @@ async function runTests() {
     g._apiCalls.length = 0;
     g._toasts.length = 0;
     await ctx.veSaveGroupConfig();
-    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config'; });
+    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
     assertEqual(configCall, undefined, 'Should not call API for invalid value 0');
     var errorToast = g._toasts.find(function(t) { return t.type === 'error'; });
     assert(errorToast !== undefined, 'Should show error toast for invalid value');
@@ -339,7 +364,7 @@ async function runTests() {
     g._apiCalls.length = 0;
     g._toasts.length = 0;
     await ctx.veSaveGroupConfig();
-    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config'; });
+    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
     assertEqual(configCall, undefined, 'Should not call API for invalid value 11');
     var errorToast = g._toasts.find(function(t) { return t.type === 'error'; });
     assert(errorToast !== undefined, 'Should show error toast for value > 10');
@@ -368,7 +393,7 @@ async function runTests() {
     g.document.elements['veMaxParticipantsInput'] = { value: '1' };
     g._apiCalls.length = 0;
     await ctx.veSaveGroupConfig();
-    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config'; });
+    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
     assert(configCall !== undefined, 'Should accept value 1');
     var body = JSON.parse(configCall.opts.body);
     assertEqual(body.max_group_participants, 1, 'Should send value 1');
@@ -376,7 +401,7 @@ async function runTests() {
     g.document.elements['veMaxParticipantsInput'] = { value: '10' };
     g._apiCalls.length = 0;
     await ctx.veSaveGroupConfig();
-    configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config'; });
+    configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
     assert(configCall !== undefined, 'Should accept value 10');
     body = JSON.parse(configCall.opts.body);
     assertEqual(body.max_group_participants, 10, 'Should send value 10');
@@ -390,6 +415,96 @@ async function runTests() {
     await ctx.loadVEList();
     var input = g.document.elements['veMaxParticipantsInput'];
     assertEqual(input.value, '5', 'Config input should show default value 5');
+  }
+
+  // Test 17a: Auto approve state renders from config
+  {
+    console.log('  Test: Auto approve checkbox reflects loaded config');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    var checkbox = g.document.elements['veAutoApproveInput'];
+    var badge = g.document.elements['veAutoApproveBadge'];
+    assertEqual(checkbox.checked, true, 'Auto approve checkbox should be checked from group config');
+    assertIncludes(badge.textContent, '\u5df2\u5f00\u542f', 'Auto approve badge should show enabled state');
+  }
+
+  // Test 17b: Auto approve toggle saves alongside group config
+  {
+    console.log('  Test: Auto approve toggle saves group config');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    g.document.elements['veAutoApproveInput'] = { checked: false };
+    g.document.elements['veMaxParticipantsInput'] = { value: '6' };
+    g._apiCalls.length = 0;
+    await ctx.veSaveAutoApproveConfig();
+    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
+    assert(configCall !== undefined, 'Should call config API when toggling auto approve');
+    assertEqual(configCall.opts.method, 'PUT', 'Auto approve save should use PUT');
+    var body = JSON.parse(configCall.opts.body);
+    assertEqual(body.max_group_participants, 6, 'Auto approve save should preserve max participants');
+    assertEqual(body.auto_approve, false, 'Auto approve save should send checkbox state');
+  }
+
+  // Test 17c: Group config save preserves server auto approve before list load
+  {
+    console.log('  Test: Group config save preserves server auto approve before list load');
+    var g = createMockGlobal();
+    g.api = async function(url, opts) {
+      g._apiCalls.push({ url: url, opts: opts || {} });
+      if (url === '/api/ve/config' && (!opts || !opts.method)) return { max_group_participants: 9, auto_approve: true };
+      return {};
+    };
+    var ctx = loadVETab(g);
+    g.document.elements['veMaxParticipantsInput'] = { value: '7' };
+    await ctx.veSaveGroupConfig();
+    var saveCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
+    var body = JSON.parse(saveCall.opts.body);
+    assertEqual(body.max_group_participants, 7, 'Should save requested max participants');
+    assertEqual(body.auto_approve, true, 'Should preserve server auto approve state before list load');
+  }
+
+  // Test 17d: Enabling auto approve refreshes list after save
+  {
+    console.log('  Test: Enabling auto approve refreshes digital employee list');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    g.document.elements['veAutoApproveInput'] = { checked: true };
+    g.document.elements['veMaxParticipantsInput'] = { value: '5' };
+    g._apiCalls.length = 0;
+    await ctx.veSaveAutoApproveConfig();
+    var listCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/list'; });
+    assert(listCall !== undefined, 'Should refresh list after enabling auto approve because pending rows may become active');
+  }
+
+  // Test 17e: Auto approve toggle rejects invalid group config
+  {
+    console.log('  Test: Auto approve toggle rejects invalid group config');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    g.document.elements['veAutoApproveInput'] = { checked: false };
+    g.document.elements['veMaxParticipantsInput'] = { value: '11' };
+    g._apiCalls.length = 0;
+    g._toasts.length = 0;
+    await ctx.veSaveAutoApproveConfig();
+    var configCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/config' && c.opts.method === 'PUT'; });
+    var errorToast = g._toasts.find(function(t) { return t.type === 'error'; });
+    assertEqual(configCall, undefined, 'Should not save auto approve when max participants is invalid');
+    assert(errorToast !== undefined, 'Should show error toast for invalid max participants');
+  }
+
+  // Test 17f: Saving group config refreshes list when auto approve is active
+  {
+    console.log('  Test: Saving group config refreshes list when auto approve is active');
+    var g = createMockGlobal();
+    var ctx = loadVETab(g);
+    await ctx.loadVEList();
+    g.document.elements['veMaxParticipantsInput'] = { value: '8' };
+    g._apiCalls.length = 0;
+    await ctx.veSaveGroupConfig();
+    var listCall = g._apiCalls.find(function(c) { return c.url === '/api/ve/list'; });
+    assert(listCall !== undefined, 'Should refresh list after group config save while auto approve is enabled');
   }
 
   // ============================================================

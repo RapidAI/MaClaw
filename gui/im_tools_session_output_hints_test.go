@@ -88,8 +88,8 @@ func TestAppendWaitingInputSessionHintUsesFacts(t *testing.T) {
 		CompletionLevel:   CompletionIncomplete,
 		StructuredSession: true,
 	})
-	if got := b.String(); !strings.Contains(got, "send_and_observe") || !strings.Contains(got, "继续完成之前的任务") {
-		t.Fatalf("waiting incomplete hint = %q, want structured continuation guidance", got)
+	if got := b.String(); !strings.Contains(got, "CodingSubAgent") || strings.Contains(got, "send_and_observe") {
+		t.Fatalf("waiting incomplete hint = %q, want CodingSubAgent guidance without external continuation", got)
 	}
 }
 
@@ -102,7 +102,7 @@ func TestAppendTerminalSessionExitHintUsesFacts(t *testing.T) {
 		Tool:              "codex",
 		StructuredSession: true,
 	})
-	if got := b.String(); !strings.Contains(got, "退出码 2") || !strings.Contains(got, "自动重试") {
-		t.Fatalf("structured exit hint = %q, want retry guidance", got)
+	if got := b.String(); !strings.Contains(got, "退出码 2") || !strings.Contains(got, "CodingSubAgent") || strings.Contains(got, "创建新会话") {
+		t.Fatalf("structured exit hint = %q, want CodingSubAgent guidance without external retry", got)
 	}
 }

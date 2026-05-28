@@ -375,6 +375,7 @@ func (e *DeepCrawlEngine) saveContent(ctx context.Context, pageURL string, depth
 	saveReq := URLSaveRequest{
 		URL:            pageURL,
 		OwnerID:        req.OwnerID,
+		TenantID:       req.TenantID,
 		ProjectPath:    req.ProjectPath,
 		TopicHint:      req.TopicHint,
 		SaveScope:      req.SaveScope,

@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+const (
+	staticAssetCacheControl = "public, max-age=300"
+	staticHTMLCacheControl  = "no-cache"
+)
+
 func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
 	staticDir = resolveStaticDir(staticDir)
 	staticDir = strings.TrimSpace(staticDir)
@@ -89,9 +94,24 @@ func registerSharedStaticAssets(mux *http.ServeMux, staticDir string) {
 	cssPath := filepath.Join(staticDir, "pro-ui.css")
 	mux.HandleFunc("GET /pro-ui.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("Cache-Control", staticAssetCacheControl)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		http.ServeFile(w, r, cssPath)
 	})
+}
+
+func shouldCacheStaticAsset(relPath string) bool {
+	switch strings.ToLower(filepath.Ext(relPath)) {
+	case ".css", ".js", ".mjs", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldRevalidateStaticHTML(relPath string) bool {
+	ext := strings.ToLower(filepath.Ext(relPath))
+	return relPath == "index.html" || ext == ".html" || ext == ".htm"
 }
 
 func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir string, indexPath string, routePrefix string) {
@@ -117,19 +137,31 @@ func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir 
 
 	if info, err := os.Stat(candidate); err == nil {
 		if !info.IsDir() {
+			if shouldCacheStaticAsset(relPath) {
+				w.Header().Set("Cache-Control", staticAssetCacheControl)
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+			} else if shouldRevalidateStaticHTML(relPath) {
+				w.Header().Set("Cache-Control", staticHTMLCacheControl)
+			}
 			http.ServeFile(w, r, candidate)
 			return
 		}
 		// Directory: try its index.html
 		dirIndex := filepath.Join(candidate, "index.html")
 		if _, err := os.Stat(dirIndex); err == nil {
+			w.Header().Set("Cache-Control", staticHTMLCacheControl)
 			http.ServeFile(w, r, dirIndex)
 			return
 		}
 	}
+	if shouldCacheStaticAsset(relPath) || strings.HasPrefix(filepath.ToSlash(relPath), "assets/") {
+		http.NotFound(w, r)
+		return
+	}
 
 	// Fallback to root index.html (SPA-style)
 	if _, err := os.Stat(indexPath); err == nil {
+		w.Header().Set("Cache-Control", staticHTMLCacheControl)
 		http.ServeFile(w, r, indexPath)
 		return
 	}

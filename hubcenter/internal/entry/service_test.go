@@ -4,12 +4,186 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
+
+type countingHubRepo struct {
+	store.HubRepository
+	mu           sync.Mutex
+	listAllCalls int
+}
+
+func (r *countingHubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
+	r.mu.Lock()
+	r.listAllCalls++
+	r.mu.Unlock()
+	return r.HubRepository.ListAll(ctx)
+}
+
+func (r *countingHubRepo) ListAllCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listAllCalls
+}
+
+type countingHubDomainRouteRepo struct {
+	store.HubDomainRouteRepository
+	mu           sync.Mutex
+	listAllCalls int
+}
+
+func (r *countingHubDomainRouteRepo) ListAll(ctx context.Context) ([]*store.HubDomainRoute, error) {
+	r.mu.Lock()
+	r.listAllCalls++
+	r.mu.Unlock()
+	return r.HubDomainRouteRepository.ListAll(ctx)
+}
+
+func (r *countingHubDomainRouteRepo) ListAllCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listAllCalls
+}
+
+type pagedCountingHubRepo struct {
+	store.HubRepository
+	mu            sync.Mutex
+	listAllCalls  int
+	listPageCalls int
+}
+
+func (r *pagedCountingHubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
+	r.mu.Lock()
+	r.listAllCalls++
+	r.mu.Unlock()
+	return r.HubRepository.ListAll(ctx)
+}
+
+func (r *pagedCountingHubRepo) ListPage(ctx context.Context, offset, limit int) ([]*store.HubInstance, error) {
+	r.mu.Lock()
+	r.listPageCalls++
+	r.mu.Unlock()
+	return r.HubRepository.(hubPageLister).ListPage(ctx, offset, limit)
+}
+
+func (r *pagedCountingHubRepo) Calls() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listAllCalls, r.listPageCalls
+}
+
+type pagedCountingHubUserLinkRepo struct {
+	store.HubUserLinkRepository
+	mu            sync.Mutex
+	listAllCalls  int
+	listPageCalls int
+}
+
+func (r *pagedCountingHubUserLinkRepo) ListAll(ctx context.Context) ([]*store.HubUserLink, error) {
+	r.mu.Lock()
+	r.listAllCalls++
+	r.mu.Unlock()
+	return r.HubUserLinkRepository.ListAll(ctx)
+}
+
+func (r *pagedCountingHubUserLinkRepo) ListPage(ctx context.Context, offset, limit int) ([]*store.HubUserLink, error) {
+	r.mu.Lock()
+	r.listPageCalls++
+	r.mu.Unlock()
+	return r.HubUserLinkRepository.(hubUserLinkPageLister).ListPage(ctx, offset, limit)
+}
+
+func (r *pagedCountingHubUserLinkRepo) Calls() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listAllCalls, r.listPageCalls
+}
+
+type pagedCountingHubDomainRouteRepo struct {
+	store.HubDomainRouteRepository
+	mu            sync.Mutex
+	listAllCalls  int
+	listPageCalls int
+}
+
+func (r *pagedCountingHubDomainRouteRepo) ListAll(ctx context.Context) ([]*store.HubDomainRoute, error) {
+	r.mu.Lock()
+	r.listAllCalls++
+	r.mu.Unlock()
+	return r.HubDomainRouteRepository.ListAll(ctx)
+}
+
+func (r *pagedCountingHubDomainRouteRepo) ListPage(ctx context.Context, offset, limit int) ([]*store.HubDomainRoute, error) {
+	r.mu.Lock()
+	r.listPageCalls++
+	r.mu.Unlock()
+	return r.HubDomainRouteRepository.(hubDomainRoutePageLister).ListPage(ctx, offset, limit)
+}
+
+func (r *pagedCountingHubDomainRouteRepo) Calls() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listAllCalls, r.listPageCalls
+}
+
+type pagedCountingBlockedEmailRepo struct {
+	store.BlockedEmailRepository
+	mu            sync.Mutex
+	listCalls     int
+	listPageCalls int
+}
+
+func (r *pagedCountingBlockedEmailRepo) List(ctx context.Context) ([]*store.BlockedEmail, error) {
+	r.mu.Lock()
+	r.listCalls++
+	r.mu.Unlock()
+	return r.BlockedEmailRepository.List(ctx)
+}
+
+func (r *pagedCountingBlockedEmailRepo) ListPage(ctx context.Context, offset, limit int) ([]*store.BlockedEmail, error) {
+	r.mu.Lock()
+	r.listPageCalls++
+	r.mu.Unlock()
+	return r.BlockedEmailRepository.(blockedEmailPageLister).ListPage(ctx, offset, limit)
+}
+
+func (r *pagedCountingBlockedEmailRepo) Calls() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listCalls, r.listPageCalls
+}
+
+type pagedCountingBlockedIPRepo struct {
+	store.BlockedIPRepository
+	mu            sync.Mutex
+	listCalls     int
+	listPageCalls int
+}
+
+func (r *pagedCountingBlockedIPRepo) List(ctx context.Context) ([]*store.BlockedIP, error) {
+	r.mu.Lock()
+	r.listCalls++
+	r.mu.Unlock()
+	return r.BlockedIPRepository.List(ctx)
+}
+
+func (r *pagedCountingBlockedIPRepo) ListPage(ctx context.Context, offset, limit int) ([]*store.BlockedIP, error) {
+	r.mu.Lock()
+	r.listPageCalls++
+	r.mu.Unlock()
+	return r.BlockedIPRepository.(blockedIPPageLister).ListPage(ctx, offset, limit)
+}
+
+func (r *pagedCountingBlockedIPRepo) Calls() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listCalls, r.listPageCalls
+}
 
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
@@ -36,6 +210,164 @@ func newTestStore(t *testing.T) *store.Store {
 	})
 
 	return sqlite.NewStore(provider)
+}
+
+func TestResolveByEmailUsesOfficialTenantPublicFallbackPolicy(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_public", OwnerEmail: "owner@example.com", Name: "Official Hub", BaseURL: "https://official.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_official_public":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"public":{"tenant_id":"public","signup_scope":"public","is_public_fallback":true,"invite_enabled":true,"max_active_invites":100,"monthly_invite_quota":500,"per_invite_max_uses_default":1,"per_invite_max_uses_max":20,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "scattered@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 {
+		t.Fatalf("expected one public fallback hub, got mode=%s hubs=%d", result.Mode, len(result.Hubs))
+	}
+	if result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "public" {
+		t.Fatalf("unexpected fallback route: %+v", result.Hubs[0])
+	}
+}
+
+func TestResolveByEmailNormalizesStoredRegistrationPolicy(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_policy_case", OwnerEmail: "owner@example.com", Name: "Official Case Hub", BaseURL: "https://official-case.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_official_policy_case":{"hub_origin":"OFFICIAL","default_signup_scope":"PUBLIC","tenants":{"tenant_default":{"signup_scope":"INHERIT","is_public_fallback":true,"status":"ACTIVE"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "case@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "" {
+		t.Fatalf("unexpected normalized fallback route: %+v", result)
+	}
+}
+
+func TestResolveByEmailUsesOfficialDefaultTenantPublicFallbackPolicy(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_default_public", OwnerEmail: "owner@example.com", Name: "Official Default Hub", BaseURL: "https://official-default.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_official_default_public":{"hub_origin":"official","default_signup_scope":"public","tenants":{"":{"tenant_id":"","signup_scope":"inherit","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "scattered@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "" {
+		t.Fatalf("unexpected fallback route: %+v", result)
+	}
+}
+
+func TestResolveByEmailUsesHubRowRegistrationPolicyFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_row_public", HubOrigin: "official", DefaultSignupScope: "public", RegistrationPolicyJSON: `{"tenants":{"public":{"tenant_id":"public","signup_scope":"public","is_public_fallback":true,"status":"active"}}}`, OwnerEmail: "owner@example.com", Name: "Official Row Hub", BaseURL: "https://official-row.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "scattered@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "public" {
+		t.Fatalf("unexpected row fallback route: %+v", result)
+	}
+}
+
+func TestResolveByEmailConfiguredSelfHostedHubDoesNotBecomePublicFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_enterprise_no_domain", OwnerEmail: "owner@example.com", Name: "Enterprise Hub", BaseURL: "https://enterprise.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_enterprise_no_domain":{"hub_origin":"self_hosted","default_signup_scope":"domain_restricted","tenants":{}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "guest@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "none" || len(result.Hubs) != 0 {
+		t.Fatalf("expected no fallback route, got mode=%s hubs=%d", result.Mode, len(result.Hubs))
+	}
+}
+
+func TestResolveByEmailSharedHubWithoutPublicSignupDoesNotFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_shared_no_public_signup", OwnerEmail: "owner@example.com", Name: "Shared Enterprise Hub", BaseURL: "https://shared-enterprise.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "guest@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "none" || len(result.Hubs) != 0 {
+		t.Fatalf("expected shared hub without accept_public_signup to stay out of fallback, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPublicFallbackRequiresEffectivePublicScope(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_inherit_restricted", OwnerEmail: "owner@example.com", Name: "Official Restricted", BaseURL: "https://official-restricted.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_official_inherit_restricted":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"public":{"tenant_id":"public","signup_scope":"inherit","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "guest@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "none" || len(result.Hubs) != 0 {
+		t.Fatalf("expected inherit/domain_restricted fallback to be ignored, got %+v", result)
+	}
 }
 
 func TestResolveByEmailPrefersDefaultLinkedHub(t *testing.T) {
@@ -378,6 +710,71 @@ func TestResolveAdminByEmailPatternIncludesInventoryHiddenByAdminOverride(t *tes
 		t.Fatalf("expected normal entry routing to stay on migrated target only, got %+v", entryResult)
 	}
 }
+
+func TestResolveAdminByEmailPatternNormalizesDefaultTenantInventory(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:               "hub_default_inventory",
+		OwnerEmail:       "owner@example.com",
+		Name:             "Default Inventory",
+		BaseURL:          "https://hub.example.com",
+		Visibility:       "private",
+		EnrollmentMode:   "open",
+		Status:           "online",
+		HubSecretHash:    "secret",
+		CapabilitiesJSON: `{"user_emails":["user@example.com"],"tenant_user_emails":{"tenant_default":["user@example.com"]},"supports_user_data_migration":true}`,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveAdminByEmailPattern(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ResolveAdminByEmailPattern: %v", err)
+	}
+	if result == nil || len(result.Hubs) != 1 || result.Hubs[0].TenantID != "" {
+		t.Fatalf("expected tenant_default inventory to route as default tenant, got %+v", result)
+	}
+}
+
+func TestResolveAdminByEmailPatternReadsTenantInventoryWithoutFlatUserEmails(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:               "hub_tenant_only_inventory",
+		OwnerEmail:       "owner@example.com",
+		Name:             "Tenant Only Inventory",
+		BaseURL:          "https://hub.example.com",
+		Visibility:       "private",
+		EnrollmentMode:   "open",
+		Status:           "online",
+		HubSecretHash:    "secret",
+		CapabilitiesJSON: `{"tenant_user_emails":{"tenant_a":["alice@example.com"]},"supports_user_data_migration":true}`,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	result, err := svc.ResolveAdminByEmailPattern(ctx, "alice@example.com")
+	if err != nil {
+		t.Fatalf("ResolveAdminByEmailPattern: %v", err)
+	}
+	if result == nil || len(result.Hubs) != 1 || result.Hubs[0].TenantID != "tenant_a" {
+		t.Fatalf("expected tenant inventory without flat user_emails to be visible, got %+v", result)
+	}
+}
+
 func TestResolveByEmailBlocked(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -443,28 +840,30 @@ func TestResolveByEmailIncludesOnlinePublicAndSharedHubs(t *testing.T) {
 		UpdatedAt:      now,
 	}
 	sharedHub := &store.HubInstance{
-		ID:             "hub_shared",
-		OwnerEmail:     "team@example.com",
-		Name:           "Shared Hub",
-		BaseURL:        "https://shared.example.com",
-		Visibility:     "shared",
-		EnrollmentMode: "approval",
-		Status:         "online",
-		HubSecretHash:  "secret-shared",
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                 "hub_shared",
+		OwnerEmail:         "team@example.com",
+		Name:               "Shared Hub",
+		BaseURL:            "https://shared.example.com",
+		Visibility:         "shared",
+		EnrollmentMode:     "approval",
+		AcceptPublicSignup: true,
+		Status:             "online",
+		HubSecretHash:      "secret-shared",
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	publicHub := &store.HubInstance{
-		ID:             "hub_public",
-		OwnerEmail:     "public@example.com",
-		Name:           "Public Hub",
-		BaseURL:        "https://public.example.com",
-		Visibility:     "public",
-		EnrollmentMode: "open",
-		Status:         "online",
-		HubSecretHash:  "secret-public",
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                 "hub_public",
+		OwnerEmail:         "public@example.com",
+		Name:               "Public Hub",
+		BaseURL:            "https://public.example.com",
+		Visibility:         "public",
+		EnrollmentMode:     "open",
+		AcceptPublicSignup: true,
+		Status:             "online",
+		HubSecretHash:      "secret-public",
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	offlinePublicHub := &store.HubInstance{
 		ID:             "hub_public_offline",
@@ -541,16 +940,17 @@ func TestResolveByEmailPrefersCorporateDomainMatch(t *testing.T) {
 		UpdatedAt:            now,
 	}
 	defaultHub := &store.HubInstance{
-		ID:             "hub_default",
-		OwnerEmail:     "owner@example.com",
-		Name:           "Default Hub",
-		BaseURL:        "https://default.example.com",
-		Visibility:     "shared",
-		EnrollmentMode: "approval",
-		Status:         "online",
-		HubSecretHash:  "secret-default",
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                 "hub_default",
+		OwnerEmail:         "owner@example.com",
+		Name:               "Default Hub",
+		BaseURL:            "https://default.example.com",
+		Visibility:         "shared",
+		EnrollmentMode:     "approval",
+		AcceptPublicSignup: true,
+		Status:             "online",
+		HubSecretHash:      "secret-default",
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	for _, hub := range []*store.HubInstance{corpHub, defaultHub} {
@@ -594,16 +994,17 @@ func TestResolveByEmailFallsBackToDefaultCorporateHub(t *testing.T) {
 		UpdatedAt:            now,
 	}
 	defaultHub := &store.HubInstance{
-		ID:             "hub_default",
-		OwnerEmail:     "owner@example.com",
-		Name:           "Default Hub",
-		BaseURL:        "https://default.example.com",
-		Visibility:     "shared",
-		EnrollmentMode: "approval",
-		Status:         "online",
-		HubSecretHash:  "secret-default",
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                 "hub_default",
+		OwnerEmail:         "owner@example.com",
+		Name:               "Default Hub",
+		BaseURL:            "https://default.example.com",
+		Visibility:         "shared",
+		EnrollmentMode:     "approval",
+		AcceptPublicSignup: true,
+		Status:             "online",
+		HubSecretHash:      "secret-default",
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	for _, hub := range []*store.HubInstance{corpHub, defaultHub} {
@@ -832,6 +1233,103 @@ func TestRoutingDiagnosticsTenantDomainDoesNotSatisfyGlobalBackfill(t *testing.T
 	}
 	if diagnostics.Migration.LegacyDomainBackfillPending != 1 {
 		t.Fatalf("LegacyDomainBackfillPending = %d, want 1", diagnostics.Migration.LegacyDomainBackfillPending)
+	}
+}
+
+func TestRoutingDiagnosticsReusesSnapshotInputs(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{
+		ID:                   "hub_diag_scans",
+		OwnerEmail:           "owner@rapidai.tech",
+		Name:                 "Diagnostics Scan Hub",
+		BaseURL:              "https://diag.example.com",
+		CorporateEmailDomain: "rapidai.tech",
+		Status:               "online",
+		HubSecretHash:        "secret",
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "route_diag_scans", HubID: hub.ID, Domain: "rapidai.tech", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert route: %v", err)
+	}
+	hubs := &countingHubRepo{HubRepository: st.Hubs}
+	routes := &countingHubDomainRouteRepo{HubDomainRouteRepository: st.HubDomainRoutes}
+	svc := NewService(hubs, st.HubUserLinks, routes, st.BlockedEmails, st.BlockedIPs)
+
+	diagnostics, err := svc.RoutingDiagnostics(ctx)
+	if err != nil {
+		t.Fatalf("RoutingDiagnostics: %v", err)
+	}
+	if diagnostics.Snapshot.DomainRoutes != 1 || diagnostics.Hubs.EnabledDomainRoutes != 1 {
+		t.Fatalf("unexpected diagnostics: %+v", diagnostics)
+	}
+	if got := hubs.ListAllCalls(); got != 1 {
+		t.Fatalf("hub ListAll calls = %d, want 1", got)
+	}
+	if got := routes.ListAllCalls(); got != 1 {
+		t.Fatalf("route ListAll calls = %d, want 1", got)
+	}
+}
+
+func TestRoutingDiagnosticsUsesPagedSnapshotInputs(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_diag_paged", OwnerEmail: "owner@rapidai.tech", Name: "Diagnostics Paged Hub", BaseURL: "https://paged.example.com", CorporateEmailDomain: "rapidai.tech", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "link_diag_paged", HubID: hub.ID, Email: "user@rapidai.tech", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert link: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "route_diag_paged", HubID: hub.ID, Domain: "rapidai.tech", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert route: %v", err)
+	}
+	if err := st.BlockedEmails.Create(ctx, &store.BlockedEmail{ID: "blocked_email_paged", Email: "blocked@rapidai.tech", Reason: "test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create blocked email: %v", err)
+	}
+	if err := st.BlockedIPs.Create(ctx, &store.BlockedIP{ID: "blocked_ip_paged", IP: "10.1.2.3", Reason: "test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create blocked ip: %v", err)
+	}
+
+	hubs := &pagedCountingHubRepo{HubRepository: st.Hubs}
+	links := &pagedCountingHubUserLinkRepo{HubUserLinkRepository: st.HubUserLinks}
+	routes := &pagedCountingHubDomainRouteRepo{HubDomainRouteRepository: st.HubDomainRoutes}
+	blockedEmails := &pagedCountingBlockedEmailRepo{BlockedEmailRepository: st.BlockedEmails}
+	blockedIPs := &pagedCountingBlockedIPRepo{BlockedIPRepository: st.BlockedIPs}
+	svc := NewService(hubs, links, routes, blockedEmails, blockedIPs)
+
+	diagnostics, err := svc.RoutingDiagnostics(ctx)
+	if err != nil {
+		t.Fatalf("RoutingDiagnostics: %v", err)
+	}
+	if diagnostics.Snapshot.EmailRoutes != 1 || diagnostics.Snapshot.DomainRoutes != 1 {
+		t.Fatalf("unexpected diagnostics: %+v", diagnostics)
+	}
+	if diagnostics.Snapshot.BlockedEmails != 1 || diagnostics.Snapshot.BlockedIPs != 1 {
+		t.Fatalf("unexpected blocked snapshot counts: %+v", diagnostics.Snapshot)
+	}
+	if listAll, listPage := hubs.Calls(); listAll != 0 || listPage == 0 {
+		t.Fatalf("hub calls = ListAll:%d ListPage:%d, want 0/>0", listAll, listPage)
+	}
+	if listAll, listPage := links.Calls(); listAll != 0 || listPage == 0 {
+		t.Fatalf("link calls = ListAll:%d ListPage:%d, want 0/>0", listAll, listPage)
+	}
+	if listAll, listPage := routes.Calls(); listAll != 0 || listPage == 0 {
+		t.Fatalf("route calls = ListAll:%d ListPage:%d, want 0/>0", listAll, listPage)
+	}
+	if list, listPage := blockedEmails.Calls(); list != 0 || listPage == 0 {
+		t.Fatalf("blocked email calls = List:%d ListPage:%d, want 0/>0", list, listPage)
+	}
+	if list, listPage := blockedIPs.Calls(); list != 0 || listPage == 0 {
+		t.Fatalf("blocked ip calls = List:%d ListPage:%d, want 0/>0", list, listPage)
 	}
 }
 

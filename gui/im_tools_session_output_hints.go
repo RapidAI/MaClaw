@@ -7,7 +7,7 @@ import (
 
 func appendNoOutputSessionHint(b *strings.Builder, sessionID string, facts sessionOutputHintFacts) {
 	if facts.Status.IsRunning() {
-		b.WriteString(fmt.Sprintf("\n📌 会话已就绪但暂无输出——编程工具在等待输入。请立即调用 send_and_observe(session_id=%q, text=\"编程指令\") 发送任务。", sessionID))
+		b.WriteString(fmt.Sprintf("\n📌 旧外部编程会话 %q 已就绪但暂无输出。agent 新编程任务已改走内部 CodingSubAgent，不再续接外部会话。", sessionID))
 	} else if facts.Status.IsStarting() {
 		b.WriteString("\n⏳ 会话正在启动中，请稍后再次调用 get_session_output 检查状态（最多再检查 1 次）。")
 	}
@@ -38,8 +38,7 @@ func appendWaitingInputSessionHint(b *strings.Builder, sessionID string, facts s
 	}
 	if facts.HasRecentTransientAPI && facts.CompletionLevel != CompletionCompleted {
 		b.WriteString("\n⚠️ 编程工具遇到 API 错误后恢复，任务可能未完成。")
-		b.WriteString(fmt.Sprintf("\n📌 请重新发送指令让编程工具继续工作：send_and_observe(session_id=%q, text=\"继续完成之前的任务\")", sessionID))
-		b.WriteString("\n不要放弃——API 错误是暂时的，重试通常会成功。")
+		b.WriteString(fmt.Sprintf("\n📌 旧外部会话 %q 不再由 agent 自动续接；新编程任务请走内部 CodingSubAgent。", sessionID))
 		return
 	}
 	switch facts.CompletionLevel {
@@ -51,15 +50,14 @@ func appendWaitingInputSessionHint(b *strings.Builder, sessionID string, facts s
 				b.WriteString("\n⚠️ 已自动续接 10 次，建议告知用户当前进度并询问是否继续。")
 			} else {
 				b.WriteString("\n🔄 编程工具因 token/turn 限制暂停，任务未完成。")
-				b.WriteString(fmt.Sprintf("\n📌 立即调用 send_and_observe(session_id=%q, text=\"继续完成之前的任务\") 让编程工具继续工作。", sessionID))
-				b.WriteString("\n⚠️ 不要询问用户是否继续——直接发送续接指令。")
+				b.WriteString(fmt.Sprintf("\n📌 旧外部会话 %q 不再由 agent 自动续接；新编程任务请走内部 CodingSubAgent。", sessionID))
 			}
 		} else {
-			b.WriteString("\n⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作")
+			b.WriteString("\n⚠️ 任务似乎未完成。agent 新编程任务请走内部 CodingSubAgent。")
 		}
 	default:
 		if facts.StructuredSession {
-			b.WriteString(fmt.Sprintf("\n📌 编程工具已暂停。调用 send_and_observe(session_id=%q, text=\"继续\") 让编程工具继续工作，或查看输出判断任务是否已完成。", sessionID))
+			b.WriteString(fmt.Sprintf("\n📌 旧外部编程会话 %q 已暂停。agent 新编程任务请走内部 CodingSubAgent。", sessionID))
 		}
 	}
 }
@@ -90,8 +88,7 @@ func appendStructuredSessionExitHint(b *strings.Builder, facts sessionOutputHint
 		b.WriteString("\n不要重试——这是配置问题，重试不会解决。")
 	} else if resumeCount < 3 {
 		b.WriteString(fmt.Sprintf("\n⚠️ 编程工具异常退出（退出码 %d），可能是 API 限流、网络波动或临时服务故障。", *facts.ExitCode))
-		b.WriteString(fmt.Sprintf("\n📌 自动重试（第 %d/3 次）：立即创建新会话重试，使用相同参数。", resumeCount+1))
-		b.WriteString("\n不要询问用户——直接重试。这类错误通常是暂时的，重试大概率会成功。")
+		b.WriteString(fmt.Sprintf("\n📌 不再自动创建外部会话重试（原计划第 %d/3 次）。新编程任务请走内部 CodingSubAgent。", resumeCount+1))
 	} else {
 		b.WriteString(fmt.Sprintf("\n🛑 编程工具已连续失败 %d 次（退出码 %d）。", resumeCount, *facts.ExitCode))
 		b.WriteString(fmt.Sprintf("\n请将错误信息告知用户，建议检查 %s 的上游 API 状态或稍后再试。", facts.Tool))
@@ -107,6 +104,6 @@ func appendPTYSessionExitHint(b *strings.Builder, facts sessionOutputHintFacts) 
 		b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", facts.Tool))
 	} else {
 		b.WriteString(fmt.Sprintf("\n🛑 会话已失败退出（退出码 %d），可能是临时错误。", *facts.ExitCode))
-		b.WriteString("\n📌 建议创建新会话重试。如果连续失败，请将错误信息告知用户。")
+		b.WriteString("\n📌 不再建议创建外部会话重试；新编程任务请走内部 CodingSubAgent。")
 	}
 }

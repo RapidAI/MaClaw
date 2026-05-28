@@ -40,8 +40,8 @@ func SendAndObserveSession(manager *RemoteSessionManager, sessionID, text string
 
 	waitMs := []int{500, 500, 1000, 1000, 1500, 1500, 2000, 2000, 3000, 3000, 3000, 3000, 3000, 3000, 3000}
 	if ts := opts.TimeoutSeconds; ts > 0 {
-		if ts > 120.0 {
-			ts = 120.0
+		if ts > 600.0 {
+			ts = 600.0
 		}
 		targetMs := int(ts * 1000)
 		if targetMs < 500 {

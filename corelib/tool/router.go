@@ -64,8 +64,8 @@ var CoreToolNames = map[string]bool{
 type conditionalKeepRule struct {
 	keepTools []string
 	// noMemoryPin when true means tools from this rule should NOT be pinned
-	// via memory-driven pinning or eager pinning during Route(). They are pinned
-	// after actual successful use through ActivateSessionTool.
+	// from recalled memory or other indirect context. They are pinned after
+	// actual successful use through ActivateSessionTool.
 	noMemoryPin bool
 }
 
@@ -98,14 +98,15 @@ func NoEagerPinToolNames() []string {
 
 // IsNoEagerPinTool returns true if the named tool is in the noEagerPinTools
 // set (derived from conditionalKeepRules with noMemoryPin=true). Such tools
-// should not be session-pinned via local matching or memory-driven pinning.
+// should not be session-pinned from indirect context.
 func IsNoEagerPinTool(name string) bool {
 	return noEagerPinTools[name]
 }
 
-// NOTE: Desktop GUI tools (gui_observe, gui_verify, gui_record_start, gui_record_stop)
-// are NOT in conditionalKeepRules. They live in DeferredToolNames, discoverable
-// via discover_tool. This avoids false-positive local activation (#87).
+// NOTE: Desktop GUI observe/verify tools (gui_observe, gui_verify) are NOT in
+// conditionalKeepRules. They live in DeferredToolNames, discoverable via
+// discover_tool. GUI record start/stop are browser-workflow conditional tools.
+// This avoids false-positive local activation (#87).
 
 var conditionalKeepRules = []conditionalKeepRule{
 	{keepTools: []string{"mis_data"}},
@@ -445,6 +446,9 @@ func (r *Router) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
 
 // ActivateSessionTool adds a tool to the current session's always-include set.
 func (r *Router) ActivateSessionTool(name string) {
+	if !ShouldPinConditionalTool(name) {
+		return
+	}
 	if r.sessionTools == nil {
 		r.sessionTools = make(map[string]bool)
 	}
@@ -719,10 +723,9 @@ var noPinConditionalTools = map[string]bool{
 	"office":       true,
 }
 
-// noEagerPinTools lists conditional tools that should NOT be eagerly pinned
-// during Route() local matching or memory-driven pinning, but SHOULD be
-// pinned after actual successful use (via ActivateSessionTool in the tool
-// execution path).
+// noEagerPinTools lists conditional tools that should NOT be pinned from
+// indirect context, but SHOULD be pinned after actual successful use (via
+// ActivateSessionTool in the tool execution path).
 //
 // This set is derived automatically from conditionalKeepRules: any rule with
 // noMemoryPin=true contributes all its keepTools to this set. This ensures
@@ -780,6 +783,57 @@ func matchConditionalKeepRules(userMessage string) (keep map[string]bool, filter
 	return keep, filterOut, needsConfirm
 }
 
+func uicResultUsableForToolActivation(result intent.ClassificationResult) bool {
+	return result.Primary != intent.LabelUnknown && result.Primary != intent.LabelAmbiguous
+}
+
+func uicToolNameActivatable(name string) bool {
+	return allConditionalKeepTools[name] || knowledgeWriteToolNames[name]
+}
+
+func coreRoutePriority(name string, condKeep, sessionTools map[string]bool) int {
+	if condKeep[name] {
+		return 0
+	}
+	switch name {
+	case "bash", "read_file", "FileRead", "ripgrep", "Glob", "write_file", "edit_file", "list_directory":
+		return 1
+	}
+	if sessionTools[name] {
+		return 2
+	}
+	switch name {
+	case "task", "async_wait", "compress_context", "memory":
+		return 3
+	case "list_sessions", "create_session", "send_and_observe", "get_session_output", "get_session_events", "control_session":
+		return 4
+	case "screenshot", "web_fetch", "set_nickname", "tts":
+		return 5
+	case "manage_skill", "discover_tool", "call_mcp_tool":
+		return 6
+	default:
+		return 7
+	}
+}
+
+func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools map[string]bool) []map[string]interface{} {
+	if len(core) <= MaxToolBudget {
+		return core
+	}
+	trimmed := append([]map[string]interface{}(nil), core...)
+	sort.SliceStable(trimmed, func(i, j int) bool {
+		ni := ExtractToolName(trimmed[i])
+		nj := ExtractToolName(trimmed[j])
+		pi := coreRoutePriority(ni, condKeep, sessionTools)
+		pj := coreRoutePriority(nj, condKeep, sessionTools)
+		if pi != pj {
+			return pi < pj
+		}
+		return ni < nj
+	})
+	return trimmed[:MaxToolBudget]
+}
+
 // Route selects the most relevant tools for userMessage from allTools.
 func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
 	var condKeep map[string]bool
@@ -795,38 +849,34 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 		uicResult := r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
 
-		// Two-tier activation:
-		//
-		// Tier 1 (activation): UIC returns a non-degraded, non-ambiguous top
-		// intent → activate that intent's ToolNames so the LLM can see and
+		// UIC activation: UIC returns a concrete, non-ambiguous top
+		// intent, including degraded embedding-only fusion results. Activate that
+		// intent's ToolNames so the LLM can see and
 		// call them. This uses a LOW threshold because the cost of a false
 		// positive is small (an extra tool definition in context) while the
 		// cost of a false negative is high (LLM cannot perform the task and
 		// falls back to dangerous workarounds like raw ssh via bash).
 		//
-		// Tier 2 (eager pin): confidence is high enough to pin tools to the
-		// session so they survive follow-up messages without re-classification.
-		// This uses a HIGHER threshold to avoid polluting the session with
-		// tools from a single ambiguous message.
-		//
-		// The old design used a single 0.90 threshold for both activation AND
-		// pinning. Fusion-ambiguous results (e.g. ssh 0.695 vs search 0.676)
+		// The old design used a single 0.90 threshold for activation. Fusion-
+		// ambiguous results (e.g. ssh 0.695 vs search 0.676)
 		// never reach 0.90, causing the correct top-intent's tools to be
 		// completely hidden from the LLM.
-		const (
-			uicActivationThreshold = 0.50 // Tier 1: activate tools (low bar)
-			uicEagerPinThreshold   = 0.80 // Tier 2: session-pin tools (high bar)
-		)
+		const uicActivationThreshold = 0.50
 
-		uicUsable := !uicResult.Degraded &&
-			uicResult.Primary != intent.LabelUnknown &&
-			uicResult.Primary != intent.LabelAmbiguous
+		// A degraded UIC result can still be actionable: in practice the tree
+		// channel may time out while the embedding channel returns a confident
+		// concrete intent. Do not hide first-class conditional tools in that
+		// case; tool availability must follow the current intent, not stale
+		// experience or an auxiliary classifier outage.
+		uicUsable := uicResultUsableForToolActivation(uicResult)
 
-		uicShouldEagerPin := uicUsable && uicResult.Confidence >= uicEagerPinThreshold
 		uicKnowledgeWrite := uicUsable && uicResult.Primary == intent.LabelKnowledgeWrite && uicResult.Confidence >= uicActivationThreshold
 
 		if uicUsable && uicResult.Confidence >= uicActivationThreshold && len(uicResult.ToolNames) > 0 {
 			for _, toolName := range uicResult.ToolNames {
+				if !uicToolNameActivatable(toolName) {
+					continue
+				}
 				condKeep[toolName] = true
 			}
 		}
@@ -844,18 +894,6 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		for name := range allConditionalKeepTools {
 			if !condKeep[name] {
 				condFilterOut[name] = true
-			}
-		}
-
-		// Eager pin only at Tier 2 confidence. Tier 1 activation makes tools
-		// available for this message only; they won't persist to the next
-		// message unless the LLM actually calls them (which triggers
-		// ActivateSessionTool in the tool execution path).
-		if uicShouldEagerPin {
-			for name := range condKeep {
-				if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
-					r.ActivateSessionTool(name)
-				}
 			}
 		}
 
@@ -896,8 +934,8 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 						}
 					}
 				}
-				// For tools in noEagerPinTools (high-cost sets like browser_*),
-				// require higher confidence to avoid false-positive activation.
+				// Fallback semantic promotion uses a single high-confidence threshold
+				// for all conditional tool groups and only affects this route call.
 				for _, name := range intentTools {
 					if condKeep[name] {
 						continue
@@ -909,24 +947,19 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	// Eager pin (fallback path only): when the IntentClassifier semantic
-	// enhancement selects a conditional tool, pin it to the session.
-	// The UIC path handles its own eager pin above with Tier 2 threshold.
-	// Tools from noMemoryPin rules are excluded (noEagerPinTools) because
-	// eager pinning is prone to false positives. They get pinned after
-	// actual successful use via ActivateSessionTool in the tool execution path.
-	if r.unifiedClassifier == nil {
-		for name := range condKeep {
-			if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
-				r.ActivateSessionTool(name)
-			}
-		}
-	}
-
-	if condKeep["ssh"] || r.sessionTools["ssh"] {
+	if condKeep["ssh"] {
 		// SSH is a first-class builtin execution surface. When it is selected,
-		// hide the generic MCP gateway so the model cannot route the same action
-		// through call_mcp_tool(server_id="ssh", tool_name="ssh").
+		// hide generic fallback/discovery surfaces so the model cannot route the
+		// same action through call_mcp_tool(server_id="ssh", tool_name="ssh") or
+		// install a community SSH skill instead of using the builtin.
+		suppressedTools["call_mcp_tool"] = true
+		suppressedTools["manage_skill"] = true
+		suppressedTools["discover_tool"] = true
+		suppressedTools["search_and_install_skill"] = true
+	} else if r.sessionTools["ssh"] {
+		// Preserve the older gateway guard for follow-up messages where ssh was
+		// session-pinned, without hiding skill/discovery tools for a possible
+		// topic change in the same conversation.
 		suppressedTools["call_mcp_tool"] = true
 	}
 
@@ -980,7 +1013,9 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	if len(candidates) == 0 || len(core) >= MaxToolBudget {
+	core = trimCoreToolsToBudget(core, condKeep, r.sessionTools)
+	remainingSlots := MaxToolBudget - len(core)
+	if len(candidates) == 0 || remainingSlots <= 0 {
 		return core
 	}
 
@@ -1098,9 +1133,11 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		return scoredList[i].score > scoredList[j].score
 	})
 
-	// Rerank top candidates when reranker is configured and candidates exceed budget.
+	// Rerank top candidates when reranker is configured and candidates exceed
+	// the remaining non-core slots. Core/session/conditional tools consume part
+	// of MaxToolBudget before candidate routing starts.
 	var rerankerResult []string
-	if r.reranker != nil && len(scoredList) > MaxToolBudget {
+	if r.reranker != nil && len(scoredList) > remainingSlots {
 		// Take top-20 candidates for reranking.
 		rerankerCount := 20
 		if rerankerCount > len(scoredList) {
@@ -1164,10 +1201,10 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	dynamicCount := 0
 	result := make([]map[string]interface{}, len(core), MaxToolBudget+2)
 	copy(result, core)
-
-	// seenNames (built during core/candidate split above) already tracks all
-	// tool names in core + candidates. Reuse it for downstream dedup; any
-	// tool appended to result must check seenNames first.
+	resultNames := make(map[string]bool, MaxToolBudget+2)
+	for _, t := range result {
+		resultNames[ExtractToolName(t)] = true
+	}
 
 	// Enhance manage_skill description with matched skill names.
 	if len(matchedSkills) > 0 && skillScore > 0.3 {
@@ -1193,13 +1230,14 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			}
 		}
 		result = append(result, candidates[s.index])
+		resultNames[candidateNames[s.index]] = true
 	}
 
 	if r.recommender != nil {
 		if hint := r.matchRecommendations(bm25.Tokenize(userMessage)); hint != nil {
-			if name := ExtractToolName(hint); !seenNames[name] {
+			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] {
 				result = append(result, hint)
-				seenNames[name] = true
+				resultNames[name] = true
 			}
 		}
 	}

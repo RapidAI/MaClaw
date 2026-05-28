@@ -2,6 +2,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { AssistantInputIcon, getInputActionButtonStyle } from "./aiAssistantPanelTheme";
+import { getAssistantInputComposerStyles } from "./AssistantInputComposerStyles";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { getParticipantColor } from "./VEGroupChat";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
@@ -56,6 +58,27 @@ type QueuedVEMessage = {
     message: VEMessage;
     filePaths?: string[];
     attachmentNames?: string[];
+};
+
+type VEHistoryDetail = {
+    discussion?: {
+        local_relation?: string;
+    };
+    session?: {
+        participants?: Array<{ id?: string; role_code?: string }>;
+    };
+    messages?: Array<{
+        id?: string;
+        from_id?: string;
+        from_name?: string;
+        kind?: string;
+        content?: string;
+        created_at?: string;
+        attachments?: unknown;
+        text_attachments?: Array<{ filename?: string; mime_type?: string; local_path?: string }>;
+        image_attachments?: Array<{ filename?: string; file_url?: string; local_path?: string; mime_type?: string }>;
+        file_attachments?: Array<{ filename?: string; file_url?: string; local_path?: string; mime_type?: string; size_bytes?: number }>;
+    }>;
 };
 
 export interface VEConversationState {
@@ -124,6 +147,10 @@ export interface VEConversationHandle {
 // --- Constants ---
 
 const SESSION_TIMEOUT_MS = 5000;
+const MIN_AGENT_TIMEOUT_SEC = 240;
+const DEFAULT_AGENT_TIMEOUT_SEC = 240;
+const MAX_AGENT_TIMEOUT_SEC = 600;
+const LOCAL_CONFIG_CHANGED_EVENT = "maclaw-config-changed";
 const RECONNECT_DELAYS = [2000, 4000, 8000, 16000, 30000]; // exponential backoff
 const MAX_RECONNECT_RETRIES = 5;
 const MENTION_TRIGGER_PATTERN = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/;
@@ -305,6 +332,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [visibleQueue, setVisibleQueue] = useState<QueuedVEMessage[]>([]);
     // Track VE online status; input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
+    const [responseWatchdogTimeoutSec, setResponseWatchdogTimeoutSec] = useState(DEFAULT_AGENT_TIMEOUT_SEC);
 
     // Refs for imperative state access (avoids stale closure in useImperativeHandle)
     const stateRef = useRef(state);
@@ -333,6 +361,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const awaitingReplyRef = useRef(false);
     const queueDrainRunningRef = useRef(false);
     const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const loadedHistorySessionRef = useRef<string>("");
     const [queueDrainSignal, setQueueDrainSignal] = useState(0);
 
     sendingRef.current = sending;
@@ -340,6 +369,16 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const isZh = !lang || lang.startsWith("zh");
     const localSpeakerName = isZh ? "我" : "Me";
     const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, isZh), [isZh, veId, veName]);
+    const canSend = veOnline && !readOnly && !sending && (!!inputText.trim() || pendingAttachments.length > 0);
+    const inputReady = veOnline && !readOnly;
+    const inputThemeMode: "light" | "dark" = isDarkHexColor(theme.bg) ? "dark" : "light";
+    const inputStyles = getAssistantInputComposerStyles({
+        cancelPending: sending,
+        inline: false,
+        isExpandedInput: false,
+        ready: inputReady,
+        theme,
+    });
 
     const closeMentionPopover = useCallback(() => {
         setMentionOpen(false);
@@ -372,8 +411,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         responseWatchdogRef.current = setTimeout(() => {
             responseWatchdogRef.current = null;
             releaseResponseGate();
-        }, 120000);
-    }, [releaseResponseGate]);
+        }, responseWatchdogTimeoutSec * 1000);
+    }, [releaseResponseGate, responseWatchdogTimeoutSec]);
 
     const scheduleInputFocus = useCallback((position?: number) => {
         if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
@@ -477,6 +516,26 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         if (state.sessionId) onSessionIdChange?.(state.sessionId);
     }, [onSessionIdChange, state.sessionId]);
 
+    useEffect(() => {
+        const sessionId = String(state.sessionId || "").trim();
+        if (!sessionId || loadedHistorySessionRef.current === sessionId || state.messages.length > 0) return;
+        loadedHistorySessionRef.current = sessionId;
+        let cancelled = false;
+        void getWailsAppModule()
+            .then((mod) => (mod as any).GroupDiscussionGetConsultationDetail?.(sessionId))
+            .then((detail: VEHistoryDetail | undefined) => {
+                if (cancelled || !detail) return;
+                const history = veMessagesFromHistoryDetail(detail, veId, assistantDisplayName, localSpeakerName);
+                if (!history.length) return;
+                setState((prev) => {
+                    if (prev.sessionId !== sessionId || prev.messages.length > 0) return prev;
+                    return { ...prev, messages: history };
+                });
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, [assistantDisplayName, localSpeakerName, state.messages.length, state.sessionId, veId]);
+
 
     // Keep reconnectAttemptRef in sync with state resets (e.g. successful session init)
     useEffect(() => {
@@ -503,6 +562,30 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             else EventsOff("ve:status_change");
         };
     }, [veId]);
+
+    useEffect(() => {
+        let cancelled = false;
+        getWailsAppModule()
+            .then((mod) => (mod as any).LoadConfig?.())
+            .then((cfg) => {
+                if (!cancelled) setResponseWatchdogTimeoutSec(normalizeAgentTimeoutSeconds(cfg?.agent_response_timeout_sec));
+            })
+            .catch(() => {
+                if (!cancelled) setResponseWatchdogTimeoutSec(DEFAULT_AGENT_TIMEOUT_SEC);
+            });
+        const handleConfigChanged = (cfg?: any) => {
+            setResponseWatchdogTimeoutSec(normalizeAgentTimeoutSeconds(cfg?.agent_response_timeout_sec));
+        };
+        const unsub = EventsOn("config-changed", handleConfigChanged);
+        const handleLocalConfigChanged = (event: Event) => handleConfigChanged((event as CustomEvent).detail);
+        window.addEventListener(LOCAL_CONFIG_CHANGED_EVENT, handleLocalConfigChanged);
+        return () => {
+            cancelled = true;
+            if (typeof unsub === "function") unsub();
+            else EventsOff("config-changed");
+            window.removeEventListener(LOCAL_CONFIG_CHANGED_EVENT, handleLocalConfigChanged);
+        };
+    }, []);
 
     // --- Session Management ---
 
@@ -879,7 +962,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             messages: msgs,
                             error: {
                                 type: "send_failed",
-                                message: err?.message || "Send failed",
+                                message: extractErrorMessage(err) || "Send failed",
                             },
                         };
                     });
@@ -1144,7 +1227,14 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             <div style={{ fontSize: 11, fontWeight: 600, color: participantColorById(participants, state.streamFromId, theme.responseBorderLeft), marginBottom: 2, whiteSpace: "normal" }}>
                                 {readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}
                             </div>
-                            <MessageContentRenderer content={state.streamContent} theme={theme} />
+                            {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} />}
+                            {state.streamAttachments.length > 0 && (
+                                <div style={{ marginTop: state.streamContent ? 6 : 0, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                    {state.streamAttachments.map((att, idx) => (
+                                        <AttachmentDisplay key={`${att.type}-${att.filename}-${att.fileUrl || att.localPath || idx}`} attachment={att} sessionId={state.sessionId || sessionIdRef.current || ""} theme={theme} prefetchRemoteImage={false} />
+                                    ))}
+                                </div>
+                            )}
                             <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>▍</span>
                         </div>
                     </div>
@@ -1153,95 +1243,24 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Attachment Preview Bar */}
-            {pendingAttachments.length > 0 && (
-                <div
-                    data-testid="ve-attachment-preview-bar"
-                    style={{
-                        display: "flex",
-                        gap: 6,
-                        padding: "6px 12px",
-                        borderTop: `1px solid ${theme.divider}`,
-                        background: theme.fieldBg,
-                        flexWrap: "wrap",
-                    }}
-                >
-                    {pendingAttachments.map((file, idx) => (
-                        <div
-                            key={idx}
-                            data-testid={`ve-attachment-preview-${idx}`}
-                            style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 4,
-                                padding: "2px 8px",
-                                borderRadius: 4,
-                                background: theme.bg,
-                                border: `1px solid ${theme.divider}`,
-                                fontSize: 11,
-                            }}
-                        >
-                            <span>{getAttachmentIcon(file.name)}</span>
-                            <span style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {file.name}
-                            </span>
-                            <span style={{ color: theme.textMuted }}>
-                                ({formatFileSize(file.size)})
-                            </span>
-                            <button
-                                onClick={() => removeAttachment(idx)}
-                                style={{
-                                    border: "none",
-                                    background: "none",
-                                    cursor: "pointer",
-                                    color: theme.closeBtnColor || "#dc2626",
-                                    fontSize: 12,
-                                    padding: "0 2px",
-                                }}
-                            >
-                                x
-                            </button>
-                        </div>
-                    ))}
-                </div>
-            )}
-
             {visibleQueue.length > 0 && (
                 <QueuedMessagePanel queue={visibleQueue} theme={theme} isZh={isZh} />
             )}
 
-            {/* Input Area */}
-            <div
-                data-testid="ve-input-area"
-                style={{
-                    display: "flex",
-                    alignItems: "flex-end",
-                    gap: 8,
-                    padding: "8px 12px",
-                    borderTop: `1px solid ${theme.divider}`,
-                    background: theme.inputBarBg,
-                    opacity: veOnline && !readOnly ? 1 : 0.55,
-                }}
-            >
-                {/* Attachment Button */}
-                <button
-                    data-testid="ve-attach-button"
-                    onClick={handleAttachmentSelect}
-                    disabled={!veOnline || readOnly}
-                    style={{
-                        border: "none",
-                        background: "none",
-                        cursor: veOnline && !readOnly ? "pointer" : "default",
-                        fontSize: 18,
-                        padding: "4px",
-                        color: theme.textMuted,
-                    }}
-                    title={isZh ? "\u6dfb\u52a0\u9644\u4ef6" : "Add attachment"}
-                >
-                    +
-                </button>
+            <div data-testid="ve-input-area" style={{ ...inputStyles.inputBarStyle, opacity: inputReady ? 1 : 0.55 }}>
+                {pendingAttachments.length > 0 && (
+                    <div
+                        data-testid="ve-attachment-preview-bar"
+                        style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
+                    >
+                        {pendingAttachments.map((file, idx) => (
+                            <PendingAttachmentChip key={`${file.path || file.name}-${idx}`} file={file} index={idx} onRemove={removeAttachment} theme={theme} isZh={isZh} />
+                        ))}
+                    </div>
+                )}
 
-                <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0, display: "flex" }}>
+                <div data-testid="ve-input-row" style={inputStyles.inputRowStyle}>
+                    <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0, display: "flex" }}>
                     {mentionOpen && (
                         <MentionPopover
                             filtered={mentionFiltered}
@@ -1276,58 +1295,126 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         ? (isZh ? `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${assistantDisplayName} is offline`)
                         : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...` : `Message ${assistantDisplayName}...`)}
                     rows={1}
-                    style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        display: "block",
-                        resize: "none",
-                        border: `1px solid ${theme.fieldBorder}`,
-                        borderRadius: 6,
-                        padding: "6px 10px",
-                        fontSize: 13,
-                        color: theme.inputText,
-                        background: veOnline && !readOnly ? theme.bg : theme.fieldBg,
-                        outline: "none",
-                        minHeight: 32,
-                        maxHeight: 120,
-                    }}
+                    style={{ ...inputStyles.textareaStyle, boxSizing: "border-box" }}
                     />
+                    </div>
                 </div>
 
-                <button
-                    data-testid="ve-send-button"
-                    onClick={handleSend}
-                    disabled={readOnly || !veOnline || sending || (!inputText.trim() && pendingAttachments.length === 0)}
-                    style={{
-                        border: "none",
-                        background: theme.sendBtnBg,
-                        color: theme.sendBtnColor,
-                        borderRadius: 6,
-                        width: 54,
-                        minWidth: 54,
-                        height: 34,
-                        padding: "0 10px",
-                        flexShrink: 0,
-                        whiteSpace: "nowrap",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: (readOnly || !veOnline || sending || (!inputText.trim() && pendingAttachments.length === 0)) ? "default" : "pointer",
-                        fontSize: 13,
-                        fontWeight: 500,
-                        opacity: (readOnly || !veOnline || sending || (!inputText.trim() && pendingAttachments.length === 0)) ? 0.4 : 1,
-                        transition: "opacity 0.15s",
-                    }}
-                    aria-label={isZh ? "\u53d1\u9001" : "Send"}
-                >
-                    {sending ? "..." : isZh ? "\u53d1\u9001" : "Send"}
-                </button>
+                <div data-testid="ve-input-toolbar" style={inputStyles.toolbarStyle}>
+                    <div style={inputStyles.toolbarLeftStyle} role="group" aria-label={isZh ? "输入操作" : "Input actions"}>
+                        <button
+                            type="button"
+                            data-testid="ve-attach-button"
+                            onClick={handleAttachmentSelect}
+                            disabled={!inputReady}
+                            style={getInputActionButtonStyle(theme, inputThemeMode, "attach", !inputReady)}
+                            title={isZh ? "\u6dfb\u52a0\u9644\u4ef6" : "Add attachment"}
+                            aria-label={isZh ? "\u6dfb\u52a0\u9644\u4ef6" : "Add attachment"}
+                        >
+                            <AssistantInputIcon name="paperclip" size={13} />
+                        </button>
+                    </div>
+                    <div style={inputStyles.toolbarRightStyle}>
+                        <span aria-hidden="true" style={{ fontSize: 11, color: theme.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
+                            {isZh ? "Enter" : "Enter"}
+                        </span>
+                        <button
+                            type="button"
+                            data-testid="ve-send-button"
+                            onClick={handleSend}
+                            disabled={!canSend}
+                            style={{ ...getInputActionButtonStyle(theme, inputThemeMode, canSend ? "send" : "neutral", !canSend), minWidth: 54, width: 54, flexShrink: 0 }}
+                            aria-label={isZh ? "\u53d1\u9001" : "Send"}
+                            title={isZh ? "\u53d1\u9001 (Enter)" : "Send (Enter)"}
+                        >
+                            {sending ? <span style={{ width: 12, height: 12, borderRadius: "50%", border: `2px solid ${theme.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="cornerDownLeft" size={13} />}
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     );
 });
 
 // --- Sub-components ---
+
+interface PendingAttachmentChipProps {
+    file: PendingVEAttachment;
+    index: number;
+    onRemove: (index: number) => void;
+    theme: Theme;
+    isZh: boolean;
+}
+
+function normalizeAgentTimeoutSeconds(value: unknown): number {
+    const seconds = Number(value || 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_AGENT_TIMEOUT_SEC;
+    return Math.min(MAX_AGENT_TIMEOUT_SEC, Math.max(MIN_AGENT_TIMEOUT_SEC, Math.floor(seconds)));
+}
+
+function PendingAttachmentChip({ file, index, onRemove, theme, isZh }: PendingAttachmentChipProps) {
+    const type = classifyAttachmentType(file.name);
+    const label = attachmentKindLabel(file.name, type);
+    return (
+        <div
+            data-testid={`ve-attachment-preview-${index}`}
+            title={file.path || file.name}
+            style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                maxWidth: 240,
+                minWidth: 0,
+                padding: "5px 7px",
+                borderRadius: 7,
+                background: theme.codeBlockBg || theme.fieldBg,
+                border: `1px solid ${theme.codeBlockBorder || theme.divider}`,
+                color: theme.text,
+                fontSize: 11,
+            }}
+        >
+            <AttachmentTypeBadge label={label} theme={theme} />
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>
+                {file.name}
+            </span>
+            {formatFileSize(file.size) && <span style={{ color: theme.textMuted, flexShrink: 0 }}>{formatFileSize(file.size)}</span>}
+            <button
+                type="button"
+                onClick={() => onRemove(index)}
+                style={{ border: "none", background: "transparent", cursor: "pointer", color: theme.closeBtnColor || theme.textMuted, padding: "0 2px" }}
+                aria-label={isZh ? `移除 ${file.name}` : `Remove ${file.name}`}
+            >
+                x
+            </button>
+        </div>
+    );
+}
+
+function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) {
+    return (
+        <span
+            aria-hidden="true"
+            style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 34,
+                height: 34,
+                flexShrink: 0,
+                borderRadius: 5,
+                background: theme.codeBlockBorder || theme.divider,
+                color: theme.pathColor || theme.text,
+                fontSize: label.length > 3 ? 8 : 10,
+                fontWeight: 800,
+                letterSpacing: 0,
+                lineHeight: 1,
+                textTransform: "uppercase",
+            }}
+        >
+            {label}
+        </span>
+    );
+}
 
 interface QueuedMessagePanelProps {
     queue: QueuedVEMessage[];
@@ -1386,6 +1473,9 @@ interface MessageBubbleProps {
 function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName }: MessageBubbleProps) {
     const isUser = message.role === "user";
     const speakerName = isUser ? userName : assistantName;
+    const hasAttachments = !!message.attachments?.length;
+    const hasContent = message.content.trim().length > 0;
+    const shouldRenderContent = hasContent || !hasAttachments || !!message.sendFailed;
 
     return (
         <div
@@ -1410,37 +1500,38 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
             >
                 {speakerName}
             </div>
-            <div
-                data-testid={`ve-msg-content-${message.id}`}
-                style={{
-                    maxWidth: "80%",
-                    padding: "8px 12px",
-                    borderRadius: 8,
-                    background: isUser ? theme.sendBtnBg + "15" : theme.fieldBg,
-                    borderLeft: isUser ? "none" : `3px solid ${theme.responseBorderLeft}`,
-                    borderRight: isUser ? `3px solid ${theme.borderLeft}` : "none",
-                    fontSize: 13,
-                    color: theme.text,
-                    wordBreak: "break-word",
-                    overflowWrap: "anywhere",
-                    whiteSpace: "pre-wrap",
-                }}
-            >
-                <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />
-                {message.sendFailed && (
-                    <span
-                        data-testid={`ve-msg-failed-${message.id}`}
-                        style={{ color: theme.errorText || "#dc2626", fontSize: 11, marginLeft: 6 }}
-                    >
-                        {isZh ? "\u53d1\u9001\u5931\u8d25" : "Failed"}
-                    </span>
-                )}
-            </div>
+            {shouldRenderContent && (
+                <div
+                    data-testid={`ve-msg-content-${message.id}`}
+                    style={{
+                        maxWidth: "80%",
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        background: isUser ? theme.sendBtnBg + "15" : theme.fieldBg,
+                        borderLeft: isUser ? "none" : `3px solid ${theme.responseBorderLeft}`,
+                        borderRight: isUser ? `3px solid ${theme.borderLeft}` : "none",
+                        fontSize: 13,
+                        color: theme.text,
+                        wordBreak: "break-word",
+                        overflowWrap: "anywhere",
+                        whiteSpace: "pre-wrap",
+                    }}
+                >
+                    {hasContent && <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />}
+                    {message.sendFailed && (
+                        <span
+                            data-testid={`ve-msg-failed-${message.id}`}
+                            style={{ color: theme.errorText || "#dc2626", fontSize: 11, marginLeft: hasContent ? 6 : 0 }}
+                        >
+                            {isZh ? "\u53d1\u9001\u5931\u8d25" : "Failed"}
+                        </span>
+                    )}
+                </div>
+            )}
 
-            {/* Attachment Display */}
-            {message.attachments && message.attachments.length > 0 && (
+            {hasAttachments && (
                 <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: "80%" }}>
-                    {message.attachments.map((att, idx) => (
+                    {message.attachments?.map((att, idx) => (
                         <AttachmentDisplay key={`${att.type}-${att.filename}-${att.fileUrl || att.localPath || idx}`} attachment={att} sessionId={sessionId} theme={theme} />
                     ))}
                 </div>
@@ -1453,32 +1544,77 @@ interface AttachmentDisplayProps {
     attachment: VEMessageAttachment;
     sessionId: string;
     theme: Theme;
+    prefetchRemoteImage?: boolean;
 }
 
-function AttachmentDisplay({ attachment, sessionId, theme }: AttachmentDisplayProps) {
+function AttachmentDisplay({ attachment, sessionId, theme, prefetchRemoteImage = true }: AttachmentDisplayProps) {
     const [localPath, setLocalPath] = useState(attachment.localPath || "");
     const [opening, setOpening] = useState(false);
-    const canOpen = !!localPath || (!!sessionId && !!attachment.fileUrl);
+    const [imageFailed, setImageFailed] = useState(false);
+    const [previewDataUrl, setPreviewDataUrl] = useState("");
+    const previewLocalPathRef = useRef(attachment.localPath || "");
+    const canOpen = !!localPath || !!previewLocalPathRef.current || (!!sessionId && !!attachment.fileUrl);
+    const imageSrc = isImageAttachment(attachment) ? previewDataUrl : "";
+    const showThumbnail = !!imageSrc && !imageFailed;
+    const typeLabel = attachmentKindLabel(attachment.filename, attachment.type);
+    const attachmentTitle = localPath || attachment.filename;
 
     useEffect(() => {
         if (attachment.localPath) {
+            previewLocalPathRef.current = attachment.localPath;
             setLocalPath(attachment.localPath);
         }
     }, [attachment.localPath]);
+
+    useEffect(() => {
+        let cancelled = false;
+        setImageFailed(false);
+        setPreviewDataUrl("");
+        if (!isImageAttachment(attachment) || !sessionId) return () => { cancelled = true; };
+        const loadPreview = async () => {
+            const mod = await getWailsAppModule();
+            let previewPath = localPath;
+            if (!previewPath && prefetchRemoteImage && attachment.fileUrl) {
+                const safeUrl = safeAttachmentFileURL(attachment.fileUrl);
+                if (safeUrl) {
+                    const result = await (mod as any).GroupDiscussionDownloadAttachment?.(sessionId, safeUrl, attachment.filename);
+                    previewPath = result?.local_path || result?.LocalPath || result?.localPath || "";
+                    if (!cancelled && previewPath) {
+                        previewLocalPathRef.current = previewPath;
+                    }
+                }
+            }
+            if (!previewPath) return { dataUrl: "", previewPath: "" };
+            const dataUrl = await (mod as any).GroupDiscussionAttachmentPreviewDataURL?.(sessionId, previewPath);
+            return { dataUrl, previewPath };
+        };
+        void loadPreview()
+            .then(({ dataUrl, previewPath }) => {
+                if (!cancelled && typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
+                    if (previewPath) {
+                        previewLocalPathRef.current = previewPath;
+                    }
+                    setPreviewDataUrl(dataUrl);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) setPreviewDataUrl("");
+            });
+        return () => { cancelled = true; };
+    }, [attachment.fileUrl, attachment.filename, attachment.mimeType, attachment.type, localPath, prefetchRemoteImage, sessionId]);
 
     const openAttachment = async () => {
         if (!canOpen || opening) return;
         setOpening(true);
         try {
-            if (localPath) {
+            const cachedPath = localPath || previewLocalPathRef.current;
+            if (cachedPath) {
                 const mod = await getWailsAppModule();
-                await (mod as any).OpenFileOrShowInFolder?.(localPath);
+                await (mod as any).OpenFileOrShowInFolder?.(cachedPath);
                 return;
             }
             if (!sessionId || !attachment.fileUrl) return;
-            const safeUrl = attachment.fileUrl.startsWith("http://") || attachment.fileUrl.startsWith("https://") || attachment.fileUrl.startsWith("/")
-                ? attachment.fileUrl
-                : "";
+            const safeUrl = safeAttachmentFileURL(attachment.fileUrl);
             if (!safeUrl) return;
             const mod = await getWailsAppModule();
             const result = await (mod as any).GroupDiscussionDownloadAttachment?.(sessionId, safeUrl, attachment.filename);
@@ -1494,40 +1630,90 @@ function AttachmentDisplay({ attachment, sessionId, theme }: AttachmentDisplayPr
         }
     };
 
+    if (isImageAttachment(attachment)) {
+        return (
+            <button
+                type="button"
+                data-testid={`ve-att-chip-${attachment.filename}`}
+                title={attachmentTitle}
+                aria-label={attachment.filename}
+                disabled={!canOpen || opening}
+                style={{
+                    display: "inline-flex",
+                    flexDirection: "column",
+                    alignItems: "stretch",
+                    gap: 5,
+                    width: 116,
+                    padding: 5,
+                    borderRadius: 7,
+                    background: theme.fieldBg,
+                    border: `1px solid ${theme.divider}`,
+                    color: theme.text,
+                    font: "inherit",
+                    opacity: opening ? 0.65 : 1,
+                    cursor: canOpen && !opening ? "pointer" : "default",
+                }}
+                onClick={openAttachment}
+            >
+                {showThumbnail ? (
+                    <img
+                        data-testid={`ve-att-image-thumb-${attachment.filename}`}
+                        src={imageSrc}
+                        alt={attachment.filename}
+                        loading="lazy"
+                        onError={() => setImageFailed(true)}
+                        style={{ width: "100%", height: 76, objectFit: "cover", borderRadius: 5, background: theme.bg, flexShrink: 0 }}
+                    />
+                ) : (
+                    <div style={{ width: "100%", height: 76, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 5, background: theme.codeBlockBg || theme.bg }}>
+                        <AttachmentTypeBadge label="IMG" theme={theme} />
+                    </div>
+                )}
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontWeight: 600 }}>
+                    {attachment.filename}
+                </span>
+                {formatFileSize(attachment.sizeBytes ?? 0) && (
+                    <span style={{ color: theme.textMuted, fontSize: 10 }}>{formatFileSize(attachment.sizeBytes ?? 0)}</span>
+                )}
+                {opening && <span style={{ color: theme.textMuted, fontSize: 10 }}>...</span>}
+            </button>
+        );
+    }
+
     return (
         <button
             type="button"
             data-testid={`ve-att-chip-${attachment.filename}`}
-            title={localPath || attachment.fileUrl || attachment.filename}
+            title={attachmentTitle}
             aria-label={attachment.filename}
             disabled={!canOpen || opening}
             style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 4,
-                padding: "3px 8px",
-                borderRadius: 4,
+                gap: 8,
+                padding: "6px 8px",
+                borderRadius: 7,
                 background: theme.fieldBg,
                 border: `1px solid ${theme.divider}`,
                 fontSize: 11,
                 color: theme.text,
                 font: "inherit",
-                maxWidth: "100%",
+                maxWidth: 240,
                 minWidth: 0,
                 opacity: opening ? 0.65 : 1,
                 cursor: canOpen && !opening ? "pointer" : "default",
             }}
             onClick={openAttachment}
         >
-            <span>{attachment.type === "image" ? "IMG" : attachment.type === "text" ? "TXT" : "FILE"}</span>
-            <span style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {attachment.filename}
-            </span>
-            {formatFileSize(attachment.sizeBytes ?? 0) && (
-                <span style={{ color: theme.textMuted }}>
-                    ({formatFileSize(attachment.sizeBytes ?? 0)})
+            <AttachmentTypeBadge label={typeLabel} theme={theme} />
+            <span style={{ minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                <span style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>
+                    {attachment.filename}
                 </span>
-            )}
+                <span style={{ color: theme.textMuted, fontSize: 10 }}>
+                    {[typeLabel, formatFileSize(attachment.sizeBytes ?? 0)].filter(Boolean).join(" / ")}
+                </span>
+            </span>
             {opening && <span style={{ color: theme.textMuted }}>...</span>}
         </button>
     );
@@ -1542,7 +1728,7 @@ function formatError(error: VEConversationError, isZh: boolean): string {
         case "ve_offline":
             return isZh ? "该数字员工当前不在线" : "Digital employee is offline";
         case "send_failed":
-            return isZh ? "消息发送失败" : "Message send failed";
+            return error.message ? (isZh ? `消息发送失败：${error.message}` : `Message send failed: ${error.message}`) : (isZh ? "消息发送失败" : "Message send failed");
         case "session_timeout":
             return isZh ? "会话创建超时（5秒）" : "Session creation timed out (5s)";
         default:
@@ -1550,13 +1736,55 @@ function formatError(error: VEConversationError, isZh: boolean): string {
     }
 }
 
+function extractErrorMessage(err: unknown): string {
+    if (typeof err === "string") return err;
+    if (!err || typeof err !== "object") return "";
+    const rec = err as Record<string, unknown>;
+    for (const key of ["message", "error", "detail", "details"]) {
+        const value = rec[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    try {
+        const json = JSON.stringify(err);
+        return json && json !== "{}" ? json : "";
+    } catch {
+        return String(err || "");
+    }
+}
+
 function classifyAttachmentType(filename: string): "text" | "image" | "file" {
     const ext = filename.toLowerCase().split(".").pop() || "";
-    const imageExts = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+    const imageExts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"];
     const textExts = ["txt", "md", "csv", "json", "xml", "yaml", "yml", "log", "go", "py", "js", "ts", "html", "css"];
     if (imageExts.includes(ext)) return "image";
     if (textExts.includes(ext)) return "text";
     return "file";
+}
+
+function attachmentKindLabel(filename: string, type?: "text" | "image" | "file"): string {
+    if (type === "image") return "IMG";
+    const ext = filename.match(/\.([^./\\]+)$/)?.[1]?.trim();
+    if (!ext) return type === "text" ? "TXT" : "FILE";
+    return ext.slice(0, 4).toUpperCase();
+}
+
+function isImageAttachment(attachment: VEMessageAttachment): boolean {
+    return attachment.type === "image" || String(attachment.mimeType || "").toLowerCase().startsWith("image/") || classifyAttachmentType(attachment.filename) === "image";
+}
+
+function safeAttachmentFileURL(value: string | undefined): string {
+    const url = String(value || "").trim();
+    return url.startsWith("http://") || url.startsWith("https://") || url.startsWith("/") ? url : "";
+}
+
+function isDarkHexColor(value: string): boolean {
+    const hex = String(value || "").trim().replace(/^#/, "");
+    if (!/^[0-9a-f]{3}([0-9a-f]{3})?$/i.test(hex)) return false;
+    const full = hex.length === 3 ? hex.split("").map((char) => char + char).join("") : hex;
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 < 96;
 }
 
 function normalizeVEMessageAttachments(raw: unknown): VEMessageAttachment[] {
@@ -1566,20 +1794,120 @@ function normalizeVEMessageAttachments(raw: unknown): VEMessageAttachment[] {
         if (!item || typeof item !== "object") continue;
         const rec = item as Record<string, unknown>;
         const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.name) || "attachment";
+        const mimeType = attachmentStringField(rec.mimeType) || attachmentStringField(rec.mime_type) || undefined;
         const rawType = attachmentStringField(rec.type) || classifyAttachmentType(filename);
-        const type = rawType === "image" || rawType === "text" ? rawType : "file";
+        const type = rawType === "image" || (mimeType || "").toLowerCase().startsWith("image/")
+            ? "image"
+            : rawType === "text"
+            ? "text"
+            : "file";
         const sizeRaw = rec.sizeBytes ?? rec.size_bytes;
         const sizeBytes = typeof sizeRaw === "number" ? sizeRaw : Number(sizeRaw || 0);
         out.push({
             type,
             filename,
-            mimeType: attachmentStringField(rec.mimeType) || attachmentStringField(rec.mime_type) || undefined,
+            mimeType,
             fileUrl: attachmentStringField(rec.fileUrl) || attachmentStringField(rec.file_url) || undefined,
             localPath: attachmentStringField(rec.localPath) || attachmentStringField(rec.local_path) || undefined,
             sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : undefined,
         });
     }
     return out;
+}
+
+function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assistantName: string, userName: string): VEMessage[] {
+    const messages = Array.isArray(detail.messages) ? detail.messages : [];
+    if (!messages.length) return [];
+    const localIds = new Set(["initiator", "me", "user"]);
+    if (String(detail.discussion?.local_relation || "").trim().toLowerCase() === "initiated_by_me") {
+        for (const participant of detail.session?.participants || []) {
+            const id = String(participant.id || "").trim();
+            const role = String(participant.role_code || "").trim().toLowerCase();
+            if (id && role === "initiator") localIds.add(id);
+        }
+    }
+
+    const normalizedVEId = normalizeParticipantId(veId);
+    const out: VEMessage[] = [];
+    let streamIndex = -1;
+    let streamFromId = "";
+
+    messages.forEach((message, index) => {
+        const kind = String(message.kind || "").trim().toLowerCase();
+        if (kind === "stream_end") {
+            streamIndex = -1;
+            streamFromId = "";
+            return;
+        }
+
+        const fromId = String(message.from_id || "").trim();
+        const content = String(message.content || "");
+        const attachments = normalizeVEHistoryAttachments(message);
+        if (kind === "stream_chunk" && !content && attachments.length === 0) return;
+
+        if (kind === "stream_chunk" && streamIndex >= 0 && streamFromId === fromId) {
+            const existing = out[streamIndex];
+            existing.content += content;
+            existing.attachments = mergeVEMessageAttachments(existing.attachments || [], attachments);
+            return;
+        }
+
+        const normalizedFromId = normalizeParticipantId(fromId);
+        const isLocalUser = localIds.has(normalizedFromId);
+        const isAssistant = normalizedFromId === normalizedVEId || (!isLocalUser && normalizedFromId !== "");
+        const fromName = String(message.from_name || "").trim();
+        out.push({
+            id: String(message.id || `history-${index}`),
+            role: isAssistant ? "assistant" : "user",
+            content,
+            timestamp: message.created_at ? Date.parse(message.created_at) || Date.now() : Date.now(),
+            fromId,
+            fromName: fromName || (isAssistant ? assistantName : userName),
+            attachments,
+        });
+
+        if (kind === "stream_chunk") {
+            streamIndex = out.length - 1;
+            streamFromId = fromId;
+        } else {
+            streamIndex = -1;
+            streamFromId = "";
+        }
+    });
+
+    return out;
+}
+
+function normalizeVEHistoryAttachments(message: NonNullable<VEHistoryDetail["messages"]>[number]): VEMessageAttachment[] {
+    const attachments = normalizeVEMessageAttachments(message.attachments);
+    for (const att of message.text_attachments || []) {
+        attachments.push({
+            type: "text",
+            filename: attachmentStringField(att.filename) || "text",
+            mimeType: attachmentStringField(att.mime_type) || undefined,
+            localPath: attachmentStringField(att.local_path) || undefined,
+        });
+    }
+    for (const att of message.image_attachments || []) {
+        attachments.push({
+            type: "image",
+            filename: attachmentStringField(att.filename) || "image",
+            mimeType: attachmentStringField(att.mime_type) || undefined,
+            fileUrl: attachmentStringField(att.file_url) || undefined,
+            localPath: attachmentStringField(att.local_path) || undefined,
+        });
+    }
+    for (const att of message.file_attachments || []) {
+        attachments.push({
+            type: "file",
+            filename: attachmentStringField(att.filename) || "file",
+            mimeType: attachmentStringField(att.mime_type) || undefined,
+            fileUrl: attachmentStringField(att.file_url) || undefined,
+            localPath: attachmentStringField(att.local_path) || undefined,
+            sizeBytes: typeof att.size_bytes === "number" && att.size_bytes > 0 ? att.size_bytes : undefined,
+        });
+    }
+    return attachments;
 }
 
 function attachmentStringField(value: unknown): string {
@@ -1614,15 +1942,6 @@ function sameVEMessageAttachment(a: VEMessageAttachment, b: VEMessageAttachment)
     if (a.localPath && b.localPath) return a.localPath === b.localPath;
     if (a.fileUrl || b.fileUrl || a.localPath || b.localPath) return true;
     return (a.sizeBytes || 0) > 0 && a.sizeBytes === b.sizeBytes;
-}
-
-function getAttachmentIcon(filename: string): string {
-    const type = classifyAttachmentType(filename);
-    switch (type) {
-        case "image": return "IMG";
-        case "text": return "TXT";
-        default: return "FILE";
-    }
 }
 
 function fileNameFromPath(filePath: string): string {

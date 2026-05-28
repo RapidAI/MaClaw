@@ -65,8 +65,8 @@ func AdminStatusHandler(admins *auth.AdminService) http.HandlerFunc {
 func SetupAdminHandler(admins *auth.AdminService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req AdminSetupRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.Username == "" || req.Password == "" || req.Email == "" {
@@ -99,8 +99,8 @@ func SetupAdminHandler(admins *auth.AdminService) http.HandlerFunc {
 func AdminLoginHandler(admins *auth.AdminService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req AdminLoginRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.Username == "" || req.Password == "" {
@@ -134,8 +134,8 @@ func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
 		}
 
 		var req AdminChangePasswordRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.CurrentPassword == "" || req.NewPassword == "" {
@@ -173,8 +173,8 @@ func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
 		}
 
 		var req AdminUpdateProfileRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.Email == "" {
@@ -215,8 +215,8 @@ func GetAdminServerConfigHandler(hubService publicBaseURLReader) http.HandlerFun
 func UpdateAdminServerConfigHandler(hubService publicBaseURLWriter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req AdminServerConfigRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if req.PublicBaseURL == "" {

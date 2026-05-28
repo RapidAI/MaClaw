@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,11 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
+)
+
+const (
+	pullOpsResponseBodyLimit = 128 << 20
+	maxConcurrentPeerSyncs   = 16
 )
 
 type PullOpsResponse struct {
@@ -26,6 +32,7 @@ type Syncer struct {
 	client   *http.Client
 	interval time.Duration
 	limit    int
+	slots    chan struct{}
 	mu       sync.Mutex
 	running  map[string]bool
 }
@@ -45,6 +52,7 @@ func NewSyncer(svc *Service, interval time.Duration, limit int) *Syncer {
 		client:   &http.Client{Timeout: 30 * time.Second},
 		interval: interval,
 		limit:    limit,
+		slots:    make(chan struct{}, maxConcurrentPeerSyncs),
 		running:  make(map[string]bool),
 	}
 }
@@ -69,10 +77,39 @@ func (s *Syncer) Run(ctx context.Context) {
 func (s *Syncer) syncAll(ctx context.Context) {
 	for _, peer := range s.svc.listPeerStates() {
 		peer := peer
-		if !s.beginPeerSync(peer.NodeID) {
+		if !s.acquireSyncSlot() {
 			continue
 		}
-		go s.syncPeer(ctx, peer)
+		if !s.beginPeerSync(peer.NodeID) {
+			s.releaseSyncSlot()
+			continue
+		}
+		go func() {
+			defer s.releaseSyncSlot()
+			s.syncPeer(ctx, peer)
+		}()
+	}
+}
+
+func (s *Syncer) acquireSyncSlot() bool {
+	if s == nil || s.slots == nil {
+		return true
+	}
+	select {
+	case s.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Syncer) releaseSyncSlot() {
+	if s == nil || s.slots == nil {
+		return
+	}
+	select {
+	case <-s.slots:
+	default:
 	}
 }
 
@@ -129,8 +166,16 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 		}
 		now := time.Now().UTC()
 		if len(resp.Ops) == 0 {
-			_ = s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{PeerNodeID: peer.NodeID, LastPulledSeq: afterSeq, LastPulledAt: &now, LastSuccessAt: &now, LastError: ""})
-			s.svc.updatePeerSync(peer.NodeID, 0)
+			nextSeq := resp.NextAfterSeq
+			if nextSeq < afterSeq {
+				nextSeq = afterSeq
+			}
+			_ = s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{PeerNodeID: peer.NodeID, LastPulledSeq: nextSeq, LastPulledAt: &now, LastSuccessAt: &now, LastError: ""})
+			backlog := int64(0)
+			if resp.MaxSeq > nextSeq {
+				backlog = resp.MaxSeq - nextSeq
+			}
+			s.svc.updatePeerSync(peer.NodeID, backlog)
 			return
 		}
 		if err := s.svc.ApplyRemoteOps(ctx, resp.Ops); err != nil {
@@ -175,7 +220,7 @@ func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq i
 		return nil, fmt.Errorf("pull ops failed: %s", resp.Status)
 	}
 	var out PullOpsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, pullOpsResponseBodyLimit)).Decode(&out); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type trajectoryTestRequest struct {
@@ -259,7 +259,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsEmptyFinalRecoverFlow(t *testing.T
 	if content, ok := session.Entries[2].Content.(string); !ok || content != "" {
 		t.Fatalf("first assistant content = %#v, want empty string", session.Entries[2].Content)
 	}
-	if content, ok := session.Entries[3].Content.(string); !ok || !strings.Contains(content, "没有返回任何可展示结果") {
+	if content, ok := session.Entries[3].Content.(string); !ok || !strings.Contains(content, "no visible result") {
 		t.Fatalf("recover system content = %#v, want empty-result recover guidance", session.Entries[3].Content)
 	}
 	if content, ok := session.Entries[4].Content.(string); !ok || content != "recovered summary" {
@@ -354,7 +354,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsPendingSkillRunRecoverReplay(t *te
 		Status:      RegToolAvailable,
 		Source:      "test",
 		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return "Part 3 (sections 4-6) appended successfully"
+			return `{"run_id":"run-1775734674900-1","status":"success","result":"Part 3 (sections 4-6) appended successfully"}`
 		},
 	}); err != nil {
 		t.Fatalf("Register get_skill_run tool: %v", err)
@@ -416,11 +416,11 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsPendingSkillRunRecoverReplay(t *te
 		}
 		recoverContents = append(recoverContents, content)
 	}
-	if !strings.Contains(recoverContents[0], "没有返回任何可展示结果") {
-		t.Fatalf("first recover content = %q, want empty-result guidance", recoverContents[0])
+	if !strings.Contains(recoverContents[0], `get_skill_run(run_id="run-1775734674900-1")`) {
+		t.Fatalf("first recover content = %q, want pending skill run guidance", recoverContents[0])
 	}
-	if !strings.Contains(recoverContents[1], "只承诺将要生成、整理或发送结果") {
-		t.Fatalf("second recover content = %q, want promise-only guidance", recoverContents[1])
+	if !strings.Contains(recoverContents[1], `get_skill_run(run_id="run-1775734674900-1")`) {
+		t.Fatalf("second recover content = %q, want pending skill run guidance", recoverContents[1])
 	}
 
 	toolPayload, ok := session.Entries[10].Content.(map[string]interface{})
@@ -436,7 +436,7 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsPendingSkillRunRecoverReplay(t *te
 	if session.Entries[11].ToolCallID != "call-get-skill-run" {
 		t.Fatalf("tool_result ToolCallID = %q, want call-get-skill-run", session.Entries[11].ToolCallID)
 	}
-	if content, ok := session.Entries[11].Content.(string); !ok || content != "Part 3 (sections 4-6) appended successfully" {
+	if content, ok := session.Entries[11].Content.(string); !ok || !strings.Contains(content, "Part 3 (sections 4-6) appended successfully") {
 		t.Fatalf("tool_result content = %#v, want appended-successfully status", session.Entries[11].Content)
 	}
 }

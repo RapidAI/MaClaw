@@ -18,12 +18,20 @@ type SmartRouteSettingsReader interface {
 	Get(ctx context.Context, key string) (string, error)
 }
 
+// SmartRouteSecurityPolicyProvider optionally gates smart route with the
+// tenant security policy. The second return value tells whether centralized
+// security is active for the user.
+type SmartRouteSecurityPolicyProvider interface {
+	IsSmartRouteAllowedBySecurityPolicy(ctx context.Context, userID string) (allowed bool, controlled bool)
+}
+
 // dbSmartRouteChecker checks smart route permission against the database.
 // It caches the global "smart_route_all" flag for 30 seconds to avoid
 // hitting the DB on every message.
 type dbSmartRouteChecker struct {
-	users    SmartRouteStore
-	settings SmartRouteSettingsReader
+	users          SmartRouteStore
+	settings       SmartRouteSettingsReader
+	policyProvider SmartRouteSecurityPolicyProvider
 
 	mu          sync.RWMutex
 	globalCache bool
@@ -33,11 +41,22 @@ type dbSmartRouteChecker struct {
 const smartRouteGlobalCacheTTL = 30 * time.Second
 
 // NewDBSmartRouteChecker creates a SmartRouteChecker backed by the database.
-func NewDBSmartRouteChecker(users SmartRouteStore, settings SmartRouteSettingsReader) SmartRouteChecker {
+func NewDBSmartRouteChecker(users SmartRouteStore, settings SmartRouteSettingsReader) *dbSmartRouteChecker {
 	return &dbSmartRouteChecker{users: users, settings: settings}
 }
 
+// SetSecurityPolicyProvider wires tenant security policy into smart route checks.
+func (c *dbSmartRouteChecker) SetSecurityPolicyProvider(provider SmartRouteSecurityPolicyProvider) {
+	c.policyProvider = provider
+}
+
 func (c *dbSmartRouteChecker) IsSmartRouteEnabled(ctx context.Context, userID string) bool {
+	if c.policyProvider != nil {
+		allowed, controlled := c.policyProvider.IsSmartRouteAllowedBySecurityPolicy(ctx, userID)
+		if controlled && !allowed {
+			return false
+		}
+	}
 	// Check global toggle first (cached).
 	if c.isGlobalEnabled(ctx) {
 		return true

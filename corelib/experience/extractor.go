@@ -134,12 +134,9 @@ type Step struct {
 var learnedSkillNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 var validStepActions = map[string]bool{
-	"create_session":   true,
-	"send_input":       true,
-	"send_and_observe": true,
-	"call_mcp_tool":    true,
-	"bash":             true,
-	"skill_md":         true,
+	"call_mcp_tool": true,
+	"bash":          true,
+	"skill_md":      true,
 }
 
 func (e *Extractor) Extract(ctx context.Context, snapshot SessionSnapshot) ([]corelib.NLSkillEntry, error) {
@@ -434,7 +431,9 @@ Return a JSON array. Each pattern must have:
 - "name": a short, descriptive kebab-case name, such as "deploy-staging" or "run-coverage-tests"
 - "description": what the pattern does and when to use it
 - "triggers": list of 3-5 keywords or phrases that would trigger this pattern
-- "steps": list of steps, each with "action" (create_session/send_input/send_and_observe/call_mcp_tool/bash), "params" (key-value map), and optional "on_error" ("stop" or "continue")
+- "steps": list of steps, each with "action" (call_mcp_tool/bash/skill_md), "params" (key-value map), and optional "on_error" ("stop" or "continue")
+
+Do not emit external coding-session actions such as create_session, send_input, or send_and_observe. Coding work is handled by the internal CodingSubAgent, not persisted learned skills.
 
 Return only a JSON array. If no genuinely reusable patterns are found, return [].
 Quality over quantity: only extract patterns you are confident are reusable.`

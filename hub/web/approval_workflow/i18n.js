@@ -1,0 +1,411 @@
+(function () {
+  'use strict';
+
+  var STORAGE_KEY = 'maclaw-approval-workflow-lang';
+
+  var dict = {
+    en: {
+      pageTitle: 'Approval Workflow Designer',
+      appTitle: 'Approval Workflow Designer',
+      draft: 'DRAFT',
+      newWorkflow: 'New',
+      newWorkflowConfirm: 'Start a new workflow? Unsaved changes will be lost.',
+      openWorkflowConfirm: 'Open this workflow design? Unsaved changes will be lost.',
+      workflowLibrary: 'My Workflows',
+      refreshWorkflows: 'Refresh',
+      workflowSearchPlaceholder: 'Search workflows',
+      workflowStatusFilter: 'Workflow status',
+      workflowStatusAll: 'All statuses',
+      statusDraftShort: 'Draft',
+      statusPendingReviewShort: 'Pending',
+      statusPublishedShort: 'Published',
+      statusRejectedShort: 'Rejected',
+      statusUnpublishedShort: 'Unpublished',
+      statusSupersededShort: 'Superseded',
+      statusUnknownShort: 'Unknown',
+      workflowListEmpty: 'No saved workflow designs yet.',
+      workflowListNoMatches: 'No workflow designs match these filters.',
+      workflowListFailed: 'Workflow list failed: {error}',
+      openWorkflow: 'Open',
+      continueWorkflow: 'Continue',
+      reviseWorkflow: 'Revise',
+      deleteWorkflow: 'Delete',
+      deleteWorkflowConfirm: 'Delete workflow design "{name}"? Published capability market skills are not removed here.',
+      deleteWorkflowBlocked: 'Published or previously published workflows cannot be deleted from the designer.',
+      deleteWorkflowUnavailable: 'Cannot verify publish history. Refresh before deleting.',
+      workflowDeleted: 'Workflow design deleted.',
+      workflowVersionMeta: '{status} {version}',
+      workflowVersionUnknown: 'Version history unavailable',
+      reviewPreviewMode: 'Review preview mode. This workflow is read-only here.',
+      reviewPreviewStatus: 'Review preview {version}',
+      adminAuthRequired: 'Admin authorization required. Sign in to the Hub admin console first.',
+      validate: 'Validate',
+      save: 'Save',
+      submitReview: 'Submit for Review',
+      workflowMetadata: 'Workflow metadata',
+      workflowNamePlaceholder: 'Workflow name',
+      workflowDescriptionPlaceholder: 'Short description',
+      statusDraft: 'Draft not saved',
+      statusLoading: 'Loading workflow...',
+      statusLoadFailed: 'Workflow load failed: {error}',
+      statusLoaded: 'Loaded {version}',
+      statusSaving: 'Saving...',
+      statusSaved: 'Saved {version}',
+      statusUnsaved: 'Unsaved changes',
+      statusSubmitting: 'Submitting...',
+      statusPendingReview: 'Pending review {version}',
+      statusPublished: 'Published {version}',
+      statusRejected: 'Rejected {version}',
+      statusSuperseded: 'Superseded {version}',
+      statusUnpublished: 'Unpublished {version}',
+      workflowNameRequired: 'Workflow name is required before saving.',
+      authRequired: 'Machine authorization required. Open with machine_id and token query parameters, or save them in localStorage.',
+      requestFailed: 'Request failed: {error}',
+      invalidJsonField: 'Invalid JSON in {field}.',
+      invalidConfigField: 'Invalid value in {field}.',
+      configErrorSummary: 'Fix these issues before continuing:',
+      nodeTypes: 'Node Types',
+      designWorkflow: 'Design Your Workflow',
+      emptyHint: 'Drag nodes from the left panel onto the canvas\nto start building your approval workflow.',
+      nodeConfiguration: 'Node Configuration',
+      closeNodeConfiguration: 'Close node configuration',
+      canvasTools: 'Workflow canvas tools',
+      selectTool: 'Select',
+      connectTool: 'Connect',
+      deleteEdgeTool: 'Delete Line',
+      connectHint: 'Connect mode: click a source node, then click a target node.',
+      deleteEdgeHint: 'Delete line mode: click a connector line to remove it.',
+      edgeConnectorLabel: 'Connector from {source} to {target}',
+      configurationSuffix: 'Configuration',
+      deleteNode: 'Delete Node',
+      label: 'Label',
+      description: 'Description',
+      triggerType: 'Trigger Type',
+      manual: 'Manual',
+      apiCall: 'API Call',
+      schedule: 'Schedule',
+      event: 'Event',
+      formFieldsJson: 'Form Fields (JSON)',
+      approvalMode: 'Approval Mode',
+      singleApprover: 'Single Approver',
+      countersign: 'Countersign (All must approve)',
+      anyNOfM: 'Any N of M',
+      sequential: 'Sequential',
+      approverIds: 'Approver IDs (comma-separated)',
+      minApprovals: 'Min Approvals (for Any N of M)',
+      timeoutHours: 'Timeout (hours, 1-720)',
+      fallbackApprover: 'Fallback Approver ID',
+      branchesJson: 'Branches (JSON)',
+      defaultBranch: 'Default Branch (target node ID)',
+      actionType: 'Action Type',
+      selectPlaceholder: 'Select...',
+      updateStatus: 'Update Status',
+      webhook: 'Webhook',
+      parametersJson: 'Parameters (JSON)',
+      recipients: 'Recipients (comma-separated)',
+      messageTemplate: 'Message Template',
+      workflowId: 'Workflow ID',
+      inputMappingJson: 'Input Mapping (JSON)',
+      resultExecutorsJson: 'Result Executors (JSON)',
+      notifiersJson: 'Notifiers (JSON)',
+      validWorkflow: 'Workflow is valid!',
+      validationErrors: 'Validation errors:\n\n{errors}',
+      saveDone: 'Workflow saved as {version}.',
+      saveChangedDuringSave: 'Workflow saved, but newer unsaved changes remain.',
+      submitBlocked: 'Cannot submit: please fix validation errors first.\n\n{errors}',
+      submitChangedDuringSave: 'Workflow changed while saving. Review changes and submit again.',
+      submitDone: 'Workflow submitted for review.',
+      requireOneTrigger: 'Exactly one Trigger node is required as the workflow entry point.',
+      onlyOneTrigger: 'Only one Trigger node is allowed. Found {count} Trigger nodes.',
+      disconnectedNode: 'Node "{label}" at ({x}, {y}) is disconnected.',
+      triggerNoIncoming: 'Trigger node "{label}" must not have incoming edges.',
+      language: 'Language',
+      trigger: 'Trigger',
+      triggerDesc: 'Workflow entry point',
+      form: 'Form',
+      formDesc: 'Collect input data',
+      approval: 'Approval',
+      approvalDesc: 'VE approval decision',
+      conditionBranch: 'Condition Branch',
+      conditionBranchDesc: 'Route by conditions',
+      action: 'Action',
+      actionDesc: 'Execute automated task',
+      notification: 'Notification',
+      notificationDesc: 'Send notifications',
+      subProcess: 'Sub-Process',
+      subProcessDesc: 'Invoke nested workflow',
+      terminal: 'Terminal',
+      terminalDesc: 'Workflow end point',
+      noExecutorWarning: 'No Result Executor configured. The workflow will complete without notifying anyone to take action.',
+      resultExecutors: 'Result Executors',
+      resultExecutorsDesc: 'People who need to take action after workflow completion',
+      notifiers: 'Notifiers',
+      notifiersDesc: 'People who should be informed of the workflow outcome',
+      searchUsers: 'Search users by name or ID...',
+      noExecutorsAdded: 'No executors added yet.',
+      noNotifiersAdded: 'No notifiers added yet.',
+      remove: 'Remove',
+      timeoutShort: 'Timeout (hours)',
+      maxReminders: 'Max Reminders',
+      noUsersFound: 'No users found',
+      mustBeBetween: 'Must be between {min} and {max}'
+    },
+    zh: {
+      pageTitle: '审批工作流设计器',
+      appTitle: '审批工作流设计器',
+      draft: '草稿',
+      newWorkflow: '新建',
+      newWorkflowConfirm: '要新建工作流吗？未保存的更改将会丢失。',
+      openWorkflowConfirm: '要打开这个工作流设计吗？未保存的更改将会丢失。',
+      workflowLibrary: '我的工作流',
+      refreshWorkflows: '刷新',
+      workflowSearchPlaceholder: '搜索工作流',
+      workflowStatusFilter: '工作流状态',
+      workflowStatusAll: '全部状态',
+      statusDraftShort: '草稿',
+      statusPendingReviewShort: '待审核',
+      statusPublishedShort: '已发布',
+      statusRejectedShort: '已拒绝',
+      statusUnpublishedShort: '已下架',
+      statusSupersededShort: '已替代',
+      statusUnknownShort: '未知',
+      workflowListEmpty: '还没有保存的工作流设计。',
+      workflowListNoMatches: '没有符合筛选条件的工作流设计。',
+      workflowListFailed: '工作流列表加载失败：{error}',
+      openWorkflow: '打开',
+      continueWorkflow: '继续',
+      reviseWorkflow: '修订',
+      deleteWorkflow: '删除',
+      deleteWorkflowConfirm: '要删除工作流设计“{name}”吗？这里不会删除已发布到能力市场的 skill。',
+      deleteWorkflowBlocked: '已发布或曾经发布的工作流不能在设计器中删除。',
+      deleteWorkflowUnavailable: '无法确认发布历史。删除前请先刷新。',
+      workflowDeleted: '工作流设计已删除。',
+      workflowVersionMeta: '{status} {version}',
+      workflowVersionUnknown: '版本历史不可用',
+      reviewPreviewMode: '审核预览模式。此处只能查看，不能修改工作流。',
+      reviewPreviewStatus: '审核预览 {version}',
+      adminAuthRequired: '需要管理员授权。请先登录 Hub 管理控制台。',
+      validate: '校验',
+      save: '保存',
+      submitReview: '提交审核',
+      workflowMetadata: '工作流元数据',
+      workflowNamePlaceholder: '工作流名称',
+      workflowDescriptionPlaceholder: '简短描述',
+      statusDraft: '草稿未保存',
+      statusLoading: '工作流加载中...',
+      statusLoadFailed: '工作流加载失败：{error}',
+      statusLoaded: '已加载 {version}',
+      statusSaving: '保存中...',
+      statusSaved: '已保存 {version}',
+      statusUnsaved: '有未保存更改',
+      statusSubmitting: '提交中...',
+      statusPendingReview: '待审核 {version}',
+      statusPublished: '已发布 {version}',
+      statusRejected: '已拒绝 {version}',
+      statusSuperseded: '已被新版本替代 {version}',
+      statusUnpublished: '已下架 {version}',
+      workflowNameRequired: '保存前请填写工作流名称。',
+      authRequired: '需要机器授权。请使用 machine_id 和 token 查询参数打开，或先写入 localStorage。',
+      requestFailed: '请求失败：{error}',
+      invalidJsonField: '{field} 中的 JSON 格式无效。',
+      invalidConfigField: '{field} 的值无效。',
+      configErrorSummary: '继续之前请修复这些问题：',
+      nodeTypes: '节点类型',
+      designWorkflow: '设计你的工作流',
+      emptyHint: '从左侧面板拖拽节点到画布\n开始搭建审批工作流。',
+      nodeConfiguration: '节点配置',
+      closeNodeConfiguration: '关闭节点配置',
+      canvasTools: '工作流画布工具',
+      selectTool: '选择',
+      connectTool: '连线',
+      deleteEdgeTool: '删除连线',
+      connectHint: '连线模式：先点击起点节点，再点击目标节点。',
+      deleteEdgeHint: '删除连线模式：点击连线即可移除。',
+      edgeConnectorLabel: '从{source}到{target}的连线',
+      configurationSuffix: '配置',
+      deleteNode: '删除节点',
+      label: '标签',
+      description: '描述',
+      triggerType: '触发类型',
+      manual: '手动',
+      apiCall: 'API 调用',
+      schedule: '定时',
+      event: '事件',
+      formFieldsJson: '表单字段 (JSON)',
+      approvalMode: '审批模式',
+      singleApprover: '单人审批',
+      countersign: '会签（全部通过）',
+      anyNOfM: 'M 人中任意 N 人',
+      sequential: '顺序审批',
+      approverIds: '审批人 ID（逗号分隔）',
+      minApprovals: '最少通过人数（用于任意 N 人）',
+      timeoutHours: '超时（小时，1-720）',
+      fallbackApprover: '兜底审批人 ID',
+      branchesJson: '分支 (JSON)',
+      defaultBranch: '默认分支（目标节点 ID）',
+      actionType: '动作类型',
+      selectPlaceholder: '请选择...',
+      updateStatus: '更新状态',
+      webhook: 'Webhook',
+      parametersJson: '参数 (JSON)',
+      recipients: '接收人（逗号分隔）',
+      messageTemplate: '消息模板',
+      workflowId: '工作流 ID',
+      inputMappingJson: '输入映射 (JSON)',
+      resultExecutorsJson: '结果执行人 (JSON)',
+      notifiersJson: '通知人 (JSON)',
+      validWorkflow: '工作流校验通过！',
+      validationErrors: '校验错误：\n\n{errors}',
+      saveDone: '工作流已保存为 {version}。',
+      saveChangedDuringSave: '工作流已保存，但仍有新的未保存更改。',
+      submitBlocked: '无法提交：请先修复校验错误。\n\n{errors}',
+      submitChangedDuringSave: '保存期间工作流发生了变化。请检查更改后再提交。',
+      submitDone: '工作流已提交审核。',
+      requireOneTrigger: '工作流入口必须且只能有一个触发节点。',
+      onlyOneTrigger: '只允许一个触发节点。当前发现 {count} 个触发节点。',
+      disconnectedNode: '节点“{label}”位于 ({x}, {y})，尚未连接。',
+      triggerNoIncoming: '触发节点“{label}”不能有入边。',
+      language: '语言',
+      trigger: '触发器',
+      triggerDesc: '工作流入口',
+      form: '表单',
+      formDesc: '收集输入数据',
+      approval: '审批',
+      approvalDesc: '虚拟员工审批决策',
+      conditionBranch: '条件分支',
+      conditionBranchDesc: '按条件路由',
+      action: '动作',
+      actionDesc: '执行自动化任务',
+      notification: '通知',
+      notificationDesc: '发送通知',
+      subProcess: '子流程',
+      subProcessDesc: '调用嵌套工作流',
+      terminal: '终止',
+      terminalDesc: '工作流结束点',
+      noExecutorWarning: '未配置结果执行人。工作流完成后不会通知任何人继续处理。',
+      resultExecutors: '结果执行人',
+      resultExecutorsDesc: '工作流完成后需要采取行动的人员',
+      notifiers: '通知人',
+      notifiersDesc: '需要获知工作流结果的人员',
+      searchUsers: '按姓名或 ID 搜索用户...',
+      noExecutorsAdded: '尚未添加执行人。',
+      noNotifiersAdded: '尚未添加通知人。',
+      remove: '移除',
+      timeoutShort: '超时（小时）',
+      maxReminders: '最多提醒次数',
+      noUsersFound: '未找到用户',
+      mustBeBetween: '必须介于 {min} 和 {max} 之间'
+    }
+  };
+
+  function normalizeLang(lang) {
+    return String(lang || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+  }
+
+  function template(text, vars) {
+    return String(text || '').replace(/\{([^}]+)\}/g, function (_, key) {
+      return vars && vars[key] !== undefined ? String(vars[key]) : '';
+    });
+  }
+
+  function currentLang() {
+    return normalizeLang(window.currentApprovalWorkflowLang || getStoredLang() || getNavigatorLang() || 'en');
+  }
+
+  function t(key, vars) {
+    var lang = currentLang();
+    var table = dict[lang] || dict.en;
+    return template(table[key] || dict.en[key] || key, vars);
+  }
+
+  function hasTranslation(lang, key) {
+    var table = dict[normalizeLang(lang)];
+    return !!(table && Object.prototype.hasOwnProperty.call(table, key));
+  }
+
+  function applyStaticText() {
+    document.documentElement.lang = currentLang() === 'zh' ? 'zh-CN' : 'en';
+    document.title = t('pageTitle');
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      var text = t(el.getAttribute('data-i18n'));
+      if (el.getAttribute('data-i18n-multiline') === 'true') {
+        el.innerHTML = text.split('\n').map(escapeHtml).join('<br>');
+      } else {
+        el.textContent = text;
+      }
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
+      el.setAttribute('placeholder', t(el.getAttribute('data-i18n-placeholder')));
+    });
+    document.querySelectorAll('[data-i18n-aria]').forEach(function (el) {
+      el.setAttribute('aria-label', t(el.getAttribute('data-i18n-aria')));
+    });
+    document.querySelectorAll('[data-set-lang]').forEach(function (btn) {
+      var active = btn.getAttribute('data-set-lang') === currentLang();
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function setLanguage(lang) {
+    window.currentApprovalWorkflowLang = normalizeLang(lang);
+    setStoredLang(window.currentApprovalWorkflowLang);
+    applyStaticText();
+    dispatchLanguageChange(window.currentApprovalWorkflowLang);
+  }
+
+  function escapeHtml(str) {
+    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  window.ApprovalWorkflowI18n = {
+    t: t,
+    setLanguage: setLanguage,
+    currentLang: currentLang,
+    applyStaticText: applyStaticText,
+    hasTranslation: hasTranslation
+  };
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var initial = getStoredLang() || getNavigatorLang() || 'en';
+    window.currentApprovalWorkflowLang = normalizeLang(initial);
+    document.querySelectorAll('[data-set-lang]').forEach(function (btn) {
+      btn.addEventListener('click', function () { setLanguage(btn.getAttribute('data-set-lang')); });
+    });
+    applyStaticText();
+  });
+
+  function getStoredLang() {
+    try {
+      return window.localStorage ? window.localStorage.getItem(STORAGE_KEY) : localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function setStoredLang(lang) {
+    try {
+      if (window.localStorage) window.localStorage.setItem(STORAGE_KEY, lang);
+      else localStorage.setItem(STORAGE_KEY, lang);
+    } catch (e) {}
+  }
+
+  function getNavigatorLang() {
+    return (window.navigator && window.navigator.language) || (typeof navigator !== 'undefined' && navigator.language) || '';
+  }
+
+  function dispatchLanguageChange(lang) {
+    var event;
+    if (typeof CustomEvent === 'function') {
+      event = new CustomEvent('approval-workflow-language-change', { detail: { lang: lang } });
+    } else if (document.createEvent) {
+      event = document.createEvent('CustomEvent');
+      event.initCustomEvent('approval-workflow-language-change', false, false, { lang: lang });
+    } else {
+      event = { type: 'approval-workflow-language-change', detail: { lang: lang } };
+    }
+    try {
+      window.dispatchEvent(event);
+    } catch (e) {}
+  }
+})();

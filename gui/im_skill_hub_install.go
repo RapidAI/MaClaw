@@ -61,6 +61,12 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query, platform, userID string, sendStatus func(string)) skillInstallExecutionResult {
 	// GitHub result 鈫?import via a stable install ref when available.
 	if best.SourceKind() == skillSearchSourceGitHub {
+		if h.app != nil {
+			guardArgs := map[string]interface{}{"action": "install", "source": "github", "skill_id": best.ID, "install_ref": best.InstallRef}
+			if ok, reason := h.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
+				return skillInstallExecutionResult{Text: reason, SilentFailure: true}
+			}
+		}
 		var imported *corelib.NLSkillEntry
 		if strings.TrimSpace(best.InstallRef) != "" {
 			var candidate cskill.GitHubSkillCandidate
@@ -87,6 +93,12 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 	sendStatus(fmt.Sprintf("猬囷笍 姝ｅ湪瀹夎: %s ...", best.Name))
 
 	if best.SourceKind() == skillSearchSourceClawHub {
+		if h.app != nil {
+			guardArgs := map[string]interface{}{"action": "install", "source": "clawhub", "skill_id": best.ID, "hub_url": cskill.ClawHubMirrorURL}
+			if ok, reason := h.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
+				return skillInstallExecutionResult{Text: reason, SilentFailure: true}
+			}
+		}
 		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
 		if dlErr != nil {
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but download failed: %v", best.Name, dlErr)}
@@ -97,6 +109,13 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 
 	// SkillMarket result: download through the HubCenter failover pool into
 	// staging so file contents are scanned before they reach the final skill dir.
+	if h.app != nil {
+		hubURL := NewSkillMarketClient(h.app).baseURL()
+		guardArgs := map[string]interface{}{"action": "install", "source": "skillhub", "skill_id": best.ID, "hub_url": hubURL}
+		if ok, reason := h.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
+			return skillInstallExecutionResult{Text: reason, SilentFailure: true}
+		}
+	}
 	stagingDir, dlErr := cskill.PrepareStagingDir(firstNonEmpty(best.ID, best.Name, "auto-hub-skill"))
 	if dlErr != nil {
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but staging failed: %v", best.Name, dlErr)}
@@ -403,8 +422,8 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		policyAction := security.PolicyAllow
 		if installScanReport != nil {
 			riskLevel = installScanReport.FinalLevel
-			if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(installScanReport) {
-				policyAction = security.PolicyUserOverride
+			if h.app != nil {
+				policyAction = h.app.skillInstallFinalAuditAction(installScanReport)
 			} else if installScanReport.NeedsUserReview() {
 				policyAction = security.PolicyAudit
 			}

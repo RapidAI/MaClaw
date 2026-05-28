@@ -47,7 +47,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Start a request-level heartbeat ticker that covers the ENTIRE request
 	// lifecycle — including pre-loop phases (IUM LLM calls, proactive_recall,
 	// system prompt build) that happen before the agent loop's own heartbeat
-	// ticker starts. This ensures the frontend's activity timeout (120s) is
+	// ticker starts. This ensures the frontend's activity timeout window is
 	// never triggered while the backend is actively processing.
 	//
 	// The agent loop has its own heartbeat ticker (startAgentLoopHeartbeat)

@@ -123,6 +123,37 @@ func TestModerationUsesLLMBeforeLowValueFallback(t *testing.T) {
 	}
 }
 
+func TestModerationLimitsLLMPromptContent(t *testing.T) {
+	longContent := strings.Repeat("x", llmModerationPromptContentRuneLimit+512)
+	var prompt string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(req.Messages) != 2 {
+			t.Fatalf("expected system and user messages, got %#v", req.Messages)
+		}
+		prompt = req.Messages[1].Content
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "PASS"}}},
+		})
+	}))
+	defer server.Close()
+
+	_ = moderateContent(t.Context(), &LLMModerationConfig{Enabled: true, URL: server.URL, APIKey: "test-key", ModelName: "test-model"}, longContent)
+	if !strings.Contains(prompt, "...[truncated]") {
+		t.Fatalf("expected truncated marker in prompt")
+	}
+	if strings.Count(prompt, "x") > llmModerationPromptContentRuneLimit {
+		t.Fatalf("prompt included too much content: x count=%d", strings.Count(prompt, "x"))
+	}
+}
+
 func TestParseModerationAnswer(t *testing.T) {
 	tests := []struct {
 		answer  string

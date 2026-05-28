@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -253,6 +254,18 @@ func (api *WorkflowAPI) handleDeleteWorkflow(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	versions, err := api.store.ListVersions(r.Context(), id)
+	if err != nil {
+		apiWriteError(w, http.StatusInternalServerError, "LIST_VERSIONS_FAILED", "failed to list workflow versions: "+err.Error())
+		return
+	}
+	for _, ver := range versions {
+		if workflowVersionBlocksDesignerDelete(ver.Status) {
+			apiWriteError(w, http.StatusConflict, "WORKFLOW_PUBLISHED", "published or previously published workflow designs cannot be deleted from the designer")
+			return
+		}
+	}
+
 	if deleter, ok := api.store.(WorkflowDeleter); ok {
 		if err := deleter.DeleteWorkflow(r.Context(), id); err != nil {
 			apiWriteError(w, http.StatusInternalServerError, "DELETE_FAILED", "failed to delete workflow: "+err.Error())
@@ -264,6 +277,15 @@ func (api *WorkflowAPI) handleDeleteWorkflow(w http.ResponseWriter, r *http.Requ
 	}
 
 	apiWriteJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+func workflowVersionBlocksDesignerDelete(status VersionStatus) bool {
+	switch status {
+	case VersionPublished, VersionSuperseded, VersionUnpublished:
+		return true
+	default:
+		return false
+	}
 }
 
 func (api *WorkflowAPI) handleCreateVersion(w http.ResponseWriter, r *http.Request) {
@@ -395,9 +417,9 @@ func (api *WorkflowAPI) handleSubmitForReview(w http.ResponseWriter, r *http.Req
 
 	if err := api.versionManager.SubmitForReview(r.Context(), versionID); err != nil {
 		switch {
-		case err == ErrVersionNotDraft:
+		case errors.Is(err, ErrVersionNotDraft):
 			apiWriteError(w, http.StatusConflict, "NOT_DRAFT", "version is not in draft status")
-		case strings.Contains(err.Error(), "graph validation failed"):
+		case isGraphValidationError(err):
 			apiWriteError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
 		default:
 			apiWriteError(w, http.StatusInternalServerError, "SUBMIT_FAILED", "failed to submit for review: "+err.Error())
@@ -411,6 +433,14 @@ func (api *WorkflowAPI) handleSubmitForReview(w http.ResponseWriter, r *http.Req
 		"submitted": true,
 		"version":   ver,
 	})
+}
+
+func isGraphValidationError(err error) bool {
+	return errors.Is(err, ErrNoNodes) ||
+		errors.Is(err, ErrNoTriggerNode) ||
+		errors.Is(err, ErrMultipleTriggers) ||
+		errors.Is(err, ErrTriggerHasIncoming) ||
+		errors.Is(err, ErrDisconnectedNodes)
 }
 
 func (api *WorkflowAPI) handleValidateVersion(w http.ResponseWriter, r *http.Request) {

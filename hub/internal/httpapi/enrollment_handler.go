@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -88,6 +89,10 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, securitySvc *secur
 		ctx := auth.WithTenant(r.Context(), RequestTenantID(r))
 		user, _, err := identity.ApproveEnrollment(ctx, req.ID)
 		if err != nil {
+			if errors.Is(err, auth.ErrRoutedToAnotherHub) {
+				writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "APPROVE_FAILED", err.Error())
 			return
 		}

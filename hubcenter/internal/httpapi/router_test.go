@@ -133,6 +133,43 @@ func doJSONRequestWithHost(t *testing.T, handler http.Handler, method, target st
 	return rr
 }
 
+func TestRouterWriteHandlersRejectOversizedJSON(t *testing.T) {
+	largeBody := `{"value":"` + strings.Repeat("x", defaultJSONBodyLimit) + `"}`
+	tests := []struct {
+		name    string
+		target  string
+		handler http.HandlerFunc
+		pathID  string
+	}{
+		{name: "register", target: "/api/hubs/register", handler: RegisterHubHandler(nil)},
+		{name: "heartbeat", target: "/api/hubs/hub-1/heartbeat", handler: HubHeartbeatHandler(nil), pathID: "hub-1"},
+		{name: "sync link", target: "/api/hubs/hub-1/users/sync", handler: HubUserLinkSyncHandler(nil), pathID: "hub-1"},
+		{name: "delete link", target: "/api/hubs/hub-1/users/delete", handler: HubUserLinkDeleteHandler(nil), pathID: "hub-1"},
+		{name: "entry resolve", target: "/api/entry/resolve", handler: EntryResolveHandler(nil)},
+		{name: "entry domain", target: "/api/entry/resolve-domain", handler: EntryResolveDomainHandler(nil)},
+		{name: "admin route", target: "/api/admin/routes/query", handler: AdminRouteQueryHandler(nil)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.target, strings.NewReader(largeBody))
+			if tt.pathID != "" {
+				req.SetPathValue("id", tt.pathID)
+			}
+			rr := httptest.NewRecorder()
+
+			tt.handler(rr, req)
+
+			if rr.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "REQUEST_TOO_LARGE") {
+				t.Fatalf("body = %s, want REQUEST_TOO_LARGE", rr.Body.String())
+			}
+		})
+	}
+}
+
 func issueAdminToken(t *testing.T, svc *hubCenterHTTPTestServices) string {
 	t.Helper()
 
@@ -280,12 +317,13 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 
 	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
-		"owner_email":     "owner@example.com",
-		"name":            "MaClaw Team Hub",
-		"description":     "Team remote coding hub",
-		"base_url":        "https://teamhub.example.com",
-		"visibility":      "shared",
-		"enrollment_mode": "approval",
+		"owner_email":          "owner@example.com",
+		"name":                 "MaClaw Team Hub",
+		"description":          "Team remote coding hub",
+		"base_url":             "https://teamhub.example.com",
+		"visibility":           "shared",
+		"enrollment_mode":      "approval",
+		"accept_public_signup": true,
 		"capabilities": map[string]any{
 			"supports_remote_control": true,
 		},
@@ -327,11 +365,12 @@ func TestResolveHandlersRouteByCorporateEmailDomain(t *testing.T) {
 	})
 
 	defaultHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
-		"owner_email":     "owner-default@example.com",
-		"name":            "Default Hub",
-		"base_url":        "https://default.example.com",
-		"visibility":      "shared",
-		"enrollment_mode": "approval",
+		"owner_email":          "owner-default@example.com",
+		"name":                 "Default Hub",
+		"base_url":             "https://default.example.com",
+		"visibility":           "shared",
+		"enrollment_mode":      "approval",
+		"accept_public_signup": true,
 	})
 
 	resolveExactResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
@@ -350,6 +389,35 @@ func TestResolveHandlersRouteByCorporateEmailDomain(t *testing.T) {
 	}
 	if len(exactResult.Hubs) != 1 || exactResult.Hubs[0].CorporateEmailDomain != "rapidai.tech" {
 		t.Fatalf("expected exact corporate route, got %+v", exactResult.Hubs)
+	}
+
+	resolveDomainResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve-domain", map[string]any{
+		"email": "stale-user@rapidai.tech",
+	}, "")
+	if resolveDomainResp.Code != http.StatusOK {
+		t.Fatalf("resolve domain status = %d, body = %s", resolveDomainResp.Code, resolveDomainResp.Body.String())
+	}
+	var domainResult entry.ResolveResult
+	if err := json.Unmarshal(resolveDomainResp.Body.Bytes(), &domainResult); err != nil {
+		t.Fatalf("decode domain resolve response: %v", err)
+	}
+	if domainResult.DefaultHubID != exactHub["hub_id"] {
+		t.Fatalf("expected domain owner hub %v, got %+v", exactHub["hub_id"], domainResult)
+	}
+
+	resolveOtherTenantDomainResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve-domain", map[string]any{
+		"domain":    "rapidai.tech",
+		"tenant_id": "tenant_other",
+	}, "")
+	if resolveOtherTenantDomainResp.Code != http.StatusOK {
+		t.Fatalf("resolve other tenant domain status = %d, body = %s", resolveOtherTenantDomainResp.Code, resolveOtherTenantDomainResp.Body.String())
+	}
+	domainResult = entry.ResolveResult{}
+	if err := json.Unmarshal(resolveOtherTenantDomainResp.Body.Bytes(), &domainResult); err != nil {
+		t.Fatalf("decode other tenant domain resolve response: %v", err)
+	}
+	if domainResult.DefaultHubID != exactHub["hub_id"] {
+		t.Fatalf("expected global domain route visible for other tenant, got %+v", domainResult)
 	}
 
 	resolveExtraResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
@@ -382,6 +450,56 @@ func TestResolveHandlersRouteByCorporateEmailDomain(t *testing.T) {
 	}
 	if len(defaultResult.Hubs) != 1 || defaultResult.Hubs[0].CorporateEmailDomain != "" {
 		t.Fatalf("expected catch-all route without corporate domain, got %+v", defaultResult.Hubs)
+	}
+}
+
+func TestResolveDomainPrefersTenantRouteOverGlobalRoute(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	globalHub := &store.HubInstance{ID: "hub_global", OwnerEmail: "global@example.com", Name: "A Global", BaseURL: "https://global.example.com", Visibility: "shared", Status: "online", CreatedAt: now, UpdatedAt: now}
+	tenantHub := &store.HubInstance{ID: "hub_tenant", OwnerEmail: "tenant@example.com", Name: "Z Tenant", BaseURL: "https://tenant.example.com", Visibility: "shared", Status: "online", CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{globalHub, tenantHub} {
+		if err := svc.store.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := svc.store.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "global-qianxin", HubID: globalHub.ID, Domain: "qianxin.com", Enabled: true, Priority: 0, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed global route: %v", err)
+	}
+	if err := svc.store.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "tenant-qianxin", HubID: tenantHub.ID, TenantID: "tenant_qianxin", Domain: "qianxin.com", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant route: %v", err)
+	}
+
+	resolveTenantResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve-domain", map[string]any{
+		"domain":    "qianxin.com",
+		"tenant_id": "tenant_qianxin",
+	}, "")
+	if resolveTenantResp.Code != http.StatusOK {
+		t.Fatalf("resolve tenant domain status = %d, body = %s", resolveTenantResp.Code, resolveTenantResp.Body.String())
+	}
+	var result entry.ResolveResult
+	if err := json.Unmarshal(resolveTenantResp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode tenant domain resolve response: %v", err)
+	}
+	if result.DefaultHubID != tenantHub.ID || len(result.Hubs) != 1 {
+		t.Fatalf("expected tenant route to override global route, got %+v", result)
+	}
+
+	resolveOtherResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve-domain", map[string]any{
+		"domain":    "qianxin.com",
+		"tenant_id": "tenant_other",
+	}, "")
+	if resolveOtherResp.Code != http.StatusOK {
+		t.Fatalf("resolve other domain status = %d, body = %s", resolveOtherResp.Code, resolveOtherResp.Body.String())
+	}
+	result = entry.ResolveResult{}
+	if err := json.Unmarshal(resolveOtherResp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode other domain resolve response: %v", err)
+	}
+	if result.DefaultHubID != globalHub.ID || len(result.Hubs) != 1 {
+		t.Fatalf("expected other tenant to use global route, got %+v", result)
 	}
 }
 
@@ -971,11 +1089,12 @@ func TestAdminRoutingDiagnosticsHandlerReturnsSnapshotAndMigrationState(t *testi
 		"corporate_email_domain": "rapidai.tech",
 	})
 	registerConfirmAndHeartbeatHub(t, svc, map[string]any{
-		"owner_email":     "owner-default@example.com",
-		"name":            "Default Hub",
-		"base_url":        "https://default.example.com",
-		"visibility":      "shared",
-		"enrollment_mode": "approval",
+		"owner_email":          "owner-default@example.com",
+		"name":                 "Default Hub",
+		"base_url":             "https://default.example.com",
+		"visibility":           "shared",
+		"enrollment_mode":      "approval",
+		"accept_public_signup": true,
 	})
 	if err := svc.entry.Rebuild(context.Background()); err != nil {
 		t.Fatalf("rebuild snapshot: %v", err)
@@ -1030,11 +1149,7 @@ func TestAdminStaticRouteServesIndexAndAssets(t *testing.T) {
 }
 
 func TestHubCenterAdminPageIncludesFailureLogsUI(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "index.html"))
-	if err != nil {
-		t.Fatalf("read admin index: %v", err)
-	}
-	content := string(body)
+	content := readAdminPageBundle(t)
 	for _, want := range []string{
 		`data-tab="failurelogs"`,
 		`id="tab-failurelogs"`,
@@ -1212,6 +1327,46 @@ func TestAdminUserMigrationHandlerMovesEmailRoute(t *testing.T) {
 	}
 	if resolved.DefaultHubID != hubB["hub_id"] {
 		t.Fatalf("expected target hub %v, got %+v", hubB["hub_id"], resolved)
+	}
+}
+
+func TestHubUserLinkDeleteHandlerRemovesTenantScopedRoute(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	hub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-delete@example.com",
+		"name":            "Hub Delete",
+		"base_url":        "https://delete.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID := hub["hub_id"].(string)
+	hubSecret := hub["hub_secret"]
+	for _, tenantID := range []string{"tenant_a", "tenant_b"} {
+		resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/user-links/sync", map[string]any{
+			"hub_secret": hubSecret,
+			"tenant_id":  tenantID,
+			"email":      "scoped-delete@example.com",
+		}, "")
+		if resp.Code != http.StatusOK {
+			t.Fatalf("sync tenant %s status=%d body=%s", tenantID, resp.Code, resp.Body.String())
+		}
+	}
+
+	deleteResp := doJSONRequest(t, svc.handler, http.MethodDelete, "/api/hubs/"+hubID+"/user-links/sync", map[string]any{
+		"hub_secret": hubSecret,
+		"tenant_id":  "tenant_a",
+		"email":      "SCOPED-DELETE@example.com",
+	}, "")
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	links, err := svc.store.HubUserLinks.ListByEmail(context.Background(), "scoped-delete@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	if len(links) != 1 || links[0].TenantID != "tenant_b" || links[0].HubID != hubID {
+		t.Fatalf("expected only tenant_b route left, got %+v", links)
 	}
 }
 

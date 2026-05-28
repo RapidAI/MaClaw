@@ -11,7 +11,7 @@ import {
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
-import { GroupDiscussionDownloadAttachment, OpenFileOrShowInFolder, SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
+import { GroupDiscussionAttachmentPreviewDataURL, GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, OpenFileOrShowInFolder, SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -26,6 +26,8 @@ vi.mock("../../../../wailsjs/runtime", () => ({
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     SelectAIAssistantFiles: vi.fn(async () => []),
     GroupDiscussionDownloadAttachment: vi.fn(async () => ({ local_path: "C:\\tmp\\report.pdf" })),
+    GroupDiscussionAttachmentPreviewDataURL: vi.fn(async () => "data:image/png;base64,abc123"),
+    GroupDiscussionGetConsultationDetail: vi.fn(async () => null),
     OpenFileOrShowInFolder: vi.fn(async () => undefined),
 }));
 
@@ -111,6 +113,10 @@ describe("VEConversationView", () => {
         (SelectAIAssistantFiles as any).mockImplementation(async () => []);
         (GroupDiscussionDownloadAttachment as any).mockReset();
         (GroupDiscussionDownloadAttachment as any).mockImplementation(async () => ({ local_path: "C:\\tmp\\report.pdf" }));
+        (GroupDiscussionAttachmentPreviewDataURL as any).mockReset();
+        (GroupDiscussionAttachmentPreviewDataURL as any).mockImplementation(async () => "data:image/png;base64,abc123");
+        (GroupDiscussionGetConsultationDetail as any).mockReset();
+        (GroupDiscussionGetConsultationDetail as any).mockImplementation(async () => null);
         (OpenFileOrShowInFolder as any).mockReset();
         (OpenFileOrShowInFolder as any).mockImplementation(async () => undefined);
         vi.useRealTimers();
@@ -192,6 +198,12 @@ describe("VEConversationView", () => {
         it("formats send_failed error", () => {
             const err: VEConversationError = { type: "send_failed", message: "" };
             expect(formatError(err, false)).toBe("Message send failed");
+        });
+
+        it("includes backend detail for send_failed errors", () => {
+            const err: VEConversationError = { type: "send_failed", message: "MESSAGE_DELIVERY_FAILED" };
+            expect(formatError(err, true)).toBe("消息发送失败：MESSAGE_DELIVERY_FAILED");
+            expect(formatError(err, false)).toBe("Message send failed: MESSAGE_DELIVERY_FAILED");
         });
     });
 
@@ -871,6 +883,7 @@ describe("VEConversationView", () => {
             fireEvent.click(screen.getByTestId("ve-attach-button"));
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(screen.getByTestId("ve-attachment-preview-bar").textContent).toContain("evidence.pdf");
+            expect(screen.getByRole("button", { name: /evidence\.pdf/ })).toBeTruthy();
 
             const textarea = screen.getByTestId("ve-input-textarea");
             fireEvent.change(textarea, { target: { value: "See attachment" } });
@@ -1252,6 +1265,23 @@ describe("VEConversationView", () => {
             expect(screen.queryByTestId("ve-streaming-indicator")).toBeNull();
             expect(screen.getByTestId("ve-message-list").textContent).toContain("report.pdf");
             expect(screen.getByTestId("ve-att-chip-report.pdf")).toBeTruthy();
+            expect(screen.getByTestId("ve-message-list").querySelector('[data-testid^="ve-msg-content-"]')).toBeNull();
+        });
+
+        it("shows streamed attachments before the stream ends", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    content: "",
+                    attachments: [{ type: "file", filename: "live.pdf", file_url: "/api/ve/files/download/live-1" }],
+                });
+            });
+
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("live.pdf");
+            expect(screen.getByTestId("ve-att-chip-live.pdf")).toBeTruthy();
         });
 
         it("merges multiple streamed attachment chunks into one final message", async () => {
@@ -1278,6 +1308,135 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-message-list").textContent).toContain("Files ready");
             expect(screen.getByTestId("ve-att-chip-one.pdf")).toBeTruthy();
             expect(screen.getByTestId("ve-att-chip-two.pdf")).toBeTruthy();
+        });
+
+        it("renders downloaded image attachments as thumbnails", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "image", filename: "photo.png", file_url: "/api/ve/files/download/img-1", local_path: "D:\\cache\\photo.png" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            const thumb = screen.getByTestId("ve-att-image-thumb-photo.png") as HTMLImageElement;
+            expect(GroupDiscussionAttachmentPreviewDataURL).toHaveBeenCalledWith("test-session-1", "D:\\cache\\photo.png");
+            expect(thumb.src).toContain("data:image/png;base64,abc123");
+        });
+
+        it("downloads remote image attachments to build thumbnails", async () => {
+            (GroupDiscussionDownloadAttachment as any).mockResolvedValueOnce({ local_path: "D:\\cache\\remote-photo.png" });
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "image", filename: "remote-photo.png", file_url: "/api/ve/files/download/img-remote" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+
+            expect(GroupDiscussionDownloadAttachment).toHaveBeenCalledWith("test-session-1", "/api/ve/files/download/img-remote", "remote-photo.png");
+            expect(GroupDiscussionAttachmentPreviewDataURL).toHaveBeenCalledWith("test-session-1", "D:\\cache\\remote-photo.png");
+            expect(GroupDiscussionAttachmentPreviewDataURL).toHaveBeenCalledTimes(1);
+            expect((screen.getByTestId("ve-att-image-thumb-remote-photo.png") as HTMLImageElement).src).toContain("data:image/png;base64,abc123");
+        });
+
+        it("does not render remote image file URLs directly before secure preview is ready", async () => {
+            let resolvePreview: (value: string) => void = () => undefined;
+            (GroupDiscussionDownloadAttachment as any).mockResolvedValueOnce({ local_path: "D:\\cache\\remote-photo.png" });
+            (GroupDiscussionAttachmentPreviewDataURL as any).mockImplementation(() => new Promise<string>((resolve) => { resolvePreview = resolve; }));
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "image", filename: "remote-photo.png", file_url: "https://hub.example/api/ve/files/download/img-remote" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            expect(screen.getByTestId("ve-att-chip-remote-photo.png").getAttribute("title")).toBe("remote-photo.png");
+            expect(screen.queryByTestId("ve-att-image-thumb-remote-photo.png")).toBeNull();
+
+            await act(async () => {
+                resolvePreview("data:image/png;base64,ready");
+                await Promise.resolve();
+            });
+
+            expect((screen.getByTestId("ve-att-image-thumb-remote-photo.png") as HTMLImageElement).src).toContain("data:image/png;base64,ready");
+        });
+
+        it("opens the cached preview path for remote image attachments", async () => {
+            (GroupDiscussionDownloadAttachment as any).mockResolvedValueOnce({ local_path: "D:\\cache\\remote-photo.png" });
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "image", filename: "remote-photo.png", file_url: "/api/ve/files/download/img-remote" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+            await act(async () => {
+                for (let i = 0; i < 8; i += 1) await Promise.resolve();
+            });
+            expect(GroupDiscussionAttachmentPreviewDataURL).toHaveBeenCalledWith("test-session-1", "D:\\cache\\remote-photo.png");
+            (GroupDiscussionDownloadAttachment as any).mockClear();
+
+            await act(async () => {
+                fireEvent.click(screen.getByTestId("ve-att-chip-remote-photo.png"));
+                await Promise.resolve();
+            });
+
+            expect(GroupDiscussionDownloadAttachment).not.toHaveBeenCalled();
+            expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("D:\\cache\\remote-photo.png");
+        });
+
+        it("uses a file-type badge for non-image attachments", async () => {
+            renderConversation({ existingSessionId: "test-session-1" });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({
+                    session_id: "test-session-1",
+                    attachments: [{ type: "file", filename: "report.pdf", file_url: "/api/ve/files/download/file-1" }],
+                });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_end")?.({ session_id: "test-session-1" });
+            });
+
+            expect(screen.getByTestId("ve-att-chip-report.pdf").textContent).toContain("PDF");
         });
 
         it("downloads streamed attachments through the authenticated Wails bridge before opening", async () => {
@@ -1577,6 +1736,26 @@ describe("VEConversationView", () => {
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(initiate).not.toHaveBeenCalled();
             expect(ref.current?.getState().sessionId).toBe("history-session");
+        });
+
+        it("loads saved messages when opening a digital employee session", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
+                messages: [
+                    { id: "m1", from_id: "human-1", from_name: "Me", kind: "statement", content: "之前的问题", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "m2", from_id: "ve-1", from_name: "Test VE", kind: "stream_chunk", content: "历史", created_at: "2026-05-01T00:00:01Z" },
+                    { id: "m3", from_id: "ve-1", from_name: "Test VE", kind: "stream_chunk", content: "回复", created_at: "2026-05-01T00:00:02Z" },
+                    { id: "m4", from_id: "ve-1", from_name: "Test VE", kind: "stream_end", created_at: "2026-05-01T00:00:03Z" },
+                ],
+            });
+
+            renderConversation({ existingSessionId: "test-session-1" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("test-session-1");
+            expect(screen.getByText("之前的问题")).toBeTruthy();
+            expect(screen.getByText("历史回复")).toBeTruthy();
         });
 
         it("clears VE history with an explicit /clear command", async () => {

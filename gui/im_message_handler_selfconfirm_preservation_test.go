@@ -18,8 +18,8 @@ import (
 // **Validates: Requirements 2.5, 3.1, 3.2, 3.3, 3.5, 3.8, 3.9**
 //
 // IMPORTANT: These tests follow observation-first methodology. They test
-// EXISTING behavior of isSubstantivePhaseDocument, looksLikeNoToolStallReply,
-// and stripThinkingTags on UNFIXED code. All tests MUST PASS on unfixed code
+// EXISTING behavior of isSubstantivePhaseDocument and stripThinkingTags on
+// UNFIXED code. All tests MUST PASS on unfixed code
 // to confirm baseline behavior that the fix must preserve.
 //
 // These tests do NOT reference containsSelfConfirmationPattern,
@@ -41,7 +41,7 @@ var confirmRequestPatternRe = confirmRequestRe
 
 // TestProperty2a_SubstantiveNormalConfirmPrompt_Unchanged verifies that
 // substantive documents ending with a normal confirmation prompt (no
-// self-answer) pass isSubstantivePhaseDocument and are not stall replies.
+// self-answer) pass isSubstantivePhaseDocument.
 // This is the baseline behavior the fix must preserve: the gate force-returns
 // the full text unchanged.
 //
@@ -81,10 +81,6 @@ func TestProperty2a_SubstantiveNormalConfirmPrompt_Unchanged(t *testing.T) {
 			if trimmed == "" {
 				t.Fatal("precondition: trimmed text must be non-empty")
 			}
-			// Must NOT be a stall reply.
-			if looksLikeNoToolStallReply(tc.input) {
-				t.Errorf("looksLikeNoToolStallReply returned true; normal confirm prompt should not be a stall reply")
-			}
 			// Must be a substantive phase document → gate would force-return.
 			if !isSubstantivePhaseDocument(trimmed) {
 				t.Errorf("isSubstantivePhaseDocument returned false (len=%d runes); normal confirm prompt doc should be substantive",
@@ -102,7 +98,7 @@ func TestProperty2a_SubstantiveNormalConfirmPrompt_Unchanged(t *testing.T) {
 // TestProperty2a_PBT_SubstantiveConfirmPromptAlwaysPassesGate uses
 // testing/quick to generate random substantive documents with normal
 // confirmation prompts (no self-answer) and verifies they pass
-// isSubstantivePhaseDocument and are not stall replies.
+// isSubstantivePhaseDocument.
 //
 // **Validates: Requirements 2.5, 3.1**
 func TestProperty2a_PBT_SubstantiveConfirmPromptAlwaysPassesGate(t *testing.T) {
@@ -118,10 +114,6 @@ func TestProperty2a_PBT_SubstantiveConfirmPromptAlwaysPassesGate(t *testing.T) {
 
 		// Property: substantive document with normal confirm prompt passes gate.
 		if !isSubstantivePhaseDocument(trimmed) {
-			return false
-		}
-		// Property: not a stall reply.
-		if looksLikeNoToolStallReply(input) {
 			return false
 		}
 		return true
@@ -237,7 +229,6 @@ func TestProperty2c_NeedsConfirmFalse_GateDoesNotActivate(t *testing.T) {
 		// With needsConfirm=false, the gate MUST NOT activate.
 		gateActivates := needsConfirm &&
 			trimmed != "" &&
-			!looksLikeNoToolStallReply(input) &&
 			isSubstantivePhaseDocument(trimmed)
 
 		// Property: gate never activates when NeedsConfirm=false.

@@ -127,21 +127,42 @@ func (d *CapabilityGapDetector) Resolve(
 	if d.app != nil {
 		allowedSources = d.app.GetAllowedSkillSources()
 	}
+	var blockedSearch []string
 
 	// Step 2: Search SkillHub (if allowed).
 	var candidates []HubSkillMeta
 	if cskill.IsSourceAllowed("skillhub", allowedSources) {
-		sendStatus("正在搜索可用的 Skill...")
-		candidates, err = d.hubClient.Search(ctx, query)
-		if err != nil {
-			return "", "", fmt.Errorf("search hub: %w", err)
+		allowed := true
+		if d.app != nil {
+			guardArgs := map[string]interface{}{"query": query, "source": "skillhub", "hub_url": NewSkillMarketClient(d.app).baseURL()}
+			if ok, reason := d.app.enforceHubSecurityAppPolicy("search_and_install_skill", guardArgs); !ok {
+				blockedSearch = append(blockedSearch, "skillhub: "+reason)
+				allowed = false
+			}
+		}
+		if allowed {
+			sendStatus("正在搜索可用的 Skill...")
+			candidates, err = d.hubClient.Search(ctx, query)
+			if err != nil {
+				return "", "", fmt.Errorf("search hub: %w", err)
+			}
 		}
 	}
 	lang := d.skillConfirmLang()
 	if len(candidates) == 0 {
 		// Fallback: search GitHub for skill.yaml files (if allowed).
 		if !cskill.IsSourceAllowed("github", allowedSources) {
+			if len(blockedSearch) > 0 {
+				return "", "", fmt.Errorf("skill search blocked by security policy: %s", strings.Join(blockedSearch, "; "))
+			}
 			return "", "", nil
+		}
+		if d.app != nil {
+			guardArgs := map[string]interface{}{"query": query, "source": "github", "url": "https://github.com"}
+			if ok, reason := d.app.enforceHubSecurityAppPolicy("search_and_install_skill", guardArgs); !ok {
+				blockedSearch = append(blockedSearch, "github: "+reason)
+				return "", "", fmt.Errorf("skill search blocked by security policy: %s", strings.Join(blockedSearch, "; "))
+			}
 		}
 		sendStatus("SkillHub 未找到匹配技能，正在搜索 GitHub...")
 		gs := cskill.NewGitHubSearcher("")
@@ -150,6 +171,15 @@ func (d *CapabilityGapDetector) Resolve(
 			return "", "", nil
 		}
 		// Import the first candidate.
+		if d.app != nil {
+			guardArgs := map[string]interface{}{"action": "install", "source": "github", "skill_id": ghCandidates[0].RepoFullName, "install_ref": ghCandidates[0].RawURL}
+			if guardArgs["install_ref"] == "" {
+				guardArgs["install_ref"] = ghCandidates[0].RepoURL
+			}
+			if ok, reason := d.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
+				return "", "", fmt.Errorf("github skill install blocked by security policy: %s", reason)
+			}
+		}
 		imported, impErr := gs.ImportFromCandidate(ghCandidates[0])
 		if impErr != nil {
 			sendStatus(fmt.Sprintf("GitHub 技能导入失败: %v", impErr))
@@ -230,8 +260,8 @@ func (d *CapabilityGapDetector) Resolve(
 			policyAction := security.PolicyAllow
 			if githubScanReport != nil {
 				riskLevel = githubScanReport.FinalLevel
-				if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(githubScanReport) {
-					policyAction = security.PolicyUserOverride
+				if d.app != nil {
+					policyAction = d.app.skillInstallFinalAuditAction(githubScanReport)
 				} else if githubScanReport.NeedsUserReview() {
 					policyAction = security.PolicyAudit
 				}
@@ -258,6 +288,12 @@ func (d *CapabilityGapDetector) Resolve(
 
 	// Step 4: Download Skill into staging; final install happens after scan.
 	sendStatus(localizedSkillInstallInstallingStatus(lang, chosen.Name, false))
+	if d.app != nil {
+		guardArgs := map[string]interface{}{"action": "install", "source": "skillhub", "skill_id": chosen.ID, "hub_url": chosen.HubURL}
+		if ok, reason := d.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
+			return "", "", fmt.Errorf("hub skill install blocked by security policy: %s", reason)
+		}
+	}
 	stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(chosen.ID, chosen.Name, "capability-gap-skill"))
 	if err != nil {
 		return "", "", fmt.Errorf("create skill staging dir: %w", err)
@@ -374,8 +410,8 @@ func (d *CapabilityGapDetector) Resolve(
 		policyAction := security.PolicyAllow
 		if scanReport != nil {
 			riskLevel = scanReport.FinalLevel
-			if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(scanReport) {
-				policyAction = security.PolicyUserOverride
+			if d.app != nil {
+				policyAction = d.app.skillInstallFinalAuditAction(scanReport)
 			} else if scanReport.NeedsUserReview() {
 				policyAction = security.PolicyAudit
 			}

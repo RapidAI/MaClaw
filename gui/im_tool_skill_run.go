@@ -184,7 +184,7 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	if sessionReady && status.SessionProgress != nil {
 		b.WriteString("- session 内部进度已自动监控，继续调用 get_skill_run(run_id) 即可查看最新状态。\n")
 	} else if sessionReady {
-		b.WriteString("- session_id 已就绪；先调用 get_skill_run(run_id) 确认当前状态，再使用 query_session / send_and_observe 观察会话输出。\n")
+		b.WriteString("- session_id 来自旧外部会话路径；继续调用 get_skill_run(run_id) 观察状态。新编程任务请走内部 CodingSubAgent，不再使用外部会话续接工具。\n")
 	} else if status.IsRunning() {
 		b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度。\n")
 	} else if status.IsFinished() {
@@ -290,7 +290,7 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 			for _, step := range status.Steps {
 				if step.IsTerminal() {
 					// A step completed but session_id not yet bound — extend
-					// deadline by up to 10s to give create_session time to
+					// deadline by up to 10s to give legacy session binding time to
 					// propagate the session meta. This addresses P0-1 where
 					// run_skill returns session_id=null because the snapshot
 					// was taken before SetRunSessionMeta completed.

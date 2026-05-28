@@ -23,6 +23,40 @@ func TestConfigUIUsesSnapshotFromConfigSaveMsg(t *testing.T) {
 	}
 }
 
+func TestConfigUIRejectsHubManagedSecurityChange(t *testing.T) {
+	m := newConfigUIModel(corelib.AppConfig{Language: "en", HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none"})
+	updated, _ := m.Update(views.ConfigSaveMsg{Key: "security_policy_mode", Value: "developer"})
+	got := updated.(configUIModel)
+	if got.cfg.SecurityPolicyMode != "strict" || got.cfg.SandboxMode != "os" || got.cfg.NetworkLevel != "none" {
+		t.Fatalf("managed security config changed: %#v", got.cfg)
+	}
+	if !strings.Contains(got.status, "Hub") {
+		t.Fatalf("status = %q, want Hub-managed rejection", got.status)
+	}
+}
+
+func TestConfigUISnapshotPreservesHubManagedSecurity(t *testing.T) {
+	current := corelib.AppConfig{Language: "zh", HubSecurityCentralized: true, SecurityPolicyMode: "strict", SandboxMode: "os", NetworkLevel: "none", FileOutboundEnabled: false, ImageOutboundEnabled: false}
+	m := newConfigUIModel(current)
+	snapshot := current
+	snapshot.Language = "en"
+	snapshot.HubSecurityCentralized = false
+	snapshot.SecurityPolicyMode = "developer"
+	snapshot.SandboxMode = "none"
+	snapshot.NetworkLevel = "full"
+	snapshot.FileOutboundEnabled = true
+	snapshot.ImageOutboundEnabled = true
+
+	updated, _ := m.Update(views.ConfigSaveMsg{Key: "language", Value: "en", Config: snapshot, HasConfig: true})
+	got := updated.(configUIModel)
+	if got.cfg.Language != "en" {
+		t.Fatalf("language = %q, want en", got.cfg.Language)
+	}
+	if !got.cfg.HubSecurityCentralized || got.cfg.SecurityPolicyMode != "strict" || got.cfg.SandboxMode != "os" || got.cfg.NetworkLevel != "none" || got.cfg.FileOutboundEnabled || got.cfg.ImageOutboundEnabled {
+		t.Fatalf("managed security config was overwritten: %#v", got.cfg)
+	}
+}
+
 func TestConfigUISaveCmdReturnsFailureMessage(t *testing.T) {
 	dataDirFile := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(dataDirFile, []byte("x"), 0o644); err != nil {

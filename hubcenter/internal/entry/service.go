@@ -73,15 +73,20 @@ type Service struct {
 	routes        store.HubDomainRouteRepository
 	blockedEmails store.BlockedEmailRepository
 	blockedIPs    store.BlockedIPRepository
+	settings      store.SystemSettingsRepository
 	snapshot      atomic.Pointer[routeSnapshot]
 }
 
-func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository) *Service {
-	return &Service{hubs: hubs, links: links, routes: routes, blockedEmails: blockedEmails, blockedIPs: blockedIPs}
+func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository, settingsOpt ...store.SystemSettingsRepository) *Service {
+	var settings store.SystemSettingsRepository
+	if len(settingsOpt) > 0 {
+		settings = settingsOpt[0]
+	}
+	return &Service{hubs: hubs, links: links, routes: routes, blockedEmails: blockedEmails, blockedIPs: blockedIPs, settings: settings}
 }
 
 func (s *Service) Rebuild(ctx context.Context) error {
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, false)
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, false)
 	if err != nil {
 		return err
 	}
@@ -98,19 +103,30 @@ func (s *Service) SnapshotStats() RouteSnapshotStats {
 }
 
 func (s *Service) RoutingDiagnostics(ctx context.Context) (RoutingDiagnostics, error) {
-	if err := s.Rebuild(ctx); err != nil {
-		return RoutingDiagnostics{}, err
-	}
-	diagnostics := RoutingDiagnostics{Snapshot: s.SnapshotStats()}
-
-	hubItems, err := s.hubs.ListAll(ctx)
+	hubItems, err := listSnapshotHubs(ctx, s.hubs)
 	if err != nil {
 		return RoutingDiagnostics{}, err
 	}
-	routeItems, err := s.routes.ListAll(ctx)
+	linkItems, err := listSnapshotUserLinks(ctx, s.links)
 	if err != nil {
 		return RoutingDiagnostics{}, err
 	}
+	routeItems, err := listSnapshotDomainRoutes(ctx, s.routes)
+	if err != nil {
+		return RoutingDiagnostics{}, err
+	}
+	blockedEmailItems, err := listSnapshotBlockedEmails(ctx, s.blockedEmails)
+	if err != nil {
+		return RoutingDiagnostics{}, err
+	}
+	blockedIPItems, err := listSnapshotBlockedIPs(ctx, s.blockedIPs)
+	if err != nil {
+		return RoutingDiagnostics{}, err
+	}
+	policies := loadSnapshotRegistrationPolicies(ctx, s.settings)
+	snap := buildRouteSnapshotFromItems(hubItems, linkItems, routeItems, blockedEmailItems, blockedIPItems, policies, false)
+	s.snapshot.Store(snap)
+	diagnostics := RoutingDiagnostics{Snapshot: snap.stats()}
 
 	enabledRoutesByHubDomain := make(map[string]struct{}, len(routeItems))
 	for _, route := range routeItems {
@@ -121,7 +137,7 @@ func (s *Service) RoutingDiagnostics(ctx context.Context) (RoutingDiagnostics, e
 		if domain == "" {
 			continue
 		}
-		enabledRoutesByHubDomain[route.HubID+"|"+strings.TrimSpace(route.TenantID)+"|"+domain] = struct{}{}
+		enabledRoutesByHubDomain[route.HubID+"|"+normalizeViewTenantID(route.TenantID)+"|"+domain] = struct{}{}
 		diagnostics.Hubs.EnabledDomainRoutes++
 	}
 
@@ -184,7 +200,7 @@ func (s *Service) ResolveAdminByEmail(ctx context.Context, email string) (*Resol
 	if isEmailPattern(email) {
 		return s.ResolveAdminByEmailPattern(ctx, email)
 	}
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, true)
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, true)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +215,7 @@ func (s *Service) ResolveAdminByEmailPattern(ctx context.Context, pattern string
 	if pattern == "" {
 		return &ResolveResult{Email: pattern, Mode: "none", Message: "Email pattern is required"}, nil
 	}
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, true)
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, true)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +230,7 @@ func (s *Service) ResolveAdminByDomain(ctx context.Context, domain string) (*Res
 	if domain == "" {
 		return &ResolveResult{Email: domain, Mode: "none", Message: "Domain is required"}, nil
 	}
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, true)
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, true)
 	if err != nil {
 		return nil, err
 	}
@@ -243,10 +259,18 @@ func (s *Service) ResolveByDomain(ctx context.Context, domain string) (*ResolveR
 
 func BuildPWAURL(baseURL, email string, tenantIDOpt ...string) string {
 	query := fmt.Sprintf("email=%s&entry=app&autologin=1", url.QueryEscape(email))
-	if len(tenantIDOpt) > 0 && strings.TrimSpace(tenantIDOpt[0]) != "" {
-		query += "&tenant_id=" + url.QueryEscape(strings.TrimSpace(tenantIDOpt[0]))
+	if len(tenantIDOpt) > 0 && normalizeViewTenantID(tenantIDOpt[0]) != "" {
+		query += "&tenant_id=" + url.QueryEscape(normalizeViewTenantID(tenantIDOpt[0]))
 	}
 	return fmt.Sprintf("%s/app?%s", strings.TrimRight(baseURL, "/"), query)
+}
+
+func normalizeViewTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "tenant_default" {
+		return ""
+	}
+	return tenantID
 }
 
 func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantIDOpt ...string) HubAccessView {
@@ -256,7 +280,7 @@ func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantID
 	}
 	tenantID := ""
 	if len(tenantIDOpt) > 0 {
-		tenantID = strings.TrimSpace(tenantIDOpt[0])
+		tenantID = normalizeViewTenantID(tenantIDOpt[0])
 	}
 	pwaURL := ""
 	if strings.TrimSpace(email) != "" || tenantID != "" {
@@ -274,15 +298,6 @@ func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantID
 		CorporateEmailDomain:   corporateDomain,
 		Status:                 hub.Status,
 		InvitationCodeRequired: hub.InvitationCodeRequired,
-	}
-}
-
-func isPubliclyDiscoverable(hub *store.HubInstance) bool {
-	switch strings.ToLower(strings.TrimSpace(hub.Visibility)) {
-	case "public", "shared":
-		return true
-	default:
-		return false
 	}
 }
 

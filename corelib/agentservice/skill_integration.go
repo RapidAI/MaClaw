@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -128,7 +129,7 @@ func (b *SkillToolBridge) RunSkill(ctx context.Context, p Principal, name string
 	// Execute using the shared synchronous runner.
 	result, err := skill.ExecuteStepsSync(ctx, entry, vars, skill.ExecConfig{
 		SkillDir:      entry.SkillDir,
-		Timeout:       120 * time.Second,
+		Timeout:       time.Duration(corelib.DefaultAgentTimeoutSec) * time.Second,
 		Params:        entry.Params,
 		SelectedSteps: selectedSteps,
 	}, &srvExecDeps{})

@@ -90,11 +90,26 @@ func mergeHAConfig(base, override config.HAConfig) config.HAConfig {
 	if override.SyncIntervalSeconds > 0 {
 		merged.SyncIntervalSeconds = override.SyncIntervalSeconds
 	}
+	if override.PushDebounceSeconds > 0 {
+		merged.PushDebounceSeconds = override.PushDebounceSeconds
+	}
 	if override.PullBatchSize > 0 {
 		merged.PullBatchSize = override.PullBatchSize
 	}
 	if override.HeartbeatSyncMinIntervalSeconds > 0 {
 		merged.HeartbeatSyncMinIntervalSeconds = override.HeartbeatSyncMinIntervalSeconds
+	}
+	if override.HistoryRetentionDays > 0 {
+		merged.HistoryRetentionDays = override.HistoryRetentionDays
+	}
+	if override.HistoryMaxRetainedOps > 0 {
+		merged.HistoryMaxRetainedOps = override.HistoryMaxRetainedOps
+	}
+	if override.HistoryPruneIntervalMinutes > 0 {
+		merged.HistoryPruneIntervalMinutes = override.HistoryPruneIntervalMinutes
+	}
+	if override.HistoryPruneBatchSize > 0 {
+		merged.HistoryPruneBatchSize = override.HistoryPruneBatchSize
 	}
 	if override.Nodes != nil {
 		merged.Nodes = append([]config.HANodeConfig(nil), override.Nodes...)
@@ -109,11 +124,26 @@ func normalizeHAConfig(defaults, cfg config.HAConfig) config.HAConfig {
 	if cfg.SyncIntervalSeconds <= 0 {
 		cfg.SyncIntervalSeconds = defaults.SyncIntervalSeconds
 	}
+	if cfg.PushDebounceSeconds <= 0 {
+		cfg.PushDebounceSeconds = defaults.PushDebounceSeconds
+	}
 	if cfg.PullBatchSize <= 0 {
 		cfg.PullBatchSize = defaults.PullBatchSize
 	}
 	if cfg.HeartbeatSyncMinIntervalSeconds <= 0 {
 		cfg.HeartbeatSyncMinIntervalSeconds = defaults.HeartbeatSyncMinIntervalSeconds
+	}
+	if cfg.HistoryRetentionDays <= 0 {
+		cfg.HistoryRetentionDays = defaults.HistoryRetentionDays
+	}
+	if cfg.HistoryMaxRetainedOps <= 0 {
+		cfg.HistoryMaxRetainedOps = defaults.HistoryMaxRetainedOps
+	}
+	if cfg.HistoryPruneIntervalMinutes <= 0 {
+		cfg.HistoryPruneIntervalMinutes = defaults.HistoryPruneIntervalMinutes
+	}
+	if cfg.HistoryPruneBatchSize <= 0 {
+		cfg.HistoryPruneBatchSize = defaults.HistoryPruneBatchSize
 	}
 	cfg.SelfFQDN = config.NormalizeHAFQDN(cfg.SelfFQDN)
 	cfg.PrivateKeyPath = strings.TrimSpace(cfg.PrivateKeyPath)

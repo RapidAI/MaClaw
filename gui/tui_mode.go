@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
@@ -341,15 +342,19 @@ func (a *tuiModeApp) saveConfig(msg views.ConfigSaveMsg) tea.Cmd {
 		if a.app == nil {
 			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: guiTUIAppNotInitializedMsg}
 		}
+		current, err := a.app.LoadConfig()
+		if err != nil {
+			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
+		}
+		if blocked, reason := clientsecurity.RejectHubManagedSecurityConfigChange(current, msg.Key); blocked {
+			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: reason}
+		}
 		cfg := msg.Config
 		if !msg.HasConfig {
-			var err error
-			cfg, err = a.app.LoadConfig()
-			if err != nil {
-				return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
-			}
+			cfg = current
 			views.ApplyConfigValue(&cfg, msg.Key, msg.Value)
 		}
+		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
 		if err := a.app.SaveConfig(cfg); err != nil {
 			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
 		}
@@ -367,6 +372,9 @@ func (a *tuiModeApp) addLocalMCP(entry corelib.LocalMCPServerEntry) tea.Cmd {
 		}
 		if a.app == nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: guiTUIAppNotInitializedMsg}
+		}
+		if ok, reason := a.app.enforceHubSecurityAppPolicy("bash", map[string]interface{}{"command": strings.Join(append([]string{entry.Command}, entry.Args...), " ")}); !ok {
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: reason}
 		}
 		entry.ID = guiTUIMCPID("local", entry.Name, now)
 		entry.CreatedAt = now.Format(time.RFC3339)
@@ -391,6 +399,9 @@ func (a *tuiModeApp) addRemoteMCP(entry corelib.MCPServerEntry) tea.Cmd {
 		}
 		if a.app == nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: guiTUIAppNotInitializedMsg}
+		}
+		if ok, reason := a.app.enforceHubSecurityAppPolicy("web_fetch", map[string]interface{}{"url": entry.EndpointURL}); !ok {
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: reason}
 		}
 		entry.ID = guiTUIMCPID("remote", entry.Name, now)
 		entry.CreatedAt = now.Format(time.RFC3339)

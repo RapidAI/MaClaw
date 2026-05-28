@@ -125,6 +125,16 @@ func (s *PGWorkflowStore) DeleteWorkflow(ctx context.Context, id string) error {
 		return errors.New("cannot delete workflow with running instances")
 	}
 
+	var published int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM workflow_versions v JOIN workflow_definitions d ON d.id = v.workflow_id WHERE d.tenant_id = $1 AND v.workflow_id = $2 AND v.status IN ('published', 'superseded', 'unpublished')`, store.TenantIDFromContext(ctx), id,
+	).Scan(&published); err != nil {
+		return err
+	}
+	if published > 0 {
+		return errors.New("cannot delete published workflow")
+	}
+
 	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_versions WHERE workflow_id = $1 AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = workflow_versions.workflow_id AND d.tenant_id = $2)`, id, store.TenantIDFromContext(ctx)); err != nil {
 		return err
 	}

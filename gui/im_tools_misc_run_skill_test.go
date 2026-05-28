@@ -473,6 +473,7 @@ func TestToolGetSkillRun_ReturnsStatusSummary(t *testing.T) {
 }
 
 func TestToolGetSkillRun_ReportsSessionFallbackFromUnknownExplicitSessionID(t *testing.T) {
+	t.Skip("legacy external create_session/send_and_observe skill flow is disabled")
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)

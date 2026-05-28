@@ -173,27 +173,12 @@ func (h *IMMessageHandler) handleRecoverableSessionDecision(decision *explicitTa
 	}
 	session, ok := h.manager.Get(decision.ResumeRecoverableSessionID)
 	if ok && session != nil {
-		var resumeSessionID, projectPath, tool string
 		session.mu.RLock()
-		if session.ResumeContext != nil {
-			resumeSessionID = strings.TrimSpace(session.ResumeContext.ResumeSessionID)
-			projectPath = strings.TrimSpace(firstNonEmptyTraceText(session.ProjectPath, session.ResumeContext.ProjectPath))
-			tool = strings.TrimSpace(firstNonEmptyTraceText(session.Tool, session.ResumeContext.Tool))
-		}
+		hasResumeContext := session.ResumeContext != nil && strings.TrimSpace(session.ResumeContext.ResumeSessionID) != ""
 		session.mu.RUnlock()
-		if resumeSessionID != "" && h.app != nil {
-			_, err := h.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-				Tool:               tool,
-				ProjectPath:        projectPath,
-				LaunchSource:       RemoteLaunchSourceAI,
-				ResumeSessionID:    resumeSessionID,
-				InjectResumePrompt: false,
-			})
-			if err != nil {
-				return &IMAgentResponse{Error: fmt.Sprintf("Recoverable session resume failed: %v", err)}, true, false
-			}
+		if hasResumeContext {
 			h.manager.SuppressResumeForSession(decision.ResumeRecoverableSessionID)
-			return &IMAgentResponse{Text: "Recoverable session started. Check the remote session list for execution status."}, true, false
+			return &IMAgentResponse{Text: "Recoverable external coding session resume is disabled. Coding work now runs through the internal CodingSubAgent; start the task again to continue with agent-managed coding."}, true, false
 		}
 	}
 	return &IMAgentResponse{Error: "There is no recoverable session available, or the session does not support resume."}, true, false

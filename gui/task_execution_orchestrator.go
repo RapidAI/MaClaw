@@ -87,9 +87,10 @@ const (
 type TaskExecMode string
 
 const (
-	// TaskExecModeExternal delegates coding to an external tool via create_session.
+	// TaskExecModeExternal is retained only for legacy persisted state.
+	// New agent task execution always resolves to direct CodingSubAgent mode.
 	TaskExecModeExternal TaskExecMode = "external"
-	// TaskExecModeDirect uses maclaw's own agent loop (bash/write_file/edit_file).
+	// TaskExecModeDirect uses maclaw's internal CodingSubAgent path.
 	TaskExecModeDirect TaskExecMode = "direct"
 )
 
@@ -631,9 +632,8 @@ func (o *TaskExecutionOrchestrator) TaskCount() int {
 	return len(o.Tasks)
 }
 
-// BuildTaskPrompt constructs the focused prompt for the current task that
-// should be sent to the coding session via send_and_observe. It includes
-// only the current task's description plus minimal context.
+// BuildTaskPrompt constructs the focused prompt for the current task. It
+// includes only the current task's description plus minimal context.
 func (o *TaskExecutionOrchestrator) BuildTaskPrompt() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -950,15 +950,6 @@ func (o *TaskExecutionOrchestrator) resolveExecutionModeForTaskLocked(task *Task
 
 // resolveModeLocked determines the mode without locking (caller holds mu).
 func (o *TaskExecutionOrchestrator) resolveModeLocked() TaskExecMode {
-	if o.Tool == "" {
-		return TaskExecModeDirect
-	}
-	if o.ExternalChecker == nil {
-		return TaskExecModeDirect
-	}
-	if o.ExternalChecker.IsExternalToolAvailable(o.Tool, o.ProjectPath) {
-		return TaskExecModeExternal
-	}
 	return TaskExecModeDirect
 }
 
@@ -1118,24 +1109,21 @@ func (o *TaskExecutionOrchestrator) buildExecutionGuideLocked(task *TaskItem) st
 	if mode == TaskExecModeDirect {
 		switch task.Status {
 		case TaskExecPending:
-			b.WriteString("\nExecution mode: direct coding (\u76f4\u63a5\u7f16\u7801).\n")
-			b.WriteString("1. Read existing files before changing them.\n")
-			b.WriteString("2. Use write_file for new files and edit_file/edit_lines for existing files.\n")
-			b.WriteString("3. Run build, lint, or focused tests after edits.\n")
-			b.WriteString("4. Complete only the assigned task and summarize changed files.\n")
+			b.WriteString("\nExecution mode: internal CodingSubAgent.\n")
+			b.WriteString("Delegate this task to CodingSubAgent; do not create external coding sessions.\n")
 		case TaskExecInProgress:
-			b.WriteString("Continue coding the current task with focused file edits.\n")
+			b.WriteString("Continue the current task through CodingSubAgent.\n")
 		case TaskExecTesting:
-			b.WriteString("Run acceptance checks and fix failures before marking the task done.\n")
+			b.WriteString("Use CodingSubAgent to run acceptance checks and fix failures before marking the task done.\n")
 		}
 	} else {
 		switch task.Status {
 		case TaskExecPending:
-			b.WriteString("Use create_session and send_and_observe to delegate only the current task to the external coding tool.\n")
+			b.WriteString("Legacy external execution mode is disabled. Use CodingSubAgent for this task.\n")
 		case TaskExecInProgress:
-			b.WriteString("Use get_session_output to observe external coding progress.\n")
+			b.WriteString("Legacy external execution mode is disabled. Continue through CodingSubAgent.\n")
 		case TaskExecTesting:
-			b.WriteString("Use send_and_observe to run the TDD/verification instructions in the external coding session.\n")
+			b.WriteString("Legacy external execution mode is disabled. Use CodingSubAgent for verification.\n")
 		}
 	}
 	return b.String()

@@ -181,6 +181,49 @@ func TestMultiKnowledgeStoreDefaultsToOwnScopeAndCanReadConfiguredSameTenantScop
 	}
 }
 
+func TestMultiKnowledgeStoreSearchesOwnSharedAndSelectedPublicKnowledge(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	library, err := access.CreatePublicLibrary(ctx, "tenant-public", "Shared Handbook")
+	if err != nil {
+		t.Fatalf("CreatePublicLibrary: %v", err)
+	}
+
+	for _, doc := range []knowledge.TextSaveRequest{
+		{Text: "unified access own runbook", Title: "own", TenantID: "tenant-a", OwnerID: "user-a"},
+		{Text: "unified access team runbook", Title: "team", TenantID: "tenant-a", OwnerID: "user-b"},
+		{Text: "unified access public handbook", Title: "public", TenantID: library.TenantID, OwnerID: library.OwnerID},
+	} {
+		if _, err := store.SaveText(ctx, doc); err != nil {
+			t.Fatalf("SaveText %s/%s: %v", doc.TenantID, doc.OwnerID, err)
+		}
+	}
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{
+		{TenantID: "tenant-a", OwnerID: "user-b", Name: "team"},
+		{TenantID: library.TenantID, OwnerID: library.OwnerID, Name: library.Name},
+	}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+
+	results, err := newMultiKnowledgeStore(store, access).Search(ctx, knowledge.SearchOptions{Query: "unified access", TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for _, ownerID := range []string{"user-a", "user-b", library.OwnerID} {
+		if !hasKnowledgeResultOwner(results, ownerID) {
+			t.Fatalf("expected owner %s in unified search results: %#v", ownerID, results)
+		}
+	}
+	if hasKnowledgeResultOwner(results, "user-c") {
+		t.Fatalf("unexpected unconfigured owner in search results: %#v", results)
+	}
+}
+
 func TestMultiKnowledgeStoreDoesNotIncludeDisabledSharedScopes(t *testing.T) {
 	ctx := context.Background()
 	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
@@ -248,6 +291,38 @@ func TestKnowledgeAccessCrossTenantRequiresAdminEnable(t *testing.T) {
 	resolved = access.ResolveForUser(ctx, "tenant-a", "user-a")
 	if hasKnowledgeScope(resolved, "tenant-b", "user-b") {
 		t.Fatalf("cross-tenant scope should be hidden after disable: %#v", resolved)
+	}
+}
+
+func TestKnowledgeAccessResolvesOwnSharedAndPublicScopesTogether(t *testing.T) {
+	ctx := context.Background()
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	library, err := access.CreatePublicLibrary(ctx, "tenant-public", "Shared Handbook")
+	if err != nil {
+		t.Fatalf("CreatePublicLibrary: %v", err)
+	}
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{
+		{TenantID: "tenant-a", OwnerID: "user-b", Name: "teammate"},
+		{TenantID: library.TenantID, OwnerID: library.OwnerID, Name: library.Name},
+	}}); err != nil {
+		t.Fatalf("SetUser with same-tenant and public scope: %v", err)
+	}
+	resolved := access.ResolveForUser(ctx, "tenant-a", "user-a")
+	for _, want := range []knowledgeScope{
+		{TenantID: "tenant-a", OwnerID: "user-a"},
+		{TenantID: "tenant-a", OwnerID: "user-b"},
+		{TenantID: library.TenantID, OwnerID: library.OwnerID},
+	} {
+		if !hasKnowledgeScope(resolved, want.TenantID, want.OwnerID) {
+			t.Fatalf("expected scope %s/%s in resolved access: %#v", want.TenantID, want.OwnerID, resolved)
+		}
+	}
+
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{
+		{TenantID: "tenant-b", OwnerID: "user-c", Name: "external"},
+		{TenantID: library.TenantID, OwnerID: library.OwnerID, Name: library.Name},
+	}}); err == nil || !strings.Contains(err.Error(), "enable cross-tenant") {
+		t.Fatalf("expected non-public cross-tenant scope to require admin enable, got %v", err)
 	}
 }
 
@@ -363,7 +438,15 @@ func TestListReadableKnowledgeSourcesIncludesConfiguredSameTenantAndManagementDe
 		t.Fatalf("SaveText team: %v", err)
 	}
 	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
-	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b"}}}); err != nil {
+	library, err := access.CreatePublicLibrary(ctx, "tenant-public", "Shared Handbook")
+	if err != nil {
+		t.Fatalf("CreatePublicLibrary: %v", err)
+	}
+	publicSource, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "public runbook", Title: "public", TenantID: library.TenantID, OwnerID: library.OwnerID})
+	if err != nil {
+		t.Fatalf("SaveText public: %v", err)
+	}
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b"}, {TenantID: library.TenantID, OwnerID: library.OwnerID, Name: library.Name}}}); err != nil {
 		t.Fatalf("SetUser: %v", err)
 	}
 	server := &HTTPServer{knowledgeMgr: &knowledgeStoreManager{store: store, access: access}}
@@ -373,11 +456,14 @@ func TestListReadableKnowledgeSourcesIncludesConfiguredSameTenantAndManagementDe
 	if err != nil {
 		t.Fatalf("listReadableKnowledgeSources: %v", err)
 	}
-	if !hasKnowledgeSource(sources, own.ID) || !hasKnowledgeSource(sources, team.ID) {
+	if !hasKnowledgeSource(sources, own.ID) || !hasKnowledgeSource(sources, team.ID) || !hasKnowledgeSource(sources, publicSource.ID) {
 		t.Fatalf("expected own and configured team sources, got %#v", sources)
 	}
 	if !server.canReadSource(ctx, team, principal) {
 		t.Fatalf("expected configured team source to be readable")
+	}
+	if !server.canReadSource(ctx, publicSource, principal) {
+		t.Fatalf("expected selected public source to be readable")
 	}
 	if server.canAccessSource(team, principal) {
 		t.Fatalf("configured team source should not be manageable by reader")
@@ -503,14 +589,26 @@ func TestAdminKnowledgeAccessUpdateWritesAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
 	km := &knowledgeStoreManager{access: newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))}
 	server := NewHTTPServer(svc, "admin-secret", km)
 
-	body, err := json.Marshal(knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b"}}})
+	body, err := json.Marshal(knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: tenant.ID, OwnerID: userB.ID}}})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/knowledge-access/tenants/tenant-a/users/user-a", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/knowledge-access/tenants/"+tenant.ID+"/users/"+userA.ID, bytes.NewReader(body))
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -525,8 +623,40 @@ func TestAdminKnowledgeAccessUpdateWritesAudit(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected one knowledge access audit event, got %#v", events)
 	}
-	if events[0].ResourceID != "tenant-a/user-a" || events[0].Metadata["scope_count"] != "1" || events[0].Metadata["cross_tenant"] != "false" {
+	if events[0].ResourceID != tenant.ID+"/"+userA.ID || events[0].Metadata["scope_count"] != "1" || events[0].Metadata["cross_tenant"] != "false" {
 		t.Fatalf("unexpected audit event: %#v", events[0])
+	}
+}
+
+func TestAdminKnowledgeAccessUpdateDefaultsScopeTenantBeforeUserValidation(t *testing.T) {
+	ctx := context.Background()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	userA, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User B"})
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{access: newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))})
+	body, err := json.Marshal(knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{OwnerID: userB.ID, Name: "same tenant"}}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/knowledge-access/tenants/"+tenant.ID+"/users/"+userA.ID, bytes.NewReader(body))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set knowledge access with implicit scope tenant status = %d body = %s", w.Code, w.Body.String())
 	}
 }
 
@@ -536,6 +666,14 @@ func TestAdminKnowledgeAccessCrossTenantAndDeleteWriteAudit(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User A"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{access: newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))})
 
@@ -547,7 +685,7 @@ func TestAdminKnowledgeAccessCrossTenantAndDeleteWriteAudit(t *testing.T) {
 		t.Fatalf("set cross tenant status = %d body = %s", putResp.Code, putResp.Body.String())
 	}
 
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/knowledge-access/tenants/tenant-a/users/user-a", nil)
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/knowledge-access/tenants/"+tenant.ID+"/users/"+user.ID, nil)
 	deleteReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	deleteResp := httptest.NewRecorder()
 	server.Handler().ServeHTTP(deleteResp, deleteReq)
@@ -566,7 +704,7 @@ func TestAdminKnowledgeAccessCrossTenantAndDeleteWriteAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAuditEvents delete: %v", err)
 	}
-	if len(deleteEvents) != 1 || deleteEvents[0].ResourceID != "tenant-a/user-a" {
+	if len(deleteEvents) != 1 || deleteEvents[0].ResourceID != tenant.ID+"/"+user.ID {
 		t.Fatalf("unexpected delete audit events: %#v", deleteEvents)
 	}
 }

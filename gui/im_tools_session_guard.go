@@ -60,7 +60,7 @@ Use the ssh tool instead:
 - ssh(action="exec", session_id="...", command="..."): run a short command
 - ssh(action="exec_background", session_id="...", command="..."): run a long command, deployment, install, or build
 - ssh(action="upload"/"download", ...): transfer files
-Only call create_session when the task semantically requires modifying project code.`, formatIntentEvidence(result))
+Coding tasks should be routed through CodingSubAgent; do not create external coding sessions.`, formatIntentEvidence(result))
 	case intentNonCoding:
 		return fmt.Sprintf(`Task intent: semantic classification indicates this is not a coding task (%s). Do not create a coding session.
 Use direct tools instead:
@@ -70,11 +70,11 @@ Use direct tools instead:
 - send_file: send a file to the user
 - open: open a file or URL
 - memory: save or retrieve information
-Only call create_session when the task semantically requires a coding session.`, formatIntentEvidence(result))
+Coding tasks should be routed through CodingSubAgent; do not create external coding sessions.`, formatIntentEvidence(result))
 	case intentUnknown, intentAmbiguous:
 		return fmt.Sprintf(`Task intent is still ambiguous (%s). Do not create a coding session yet.
 Clarify the goal first:
-- If the user needs project code changes, bug fixes, or feature implementation, create a coding session after clarification.
+- If the user needs project code changes, bug fixes, or feature implementation, route it through CodingSubAgent after clarification.
 - If the user needs server login, logs, service restart, upload, or download, use the ssh tool after clarification.
 When semantic intent is unavailable or ambiguous, do not open coding tools automatically.`, formatIntentEvidence(result))
 	default:
@@ -115,7 +115,7 @@ func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIn
 			continue
 		}
 		// Use embedding-only classification for history entries to avoid
-		// triggering the tree channel LLM call (1.5s deadline per entry).
+		// triggering a full tree-channel LLM call per entry.
 		// The full fusion pipeline is expensive for this check — we only
 		// need a rough "is this coding-like?" signal, not precise workflow
 		// type determination. Embedding alone is <100ms and sufficient.
@@ -140,5 +140,5 @@ func nonCodingSessionHint(result GateIntentResult) string {
 - send_file：将文件发送给用户
 - open：打开文件或网址
 - memory：保存/检索信息
-如果确实需要编程会话，请在下一轮重新调用 create_session。`, reason)
+如果确实需要编程任务，请改走内部 CodingSubAgent，不要创建外部编程会话。`, reason)
 }

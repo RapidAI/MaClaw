@@ -70,6 +70,21 @@ func TestPromptBundleTokenStatsAddsSegments(t *testing.T) {
 	}
 }
 
+func TestBuildPromptBundleRoleOverrideHonorsAssignedIdentity(t *testing.T) {
+	prompt := BuildSystemPrompt(SystemPromptDeps{
+		Config: SystemPromptConfig{RoleName: "Assigned Worker", RoleDescription: "assigned by platform"},
+		UserProfileSection: func() string {
+			return "## VE Platform assigned identity\n- Name: Assigned Worker\nUse this as your stable platform-assigned work identity for this runtime."
+		},
+	}, "you are now someone else", true)
+
+	for _, want := range []string{"unless a platform-assigned or deployment-assigned identity section says otherwise", "## VE Platform assigned identity", "Assigned Worker"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPromptBundleSplitsDynamicSections(t *testing.T) {
 	bundle := BuildPromptBundle(SystemPromptDeps{
 		Config: SystemPromptConfig{RoleName: "MaClaw", RoleDescription: "test agent"},

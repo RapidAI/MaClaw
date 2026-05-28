@@ -169,7 +169,7 @@ func passthroughCommandFromToolArgs(args map[string]interface{}) (PassthroughCom
 	if scriptPath == "" {
 		return PassthroughCommand{}, fmt.Errorf("missing script_path or command")
 	}
-	timeout := passthroughIntArg(args, "timeout_seconds", 120)
+	timeout := passthroughIntArg(args, "timeout_seconds", defaultPassthroughTimeoutSeconds)
 	cmd := PassthroughCommand{
 		Name:            name,
 		Title:           strings.TrimSpace(stringVal(args, "title")),

@@ -587,7 +587,7 @@ func (c *codingSubAgentCallbacks) withDefaultWorkingDir(args map[string]interfac
 }
 
 func normalizeCodingBashTimeout(raw interface{}) float64 {
-	timeout := codingSubAgentDefaultBashTimeout
+	timeout := corelib.DefaultAgentTimeoutSec
 	switch v := raw.(type) {
 	case float64:
 		timeout = int(v)
@@ -602,13 +602,7 @@ func normalizeCodingBashTimeout(raw interface{}) float64 {
 			timeout = int(i)
 		}
 	}
-	if timeout <= 0 {
-		timeout = codingSubAgentDefaultBashTimeout
-	}
-	if timeout > codingSubAgentMaxBashTimeout {
-		timeout = codingSubAgentMaxBashTimeout
-	}
-	return float64(timeout)
+	return float64(corelib.NormalizeAgentTimeoutSec(timeout))
 }
 
 func rejectDisallowedCodingBashCommand(command string) string {
@@ -2621,8 +2615,8 @@ func truncateRunesForSubAgent(s string, maxRunes int) string {
 // codingSubAgentToolOrder is the single source of truth for the compact tool
 // belt. The membership map is derived from it below.
 const (
-	codingSubAgentDefaultBashTimeout           = 60
-	codingSubAgentMaxBashTimeout               = 120
+	codingSubAgentDefaultBashTimeout           = corelib.DefaultAgentTimeoutSec
+	codingSubAgentMaxBashTimeout               = corelib.MaxAgentTimeoutSec
 	codingSubAgentGuardrailSummaryMax          = 5
 	codingSubAgentGuardrailDetailMaxRunes      = 240
 	codingSubAgentCommandSummaryMax            = 10

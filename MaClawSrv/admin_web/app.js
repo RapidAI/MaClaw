@@ -222,7 +222,12 @@ const zh = {
   "scopeName": "范围名称",
   "kindPlaceholder": "类型",
   "tenantID": "tenant_id",
+  "tenantName": "租户名称",
   "userID": "user_id",
+  "knowledgeOwner": "知识归属用户",
+  "knowledgeSourceDisplayHint": "优先显示租户名称和用户名；括号中保留原始 ID，方便核对。",
+  "knowledgeAccessTargetHint": "先选择要配置知识权限的用户；保存后只影响这个用户的可读知识范围。",
+  "knowledgeScopeBuilderHint": "添加可读知识来源时优先选择租户名称和用户名；预览会保留原始 ID 方便核对。",
   "actionName": "操作",
   "apiKeyOptional": "API key（可选）",
   "apiSecretOptional": "API secret（可选）",
@@ -248,7 +253,63 @@ const zh = {
   "rotateLog": "\u8f6c\u50a8\u65e5\u5fd7",
   "rotateLogConfirm": "\u786e\u8ba4\u8f6c\u50a8\u5f53\u524d\u65e5\u5fd7\u5e76\u521b\u5efa\u65b0\u6587\u4ef6\uff1f",
   "rotateSecret": "轮换密钥",
-  "rotateKey": "轮换公钥"
+  "rotateKey": "轮换公钥",
+  "publicKnowledgeBases": "公用知识库",
+  "publicKnowledgeHint": "管理共享知识库，可导入文本、文档/压缩包和抓取 URL。",
+  "publicKnowledgeName": "公用知识库名称",
+  "createPublicKnowledgeBase": "创建公用知识库",
+  "addPublicKnowledgeScope": "加入公用知识库",
+  "configuredKnowledgeScopes": "已配置知识范围",
+  "effectiveKnowledgeAccess": "实际生效知识范围",
+  "ownKnowledge": "自有知识",
+  "sharedKnowledge": "他人知识",
+  "selectedUserForPublicKnowledge": "先选择要配置的用户，再挂载或移除公用知识库。",
+  "attachPublicKnowledge": "挂载",
+  "detachPublicKnowledge": "移除",
+  "importText": "导入文本",
+  "importDocumentArchive": "导入文档/压缩包",
+  "importURL": "导入 URL",
+  "importing": "导入中...",
+  "importStarted": "知识库导入已开始",
+  "importedKnowledge": "知识库导入已完成",
+  "importCompleted": "知识库导入已完成",
+  "importStillRunning": "知识库导入仍在运行",
+  "importJob": "导入任务",
+  "importStatus": "状态",
+  "importSource": "来源",
+  "importTitle": "标题",
+  "importKind": "类型",
+  "importFiles": "文件",
+  "importUrls": "URL",
+  "importProcessed": "已处理",
+  "importImported": "已导入",
+  "importFailed": "失败",
+  "importSkipped": "跳过",
+  "importDuplicates": "重复",
+  "importWarnings": "警告",
+  "sameDomainOnly": "仅同域名",
+  "crawlDepth": "枚举深度",
+  "labels": "标签",
+  "urlPlaceholder": "https://example.com/docs",
+  "deletePublicKnowledgeConfirm": "删除此公用知识库及其中知识来源？",
+  "importTextRequired": "请输入要导入的文本。",
+  "importURLRequired": "请输入要导入的 URL。",
+  "skillSourcesHintDetailed": "技能来源是助手搜索和安装技能的渠道，不是知识库。生效优先级：用户单独策略 > 租户单独策略 > 全局默认策略。未启用的层级会继承上一级。",
+  "skillPolicyPriorityTitle": "生效顺序",
+  "globalPolicyShort": "全局默认",
+  "tenantOverrideHintDetailed": "租户覆盖：只影响该租户内所有用户；启用后覆盖全局默认。",
+  "userOverrideHintDetailed": "用户覆盖：只影响选中的单个用户；启用后优先级最高。",
+  "globalSkillPolicyTitle": "全局默认策略",
+  "tenantSkillPolicyTitle": "租户单独策略",
+  "userSkillPolicyTitle": "用户单独策略",
+  "globalSkillPolicyHint": "所有租户和用户的默认技能来源；没有租户/用户单独策略时按这里执行。",
+  "tenantSkillPolicyHint": "给选中的租户设置技能来源；启用后，该租户内用户默认按这里执行。",
+  "userSkillPolicyHint": "给选中的用户设置技能来源；启用后优先级最高，只影响这个用户。",
+  "skillPolicyEnabledHint": "启用此层策略；不启用则继承上一级策略。",
+  "skillhubDesc": "官方 SkillHub / SkillMarket，优先使用的受控技能市场。",
+  "clawhubDesc": "社区 ClawHub 镜像，用于发现社区共享技能。",
+  "githubDesc": "GitHub 开源仓库，范围更广但需注意来源可信度。",
+  "enterpriseHubDesc": "企业内部能力市场，适合只允许企业已审批技能。"
 };
 const en = {
   "adminConsole": "Admin Console",
@@ -477,7 +538,12 @@ const en = {
   "scopeName": "Scope name",
   "kindPlaceholder": "Kind",
   "tenantID": "tenant_id",
+  "tenantName": "Tenant name",
   "userID": "user_id",
+  "knowledgeOwner": "Knowledge owner",
+  "knowledgeSourceDisplayHint": "Shows tenant/user names first, with raw IDs kept in parentheses for verification.",
+  "knowledgeAccessTargetHint": "Select the user whose knowledge permissions you are configuring. Saving affects only this user's readable knowledge scopes.",
+  "knowledgeScopeBuilderHint": "Choose tenant and user names when adding readable knowledge sources. Preview keeps raw IDs for verification.",
   "actionName": "Action",
   "apiKeyOptional": "API key (optional)",
   "apiSecretOptional": "API secret (optional)",
@@ -503,20 +569,77 @@ const en = {
   "rotateLog": "Rotate log",
   "rotateLogConfirm": "Rotate the current log and create a new file?",
   "rotateSecret": "Rotate secret",
-  "rotateKey": "Rotate key"
+  "rotateKey": "Rotate key",
+  "publicKnowledgeBases": "Public Knowledge Bases",
+  "publicKnowledgeHint": "Manage named shared knowledge bases. Import text, documents, archives, and crawled URLs.",
+  "publicKnowledgeName": "Public knowledge base name",
+  "createPublicKnowledgeBase": "Create public knowledge base",
+  "addPublicKnowledgeScope": "Add public knowledge base",
+  "configuredKnowledgeScopes": "Configured knowledge scopes",
+  "effectiveKnowledgeAccess": "Effective knowledge access",
+  "ownKnowledge": "Own knowledge",
+  "sharedKnowledge": "Shared user knowledge",
+  "selectedUserForPublicKnowledge": "Select the target user first, then attach or detach public knowledge bases.",
+  "attachPublicKnowledge": "Attach",
+  "detachPublicKnowledge": "Detach",
+  "importText": "Import text",
+  "importDocumentArchive": "Import document/archive",
+  "importURL": "Import URL",
+  "importing": "Importing...",
+  "importStarted": "Knowledge import started",
+  "importedKnowledge": "Knowledge import completed",
+  "importCompleted": "Knowledge import completed",
+  "importStillRunning": "Knowledge import still running",
+  "importJob": "Import job",
+  "importStatus": "Status",
+  "importSource": "Source",
+  "importTitle": "Title",
+  "importKind": "Kind",
+  "importFiles": "Files",
+  "importUrls": "URLs",
+  "importProcessed": "Processed",
+  "importImported": "Imported",
+  "importFailed": "Failed",
+  "importSkipped": "Skipped",
+  "importDuplicates": "Duplicates",
+  "importWarnings": "Warnings",
+  "sameDomainOnly": "Same domain only",
+  "crawlDepth": "Crawl depth",
+  "labels": "labels",
+  "urlPlaceholder": "https://example.com/docs",
+  "deletePublicKnowledgeConfirm": "Delete this public knowledge base and its knowledge sources?",
+  "importTextRequired": "Enter text to import.",
+  "importURLRequired": "Enter at least one URL to import.",
+  "skillSourcesHintDetailed": "Skill sources are channels for finding and installing skills, not knowledge bases. Priority: user-specific policy > tenant-specific policy > global default policy. Disabled layers inherit from the parent layer.",
+  "skillPolicyPriorityTitle": "Effective order",
+  "globalPolicyShort": "Global default",
+  "tenantOverrideHintDetailed": "Tenant override: affects all users in the selected tenant and overrides the global default when enabled.",
+  "userOverrideHintDetailed": "User override: affects only the selected user and has the highest priority when enabled.",
+  "globalSkillPolicyTitle": "Global default policy",
+  "tenantSkillPolicyTitle": "Tenant-specific policy",
+  "userSkillPolicyTitle": "User-specific policy",
+  "globalSkillPolicyHint": "Default skill sources for all tenants and users unless tenant/user-specific policies are enabled.",
+  "tenantSkillPolicyHint": "Set skill sources for the selected tenant. When enabled, users in this tenant use this by default.",
+  "userSkillPolicyHint": "Set skill sources for the selected user. When enabled, this has highest priority and affects only that user.",
+  "skillPolicyEnabledHint": "Enable this policy layer. When disabled, it inherits from the parent layer.",
+  "skillhubDesc": "Official SkillHub / SkillMarket, the preferred controlled skill marketplace.",
+  "clawhubDesc": "Community ClawHub mirror for shared community skills.",
+  "githubDesc": "GitHub open source repositories, broader but requiring source trust review.",
+  "enterpriseHubDesc": "Enterprise internal capability market for approved company skills."
 };
 const dicts = {"zh-CN": zh, "en-US": en};
 const sections = ["overview","sandbox","logs","config","tenants","accounts","knowledge","ops"];
 const initialSection = sections.includes(location.hash.slice(1)) ? location.hash.slice(1) : (sections.includes(localStorage.getItem("maclaw.admin.section")) ? localStorage.getItem("maclaw.admin.section") : "overview");
-const state = { locale: localStorage.getItem("maclaw.admin.locale") || "zh-CN", token: localStorage.getItem("maclaw.admin.token") || "", section: initialSection, sectionChanged: false, me: null, pendingRiskFilter: null, pendingRequests: 0, locales: [{locale:"zh-CN",label:"zh-CN"},{locale:"en-US",label:"English"}] };
+const state = { locale: localStorage.getItem("maclaw.admin.locale") || "zh-CN", token: localStorage.getItem("maclaw.admin.token") || "", section: initialSection, sectionChanged: false, me: null, pendingRiskFilter: null, pendingRequests: 0, knowledgeTenantNames: {}, knowledgeUserNames: {}, locales: [{locale:"zh-CN",label:"zh-CN"},{locale:"en-US",label:"English"}] };
 const $ = (id) => document.getElementById(id);
 const t = (k, vars) => { let out=(dicts[state.locale] || zh)[k] || k; for(const [name,value] of Object.entries(vars||{})) out=out.replaceAll(`{${name}}`, String(value)); return out; };
-const colLabels={tenant_id:"tenantID",owner_id:"userID",title:"name",updated_at:"generatedAt",env_key:"envKey",configured:"configuredState",default:"defaultValue",source:"source",restart_required:"restartRequired",mutable_at_runtime:"runtimeOnly",changed:"changed",current:"current",desired:"desired",sensitive:"sensitive",action:"action"};
+const colLabels={tenant_id:"tenantID",tenant_name:"tenantName",owner_id:"userID",owner_name:"knowledgeOwner",title:"name",updated_at:"generatedAt",env_key:"envKey",configured:"configuredState",default:"defaultValue",source:"source",restart_required:"restartRequired",mutable_at_runtime:"runtimeOnly",changed:"changed",current:"current",desired:"desired",sensitive:"sensitive",action:"action"};
 const tableCol=(c)=>colLabels[c]?t(colLabels[c]):c;
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const pretty = (v) => JSON.stringify(v, null, 2);
 function emptyState(label){ return `<div class="empty-state" role="status"><span aria-hidden="true"></span><p>${esc(label||t("empty"))}</p></div>`; }
 function optionText(parts){ return parts.filter(Boolean).join(" / "); }
+function displayWithID(label,id){ const text=String(label||"").trim(); const raw=String(id||"").trim(); if(!text||text===raw) return raw||"-"; return `${text} (${raw})`; }
 function tenantSelect(id,items,selected="",blank=true,blankLabel="allOption"){ const opts=blank?`<option value="">${t(blankLabel)}</option>`:""; return `<select id="${esc(id)}">${opts}${(items||[]).map(x=>`<option value="${esc(x.id)}" ${selected===x.id?"selected":""}>${esc(optionText([x.name,x.id]))}</option>`).join("")}</select>`; }
 function userSelect(id,items,selected="",mode="id",blank=true,blankLabel="allOption"){ const opts=blank?`<option value="">${t(blankLabel)}</option>`:""; return `<select id="${esc(id)}">${opts}${(items||[]).filter(x=>mode!=="email"||x.email).map(x=>{ const value=mode==="tenantUser"?`${x.tenant_id||""}:${x.id||""}`:(mode==="email"?x.email:x.id); return `<option value="${esc(value)}" ${selected===value?"selected":""}>${esc(optionText([x.name,x.email,x.tenant_id,x.id]))}</option>`; }).join("")}</select>`; }
 function adminSelect(id,items,selected="",blank=true,blankLabel="allOption"){ const opts=blank?`<option value="">${t(blankLabel)}</option>`:""; return `<select id="${esc(id)}">${opts}${(items||[]).map(x=>`<option value="${esc(x.id)}" ${selected===x.id?"selected":""}>${esc(optionText([x.username,x.display_name,x.role,x.id]))}</option>`).join("")}</select>`; }
@@ -531,7 +654,7 @@ async function downloadAdmin(path, fallbackName="maclaw-admin-download"){ setNet
 async function textAdmin(path){ setNetworkBusy(1); try{ const res=await fetch(path,{headers:headers(false)}); const text=await res.text(); if(!res.ok) throw new Error(text || res.statusText); return text; } finally { setNetworkBusy(-1); } }
 function setTitle(title,hint=""){ $("pageTitle").textContent=title; $("pageHint").textContent=hint; document.title=`${title} · MaClawSrv Admin`; const main=$("main"); if(main) main.setAttribute("aria-labelledby","pageTitle"); const content=$("content"); if(content) content.setAttribute("aria-describedby", hint ? "pageHint" : ""); }
 function isOwner(){ return state.me?.auth_type==="admin_secret" || state.me?.admin?.role==="owner"; }
-function applyOwnerGuards(){ if(isOwner()) return; const tip=t("ownerOnly"); ["runRuntimeGC","rotateLog","saveSandbox","rollbackSandbox","installSandboxRun","saveSandboxProfile","createTenant","createTenantUser","createCredential","saveCfg","exportCfg","clearCfgDraft","clearTenantKnowledge","saveKnowledgeCrossTenant","saveKnowledgeAccess","deleteKnowledgeAccess","saveSkillGlobal","saveSkillTenant","deleteSkillTenant","saveSkillUser","deleteSkillUser","runImport","createSnapshot","pruneSnapshots"].forEach(id=>{ const el=$(id); if(el){ el.disabled=true; el.title=tip; }}); document.querySelectorAll("[data-job-cancel],[data-tenant-status],[data-tenant-delete],[data-user-status],[data-user-delete],[data-credential-status],[data-credential-secret],[data-credential-key],[data-credential-revoke],[data-admin-toggle],[data-session-revoke],[data-sandbox-report-delete],[data-sandbox-profile-delete],[data-snapshot-restore-run],[data-snapshot-delete]").forEach(el=>{ el.disabled=true; el.title=tip; }); }
+function applyOwnerGuards(){ if(isOwner()) return; const tip=t("ownerOnly"); ["runRuntimeGC","rotateLog","saveSandbox","rollbackSandbox","installSandboxRun","saveSandboxProfile","createTenant","createTenantUser","createCredential","saveCfg","exportCfg","clearCfgDraft","clearTenantKnowledge","saveKnowledgeCrossTenant","saveKnowledgeAccess","deleteKnowledgeAccess","createPublicKnowledge","publicKnowledgeImportText","publicKnowledgeImportFile","publicKnowledgeImportURLs","saveSkillGlobal","saveSkillTenant","deleteSkillTenant","saveSkillUser","deleteSkillUser","runImport","createSnapshot","pruneSnapshots"].forEach(id=>{ const el=$(id); if(el){ el.disabled=true; el.title=tip; }}); document.querySelectorAll("[data-job-cancel],[data-tenant-status],[data-tenant-delete],[data-user-status],[data-user-delete],[data-credential-status],[data-credential-secret],[data-credential-key],[data-credential-revoke],[data-admin-toggle],[data-session-revoke],[data-sandbox-report-delete],[data-sandbox-profile-delete],[data-snapshot-restore-run],[data-snapshot-delete],[data-public-kb-add],[data-public-kb-remove],[data-public-kb-delete]").forEach(el=>{ el.disabled=true; el.title=tip; }); }
 function bindNavKeyboard(){ const buttons=[...$("nav").querySelectorAll("button")]; buttons.forEach((b,i)=>b.onkeydown=(e)=>{ const keys={ArrowDown:1,ArrowRight:1,ArrowUp:-1,ArrowLeft:-1}; if(e.key==="Home"||e.key==="End"||keys[e.key]){ e.preventDefault(); const next=e.key==="Home"?0:e.key==="End"?buttons.length-1:(i+keys[e.key]+buttons.length)%buttons.length; buttons[next]?.focus(); } if(e.key==="Enter"||e.key===" "){ e.preventDefault(); b.click(); } }); document.onkeydown=(e)=>{ if(e.altKey||e.ctrlKey||e.metaKey||e.shiftKey) return; const target=e.target; if(target&&["INPUT","TEXTAREA","SELECT"].includes(target.tagName)) return; const n=Number(e.key); if(n>=1&&n<=buttons.length){ e.preventDefault(); buttons[n-1]?.click(); buttons[n-1]?.focus(); } }; }
 function setSection(id, updateHash=true){ if(!sections.includes(id)) id="overview"; state.sectionChanged=state.section!==id; state.section=id; localStorage.setItem("maclaw.admin.section",id); if(updateHash&&location.hash!==`#${id}`) history.replaceState(null,"",`#${id}`); }
 function renderShell(){ document.documentElement.lang=state.locale; const localeSelect=$("localeSelect"); if(localeSelect){ localeSelect.innerHTML=(state.locales||[]).map(x=>`<option value="${esc(x.locale)}">${esc(x.label||x.locale)}</option>`).join(""); localeSelect.value=state.locale; } document.querySelectorAll("[data-i18n]").forEach(n=>n.textContent=t(n.dataset.i18n)); $("nav").innerHTML=sections.map((id,i)=>`<button type="button" class="${state.section===id?"active":""}" data-section="${id}" data-shortcut="${i+1}" title="${esc(i+1)} · ${esc(t(id))}" aria-current="${state.section===id?"page":"false"}">${t(id)}</button>`).join(""); $("nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{setSection(b.dataset.section); render();}); bindNavKeyboard(); const badge=$("authBadge"); badge.textContent=state.me?.admin?.username || state.me?.auth_type || (state.token ? "admin" : t("noToken")); badge.className=`badge ${state.token?"badge-on":"badge-off"}`; }
@@ -643,19 +766,29 @@ function bindTenantActions(){
 async function accounts(){ setTitle(t("accounts"), t("accountsHint")); if(!isOwner()){ $("content").innerHTML=`<div class="card stack"><h2>${t("changePassword")}</h2><p class="muted">${t("ownerOnly")}: ${t("users")} / ${t("sessions")}</p><div class="form-grid"><input id="oldPass" type="password" placeholder="${t("oldPassword")}"><input id="newPass" type="password" placeholder="${t("newPassword")}"></div><button id="changePass">${t("save")}</button></div>`; $("changePass").onclick=async()=>{await api("/api/v1/admin/auth/change-password",{method:"POST",body:JSON.stringify({old_password:$("oldPass").value,new_password:$("newPass").value})}); toast(t("loaded"));}; return; } const [users,sessions]=await Promise.all([api("/api/v1/admin/auth/users"),api("/api/v1/admin/auth/sessions")]); $("content").innerHTML=`<div class="card"><h2>${t("users")}</h2>${table(users.items||[],["username","display_name","role","status","locale","last_login_at"], x=>`<button data-admin-toggle="${esc(x.id)}:${x.status==='active'?'suspended':'active'}">${x.status==='active'?t("suspend"):t("activate")}</button>`)}</div><div class="card stack"><h2>${t("createAdmin")}</h2><div class="form-grid"><input id="newAdminUser" placeholder="${t("username")}"><input id="newAdminPass" type="password" placeholder="${t("password")}"><input id="newAdminName" placeholder="${t("displayName")}"><select id="newAdminRole"><option value="operator">${t("operator")}</option><option value="owner">${t("owner")}</option></select><select id="newAdminLocale">${localeOptions()}</select></div><button id="createAdmin">${t("create")}</button></div><div class="card"><h2>${t("sessions")}</h2>${table(sessions.items||[],["username","active","created_at","expires_at","remote_ip"], x=>`<button class="danger" data-session-revoke="${esc(x.id)}">${t("revoke")}</button>`)}</div><div class="card stack"><h2>${t("changePassword")}</h2><div class="form-grid"><input id="oldPass" type="password" placeholder="${t("oldPassword")}"><input id="newPass" type="password" placeholder="${t("newPassword")}"></div><button id="changePass">${t("save")}</button></div>`; document.querySelectorAll("[data-admin-toggle]").forEach(b=>b.onclick=async()=>{const [id,status]=b.dataset.adminToggle.split(":"); await api(`/api/v1/admin/auth/users/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify({status,confirm_unsafe:true})}); render();}); document.querySelectorAll("[data-session-revoke]").forEach(b=>b.onclick=async()=>{if(await confirmDanger(t("revokeSessionConfirm"))){await api(`/api/v1/admin/auth/sessions/${encodeURIComponent(b.dataset.sessionRevoke)}?confirm=true`,{method:"DELETE"}); render();}}); $("createAdmin").onclick=async()=>{await api("/api/v1/admin/auth/users",{method:"POST",body:JSON.stringify({username:$("newAdminUser").value,password:$("newAdminPass").value,display_name:$("newAdminName").value,role:$("newAdminRole").value,locale:$("newAdminLocale").value})}); render();}; $("changePass").onclick=async()=>{await api("/api/v1/admin/auth/change-password",{method:"POST",body:JSON.stringify({old_password:$("oldPass").value,new_password:$("newPass").value})}); toast(t("loaded"));}; }
 async function knowledge(){
   setTitle(t("knowledge"), t("knowledgeHint"));
-  const [stats,sources,cross,available,globalCfg,tenantsResp,usersResp]=await Promise.all([
+  const [stats,sources,cross,available,globalCfg,tenantsResp,usersResp,publicResp]=await Promise.all([
     api("/api/v1/admin/knowledge/stats").catch(e=>({error:e.message})),
     api("/api/v1/admin/knowledge/sources").catch(e=>({error:e.message,sources:[]})),
     api("/api/v1/admin/knowledge-access/cross-tenant").catch(e=>({error:e.message,enabled:false})),
     api("/api/v1/admin/skill-sources/available").catch(e=>({error:e.message,sources:["skillhub","clawhub","github"]})),
     api("/api/v1/admin/skill-sources/global").catch(e=>({error:e.message,enabled:false,allowed_sources:[]})),
     api("/api/v1/admin/tenants?limit=500").catch(e=>({error:e.message,items:[]})),
-    api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]}))
+    api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]})),
+    api("/api/v1/admin/public-knowledge-libraries").catch(e=>({error:e.message,libraries:[]}))
   ]);
   const sourceItems=sources.sources||sources.items||[];
   const availableSources=available.sources||[];
+  const sourceDescriptions=available.description||{};
   const tenantItems=tenantsResp.items||[];
   const userItems=usersResp.items||[];
+  const publicLibraries=publicResp.libraries||[];
+  const tenantNameByID=new Map(tenantItems.map(x=>[String(x.id||""),String(x.name||x.id||"")]));
+  const userNameByKey=new Map();
+  userItems.forEach(x=>{ const label=String(x.name||x.email||x.username||x.id||""); userNameByKey.set(`${x.tenant_id||""}:${x.id||""}`,label); if(x.id&&!userNameByKey.has(`:${x.id}`)) userNameByKey.set(`:${x.id}`,label); });
+  state.knowledgeTenantNames=Object.fromEntries(tenantNameByID);
+  state.knowledgeUserNames=Object.fromEntries(userNameByKey);
+  const knowledgeSourceRows=sourceItems.map(x=>{ const tenantID=String(x.tenant_id||""); const ownerID=String(x.owner_id||""); const ownerLabel=userNameByKey.get(`${tenantID}:${ownerID}`)||userNameByKey.get(`:${ownerID}`)||ownerID; return {...x,tenant_name:displayWithID(tenantNameByID.get(tenantID)||tenantID,tenantID),owner_name:displayWithID(ownerLabel,ownerID)}; });
+  const publicKnowledgeRows=publicLibraries.map(x=>({...x,tenant_name:displayWithID(tenantNameByID.get(String(x.tenant_id||""))||x.tenant_id,x.tenant_id)}));
   $("content").innerHTML=`<section class="knowledge-page">
     <div class="knowledge-summary">
       <div class="card metric knowledge-metric"><span>${t("knowledgeSources")}</span><b>${esc(sources.total ?? sourceItems.length ?? "-")}</b><small>${esc(sourceItems.length)} ${t("sources")}</small></div>
@@ -664,39 +797,69 @@ async function knowledge(){
     </div>
     <div class="knowledge-layout">
       <div class="knowledge-main stack">
-        <div class="card knowledge-panel"><div class="section-head"><div><h2>${t("knowledgeSources")}</h2><p class="muted">${t("tenantID")} / ${t("userID")} / ${t("name")} / ${t("generatedAt")}</p></div></div>${table(sourceItems,["id","tenant_id","owner_id","title","updated_at"],null)}</div>
+        <div class="card knowledge-panel"><div class="section-head"><div><h2>${t("knowledgeSources")}</h2><p class="muted">${t("knowledgeSourceDisplayHint")}</p></div></div>${table(knowledgeSourceRows,["id","tenant_name","owner_name","title","updated_at"],null)}</div>
+        <div class="card knowledge-panel"><div class="section-head"><div><h2>${t("publicKnowledgeBases")}</h2><p class="muted">${t("publicKnowledgeHint")}</p></div></div>${publicKnowledgePanel(publicKnowledgeRows,tenantItems)}</div>
         <div class="card knowledge-panel"><div class="section-head"><div><h2>${t("knowledgeStats")}</h2><p class="muted">${t("raw")}</p></div></div><pre class="code compact-code">${esc(pretty(stats))}</pre></div>
       </div>
       <aside class="knowledge-side stack">
-        <div class="card stack knowledge-panel"><div class="section-head"><div><h2>${t("knowledgeAccess")}</h2><p class="muted">${t("tenantID")} + ${t("userID")}</p></div></div><label class="switch-row"><input id="knowledgeCrossTenant" type="checkbox" ${cross.enabled?"checked":""}> <span>${t("allowCrossTenant")}</span></label><button id="saveKnowledgeCrossTenant">${t("save")}</button><div class="form-grid compact-form">${tenantSelect("knowledgeTenant",tenantItems,"",true,"selectTenant")}${userSelect("knowledgeUser",userItems,"","tenantUser",true,"selectUser")}</div><div class="form-grid compact-form scope-builder">${tenantSelect("knowledgeScopeTenant",tenantItems,"",true,"selectTenant")}${userSelect("knowledgeScopeUser",userItems,"","tenantUser",true,"selectUser")}<input id="knowledgeScopeName" placeholder="${t("scopeName")}"><button type="button" class="secondary" id="addKnowledgeScope">${t("addScope")}</button></div><textarea id="knowledgeScopes" class="policy-textarea" placeholder='[{"tenant_id":"tenant-a","owner_id":"user-a","name":"team"}]'></textarea><div class="action-bar"><label class="switch-row inline"><input id="knowledgeEnabled" type="checkbox" checked> <span>${t("enabledState")}</span></label><button id="getKnowledgeAccess" class="secondary">${t("view")}</button><button id="saveKnowledgeAccess">${t("save")}</button><button class="secondary" id="resolveKnowledgeAccess">${t("resolve")}</button><button class="danger" id="deleteKnowledgeAccess">${t("delete")}</button></div></div>
-        <div class="card stack knowledge-panel"><div class="section-head"><div><h2>${t("skillSources")}</h2><p class="muted">${t("global")} / ${t("tenantOverride")} / ${t("userOverride")}</p></div></div><div class="policy-grid"><section class="policy-box"><h3>${t("global")}</h3>${skillSourceChecks("skillGlobal",availableSources,globalCfg)}<button id="saveSkillGlobal">${t("save")}</button></section><section class="policy-box"><h3>${t("tenantOverride")}</h3>${tenantSelect("skillTenant",tenantItems,"",true,"selectTenant")}${skillSourceChecks("skillTenantCfg",availableSources,{})}<div class="action-bar"><button id="loadSkillTenant" class="secondary">${t("view")}</button><button id="saveSkillTenant">${t("save")}</button><button class="danger" id="deleteSkillTenant">${t("delete")}</button></div></section><section class="policy-box"><h3>${t("userOverride")}</h3>${userSelect("skillUserEmail",userItems,"","email",true,"selectUser")}${skillSourceChecks("skillUserCfg",availableSources,{})}<div class="action-bar"><button id="loadSkillUser" class="secondary">${t("view")}</button><button id="saveSkillUser">${t("save")}</button><button class="secondary" id="resolveSkillUser">${t("resolve")}</button><button class="danger" id="deleteSkillUser">${t("delete")}</button></div></section></div></div>
+        <div class="card stack knowledge-panel"><div class="section-head"><div><h2>${t("knowledgeAccess")}</h2><p class="muted">${t("knowledgeAccessTargetHint")}</p></div></div><label class="switch-row"><input id="knowledgeCrossTenant" type="checkbox" ${cross.enabled?"checked":""}> <span>${t("allowCrossTenant")}</span></label><button id="saveKnowledgeCrossTenant">${t("save")}</button><div class="form-grid compact-form">${tenantSelect("knowledgeTenant",tenantItems,"",true,"selectTenant")}${userSelect("knowledgeUser",userItems,"","tenantUser",true,"selectUser")}</div><p class="muted">${t("knowledgeScopeBuilderHint")}</p><div class="form-grid compact-form scope-builder">${tenantSelect("knowledgeScopeTenant",tenantItems,"",true,"selectTenant")}${userSelect("knowledgeScopeUser",userItems,"","tenantUser",true,"selectUser")}<input id="knowledgeScopeName" placeholder="${t("scopeName")}"><button type="button" class="secondary" id="addKnowledgeScope">${t("addScope")}</button></div>${publicKnowledgeScopeSelect(publicLibraries)}<textarea id="knowledgeScopes" class="policy-textarea" placeholder='[{"tenant_id":"tenant-a","owner_id":"user-a","name":"team"}]'></textarea><div id="knowledgeScopePreview" class="knowledge-scope-preview" aria-live="polite"></div><div class="action-bar"><label class="switch-row inline"><input id="knowledgeEnabled" type="checkbox" checked> <span>${t("enabledState")}</span></label><button id="getKnowledgeAccess" class="secondary">${t("view")}</button><button id="saveKnowledgeAccess">${t("save")}</button><button class="secondary" id="resolveKnowledgeAccess">${t("resolve")}</button><button class="danger" id="deleteKnowledgeAccess">${t("delete")}</button></div></div>
+        <div class="card stack knowledge-panel"><div class="section-head"><div><h2>${t("skillSources")}</h2><p class="muted">${t("skillSourcesHintDetailed")}</p></div></div><div class="policy-flow" aria-label="${esc(t("skillPolicyPriorityTitle"))}"><strong>${t("skillPolicyPriorityTitle")}</strong><span>${t("globalPolicyShort")}</span><span>${t("tenantOverride")}</span><span>${t("userOverride")}</span><small>${t("tenantOverrideHintDetailed")}</small><small>${t("userOverrideHintDetailed")}</small></div><div class="policy-grid"><section class="policy-box"><h3>${t("globalSkillPolicyTitle")}</h3><p class="muted">${t("globalSkillPolicyHint")}</p>${skillSourceChecks("skillGlobal",availableSources,globalCfg,sourceDescriptions)}<button id="saveSkillGlobal">${t("save")}</button></section><section class="policy-box"><h3>${t("tenantSkillPolicyTitle")}</h3><p class="muted">${t("tenantSkillPolicyHint")}</p>${tenantSelect("skillTenant",tenantItems,"",true,"selectTenant")}${skillSourceChecks("skillTenantCfg",availableSources,{},sourceDescriptions)}<div class="action-bar"><button id="loadSkillTenant" class="secondary">${t("view")}</button><button id="saveSkillTenant">${t("save")}</button><button class="danger" id="deleteSkillTenant">${t("delete")}</button></div></section><section class="policy-box"><h3>${t("userSkillPolicyTitle")}</h3><p class="muted">${t("userSkillPolicyHint")}</p>${userSelect("skillUserEmail",userItems,"","email",true,"selectUser")}${skillSourceChecks("skillUserCfg",availableSources,{},sourceDescriptions)}<div class="action-bar"><button id="loadSkillUser" class="secondary">${t("view")}</button><button id="saveSkillUser">${t("save")}</button><button class="secondary" id="resolveSkillUser">${t("resolve")}</button><button class="danger" id="deleteSkillUser">${t("delete")}</button></div></section></div></div>
         <div class="card stack danger-zone knowledge-panel"><div class="section-head"><div><h2>${t("dangerous")}</h2><p class="muted">${t("clearTenantKnowledge")}</p></div></div><div class="form-grid compact-form">${tenantSelect("knowledgeClearTenant",tenantItems,"",true,"selectTenant")}</div><button class="danger" id="clearTenantKnowledge">${t("clearTenantKnowledge")}</button></div>
       </aside>
     </div>
-    <details class="card raw-details"><summary>${t("raw")}</summary><pre id="knowledgeOut" class="code">${esc(pretty({stats,sources,cross,available,global:globalCfg,tenants:tenantsResp,users:usersResp}))}</pre></details>
+    <details class="card raw-details"><summary>${t("raw")}</summary><pre id="knowledgeOut" class="code">${esc(pretty({stats,sources,cross,available,global:globalCfg,tenants:tenantsResp,users:usersResp,public_libraries:publicResp}))}</pre></details>
   </section>`;
   syncTenantFromUser("knowledgeUser","knowledgeTenant");
   syncTenantFromUser("knowledgeScopeUser","knowledgeScopeTenant");
-  bindKnowledgeActions(availableSources);
+  bindKnowledgeActions(availableSources,publicLibraries);
 }
-function skillSourceChecks(prefix,sources,cfg){ const allowed=new Set(cfg.allowed_sources||sources||[]); return `<label class="switch-row"><input id="${prefix}_enabled" type="checkbox" ${cfg.enabled?"checked":""}> <span>${t("enabledState")}</span></label><div class="source-checks">${(sources||[]).map(s=>`<label><input id="${prefix}_${esc(s)}" type="checkbox" ${allowed.has(s)?"checked":""}> <span>${esc(s)}</span></label>`).join("")}</div>`; }
+function publicKnowledgeOptionLabel(x){ return `${x.name} / ${x.tenant_name||displayWithID(state.knowledgeTenantNames?.[String(x.tenant_id||"")]||x.tenant_id,x.tenant_id)}`; }
+function publicKnowledgeScopeSelect(libraries){ return `<div class="form-grid compact-form scope-builder public-scope-builder"><select id="knowledgePublicScopeLibrary"><option value="">${t("publicKnowledgeBases")}</option>${(libraries||[]).map(x=>`<option value="${esc(x.id)}">${esc(publicKnowledgeOptionLabel(x))}</option>`).join("")}</select><button type="button" class="secondary" id="addPublicKnowledgeScope">${t("addPublicKnowledgeScope")}</button><p class="muted span-2">${t("selectedUserForPublicKnowledge")}</p></div>`; }
+function publicKnowledgePanel(libraries,tenants){ return `<div class="stack"><div class="form-grid compact-form">${tenantSelect("publicKnowledgeTenant",tenants,"",true,"selectTenant")}<input id="publicKnowledgeName" placeholder="${t("publicKnowledgeName")}"><button id="createPublicKnowledge" type="button">${t("createPublicKnowledgeBase")}</button></div><div>${table(libraries||[],["name","tenant_name","source_count","distilled_sources","latest_source_at"],x=>`<button class="secondary" data-public-kb-add="${esc(x.id)}">${t("attachPublicKnowledge")}</button> <button class="secondary" data-public-kb-remove="${esc(x.id)}">${t("detachPublicKnowledge")}</button> <button class="secondary" data-public-kb-select="${esc(x.id)}">${t("view")}</button> <button class="danger" data-public-kb-delete="${esc(x.id)}">${t("delete")}</button>`)}</div><div class="form-grid compact-form"><select id="publicKnowledgeImportTarget"><option value="">${t("allOption")}</option>${(libraries||[]).map(x=>`<option value="${esc(x.id)}">${esc(publicKnowledgeOptionLabel(x))}</option>`).join("")}</select><input id="publicKnowledgeTopic" placeholder="${t("scopeName")}"><input id="publicKnowledgeLabels" placeholder="${t("labels")}"></div><div class="form-grid compact-form"><textarea id="publicKnowledgeText" class="policy-textarea" placeholder="${t("importText")}"></textarea><button id="publicKnowledgeImportText" type="button" class="secondary">${t("importText")}</button></div><div class="form-grid compact-form"><input id="publicKnowledgeFile" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar"><button id="publicKnowledgeImportFile" type="button" class="secondary">${t("importDocumentArchive")}</button></div><div class="form-grid compact-form"><textarea id="publicKnowledgeURLs" class="policy-textarea" placeholder="${t("urlPlaceholder")}"></textarea><label class="field-inline" for="publicKnowledgeDepth"><span>${t("crawlDepth")}</span><input id="publicKnowledgeDepth" type="number" min="0" max="5" step="1" value="0"></label><label class="switch-row"><input id="publicKnowledgeSameDomain" type="checkbox" checked> <span>${t("sameDomainOnly")}</span></label><button id="publicKnowledgeImportURLs" type="button" class="secondary">${t("importURL")}</button></div></div>`; }
+function skillSourceDescription(source,descriptions){ const fallback={skillhub:t("skillhubDesc"),clawhub:t("clawhubDesc"),github:t("githubDesc"),enterprise_hub:t("enterpriseHubDesc")}; return fallback[source]||(descriptions&&descriptions[source])||""; }
+function skillSourceChecks(prefix,sources,cfg,descriptions){ const allowed=new Set(cfg.allowed_sources||sources||[]); return `<label class="switch-row"><input id="${prefix}_enabled" type="checkbox" ${cfg.enabled?"checked":""}> <span>${t("enabledState")}</span><small>${t("skillPolicyEnabledHint")}</small></label><div class="source-checks">${(sources||[]).map(s=>{const desc=skillSourceDescription(s,descriptions); return `<label><input id="${prefix}_${esc(s)}" type="checkbox" ${allowed.has(s)?"checked":""}> <span><strong>${esc(s)}</strong>${desc?`<small>${esc(desc)}</small>`:""}</span></label>`;}).join("")}</div>`; }
 function skillSourceBody(prefix,sources){ return {enabled:!!$(`${prefix}_enabled`)?.checked, allowed_sources:(sources||[]).filter(s=>$(`${prefix}_${s}`)?.checked)}; }
 function applySkillSource(prefix,sources,cfg){ if($(`${prefix}_enabled`)) $(`${prefix}_enabled`).checked=!!cfg.enabled; for(const s of sources||[]){ const el=$(`${prefix}_${s}`); if(el) el.checked=(cfg.allowed_sources||[]).includes(s); } }
 function knowledgeIds(){ const selected=splitTenantUser($('knowledgeUser').value.trim()); return {tenant:selected.tenant||$('knowledgeTenant').value.trim(), user:selected.user||$('knowledgeUser').value.trim()}; }
 function requireKnowledgeIds(){ const ids=knowledgeIds(); if(!ids.tenant){ toast(t("tenantIDRequired")); return null; } if(!ids.user){ toast(t("requiredField")); return null; } return ids; }
 function requireInput(id,labelKey){ const value=$(id).value.trim(); if(!value){ toast(t(labelKey||"requiredField")); return ""; } return value; }
-function appendKnowledgeScope(){ const ids=tenantUserValue('knowledgeScopeTenant','knowledgeScopeUser'); if(!ids.tenant){ toast(t("tenantIDRequired")); return; } if(!ids.user){ toast(t("requiredField")); return; } let scopes; try{scopes=parseJSONField("knowledgeScopes","[]");}catch{return;} scopes.push({tenant_id:ids.tenant,owner_id:ids.user,name:$('knowledgeScopeName').value.trim()||ids.user}); $('knowledgeScopes').value=pretty(scopes); }
-function bindKnowledgeActions(sources){
+function appendKnowledgeScope(){ const ids=tenantUserValue('knowledgeScopeTenant','knowledgeScopeUser'); if(!ids.tenant){ toast(t("tenantIDRequired")); return; } if(!ids.user){ toast(t("requiredField")); return; } let scopes; try{scopes=parseJSONField("knowledgeScopes","[]");}catch{return;} scopes.push({tenant_id:ids.tenant,owner_id:ids.user,name:$('knowledgeScopeName').value.trim()||ids.user}); $('knowledgeScopes').value=pretty(scopes); renderKnowledgeScopePreview(scopes,t("configuredKnowledgeScopes")); }
+function appendPublicKnowledgeScope(libraries){ const id=$('knowledgePublicScopeLibrary')?.value||""; const lib=(libraries||[]).find(x=>x.id===id); if(!lib){ toast(t("requiredField")); return; } let scopes; try{scopes=parseJSONField("knowledgeScopes","[]");}catch{return;} scopes.push({tenant_id:lib.tenant_id,owner_id:lib.owner_id,name:lib.name}); $('knowledgeScopes').value=pretty(scopes); renderKnowledgeScopePreview(scopes,t("configuredKnowledgeScopes")); }
+function knowledgeScopeType(scope){ if(String(scope.name||"")==="self") return t("ownKnowledge"); if(String(scope.owner_id||"").startsWith("public:")) return t("publicKnowledgeBases"); return t("sharedKnowledge"); }
+function knowledgeScopeDisplay(scope){ const tenantID=String(scope.tenant_id||""); const ownerID=String(scope.owner_id||""); const tenantLabel=state.knowledgeTenantNames?.[tenantID]||tenantID; const ownerLabel=state.knowledgeUserNames?.[`${tenantID}:${ownerID}`]||state.knowledgeUserNames?.[`:${ownerID}`]||ownerID; return {tenant:displayWithID(tenantLabel,tenantID), owner:displayWithID(ownerLabel,ownerID)}; }
+function renderKnowledgeScopePreview(scopes,title=t("configuredKnowledgeScopes")){ const box=$('knowledgeScopePreview'); if(!box) return; const items=Array.isArray(scopes)?scopes:[]; if(!items.length){ box.innerHTML=`<p class="muted">${esc(title)}: ${esc(t("empty"))}</p>`; return; } box.innerHTML=`<strong>${esc(title)}</strong><div>${items.map(s=>{const d=knowledgeScopeDisplay(s); return `<span class="knowledge-scope-chip"><b>${esc(s.name||knowledgeScopeType(s))}</b><small>${esc(knowledgeScopeType(s))}</small><code>${esc(d.tenant)} / ${esc(d.owner)}</code></span>`;}).join("")}</div>`; }
+function setKnowledgeAccessFields(cfg){ if($('knowledgeEnabled')) $('knowledgeEnabled').checked=!!cfg.enabled; if($('knowledgeScopes')) $('knowledgeScopes').value=pretty(cfg.read_scopes||[]); renderKnowledgeScopePreview(cfg.read_scopes||[],t("configuredKnowledgeScopes")); }
+function showKnowledgeOut(value,open=true){ const out=$('knowledgeOut'); if(out) out.textContent=formatKnowledgeOut(value); const raw=document.querySelector('.raw-details'); if(open&&raw) raw.open=true; }
+function formatKnowledgeOut(value){ if(typeof value==="string") return value; if(!value||typeof value!=="object") return pretty(value); const result=value.result&&typeof value.result==="object"?value.result:value; const lines=[]; if(value.job_id||value.id) lines.push(`${t("importJob")}: ${value.job_id||value.id}`); if(value.status) lines.push(`${t("importStatus")}: ${value.status}`); if(value.source_id) lines.push(`${t("importSource")}: ${value.source_id}`); if(value.title) lines.push(`${t("importTitle")}: ${value.title}`); if(value.kind) lines.push(`${t("importKind")}: ${value.kind}`); if(Number.isFinite(value.file_count)) lines.push(`${t("importFiles")}: ${value.file_count}`); if(Array.isArray(value.filenames)&&value.filenames.length) lines.push(`${t("importFiles")}: ${value.filenames.join(", ")}`); if(Number.isFinite(value.url_count)) lines.push(`${t("importUrls")}: ${value.url_count}`); [["processed_files","importProcessed"],["imported_files","importImported"],["failed_files","importFailed"],["skipped_files","importSkipped"],["duplicate_files","importDuplicates"]].forEach(([key,label])=>{ if(Number.isFinite(result[key])) lines.push(`${t(label)}: ${result[key]}`); }); if(Array.isArray(result.warnings)&&result.warnings.length) lines.push(`${t("importWarnings")}: ${result.warnings.length}`); if(value.error||result.error) lines.push(`${t("failed")}: ${value.error||result.error}`); return lines.length?`${lines.join("\n")}\n\n${pretty(value)}`:pretty(value); }
+async function watchAdminJob(jobID){ if(!jobID) return null; let latest=null; for(let i=0;i<60;i++){ latest=await api(`/api/v1/admin/jobs/${encodeURIComponent(jobID)}`); showKnowledgeOut(latest); if(["succeeded","failed","canceled"].includes(String(latest.status||""))) return latest; await new Promise(resolve=>setTimeout(resolve,1000)); } return latest; }
+function toastKnowledgeJobResult(job){ const status=String(job?.status||"").toLowerCase(); if(status==="succeeded") toast(t("importCompleted")); else if(status==="failed"||status==="canceled") toast(`${t("failed")}: ${job?.error||status}`); else toast(t("importStillRunning")); }
+async function withPublicKnowledgeButton(btn,fn){ if(!btn) return fn(); const text=btn.textContent; btn.disabled=true; btn.textContent="..."; try{return await fn();}catch(e){toast(`${t("failed")}: ${e.message}`);}finally{btn.disabled=false; btn.textContent=text; applyOwnerGuards();} }
+async function updatePublicKnowledgeAccess(library,method,btn){ try{ await withPublicKnowledgeButton(btn,async()=>{ if(!library){ toast(t("requiredField")); return; } const ids=requireKnowledgeIds(); if(!ids) return; const cfg=await api(`/api/v1/admin/knowledge-access/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}/public-libraries/${encodeURIComponent(library.id)}`,{method}); setKnowledgeAccessFields(cfg); showKnowledgeOut(cfg); toast(t('saved')); }); }catch{} }
+function bindPublicKnowledgeActions(libraries){
+  const selectedLibrary=()=>{ const id=$('publicKnowledgeImportTarget')?.value||""; const library=(libraries||[]).find(x=>x.id===id); if(!library) toast(t("requiredField")); return library; };
+  $('createPublicKnowledge').onclick=async()=>{ await withPublicKnowledgeButton($('createPublicKnowledge'),async()=>{ const tenant=$('publicKnowledgeTenant').value.trim(); const name=$('publicKnowledgeName').value.trim(); if(!tenant||!name){ toast(t('requiredField')); return; } showKnowledgeOut(await api('/api/v1/admin/public-knowledge-libraries',{method:'POST',body:JSON.stringify({tenant_id:tenant,name})})); toast(t('saved')); render(); }); };
+  document.querySelectorAll('[data-public-kb-add]').forEach(b=>b.onclick=async()=>updatePublicKnowledgeAccess((libraries||[]).find(x=>x.id===b.dataset.publicKbAdd),'POST',b));
+  document.querySelectorAll('[data-public-kb-remove]').forEach(b=>b.onclick=async()=>updatePublicKnowledgeAccess((libraries||[]).find(x=>x.id===b.dataset.publicKbRemove),'DELETE',b));
+  document.querySelectorAll('[data-public-kb-select]').forEach(b=>b.onclick=async()=>{ await withPublicKnowledgeButton(b,async()=>{ if($('publicKnowledgeImportTarget')) $('publicKnowledgeImportTarget').value=b.dataset.publicKbSelect; showKnowledgeOut(await api(`/api/v1/admin/public-knowledge-libraries/${encodeURIComponent(b.dataset.publicKbSelect)}/sources`)); }); });
+  document.querySelectorAll('[data-public-kb-delete]').forEach(b=>b.onclick=async()=>{ if(!await confirmDanger(t('deletePublicKnowledgeConfirm'))) return; await withPublicKnowledgeButton(b,async()=>{ showKnowledgeOut(await api(`/api/v1/admin/public-knowledge-libraries/${encodeURIComponent(b.dataset.publicKbDelete)}`,{method:'DELETE'})); toast(t('saved')); render(); }); });
+  $('publicKnowledgeImportText').onclick=async()=>{ await withPublicKnowledgeButton($('publicKnowledgeImportText'),async()=>{ const lib=selectedLibrary(); if(!lib) return; const text=$('publicKnowledgeText').value.trim(); if(!text){ toast(t('importTextRequired')); return; } showKnowledgeOut(await api(`/api/v1/admin/public-knowledge-libraries/${encodeURIComponent(lib.id)}/import/text`,{method:'POST',body:JSON.stringify({text,topic_hint:$('publicKnowledgeTopic').value,labels:$('publicKnowledgeLabels').value})})); toast(t('saved')); }); };
+  $('publicKnowledgeImportURLs').onclick=async()=>{ await withPublicKnowledgeButton($('publicKnowledgeImportURLs'),async()=>{ const lib=selectedLibrary(); if(!lib) return; const text=$('publicKnowledgeURLs').value.trim(); if(!text){ toast(t('importURLRequired')); return; } showKnowledgeOut(t('importing')); const out=await api(`/api/v1/admin/public-knowledge-libraries/${encodeURIComponent(lib.id)}/import/urls`,{method:'POST',body:JSON.stringify({text,max_depth:Number($('publicKnowledgeDepth').value||0),same_domain_only:$('publicKnowledgeSameDomain').checked,topic_hint:$('publicKnowledgeTopic').value,labels:$('publicKnowledgeLabels').value})}); showKnowledgeOut(out); toast(t('importStarted')); toastKnowledgeJobResult(await watchAdminJob(out.job_id)); }); };
+  $('publicKnowledgeImportFile').onclick=async()=>{ await withPublicKnowledgeButton($('publicKnowledgeImportFile'),async()=>{ const lib=selectedLibrary(); const files=[...($('publicKnowledgeFile')?.files||[])]; if(!lib||!files.length){ toast(t('requiredField')); return; } const form=new FormData(); files.forEach(file=>form.append('file',file)); form.append('topic_hint',$('publicKnowledgeTopic').value); form.append('labels',$('publicKnowledgeLabels').value); setNetworkBusy(1); try{ showKnowledgeOut(t('importing')); const resp=await fetch(`/api/v1/admin/public-knowledge-libraries/${encodeURIComponent(lib.id)}/import/file`,{method:'POST',headers:headers(false),body:form}); const text=await resp.text(); let out={}; try{out=text?JSON.parse(text):{};}catch{out={raw:text};} if(!resp.ok) throw new Error(out.error||text||resp.statusText); showKnowledgeOut(out); toast(t('importStarted')); toastKnowledgeJobResult(await watchAdminJob(out.job_id)); } finally { setNetworkBusy(-1); } }); };
+}
+function bindKnowledgeActions(sources,publicLibraries){
   const out=()=>$('knowledgeOut');
-  const show=x=>{ if($('knowledgeOut')) $('knowledgeOut').textContent=pretty(x); };
-  const saveOK=x=>{ show(x); const raw=document.querySelector('.raw-details'); if(raw) raw.open=true; toast(t("saved")); };
+  const show=x=>showKnowledgeOut(x,false);
+  const saveOK=x=>{ showKnowledgeOut(x); toast(t("saved")); };
   const run=fn=>async()=>{ try{ await fn(); }catch(e){ toast(`${t("failed")}: ${e.message}`); } };
   $('addKnowledgeScope').onclick=appendKnowledgeScope;
+  $('addPublicKnowledgeScope').onclick=()=>appendPublicKnowledgeScope(publicLibraries);
+  $('knowledgeScopes').oninput=()=>{ try{renderKnowledgeScopePreview(parseJSONField("knowledgeScopes","[]"),t("configuredKnowledgeScopes"));}catch{} };
+  bindPublicKnowledgeActions(publicLibraries);
   $('saveKnowledgeCrossTenant').onclick=run(async()=>saveOK(await api('/api/v1/admin/knowledge-access/cross-tenant',{method:'PUT',body:JSON.stringify({enabled:$('knowledgeCrossTenant').checked})})));
   $('clearTenantKnowledge').onclick=run(async()=>{ const tenant=requireInput('knowledgeClearTenant','tenantIDRequired'); if(!tenant) return; if(await confirmDanger(t("clearKnowledgeConfirm"))) saveOK(await api(`/api/v1/admin/tenants/${encodeURIComponent(tenant)}/knowledge?confirm=true`,{method:'DELETE'})); });
-  $('getKnowledgeAccess').onclick=run(async()=>{ const ids=requireKnowledgeIds(); if(!ids) return; const cfg=await api(`/api/v1/admin/knowledge-access/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}`); $('knowledgeEnabled').checked=!!cfg.enabled; $('knowledgeScopes').value=pretty(cfg.read_scopes||[]); show(cfg); });
+  $('getKnowledgeAccess').onclick=run(async()=>{ const ids=requireKnowledgeIds(); if(!ids) return; const cfg=await api(`/api/v1/admin/knowledge-access/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}`); setKnowledgeAccessFields(cfg); show(cfg); });
   $('saveKnowledgeAccess').onclick=run(async()=>{ const ids=requireKnowledgeIds(); if(!ids) return; let scopes; try{scopes=parseJSONField("knowledgeScopes","[]");}catch{return;} saveOK(await api(`/api/v1/admin/knowledge-access/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}`,{method:'PUT',body:JSON.stringify({enabled:$('knowledgeEnabled').checked,read_scopes:scopes})})); });
-  $('resolveKnowledgeAccess').onclick=run(async()=>{ const ids=requireKnowledgeIds(); if(!ids) return; show(await api(`/api/v1/admin/knowledge-access/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}/resolve`)); });
+  $('resolveKnowledgeAccess').onclick=run(async()=>{ const ids=requireKnowledgeIds(); if(!ids) return; const resolved=await api(`/api/v1/admin/knowledge-access/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}/resolve`); renderKnowledgeScopePreview(resolved.scopes||[],t("effectiveKnowledgeAccess")); show(resolved); });
   $('deleteKnowledgeAccess').onclick=run(async()=>{ const ids=requireKnowledgeIds(); if(!ids) return; if(await confirmDanger(t("deleteKnowledgeAccessConfirm"))) saveOK(await api(`/api/v1/admin/knowledge-access/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}`,{method:'DELETE'})); });
   $('saveSkillGlobal').onclick=run(async()=>saveOK(await api('/api/v1/admin/skill-sources/global',{method:'PUT',body:JSON.stringify(skillSourceBody('skillGlobal',sources))})));
   $('loadSkillTenant').onclick=run(async()=>{ const tenant=requireInput('skillTenant','tenantIDRequired'); if(!tenant) return; const cfg=await api(`/api/v1/admin/skill-sources/tenant/${encodeURIComponent(tenant)}`); applySkillSource('skillTenantCfg',sources,cfg); show(cfg); });

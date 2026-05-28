@@ -18,6 +18,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
@@ -232,6 +233,11 @@ func mcpAdd(args []string) error {
 	}
 
 	if *command != "" {
+		entryArgs := splitMCPArgs(*mcpArgs)
+		cmdText := strings.Join(append([]string{*command}, entryArgs...), " ")
+		if err := enforceMCPClientSecurity(cfg, "bash", map[string]interface{}{"command": cmdText}); err != nil {
+			return err
+		}
 		// 本地 MCP
 		entry := corelib.LocalMCPServerEntry{
 			ID:        fmt.Sprintf("local-%s-%d", *name, time.Now().UnixMilli()),
@@ -239,12 +245,13 @@ func mcpAdd(args []string) error {
 			Command:   *command,
 			CreatedAt: time.Now().Format(time.RFC3339),
 		}
-		if *mcpArgs != "" {
-			entry.Args = strings.Split(*mcpArgs, ",")
-		}
+		entry.Args = entryArgs
 		cfg.LocalMCPServers = append(cfg.LocalMCPServers, entry)
 		fmt.Printf("✓ 本地 MCP 服务器 '%s' 已添加 (command: %s)\n", *name, *command)
 	} else {
+		if err := enforceMCPClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": *endpoint}); err != nil {
+			return err
+		}
 		// 远程 MCP
 		entry := corelib.MCPServerEntry{
 			ID:          fmt.Sprintf("remote-%s-%d", *name, time.Now().UnixMilli()),
@@ -260,6 +267,30 @@ func mcpAdd(args []string) error {
 	}
 
 	return store.SaveConfig(cfg)
+}
+
+func splitMCPArgs(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func enforceMCPClientSecurity(cfg corelib.AppConfig, name string, args map[string]interface{}) error {
+	if ok, reason := clientsecurity.EnforceConfig(cfg, name, args); !ok {
+		if reason == "" {
+			reason = "blocked by Hub security policy"
+		}
+		return fmt.Errorf("%s", reason)
+	}
+	return nil
 }
 
 func mcpRemove(args []string) error {
@@ -335,6 +366,10 @@ func mcpHealthCheck(args []string) error {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, s := range cfg.MCPServers {
+		if err := enforceMCPClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": s.EndpointURL}); err != nil {
+			results = append(results, healthResult{Name: s.Name, Type: "remote", Endpoint: s.EndpointURL, Status: "blocked", Error: err.Error()})
+			continue
+		}
 		start := time.Now()
 		// Send a JSON-RPC tools/list request (POST) per MCP Streamable HTTP spec.
 		reqBody, _ := json.Marshal(map[string]interface{}{
@@ -448,6 +483,10 @@ func mcpTools(args []string) error {
 		if *server != "" && s.Name != *server {
 			continue
 		}
+		if err := enforceMCPClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": s.EndpointURL}); err != nil {
+			tools = append(tools, toolInfo{Server: s.Name, Name: "(blocked)", Desc: err.Error()})
+			continue
+		}
 		reqBody, _ := json.Marshal(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      1,
@@ -501,6 +540,10 @@ func mcpTools(args []string) error {
 			continue
 		}
 		if *server != "" && s.Name != *server {
+			continue
+		}
+		if err := enforceMCPClientSecurity(cfg, "bash", map[string]interface{}{"command": strings.Join(append([]string{s.Command}, s.Args...), " ")}); err != nil {
+			tools = append(tools, toolInfo{Server: s.Name + " (local)", Name: "(blocked)", Desc: err.Error()})
 			continue
 		}
 		discovered, err := discoverLocalMCPTools(s)
@@ -754,10 +797,18 @@ func mcpCallTool(args []string) error {
 		return fmt.Errorf("MCP 服务器 '%s' 不存在或不是远程服务器", *server)
 	}
 
+	if err := enforceMCPClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": serverEntry.EndpointURL}); err != nil {
+		return err
+	}
+
 	// Parse args
 	var parsedArgs map[string]interface{}
 	if err := json.Unmarshal([]byte(*toolArgs), &parsedArgs); err != nil {
 		return fmt.Errorf("解析工具参数失败: %w", err)
+	}
+
+	if err := enforceMCPClientSecurity(cfg, "call_mcp_tool", map[string]interface{}{"tool_name": *tool, "arguments": parsedArgs}); err != nil {
+		return err
 	}
 
 	// Call the tool via JSON-RPC

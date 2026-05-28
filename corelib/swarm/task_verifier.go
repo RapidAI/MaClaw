@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -72,7 +73,7 @@ Agent 输出摘要：
 
 只返回 JSON，不要其他内容。`, taskDesc, criteriaSection, TruncateForPrompt(agentOutput, 3000))
 
-	body, err := v.caller.CallLLM(prompt, 0.1, 30*time.Second)
+	body, err := v.caller.CallLLM(prompt, 0.1, time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 	if err != nil {
 		// LLM 调用失败时默认通过，避免阻塞流程
 		return &TaskVerdict{Pass: true, Score: 50, Reason: "验收 LLM 调用失败，默认通过: " + err.Error()}, nil
@@ -99,7 +100,7 @@ func (v *TaskVerifier) VerifyByTest(workDir, testCmd, testFile string) *TaskVerd
 		cmd = BuildTargetedTestCmd(testCmd, testFile)
 	}
 
-	output, exitCode := RunTestShellCommand(workDir, cmd, 120*time.Second)
+	output, exitCode := RunTestShellCommand(workDir, cmd, time.Duration(corelib.DefaultAgentTimeoutSec)*time.Second)
 
 	if exitCode == 0 {
 		return &TaskVerdict{

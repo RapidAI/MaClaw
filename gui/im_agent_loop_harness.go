@@ -157,7 +157,7 @@ func startAgentLoopHeartbeat(sendProgress func(string)) func() {
 // startRequestLevelHeartbeat covers the entire request processing lifecycle,
 // including pre-loop phases (IUM LLM calls, proactive_recall, system prompt
 // construction) that happen before the agent loop's own heartbeat starts.
-// Interval is 30s — half of the frontend's 120s activity timeout.
+// Interval is 30s, safely below the frontend's configurable activity timeout.
 func startRequestLevelHeartbeat(onProgress func(string)) func() {
 	return startHeartbeatTicker(30*time.Second, onProgress)
 }

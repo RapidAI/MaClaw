@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,7 +12,10 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
 
-const maxSkillPublishJSONBytes = 5 << 20
+const (
+	maxSkillPublishJSONBytes = 5 << 20
+	maxSkillSmallJSONBytes   = 4096
+)
 
 type SkillHandlers struct {
 	store     *skill.SkillStore
@@ -34,6 +36,18 @@ func skillError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func decodeSkillJSON(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	if err := decodeLimitedJSON(w, r, dst, limit); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			skillError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
+		skillError(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	return true
 }
 
 func (h *SkillHandlers) SearchSkills(w http.ResponseWriter, r *http.Request) {
@@ -100,13 +114,7 @@ func (h *SkillHandlers) PopularSkills(w http.ResponseWriter, r *http.Request) {
 
 func (h *SkillHandlers) PublishSkill(w http.ResponseWriter, r *http.Request) {
 	var s skill.HubSkillFull
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSkillPublishJSONBytes)).Decode(&s); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			skillError(w, http.StatusRequestEntityTooLarge, "skill JSON body exceeds 5MB limit")
-			return
-		}
-		skillError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeSkillJSON(w, r, &s, maxSkillPublishJSONBytes) {
 		return
 	}
 	if s.ID == "" || s.Name == "" {
@@ -131,8 +139,7 @@ func (h *SkillHandlers) RateSkill(w http.ResponseWriter, r *http.Request) {
 		MaclawID string `json:"maclaw_id"`
 		Score    int    `json:"score"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		skillError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeSkillJSON(w, r, &req, maxSkillSmallJSONBytes) {
 		return
 	}
 	if req.MaclawID == "" {
@@ -155,8 +162,7 @@ func (h *SkillHandlers) AdminSetVisibility(w http.ResponseWriter, r *http.Reques
 		ID      string `json:"id"`
 		Visible bool   `json:"visible"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		skillError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeSkillJSON(w, r, &req, maxSkillSmallJSONBytes) {
 		return
 	}
 	if req.ID == "" {
@@ -184,8 +190,7 @@ func (h *SkillHandlers) AdminSetTrustLevel(w http.ResponseWriter, r *http.Reques
 		ID         string `json:"id"`
 		TrustLevel string `json:"trust_level"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		skillError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeSkillJSON(w, r, &req, maxSkillSmallJSONBytes) {
 		return
 	}
 	if req.ID == "" {
@@ -225,8 +230,7 @@ func (h *SkillHandlers) AdminImportFromURL(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		URL string `json:"url"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		skillError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeSkillJSON(w, r, &req, maxSkillSmallJSONBytes) {
 		return
 	}
 	if req.URL == "" {

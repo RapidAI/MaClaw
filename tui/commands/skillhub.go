@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -84,6 +87,73 @@ func resolveHubURL() (string, error) {
 }
 
 // resolveMaclawID 从本地配置读取 MachineID 作为 maclaw_id。
+func loadSkillHubCommandConfig() (corelib.AppConfig, error) {
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return corelib.AppConfig{}, fmt.Errorf("鍔犺浇閰嶇疆澶辫触: %w", err)
+	}
+	return cfg, nil
+}
+
+func enforceSkillHubClientSecurity(cfg corelib.AppConfig, tool string, args map[string]interface{}) error {
+	if ok, reason := clientsecurity.EnforceConfig(cfg, tool, args); !ok {
+		return fmt.Errorf("%s", reason)
+	}
+	return nil
+}
+
+func enforceSkillHubSourceAction(cfg corelib.AppConfig, source, action string, extra map[string]interface{}) error {
+	args := map[string]interface{}{"action": action, "source": source}
+	for k, v := range extra {
+		args[k] = v
+	}
+	return enforceSkillHubClientSecurity(cfg, "manage_skill", args)
+}
+
+func enforceSkillHubFetchSecurity(cfg corelib.AppConfig, endpoint string) error {
+	if clientsecurity.IsDeveloperMode(cfg) {
+		return nil
+	}
+	return enforceSkillHubClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": endpoint})
+}
+
+func sourceAllowedBySkillHubPolicy(cfg corelib.AppConfig, source string) bool {
+	if clientsecurity.IsDeveloperMode(cfg) {
+		return true
+	}
+	return skill.IsSourceAllowed(source, cfg.SkillSourcesAllowed)
+}
+
+func recordDeveloperSkillInstallAudit(cfg corelib.AppConfig, source, action string, args map[string]interface{}) {
+	if !clientsecurity.IsDeveloperMode(cfg) {
+		return
+	}
+	auditAction := security.AuditActionHubSkillInstall
+	if strings.EqualFold(action, "update") {
+		auditAction = security.AuditActionHubSkillUpdate
+	}
+	entryArgs := map[string]interface{}{"source": source, "action": action}
+	for k, v := range args {
+		entryArgs[k] = v
+	}
+	al, err := security.NewAuditLog(filepath.Join(ResolveDataDir(), "audit_logs"))
+	if err != nil {
+		return
+	}
+	defer al.Close()
+	_ = al.Log(security.AuditEntry{
+		Timestamp:    time.Now(),
+		Action:       auditAction,
+		ToolName:     "skillhub_" + action,
+		Arguments:    entryArgs,
+		RiskLevel:    security.RiskHigh,
+		PolicyAction: security.PolicyAudit,
+		Source:       source,
+		Result:       "developer mode recorded skill install risk and allowed operation",
+	})
+}
+
 func resolveMaclawID() string {
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, _ := store.LoadConfig()
@@ -103,59 +173,82 @@ func skillhubSearch(args []string) error {
 		return NewUsageError("usage: skillhub search <query> [--page N] [--json]")
 	}
 	query := strings.Join(fs.Args(), " ")
-
-	hubURL, err := resolveHubURL()
+	cfg, err := loadSkillHubCommandConfig()
 	if err != nil {
 		return err
 	}
-
-	endpoint := fmt.Sprintf("%s/api/v1/skills/search?q=%s&page=%d",
-		hubURL, url.QueryEscape(query), *page)
-
+	searchSkillHub := sourceAllowedBySkillHubPolicy(cfg, "skillhub")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("搜索 SkillHub 失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("SkillHub 返回 HTTP %d", resp.StatusCode)
-	}
-
 	var result hubSearchResult
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		return fmt.Errorf("解析搜索结果失败: %w", err)
+	if searchSkillHub {
+		if err := enforceSkillHubSourceAction(cfg, "skillhub", "search", map[string]interface{}{"query": query, "url": cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)}); err != nil {
+			return err
+		}
+
+		hubURL, err := resolveHubURL()
+		if err != nil {
+			return err
+		}
+
+		endpoint := fmt.Sprintf("%s/api/v1/skills/search?q=%s&page=%d",
+			hubURL, url.QueryEscape(query), *page)
+		if err := enforceSkillHubFetchSecurity(cfg, endpoint); err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("搜索 SkillHub 失败: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("SkillHub 返回 HTTP %d", resp.StatusCode)
+		}
+
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+			return fmt.Errorf("解析搜索结果失败: %w", err)
+		}
+
 	}
 
 	if *jsonOut {
 		if len(result.Skills) == 0 {
 			// Fallback 1: ClawHub mirror
-			client := skill.DefaultHubClient()
-			clawResults := client.SearchClawHub(ctx, query)
-			if len(clawResults) > 0 {
-				return PrintJSON(map[string]interface{}{
-					"source":  "clawhub",
-					"results": clawResults,
-				})
+			if sourceAllowedBySkillHubPolicy(cfg, "clawhub") {
+				if err := enforceSkillHubSourceAction(cfg, "clawhub", "search", map[string]interface{}{"query": query, "url": skill.ClawHubMirrorURL}); err != nil {
+					return err
+				}
+				client := skill.DefaultHubClient()
+				clawResults := client.SearchClawHub(ctx, query)
+				if len(clawResults) > 0 {
+					return PrintJSON(map[string]interface{}{
+						"source":  "clawhub",
+						"results": clawResults,
+					})
+				}
 			}
 			// Fallback 2: GitHub
-			gs := skill.NewGitHubSearcher("")
-			candidates, ghErr := gs.SearchGitHub(query)
-			if ghErr == nil && len(candidates) > 0 {
-				return PrintJSON(map[string]interface{}{
-					"source":     "github",
-					"candidates": candidates,
-				})
+			if sourceAllowedBySkillHubPolicy(cfg, "github") {
+				if err := enforceSkillHubSourceAction(cfg, "github", "search", map[string]interface{}{"query": query, "url": "https://github.com"}); err != nil {
+					return err
+				}
+				gs := skill.NewGitHubSearcher("")
+				candidates, ghErr := gs.SearchGitHub(query)
+				if ghErr == nil && len(candidates) > 0 {
+					return PrintJSON(map[string]interface{}{
+						"source":     "github",
+						"candidates": candidates,
+					})
+				}
 			}
 		}
 		return PrintJSON(result)
@@ -163,24 +256,37 @@ func skillhubSearch(args []string) error {
 
 	if len(result.Skills) == 0 {
 		// Fallback 1: ClawHub mirror
-		fmt.Printf("SkillHub 未找到匹配 \"%s\" 的技能，正在搜索 ClawHub...\n", query)
-		client := skill.DefaultHubClient()
-		clawResults := client.SearchClawHub(ctx, query)
-		if len(clawResults) > 0 {
-			fmt.Printf("\n在 ClawHub 上找到 %d 个结果:\n\n", len(clawResults))
-			fmt.Printf("%-24s %-8s %-10s %s\n", "ID", "VERSION", "TRUST", "NAME")
-			fmt.Println(strings.Repeat("-", 70))
-			for _, r := range clawResults {
-				fmt.Printf("%-24s %-8s %-10s %s\n",
-					TruncateDisplay(r.ID, 24),
-					TruncateDisplay(r.Version, 8),
-					TruncateDisplay(r.TrustLevel, 10),
-					TruncateDisplay(r.Name, 30))
+		if sourceAllowedBySkillHubPolicy(cfg, "clawhub") {
+			if err := enforceSkillHubSourceAction(cfg, "clawhub", "search", map[string]interface{}{"query": query, "url": skill.ClawHubMirrorURL}); err != nil {
+				return err
 			}
-			return nil
+			fmt.Printf("SkillHub 未找到匹配 \"%s\" 的技能，正在搜索 ClawHub...\n", query)
+			client := skill.DefaultHubClient()
+			clawResults := client.SearchClawHub(ctx, query)
+			if len(clawResults) > 0 {
+				fmt.Printf("\n在 ClawHub 上找到 %d 个结果:\n\n", len(clawResults))
+				fmt.Printf("%-24s %-8s %-10s %s\n", "ID", "VERSION", "TRUST", "NAME")
+				fmt.Println(strings.Repeat("-", 70))
+				for _, r := range clawResults {
+					fmt.Printf("%-24s %-8s %-10s %s\n",
+						TruncateDisplay(r.ID, 24),
+						TruncateDisplay(r.Version, 8),
+						TruncateDisplay(r.TrustLevel, 10),
+						TruncateDisplay(r.Name, 30))
+				}
+				return nil
+			}
+
 		}
 
 		// Fallback 2: GitHub
+		if !sourceAllowedBySkillHubPolicy(cfg, "github") {
+			fmt.Println("No matching skills found in allowed sources.")
+			return nil
+		}
+		if err := enforceSkillHubSourceAction(cfg, "github", "search", map[string]interface{}{"query": query, "url": "https://github.com"}); err != nil {
+			return err
+		}
 		fmt.Printf("ClawHub 也未找到，正在搜索 GitHub...\n")
 		gs := skill.NewGitHubSearcher("") // unauthenticated
 		candidates, ghErr := gs.SearchGitHub(query)
@@ -227,6 +333,14 @@ func skillhubInstall(args []string) error {
 		return NewUsageError("usage: skillhub install <skill-id>")
 	}
 	skillID := fs.Arg(0)
+	secCfg, err := loadSkillHubCommandConfig()
+	if err != nil {
+		return err
+	}
+	if err := enforceSkillHubSourceAction(secCfg, "skillhub", "install", map[string]interface{}{"skill_id": skillID, "url": secCfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)}); err != nil {
+		return err
+	}
+	recordDeveloperSkillInstallAudit(secCfg, "skillhub", "install", map[string]interface{}{"skill_id": skillID})
 
 	hubURL, err := resolveHubURL()
 	if err != nil {
@@ -234,6 +348,9 @@ func skillhubInstall(args []string) error {
 	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/skills/%s/download", hubURL, url.PathEscape(skillID))
+	if err := enforceSkillHubFetchSecurity(secCfg, endpoint); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -307,6 +424,14 @@ func skillhubInstallGitHub(args []string) error {
 		return NewUsageError("usage: skillhub install-github <github-repo-url>")
 	}
 	repoURL := fs.Arg(0)
+	cfg, err := loadSkillHubCommandConfig()
+	if err != nil {
+		return err
+	}
+	if err := enforceSkillHubSourceAction(cfg, "github", "install", map[string]interface{}{"install_ref": repoURL, "url": repoURL}); err != nil {
+		return err
+	}
+	recordDeveloperSkillInstallAudit(cfg, "github", "install", map[string]interface{}{"install_ref": repoURL})
 
 	gs := skill.NewGitHubSearcher("")
 	imported, err := gs.ImportFromRepoURL(repoURL)
@@ -367,6 +492,13 @@ func skillhubRate(args []string) error {
 		return NewUsageError("usage: skillhub rate <skill-id> --score <1-5>")
 	}
 	skillID := fs.Arg(0)
+	cfg, err := loadSkillHubCommandConfig()
+	if err != nil {
+		return err
+	}
+	if err := enforceSkillHubSourceAction(cfg, "skillhub", "search", map[string]interface{}{"skill_id": skillID, "url": cfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)}); err != nil {
+		return err
+	}
 
 	hubURL, err := resolveHubURL()
 	if err != nil {
@@ -380,6 +512,9 @@ func skillhubRate(args []string) error {
 	})
 
 	endpoint := fmt.Sprintf("%s/api/v1/skills/%s/rate", hubURL, url.PathEscape(skillID))
+	if err := enforceSkillHubFetchSecurity(cfg, endpoint); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -428,6 +563,13 @@ func skillhubCheckUpdates(args []string) error {
 	fs := flag.NewFlagSet("skillhub check-updates", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
 	fs.Parse(args)
+	secCfg, err := loadSkillHubCommandConfig()
+	if err != nil {
+		return err
+	}
+	if err := enforceSkillHubSourceAction(secCfg, "skillhub", "search", map[string]interface{}{"url": secCfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)}); err != nil {
+		return err
+	}
 
 	hubURL, err := resolveHubURL()
 	if err != nil {
@@ -441,12 +583,12 @@ func skillhubCheckUpdates(args []string) error {
 	}
 
 	type updateInfo struct {
-		Name         string `json:"name"`
-		HubSkillID   string `json:"hub_skill_id"`
-		LocalVersion string `json:"local_version"`
+		Name          string `json:"name"`
+		HubSkillID    string `json:"hub_skill_id"`
+		LocalVersion  string `json:"local_version"`
 		LatestVersion string `json:"latest_version,omitempty"`
-		NeedsUpdate  bool   `json:"needs_update"`
-		Error        string `json:"error,omitempty"`
+		NeedsUpdate   bool   `json:"needs_update"`
+		Error         string `json:"error,omitempty"`
 	}
 
 	var results []updateInfo
@@ -457,6 +599,9 @@ func skillhubCheckUpdates(args []string) error {
 			continue
 		}
 		endpoint := fmt.Sprintf("%s/api/v1/skills/%s", hubURL, url.PathEscape(s.HubSkillID))
+		if err := enforceSkillHubFetchSecurity(cfg, endpoint); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
@@ -533,6 +678,14 @@ func skillhubUpdate(args []string) error {
 		return NewUsageError("usage: skillhub update <skill-name|--all>")
 	}
 	target := fs.Arg(0)
+	secCfg, err := loadSkillHubCommandConfig()
+	if err != nil {
+		return err
+	}
+	if err := enforceSkillHubSourceAction(secCfg, "skillhub", "update", map[string]interface{}{"url": secCfg.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)}); err != nil {
+		return err
+	}
+	recordDeveloperSkillInstallAudit(secCfg, "skillhub", "update", map[string]interface{}{"target": target})
 
 	hubURL, err := resolveHubURL()
 	if err != nil {
@@ -559,6 +712,9 @@ func skillhubUpdate(args []string) error {
 		}
 
 		endpoint := fmt.Sprintf("%s/api/v1/skills/%s/download", hubURL, url.PathEscape(s.HubSkillID))
+		if err := enforceSkillHubFetchSecurity(cfg, endpoint); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		req.Header.Set("User-Agent", "MaClaw-TUI/1.0")

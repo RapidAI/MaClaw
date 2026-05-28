@@ -2,15 +2,15 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
+
+const haOpsApplyJSONBodyLimit = 128 << 20
 
 type haSyncReader interface {
 	NodeID() string
@@ -73,7 +73,7 @@ func HAOpsPullHandler(svc haSyncReader) http.HandlerFunc {
 			"node_id":        svc.NodeID(),
 			"ops":            ops,
 			"next_after_seq": nextAfterSeq,
-			"has_more":       len(ops) >= limit,
+			"has_more":       maxSeq > nextAfterSeq,
 			"max_seq":        maxSeq,
 		})
 	}
@@ -92,8 +92,8 @@ func HAOpsApplyHandler(svc haSyncApplier) http.HandlerFunc {
 		var req struct {
 			Ops []*store.HASyncOp `json:"ops"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 128<<20)).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_BODY", "invalid HA ops payload")
+		if err := decodeLimitedJSON(w, r, &req, haOpsApplyJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_BODY", "invalid HA ops payload")
 			return
 		}
 		if len(req.Ops) == 0 {

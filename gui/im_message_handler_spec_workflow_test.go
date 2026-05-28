@@ -47,11 +47,11 @@ func TestSpecWorkflowProperty1_PhaseSequentialOrder(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Property 2: Spec 工作流在 create_session 之前
+// Property 2: Spec 工作流在 CodingSubAgent 之前
 // Validates: Requirements 1.1
-// Three confirmation phases appear before Execution Phase's create_session.
+// Three confirmation phases appear before Execution Phase's CodingSubAgent handoff.
 // ---------------------------------------------------------------------------
-func TestSpecWorkflowProperty2_SpecBeforeCreateSession(t *testing.T) {
+func TestSpecWorkflowProperty2_SpecBeforeCodingSubAgent(t *testing.T) {
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
 
@@ -75,10 +75,10 @@ func TestSpecWorkflowProperty2_SpecBeforeCreateSession(t *testing.T) {
 			}
 		}
 
-		// Verify create_session appears in or after Execution Phase section
-		csIdx := strings.Index(prompt[execIdx:], "create_session")
-		if csIdx < 0 {
-			t.Logf("create_session not found after 第六步")
+		// Verify CodingSubAgent appears in or after Execution Phase section and create_session is absent.
+		csIdx := strings.Index(prompt[execIdx:], "CodingSubAgent")
+		if csIdx < 0 || strings.Contains(prompt, "create_session") {
+			t.Logf("CodingSubAgent not found after execution phase or create_session still present")
 			return false
 		}
 		return true
@@ -421,15 +421,10 @@ func TestSpecWorkflowProperty10_InterPhaseContextPassing(t *testing.T) {
 			return false
 		}
 
-		// All three → Execution Phase via send_and_observe
-		hasExecContext := strings.Contains(prompt, "send_and_observe") && strings.Contains(prompt, "需求和设计上下文")
+		// All three → Execution Phase via internal CodingSubAgent.
+		hasExecContext := strings.Contains(prompt, "CodingSubAgent") && !strings.Contains(prompt, "create_session")
 		if !hasExecContext {
-			// Try alternate: check that execution mentions passing context
-			hasExecContext = strings.Contains(prompt, "send_and_observe") &&
-				(strings.Contains(prompt, "需求") && strings.Contains(prompt, "设计") && strings.Contains(prompt, "上下文"))
-		}
-		if !hasExecContext {
-			t.Logf("missing all-three → execution context via send_and_observe")
+			t.Logf("missing all-three -> execution context via CodingSubAgent")
 			return false
 		}
 

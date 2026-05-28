@@ -23,6 +23,8 @@ func TestPendingBackgroundTaskHintFromStatusIncludesOnlyActiveLoopTasks(t *testi
 		{TaskID: "", Source: runtimeTaskSourceSSH, Status: runtimeTaskStatusRunning, Command: "sleep invalid", StartedAt: loopStart.Add(30 * time.Second)},
 		{TaskID: "bg_old", Source: runtimeTaskSourceSSH, Status: runtimeTaskStatusRunning, Command: "sleep 100", StartedAt: loopStart.Add(-10 * time.Second)},
 		{TaskID: "local_done", Source: runtimeTaskSourceLocal, Status: runtimeTaskStatusCompleted, Command: "echo done", StartedAt: loopStart.Add(10 * time.Second)},
+		{TaskID: "watcher", Source: runtimeTaskSourceSSH, Status: runtimeTaskStatusRunning, Command: "sleep 60 && tail build.log", TaskRole: "poll", StartedAt: loopStart.Add(25 * time.Second)},
+		{TaskID: "local_watcher", Source: runtimeTaskSourceLocal, Status: runtimeTaskStatusRunning, Command: "sleep 60 && tail build.log", TaskRole: "poll", StartedAt: loopStart.Add(25 * time.Second)},
 	}}
 
 	hint := pendingBackgroundTaskHintFromStatus(rs, loopStart)
@@ -32,8 +34,8 @@ func TestPendingBackgroundTaskHintFromStatusIncludesOnlyActiveLoopTasks(t *testi
 	if !strings.Contains(hint, `ssh(action="wait_task"`) {
 		t.Fatalf("active SSH task hint should advertise bounded wait_task path: %q", hint)
 	}
-	if strings.Contains(hint, "bg_old") || strings.Contains(hint, "local_done") || strings.Contains(hint, "sleep invalid") {
-		t.Fatalf("hint should exclude stale/completed tasks: %q", hint)
+	if strings.Contains(hint, "bg_old") || strings.Contains(hint, "local_done") || strings.Contains(hint, "sleep invalid") || strings.Contains(hint, "watcher") || strings.Contains(hint, "local_watcher") {
+		t.Fatalf("hint should exclude stale/completed/non-command tasks: %q", hint)
 	}
 	if strings.Count(hint, "sleep 100") != 1 {
 		t.Fatalf("hint should deduplicate repeated task ids, got: %q", hint)
@@ -47,8 +49,8 @@ func TestPendingBackgroundTaskHintFromStatusIncludesOnlyActiveLoopTasks(t *testi
 	if !hasPendingBackgroundTaskFromStatus(rs, loopStart) {
 		t.Fatal("expected active in-loop task to be detected")
 	}
-	if hasPendingBackgroundTaskFromStatus(RuntimeStatus{Tasks: []RuntimeTaskInfo{rs.Tasks[4], rs.Tasks[5], rs.Tasks[6]}}, loopStart) {
-		t.Fatal("stale/completed tasks should not count as pending")
+	if hasPendingBackgroundTaskFromStatus(RuntimeStatus{Tasks: []RuntimeTaskInfo{rs.Tasks[4], rs.Tasks[5], rs.Tasks[6], rs.Tasks[7], rs.Tasks[8]}}, loopStart) {
+		t.Fatal("stale/completed/non-command tasks should not count as pending")
 	}
 	if got := pendingBackgroundTaskKeyFromStatus(rs, loopStart); got != "local:local_active,ssh:bg_active,ssh:bg_spaced" {
 		t.Fatalf("pending background task key = %q", got)
@@ -127,9 +129,36 @@ func TestSSHToolSchemaAdvertisesWaitTask(t *testing.T) {
 
 func TestWaitSSHBackgroundTaskTrimsTaskID(t *testing.T) {
 	manager := remote.NewSSHBackgroundTaskManager(nil)
-	got := waitSSHBackgroundTask(manager, map[string]interface{}{"task_id": "   "}, "no manager", "missing task")
+	got := waitSSHBackgroundTask(manager, map[string]interface{}{"task_id": "   "}, "no manager", "missing task", nil)
 	if got != "missing task" {
 		t.Fatalf("blank task_id should be rejected before manager lookup, got %q", got)
+	}
+}
+
+func TestRegisterSSHBackgroundLoopIsIdempotent(t *testing.T) {
+	mgr := NewBackgroundLoopManager(nil)
+	h := &IMMessageHandler{bgManager: mgr}
+	session := &remote.SSHManagedSession{ID: "ssh_root@example.com_1"}
+	cfg := remote.SSHHostConfig{Host: "example.com", User: "root", Port: 22, Label: "prod"}
+
+	h.registerSSHBackgroundLoop(session, cfg)
+	h.registerSSHBackgroundLoop(session, cfg)
+
+	loops := mgr.List()
+	if len(loops) != 1 {
+		t.Fatalf("registering the same SSH session should create one loop, got %d", len(loops))
+	}
+	if loops[0].SlotKind != SlotKindSSH || loops[0].SessionID != session.ID {
+		t.Fatalf("unexpected SSH loop: kind=%s session=%q", loops[0].SlotKind, loops[0].SessionID)
+	}
+	if loops[0].LoopState() != LoopStateRunning {
+		t.Fatalf("SSH loop state = %s, want running", loops[0].LoopState())
+	}
+
+	loops[0].SetLoopState(LoopStatePaused)
+	h.registerSSHBackgroundLoop(session, cfg)
+	if got := mgr.List()[0].LoopState(); got != LoopStateRunning {
+		t.Fatalf("existing SSH loop should be refreshed to running, got %s", got)
 	}
 }
 

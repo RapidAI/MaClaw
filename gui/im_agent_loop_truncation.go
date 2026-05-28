@@ -11,6 +11,13 @@ import (
 
 const maxTruncationRetries = 3
 
+const maxEssentialTruncationHints = 1
+
+const (
+	maxAgentLoopInlineWriteFileContentRunes = 3000
+	maxAgentLoopInlineBashCommandRunes      = 4000
+)
+
 type agentLoopTruncationRecoveryResult struct {
 	Conversation []interface{}
 	Tools        []map[string]interface{}
@@ -23,6 +30,18 @@ func logAgentLoopPartialTruncation(choice llm.Choice) {
 	}
 	log.Printf("[agent-loop] partial truncation: %d tool call(s) removed (%s), %d valid call(s) proceeding",
 		len(choice.TruncatedToolNames), strings.Join(choice.TruncatedToolNames, ", "), len(choice.Message.ToolCalls))
+}
+
+func resetAgentLoopTruncationRecoveryAfterToolCalls(phase *agentLoopPhase, choice llm.Choice) {
+	if phase == nil || len(choice.Message.ToolCalls) == 0 || len(choice.TruncatedToolNames) > 0 {
+		return
+	}
+	if phase.TruncationRetries == 0 && phase.EssentialTruncationHints == 0 {
+		return
+	}
+	log.Printf("[agent-loop] reset truncation recovery counters after valid tool call branch (retries=%d essential_hints=%d)", phase.TruncationRetries, phase.EssentialTruncationHints)
+	phase.TruncationRetries = 0
+	phase.EssentialTruncationHints = 0
 }
 
 func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
@@ -39,6 +58,9 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 		return result
 	}
 	result.ContinueLoop = true
+	if allTruncatedToolsBlockSafe(choice.TruncatedToolNames) {
+		return h.handleAgentLoopEssentialTruncatedToolCalls(iteration, choice, phase, conversation, tools, recordSystemMessages)
+	}
 	if phase.TruncationRetries < maxTruncationRetries {
 		phase.TruncationRetries++
 		phase.ConsecutiveNoTool = 0
@@ -73,6 +95,7 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 	if len(newlyBlocked) == 0 {
 		log.Printf("[agent-loop] truncated tool call: no new tools to block (tools=%v, already_blocked=%v, iter=%d)",
 			choice.TruncatedToolNames, phase.TruncationBlockedTools, iteration)
+		result.ContinueLoop = false
 		return result
 	}
 
@@ -98,6 +121,47 @@ func (h *IMMessageHandler) handleAgentLoopTruncatedToolCalls(
 	})
 	recordSystemMessages(systemMessagesStart, conversation)
 	result.Conversation = conversation
+	return result
+}
+
+func allTruncatedToolsBlockSafe(names []string) bool {
+	if len(names) == 0 {
+		return false
+	}
+	for _, name := range names {
+		if !classifyAgentToolKind(name).IsTruncationBlockSafe() {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *IMMessageHandler) handleAgentLoopEssentialTruncatedToolCalls(
+	iteration int,
+	choice llm.Choice,
+	phase *agentLoopPhase,
+	conversation []interface{},
+	tools []map[string]interface{},
+	recordSystemMessages func(int, []interface{}),
+) agentLoopTruncationRecoveryResult {
+	result := agentLoopTruncationRecoveryResult{Conversation: conversation, Tools: tools}
+	if phase.EssentialTruncationHints >= maxEssentialTruncationHints {
+		log.Printf("[agent-loop] essential tool truncation hint already injected; allowing no-tool recovery path (iter=%d)", iteration)
+		return result
+	}
+	phase.EssentialTruncationHints++
+	phase.ConsecutiveNoTool = 0
+	truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
+	log.Printf("[agent-loop] essential tool truncation recovery (hint %d/%d, iter=%d, tools=%s)", phase.EssentialTruncationHints, maxEssentialTruncationHints, iteration, truncatedList)
+	hint := fmt.Sprintf("[system hint] Tool call arguments were truncated for essential tool(s): %s. Keep those tools available, but do not send oversized inline payloads. %s Use write_file chunks or craft_tool for generated file bodies; use bash only for short commands.", truncatedList, agentLoopInlinePayloadLimitInstruction())
+	systemMessagesStart := len(conversation)
+	conversation = append(conversation, map[string]string{
+		"role":    "system",
+		"content": hint,
+	})
+	recordSystemMessages(systemMessagesStart, conversation)
+	result.Conversation = conversation
+	result.ContinueLoop = true
 	return result
 }
 
@@ -178,17 +242,24 @@ func truncationFallbackToolNames(blocked []string) []string {
 }
 
 func buildTruncationRetryHint(truncatedList string, tools []map[string]interface{}) string {
-	alternatives := []string{"Split large file content across smaller writes."}
+	alternatives := []string{agentLoopInlinePayloadLimitInstruction()}
+	if toolListContainsName(tools, "write_file") {
+		alternatives = append(alternatives, "For large file content, use write_file once with mode=overwrite for the first chunk, then mode=append for later chunks.")
+	}
 	if toolListContainsName(tools, "craft_tool") {
 		alternatives = append(alternatives, "craft_tool is available, so you may use it to generate a local script.")
 	}
 	if toolListContainsName(tools, "bash") {
-		alternatives = append(alternatives, "bash is available, so a script/heredoc is also acceptable.")
+		alternatives = append(alternatives, "bash is available only for short commands; do not embed generated file bodies in bash arguments.")
 	}
 	if len(alternatives) == 1 {
 		alternatives = append(alternatives, "Use only tools available in the current tool list.")
 	}
 	return fmt.Sprintf("[system hint] Tool call arguments were incomplete or truncated: %s. %s", truncatedList, strings.Join(alternatives, " "))
+}
+
+func agentLoopInlinePayloadLimitInstruction() string {
+	return fmt.Sprintf("Respect inline payload limits: write_file.content <= %d runes per call and bash.command <= %d runes per call.", maxAgentLoopInlineWriteFileContentRunes, maxAgentLoopInlineBashCommandRunes)
 }
 
 func buildTruncationBlockAlternativeInstructions(blocked []string, availableTools []map[string]interface{}) string {
