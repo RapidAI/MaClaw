@@ -364,6 +364,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		ConsecutiveWriteFileErrors: &opts.RunState.ConsecutiveWriteFileErrors,
 		InFlightLifecycle:          opts.InFlightLifecycle,
 		OnProgress:                 opts.OnProgress,
+		OnToken:                    opts.OnToken,
 		SendToolProgress:           opts.RuntimeState.SendToolProgress,
 		MilestoneTracker:           opts.MilestoneTracker,
 		RecordToolCall:             opts.RecordToolCall,

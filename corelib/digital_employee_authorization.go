@@ -2,7 +2,7 @@ package corelib
 
 import "time"
 
-// DigitalEmployeeAuthorization describes the Hub-level subscription pushed by HubCenter.
+// DigitalEmployeeAuthorization describes a digital employee seat authorization pushed by HubCenter.
 type DigitalEmployeeAuthorization struct {
 	Quota     int    `json:"quota"`
 	Enabled   bool   `json:"enabled"`

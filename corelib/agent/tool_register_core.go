@@ -59,7 +59,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Properties: map[string]interface{}{
 			"command":     map[string]string{"type": "string", "description": "Shell command to execute"},
 			"working_dir": map[string]string{"type": "string", "description": "Working directory (optional)"},
-			"timeout":     map[string]string{"type": "integer", "description": "Timeout seconds, default 240, range 240-600"},
+			"timeout":     map[string]string{"type": "integer", "description": "Timeout seconds, default 600, range 240-600"},
 		},
 		Required: []string{"command"},
 		Handler:  guardedHandler(deps, "bash", func(args map[string]interface{}) string { return ToolBash(args, deps.OnBashProgress) }),
@@ -327,7 +327,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"url":       map[string]string{"type": "string", "description": "URL to fetch"},
 			"render_js": map[string]string{"type": "boolean", "description": "Use Chrome to render JS (optional, default false)"},
 			"save_path": map[string]string{"type": "string", "description": "Save file path (optional, downloads file instead of returning text)"},
-			"timeout":   map[string]string{"type": "integer", "description": "Timeout seconds, default 240, range 240-600"},
+			"timeout":   map[string]string{"type": "integer", "description": "Timeout seconds, default 600, range 240-600"},
 			"offset":    map[string]string{"type": "integer", "description": "Character offset for pagination (default 0)"},
 			"max_chars": map[string]string{"type": "integer", "description": "Max characters to return (optional)"},
 		},

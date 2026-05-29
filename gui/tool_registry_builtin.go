@@ -341,7 +341,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		map[string]interface{}{
 			"command":     map[string]interface{}{"type": "string", "description": "要执行的 shell 命令", "maxLength": maxAgentLoopInlineBashCommandRunes},
 			"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
-			"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+			"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600）"},
 		}, []string{"command"},
 		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolBash(args, onProgress)
@@ -593,7 +593,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"url":       map[string]string{"type": "string", "description": "要抓取的 URL"},
 			"render_js": map[string]string{"type": "boolean", "description": "是否使用 Chrome 渲染 JS（可选，默认 false）"},
 			"save_path": map[string]string{"type": "string", "description": "保存文件路径（可选，指定后下载文件而非返回文本）"},
-			"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+			"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600）"},
 			"offset":    map[string]string{"type": "integer", "description": "从第几个字符开始读取（用于长页面续读，默认 0）"},
 			"max_chars": map[string]string{"type": "integer", "description": "本次最多返回字符数（可选；不传表示返回全部提取内容）"},
 		}, []string{"url"},

@@ -58,6 +58,7 @@ type agentLoopToolPathOptions struct {
 	ConsecutiveWriteFileErrors *int
 	InFlightLifecycle          *imInFlightLifecycle
 	OnProgress                 tool.ProgressCallback
+	OnToken                    llm.TokenCallback
 	SendToolProgress           func(string)
 	MilestoneTracker           *progress.AgentProgressTracker
 	RecordToolCall             func(string, string, string)
@@ -122,6 +123,7 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		ConsecutiveWriteFileErrors: opts.ConsecutiveWriteFileErrors,
 		InFlightLifecycle:          opts.InFlightLifecycle,
 		OnProgress:                 opts.OnProgress,
+		OnToken:                    opts.OnToken,
 		SendToolProgress:           opts.SendToolProgress,
 		MilestoneTracker:           opts.MilestoneTracker,
 		RecordToolCall:             opts.RecordToolCall,
@@ -197,6 +199,7 @@ type agentLoopToolCallsOptions struct {
 	ConsecutiveWriteFileErrors *int
 	InFlightLifecycle          *imInFlightLifecycle
 	OnProgress                 tool.ProgressCallback
+	OnToken                    llm.TokenCallback
 	SendToolProgress           func(string)
 	MilestoneTracker           *progress.AgentProgressTracker
 	RecordToolCall             func(string, string, string)
@@ -246,6 +249,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			Phase:            derefAgentLoopPhase(opts.Phase),
 			Debug:            opts.Debug,
 			OnProgress:       opts.OnProgress,
+			OnToken:          opts.OnToken,
 			SendToolProgress: opts.SendToolProgress,
 			MilestoneTracker: opts.MilestoneTracker,
 			RecordToolCall:   opts.RecordToolCall,

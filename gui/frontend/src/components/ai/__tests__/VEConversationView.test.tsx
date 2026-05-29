@@ -1758,6 +1758,436 @@ describe("VEConversationView", () => {
             expect(screen.getByText("历史回复")).toBeTruthy();
         });
 
+        it("falls back to session messages when saved detail has no top-level messages", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: {
+                    participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }],
+                    messages: [],
+                    Messages: [
+                        { id: "session-m1", from_id: "human-1", from_name: "Me", kind: "statement", content: "session question", created_at: "2026-05-01T00:00:00Z" },
+                        { id: "session-m2", from_id: "ve-1", from_name: "Test VE", kind: "statement", content: "session answer", created_at: "2026-05-01T00:00:01Z" },
+                    ],
+                },
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+            expect(screen.getByText("session question")).toBeTruthy();
+            expect(screen.getByText("session answer")).toBeTruthy();
+        });
+
+        it("restores attachments from saved digital employee history", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
+                messages: [
+                    {
+                        id: "history-file-msg",
+                        from_id: "ve-1",
+                        from_name: "Test VE",
+                        kind: "statement",
+                        content: "Saved file",
+                        created_at: "2026-05-01T00:00:00Z",
+                        file_attachments: [{ filename: "saved-report.pdf", file_url: "/api/ve/files/download/saved-report", size_bytes: 4096 }],
+                    },
+                    {
+                        id: "history-image-msg",
+                        from_id: "ve-1",
+                        from_name: "Test VE",
+                        kind: "statement",
+                        content: "Saved image",
+                        created_at: "2026-05-01T00:00:01Z",
+                        image_attachments: [{ filename: "saved-photo.png", file_url: "/api/ve/files/download/saved-photo", local_path: "D:\\cache\\saved-photo.png" }],
+                    },
+                ],
+            });
+
+            renderConversation({ existingSessionId: "test-session-1" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("Saved file")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-saved-report.pdf")).toBeTruthy();
+            expect(screen.getByText("Saved image")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-saved-photo.png")).toBeTruthy();
+            expect(GroupDiscussionAttachmentPreviewDataURL).toHaveBeenCalledWith("test-session-1", "D:\\cache\\saved-photo.png");
+        });
+
+        it("deduplicates overlapping saved history attachments", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1" },
+                session: { participants: [{ id: "ve-1", role_code: "speak" }] },
+                messages: [
+                    {
+                        id: "history-duplicate-file",
+                        from_id: "ve-1",
+                        from_name: "Test VE",
+                        kind: "statement",
+                        content: "duplicate file",
+                        created_at: "2026-05-01T00:00:00Z",
+                        attachments: [{ type: "file", filename: "duplicate.pdf", fileUrl: "/api/ve/files/download/duplicate", sizeBytes: 1024 }],
+                        file_attachments: [{ filename: "duplicate.pdf", file_url: "/api/ve/files/download/duplicate", local_path: "D:\\cache\\duplicate.pdf", size_bytes: 1024 }],
+                    },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("duplicate file")).toBeTruthy();
+            expect(ref.current?.getState().messages[0]?.attachments).toHaveLength(1);
+            expect(ref.current?.getState().messages[0]?.attachments?.[0]?.localPath).toBe("D:\\cache\\duplicate.pdf");
+        });
+
+        it("treats initiator-role history messages as local even without local relation", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speak" }] },
+                messages: [
+                    { id: "m-local", from_id: "human-1", from_name: "Me", kind: "statement", content: "local question", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "m-assistant", from_id: "ve-1", from_name: "Test VE", kind: "statement", content: "assistant answer", created_at: "2026-05-01T00:00:01Z" },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+            expect(screen.getByText("local question")).toBeTruthy();
+            expect(screen.getByText("assistant answer")).toBeTruthy();
+        });
+
+        it("accepts camelCase fields in saved digital employee history", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1" },
+                session: { participants: [{ id: "human-1", roleCode: "initiator" }, { id: "ve-1", roleCode: "speak" }] },
+                messages: [
+                    { id: "camel-user", fromId: "human-1", fromName: "Me", kind: "statement", content: "camel question", createdAt: "2026-05-01T00:00:00Z" },
+                    {
+                        id: "camel-ve",
+                        fromId: "ve-1",
+                        fromName: "Test VE",
+                        kind: "statement",
+                        content: "camel answer",
+                        createdAt: "2026-05-01T00:00:01Z",
+                        fileAttachments: [{ filename: "camel-report.pdf", fileUrl: "/api/ve/files/download/camel-report", sizeBytes: 2048 }],
+                    },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+            expect(screen.getByText("camel question")).toBeTruthy();
+            expect(screen.getByText("camel answer")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-camel-report.pdf")).toBeTruthy();
+        });
+
+        it("accepts PascalCase fields in saved digital employee history", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1" },
+                session: { participants: [{ ID: "human-1", RoleCode: "initiator" }, { ID: "ve-1", RoleCode: "speak" }] },
+                messages: [
+                    { ID: "pascal-user", FromID: "human-1", FromName: "Me", Kind: "statement", Content: "pascal question", CreatedAt: "2026-05-01T00:00:00Z" },
+                    {
+                        ID: "pascal-ve",
+                        FromID: "ve-1",
+                        FromName: "Test VE",
+                        Kind: "stream_chunk",
+                        Content: "pascal",
+                        CreatedAt: "2026-05-01T00:00:01Z",
+                    },
+                    {
+                        ID: "pascal-end",
+                        FromID: "ve-1",
+                        Kind: "stream_end",
+                        Content: " answer",
+                        Attachments: [{ Filename: "pascal-generic.txt", FileURL: "/api/ve/files/download/pascal-generic", SizeBytes: "512", MimeType: "text/plain" }],
+                        FileAttachments: [{ Filename: "pascal-report.pdf", FileURL: "/api/ve/files/download/pascal-report", SizeBytes: "2048" }],
+                    },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+            expect(screen.getByText("pascal question")).toBeTruthy();
+            expect(screen.getByText("pascal answer")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-pascal-generic.txt")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-pascal-report.pdf")).toBeTruthy();
+            expect(ref.current?.getState().messages[1]?.attachments?.map((attachment) => attachment.sizeBytes)).toEqual([512, 2048]);
+        });
+
+        it("ignores malformed history attachment lists and parses string sizes", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1" },
+                session: { participants: [{ id: "ve-1", role_code: "speak" }] },
+                messages: [
+                    {
+                        id: "history-size-string",
+                        from_id: "ve-1",
+                        from_name: "Test VE",
+                        kind: "statement",
+                        content: "sized attachment",
+                        created_at: "2026-05-01T00:00:00Z",
+                        imageAttachments: { malformed: true },
+                        file_attachments: [{ filename: "string-size.pdf", file_url: "/api/ve/files/download/string-size", size_bytes: "4096" }],
+                    },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("sized attachment")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-string-size.pdf")).toBeTruthy();
+            expect(ref.current?.getState().messages[0]?.attachments?.[0]?.sizeBytes).toBe(4096);
+        });
+
+        it("merges stream_end attachment enrichment while restoring history", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speak" }] },
+                messages: [
+                    {
+                        id: "history-stream-file",
+                        from_id: "ve-1",
+                        from_name: "Test VE",
+                        kind: "stream_chunk",
+                        content: "final file",
+                        created_at: "2026-05-01T00:00:00Z",
+                        file_attachments: [{ filename: "final-report.pdf", file_url: "/api/ve/files/download/final-report", size_bytes: 4096 }],
+                    },
+                    {
+                        id: "history-stream-end",
+                        from_id: "ve-1",
+                        from_name: "Test VE",
+                        kind: "stream_end",
+                        created_at: "2026-05-01T00:00:01Z",
+                        file_attachments: [{ filename: "final-report.pdf", file_url: "/api/ve/files/download/final-report", local_path: "D:\\cache\\final-report.pdf", size_bytes: 4096 }],
+                    },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("final file")).toBeTruthy();
+            expect(screen.getByTestId("ve-att-chip-final-report.pdf")).toBeTruthy();
+            expect(ref.current?.getState().messages).toHaveLength(1);
+            expect(ref.current?.getState().messages[0]?.attachments?.[0]?.localPath).toBe("D:\\cache\\final-report.pdf");
+        });
+
+        it("keeps attachment-only stream_end history messages without prior chunks", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speak" }] },
+                messages: [
+                    {
+                        id: "history-end-only",
+                        from_id: "ve-1",
+                        from_name: "Test VE",
+                        kind: "stream_end",
+                        created_at: "2026-05-01T00:00:00Z",
+                        file_attachments: [{ filename: "end-only.pdf", file_url: "/api/ve/files/download/end-only", local_path: "D:\\cache\\end-only.pdf" }],
+                    },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages).toHaveLength(1);
+            expect(screen.getByTestId("ve-att-chip-end-only.pdf")).toBeTruthy();
+            expect(ref.current?.getState().messages[0]?.attachments?.[0]?.localPath).toBe("D:\\cache\\end-only.pdf");
+        });
+
+        it("merges stream_end content into the active restored stream", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speak" }] },
+                messages: [
+                    { id: "history-stream-start", from_id: "ve-1", from_name: "Test VE", kind: "stream_chunk", content: "Hello", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "history-stream-final", from_id: "ve-1", from_name: "Test VE", kind: "stream_end", content: " world", created_at: "2026-05-01T00:00:01Z" },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages).toHaveLength(1);
+            expect(screen.getByText("Hello world")).toBeTruthy();
+        });
+
+        it("loads saved messages after initiate reuses an existing digital employee session", async () => {
+            const initiate = vi.fn().mockResolvedValue({ session_id: "reused-session-1", ve_id: "ve-1", ve_name: "Test VE" });
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "reused-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
+                messages: [
+                    { id: "m-reused-1", from_id: "human-1", from_name: "Me", kind: "statement", content: "earlier question", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "m-reused-2", from_id: "ve-1", from_name: "Test VE", kind: "statement", content: "earlier answer", created_at: "2026-05-01T00:00:01Z" },
+                ],
+            });
+
+            renderConversation({ initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledWith("ve-1");
+            expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("reused-session-1");
+            expect(screen.getByText("earlier question")).toBeTruthy();
+            expect(screen.getByText("earlier answer")).toBeTruthy();
+        });
+
+        it("does not replace already provided messages with fetched history", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                messages: [
+                    { id: "history-msg", from_id: "ve-1", from_name: "Test VE", kind: "statement", content: "history answer", created_at: "2026-05-01T00:00:00Z" },
+                ],
+            });
+
+            renderConversation({
+                existingSessionId: "test-session-1",
+                initialMessages: [{ id: "current-msg", role: "assistant", content: "current answer", timestamp: 1 }],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(GroupDiscussionGetConsultationDetail).not.toHaveBeenCalled();
+            expect(screen.getByText("current answer")).toBeTruthy();
+            expect(screen.queryByText("history answer")).toBeNull();
+        });
+
         it("clears VE history with an explicit /clear command", async () => {
             const close = vi.fn().mockResolvedValue(undefined);
             const onConversationCleared = vi.fn();

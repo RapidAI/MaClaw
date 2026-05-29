@@ -165,12 +165,14 @@ func (s *CodingSubAgent) SetCallbacks(onToken func(string), onProgress func(stri
 // The conversation is independent — no IM rules, no memory, no 40+ tools.
 func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, prevOutputs []string) *CodingSubAgentResult {
 	if s == nil {
+		log.Printf("[coding-subagent] task start failed: subagent is nil")
 		return &CodingSubAgentResult{
 			Status: TaskExecFailed,
 			Error:  "coding subagent is nil",
 		}
 	}
 	if task == nil {
+		log.Printf("[coding-subagent] task start failed: task is nil (project=%s)", s.projectPath)
 		return &CodingSubAgentResult{
 			Status: TaskExecFailed,
 			Error:  "coding subagent task is nil",
@@ -199,6 +201,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	if result.Error != "" {
 		status = TaskExecFailed
 		errMsg = compactSubAgentErrorSummary(result.Error)
+		log.Printf("[coding-subagent] task T%d agent loop failed: %s", task.Index, errMsg)
 	}
 	if result.HardExit {
 		status = TaskExecFailed

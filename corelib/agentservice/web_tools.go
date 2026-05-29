@@ -57,7 +57,7 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 		Offset:   offset,
 		MaxChars: maxChars,
 		MaxBytes: 2 * 1024 * 1024, // 2MB
-		TimeoutS: intArg(args, "timeout", 30),
+		TimeoutS: corelib.NormalizeAgentTimeoutSec(intArg(args, "timeout", corelib.DefaultAgentTimeoutSec)),
 	}
 
 	result, err := websearch.Fetch(rawURL, opts)

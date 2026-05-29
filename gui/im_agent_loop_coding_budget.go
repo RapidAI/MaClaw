@@ -5,12 +5,12 @@ import (
 	"log"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 const (
 	codingIterBudgetSoft = 50
-	codingIterBudgetHard = 65
 )
 
 type agentLoopCodingBudgetResult struct {
@@ -20,6 +20,7 @@ type agentLoopCodingBudgetResult struct {
 }
 
 func (h *IMMessageHandler) enforceAgentLoopCodingBudget(
+	ctx *LoopContext,
 	userID string,
 	iteration int,
 	currentCount int,
@@ -35,12 +36,13 @@ func (h *IMMessageHandler) enforceAgentLoopCodingBudget(
 	attachPendingVisibleArtifacts func(*IMAgentResponse),
 ) agentLoopCodingBudgetResult {
 	result := agentLoopCodingBudgetResult{Conversation: conversation, Count: nextCodingIterationCount(currentCount, toolCalls)}
-	if result.Count >= codingIterBudgetHard {
-		log.Printf("[coding-budget] hard limit reached: %d consecutive coding iterations, force-returning (iter=%d)", result.Count, iteration)
+	hardLimit := codingIterBudgetHardLimit(ctx)
+	if result.Count >= hardLimit {
+		log.Printf("[coding-budget] hard limit reached: %d consecutive coding iterations, force-returning (iter=%d max=%d)", result.Count, iteration, hardLimit)
 		if phase != nil {
 			phase.Stage = agentStageFinalize
 		}
-		finalResp := &IMAgentResponse{Text: fmt.Sprintf("Coding execution reached the %d-iteration limit. Completed work has been saved. Send 'continue' to keep going.", result.Count)}
+		finalResp := &IMAgentResponse{Text: fmt.Sprintf("Coding execution reached the %d-iteration limit. Completed work has been saved. Send 'continue' to keep going.", hardLimit)}
 		if voiceData != "" {
 			finalResp.VoiceData = voiceData
 			finalResp.VoiceFileName = voiceFileName
@@ -63,6 +65,16 @@ func (h *IMMessageHandler) enforceAgentLoopCodingBudget(
 		result.Conversation = conversation
 	}
 	return result
+}
+
+func codingIterBudgetHardLimit(ctx *LoopContext) int {
+	if ctx != nil {
+		limit := ctx.MaxIterations()
+		if limit > 0 {
+			return config.EffectiveMaxIterations(limit)
+		}
+	}
+	return config.MaxAgentIterationsCap
 }
 
 func nextCodingIterationCount(current int, toolCalls []llm.ToolCall) int {

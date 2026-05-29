@@ -22,13 +22,13 @@ const DefaultContextTokens = 110_000
 //   - http.Client.Timeout: total request timeout (connect + headers + body)
 //   - context.WithTimeout: single operation deadline
 //
-// 240s leaves enough room for slower coding/reasoning models and is the lower
-// bound for user-configurable agent timeouts.
-const DefaultLLMTimeoutSec = 240
+// 600s is the default for slower coding/reasoning models while still keeping a
+// bounded failure path when an upstream request stalls.
+const DefaultLLMTimeoutSec = 600
 
 const (
 	MinAgentTimeoutSec     = 240
-	DefaultAgentTimeoutSec = 240
+	DefaultAgentTimeoutSec = 600
 	MaxAgentTimeoutSec     = 600
 )
 

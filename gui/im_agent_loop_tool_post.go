@@ -53,7 +53,7 @@ func (h *IMMessageHandler) handleAgentLoopPostToolBranch(opts agentLoopPostToolB
 
 	processSkillPreferenceToolExecutions(opts.Phase, opts.ToolCalls, opts.ToolExecResults)
 	h.observeAgentLoopTrialIteration(opts.Context, opts.TrialState, opts.Phase, opts.UserText, opts.ToolCalls, opts.ToolResults, opts.ToolOutcomes)
-	codingBudget := h.enforceAgentLoopCodingBudget(opts.UserID, opts.Iteration, result.CodingIterCount, opts.ToolCalls, result.Conversation, result.History, opts.Phase, opts.PendingArtifacts.VoiceData, opts.PendingArtifacts.VoiceFileName, opts.PendingArtifacts.VoiceMimeType, opts.RecordSystemMessages, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
+	codingBudget := h.enforceAgentLoopCodingBudget(opts.Context, opts.UserID, opts.Iteration, result.CodingIterCount, opts.ToolCalls, result.Conversation, result.History, opts.Phase, opts.PendingArtifacts.VoiceData, opts.PendingArtifacts.VoiceFileName, opts.PendingArtifacts.VoiceMimeType, opts.RecordSystemMessages, opts.AttachLLMTelemetry, opts.AttachVisibleArtifacts)
 	result.CodingIterCount = codingBudget.Count
 	result.Conversation = codingBudget.Conversation
 	if codingBudget.Response != nil {

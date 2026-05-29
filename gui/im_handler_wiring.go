@@ -379,7 +379,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	// Response-header timeout: how long to wait for the FIRST byte from the
 	// LLM API after sending the request. This is NOT the total streaming
 	// duration 鈥?once headers arrive, SSE streaming continues without this
-	// limit. The value follows the configured LLM timeout (default 240s,
+	// limit. The value follows the configured LLM timeout (default 600s,
 	// clamped to 240-600s).
 	//
 	// This is a fixed value rather than reading from LLM config because the

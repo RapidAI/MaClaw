@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -817,30 +818,40 @@ func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) 
 	}
 
 	enabled := true
-	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 0, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeQuotaRequired {
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "", Quota: 3, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeTenantRequired {
+		t.Fatalf("missing tenant error = %v, want ErrDigitalEmployeeTenantRequired", err)
+	}
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 0, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeQuotaRequired {
 		t.Fatalf("zero enabled quota error = %v, want ErrDigitalEmployeeQuotaRequired", err)
 	}
-	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 3, Enabled: &enabled}); err != ErrDigitalEmployeeYearsRequired {
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 3, Enabled: &enabled}); err != ErrDigitalEmployeeYearsRequired {
 		t.Fatalf("missing years enabled error = %v, want ErrDigitalEmployeeYearsRequired", err)
 	}
-	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 3}); err != ErrDigitalEmployeeYearsRequired {
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 3}); err != ErrDigitalEmployeeYearsRequired {
 		t.Fatalf("missing years implicit enabled error = %v, want ErrDigitalEmployeeYearsRequired", err)
 	}
 
-	auth, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 3, Years: 1, Enabled: &enabled})
+	auth, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 3, Years: 1, Enabled: &enabled})
 	if err != nil {
 		t.Fatalf("initial update: %v", err)
 	}
 	if auth == nil || !auth.Active || auth.Quota != 3 || auth.ExpiresAt == "" {
 		t.Fatalf("unexpected active auth: %+v", auth)
 	}
+	storedHub, err := st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil {
+		t.Fatalf("reload hub after tenant auth: %v", err)
+	}
+	if storedHub.DigitalEmployeeQuota != 0 || storedHub.DigitalEmployeeAuthorizationEnabled || storedHub.DigitalEmployeeAuthorizationExpiresAt != nil {
+		t.Fatalf("tenant authorization must not mutate legacy hub-level authorization columns: %+v", storedHub)
+	}
 	firstExpiry := auth.ExpiresAt
 
-	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 2, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeQuotaDecrease {
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 2, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeQuotaDecrease {
 		t.Fatalf("decrease error = %v, want ErrDigitalEmployeeQuotaDecrease", err)
 	}
 
-	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Years: 1, Enabled: &enabled})
+	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Years: 1, Enabled: &enabled})
 	if err != nil {
 		t.Fatalf("renew update without quota should preserve current quota: %v", err)
 	}
@@ -849,7 +860,7 @@ func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) 
 	}
 	extendedExpiry := auth.ExpiresAt
 
-	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 4, Years: 1, Enabled: &enabled, StartDate: now.Format("2006-01-02")})
+	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 4, Years: 1, Enabled: &enabled, StartDate: now.Format("2006-01-02")})
 	if err != nil {
 		t.Fatalf("quota increase with explicit start date should not reduce expiry: %v", err)
 	}
@@ -858,12 +869,104 @@ func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) 
 	}
 
 	disabled := false
-	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Enabled: &disabled})
+	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Enabled: &disabled})
 	if err != nil {
 		t.Fatalf("disable update should preserve existing quota when omitted: %v", err)
 	}
 	if auth.Active || auth.Enabled || auth.Reason != "disabled" || auth.Quota != 4 {
 		t.Fatalf("unexpected disabled auth: %+v", auth)
+	}
+}
+
+func TestTenantDigitalEmployeeAuthorizationsSanitizeTenantKeys(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := &store.HubInstance{ID: "hub_ve_keys", OwnerEmail: "owner@example.com", Name: "Hub VE Keys", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	seed := map[string]*corelib.DigitalEmployeeAuthorization{
+		" tenant_a ": {Quota: 2, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		" tenant_b ": {Quota: 1, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		"tenant_b":   {Quota: 5, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		"":           {Quota: 9, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		"tenant_nil": nil,
+	}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := st.System.Set(ctx, tenantDigitalEmployeeAuthorizationsKey(hub.ID), string(data)); err != nil {
+		t.Fatalf("seed tenant auths: %v", err)
+	}
+
+	auths, err := svc.HubDigitalEmployeeAuthorizations(ctx, hub.ID)
+	if err != nil {
+		t.Fatalf("load authorizations: %v", err)
+	}
+	if _, ok := auths[" tenant_a "]; ok || auths[""] != nil || auths["tenant_nil"] != nil {
+		t.Fatalf("authorizations should drop empty/nil keys and trim tenant ids: %+v", auths)
+	}
+	if auth := auths["tenant_a"]; auth == nil || auth.Quota != 2 || !auth.Active {
+		t.Fatalf("tenant_a auth = %+v, want active quota 2", auth)
+	}
+	if auth := auths["tenant_b"]; auth == nil || auth.Quota != 5 || !auth.Active {
+		t.Fatalf("tenant_b auth = %+v, want exact key quota 5 to win over trimmed duplicate", auth)
+	}
+}
+
+func TestUpdateDigitalEmployeeAuthorizationRequiresSettingsStore(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, nil, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := &store.HubInstance{ID: "hub_ve_no_settings", OwnerEmail: "owner@example.com", Name: "Hub VE No Settings", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	enabled := true
+	_, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 1, Years: 1, Enabled: &enabled})
+	if err != ErrDigitalEmployeeAuthorizationStoreUnavailable {
+		t.Fatalf("update error = %v, want ErrDigitalEmployeeAuthorizationStoreUnavailable", err)
+	}
+}
+
+type failingGetSystemSettingsRepo struct {
+	inner store.SystemSettingsRepository
+	err   error
+}
+
+func (r failingGetSystemSettingsRepo) Set(ctx context.Context, key, valueJSON string) error {
+	return r.inner.Set(ctx, key, valueJSON)
+}
+
+func (r failingGetSystemSettingsRepo) Get(context.Context, string) (string, error) {
+	return "", r.err
+}
+
+func (r failingGetSystemSettingsRepo) List(ctx context.Context) ([]*store.SystemSettingEntry, error) {
+	return r.inner.List(ctx)
+}
+
+func TestUpdateDigitalEmployeeAuthorizationPropagatesSettingsReadError(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	readErr := errors.New("settings read failed")
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, failingGetSystemSettingsRepo{inner: st.System, err: readErr}, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := &store.HubInstance{ID: "hub_ve_settings_read", OwnerEmail: "owner@example.com", Name: "Hub VE Settings Read", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	enabled := true
+	_, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 1, Years: 1, Enabled: &enabled})
+	if !errors.Is(err, readErr) {
+		t.Fatalf("update error = %v, want settings read error", err)
 	}
 }
 

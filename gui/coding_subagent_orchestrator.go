@@ -26,11 +26,12 @@ import (
 // a CodingSubAgent. It returns a structured result that the main agent
 // loop can use to update the orchestrator and report progress.
 type SubAgentTaskRunner struct {
-	handler      *IMMessageHandler
-	cfg          corelib.MaclawLLMConfig
-	httpClient   *http.Client
-	orchestrator *TaskExecutionOrchestrator
-	loopCtx      *LoopContext // propagates cancellation from main agent loop
+	handler       *IMMessageHandler
+	cfg           corelib.MaclawLLMConfig
+	httpClient    *http.Client
+	orchestrator  *TaskExecutionOrchestrator
+	loopCtx       *LoopContext // propagates cancellation from main agent loop
+	codeSessionID string
 }
 
 // NewSubAgentTaskRunner creates a runner bound to the orchestrator.
@@ -42,11 +43,12 @@ func NewSubAgentTaskRunner(
 	loopCtx *LoopContext,
 ) *SubAgentTaskRunner {
 	return &SubAgentTaskRunner{
-		handler:      handler,
-		cfg:          cfg,
-		httpClient:   httpClient,
-		orchestrator: orchestrator,
-		loopCtx:      loopCtx,
+		handler:       handler,
+		cfg:           cfg,
+		httpClient:    httpClient,
+		orchestrator:  orchestrator,
+		loopCtx:       loopCtx,
+		codeSessionID: "subagent-workflow",
 	}
 }
 
@@ -130,7 +132,10 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 	// Update orchestrator based on result.
 	resultSummary := compactSubAgentReportSummary(result.Summary)
 	resultStatus, resultError := normalizeSubAgentResultStatus(result)
-	r.orchestrator.RecordTaskActualArtifactsForRun(task, runID, result.FilesModified, result.FilesCreated)
+	artifactsRecorded := r.orchestrator.RecordTaskActualArtifactsForRun(task, runID, result.FilesModified, result.FilesCreated)
+	if artifactsRecorded && r.handler != nil {
+		emitCodingSubAgentCodeFileEvents(r.handler.app, r.activeCodeSessionID(), r.orchestrator.ProjectPath, result.FilesModified, result.FilesCreated)
+	}
 	switch resultStatus {
 	case TaskExecPassed:
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecPassed, "") {
@@ -178,6 +183,13 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("skipped", task, taskTitle))
 		return fmt.Sprintf("⏭️ T%d: %s — 跳过\n%s", task.Index, taskTitle, resultError), false
 	}
+}
+
+func (r *SubAgentTaskRunner) activeCodeSessionID() string {
+	if r != nil && strings.TrimSpace(r.codeSessionID) != "" {
+		return strings.TrimSpace(r.codeSessionID)
+	}
+	return "subagent-workflow"
 }
 
 func normalizeSubAgentResultStatus(result *CodingSubAgentResult) (TaskExecStatus, string) {

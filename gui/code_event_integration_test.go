@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -196,6 +197,124 @@ func TestEmitCodeFileEvents_FileChangeOpType(t *testing.T) {
 // ---------------------------------------------------------------------------
 // emitCodeFileEvents — extracts file path from SDK summary
 // ---------------------------------------------------------------------------
+
+func TestBuildCodingSubAgentCodeFileEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "src"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	modifiedPath := filepath.Join(tmpDir, "src", "app.ts")
+	createdPath := filepath.Join(tmpDir, "src", "new.go")
+	if err := os.WriteFile(modifiedPath, []byte("export const n = 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(createdPath, []byte("package src\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	events := buildCodingSubAgentCodeFileEvents(
+		"subagent-test",
+		tmpDir,
+		[]string{"src/app.ts", filepath.Join(tmpDir, "src", "new.go")},
+		[]string{"src/new.go"},
+	)
+
+	if len(events) != 2 {
+		t.Fatalf("events len = %d, want 2: %#v", len(events), events)
+	}
+	if events[0].SessionID != "subagent-test" || events[0].FilePath != "src/app.ts" || events[0].FileName != "app.ts" || events[0].OpType != "modify" || events[0].Language != "typescript" {
+		t.Fatalf("modified event = %#v", events[0])
+	}
+	if !events[0].ForceOpen {
+		t.Fatalf("modified event ForceOpen = false, want true")
+	}
+	if events[0].Content != "export const n = 1\n" {
+		t.Fatalf("modified content = %q", events[0].Content)
+	}
+	if events[1].FilePath != "src/new.go" || events[1].FileName != "new.go" || events[1].OpType != "create" || events[1].Language != "go" {
+		t.Fatalf("created event = %#v", events[1])
+	}
+	if events[1].Original != "" {
+		t.Fatalf("created original = %q, want empty", events[1].Original)
+	}
+}
+
+func TestBuildCodingSubAgentCodeFileEventsSkipsMissingAndLargeFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	largePath := filepath.Join(tmpDir, "large.go")
+	if err := os.WriteFile(largePath, make([]byte, maxCodeFileSize+1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	events := buildCodingSubAgentCodeFileEvents("subagent-test", tmpDir, []string{"missing.go", "large.go"}, nil)
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want none", events)
+	}
+}
+
+func TestBuildCodingSubAgentCodeFileEventsSkipsBinaryFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "asset.bin")
+	if err := os.WriteFile(binaryPath, []byte{'p', 'k', 0, 1, 2}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	invalidUTF8Path := filepath.Join(tmpDir, "invalid.txt")
+	if err := os.WriteFile(invalidUTF8Path, []byte{0xff, 0xfe, 0xfd}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	events := buildCodingSubAgentCodeFileEvents("subagent-test", tmpDir, []string{"asset.bin", "invalid.txt"}, nil)
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want none", events)
+	}
+}
+
+func TestBuildCodingSubAgentCodeFileEventsSkipsOutsideProject(t *testing.T) {
+	projectDir := t.TempDir()
+	outsideDir := t.TempDir()
+	insidePath := filepath.Join(projectDir, "inside.go")
+	outsidePath := filepath.Join(outsideDir, "outside.go")
+	if err := os.WriteFile(insidePath, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsidePath, []byte("package outside\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	events := buildCodingSubAgentCodeFileEvents("subagent-test", projectDir, []string{"inside.go", outsidePath}, nil)
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(events), events)
+	}
+	if events[0].FilePath != "inside.go" {
+		t.Fatalf("event path = %q, want inside.go", events[0].FilePath)
+	}
+}
+
+func TestIsCodePreviewTextContentAllowsUTF8Text(t *testing.T) {
+	if !isCodePreviewTextContent([]byte("package main\n// 中文\n")) {
+		t.Fatal("valid UTF-8 source text should be allowed")
+	}
+}
+
+func TestCodingSubAgentCodeSessionID(t *testing.T) {
+	if got := codingSubAgentCodeSessionID(" delegate ", " user-1 "); got != "delegate:user-1" {
+		t.Fatalf("session id = %q, want delegate:user-1", got)
+	}
+	if got := codingSubAgentCodeSessionID("", ""); got != "subagent" {
+		t.Fatalf("empty session id = %q, want subagent", got)
+	}
+}
+
+func TestNewCodingSubAgentCodeSessionIDIsUniquePerRun(t *testing.T) {
+	first := newCodingSubAgentCodeSessionID("delegate", "user-1")
+	second := newCodingSubAgentCodeSessionID("delegate", "user-1")
+	if first == second {
+		t.Fatalf("session ids should be unique per run, both were %q", first)
+	}
+	if !strings.HasPrefix(first, "delegate:user-1:") || !strings.HasPrefix(second, "delegate:user-1:") {
+		t.Fatalf("session ids should keep base prefix, got %q and %q", first, second)
+	}
+}
 
 func TestEmitCodeFileEvents_ExtractsFromSummary(t *testing.T) {
 	tmpDir := t.TempDir()

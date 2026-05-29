@@ -234,11 +234,20 @@ describe('VirtualEmployeeTab', () => {
     // --- Interactions ---
 
     describe('interactions', () => {
-        it('calls onStartConversation on double-click', async () => {
+        it('calls onStartConversation on click', async () => {
             const { onStartConversation } = renderVETab();
             await act(async () => { await vi.runAllTimersAsync(); });
-            fireEvent.doubleClick(screen.getByTestId("ve-item-ve-1"));
+            fireEvent.click(screen.getByTestId("ve-item-ve-1"));
             expect(onStartConversation).toHaveBeenCalledWith(sampleVEs[0]);
+        });
+
+        it('calls onStartConversation from keyboard activation', async () => {
+            const { onStartConversation } = renderVETab();
+            await act(async () => { await vi.runAllTimersAsync(); });
+            fireEvent.keyDown(screen.getByTestId("ve-item-ve-1"), { key: "Enter" });
+            fireEvent.keyDown(screen.getByTestId("ve-item-ve-2"), { key: " " });
+            expect(onStartConversation).toHaveBeenNthCalledWith(1, sampleVEs[0]);
+            expect(onStartConversation).toHaveBeenNthCalledWith(2, sampleVEs[1]);
         });
 
         it('shows context menu on right-click', async () => {

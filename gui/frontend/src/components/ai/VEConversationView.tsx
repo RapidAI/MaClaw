@@ -60,25 +60,63 @@ type QueuedVEMessage = {
     attachmentNames?: string[];
 };
 
+type VEHistoryAttachment = {
+    filename?: string;
+    Filename?: string;
+    mime_type?: string;
+    mimeType?: string;
+    MimeType?: string;
+    file_url?: string;
+    fileUrl?: string;
+    FileURL?: string;
+    local_path?: string;
+    localPath?: string;
+    LocalPath?: string;
+    size_bytes?: number | string;
+    sizeBytes?: number | string;
+    SizeBytes?: number | string;
+};
+
+type VEHistoryMessage = {
+    id?: string;
+    ID?: string;
+    from_id?: string;
+    fromId?: string;
+    FromID?: string;
+    from_name?: string;
+    fromName?: string;
+    FromName?: string;
+    kind?: string;
+    Kind?: string;
+    content?: string;
+    Content?: string;
+    created_at?: string;
+    createdAt?: string;
+    CreatedAt?: string;
+    attachments?: unknown;
+    Attachments?: unknown;
+    text_attachments?: VEHistoryAttachment[];
+    textAttachments?: VEHistoryAttachment[];
+    TextAttachments?: VEHistoryAttachment[];
+    image_attachments?: VEHistoryAttachment[];
+    imageAttachments?: VEHistoryAttachment[];
+    ImageAttachments?: VEHistoryAttachment[];
+    file_attachments?: VEHistoryAttachment[];
+    fileAttachments?: VEHistoryAttachment[];
+    FileAttachments?: VEHistoryAttachment[];
+};
+
 type VEHistoryDetail = {
     discussion?: {
         local_relation?: string;
     };
     session?: {
-        participants?: Array<{ id?: string; role_code?: string }>;
+        participants?: Array<{ id?: string; ID?: string; role_code?: string; roleCode?: string; RoleCode?: string }>;
+        messages?: VEHistoryMessage[];
+        Messages?: VEHistoryMessage[];
     };
-    messages?: Array<{
-        id?: string;
-        from_id?: string;
-        from_name?: string;
-        kind?: string;
-        content?: string;
-        created_at?: string;
-        attachments?: unknown;
-        text_attachments?: Array<{ filename?: string; mime_type?: string; local_path?: string }>;
-        image_attachments?: Array<{ filename?: string; file_url?: string; local_path?: string; mime_type?: string }>;
-        file_attachments?: Array<{ filename?: string; file_url?: string; local_path?: string; mime_type?: string; size_bytes?: number }>;
-    }>;
+    messages?: VEHistoryMessage[];
+    Messages?: VEHistoryMessage[];
 };
 
 export interface VEConversationState {
@@ -148,7 +186,7 @@ export interface VEConversationHandle {
 
 const SESSION_TIMEOUT_MS = 5000;
 const MIN_AGENT_TIMEOUT_SEC = 240;
-const DEFAULT_AGENT_TIMEOUT_SEC = 240;
+const DEFAULT_AGENT_TIMEOUT_SEC = 600;
 const MAX_AGENT_TIMEOUT_SEC = 600;
 const LOCAL_CONFIG_CHANGED_EVENT = "maclaw-config-changed";
 const RECONNECT_DELAYS = [2000, 4000, 8000, 16000, 30000]; // exponential backoff
@@ -1793,22 +1831,22 @@ function normalizeVEMessageAttachments(raw: unknown): VEMessageAttachment[] {
     for (const item of raw) {
         if (!item || typeof item !== "object") continue;
         const rec = item as Record<string, unknown>;
-        const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.name) || "attachment";
-        const mimeType = attachmentStringField(rec.mimeType) || attachmentStringField(rec.mime_type) || undefined;
+        const filename = attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || attachmentStringField(rec.name) || "attachment";
+        const mimeType = attachmentStringField(rec.mimeType) || attachmentStringField(rec.mime_type) || attachmentStringField(rec.MimeType) || undefined;
         const rawType = attachmentStringField(rec.type) || classifyAttachmentType(filename);
         const type = rawType === "image" || (mimeType || "").toLowerCase().startsWith("image/")
             ? "image"
             : rawType === "text"
             ? "text"
             : "file";
-        const sizeRaw = rec.sizeBytes ?? rec.size_bytes;
+        const sizeRaw = rec.sizeBytes ?? rec.size_bytes ?? rec.SizeBytes;
         const sizeBytes = typeof sizeRaw === "number" ? sizeRaw : Number(sizeRaw || 0);
         out.push({
             type,
             filename,
             mimeType,
-            fileUrl: attachmentStringField(rec.fileUrl) || attachmentStringField(rec.file_url) || undefined,
-            localPath: attachmentStringField(rec.localPath) || attachmentStringField(rec.local_path) || undefined,
+            fileUrl: attachmentStringField(rec.fileUrl) || attachmentStringField(rec.file_url) || attachmentStringField(rec.FileURL) || undefined,
+            localPath: attachmentStringField(rec.localPath) || attachmentStringField(rec.local_path) || attachmentStringField(rec.LocalPath) || undefined,
             sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : undefined,
         });
     }
@@ -1816,15 +1854,13 @@ function normalizeVEMessageAttachments(raw: unknown): VEMessageAttachment[] {
 }
 
 function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assistantName: string, userName: string): VEMessage[] {
-    const messages = Array.isArray(detail.messages) ? detail.messages : [];
+    const messages = firstHistoryList(detail.messages, detail.Messages, detail.session?.messages, detail.session?.Messages);
     if (!messages.length) return [];
     const localIds = new Set(["initiator", "me", "user"]);
-    if (String(detail.discussion?.local_relation || "").trim().toLowerCase() === "initiated_by_me") {
-        for (const participant of detail.session?.participants || []) {
-            const id = String(participant.id || "").trim();
-            const role = String(participant.role_code || "").trim().toLowerCase();
-            if (id && role === "initiator") localIds.add(id);
-        }
+    for (const participant of detail.session?.participants || []) {
+        const id = String(participant.id || participant.ID || "").trim();
+        const role = String(participant.role_code || participant.roleCode || participant.RoleCode || "").trim().toLowerCase();
+        if (id && role === "initiator") localIds.add(normalizeParticipantId(id));
     }
 
     const normalizedVEId = normalizeParticipantId(veId);
@@ -1833,16 +1869,26 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
     let streamFromId = "";
 
     messages.forEach((message, index) => {
-        const kind = String(message.kind || "").trim().toLowerCase();
+        const kind = String(message.kind || message.Kind || "").trim().toLowerCase();
+        const fromId = String(message.from_id || message.fromId || message.FromID || "").trim();
+        const attachments = normalizeVEHistoryAttachments(message);
+        const content = String(message.content || message.Content || "");
         if (kind === "stream_end") {
-            streamIndex = -1;
-            streamFromId = "";
-            return;
+            if (streamIndex >= 0 && (!fromId || streamFromId === fromId)) {
+                const existing = out[streamIndex];
+                if (content) existing.content += content;
+                existing.attachments = mergeVEMessageAttachments(existing.attachments || [], attachments);
+                streamIndex = -1;
+                streamFromId = "";
+                return;
+            }
+            if (!content && attachments.length === 0) {
+                streamIndex = -1;
+                streamFromId = "";
+                return;
+            }
         }
 
-        const fromId = String(message.from_id || "").trim();
-        const content = String(message.content || "");
-        const attachments = normalizeVEHistoryAttachments(message);
         if (kind === "stream_chunk" && !content && attachments.length === 0) return;
 
         if (kind === "stream_chunk" && streamIndex >= 0 && streamFromId === fromId) {
@@ -1855,12 +1901,13 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
         const normalizedFromId = normalizeParticipantId(fromId);
         const isLocalUser = localIds.has(normalizedFromId);
         const isAssistant = normalizedFromId === normalizedVEId || (!isLocalUser && normalizedFromId !== "");
-        const fromName = String(message.from_name || "").trim();
+        const fromName = String(message.from_name || message.fromName || message.FromName || "").trim();
+        const createdAt = message.created_at || message.createdAt || message.CreatedAt;
         out.push({
-            id: String(message.id || `history-${index}`),
+            id: String(message.id || message.ID || `history-${index}`),
             role: isAssistant ? "assistant" : "user",
             content,
-            timestamp: message.created_at ? Date.parse(message.created_at) || Date.now() : Date.now(),
+            timestamp: createdAt ? Date.parse(createdAt) || Date.now() : Date.now(),
             fromId,
             fromName: fromName || (isAssistant ? assistantName : userName),
             attachments,
@@ -1878,36 +1925,52 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
     return out;
 }
 
-function normalizeVEHistoryAttachments(message: NonNullable<VEHistoryDetail["messages"]>[number]): VEMessageAttachment[] {
-    const attachments = normalizeVEMessageAttachments(message.attachments);
-    for (const att of message.text_attachments || []) {
+function normalizeVEHistoryAttachments(message: VEHistoryMessage): VEMessageAttachment[] {
+    const attachments = normalizeVEMessageAttachments(message.attachments || message.Attachments);
+    for (const att of [...historyAttachmentList(message.text_attachments), ...historyAttachmentList(message.textAttachments), ...historyAttachmentList(message.TextAttachments)]) {
+        const rec = att as Record<string, unknown>;
         attachments.push({
             type: "text",
-            filename: attachmentStringField(att.filename) || "text",
-            mimeType: attachmentStringField(att.mime_type) || undefined,
-            localPath: attachmentStringField(att.local_path) || undefined,
+            filename: attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "text",
+            mimeType: attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined,
+            localPath: attachmentStringField(rec.local_path) || attachmentStringField(rec.localPath) || attachmentStringField(rec.LocalPath) || undefined,
         });
     }
-    for (const att of message.image_attachments || []) {
+    for (const att of [...historyAttachmentList(message.image_attachments), ...historyAttachmentList(message.imageAttachments), ...historyAttachmentList(message.ImageAttachments)]) {
+        const rec = att as Record<string, unknown>;
         attachments.push({
             type: "image",
-            filename: attachmentStringField(att.filename) || "image",
-            mimeType: attachmentStringField(att.mime_type) || undefined,
-            fileUrl: attachmentStringField(att.file_url) || undefined,
-            localPath: attachmentStringField(att.local_path) || undefined,
+            filename: attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "image",
+            mimeType: attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined,
+            fileUrl: attachmentStringField(rec.file_url) || attachmentStringField(rec.fileUrl) || attachmentStringField(rec.FileURL) || undefined,
+            localPath: attachmentStringField(rec.local_path) || attachmentStringField(rec.localPath) || attachmentStringField(rec.LocalPath) || undefined,
         });
     }
-    for (const att of message.file_attachments || []) {
+    for (const att of [...historyAttachmentList(message.file_attachments), ...historyAttachmentList(message.fileAttachments), ...historyAttachmentList(message.FileAttachments)]) {
+        const rec = att as Record<string, unknown>;
+        const sizeRaw = rec.size_bytes ?? rec.sizeBytes ?? rec.SizeBytes;
+        const sizeBytes = typeof sizeRaw === "number" ? sizeRaw : Number(sizeRaw || 0);
         attachments.push({
             type: "file",
-            filename: attachmentStringField(att.filename) || "file",
-            mimeType: attachmentStringField(att.mime_type) || undefined,
-            fileUrl: attachmentStringField(att.file_url) || undefined,
-            localPath: attachmentStringField(att.local_path) || undefined,
-            sizeBytes: typeof att.size_bytes === "number" && att.size_bytes > 0 ? att.size_bytes : undefined,
+            filename: attachmentStringField(rec.filename) || attachmentStringField(rec.Filename) || "file",
+            mimeType: attachmentStringField(rec.mime_type) || attachmentStringField(rec.mimeType) || attachmentStringField(rec.MimeType) || undefined,
+            fileUrl: attachmentStringField(rec.file_url) || attachmentStringField(rec.fileUrl) || attachmentStringField(rec.FileURL) || undefined,
+            localPath: attachmentStringField(rec.local_path) || attachmentStringField(rec.localPath) || attachmentStringField(rec.LocalPath) || undefined,
+            sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : undefined,
         });
     }
-    return attachments;
+    return mergeVEMessageAttachments([], attachments);
+}
+
+function historyAttachmentList<T>(value: T[] | undefined): T[] {
+    return Array.isArray(value) ? value : [];
+}
+
+function firstHistoryList<T>(...values: Array<T[] | undefined>): T[] {
+    for (const value of values) {
+        if (Array.isArray(value) && value.length > 0) return value;
+    }
+    return [];
 }
 
 function attachmentStringField(value: unknown): string {

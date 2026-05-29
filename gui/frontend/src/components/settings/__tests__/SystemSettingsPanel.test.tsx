@@ -20,8 +20,8 @@ function renderPanel(configPatch: Record<string, unknown> = {}) {
       config={new main.AppConfig({
         remote_heartbeat_sec: 10,
         screen_dim_timeout_min: 3,
-        agent_response_timeout_sec: 240,
-        maclaw_llm_timeout_sec: 240,
+        agent_response_timeout_sec: 600,
+        maclaw_llm_timeout_sec: 600,
         ...configPatch,
       })}
       setConfig={vi.fn()}
@@ -40,14 +40,14 @@ describe("SystemSettingsPanel", () => {
 
     expect(screen.getByDisplayValue("300")).toBeTruthy();
     expect(screen.getByDisplayValue("480")).toBeTruthy();
-    expect(screen.getByTitle("How long the AI assistant may stay silent before the foreground request is marked timed out. Range: 240-600 seconds.")).toBeTruthy();
-    expect(screen.getByTitle("HTTP timeout for MaClaw LLM calls. Range: 240-600 seconds.")).toBeTruthy();
+    expect(screen.getByTitle("How long the AI assistant may stay silent before the foreground request is marked timed out. Default: 600 seconds. Range: 240-600 seconds.")).toBeTruthy();
+    expect(screen.getByTitle("HTTP timeout for MaClaw LLM calls. Default: 600 seconds. Range: 240-600 seconds.")).toBeTruthy();
   });
 
   it("clamps timeout edits to 240-600 seconds", () => {
     const { saveRemoteConfigField } = renderPanel();
-    const agentInput = screen.getByTitle("How long the AI assistant may stay silent before the foreground request is marked timed out. Range: 240-600 seconds.");
-    const llmInput = screen.getByTitle("HTTP timeout for MaClaw LLM calls. Range: 240-600 seconds.");
+    const agentInput = screen.getByTitle("How long the AI assistant may stay silent before the foreground request is marked timed out. Default: 600 seconds. Range: 240-600 seconds.");
+    const llmInput = screen.getByTitle("HTTP timeout for MaClaw LLM calls. Default: 600 seconds. Range: 240-600 seconds.");
 
     fireEvent.change(agentInput, { target: { value: "120" } });
     fireEvent.change(llmInput, { target: { value: "900" } });

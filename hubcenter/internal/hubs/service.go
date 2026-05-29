@@ -36,6 +36,8 @@ var ErrHubNotFound = errors.New("hub not found")
 var ErrDigitalEmployeeQuotaDecrease = errors.New("digital employee quota cannot decrease")
 var ErrDigitalEmployeeQuotaRequired = errors.New("digital employee quota must be greater than zero when enabled")
 var ErrDigitalEmployeeYearsRequired = errors.New("digital employee authorization years must be at least one when enabled")
+var ErrDigitalEmployeeTenantRequired = errors.New("tenant id is required for digital employee authorization")
+var ErrDigitalEmployeeAuthorizationStoreUnavailable = errors.New("digital employee authorization store is unavailable")
 
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const (
@@ -115,6 +117,16 @@ type hubUserCountByTenantLister interface {
 
 type hubUserFirstSeenLister interface {
 	ListUserFirstSeen(ctx context.Context) ([]store.HubUserFirstSeen, error)
+}
+
+type EnterpriseMailDomainItem struct {
+	HubID            string   `json:"hub_id"`
+	HubName          string   `json:"hub_name"`
+	BaseURL          string   `json:"base_url"`
+	TenantID         string   `json:"tenant_id,omitempty"`
+	TenantName       string   `json:"tenant_name,omitempty"`
+	EnterpriseDomain string   `json:"enterprise_domain"`
+	GuestDomains     []string `json:"guest_domains,omitempty"`
 }
 
 type hubUserMigrationSourceLinkLister interface {
@@ -769,6 +781,136 @@ func (s *Service) confirmHubRegistration(ctx context.Context, hub *store.HubInst
 
 func (s *Service) ListHubs(ctx context.Context) ([]*store.HubInstance, error) {
 	return s.hubs.ListAll(ctx)
+}
+
+func (s *Service) ListEnterpriseMailDomains(ctx context.Context) ([]EnterpriseMailDomainItem, error) {
+	hubItems, err := s.hubs.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	routeDomainsByScope := map[string][]string{}
+	if s.routes != nil {
+		routes, err := s.routes.ListAll(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, route := range routes {
+			if route == nil || !route.Enabled {
+				continue
+			}
+			domain := normalizeCorporateEmailDomain(route.Domain)
+			if domain == "" {
+				continue
+			}
+			key := hubTenantScopeKey(route.HubID, route.TenantID)
+			routeDomainsByScope[key] = append(routeDomainsByScope[key], domain)
+		}
+	}
+	linksByScope := map[string]map[string]struct{}{}
+	if s.links != nil {
+		links, err := s.links.ListAll(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			if link == nil || strings.TrimSpace(link.HubID) == "" || strings.TrimSpace(link.Email) == "" {
+				continue
+			}
+			domain := emailDomain(link.Email)
+			if domain == "" || strings.Contains(domain, "*") {
+				continue
+			}
+			key := hubTenantScopeKey(link.HubID, normalizeHubSyncTenantID(link.TenantID))
+			if linksByScope[key] == nil {
+				linksByScope[key] = map[string]struct{}{}
+			}
+			linksByScope[key][domain] = struct{}{}
+		}
+	}
+	out := make([]EnterpriseMailDomainItem, 0)
+	for _, hub := range hubItems {
+		if hub == nil || strings.TrimSpace(hub.ID) == "" {
+			continue
+		}
+		caps := hubCapabilities(hub)
+		globalDomains := append(hubCorporateDomains(hub), routeDomainsByScope[hubTenantScopeKey(hub.ID, "")]...)
+		out = appendEnterpriseMailDomainItems(out, hub, "", "", globalDomains, linksByScope)
+		tenantIDs := map[string]struct{}{}
+		for _, tenantID := range dashboardTenantIDs(caps, nil) {
+			tenantID = strings.TrimSpace(tenantID)
+			if tenantID == "" {
+				continue
+			}
+			tenantIDs[tenantID] = struct{}{}
+		}
+		for key := range routeDomainsByScope {
+			parts := strings.SplitN(key, "|", 2)
+			if len(parts) == 2 && parts[0] == hub.ID && parts[1] != "" {
+				tenantIDs[parts[1]] = struct{}{}
+			}
+		}
+		orderedTenantIDs := make([]string, 0, len(tenantIDs))
+		for tenantID := range tenantIDs {
+			orderedTenantIDs = append(orderedTenantIDs, tenantID)
+		}
+		sort.Strings(orderedTenantIDs)
+		for _, tenantID := range orderedTenantIDs {
+			domains := append(tenantDashboardDomains(caps, tenantID), routeDomainsByScope[hubTenantScopeKey(hub.ID, tenantID)]...)
+			out = appendEnterpriseMailDomainItems(out, hub, tenantID, tenantDashboardName(caps, tenantID), domains, linksByScope)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].HubName != out[j].HubName {
+			return out[i].HubName < out[j].HubName
+		}
+		if out[i].HubID != out[j].HubID {
+			return out[i].HubID < out[j].HubID
+		}
+		if out[i].TenantName != out[j].TenantName {
+			return out[i].TenantName < out[j].TenantName
+		}
+		if out[i].TenantID != out[j].TenantID {
+			return out[i].TenantID < out[j].TenantID
+		}
+		return out[i].EnterpriseDomain < out[j].EnterpriseDomain
+	})
+	return out, nil
+}
+
+func appendEnterpriseMailDomainItems(out []EnterpriseMailDomainItem, hub *store.HubInstance, tenantID, tenantName string, enterpriseDomains []string, linksByScope map[string]map[string]struct{}) []EnterpriseMailDomainItem {
+	enterpriseDomains = normalizeCorporateEmailDomains(enterpriseDomains)
+	if len(enterpriseDomains) == 0 {
+		return out
+	}
+	enterpriseSet := map[string]struct{}{}
+	for _, domain := range enterpriseDomains {
+		enterpriseSet[domain] = struct{}{}
+	}
+	guestDomains := make([]string, 0)
+	for domain := range linksByScope[hubTenantScopeKey(hub.ID, tenantID)] {
+		if _, ok := enterpriseSet[domain]; ok {
+			continue
+		}
+		guestDomains = append(guestDomains, domain)
+	}
+	sort.Strings(guestDomains)
+	for _, domain := range enterpriseDomains {
+		out = append(out, EnterpriseMailDomainItem{HubID: hub.ID, HubName: hub.Name, BaseURL: hub.BaseURL, TenantID: tenantID, TenantName: tenantName, EnterpriseDomain: domain, GuestDomains: guestDomains})
+	}
+	return out
+}
+
+func hubTenantScopeKey(hubID, tenantID string) string {
+	return strings.TrimSpace(hubID) + "|" + normalizeHubSyncTenantID(tenantID)
+}
+
+func emailDomain(email string) string {
+	email = normalizeEmail(email)
+	at := strings.LastIndex(email, "@")
+	if at < 0 || at == len(email)-1 {
+		return ""
+	}
+	return normalizeCorporateEmailDomain(email[at+1:])
 }
 
 func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem, error) {
@@ -1989,17 +2131,6 @@ type DigitalEmployeeAuthorizationUpdate struct {
 	StartDate string // optional ISO date (YYYY-MM-DD); if set, overrides the default base date for expiry calculation
 }
 
-func (s *Service) HubDigitalEmployeeAuthorization(ctx context.Context, hubID string) (*corelib.DigitalEmployeeAuthorization, error) {
-	auths, err := s.HubDigitalEmployeeAuthorizations(ctx, hubID)
-	if err != nil {
-		return nil, err
-	}
-	if auth := auths[""]; auth != nil {
-		return auth, nil
-	}
-	return nil, nil
-}
-
 func (s *Service) HubDigitalEmployeeAuthorizations(ctx context.Context, hubID string) (map[string]*corelib.DigitalEmployeeAuthorization, error) {
 	hub, err := s.hubs.GetByID(ctx, strings.TrimSpace(hubID))
 	if err != nil {
@@ -2009,6 +2140,7 @@ func (s *Service) HubDigitalEmployeeAuthorizations(ctx context.Context, hubID st
 		return nil, ErrHubNotFound
 	}
 	out := map[string]*corelib.DigitalEmployeeAuthorization{}
+	now := time.Now().UTC()
 	// If authorization was never configured on this node (all fields at default),
 	// return nil so the Hub preserves any previously received valid authorization.
 	// This prevents HA replication lag from overwriting a correct quota with zero.
@@ -2020,7 +2152,8 @@ func (s *Service) HubDigitalEmployeeAuthorizations(ctx context.Context, hubID st
 		if hub.DigitalEmployeeAuthorizationExpiresAt != nil {
 			auth.ExpiresAt = hub.DigitalEmployeeAuthorizationExpiresAt.UTC().Format(time.RFC3339)
 		}
-		out[""] = ptrDigitalEmployeeAuthorization(corelib.NormalizeDigitalEmployeeAuthorization(auth, time.Now().UTC()))
+		normalized := corelib.NormalizeDigitalEmployeeAuthorization(auth, now)
+		out[""] = &normalized
 	}
 	tenantAuths, err := s.loadTenantDigitalEmployeeAuthorizations(ctx, hubID)
 	if err != nil {
@@ -2030,7 +2163,7 @@ func (s *Service) HubDigitalEmployeeAuthorizations(ctx context.Context, hubID st
 		if strings.TrimSpace(tenantID) == "" || auth == nil {
 			continue
 		}
-		normalized := corelib.NormalizeDigitalEmployeeAuthorization(*auth, time.Now().UTC())
+		normalized := corelib.NormalizeDigitalEmployeeAuthorization(*auth, now)
 		out[strings.TrimSpace(tenantID)] = &normalized
 	}
 	return out, nil
@@ -2049,65 +2182,12 @@ func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID 
 	if hub == nil {
 		return nil, ErrHubNotFound
 	}
-	if tenantID != "" {
-		return s.updateTenantDigitalEmployeeAuthorization(ctx, hubID, tenantID, req)
+	if tenantID == "" {
+		return nil, ErrDigitalEmployeeTenantRequired
 	}
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-	requestedQuota := req.Quota
-	if requestedQuota == 0 && hub.DigitalEmployeeQuota > 0 {
-		requestedQuota = hub.DigitalEmployeeQuota
-	}
-	if requestedQuota < hub.DigitalEmployeeQuota {
-		return nil, ErrDigitalEmployeeQuotaDecrease
-	}
-	if enabled && requestedQuota <= 0 {
-		return nil, ErrDigitalEmployeeQuotaRequired
-	}
-	years := req.Years
-	if enabled && years < 1 {
-		return nil, ErrDigitalEmployeeYearsRequired
-	}
-	var expiresAt *time.Time
-	if enabled {
-		base := time.Now().UTC()
-		// If a custom start date is provided, use it as the base for expiry calculation.
-		if req.StartDate != "" {
-			parsed, parseErr := time.Parse("2006-01-02", req.StartDate)
-			if parseErr != nil {
-				return nil, fmt.Errorf("invalid start_date format (expected YYYY-MM-DD): %w", parseErr)
-			}
-			base = parsed.UTC()
-		} else if hub.DigitalEmployeeAuthorizationExpiresAt != nil && hub.DigitalEmployeeAuthorizationExpiresAt.After(base) {
-			base = hub.DigitalEmployeeAuthorizationExpiresAt.UTC()
-		}
-		next := base.AddDate(years, 0, 0)
-		if hub.DigitalEmployeeAuthorizationExpiresAt != nil && hub.DigitalEmployeeAuthorizationExpiresAt.After(next) {
-			next = hub.DigitalEmployeeAuthorizationExpiresAt.UTC()
-		}
-		expiresAt = &next
-	} else {
-		expiresAt = hub.DigitalEmployeeAuthorizationExpiresAt
-	}
-	quota := requestedQuota
-	if quota < 0 {
-		quota = 0
-	}
-	if err := s.hubs.UpdateDigitalEmployeeAuthorization(ctx, hubID, quota, enabled, expiresAt, time.Now()); err != nil {
-		return nil, err
-	}
-	// Propagate the change to all HA nodes so that Hub heartbeats hitting
-	// any node will receive the updated quota.
-	if err := s.recordHubByID(ctx, hubID); err != nil {
-		return nil, err
-	}
-	return s.HubDigitalEmployeeAuthorization(ctx, hubID)
-}
-
-func ptrDigitalEmployeeAuthorization(auth corelib.DigitalEmployeeAuthorization) *corelib.DigitalEmployeeAuthorization {
-	return &auth
+	// Legacy Hub-level authorization remains readable for compatibility with older
+	// registrations; new HubCenter grants must be scoped to a tenant.
+	return s.updateTenantDigitalEmployeeAuthorization(ctx, hubID, tenantID, req)
 }
 
 func (s *Service) updateTenantDigitalEmployeeAuthorization(ctx context.Context, hubID, tenantID string, req DigitalEmployeeAuthorizationUpdate) (*corelib.DigitalEmployeeAuthorization, error) {
@@ -2185,24 +2265,46 @@ func (s *Service) loadTenantDigitalEmployeeAuthorizations(ctx context.Context, h
 		return items, nil
 	}
 	raw, err := s.settings.Get(ctx, tenantDigitalEmployeeAuthorizationsKey(hubID))
-	if err != nil || strings.TrimSpace(raw) == "" {
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(raw) == "" {
 		return items, nil
 	}
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return nil, err
 	}
-	return items, nil
+	return sanitizeTenantDigitalEmployeeAuthorizations(items), nil
 }
 
 func (s *Service) saveTenantDigitalEmployeeAuthorizations(ctx context.Context, hubID string, items map[string]*corelib.DigitalEmployeeAuthorization) error {
 	if s.settings == nil {
-		return nil
+		return ErrDigitalEmployeeAuthorizationStoreUnavailable
 	}
+	items = sanitizeTenantDigitalEmployeeAuthorizations(items)
 	data, err := json.Marshal(items)
 	if err != nil {
 		return err
 	}
 	return s.settings.Set(ctx, tenantDigitalEmployeeAuthorizationsKey(hubID), string(data))
+}
+
+func sanitizeTenantDigitalEmployeeAuthorizations(items map[string]*corelib.DigitalEmployeeAuthorization) map[string]*corelib.DigitalEmployeeAuthorization {
+	clean := map[string]*corelib.DigitalEmployeeAuthorization{}
+	exactKeys := map[string]bool{}
+	for rawTenantID, auth := range items {
+		tenantID := strings.TrimSpace(rawTenantID)
+		if tenantID == "" || auth == nil {
+			continue
+		}
+		isExactKey := rawTenantID == tenantID
+		if _, exists := clean[tenantID]; exists && exactKeys[tenantID] && !isExactKey {
+			continue
+		}
+		clean[tenantID] = auth
+		exactKeys[tenantID] = isExactKey
+	}
+	return clean
 }
 
 func tenantDigitalEmployeeAuthorizationsKey(hubID string) string {

@@ -107,6 +107,18 @@ func doJSONRequest(t *testing.T, handler http.Handler, method, target string, bo
 	handler.ServeHTTP(rr, req)
 	return rr
 }
+
+func responseErrorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
+	t.Helper()
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, rr.Body.String())
+	}
+	return payload.Code
+}
+
 func doJSONRequestWithHost(t *testing.T, handler http.Handler, method, target string, body any, token string, requestURL string) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -668,61 +680,144 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	hubID := registered["hub_id"].(string)
 	hubSecret := registered["hub_secret"].(string)
 
-	zeroQuotaResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"quota":   0,
+	policyTenantResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/registration-policy", map[string]any{
+		"tenant": map[string]any{
+			"tenant_id":    "tenant_policy",
+			"tenant_name":  "Policy Tenant",
+			"signup_scope": "invite_only",
+		},
+	}, token)
+	if policyTenantResp.Code != http.StatusOK {
+		t.Fatalf("policy tenant update status=%d body=%s", policyTenantResp.Code, policyTenantResp.Body.String())
+	}
+	policyListResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
+	if policyListResp.Code != http.StatusOK {
+		t.Fatalf("hub list should expose policy-only tenant before authorization, status=%d body=%s", policyListResp.Code, policyListResp.Body.String())
+	}
+	var policyListBody struct {
+		Hubs []struct {
+			Tenants []struct {
+				TenantID   string `json:"tenant_id"`
+				TenantName string `json:"tenant_name"`
+			} `json:"tenants"`
+		} `json:"hubs"`
+	}
+	if err := json.Unmarshal(policyListResp.Body.Bytes(), &policyListBody); err != nil {
+		t.Fatalf("decode policy-only tenant list: %v body=%s", err, policyListResp.Body.String())
+	}
+	foundPolicyTenant := false
+	for _, hub := range policyListBody.Hubs {
+		for _, tenant := range hub.Tenants {
+			if tenant.TenantID == "tenant_policy" && tenant.TenantName == "Policy Tenant" {
+				foundPolicyTenant = true
+			}
+		}
+	}
+	if !foundPolicyTenant {
+		t.Fatalf("hub list should expose policy-only tenant before authorization, decoded=%+v body=%s", policyListBody, policyListResp.Body.String())
+	}
+
+	missingTenantResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"quota":   1,
 		"years":   1,
 		"enabled": true,
 	}, token)
-	if zeroQuotaResp.Code != http.StatusBadRequest || !bytes.Contains(zeroQuotaResp.Body.Bytes(), []byte("DIGITAL_EMPLOYEE_QUOTA_REQUIRED")) {
+	if missingTenantResp.Code != http.StatusBadRequest || responseErrorCode(t, missingTenantResp) != "TENANT_ID_REQUIRED" {
+		t.Fatalf("expected missing tenant rejection, status=%d body=%s", missingTenantResp.Code, missingTenantResp.Body.String())
+	}
+
+	noSettingsHubService := hubs.NewService(svc.store.Hubs, svc.store.HubUserLinks, svc.store.HubDomainRoutes, svc.store.BlockedEmails, svc.store.BlockedIPs, nil, svc.mailer, "http://127.0.0.1:9388")
+	noSettingsHandler := NewRouter(svc.admins, noSettingsHubService, svc.entry, nil, nil, svc.store.FailureLogs, nil, nil, nil, svc.store.System, svc.store.News, nil)
+	storeUnavailableResp := doJSONRequest(t, noSettingsHandler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"tenant_id": "tenant_a",
+		"quota":     1,
+		"years":     1,
+		"enabled":   true,
+	}, token)
+	if storeUnavailableResp.Code != http.StatusServiceUnavailable || responseErrorCode(t, storeUnavailableResp) != "DIGITAL_EMPLOYEE_AUTHORIZATION_STORE_UNAVAILABLE" {
+		t.Fatalf("expected unavailable authorization store rejection, status=%d body=%s", storeUnavailableResp.Code, storeUnavailableResp.Body.String())
+	}
+
+	zeroQuotaResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"tenant_id": "tenant_a",
+		"quota":     0,
+		"years":     1,
+		"enabled":   true,
+	}, token)
+	if zeroQuotaResp.Code != http.StatusBadRequest || responseErrorCode(t, zeroQuotaResp) != "DIGITAL_EMPLOYEE_QUOTA_REQUIRED" {
 		t.Fatalf("expected enabled zero quota rejection, status=%d body=%s", zeroQuotaResp.Code, zeroQuotaResp.Body.String())
 	}
 
 	missingYearsResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"quota": 4,
+		"tenant_id": "tenant_a",
+		"quota":     4,
 	}, token)
-	if missingYearsResp.Code != http.StatusBadRequest || !bytes.Contains(missingYearsResp.Body.Bytes(), []byte("INVALID_YEARS")) {
+	if missingYearsResp.Code != http.StatusBadRequest || responseErrorCode(t, missingYearsResp) != "INVALID_YEARS" {
 		t.Fatalf("expected implicit enabled yearly authorization rejection, status=%d body=%s", missingYearsResp.Code, missingYearsResp.Body.String())
 	}
 
 	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"quota":   4,
-		"years":   1,
-		"enabled": true,
+		"tenant_id": "tenant_a",
+		"quota":     4,
+		"years":     1,
+		"enabled":   true,
 	}, token)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("authorization update status=%d body=%s", resp.Code, resp.Body.String())
 	}
-	if !bytes.Contains(resp.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(resp.Body.Bytes(), []byte("\"active\":true")) {
-		t.Fatalf("expected active quota response, body=%s", resp.Body.String())
+	var updateBody struct {
+		TenantID      string `json:"tenant_id"`
+		Authorization struct {
+			Quota  int  `json:"quota"`
+			Active bool `json:"active"`
+		} `json:"digital_employee_authorization"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &updateBody); err != nil {
+		t.Fatalf("decode authorization update response: %v body=%s", err, resp.Body.String())
+	}
+	if updateBody.TenantID != "tenant_a" || updateBody.Authorization.Quota != 4 || !updateBody.Authorization.Active {
+		t.Fatalf("expected active tenant_a quota response, decoded=%+v body=%s", updateBody, resp.Body.String())
 	}
 
 	decreaseResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"quota":   3,
-		"years":   1,
-		"enabled": true,
+		"tenant_id": "tenant_a",
+		"quota":     3,
+		"years":     1,
+		"enabled":   true,
 	}, token)
-	if decreaseResp.Code != http.StatusBadRequest || !bytes.Contains(decreaseResp.Body.Bytes(), []byte("DIGITAL_EMPLOYEE_QUOTA_DECREASE")) {
+	if decreaseResp.Code != http.StatusBadRequest || responseErrorCode(t, decreaseResp) != "DIGITAL_EMPLOYEE_QUOTA_DECREASE" {
 		t.Fatalf("expected quota decrease rejection, status=%d body=%s", decreaseResp.Code, decreaseResp.Body.String())
 	}
 
 	invalidYearsResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"quota":   4,
-		"years":   0,
-		"enabled": true,
+		"tenant_id": "tenant_a",
+		"quota":     4,
+		"years":     0,
+		"enabled":   true,
 	}, token)
-	if invalidYearsResp.Code != http.StatusBadRequest || !bytes.Contains(invalidYearsResp.Body.Bytes(), []byte("INVALID_YEARS")) {
+	if invalidYearsResp.Code != http.StatusBadRequest || responseErrorCode(t, invalidYearsResp) != "INVALID_YEARS" {
 		t.Fatalf("expected enabled yearly authorization rejection, status=%d body=%s", invalidYearsResp.Code, invalidYearsResp.Body.String())
 	}
 
 	renewResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"years":   1,
-		"enabled": true,
+		"tenant_id": "tenant_a",
+		"years":     1,
+		"enabled":   true,
 	}, token)
 	if renewResp.Code != http.StatusOK {
 		t.Fatalf("authorization renew without quota status=%d body=%s", renewResp.Code, renewResp.Body.String())
 	}
-	if !bytes.Contains(renewResp.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(renewResp.Body.Bytes(), []byte("\"active\":true")) {
-		t.Fatalf("renew without quota should preserve active quota, body=%s", renewResp.Body.String())
+	var renewBody struct {
+		Authorization struct {
+			Quota  int  `json:"quota"`
+			Active bool `json:"active"`
+		} `json:"digital_employee_authorization"`
+	}
+	if err := json.Unmarshal(renewResp.Body.Bytes(), &renewBody); err != nil {
+		t.Fatalf("decode authorization renew response: %v body=%s", err, renewResp.Body.String())
+	}
+	if renewBody.Authorization.Quota != 4 || !renewBody.Authorization.Active {
+		t.Fatalf("renew without quota should preserve active quota, decoded=%+v body=%s", renewBody, renewResp.Body.String())
 	}
 
 	heartbeatResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
@@ -731,12 +826,19 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if heartbeatResp.Code != http.StatusOK {
 		t.Fatalf("heartbeat status=%d body=%s", heartbeatResp.Code, heartbeatResp.Body.String())
 	}
-	if !bytes.Contains(heartbeatResp.Body.Bytes(), []byte("\"digital_employee_authorization\"")) || !bytes.Contains(heartbeatResp.Body.Bytes(), []byte("\"quota\":4")) {
-		t.Fatalf("heartbeat should push digital employee authorization, body=%s", heartbeatResp.Body.String())
+	var heartbeatBody struct {
+		LegacyAuthorization  map[string]any            `json:"digital_employee_authorization"`
+		TenantAuthorizations map[string]map[string]any `json:"digital_employee_authorizations"`
+	}
+	if err := json.Unmarshal(heartbeatResp.Body.Bytes(), &heartbeatBody); err != nil {
+		t.Fatalf("decode heartbeat response: %v body=%s", err, heartbeatResp.Body.String())
+	}
+	if heartbeatBody.LegacyAuthorization != nil || heartbeatBody.TenantAuthorizations["tenant_a"]["quota"] != float64(4) {
+		t.Fatalf("heartbeat should push tenant digital employee authorization only, decoded=%+v body=%s", heartbeatBody, heartbeatResp.Body.String())
 	}
 
 	tenantResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"tenant_id": "tenant_a",
+		"tenant_id": "tenant_b",
 		"quota":     2,
 		"years":     1,
 		"enabled":   true,
@@ -748,8 +850,26 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("list hubs with tenant authorization status=%d body=%s", listResp.Code, listResp.Body.String())
 	}
-	if !bytes.Contains(listResp.Body.Bytes(), []byte("\"tenants\"")) || !bytes.Contains(listResp.Body.Bytes(), []byte("\"tenant_id\":\"tenant_a\"")) || !bytes.Contains(listResp.Body.Bytes(), []byte("\"digital_employee_authorizations\"")) {
-		t.Fatalf("hub list should expose tenant authorization context, body=%s", listResp.Body.String())
+	var listBody struct {
+		Hubs []struct {
+			Tenants                       []map[string]any          `json:"tenants"`
+			DigitalEmployeeAuthorizations map[string]map[string]any `json:"digital_employee_authorizations"`
+		} `json:"hubs"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listBody); err != nil {
+		t.Fatalf("decode hub list response: %v body=%s", err, listResp.Body.String())
+	}
+	if len(listBody.Hubs) != 1 || listBody.Hubs[0].DigitalEmployeeAuthorizations["tenant_b"] == nil || listBody.Hubs[0].DigitalEmployeeAuthorizations[""] != nil {
+		t.Fatalf("hub list should expose tenant auths without legacy empty key, decoded=%+v body=%s", listBody, listResp.Body.String())
+	}
+	foundTenantB := false
+	for _, tenant := range listBody.Hubs[0].Tenants {
+		if tenant["tenant_id"] == "tenant_b" {
+			foundTenantB = true
+		}
+	}
+	if !foundTenantB {
+		t.Fatalf("hub list should expose tenant_b in tenants, decoded=%+v body=%s", listBody, listResp.Body.String())
 	}
 	tenantHeartbeat := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
 		"hub_secret": hubSecret,
@@ -757,18 +877,35 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if tenantHeartbeat.Code != http.StatusOK {
 		t.Fatalf("tenant heartbeat status=%d body=%s", tenantHeartbeat.Code, tenantHeartbeat.Body.String())
 	}
-	if !bytes.Contains(tenantHeartbeat.Body.Bytes(), []byte("\"digital_employee_authorizations\"")) || !bytes.Contains(tenantHeartbeat.Body.Bytes(), []byte("\"tenant_a\"")) || !bytes.Contains(tenantHeartbeat.Body.Bytes(), []byte("\"quota\":2")) {
-		t.Fatalf("heartbeat should push tenant digital employee authorizations, body=%s", tenantHeartbeat.Body.String())
+	var tenantHeartbeatBody struct {
+		TenantAuthorizations map[string]map[string]any `json:"digital_employee_authorizations"`
+	}
+	if err := json.Unmarshal(tenantHeartbeat.Body.Bytes(), &tenantHeartbeatBody); err != nil {
+		t.Fatalf("decode tenant heartbeat response: %v body=%s", err, tenantHeartbeat.Body.String())
+	}
+	if tenantHeartbeatBody.TenantAuthorizations["tenant_a"] == nil || tenantHeartbeatBody.TenantAuthorizations["tenant_b"]["quota"] != float64(2) {
+		t.Fatalf("heartbeat should push tenant digital employee authorizations, decoded=%+v body=%s", tenantHeartbeatBody, tenantHeartbeat.Body.String())
 	}
 
 	disableResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
-		"enabled": false,
+		"tenant_id": "tenant_a",
+		"enabled":   false,
 	}, token)
 	if disableResp.Code != http.StatusOK {
 		t.Fatalf("authorization disable status=%d body=%s", disableResp.Code, disableResp.Body.String())
 	}
-	if !bytes.Contains(disableResp.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(disableResp.Body.Bytes(), []byte("\"active\":false")) || !bytes.Contains(disableResp.Body.Bytes(), []byte("disabled")) {
-		t.Fatalf("disable should preserve quota but mark inactive, body=%s", disableResp.Body.String())
+	var disableBody struct {
+		Authorization struct {
+			Quota  int    `json:"quota"`
+			Active bool   `json:"active"`
+			Reason string `json:"reason"`
+		} `json:"digital_employee_authorization"`
+	}
+	if err := json.Unmarshal(disableResp.Body.Bytes(), &disableBody); err != nil {
+		t.Fatalf("decode disable response: %v body=%s", err, disableResp.Body.String())
+	}
+	if disableBody.Authorization.Quota != 4 || disableBody.Authorization.Active || disableBody.Authorization.Reason != "disabled" {
+		t.Fatalf("disable should preserve quota but mark inactive, decoded=%+v body=%s", disableBody, disableResp.Body.String())
 	}
 
 	disabledHeartbeat := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
@@ -777,8 +914,19 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if disabledHeartbeat.Code != http.StatusOK {
 		t.Fatalf("disabled heartbeat status=%d body=%s", disabledHeartbeat.Code, disabledHeartbeat.Body.String())
 	}
-	if !bytes.Contains(disabledHeartbeat.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(disabledHeartbeat.Body.Bytes(), []byte("\"active\":false")) || !bytes.Contains(disabledHeartbeat.Body.Bytes(), []byte("disabled")) {
-		t.Fatalf("heartbeat should push disabled digital employee authorization, body=%s", disabledHeartbeat.Body.String())
+	var disabledHeartbeatBody struct {
+		TenantAuthorizations map[string]struct {
+			Quota  int    `json:"quota"`
+			Active bool   `json:"active"`
+			Reason string `json:"reason"`
+		} `json:"digital_employee_authorizations"`
+	}
+	if err := json.Unmarshal(disabledHeartbeat.Body.Bytes(), &disabledHeartbeatBody); err != nil {
+		t.Fatalf("decode disabled heartbeat response: %v body=%s", err, disabledHeartbeat.Body.String())
+	}
+	tenantAAuth := disabledHeartbeatBody.TenantAuthorizations["tenant_a"]
+	if tenantAAuth.Quota != 4 || tenantAAuth.Active || tenantAAuth.Reason != "disabled" {
+		t.Fatalf("heartbeat should push disabled digital employee authorization, decoded=%+v body=%s", disabledHeartbeatBody, disabledHeartbeat.Body.String())
 	}
 }
 

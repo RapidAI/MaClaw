@@ -13,9 +13,10 @@ type CodeFileEvent struct {
 	FilePath  string `json:"file_path"`
 	FileName  string `json:"file_name"`
 	Content   string `json:"content"`
-	Original  string `json:"original,omitempty"` // empty for new files
-	OpType    string `json:"op_type"`            // "create" or "modify"
-	Language  string `json:"language"`            // detected from extension
+	Original  string `json:"original,omitempty"`   // empty for new files
+	OpType    string `json:"op_type"`              // "create" or "modify"
+	Language  string `json:"language"`             // detected from extension
+	ForceOpen bool   `json:"force_open,omitempty"` // true when backend should override a manually closed preview
 }
 
 // CodeEventEmitter emits code file events to the frontend via Wails runtime.

@@ -8,7 +8,7 @@ func TestResolveBashTimeoutClampsToAgentRange(t *testing.T) {
 		args map[string]interface{}
 		want int
 	}{
-		{name: "default", args: map[string]interface{}{}, want: 240},
+		{name: "default", args: map[string]interface{}{}, want: 600},
 		{name: "below min", args: map[string]interface{}{"timeout": float64(120)}, want: 240},
 		{name: "valid", args: map[string]interface{}{"timeout": float64(360)}, want: 360},
 		{name: "above max", args: map[string]interface{}{"timeout": float64(900)}, want: 600},

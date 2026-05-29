@@ -46,7 +46,8 @@ type LoopCommandConfig struct {
 	WorkDir string
 
 	// VerifyTimeout is the timeout for each verification command execution.
-	// Default: 240 seconds, clamped to 240-600 seconds.
+	// This is separate from LLM/agent response timeouts. Verification commands
+	// default to 240 seconds and are clamped to 240-600 seconds.
 	VerifyTimeout time.Duration
 
 	// MaxLLMIterationsPerCycle limits how many LLM iterations RunLoop can

@@ -183,7 +183,7 @@ func ParseEnrichmentResponse(resp string) []string {
 var BuiltinBodies = map[string]string{
 	"bash": `Parameters:
 - command (string, required): Shell command to execute
-- timeout (int, optional): Timeout in seconds, default 30
+- timeout (int, optional): Timeout seconds, default 600, range 240-600
 Typical usage: Run shell commands, check system status, install packages`,
 
 	"read_file": `Parameters:
@@ -248,6 +248,7 @@ Typical usage: Search for documentation, find solutions, look up APIs`,
 	"web_fetch": `Parameters:
 - url (string, required): URL to fetch
 - format (string, optional): Output format (text/html/markdown), default text
+- timeout (int, optional): Timeout seconds, default 600, range 240-600
 Typical usage: Fetch webpage content, read documentation, download text resources`,
 
 	"screenshot": `Parameters:

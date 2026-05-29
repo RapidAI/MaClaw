@@ -150,7 +150,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"command":     map[string]interface{}{"type": "string", "description": "要执行的 shell 命令", "maxLength": maxAgentLoopInlineBashCommandRunes},
 				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
-				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120。background 模式下忽略）"},
+				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600。background 模式下忽略）"},
 				"background":  map[string]string{"type": "boolean", "description": "后台执行（可选，默认 false）。设为 true 时命令在后台运行，立即返回 task_id，用 async_wait 查询进度。适用于翻译、编译、下载等长时间任务"},
 			}, []string{"command"}),
 		toolDef("read_file", "读取本机文件内容。支持 offset 参数从指定位置读取（适合监控日志文件的增量内容）",
@@ -324,7 +324,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"url":       map[string]string{"type": "string", "description": "要抓取的 URL（支持 http/https/ftp 协议）"},
 				"render_js": map[string]string{"type": "boolean", "description": "是否使用 Chrome 渲染 JS（可选，默认 false。适用于 SPA 等 JS 渲染页面）"},
 				"save_path": map[string]string{"type": "string", "description": "保存文件路径（可选。指定后将原始内容保存到文件而非返回文本，适用于下载文件）"},
-				"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+				"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600）"},
 				"offset":    map[string]string{"type": "integer", "description": "从第几个字符开始读取（用于长页面续读，默认 0）"},
 				"max_chars": map[string]string{"type": "integer", "description": "本次最多返回字符数（可选；不传表示返回全部提取内容）"},
 			}, []string{"url"}),

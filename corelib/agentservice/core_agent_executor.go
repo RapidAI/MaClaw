@@ -767,7 +767,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"url":       map[string]interface{}{"type": "string", "description": "URL to fetch (http/https)"},
 					"offset":    map[string]interface{}{"type": "integer", "description": "Character offset for continuation reading (from previous next_offset)"},
 					"max_chars": map[string]interface{}{"type": "integer", "description": "Maximum characters to return (default 16384)"},
-					"timeout":   map[string]interface{}{"type": "integer", "description": "Timeout in seconds (default 30)"},
+					"timeout":   map[string]interface{}{"type": "integer", "description": "Timeout seconds, default 600, range 240-600"},
 				},
 				"required": []string{"url"},
 			},

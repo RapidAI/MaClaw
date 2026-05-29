@@ -7,7 +7,7 @@ type SystemTimeoutFieldProps = {
 };
 
 const MIN_SYSTEM_TIMEOUT_SEC = 240;
-const DEFAULT_SYSTEM_TIMEOUT_SEC = 240;
+const DEFAULT_SYSTEM_TIMEOUT_SEC = 600;
 const MAX_SYSTEM_TIMEOUT_SEC = 600;
 
 export const clampSystemTimeoutSec = (value: number) => Math.min(MAX_SYSTEM_TIMEOUT_SEC, Math.max(MIN_SYSTEM_TIMEOUT_SEC, Number.isFinite(value) ? Math.floor(value) : DEFAULT_SYSTEM_TIMEOUT_SEC));

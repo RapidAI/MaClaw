@@ -69,10 +69,15 @@ function applyCodeFileEvent(state: CombinedPanelState, file: CodeFile): Combined
  * At most one of workflow preview or code preview is active.
  */
 function checkMutualExclusion(state: CombinedPanelState): boolean {
-    const workflowVisible = state.workflowActive;
+    const workflowVisible = state.workflowActive && !state.codePreview.active;
     const codeVisible = !workflowVisible && state.codePreview.active;
-    // Both cannot be true simultaneously
-    return !(workflowVisible && state.codePreview.active);
+    return !(workflowVisible && codeVisible);
+}
+
+function renderedPanel(state: CombinedPanelState): 'workflow' | 'code' | 'none' {
+    if (state.workflowActive && !state.codePreview.active) return 'workflow';
+    if (state.codePreview.active) return 'code';
+    return 'none';
 }
 
 // ── Event type for the state machine ──
@@ -138,15 +143,10 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
                         // Invariant: mutual exclusion holds after every event
                         expect(checkMutualExclusion(state)).toBe(true);
 
-                        // Stronger check: if workflow is active, code preview
-                        // must not be rendering (even if codePreview.active is
-                        // true in state, the parent won't render it)
+                        // Stronger check: the parent-level render decision
+                        // never displays both panels at once.
                         if (state.workflowActive) {
-                            // Code preview should have been deactivated by
-                            // workflow:doc_update, or suppressed by
-                            // workflowActive flag in applyFileUpdate
-                            const codeWouldRender = !state.workflowActive && state.codePreview.active;
-                            expect(codeWouldRender).toBe(false);
+                            expect(['workflow', 'code']).toContain(renderedPanel(state));
                         }
                     }
                 },
@@ -184,14 +184,34 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
         );
     });
 
+    it('force-open code update takes display priority over workflow preview', () => {
+        fc.assert(
+            fc.property(
+                arbCodeFile,
+                (rawFile) => {
+                    let state = applyWorkflowEvent(initialCombinedState());
+                    const file = { ...rawFile, forceOpen: true };
+
+                    state = applyCodeFileEvent(state, file);
+
+                    expect(state.workflowActive).toBe(true);
+                    expect(state.codePreview.active).toBe(true);
+                    expect(renderedPanel(state)).toBe('code');
+                    expect(checkMutualExclusion(state)).toBe(true);
+                },
+            ),
+            { numRuns: 100 },
+        );
+    });
+
     /**
-     * Additional property: code:file_update while workflow active does NOT
-     * open code preview.
+     * Additional property: regular code:file_update while workflow active does
+     * NOT open code preview.
      *
      * For any state where workflow preview is active, code:file_update events
-     * SHALL NOT activate the code preview panel.
+     * SHALL NOT activate the code preview panel unless forceOpen is true.
      */
-    it('code:file_update suppressed while workflow active', () => {
+    it('regular code:file_update suppressed while workflow active', () => {
         fc.assert(
             fc.property(
                 fc.array(arbCodeFile, { minLength: 1, maxLength: 10 }),
@@ -202,9 +222,9 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
                     state = applyWorkflowEvent(state);
                     expect(state.workflowActive).toBe(true);
 
-                    // Code file events should NOT open code preview
+                    // Regular code file events should NOT open code preview
                     for (const file of files) {
-                        state = applyCodeFileEvent(state, file);
+                        state = applyCodeFileEvent(state, { ...file, forceOpen: false });
                         expect(state.codePreview.active).toBe(false);
                     }
 

@@ -19,6 +19,7 @@ import {
     applyReopenPanel,
     applySelectFile,
     applySessionStart,
+    applySessionEnd,
     applyResetSession,
     type CodeFile,
     type CodePreviewUIState,
@@ -141,6 +142,25 @@ describe('useCodePreviewState — Property Tests', () => {
         );
     });
 
+    it('forceOpen reopens after user close and while workflow preview is active', () => {
+        let state = applyFileUpdate(initialState(), {
+            filePath: '/src/a.ts', fileName: 'a.ts', content: 'hello',
+            opType: 'modify', language: 'typescript', updatedAt: 1,
+        });
+        state = applyClosePanel(state);
+        expect(state.active).toBe(false);
+        expect(state.userClosed).toBe(true);
+
+        state = applyFileUpdate(state, {
+            filePath: '/src/b.ts', fileName: 'b.ts', content: 'world',
+            opType: 'modify', language: 'typescript', updatedAt: 2, forceOpen: true,
+        }, true);
+
+        expect(state.active).toBe(true);
+        expect(state.userClosed).toBe(false);
+        expect(state.activeFilePath).toBe('/src/b.ts');
+    });
+
     /**
      * **Validates: Requirements 2.1, 2.4**
      *
@@ -240,10 +260,49 @@ describe('useCodePreviewState — Property Tests', () => {
         expect(state.userClosed).toBe(true);
 
         state = applySessionStart(state);
+        expect(state.active).toBe(false);
         expect(state.files.size).toBe(0);
         expect(state.activeFilePath).toBe('');
+        expect(state.sessionID).toBe('');
         expect(state.sessionActive).toBe(true);
         expect(state.userClosed).toBe(false);
+    });
+
+    it('session scoped events ignore stale file updates and stale session_end', () => {
+        let state = applySessionStart(initialState(), 'session-a');
+        state = applyFileUpdate(state, {
+            sessionID: 'session-a', filePath: '/src/a.ts', fileName: 'a.ts', content: 'a',
+            opType: 'modify', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        expect(state.files.size).toBe(1);
+        expect(state.activeFilePath).toBe('/src/a.ts');
+
+        const afterStaleFile = applyFileUpdate(state, {
+            sessionID: 'session-b', filePath: '/src/b.ts', fileName: 'b.ts', content: 'b',
+            opType: 'modify', language: 'typescript', updatedAt: 2, forceOpen: true,
+        });
+        expect(afterStaleFile).toBe(state);
+        expect(afterStaleFile.files.has('/src/b.ts')).toBe(false);
+
+        const afterUnscopedFile = applyFileUpdate(state, {
+            filePath: '/src/unscoped.ts', fileName: 'unscoped.ts', content: 'u',
+            opType: 'modify', language: 'typescript', updatedAt: 3, forceOpen: true,
+        });
+        expect(afterUnscopedFile).toBe(state);
+        expect(afterUnscopedFile.files.has('/src/unscoped.ts')).toBe(false);
+
+        const afterStaleEnd = applySessionEnd(state, 'session-b');
+        expect(afterStaleEnd.sessionActive).toBe(true);
+
+        const afterUnscopedEnd = applySessionEnd(state);
+        expect(afterUnscopedEnd.sessionActive).toBe(true);
+
+        const afterUnscopedStart = applySessionStart(state);
+        expect(afterUnscopedStart).toBe(state);
+        expect(afterUnscopedStart.files.size).toBe(1);
+
+        const afterMatchingEnd = applySessionEnd(state, 'session-a');
+        expect(afterMatchingEnd.sessionActive).toBe(false);
     });
 
     it('resetSession clears all state', () => {

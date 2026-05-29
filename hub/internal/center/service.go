@@ -982,9 +982,14 @@ func registrationDigitalEmployeeAuthorizationsForStatus(record registrationRecor
 
 func recordDigitalEmployeeAuthorizationForTenant(record registrationRecord, tenantID string) *corelib.DigitalEmployeeAuthorization {
 	tenantID = strings.TrimSpace(tenantID)
-	if tenantID != "" && tenantID != store.DefaultTenantID && record.DigitalEmployeeAuthorizations != nil {
-		if auth := record.DigitalEmployeeAuthorizations[tenantID]; auth != nil {
-			return auth
+	if tenantID != "" {
+		if record.DigitalEmployeeAuthorizations != nil {
+			if auth := record.DigitalEmployeeAuthorizations[tenantID]; auth != nil {
+				return auth
+			}
+		}
+		if tenantID != store.DefaultTenantID {
+			return nil
 		}
 	}
 	return record.DigitalEmployeeAuthorization

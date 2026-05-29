@@ -76,17 +76,26 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 			if item == nil {
 				continue
 			}
+			policy := policyByHub[item.ID]
 			auths, err := service.HubDigitalEmployeeAuthorizations(r.Context(), item.ID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "LIST_HUBS_FAILED", err.Error())
 				return
+			}
+			tenantAuths := map[string]*corelib.DigitalEmployeeAuthorization{}
+			for tenantID, auth := range auths {
+				tenantID = strings.TrimSpace(tenantID)
+				if tenantID == "" || auth == nil {
+					continue
+				}
+				tenantAuths[tenantID] = auth
 			}
 			tenantItems := append([]hubs.HubUserDashboardItem(nil), tenantsByHub[item.ID]...)
 			seenTenants := map[string]struct{}{}
 			for _, tenant := range tenantItems {
 				seenTenants[strings.TrimSpace(tenant.TenantID)] = struct{}{}
 			}
-			for tenantID := range auths {
+			for tenantID, tenantPolicy := range policy.Tenants {
 				tenantID = strings.TrimSpace(tenantID)
 				if tenantID == "" {
 					continue
@@ -94,11 +103,30 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 				if _, ok := seenTenants[tenantID]; ok {
 					continue
 				}
+				tenantItems = append(tenantItems, hubs.HubUserDashboardItem{HubID: item.ID, TenantID: tenantID, TenantName: tenantPolicy.TenantName, HubName: item.Name, BaseURL: item.BaseURL, Status: item.Status, IsDisabled: item.IsDisabled, AcceptPublicSignup: item.AcceptPublicSignup, SignupMode: item.EnrollmentMode, LastSeenAt: item.LastSeenAt})
+				seenTenants[tenantID] = struct{}{}
+			}
+			for tenantID := range tenantAuths {
+				tenantID = strings.TrimSpace(tenantID)
+				if _, ok := seenTenants[tenantID]; ok {
+					continue
+				}
 				tenantItems = append(tenantItems, hubs.HubUserDashboardItem{HubID: item.ID, TenantID: tenantID, HubName: item.Name, BaseURL: item.BaseURL, Status: item.Status, IsDisabled: item.IsDisabled, AcceptPublicSignup: item.AcceptPublicSignup, SignupMode: item.EnrollmentMode, LastSeenAt: item.LastSeenAt})
 			}
-			views = append(views, adminHubView{HubInstance: item, Tenants: tenantItems, DigitalEmployeeAuthorizations: auths, RegistrationPolicy: policyByHub[item.ID]})
+			views = append(views, adminHubView{HubInstance: item, Tenants: tenantItems, DigitalEmployeeAuthorizations: tenantAuths, RegistrationPolicy: policy})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"hubs": views})
+	}
+}
+
+func ListEnterpriseMailDomainsHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := service.ListEnterpriseMailDomains(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LIST_ENTERPRISE_MAIL_DOMAINS_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
 
@@ -167,6 +195,11 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
+		tenantID := strings.TrimSpace(req.TenantID)
+		if tenantID == "" {
+			writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required for digital employee authorization")
+			return
+		}
 		if req.Quota < 0 {
 			writeError(w, http.StatusBadRequest, "INVALID_QUOTA", "Quota must be >= 0")
 			return
@@ -185,8 +218,12 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 				return
 			}
 		}
-		auth, err := service.UpdateDigitalEmployeeAuthorization(r.Context(), hubID, hubs.DigitalEmployeeAuthorizationUpdate{TenantID: strings.TrimSpace(req.TenantID), Quota: req.Quota, Years: req.Years, Enabled: req.Enabled, StartDate: req.StartDate})
+		auth, err := service.UpdateDigitalEmployeeAuthorization(r.Context(), hubID, hubs.DigitalEmployeeAuthorizationUpdate{TenantID: tenantID, Quota: req.Quota, Years: req.Years, Enabled: req.Enabled, StartDate: req.StartDate})
 		if err != nil {
+			if errors.Is(err, hubs.ErrDigitalEmployeeTenantRequired) {
+				writeError(w, http.StatusBadRequest, "TENANT_ID_REQUIRED", "tenant_id is required for digital employee authorization")
+				return
+			}
 			if errors.Is(err, hubs.ErrDigitalEmployeeQuotaDecrease) {
 				writeError(w, http.StatusBadRequest, "DIGITAL_EMPLOYEE_QUOTA_DECREASE", "Digital employee authorization count can only increase")
 				return
@@ -199,6 +236,10 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 				writeError(w, http.StatusBadRequest, "INVALID_YEARS", "Years must be >= 1 when enabling digital employee authorization")
 				return
 			}
+			if errors.Is(err, hubs.ErrDigitalEmployeeAuthorizationStoreUnavailable) {
+				writeError(w, http.StatusServiceUnavailable, "DIGITAL_EMPLOYEE_AUTHORIZATION_STORE_UNAVAILABLE", "Digital employee authorization store is unavailable")
+				return
+			}
 			if errors.Is(err, hubs.ErrHubNotFound) {
 				writeError(w, http.StatusNotFound, "HUB_NOT_FOUND", "Hub not found")
 				return
@@ -206,7 +247,7 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 			writeError(w, http.StatusInternalServerError, "UPDATE_DIGITAL_EMPLOYEE_AUTHORIZATION_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "digital_employee_authorization": auth})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenant_id": tenantID, "digital_employee_authorization": auth})
 	}
 }
 func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {

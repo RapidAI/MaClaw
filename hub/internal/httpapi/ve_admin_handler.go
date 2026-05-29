@@ -392,6 +392,42 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 		})
 	}
 }
+
+func findReusableVEDirectSession(groupSvc *GroupDiscussionService, tenantID, initiatorID, targetID string) *coreliba2a.Session {
+	if groupSvc == nil {
+		return nil
+	}
+	initiatorID = strings.TrimSpace(initiatorID)
+	targetID = strings.TrimSpace(targetID)
+	if initiatorID == "" || targetID == "" {
+		return nil
+	}
+	sessions, err := groupSvc.ListSessions(tenantID, ListSessionsFilter{ParticipantID: initiatorID, Status: coreliba2a.SessionOpen})
+	if err != nil {
+		return nil
+	}
+	for _, session := range sessions {
+		if isReusableVEDirectSession(session, initiatorID, targetID) {
+			return session
+		}
+	}
+	return nil
+}
+
+func isReusableVEDirectSession(session *coreliba2a.Session, initiatorID, targetID string) bool {
+	if session == nil || session.Status != coreliba2a.SessionOpen {
+		return false
+	}
+	initiatorID = strings.TrimSpace(initiatorID)
+	targetID = strings.TrimSpace(targetID)
+	if initiatorID == "" || targetID == "" || len(session.Participants) != 2 {
+		return false
+	}
+	roles := participantRoleMap(session)
+	targetRole := strings.TrimSpace(roles[targetID])
+	return strings.EqualFold(strings.TrimSpace(roles[initiatorID]), "initiator") && targetRole != "" && groupDiscussionRoleContributesAnswer(targetRole)
+}
+
 func VEAdminActionHandler(system store.SystemSettingsRepository, action string, senders ...veMachineEventSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		baseSystem := globalSystemSettings(system)
@@ -661,6 +697,9 @@ func loadVEDigitalEmployeeAuthorization(ctx context.Context, system store.System
 }
 
 func veSystemSettingsForRequest(r *http.Request, system store.SystemSettingsRepository) store.SystemSettingsRepository {
+	if r != nil && system != nil && isTenantScopedAdminRequest(r) && store.NormalizeTenantID(RequestTenantID(r)) == store.DefaultTenantID {
+		return defaultTenantAwareSystemSettings{base: system}
+	}
 	return scopedSystemSettingsForRequest(r, system)
 }
 
@@ -668,7 +707,26 @@ func veSystemSettingsForMachine(system store.SystemSettingsRepository, principal
 	if principal == nil {
 		return system
 	}
+	if store.NormalizeTenantID(principal.TenantID) == store.DefaultTenantID && system != nil {
+		return defaultTenantAwareSystemSettings{base: system}
+	}
 	return scopedSystemSettingsForTenant(principal.TenantID, system)
+}
+
+type defaultTenantAwareSystemSettings struct {
+	base store.SystemSettingsRepository
+}
+
+func (s defaultTenantAwareSystemSettings) Set(ctx context.Context, key, valueJSON string) error {
+	return s.base.Set(ctx, key, valueJSON)
+}
+
+func (s defaultTenantAwareSystemSettings) Get(ctx context.Context, key string) (string, error) {
+	return s.base.Get(ctx, key)
+}
+
+func (s defaultTenantAwareSystemSettings) TenantID() string {
+	return store.DefaultTenantID
 }
 
 func requireVEDigitalEmployeeAuthorization(w http.ResponseWriter, r *http.Request, system store.SystemSettingsRepository) bool {

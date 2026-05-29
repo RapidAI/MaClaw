@@ -44,6 +44,7 @@ type agentLoopToolExecutionOptions struct {
 	Phase            agentLoopPhase
 	Debug            bool
 	OnProgress       coretool.ProgressCallback
+	OnToken          llm.TokenCallback
 	SendToolProgress func(string)
 	MilestoneTracker *progress.AgentProgressTracker
 	RecordToolCall   func(string, string, string)
@@ -186,6 +187,9 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	if runner == nil {
 		runner = RunTaskWithSubAgent
 	}
+	codeSessionID := newCodingSubAgentCodeSessionID("delegate-task-coding-workflow", opts.UserID)
+	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID)
+	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID)
 	result := runner(
 		h,
 		h.getMaclawLLMConfig(),
@@ -196,7 +200,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 		"Directly delegated coding task; user already requested implementation.",
 		nil,
 		opts.Context,
-		nil,
+		opts.OnToken,
 		func(text string) {
 			if opts.OnProgress != nil {
 				opts.OnProgress(text)
@@ -206,6 +210,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	if result == nil {
 		return toolExecutionResult{Text: "CodingSubAgent did not return a result.", ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureExecutionPanic}, true
 	}
+	emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, result.FilesModified, result.FilesCreated)
 	text := strings.TrimSpace(result.Summary)
 	if text == "" {
 		text = strings.TrimSpace(result.Error)

@@ -398,6 +398,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(adminService, GetMailConfigHandler(mailer)))
 	mux.HandleFunc("POST /api/admin/mail/config", RequireAdmin(adminService, UpdateMailConfigHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/hubs", RequireAdmin(adminService, ListHubsHandler(hubService)))
+	mux.HandleFunc("GET /api/admin/routing/enterprise-mail-domains", RequireAdmin(adminService, ListEnterpriseMailDomainsHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/hubs/runtime", RequireAdmin(adminService, ListHubRuntimeStatusesHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/users/dashboard", RequireAdmin(adminService, ListUserDashboardHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))

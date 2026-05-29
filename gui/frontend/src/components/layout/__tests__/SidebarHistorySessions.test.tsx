@@ -4,6 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SidebarHistorySessions, type HistoryDiscussionSummary } from '../SidebarHistorySessions';
 import { GroupDiscussionListLocalHidden, GroupDiscussionListMine, GroupDiscussionSetLocalHidden } from '../../../../wailsjs/go/main/App';
 
+const eventHandlers = new Map<string, (...args: any[]) => void>();
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsOn: vi.fn((eventName: string, handler: (...args: any[]) => void) => {
+        eventHandlers.set(eventName, handler);
+        return () => eventHandlers.delete(eventName);
+    }),
+    EventsOff: vi.fn((eventName: string) => eventHandlers.delete(eventName)),
+}));
+
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GroupDiscussionListMine: vi.fn(),
     GroupDiscussionListLocalHidden: vi.fn(),
@@ -27,6 +37,7 @@ const listHidden = vi.mocked(GroupDiscussionListLocalHidden);
 const setHidden = vi.mocked(GroupDiscussionSetLocalHidden);
 
 beforeEach(() => {
+    eventHandlers.clear();
     vi.clearAllMocks();
     listMine.mockResolvedValue(visibleSessions as any);
     listHidden.mockResolvedValue(hiddenSessions as any);
@@ -34,7 +45,7 @@ beforeEach(() => {
 });
 
 describe('SidebarHistorySessions', () => {
-    it('marks initiated and invited sessions distinctly and opens by double-click', async () => {
+    it('marks initiated and invited sessions distinctly and opens by click', async () => {
         const onOpen = vi.fn();
         render(<SidebarHistorySessions lang="en" onOpenDiscussion={onOpen} />);
 
@@ -48,9 +59,61 @@ describe('SidebarHistorySessions', () => {
         expect(screen.getAllByText('Read-only')).toHaveLength(4);
         expect(screen.getByText('History session')).toBeTruthy();
 
-        fireEvent.doubleClick(screen.getByText('Vendor audit'));
+        fireEvent.click(screen.getByText('Vendor audit'));
         expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'disc-2', local_relation: 'owned_ve_invited' }));
         expect(listMine).toHaveBeenCalledWith('all');
+    });
+
+    it('refreshes history when digital employee discussion events arrive', async () => {
+        render(<SidebarHistorySessions lang="en" />);
+
+        expect(await screen.findByText('Contract review')).toBeTruthy();
+        expect(listMine).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            eventHandlers.get('ve:stream_end')?.({ session_id: 'disc-1' });
+        });
+        await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
+
+        await act(async () => {
+            eventHandlers.get('ve-event')?.({ payload: { session_id: 'disc-2' } });
+        });
+        await waitFor(() => expect(listMine).toHaveBeenCalledTimes(3));
+    });
+
+    it('coalesces bursty digital employee refresh events', async () => {
+        render(<SidebarHistorySessions lang="en" />);
+
+        expect(await screen.findByText('Contract review')).toBeTruthy();
+        expect(listMine).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            eventHandlers.get('ve:stream_end')?.({ session_id: 'disc-1' });
+            eventHandlers.get('ve-event')?.({ payload: { session_id: 'disc-1' } });
+            eventHandlers.get('ve-event')?.({ payload: { session_id: 'disc-2' } });
+        });
+        await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        expect(listMine).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits for stream_end instead of refreshing on every stream chunk', async () => {
+        render(<SidebarHistorySessions lang="en" />);
+
+        expect(await screen.findByText('Contract review')).toBeTruthy();
+        expect(listMine).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            eventHandlers.get('ve-event')?.({ payload: { message: { kind: 'stream_chunk' } } });
+            eventHandlers.get('ve-event')?.({ payload: { message: { kind: 'stream_chunk' } } });
+            eventHandlers.get('ve-event')?.({ payload: { kind: 'stream_chunk' } });
+        });
+        expect(listMine).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            eventHandlers.get('ve:stream_end')?.({ session_id: 'disc-1' });
+        });
+        await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
     });
 
     it('opens from context menu and can hide a visible session locally', async () => {

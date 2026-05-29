@@ -1575,7 +1575,7 @@ func ResolveBashTimeout(args map[string]interface{}, command string) int {
 		}
 		return timeout
 	}
-	return 240
+	return 600
 }
 
 // HideCommandWindow is a platform-specific function to hide the console

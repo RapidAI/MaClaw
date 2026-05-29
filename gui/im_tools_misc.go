@@ -1139,7 +1139,8 @@ func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string
 // ---------------------------------------------------------------------------
 
 const (
-	bashDefaultTimeout      = 240
+	bashMinTimeout          = 240
+	bashDefaultTimeout      = corelib.DefaultAgentTimeoutSec
 	bashMaxTimeout          = 600
 	bashPDFTimeout          = bashMaxTimeout
 	craftToolDefaultTimeout = 90
@@ -1177,8 +1178,8 @@ func resolveBashTimeout(args map[string]interface{}, command string) int {
 	if !explicit && looksLikePDFRelatedWork(command) {
 		timeout = bashPDFTimeout
 	}
-	if timeout < bashDefaultTimeout {
-		timeout = bashDefaultTimeout
+	if timeout < bashMinTimeout {
+		timeout = bashMinTimeout
 	}
 	if timeout > bashMaxTimeout {
 		timeout = bashMaxTimeout
@@ -2002,7 +2003,13 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	if t, ok := args["timeout"].(float64); ok && t > 0 {
 		opts.TimeoutS = int(t)
 	} else {
-		opts.TimeoutS = intArg(args, "timeout", 30)
+		opts.TimeoutS = intArg(args, "timeout", corelib.DefaultAgentTimeoutSec)
+	}
+	if opts.TimeoutS < corelib.MinAgentTimeoutSec {
+		opts.TimeoutS = corelib.MinAgentTimeoutSec
+	}
+	if opts.TimeoutS > corelib.MaxAgentTimeoutSec {
+		opts.TimeoutS = corelib.MaxAgentTimeoutSec
 	}
 
 	// Use provider-aware fetch: TinyFish has better content extraction.

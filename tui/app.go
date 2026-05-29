@@ -332,10 +332,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	tuiModel.program = p
 	startupIndicator.Stage(98, "进入界面")
 
-	// Start WeChat gateway now that the program is available for UI messages.
+	// Wire the program before Run; gateway startup is scheduled from Init.
 	if app.weixinGateway != nil {
 		app.weixinGateway.SetProgram(p)
-		app.weixinGateway.Start()
 	}
 
 	startupIndicator.Stop()
@@ -536,10 +535,20 @@ func (m *tuiModel) Init() tea.Cmd {
 		time.Sleep(100 * time.Millisecond)
 		return tuiReadyMsg{}
 	}
+	weixinCmd := m.startWeixinGatewayCmd()
 	if m.startupCmd != nil {
-		return tea.Batch(readyCmd, m.startupCmd)
+		return tea.Batch(readyCmd, m.startupCmd, weixinCmd)
 	}
-	return readyCmd
+	return tea.Batch(readyCmd, weixinCmd)
+}
+
+func (m *tuiModel) startWeixinGatewayCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m != nil && m.app != nil && m.app.weixinGateway != nil {
+			m.app.weixinGateway.Start()
+		}
+		return nil
+	}
 }
 
 type tuiReadyMsg struct{}
@@ -1809,7 +1818,7 @@ func (m *tuiModel) pollWeixinFromTUI(token string) tea.Cmd {
 		if baseURL == "" {
 			baseURL = weixin.DefaultBaseURL
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		result, status, err := weixin.PollQRStatus(ctx, baseURL, token)
 		if err != nil {

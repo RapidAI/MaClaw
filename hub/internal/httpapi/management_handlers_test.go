@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -851,6 +852,28 @@ func TestGetCenterStatusHandlerSelectsTenantAuthorizationForGlobalAdmin(t *testi
 	}
 	if len(payload.DigitalEmployeeAuthorizations) != 2 {
 		t.Fatalf("global admin should still see tenant authorization map, got %#v", payload.DigitalEmployeeAuthorizations)
+	}
+}
+
+func TestGetCenterStatusHandlerTenantAdminDoesNotFallbackToHubAuthorization(t *testing.T) {
+	now := time.Now().UTC()
+	hubAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Enabled: true, Quota: 9, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)}, now)
+	otherTenantAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Enabled: true, Quota: 3, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)}, now)
+	status := &center.RegistrationState{
+		DigitalEmployeeAuthorization: &hubAuth,
+		DigitalEmployeeAuthorizations: map[string]*corelib.DigitalEmployeeAuthorization{
+			"tenant_other": &otherTenantAuth,
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/center/status", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), "tenant_acme"))
+
+	filterCenterStatusForTenantAdmin(req, status)
+	if status.DigitalEmployeeAuthorization != nil {
+		t.Fatalf("tenant admin without tenant grant should not see hub-level fallback auth, got %#v", status.DigitalEmployeeAuthorization)
+	}
+	if status.DigitalEmployeeAuthorizations != nil {
+		t.Fatalf("tenant admin should not see tenant authorization map, got %#v", status.DigitalEmployeeAuthorizations)
 	}
 }
 

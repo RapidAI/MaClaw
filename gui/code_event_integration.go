@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // maxCodeFileSize is the maximum file size (1 MB) for code event emission.
@@ -63,6 +65,10 @@ func (m *RemoteSessionManager) emitCodeFileEvents(s *RemoteSession, events []Imp
 			log.Printf("[code-event] skip %s: read error: %v", filePath, err)
 			continue
 		}
+		if !isCodePreviewTextContent(content) {
+			log.Printf("[code-event] skip %s: binary or invalid UTF-8 content", filePath)
+			continue
+		}
 
 		fileName := filepath.Base(filePath)
 		language := detectLanguageFromExt(fileName)
@@ -86,6 +92,168 @@ func (m *RemoteSessionManager) emitCodeFileEvents(s *RemoteSession, events []Imp
 			Language:  language,
 		})
 	}
+}
+
+func emitCodingSubAgentCodeFileEvents(app *App, sessionID, projectPath string, filesModified, filesCreated []string) {
+	if app == nil || app.codeEventEmitter == nil {
+		return
+	}
+	for _, evt := range buildCodingSubAgentCodeFileEvents(sessionID, projectPath, filesModified, filesCreated) {
+		app.codeEventEmitter.EmitCodeFileEvent(evt)
+	}
+}
+
+func emitCodingSubAgentCodeSessionStart(app *App, sessionID string) {
+	if app == nil || app.codeEventEmitter == nil {
+		return
+	}
+	app.codeEventEmitter.EmitSessionStart(sessionID)
+}
+
+func emitCodingSubAgentCodeSessionEnd(app *App, sessionID string) {
+	if app == nil || app.codeEventEmitter == nil {
+		return
+	}
+	app.codeEventEmitter.EmitSessionEnd(sessionID)
+}
+
+func codingSubAgentCodeSessionID(scope, userID string) string {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "subagent"
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return scope
+	}
+	return scope + ":" + userID
+}
+
+var codingSubAgentCodeSessionSeq atomic.Uint64
+
+func newCodingSubAgentCodeSessionID(scope, userID string) string {
+	seq := codingSubAgentCodeSessionSeq.Add(1)
+	return fmt.Sprintf("%s:%d:%d", codingSubAgentCodeSessionID(scope, userID), time.Now().UnixNano(), seq)
+}
+
+func buildCodingSubAgentCodeFileEvents(sessionID, projectPath string, filesModified, filesCreated []string) []CodeFileEvent {
+	created := make(map[string]bool, len(filesCreated))
+	for _, filePath := range filesCreated {
+		if normalized := normalizeSubAgentCodeEventPath(filePath, projectPath); normalized.displayPath != "" {
+			created[normalized.displayPath] = true
+		}
+	}
+
+	inputFiles := append(append([]string{}, filesModified...), filesCreated...)
+	seen := make(map[string]bool, len(inputFiles))
+	events := make([]CodeFileEvent, 0, len(inputFiles))
+	for _, filePath := range inputFiles {
+		normalized := normalizeSubAgentCodeEventPath(filePath, projectPath)
+		if normalized.displayPath == "" || normalized.absPath == "" || seen[normalized.displayPath] {
+			continue
+		}
+		seen[normalized.displayPath] = true
+		if !isSubAgentCodeEventPathInProject(normalized.absPath, projectPath) {
+			log.Printf("[code-event] skip subagent file %s: outside project path", normalized.displayPath)
+			continue
+		}
+
+		info, err := os.Stat(normalized.absPath)
+		if err != nil || info.IsDir() {
+			if err != nil {
+				log.Printf("[code-event] skip subagent file %s: stat error: %v", normalized.displayPath, err)
+			}
+			continue
+		}
+		if info.Size() > maxCodeFileSize {
+			log.Printf("[code-event] skip subagent file %s: file too large (%d bytes)", normalized.displayPath, info.Size())
+			continue
+		}
+
+		content, err := os.ReadFile(normalized.absPath)
+		if err != nil {
+			log.Printf("[code-event] skip subagent file %s: read error: %v", normalized.displayPath, err)
+			continue
+		}
+		if !isCodePreviewTextContent(content) {
+			log.Printf("[code-event] skip subagent file %s: binary or invalid UTF-8 content", normalized.displayPath)
+			continue
+		}
+
+		opType := "modify"
+		var original string
+		if created[normalized.displayPath] {
+			opType = "create"
+		} else {
+			original = gitShowOriginal(projectPath, normalized.absPath)
+		}
+
+		fileName := filepath.Base(normalized.displayPath)
+		events = append(events, CodeFileEvent{
+			SessionID: sessionID,
+			FilePath:  normalized.displayPath,
+			FileName:  fileName,
+			Content:   string(content),
+			Original:  original,
+			OpType:    opType,
+			Language:  detectLanguageFromExt(fileName),
+			ForceOpen: true,
+		})
+	}
+	return events
+}
+
+type subAgentCodeEventPath struct {
+	displayPath string
+	absPath     string
+}
+
+func normalizeSubAgentCodeEventPath(filePath, projectPath string) subAgentCodeEventPath {
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return subAgentCodeEventPath{}
+	}
+
+	absPath := filePath
+	if !filepath.IsAbs(absPath) && strings.TrimSpace(projectPath) != "" {
+		absPath = filepath.Join(projectPath, filePath)
+	}
+	absPath = filepath.Clean(absPath)
+
+	displayPath := filepath.Clean(filePath)
+	if strings.TrimSpace(projectPath) != "" && filepath.IsAbs(absPath) {
+		if rel, err := filepath.Rel(projectPath, absPath); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+			displayPath = rel
+		}
+	}
+	return subAgentCodeEventPath{
+		displayPath: filepath.ToSlash(displayPath),
+		absPath:     absPath,
+	}
+}
+
+func isSubAgentCodeEventPathInProject(absPath, projectPath string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return true
+	}
+	ok, err := isPathWithinDir(absPath, projectPath)
+	return err == nil && ok
+}
+
+func isCodePreviewTextContent(content []byte) bool {
+	if len(content) == 0 {
+		return true
+	}
+	if !utf8.Valid(content) {
+		return false
+	}
+	for _, b := range content {
+		if b == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // gitShowTimeout is the maximum time allowed for a git show command.

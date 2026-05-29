@@ -16,7 +16,11 @@ const haSeedPageSize = 500
 
 type haSystemSettings struct {
 	inner store.SystemSettingsRepository
-	sync  *ha.Service
+	sync  haSystemSettingRecorder
+}
+
+type haSystemSettingRecorder interface {
+	AppendSystemSetting(ctx context.Context, key, valueJSON string)
 }
 
 func (r *haSystemSettings) Set(ctx context.Context, key, valueJSON string) error {

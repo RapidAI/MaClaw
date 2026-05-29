@@ -1075,7 +1075,9 @@ func (a *App) StartWeixinQRLogin() map[string]string {
 	}
 }
 
-// PollWeixinQRStatus performs a single poll of the QR code status.
+const weixinQRStatusPollTimeout = 5 * time.Second
+
+// PollWeixinQRStatus performs a single short poll of the QR code status.
 // Returns status ("wait", "scaned", "confirmed", "expired") and a message.
 // On "confirmed", automatically saves config and starts gateway (no separate confirm call needed).
 func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
@@ -1088,17 +1090,20 @@ func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
 		baseURL = weixin.DefaultBaseURL
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), weixinQRStatusPollTimeout)
 	defer cancel()
 
+	start := time.Now()
 	result, status, err := weixin.PollQRStatus(ctx, baseURL, qrcodeToken)
 	if err != nil {
+		log.Printf("[weixin-qr] poll failed status=error elapsed=%s retryable=%v err=%v", time.Since(start).Round(time.Millisecond), weixin.IsQRLoginRetryableError(err), err)
 		resp := map[string]string{"error": err.Error(), "status": string(gatewayConnectionStatusError)}
 		if weixin.IsQRLoginRetryableError(err) {
 			resp["retryable"] = "true"
 		}
 		return resp
 	}
+	log.Printf("[weixin-qr] poll status=%s elapsed=%s", status.String(), time.Since(start).Round(time.Millisecond))
 	resp := map[string]string{
 		"status":  status.String(),
 		"message": result.Message,

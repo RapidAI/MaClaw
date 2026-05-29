@@ -436,6 +436,39 @@ func TestLoadDigitalEmployeeAuthorizationForDisabledRecordForcesInactive(t *test
 	}
 }
 
+func TestLoadDigitalEmployeeAuthorizationForTenantDoesNotFallbackToHubAuthorization(t *testing.T) {
+	now := time.Now().UTC()
+	settings := newFakeSettingsRepo()
+	hubAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 3, Enabled: true, ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)}, now)
+	tenantAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 1, Enabled: true, ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)}, now)
+	defaultTenantAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 2, Enabled: true, ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339)}, now)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered:                   true,
+		HubID:                        "hub_tenant_auth",
+		HubSecret:                    "secret_tenant_auth",
+		DigitalEmployeeAuthorization: &hubAuth,
+		DigitalEmployeeAuthorizations: map[string]*corelib.DigitalEmployeeAuthorization{
+			"tenant_a":            &tenantAuth,
+			store.DefaultTenantID: &defaultTenantAuth,
+		},
+	})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if auth := LoadDigitalEmployeeAuthorizationForTenant(context.Background(), settings, "tenant_a"); auth == nil || auth.Quota != 1 || !auth.Active {
+		t.Fatalf("tenant_a auth = %+v, want tenant quota 1", auth)
+	}
+	if auth := LoadDigitalEmployeeAuthorizationForTenant(context.Background(), settings, "tenant_b"); auth != nil {
+		t.Fatalf("tenant_b auth = %+v, want nil instead of hub-level fallback", auth)
+	}
+	if auth := LoadDigitalEmployeeAuthorizationForTenant(context.Background(), settings, store.DefaultTenantID); auth == nil || auth.Quota != 2 || !auth.Active {
+		t.Fatalf("default tenant auth = %+v, want tenant quota 2", auth)
+	}
+	if auth := LoadDigitalEmployeeAuthorizationForTenant(context.Background(), settings, ""); auth == nil || auth.Quota != 3 || !auth.Active {
+		t.Fatalf("default auth = %+v, want legacy hub quota 3", auth)
+	}
+}
+
 func TestSendHeartbeatUsesStoredRegistration(t *testing.T) {
 	var (
 		gotPath   string

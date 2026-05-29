@@ -5,6 +5,7 @@ import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 /** A single code file received from the backend code:file_update event. */
 export interface CodeFile {
+    sessionID?: string;
     filePath: string;
     fileName: string;
     content: string;
@@ -12,6 +13,7 @@ export interface CodeFile {
     opType: 'create' | 'modify';
     language: string;
     updatedAt: number;
+    forceOpen?: boolean;
 }
 
 /** UI state for the code preview panel. */
@@ -19,6 +21,7 @@ export interface CodePreviewUIState {
     active: boolean;              // panel is visible
     files: Map<string, CodeFile>; // filePath -> CodeFile
     activeFilePath: string;       // currently selected file
+    sessionID: string;            // latest code session id
     sessionActive: boolean;       // coding session in progress
     userClosed: boolean;          // user manually closed, suppress auto-open
 }
@@ -31,6 +34,7 @@ export function initialState(): CodePreviewUIState {
         active: false,
         files: new Map(),
         activeFilePath: "",
+        sessionID: "",
         sessionActive: false,
         userClosed: false,
     };
@@ -41,8 +45,8 @@ export function initialState(): CodePreviewUIState {
  * Updates the files map, auto-opens the panel if not userClosed,
  * and auto-selects the latest file.
  *
- * When `workflowPreviewActive` is true, the code preview panel will NOT
- * auto-open (mutual exclusion with workflow preview).
+ * When `workflowPreviewActive` is true, regular file updates will NOT
+ * auto-open. Backend-forced updates can still open the panel.
  */
 export function applyFileUpdate(
     state: CodePreviewUIState,
@@ -53,18 +57,24 @@ export function applyFileUpdate(
     if (!file.filePath || file.content === undefined || file.content === null) {
         return state;
     }
+    if (state.sessionID && file.sessionID !== state.sessionID) {
+        return state;
+    }
 
     const nextFiles = new Map(state.files);
     nextFiles.set(file.filePath, file);
 
-    // Suppress auto-open when workflow preview is active (mutual exclusion)
-    const shouldAutoOpen = !state.userClosed && !workflowPreviewActive;
+    // Suppress regular auto-open when workflow preview is active; SubAgent
+    // completion events force-open so changed files are visible to the user.
+    const shouldAutoOpen = file.forceOpen || (!state.userClosed && !workflowPreviewActive);
 
     return {
         ...state,
         files: nextFiles,
         activeFilePath: file.filePath,
+        sessionID: file.sessionID || state.sessionID,
         active: shouldAutoOpen ? true : state.active,
+        userClosed: file.forceOpen ? false : state.userClosed,
     };
 }
 
@@ -82,13 +92,19 @@ export function applyWorkflowDocUpdate(state: CodePreviewUIState): CodePreviewUI
 
 /**
  * Apply a code:session_start event to the state.
- * Resets files map, sets sessionActive=true, resets userClosed.
+ * Resets files map, closes the panel until the first file update,
+ * sets sessionActive=true, resets userClosed.
  */
-export function applySessionStart(state: CodePreviewUIState): CodePreviewUIState {
+export function applySessionStart(state: CodePreviewUIState, sessionID = ""): CodePreviewUIState {
+    if (state.sessionID && !sessionID) {
+        return state;
+    }
     return {
         ...state,
+        active: false,
         files: new Map(),
         activeFilePath: "",
+        sessionID,
         sessionActive: true,
         userClosed: false,
     };
@@ -98,7 +114,10 @@ export function applySessionStart(state: CodePreviewUIState): CodePreviewUIState
  * Apply a code:session_end event to the state.
  * Sets sessionActive=false.
  */
-export function applySessionEnd(state: CodePreviewUIState): CodePreviewUIState {
+export function applySessionEnd(state: CodePreviewUIState, sessionID = ""): CodePreviewUIState {
+    if (state.sessionID && state.sessionID !== sessionID) {
+        return state;
+    }
     return {
         ...state,
         sessionActive: false,
@@ -182,6 +201,7 @@ export function useCodePreviewState(workflowPreviewActive = false) {
             if (!data?.file_path || data?.content === undefined || data?.content === null) return;
 
             const file: CodeFile = {
+                sessionID: data.session_id || "",
                 filePath: data.file_path,
                 fileName: data.file_name || data.file_path.split(/[/\\]/).pop() || data.file_path,
                 content: data.content,
@@ -189,6 +209,7 @@ export function useCodePreviewState(workflowPreviewActive = false) {
                 opType: data.op_type === "modify" ? "modify" : "create",
                 language: data.language || "plaintext",
                 updatedAt: Date.now(),
+                forceOpen: data.force_open === true,
             };
 
             setState(prev => applyFileUpdate(prev, file, workflowActiveRef.current));
@@ -201,8 +222,8 @@ export function useCodePreviewState(workflowPreviewActive = false) {
 
     // Listen for code:session_start
     useEffect(() => {
-        const unsub = EventsOn("code:session_start", () => {
-            setState(prev => applySessionStart(prev));
+        const unsub = EventsOn("code:session_start", (data: any) => {
+            setState(prev => applySessionStart(prev, data?.session_id || ""));
         });
         return () => {
             if (typeof unsub === "function") unsub();
@@ -212,8 +233,8 @@ export function useCodePreviewState(workflowPreviewActive = false) {
 
     // Listen for code:session_end
     useEffect(() => {
-        const unsub = EventsOn("code:session_end", () => {
-            setState(prev => applySessionEnd(prev));
+        const unsub = EventsOn("code:session_end", (data: any) => {
+            setState(prev => applySessionEnd(prev, data?.session_id || ""));
         });
         return () => {
             if (typeof unsub === "function") unsub();

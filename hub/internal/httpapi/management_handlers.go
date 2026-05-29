@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
@@ -545,18 +546,28 @@ func filterCenterStatusForTenantAdmin(r *http.Request, status *center.Registrati
 		if tenantID == "" || status.DigitalEmployeeAuthorizations == nil {
 			return
 		}
-		if authz := status.DigitalEmployeeAuthorizations[tenantID]; authz != nil {
-			status.DigitalEmployeeAuthorization = authz
-		}
+		status.DigitalEmployeeAuthorization = centerStatusAuthorizationForTenant(status, tenantID)
 		return
 	}
 	tenantID := AdminTenantID(r.Context())
+	status.DigitalEmployeeAuthorization = centerStatusAuthorizationForTenant(status, tenantID)
+	status.DigitalEmployeeAuthorizations = nil
+}
+
+func centerStatusAuthorizationForTenant(status *center.RegistrationState, tenantID string) *corelib.DigitalEmployeeAuthorization {
+	tenantID = strings.TrimSpace(tenantID)
+	if status == nil || tenantID == "" {
+		return nil
+	}
 	if status.DigitalEmployeeAuthorizations != nil {
 		if authz := status.DigitalEmployeeAuthorizations[tenantID]; authz != nil {
-			status.DigitalEmployeeAuthorization = authz
+			return authz
 		}
 	}
-	status.DigitalEmployeeAuthorizations = nil
+	if tenantID == store.DefaultTenantID {
+		return status.DigitalEmployeeAuthorization
+	}
+	return nil
 }
 
 func requireGlobalAdminForHubCenter(w http.ResponseWriter, r *http.Request) bool {

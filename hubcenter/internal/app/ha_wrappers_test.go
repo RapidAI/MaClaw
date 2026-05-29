@@ -20,6 +20,8 @@ type fakeSeedSync struct {
 	routingLinks       int
 	routingRoutes      int
 	systemSettingSeeds int
+	systemSettingKeys  []string
+	systemSettingVals  map[string]string
 	gossipSeeds        int
 	newsSeeds          int
 	skillHubSeeds      int
@@ -55,8 +57,13 @@ func (f *fakeSeedSync) AppendHubDomainRoute(_ context.Context, _ *store.HubDomai
 	f.routingRoutes++
 }
 
-func (f *fakeSeedSync) AppendSystemSetting(_ context.Context, _, _ string) {
+func (f *fakeSeedSync) AppendSystemSetting(_ context.Context, key, valueJSON string) {
 	f.systemSettingSeeds++
+	f.systemSettingKeys = append(f.systemSettingKeys, key)
+	if f.systemSettingVals == nil {
+		f.systemSettingVals = map[string]string{}
+	}
+	f.systemSettingVals[key] = valueJSON
 }
 
 func (f *fakeSeedSync) AppendGossipSnapshot(_ context.Context, _ *ha.GossipSnapshot) {
@@ -178,6 +185,30 @@ func (f *fakeSeedSystemSettingsRepo) List(context.Context) ([]*store.SystemSetti
 		{Key: "llm_moderation_config", ValueJSON: `{"enabled":true}`},
 		{Key: "admin_email", ValueJSON: `{"value":"admin@example.com"}`},
 	}, nil
+}
+
+type fakeHASystemSettingsRepo struct {
+	items map[string]string
+}
+
+func (f *fakeHASystemSettingsRepo) Set(_ context.Context, key, valueJSON string) error {
+	if f.items == nil {
+		f.items = map[string]string{}
+	}
+	f.items[key] = valueJSON
+	return nil
+}
+
+func (f *fakeHASystemSettingsRepo) Get(_ context.Context, key string) (string, error) {
+	return f.items[key], nil
+}
+
+func (f *fakeHASystemSettingsRepo) List(context.Context) ([]*store.SystemSettingEntry, error) {
+	items := make([]*store.SystemSettingEntry, 0, len(f.items))
+	for key, value := range f.items {
+		items = append(items, &store.SystemSettingEntry{Key: key, ValueJSON: value})
+	}
+	return items, nil
 }
 
 type fakeSeedGossipRepo struct{}
@@ -360,6 +391,24 @@ func TestSeedInitialHASnapshotsSeedsMissingCategories(t *testing.T) {
 	}
 	if refresher.calls != 1 {
 		t.Fatalf("refresher calls = %d, want 1", refresher.calls)
+	}
+}
+
+func TestHASystemSettingsRecordsTenantDigitalEmployeeAuthorization(t *testing.T) {
+	inner := &fakeHASystemSettingsRepo{}
+	sync := &fakeSeedSync{has: map[string]bool{}}
+
+	key := "tenant_digital_employee_authorizations:hub-1"
+	value := `{"tenant_a":{"quota":2,"enabled":true}}`
+	settings := &haSystemSettings{inner: inner, sync: sync}
+	if err := settings.Set(context.Background(), key, value); err != nil {
+		t.Fatalf("wrapped set: %v", err)
+	}
+	if got, _ := settings.Get(context.Background(), key); got != value {
+		t.Fatalf("wrapped get = %q, want %q", got, value)
+	}
+	if sync.systemSettingSeeds != 1 || sync.systemSettingVals[key] != value {
+		t.Fatalf("system setting sync = count:%d values:%+v, want tenant auth setting", sync.systemSettingSeeds, sync.systemSettingVals)
 	}
 }
 

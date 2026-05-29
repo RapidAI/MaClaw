@@ -3,8 +3,10 @@ package main
 import (
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -18,8 +20,12 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 		if onProgress != nil {
 			onProgress("Starting SubAgent tasks...")
 		}
+		codeSessionID := newCodingSubAgentCodeSessionID("subagent-workflow", msg.UserID)
+		emitCodingSubAgentCodeSessionStart(h.app, codeSessionID)
+		defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID)
 
 		runner := NewSubAgentTaskRunner(h, cfg, httpClient, taskOrch, loopCtx)
+		runner.codeSessionID = codeSessionID
 		report := runner.RunAllTasks(onToken, func(text string) {
 			if onProgress != nil {
 				onProgress(text)
@@ -75,6 +81,7 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 						integrationFailed = true
 					}
 					if integrationResult != nil {
+						emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, taskOrch.ProjectPath, integrationResult.FilesModified, integrationResult.FilesCreated)
 						report += "\n\n## Integration\n\n" + integrationResult.Summary
 					}
 				}
@@ -111,7 +118,129 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 		return resp, history, true
 	}
 
+	if h.shouldRouteBugFixToDirectCodingSubAgent(msg, loopCtx) {
+		return h.routeDirectCodingSubAgentExecution(msg, httpClient, loopCtx, history, onProgress, onToken)
+	}
+
 	return nil, history, false
+}
+
+func (h *IMMessageHandler) shouldRouteBugFixToDirectCodingSubAgent(msg IMUserMessage, loopCtx *LoopContext) bool {
+	if h == nil || msg.IsBackground || strings.TrimSpace(msg.Text) == "" {
+		return false
+	}
+	if loopCtx != nil {
+		if loopCtx.WorkflowAgentLoop || loopCtx.Kind == LoopKindBackground {
+			return false
+		}
+	}
+	result, ok := h.classifyDirectCodingSubAgentGateIntent(msg)
+	if !ok {
+		return false
+	}
+	shouldRoute := shouldRouteGateResultToDirectCodingSubAgent(result, msg, loopCtx)
+	if shouldRoute {
+		log.Printf("[subagent-intercept] routing semantic bug_fix to CodingSubAgent user=%s conf=%.2f layer=%d degraded=%v reason=%q",
+			msg.UserID, result.Confidence, result.Layer, result.Degraded, result.Reason)
+	}
+	return shouldRoute
+}
+
+func (h *IMMessageHandler) classifyDirectCodingSubAgentGateIntent(msg IMUserMessage) (GateIntentResult, bool) {
+	var gic *GateIntentClassifier
+	if h.app != nil {
+		gic = h.getGateIntentClassifier()
+	}
+	if gic != nil {
+		return gic.Classify(msg.Text, msg.UserID), true
+	}
+
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		uic = unifiedClassifierPtr.Load()
+	}
+	if uic == nil {
+		return GateIntentResult{}, false
+	}
+	uicResult := uic.Classify(intent.MessageContext{Text: msg.Text, UserID: msg.UserID})
+	gateIntent, confidence, gap, layer, reason := uicResult.ToGateIntent()
+	return GateIntentResult{
+		Intent:     GateIntent(gateIntent),
+		Confidence: confidence,
+		Gap:        gap,
+		Layer:      layer,
+		Reason:     reason,
+		Degraded:   uicResult.Degraded,
+	}, true
+}
+
+func shouldRouteGateConfigToDirectCodingSubAgent(cfg codingToolGateConfig, msg IMUserMessage, loopCtx *LoopContext) bool {
+	if msg.IsBackground || strings.TrimSpace(msg.Text) == "" {
+		return false
+	}
+	if loopCtx != nil && (loopCtx.WorkflowAgentLoop || loopCtx.Kind == LoopKindBackground) {
+		return false
+	}
+	return cfg.intent == intentCoding && cfg.bugFix && !cfg.active
+}
+
+func shouldRouteGateResultToDirectCodingSubAgent(result GateIntentResult, msg IMUserMessage, loopCtx *LoopContext) bool {
+	if msg.IsBackground || strings.TrimSpace(msg.Text) == "" {
+		return false
+	}
+	if loopCtx != nil && (loopCtx.WorkflowAgentLoop || loopCtx.Kind == LoopKindBackground) {
+		return false
+	}
+	if !isSemanticGateResultForDirectCodingSubAgent(result) {
+		return false
+	}
+	cfg := mapGateIntentToConfig(result, result.Intent == GateIntentContinuation)
+	return shouldRouteGateConfigToDirectCodingSubAgent(cfg, msg, loopCtx)
+}
+
+func isSemanticGateResultForDirectCodingSubAgent(result GateIntentResult) bool {
+	if !shouldAcceptGateResult(result) {
+		return false
+	}
+	switch result.Layer {
+	case 2, 3, 23:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *IMMessageHandler) routeDirectCodingSubAgentExecution(msg IMUserMessage, httpClient *http.Client, loopCtx *LoopContext, history []agent.ConversationEntry, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, []agent.ConversationEntry, bool) {
+	if onProgress != nil {
+		onProgress("Starting CodingSubAgent...")
+	}
+	if loopCtx != nil && loopCtx.HTTPClient == nil {
+		loopCtx.HTTPClient = httpClient
+	}
+	args := map[string]interface{}{
+		"agent":   "coding_workflow",
+		"request": msg.Text,
+	}
+	if projectPath := h.workflowStartProjectPath(); projectPath != "" {
+		args["project_path"] = projectPath
+	}
+	result, handled := h.executeCodingWorkflowDelegateArgs(args, agentLoopToolExecutionOptions{
+		Context:    loopCtx,
+		UserID:     msg.UserID,
+		OnProgress: onProgress,
+		OnToken:    onToken,
+	})
+	if !handled {
+		return nil, history, false
+	}
+	text := strings.TrimSpace(result.Text)
+	if text == "" {
+		text = "CodingSubAgent finished."
+	}
+	history = append(history, agent.ConversationEntry{Role: "assistant", Content: text})
+	resp := &IMAgentResponse{Text: text}
+	h.saveConversationHistoryTimed(msg.UserID, history, resp)
+	return resp, history, true
 }
 
 func shouldDeactivateSubAgentOrchestratorAfterRun(runCompleted, runCancelled bool) bool {

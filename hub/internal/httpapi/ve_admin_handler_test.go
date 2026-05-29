@@ -401,9 +401,79 @@ func TestDigitalEmployeeInitiateCreatesMachineIDDiscussion(t *testing.T) {
 	if err != nil || len(mine) != 1 || mine[0].LocalRelation != "initiated_by_me" || mine[0].Readonly {
 		t.Fatalf("initiator summaries err=%v items=%+v", err, mine)
 	}
+
+	reuseReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	reuseReq.Header.Set("X-Machine-ID", "machine-b")
+	reuseReq.Header.Set("Authorization", "Bearer machine-token")
+	reuseReq.SetPathValue("id", "ve_machine-a")
+	reuseRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, groupSvc, authn).ServeHTTP(reuseRec, reuseReq)
+	if reuseRec.Code != http.StatusOK {
+		t.Fatalf("reuse initiate status=%d body=%s", reuseRec.Code, reuseRec.Body.String())
+	}
+	var reused struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(reuseRec.Body.Bytes(), &reused); err != nil {
+		t.Fatalf("decode reused initiate response: %v body=%s", err, reuseRec.Body.String())
+	}
+	if reused.SessionID != out.SessionID {
+		t.Fatalf("reused session_id=%q, want existing %q", reused.SessionID, out.SessionID)
+	}
+	mine, err = groupSvc.ListDiscussionSummaries("tenant-a", ListSessionsFilter{ParticipantID: "machine-b"})
+	if err != nil || len(mine) != 1 {
+		t.Fatalf("reuse should not create duplicate discussion err=%v items=%+v", err, mine)
+	}
+
 	invited, err := groupSvc.ListDiscussionSummaries("tenant-a", ListSessionsFilter{ParticipantID: "machine-a"})
 	if err != nil || len(invited) != 1 || invited[0].LocalRelation != "owned_ve_invited" || !invited[0].Readonly {
 		t.Fatalf("target summaries err=%v items=%+v", err, invited)
+	}
+
+	if _, err := groupSvc.SetDiscussionState("tenant-a", out.SessionID, "cancel"); err != nil {
+		t.Fatalf("close existing direct discussion: %v", err)
+	}
+	freshReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	freshReq.Header.Set("X-Machine-ID", "machine-b")
+	freshReq.Header.Set("Authorization", "Bearer machine-token")
+	freshReq.SetPathValue("id", "ve_machine-a")
+	freshRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, groupSvc, authn).ServeHTTP(freshRec, freshReq)
+	if freshRec.Code != http.StatusCreated {
+		t.Fatalf("fresh initiate after close status=%d body=%s", freshRec.Code, freshRec.Body.String())
+	}
+	var fresh struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(freshRec.Body.Bytes(), &fresh); err != nil {
+		t.Fatalf("decode fresh initiate response: %v body=%s", err, freshRec.Body.String())
+	}
+	if fresh.SessionID == "" || fresh.SessionID == out.SessionID {
+		t.Fatalf("fresh session_id=%q should differ from closed %q", fresh.SessionID, out.SessionID)
+	}
+}
+
+func TestReusableVEDirectSessionRejectsGroupDiscussion(t *testing.T) {
+	session := &corea2a.Session{
+		Status: corea2a.SessionOpen,
+		Participants: []corea2a.Participant{
+			{ID: "machine-b", RoleCode: "initiator"},
+			{ID: "machine-a", RoleCode: "speak"},
+			{ID: "machine-c", RoleCode: "review"},
+		},
+	}
+	if isReusableVEDirectSession(session, "machine-b", "machine-a") {
+		t.Fatal("group discussion must not be reused as a direct digital employee session")
+	}
+
+	session.Participants = session.Participants[:2]
+	if !isReusableVEDirectSession(session, "machine-b", "machine-a") {
+		t.Fatal("open two-party initiator session should be reusable")
+	}
+
+	session.Participants[1].RoleCode = "observe"
+	if isReusableVEDirectSession(session, "machine-b", "machine-a") {
+		t.Fatal("two-party observer session must not be reused as a direct digital employee session")
 	}
 }
 
@@ -657,6 +727,73 @@ func TestDigitalEmployeeAuthorizationBlocksRegisterAndDiscovery(t *testing.T) {
 	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "machine-b", "machine-token")
 	if discoverRR.Code != http.StatusOK || bytes.Contains(discoverRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) {
 		t.Fatalf("expected inactive authorization to hide employees, status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeAuthorizationRequiresTenantGrant(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	hubAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 5, Enabled: true, ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339)}, time.Now().UTC())
+	setVEHubOnlyRegistrationRecord(t, settings, hubAuth)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a":       {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b":       {TenantID: "tenant-b", UserID: "user-b", MachineID: "machine-b"},
+			"machine-default": {TenantID: store.DefaultTenantID, UserID: "user-default", MachineID: "machine-default"},
+		},
+	}
+
+	rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Tenant A Worker"}, "machine-a", "machine-token")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("hub-level authorization should not authorize tenant-a, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	tenantAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 1, Enabled: true, ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339)}, time.Now().UTC())
+	defaultTenantAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 1, Enabled: true, ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339)}, time.Now().UTC())
+	setVETenantRegistrationRecord(t, settings, map[string]corelib.DigitalEmployeeAuthorization{"tenant-a": tenantAuth, store.DefaultTenantID: defaultTenantAuth})
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Tenant A Worker"}, "machine-a", "machine-token"); rr.Code != http.StatusOK {
+		t.Fatalf("tenant-a grant should authorize tenant-a, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Default Tenant Worker"}, "machine-default", "machine-token"); rr.Code != http.StatusOK {
+		t.Fatalf("default tenant grant should authorize default tenant, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{"name": "Tenant B Worker"}, "machine-b", "machine-token"); rr.Code != http.StatusForbidden {
+		t.Fatalf("tenant-b without grant should still be blocked, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestVEAdminListUsesDefaultTenantAuthorization(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	hubAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 5, Enabled: true, ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339)}, time.Now().UTC())
+	defaultTenantAuth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 2, Enabled: true, ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour).Format(time.RFC3339)}, time.Now().UTC())
+	setVERegistrationPayload(t, settings, map[string]any{
+		"registered":                     true,
+		"pending_confirmation":           false,
+		"disabled":                       false,
+		"hub_id":                         "hub-1",
+		"hub_secret":                     "secret",
+		"digital_employee_authorization": &hubAuth,
+		"digital_employee_authorizations": map[string]*corelib.DigitalEmployeeAuthorization{
+			store.DefaultTenantID: &defaultTenantAuth,
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/list", nil)
+	req = req.WithContext(tenantAdminContext(req.Context(), store.DefaultTenantID))
+	rec := httptest.NewRecorder()
+	VEAdminListHandler(settings).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Authorization struct {
+			Quota int `json:"quota"`
+		} `json:"authorization"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode list response: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Authorization.Quota != 2 {
+		t.Fatalf("default tenant admin auth quota=%d, want default tenant quota 2 body=%s", payload.Authorization.Quota, rec.Body.String())
 	}
 }
 
@@ -1357,8 +1494,46 @@ func setVERegistrationRecord(t *testing.T, settings *testSystemSettingsRepo, aut
 		"disabled":                       false,
 		"hub_id":                         "hub-1",
 		"hub_secret":                     "secret",
+		"digital_employee_authorization": &authz,
+		"digital_employee_authorizations": map[string]*corelib.DigitalEmployeeAuthorization{
+			"tenant-a": &authz,
+		},
+	}
+	setVERegistrationPayload(t, settings, payload)
+}
+
+func setVEHubOnlyRegistrationRecord(t *testing.T, settings *testSystemSettingsRepo, authz corelib.DigitalEmployeeAuthorization) {
+	t.Helper()
+	payload := map[string]any{
+		"registered":                     true,
+		"pending_confirmation":           false,
+		"disabled":                       false,
+		"hub_id":                         "hub-1",
+		"hub_secret":                     "secret",
 		"digital_employee_authorization": authz,
 	}
+	setVERegistrationPayload(t, settings, payload)
+}
+
+func setVETenantRegistrationRecord(t *testing.T, settings *testSystemSettingsRepo, authzs map[string]corelib.DigitalEmployeeAuthorization) {
+	t.Helper()
+	tenantAuthzs := make(map[string]corelib.DigitalEmployeeAuthorization, len(authzs))
+	for tenantID, authz := range authzs {
+		tenantAuthzs[tenantID] = authz
+	}
+	payload := map[string]any{
+		"registered":                      true,
+		"pending_confirmation":            false,
+		"disabled":                        false,
+		"hub_id":                          "hub-1",
+		"hub_secret":                      "secret",
+		"digital_employee_authorizations": tenantAuthzs,
+	}
+	setVERegistrationPayload(t, settings, payload)
+}
+
+func setVERegistrationPayload(t *testing.T, settings *testSystemSettingsRepo, payload map[string]any) {
+	t.Helper()
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal auth payload: %v", err)

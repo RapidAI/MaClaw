@@ -14,10 +14,12 @@ func TestExecuteAgentLoopDelegateTaskRunsCodingSubAgent(t *testing.T) {
 	defer func() { runTaskWithSubAgent = original }()
 
 	var called bool
+	var tokenCallbackForwarded bool
 	var gotProject string
 	var gotTask *TaskItem
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		called = true
+		tokenCallbackForwarded = onToken != nil
 		gotProject = projectPath
 		gotTask = task
 		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "implemented"}
@@ -29,6 +31,7 @@ func TestExecuteAgentLoopDelegateTaskRunsCodingSubAgent(t *testing.T) {
 			Name:      "delegate_task",
 			Arguments: `{"agent":"coding_workflow","request":"create app in d:\\workprj\\testprj, write index.html"}`,
 		}},
+		OnToken: func(string) {},
 	})
 
 	if !called {
@@ -42,6 +45,9 @@ func TestExecuteAgentLoopDelegateTaskRunsCodingSubAgent(t *testing.T) {
 	}
 	if gotTask == nil || gotTask.Description == "" {
 		t.Fatalf("task = %#v, want populated delegated task", gotTask)
+	}
+	if !tokenCallbackForwarded {
+		t.Fatal("expected delegate_task(coding_workflow) to forward token callback")
 	}
 }
 

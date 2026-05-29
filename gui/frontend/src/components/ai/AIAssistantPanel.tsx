@@ -399,7 +399,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
     const showAgentView = !!agentView;
-    const showWorkflowPreview = !showAgentView && workflowState.splitMode;
+    const showWorkflowPreview = !showAgentView && workflowState.splitMode && !codePreviewState.active;
     const showCodePreview = !showAgentView && !showWorkflowPreview && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;

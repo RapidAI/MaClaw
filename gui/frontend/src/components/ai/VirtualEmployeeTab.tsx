@@ -223,7 +223,14 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                 <div
                     key={ve.id}
                     data-testid={`ve-item-${ve.id}`}
-                    onDoubleClick={() => onStartConversation(ve)}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onStartConversation(ve)}
+                    onKeyDown={(e) => {
+                        if (e.key !== "Enter" && e.key !== " ") return;
+                        e.preventDefault();
+                        onStartConversation(ve);
+                    }}
                     onContextMenu={(e) => {
                         e.preventDefault();
                         setContextMenu({ x: e.clientX, y: e.clientY, ve });

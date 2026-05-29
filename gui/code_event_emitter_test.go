@@ -138,6 +138,7 @@ func TestCodeFileEvent_Fields(t *testing.T) {
 		Original:  "package main",
 		OpType:    "modify",
 		Language:  "go",
+		ForceOpen: true,
 	}
 	if evt.SessionID != "session-123" {
 		t.Errorf("SessionID = %q, want %q", evt.SessionID, "session-123")
@@ -159,5 +160,8 @@ func TestCodeFileEvent_Fields(t *testing.T) {
 	}
 	if evt.Language != "go" {
 		t.Errorf("Language = %q, want %q", evt.Language, "go")
+	}
+	if !evt.ForceOpen {
+		t.Errorf("ForceOpen = false, want true")
 	}
 }

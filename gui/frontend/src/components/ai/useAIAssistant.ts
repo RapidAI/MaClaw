@@ -1584,8 +1584,20 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
     return updateRoundMessage(messages, assistantMessageId, requestId, finalizeMessage);
 }
 
-function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, errorText: string): ChatMessage[] {
+function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, errorText: string, preserveExistingContent = false): ChatMessage[] {
     if (!assistantMessageId && !requestId) {
+        return [...messages, {
+            id: nextId(),
+            role: 'error',
+            content: errorText,
+            timestamp: Date.now(),
+        }];
+    }
+    const index = findLastIndex(messages, msg =>
+        (assistantMessageId && msg.id === assistantMessageId)
+        || (!!requestId && msg.role === 'assistant' && msg.requestId === requestId)
+    );
+    if (preserveExistingContent && index >= 0 && messages[index].content.trim()) {
         return [...messages, {
             id: nextId(),
             role: 'error',
@@ -1599,15 +1611,15 @@ function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: stri
         content: errorText,
         timestamp: Date.now(),
     });
-        const nextMessages = updateRoundMessage(messages, assistantMessageId, requestId, replaceWithError);
-        return hasRoundMessage(messages, assistantMessageId, requestId)
-            ? nextMessages
-            : [...messages, {
-                id: nextId(),
-                role: 'error',
-                content: errorText,
-                timestamp: Date.now(),
-            }];
+    const nextMessages = updateRoundMessage(messages, assistantMessageId, requestId, replaceWithError);
+    return hasRoundMessage(messages, assistantMessageId, requestId)
+        ? nextMessages
+        : [...messages, {
+            id: nextId(),
+            role: 'error',
+            content: errorText,
+            timestamp: Date.now(),
+        }];
 }
 
 export const CANCELED_BY_USER_LINE = "任务已经应用户要求取消";
@@ -2008,7 +2020,7 @@ function inferCriticalConfirmLangFromMessage(message: ChatMessage): string {
 }
 
 const MIN_AGENT_TIMEOUT_SEC = 240;
-const DEFAULT_AGENT_TIMEOUT_SEC = 240;
+const DEFAULT_AGENT_TIMEOUT_SEC = 600;
 const MAX_AGENT_TIMEOUT_SEC = 600;
 const LOCAL_CONFIG_CHANGED_EVENT = 'maclaw-config-changed';
 
@@ -2308,7 +2320,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (pendingTaskRef.current?.requestId === activeRequestId) return;
             responseTimeoutControllerRef.current = null;
             setMessages(prev => replaceRoundWithError(prev, round.assistantMessageId, activeRequestId,
-                `⏱️ 请求超时（${responseActivityTimeoutSec}秒无响应），请重试。`));
+                `⏱️ 请求超时（${responseActivityTimeoutSec}秒无响应），请重试。`, true));
             clearTransientProgress();
             resetActiveRound(round.generation);
             emitPetStateForAssistant('idle', `${round.source}:timeout`);

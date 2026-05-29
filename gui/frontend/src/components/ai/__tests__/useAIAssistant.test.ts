@@ -778,6 +778,36 @@ describe('useAIAssistant property tests', () => {
         }
     });
 
+    it('preserves streamed output when a foreground round times out', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+            (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('long post-stream work');
+                await Promise.resolve();
+            });
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+                emitRuntimeEvent('ai-assistant-token', requestEvent('partial output'));
+                await vi.advanceTimersByTimeAsync(40);
+                emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+                await vi.advanceTimersByTimeAsync(600_001);
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(messageContents(result.current.messages)).toContain('partial output');
+            expect(messageContents(result.current.messages).join('\n')).toContain('请求超时');
+            expect(assistantMessages(result.current.messages)[0].content).toBe('partial output');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('uses configured foreground response timeout from config', async () => {
         vi.useFakeTimers();
         try {
@@ -1028,7 +1058,7 @@ describe('useAIAssistant property tests', () => {
             expect(result.current.sending).toBe(true);
 
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(240_001);
+                await vi.advanceTimersByTimeAsync(600_001);
             });
 
             expect(result.current.sending).toBe(true);
@@ -3433,7 +3463,7 @@ describe('useAIAssistant property tests', () => {
             expect(messageContents(result.current.messages)).not.toContain('wrong terminal event');
 
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(240_001);
+                await vi.advanceTimersByTimeAsync(600_001);
             });
 
             expect(result.current.sending).toBe(false);
@@ -3486,7 +3516,7 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.progressMessages).toHaveLength(1);
 
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(240_001);
+            await vi.advanceTimersByTimeAsync(600_001);
         });
 
         expect(result.current.sending).toBe(false);
