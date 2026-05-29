@@ -147,6 +147,9 @@ func (g *tuiWeixinGateway) Stop() {
 // Called once when the TUI process is exiting.
 func (g *tuiWeixinGateway) Shutdown() {
 	g.stopOnce.Do(func() { close(g.stopped) })
+	g.mu.Lock()
+	g.program = nil
+	g.mu.Unlock()
 	g.Stop()
 }
 
@@ -179,11 +182,21 @@ func (g *tuiWeixinGateway) onStatusChange(status string) {
 
 // emitStatus sends a status update to the TUI status bar.
 func (g *tuiWeixinGateway) emitStatus(status string) {
+	g.sendProgram(tuiWeixinStatusMsg{Status: status})
+}
+
+func (g *tuiWeixinGateway) sendProgram(msg tea.Msg) {
 	g.mu.Lock()
 	p := g.program
+	select {
+	case <-g.stopped:
+		g.mu.Unlock()
+		return
+	default:
+	}
 	g.mu.Unlock()
 	if p != nil {
-		p.Send(tuiWeixinStatusMsg{Status: status})
+		go p.Send(msg)
 	}
 }
 
@@ -207,12 +220,7 @@ func (g *tuiWeixinGateway) onIncomingMessage(msg weixin.IncomingMessage) {
 		msg.FromUserID, len(msg.Text), msg.MediaType)
 
 	// Notify the TUI that a message arrived (for status bar display).
-	g.mu.Lock()
-	p := g.program
-	g.mu.Unlock()
-	if p != nil {
-		p.Send(tuiWeixinIncomingMsg{FromUserID: msg.FromUserID, Text: msg.Text})
-	}
+	g.sendProgram(tuiWeixinIncomingMsg{FromUserID: msg.FromUserID, Text: msg.Text})
 
 	// Check LLM is configured.
 	if !tuiAppLLMReady(g.app) {

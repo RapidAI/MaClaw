@@ -21,6 +21,10 @@ func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, resp *llm.Respon
 	if resp == nil {
 		return llmUsageSnapshot{}
 	}
+	if resp.LocalCacheHit {
+		log.Printf("[LLM] usage %s local_cache_hit=true; skipping token accumulation", label)
+		return llmUsageSnapshot{}
+	}
 	input, output := deriveLLMTokenUsage(resp, conversation)
 	cacheRead, cacheWrite := deriveCacheTokens(resp)
 	providerName := h.getMaclawLLMProviders().Current

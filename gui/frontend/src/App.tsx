@@ -51,6 +51,7 @@ import { GeneralAdvancedSettingsPanel } from './components/settings/GeneralAdvan
 import { SystemSettingsPanel } from './components/settings/SystemSettingsPanel';
 import { ProxySettingsPanel } from './components/settings/ProxySettingsPanel';
 import { IMSettingsPanel } from './components/settings/IMSettingsPanel';
+import { LLMCacheSettingsPanel } from './components/settings/LLMCacheSettingsPanel';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
@@ -406,7 +407,7 @@ function App() {
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
-    const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 });
+    const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
     const sidebarTokenUsageSeqRef = useRef(0);
     const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
@@ -1480,7 +1481,7 @@ function App() {
         return () => window.clearInterval(timer);
     }, [config, groupDiscussionConfig.enabled, groupDiscussionConfig.discoverable, publishGroupDiscussionProfile]);
 
-    const aiAssistant = useAIAssistant({ refreshSessionsOnly });
+    const aiAssistant = useAIAssistant({ refreshSessionsOnly, lang });
     const codingAgentTurnSnapshot = useMemo(
         () => aiAssistant.sending ? latestCodingAgentTurnSnapshot(aiAssistant.progressMessages || []) : null,
         [aiAssistant.sending, aiAssistant.progressMessages],
@@ -1598,7 +1599,7 @@ function App() {
             setSidebarHubCredits(hubCredits);
         } catch {
             if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
-            setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 });
+            setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
             setSidebarHubCredits(null);
         }
     }, [normalizeSidebarProviderState, providers, selectedProvider]);
@@ -2689,6 +2690,10 @@ ${instruction}`;
                                     onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }}
                                     onProviderChanged={() => { void refreshSidebarTokenUsage(); }}
                                 />
+                            </div>
+
+                            <div className="settings-content settings-panel" hidden={settingsTab !== 'llmCache'}>
+                                <LLMCacheSettingsPanel config={config} setConfig={setConfig} lang={lang} />
                             </div>
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'redeem'}>

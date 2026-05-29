@@ -1,6 +1,9 @@
 package corelib
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestLLMPromptCacheKeyNormalizesTransportAndDefaultNoise(t *testing.T) {
 	opts := LLMPromptCacheOptions{
@@ -53,5 +56,48 @@ func TestLLMPromptCacheableRejectsSampling(t *testing.T) {
 	}
 	if decision := LLMPromptCacheable(map[string]any{"messages": []any{}, "stream": true, "temperature": 0}, opts); !decision.Cacheable {
 		t.Fatalf("streaming transport preference should remain cacheable: %+v", decision)
+	}
+}
+
+func TestLLMPromptCacheableRejectsStoreSideEffect(t *testing.T) {
+	opts := LLMPromptCacheOptions{Enabled: true}
+	if decision := LLMPromptCacheable(map[string]any{"messages": []any{}, "store": true}, opts); decision.Cacheable || decision.Reason != "store" {
+		t.Fatalf("store=true decision = %+v, want uncacheable store", decision)
+	}
+	if decision := LLMPromptCacheable(map[string]any{"messages": []any{}, "store": false}, opts); !decision.Cacheable {
+		t.Fatalf("store=false should remain cacheable: %+v", decision)
+	}
+}
+
+func TestLLMPromptCacheKeyPreservesScopeAndModelCase(t *testing.T) {
+	body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "repeat this"}}}
+	opts := LLMPromptCacheOptions{Enabled: true, IgnoreModelField: false}
+	keyA, _, err := LLMPromptCacheKey("openai|Local|abc", "Model-A", body, opts)
+	if err != nil {
+		t.Fatalf("keyA error: %v", err)
+	}
+	keyB, _, err := LLMPromptCacheKey("openai|local|abc", "model-a", body, opts)
+	if err != nil {
+		t.Fatalf("keyB error: %v", err)
+	}
+	if keyA == keyB {
+		t.Fatalf("case-distinct scope/model should not share cache key: %q", keyA)
+	}
+}
+
+func TestLLMPromptCacheConfigDefaultsCacheDirUnderMaclaw(t *testing.T) {
+	cfg := LLMPromptCacheConfig{}.WithDefaults()
+	if cfg.CacheDir != DefaultLLMPromptCacheDir() {
+		t.Fatalf("cache dir = %q, want %q", cfg.CacheDir, DefaultLLMPromptCacheDir())
+	}
+	if filepath.Base(cfg.CacheDir) != "llm_prompt_cache" {
+		t.Fatalf("cache dir base = %q, want llm_prompt_cache", filepath.Base(cfg.CacheDir))
+	}
+}
+
+func TestExpandLLMPromptCacheDirExpandsTilde(t *testing.T) {
+	got := ExpandLLMPromptCacheDir("~/custom_llm_cache")
+	if filepath.Base(got) != "custom_llm_cache" || got == "~/custom_llm_cache" {
+		t.Fatalf("expanded dir = %q", got)
 	}
 }

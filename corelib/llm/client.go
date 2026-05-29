@@ -477,18 +477,29 @@ func DoOpenAIRequest(
 	tools []map[string]interface{},
 	client *http.Client,
 ) (*Response, error) {
+	result, _, err := DoOpenAIRequestRaw(ctx, cfg, messages, tools, client)
+	return result, err
+}
+
+func DoOpenAIRequestRaw(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+) (*Response, []byte, error) {
 	req, _, endpoint, err := NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{
 		Stream: false,
 		Tools:  tools,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	log.Printf("[LLM] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("[%s] %w", endpoint, err)
+		return nil, nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
@@ -498,14 +509,14 @@ func DoOpenAIRequest(
 		if len(msg) > 512 {
 			msg = msg[:512] + "..."
 		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		return nil, body, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 
 	result, err := ParseNonStreamOpenAIResponseBody(body)
 	if err != nil {
-		return nil, err
+		return nil, body, err
 	}
-	return result, nil
+	return result, body, nil
 }
 
 // sseChunk represents a single SSE chunk from an OpenAI-compatible streaming response.

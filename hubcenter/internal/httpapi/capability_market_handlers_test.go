@@ -165,6 +165,24 @@ func TestCapabilityMarketCustomerAccountUsesTenantVirtualHub(t *testing.T) {
 	}
 }
 
+func TestCapabilityMarketCustomerAccountUsesDefaultTenantVirtualHub(t *testing.T) {
+	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capability-market/customer-account?hub_id=hub-1&tenant_id=tenant_default&admin_email=admin@example.com", nil)
+	rec := httptest.NewRecorder()
+	CapabilityMarketCustomerAccountHandler(settings)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var account CapabilityMarketCustomerAccount
+	if err := json.Unmarshal(rec.Body.Bytes(), &account); err != nil {
+		t.Fatalf("decode account: %v", err)
+	}
+	if account.CustomerID != "hub-1:tenant_default" || account.HubID != "hub-1" || account.TenantID != "tenant_default" || account.IdentitySource != "request" {
+		t.Fatalf("unexpected default tenant virtual hub account: %+v", account)
+	}
+}
+
 func TestCapabilityMarketCustomerAccountFallsBackToAdminEmail(t *testing.T) {
 	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
 	if err := settings.Set(context.Background(), "admin_email", `{"value":"owner@example.com"}`); err != nil {
@@ -184,6 +202,9 @@ func TestCapabilityMarketCustomerAccountFallsBackToAdminEmail(t *testing.T) {
 	}
 	if account.Status != "configured" || account.CustomerID != "owner@example.com" || account.AdminEmail != "owner@example.com" || account.IdentitySource != "settings" {
 		t.Fatalf("unexpected fallback account: %+v", account)
+	}
+	if account.TenantID != "" {
+		t.Fatalf("fallback account without hub tenant context should not invent tenant id: %+v", account)
 	}
 }
 func TestCapabilityMarketMCPPurchaseRequiresAdminEmailForPaid(t *testing.T) {
@@ -311,6 +332,74 @@ func TestCapabilityMarketMCPPurchaseRequestIDIsTenantScoped(t *testing.T) {
 	}
 }
 
+func TestCapabilityMarketMCPPurchaseNormalizesDefaultTenant(t *testing.T) {
+	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
+	upsertReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/mcp", bytes.NewReader([]byte(`{"capability_id":"paid-mcp","display_name":"Paid MCP","pricing":{"mode":"paid"},"mcp":{"endpoint_url":"https://paid.example.com/mcp"}}`)))
+	upsertRec := httptest.NewRecorder()
+	AdminCapabilityMarketMCPUpsertHandler(settings)(upsertRec, upsertReq)
+	if upsertRec.Code != http.StatusOK {
+		t.Fatalf("upsert status=%d body=%s", upsertRec.Code, upsertRec.Body.String())
+	}
+
+	purchaseReq := httptest.NewRequest(http.MethodPost, "/api/capability-market/mcp/paid-mcp/purchase", bytes.NewReader([]byte(`{"hub_id":"hub-1","tenant_id":"tenant_default","admin_email":"admin@example.com","request_id":"default-request"}`)))
+	purchaseReq.SetPathValue("id", "paid-mcp")
+	purchaseRec := httptest.NewRecorder()
+	CapabilityMarketMCPPurchaseHandler(settings)(purchaseRec, purchaseReq)
+	if purchaseRec.Code != http.StatusOK {
+		t.Fatalf("purchase status=%d body=%s", purchaseRec.Code, purchaseRec.Body.String())
+	}
+	if !strings.Contains(purchaseRec.Body.String(), `"tenant_id":"tenant_default"`) {
+		t.Fatalf("purchase response should expose tenant_default, body=%s", purchaseRec.Body.String())
+	}
+
+	licensesReq := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1&tenant_id=tenant_default", nil)
+	licensesRec := httptest.NewRecorder()
+	skillProvider := fakeSkillLicenseProvider{items: []CapabilityMarketLicenseRecord{{CapabilityType: corelib.CapabilityTypeSkill, CapabilityID: "paid-skill", Source: corelib.CapabilitySourceHubCenter, PurchaseID: "pur-skill", BuyerEmail: "admin@example.com", AdminEmail: "admin@example.com", Status: "active"}}}
+	CapabilityMarketBillingLicensesHandler(settings, skillProvider)(licensesRec, licensesReq)
+	if licensesRec.Code != http.StatusOK {
+		t.Fatalf("licenses status=%d body=%s", licensesRec.Code, licensesRec.Body.String())
+	}
+	var licenses struct {
+		Items []CapabilityMarketMCPPurchaseRecord `json:"items"`
+	}
+	if err := json.Unmarshal(licensesRec.Body.Bytes(), &licenses); err != nil {
+		t.Fatalf("decode licenses: %v", err)
+	}
+	if len(licenses.Items) != 2 {
+		t.Fatalf("expected MCP + Skill default tenant licenses, got %+v body=%s", licenses.Items, licensesRec.Body.String())
+	}
+	for _, item := range licenses.Items {
+		if item.TenantID != "tenant_default" {
+			t.Fatalf("default tenant license should round-trip with public id, got %+v body=%s", licenses.Items, licensesRec.Body.String())
+		}
+	}
+}
+
+func TestCapabilityMarketBillingLicensesFiltersGenericSkillLicensesByTenant(t *testing.T) {
+	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
+	skillProvider := fakeGenericSkillLicenseProvider{items: []CapabilityMarketLicenseRecord{
+		{CapabilityType: corelib.CapabilityTypeSkill, CapabilityID: "tenant-a-skill", Source: corelib.CapabilitySourceHubCenter, PurchaseID: "pur-a", HubID: "hub-1", TenantID: "tenant-a", BuyerEmail: "admin@example.com", AdminEmail: "admin@example.com", Status: "active"},
+		{CapabilityType: corelib.CapabilityTypeSkill, CapabilityID: "tenant-b-skill", Source: corelib.CapabilitySourceHubCenter, PurchaseID: "pur-b", HubID: "hub-1", TenantID: "tenant-b", BuyerEmail: "admin@example.com", AdminEmail: "admin@example.com", Status: "active"},
+		{CapabilityType: corelib.CapabilityTypeSkill, CapabilityID: "unscoped-skill", Source: corelib.CapabilitySourceHubCenter, PurchaseID: "pur-unscoped", BuyerEmail: "admin@example.com", AdminEmail: "admin@example.com", Status: "active"},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capability-market/billing/licenses?hub_id=hub-1&tenant_id=tenant-a&admin_email=admin@example.com", nil)
+	rec := httptest.NewRecorder()
+	CapabilityMarketBillingLicensesHandler(settings, skillProvider)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []CapabilityMarketLicenseRecord `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode licenses: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].CapabilityID != "tenant-a-skill" || resp.Items[0].TenantID != "tenant-a" {
+		t.Fatalf("tenant filter leaked generic skill licenses: %+v body=%s", resp.Items, rec.Body.String())
+	}
+}
+
 func TestAdminCapabilityMarketMCPDelete(t *testing.T) {
 	settings := &capabilityMarketSettingsRepo{values: map[string]string{}}
 	upsertReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/mcp", bytes.NewReader([]byte(`{"capability_id":"tmp","display_name":"Tmp","mcp":{"endpoint_url":"https://tmp.example.com/mcp"}}`)))
@@ -389,6 +478,20 @@ func (f fakeSkillLicenseProvider) CapabilityMarketSkillLicensesForTenant(ctx con
 	for i := range items {
 		items[i].HubID = strings.TrimSpace(hubID)
 		items[i].TenantID = strings.TrimSpace(tenantID)
+	}
+	return items, nil
+}
+
+type fakeGenericSkillLicenseProvider struct {
+	items []CapabilityMarketLicenseRecord
+}
+
+func (f fakeGenericSkillLicenseProvider) CapabilityMarketSkillLicenses(ctx context.Context, buyerEmail string) ([]CapabilityMarketLicenseRecord, error) {
+	items := make([]CapabilityMarketLicenseRecord, 0, len(f.items))
+	for _, item := range f.items {
+		if buyerEmail == "" || item.BuyerEmail == buyerEmail || item.AdminEmail == buyerEmail {
+			items = append(items, item)
+		}
 	}
 	return items, nil
 }

@@ -296,6 +296,44 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LLMPromptCacheConfig {
+	    enabled: boolean;
+	    openai_enabled?: boolean;
+	    anthropic_enabled?: boolean;
+	    stream_synthesis_enabled?: boolean;
+	    cache_dir?: string;
+	    ttl_seconds: number;
+	    memory_max_entries: number;
+	    memory_max_bytes: number;
+	    disk_max_bytes: number;
+	    normalize_deterministic_params: boolean;
+	    ignore_model_field: boolean;
+	    ignore_user_field: boolean;
+	    ignore_metadata_field: boolean;
+	    singleflight_wait_timeout_ms: number;
+
+	    static createFrom(source: any = {}) {
+	        return new LLMPromptCacheConfig(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.openai_enabled = source["openai_enabled"];
+	        this.anthropic_enabled = source["anthropic_enabled"];
+	        this.stream_synthesis_enabled = source["stream_synthesis_enabled"];
+	        this.cache_dir = source["cache_dir"];
+	        this.ttl_seconds = source["ttl_seconds"];
+	        this.memory_max_entries = source["memory_max_entries"];
+	        this.memory_max_bytes = source["memory_max_bytes"];
+	        this.disk_max_bytes = source["disk_max_bytes"];
+	        this.normalize_deterministic_params = source["normalize_deterministic_params"];
+	        this.ignore_model_field = source["ignore_model_field"];
+	        this.ignore_user_field = source["ignore_user_field"];
+	        this.ignore_metadata_field = source["ignore_metadata_field"];
+	        this.singleflight_wait_timeout_ms = source["singleflight_wait_timeout_ms"];
+	    }
+	}
 	export class AppConfig {
 	    claude: ToolConfig;
 	    gemini: ToolConfig;
@@ -368,6 +406,7 @@ export namespace main {
 	    agent_response_timeout_sec: number;
 	    maclaw_llm_providers: any[];
 	    maclaw_llm_current_provider: string;
+	    llm_prompt_cache: LLMPromptCacheConfig;
 	    web_search_providers: any[];
 	    web_search_current_provider: string;
 	    maclaw_agent_max_iterations: number;
@@ -413,6 +452,7 @@ export namespace main {
 	    thirdparty_gateway_host: string;
 	    thirdparty_gateway_port: number;
 	    thirdparty_gateway_local_mode?: boolean;
+	    im_progress_nudge_enabled?: boolean;
 	    ui_mode: string;
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
@@ -535,6 +575,7 @@ export namespace main {
 	        this.agent_response_timeout_sec = source["agent_response_timeout_sec"];
 	        this.maclaw_llm_providers = source["maclaw_llm_providers"];
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
+	        this.llm_prompt_cache = this.convertValues(source["llm_prompt_cache"], LLMPromptCacheConfig);
 	        this.web_search_providers = source["web_search_providers"];
 	        this.web_search_current_provider = source["web_search_current_provider"];
 	        this.maclaw_agent_max_iterations = source["maclaw_agent_max_iterations"];
@@ -580,6 +621,7 @@ export namespace main {
 	        this.thirdparty_gateway_host = source["thirdparty_gateway_host"];
 	        this.thirdparty_gateway_port = source["thirdparty_gateway_port"];
 	        this.thirdparty_gateway_local_mode = source["thirdparty_gateway_local_mode"];
+	        this.im_progress_nudge_enabled = source["im_progress_nudge_enabled"];
 	        this.ui_mode = source["ui_mode"];
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];

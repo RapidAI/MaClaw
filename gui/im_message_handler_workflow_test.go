@@ -1076,6 +1076,23 @@ func TestWorkflowFormLifecyclePayloadPreservesSubmittedContext(t *testing.T) {
 	}
 }
 
+func TestBuildFormSubmissionSummaryLocalizesChinese(t *testing.T) {
+	previousLang, _ := agentViewCurrentLang.Load().(string)
+	t.Cleanup(func() { setAgentViewLang(previousLang) })
+
+	setAgentViewLang("zh-Hans")
+	got := buildFormSubmissionSummary(map[string]interface{}{"goal": "build app"})
+	if !strings.Contains(got, "\u7528\u6237\u5df2\u63d0\u4ea4\u5de5\u4f5c\u6d41\u8868\u5355\u6570\u636e\uff1a") || !strings.Contains(got, "goal: build app") {
+		t.Fatalf("expected Chinese workflow form summary, got %q", got)
+	}
+
+	setAgentViewLang("en-US")
+	got = buildFormSubmissionSummary(map[string]interface{}{"goal": "build app"})
+	if !strings.HasPrefix(got, "The user submitted workflow form data: ") {
+		t.Fatalf("expected English workflow form summary, got %q", got)
+	}
+}
+
 func TestWorkflowFormSchemaLocalizesBusinessPlanForChineseUI(t *testing.T) {
 	schema := &workflow.PhaseInputSchema{
 		Title:     "Business plan brief",

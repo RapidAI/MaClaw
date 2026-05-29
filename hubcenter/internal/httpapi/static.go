@@ -13,6 +13,10 @@ const (
 )
 
 func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
+	registerStaticRoutesWithAssetCache(mux, staticDir, routePrefix, staticAssetCacheControl)
+}
+
+func registerStaticRoutesWithAssetCache(mux *http.ServeMux, staticDir string, routePrefix string, assetCacheControl string) {
 	staticDir = resolveStaticDir(staticDir)
 	staticDir = strings.TrimSpace(staticDir)
 	if staticDir == "" {
@@ -25,10 +29,10 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix stri
 	indexPath := filepath.Join(staticDir, "index.html")
 
 	mux.HandleFunc("GET "+routePrefix, func(w http.ResponseWriter, r *http.Request) {
-		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
+		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix, assetCacheControl)
 	})
 	mux.HandleFunc("GET "+routePrefix+"/{rest...}", func(w http.ResponseWriter, r *http.Request) {
-		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
+		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix, assetCacheControl)
 	})
 }
 
@@ -78,12 +82,12 @@ func resolveStaticDirFromBases(staticDir string, baseDirs []string) string {
 	return filepath.Clean(staticDir)
 }
 
-// registerAdminStaticRoutes is an alias for registerStaticRoutes with /admin default.
+// registerAdminStaticRoutes serves admin files with revalidation so operator JS updates take effect promptly.
 func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
 	if routePrefix == "" {
 		routePrefix = "/admin"
 	}
-	registerStaticRoutes(mux, staticDir, routePrefix)
+	registerStaticRoutesWithAssetCache(mux, staticDir, routePrefix, staticHTMLCacheControl)
 }
 
 func registerSharedStaticAssets(mux *http.ServeMux, staticDir string) {
@@ -114,7 +118,7 @@ func shouldRevalidateStaticHTML(relPath string) bool {
 	return relPath == "index.html" || ext == ".html" || ext == ".htm"
 }
 
-func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir string, indexPath string, routePrefix string) {
+func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir string, indexPath string, routePrefix string, assetCacheControl string) {
 	relPath := strings.TrimPrefix(r.URL.Path, routePrefix)
 	relPath = strings.TrimPrefix(relPath, "/")
 	if relPath == "" {
@@ -138,7 +142,7 @@ func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir 
 	if info, err := os.Stat(candidate); err == nil {
 		if !info.IsDir() {
 			if shouldCacheStaticAsset(relPath) {
-				w.Header().Set("Cache-Control", staticAssetCacheControl)
+				w.Header().Set("Cache-Control", assetCacheControl)
 				w.Header().Set("X-Content-Type-Options", "nosniff")
 			} else if shouldRevalidateStaticHTML(relPath) {
 				w.Header().Set("Cache-Control", staticHTMLCacheControl)

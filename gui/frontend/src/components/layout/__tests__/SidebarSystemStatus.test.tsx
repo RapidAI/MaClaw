@@ -96,6 +96,62 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(cacheTitles[0].getAttribute('title')).toContain('Write 30');
     });
 
+    it('shows zero cache hit rate when local cache is enabled before first hit', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                localLLMCacheEnabled
+                sidebarCurrentProviderTokenUsage={{ provider: 'Local', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => `${value}`}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="unlimited"
+                noHubAuthorizationText="none"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        expect(screen.getByText(/cache 0%/)).toBeTruthy();
+    });
+
+    it('uses local cache counters for non-hub providers when local cache is enabled', () => {
+        render(
+            <SidebarSystemStatus
+                lang="en"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                localLLMCacheEnabled
+                sidebarCurrentProviderTokenUsage={{ provider: 'Local', isHubService: false, input: 100, output: 20, total: 120, cachedInput: 0, cacheWrite: 0, requests: 10, cachedRequests: 9, localCacheRequests: 4, localCacheHits: 1 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => `${value}`}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="unlimited"
+                noHubAuthorizationText="none"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        expect(screen.getByText(/cache 25%/)).toBeTruthy();
+    });
+
     it('shows background task count immediately after IM status', () => {
         render(
             <SidebarSystemStatus

@@ -1216,8 +1216,13 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 	go func() {
 		// Create a progress callback that sends intermediate updates to Hub.
 		// Hub will relay these to the user via IM and reset the response timeout.
+		progressFilter := newIMProgressVisibilityFilter(c.app)
 		onProgress := func(text string) {
-			if err := c.sendIMAgentProgress(requestID, text); err != nil {
+			forwardText, ok := progressFilter.ForwardProgressOrHeartbeat(text)
+			if !ok {
+				return
+			}
+			if err := c.sendIMAgentProgress(requestID, forwardText); err != nil {
 				c.app.log(fmt.Sprintf("[im-progress] send error for request=%s: %s", requestID, err.Error()))
 			}
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -103,6 +104,51 @@ func executeCodingReadFile(args map[string]interface{}) codingToolExecutionResul
 		return codingToolExecutionResult{Text: fmt.Sprintf("(lines %d-%d of %d)\n%s", startLine, totalLines, totalLines, strings.Join(remaining, "")), Outcome: codingToolOutcomeSuccess}
 	}
 	return codingToolExecutionResult{Text: string(data), Outcome: codingToolOutcomeSuccess}
+}
+
+func executeCodingListDirectory(args map[string]interface{}) codingToolExecutionResult {
+	p, _ := args["path"].(string)
+	if p == "" {
+		return codingToolExecutionResult{Text: "missing path parameter", Outcome: codingToolOutcomeFailed}
+	}
+	absPath, err := resolveFileToolPath(p)
+	if err != nil {
+		return codingToolExecutionResult{Text: err.Error(), Outcome: codingToolOutcomeFailed}
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return codingToolExecutionResult{Text: fmt.Sprintf("path does not exist or cannot be accessed: %s", err.Error()), Outcome: codingToolOutcomeFailed}
+	}
+	if !info.IsDir() {
+		return codingToolExecutionResult{Text: fmt.Sprintf("%s is not a directory", absPath), Outcome: codingToolOutcomeFailed}
+	}
+
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		return codingToolExecutionResult{Text: fmt.Sprintf("read directory failed: %s", err.Error()), Outcome: codingToolOutcomeFailed}
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("directory: %s (%d entries)\n", absPath, len(entries)))
+	shown := 0
+	for _, entry := range entries {
+		if shown >= 100 {
+			b.WriteString(fmt.Sprintf("... %d more entries not shown\n", len(entries)-shown))
+			break
+		}
+		entryInfo, _ := entry.Info()
+		name := filepath.ToSlash(entry.Name())
+		if entry.IsDir() {
+			b.WriteString(fmt.Sprintf("  [dir] %s/\n", name))
+		} else if entryInfo != nil {
+			b.WriteString(fmt.Sprintf("  [file] %s (%d bytes)\n", name, entryInfo.Size()))
+		} else {
+			b.WriteString(fmt.Sprintf("  [file] %s\n", name))
+		}
+		shown++
+	}
+	return codingToolExecutionResult{Text: b.String(), Outcome: codingToolOutcomeSuccess}
 }
 
 func executeCodingWriteFile(args map[string]interface{}) codingToolExecutionResult {

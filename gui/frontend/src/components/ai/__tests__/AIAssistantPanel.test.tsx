@@ -1212,9 +1212,36 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('confirmation-planned-actions').textContent).toContain('check login flow');
         expect(getByTestId('confirmation-risk-flags').textContent).toContain('will edit code directly');
         expect(getByTestId('confirmation-revision-hints').textContent).toContain('correct the directory if needed');
-        expect(getByTestId('confirmation-status').textContent).toContain('pending');
+        expect(getByTestId('confirmation-status').textContent).toMatch(/Pending|pending|待确认/);
         expect(getByText('Confirm and start')).toBeTruthy();
         expect(getByText('Cancel')).toBeTruthy();
+    });
+
+    it('localizes confirmation fallback labels and enum values', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'confirm',
+                confirmation: {
+                    id: 'c-zh',
+                    summary: 'ready',
+                    taskType: 'coding',
+                    status: 'running',
+                },
+                actions: [
+                    { label: 'Confirm and start', command: '__confirm_execution__ c-zh', style: 'default' },
+                ],
+            }),
+        ];
+
+        const { container } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(container.textContent).toContain('\u6267\u884c\u524d\u786e\u8ba4 - \u4ee3\u7801\u4efb\u52a1');
+        expect(container.textContent).toContain('\u72b6\u6001: \u6267\u884c\u4e2d');
+        expect(container.textContent).toContain('\u786e\u8ba4\u5e76\u5f00\u59cb');
     });
 
     it('confirmation card buttons reuse executeAction', async () => {

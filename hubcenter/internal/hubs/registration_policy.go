@@ -25,6 +25,7 @@ type hubRegistrationPolicyStore struct {
 }
 
 type UpdateHubRegistrationPolicyRequest struct {
+	HubID              string                                `json:"hub_id,omitempty"`
 	HubOrigin          string                                `json:"hub_origin,omitempty"`
 	DefaultSignupScope string                                `json:"default_signup_scope,omitempty"`
 	Tenant             UpdateTenantRegistrationPolicyRequest `json:"tenant,omitempty"`
@@ -86,6 +87,9 @@ func (s *Service) UpdateHubRegistrationPolicy(ctx context.Context, hubID string,
 	if err != nil {
 		return HubRegistrationPolicyConfig{}, err
 	}
+	if err := s.pruneRegistrationPolicyStore(ctx, &state); err != nil {
+		return HubRegistrationPolicyConfig{}, err
+	}
 	cfg, ok := state.Hubs[hubID]
 	if !ok {
 		cfg = hubRegistrationPolicyConfigFromRow(hub)
@@ -97,12 +101,14 @@ func (s *Service) UpdateHubRegistrationPolicy(ctx context.Context, hubID string,
 	if strings.TrimSpace(req.DefaultSignupScope) != "" {
 		cfg.DefaultSignupScope = normalizeSignupScope(req.DefaultSignupScope)
 	}
+	cfg = normalizeHubRegistrationPolicyConfig(cfg)
 	if req.Tenant.hasUpdate() {
 		policy := mergeTenantRegistrationPolicy(cfg.Tenants[normalizeHubSyncTenantID(req.Tenant.TenantID)], req.Tenant)
 		cfg.Tenants[policy.TenantID] = policy
 	}
+	cfg = normalizeHubRegistrationPolicyConfig(cfg)
 	state.Hubs[hubID] = cfg
-	if err := validateRegistrationPolicyStore(state); err != nil {
+	if err := validateUpdatedRegistrationPolicyStore(state, hubID); err != nil {
 		return HubRegistrationPolicyConfig{}, err
 	}
 	if err := s.saveRegistrationPolicyStore(ctx, state); err != nil {
@@ -143,6 +149,48 @@ func (s *Service) ensureDefaultHubRegistrationPolicy(ctx context.Context, hubID 
 		return nil
 	}
 	return s.persistHubRegistrationPolicyFields(ctx, hub, state.Hubs[hubID])
+}
+
+func (s *Service) deleteHubRegistrationPolicy(ctx context.Context, hubID string) error {
+	hubID = strings.TrimSpace(hubID)
+	if hubID == "" || s == nil || s.settings == nil {
+		return nil
+	}
+	state, err := s.loadRegistrationPolicyStore(ctx)
+	if err != nil {
+		return err
+	}
+	if _, ok := state.Hubs[hubID]; !ok {
+		return nil
+	}
+	delete(state.Hubs, hubID)
+	return s.saveRegistrationPolicyStore(ctx, state)
+}
+
+func (s *Service) pruneRegistrationPolicyStore(ctx context.Context, state *hubRegistrationPolicyStore) error {
+	if s == nil || s.hubs == nil || state == nil || len(state.Hubs) == 0 {
+		return nil
+	}
+	items, err := s.hubs.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	active := map[string]struct{}{}
+	for _, hub := range items {
+		if hub == nil || strings.TrimSpace(hub.ID) == "" {
+			continue
+		}
+		active[strings.TrimSpace(hub.ID)] = struct{}{}
+	}
+	for hubID := range state.Hubs {
+		if _, ok := active[strings.TrimSpace(hubID)]; !ok {
+			delete(state.Hubs, hubID)
+		}
+	}
+	if state.Hubs == nil {
+		state.Hubs = map[string]HubRegistrationPolicyConfig{}
+	}
+	return nil
 }
 
 func hubRegistrationPolicyConfigFromRow(hub *store.HubInstance) HubRegistrationPolicyConfig {
@@ -244,15 +292,12 @@ func validateRegistrationPolicyStore(state hubRegistrationPolicyStore) error {
 	publicFallbacks := 0
 	for _, cfg := range state.Hubs {
 		cfg = normalizeHubRegistrationPolicyConfig(cfg)
-		if cfg.HubOrigin != "official" && cfg.DefaultSignupScope == "public" {
-			return ErrInvalidRegistrationPolicy
+		if err := validateHubRegistrationPolicyConfig(cfg); err != nil {
+			return err
 		}
 		for _, policy := range cfg.Tenants {
-			if !policy.IsPublicFallback || strings.EqualFold(strings.TrimSpace(policy.Status), "disabled") {
+			if !activePublicFallbackPolicy(cfg, policy) {
 				continue
-			}
-			if cfg.HubOrigin != "official" || effectiveTenantSignupScope(cfg, policy) != "public" {
-				return ErrInvalidRegistrationPolicy
 			}
 			publicFallbacks++
 			if publicFallbacks > 1 {
@@ -263,8 +308,63 @@ func validateRegistrationPolicyStore(state hubRegistrationPolicyStore) error {
 	return nil
 }
 
+func validateUpdatedRegistrationPolicyStore(state hubRegistrationPolicyStore, updatedHubID string) error {
+	updatedHubID = strings.TrimSpace(updatedHubID)
+	updatedCfg, ok := state.Hubs[updatedHubID]
+	if !ok {
+		return ErrInvalidRegistrationPolicy
+	}
+	updatedCfg = normalizeHubRegistrationPolicyConfig(updatedCfg)
+	if err := validateHubRegistrationPolicyConfig(updatedCfg); err != nil {
+		return err
+	}
+	if !hubRegistrationConfigHasPublicFallback(updatedCfg) {
+		return nil
+	}
+	for hubID, cfg := range state.Hubs {
+		if strings.TrimSpace(hubID) == updatedHubID {
+			continue
+		}
+		cfg = normalizeHubRegistrationPolicyConfig(cfg)
+		if hubRegistrationConfigHasPublicFallback(cfg) {
+			return ErrInvalidRegistrationPolicy
+		}
+	}
+	return nil
+}
+
+func validateHubRegistrationPolicyConfig(cfg HubRegistrationPolicyConfig) error {
+	cfg = normalizeHubRegistrationPolicyConfig(cfg)
+	for _, policy := range cfg.Tenants {
+		if !policy.IsPublicFallback || strings.EqualFold(strings.TrimSpace(policy.Status), "disabled") {
+			continue
+		}
+		if cfg.HubOrigin != "official" || effectiveTenantSignupScope(cfg, policy) != "public" {
+			return ErrInvalidRegistrationPolicy
+		}
+	}
+	return nil
+}
+
+func hubRegistrationConfigHasPublicFallback(cfg HubRegistrationPolicyConfig) bool {
+	cfg = normalizeHubRegistrationPolicyConfig(cfg)
+	for _, policy := range cfg.Tenants {
+		if activePublicFallbackPolicy(cfg, policy) {
+			return true
+		}
+	}
+	return false
+}
+
+func activePublicFallbackPolicy(cfg HubRegistrationPolicyConfig, policy store.HubTenantRegistrationPolicy) bool {
+	return policy.IsPublicFallback &&
+		!strings.EqualFold(strings.TrimSpace(policy.Status), "disabled") &&
+		cfg.HubOrigin == "official" &&
+		effectiveTenantSignupScope(cfg, policy) == "public"
+}
+
 func effectiveTenantSignupScope(cfg HubRegistrationPolicyConfig, policy store.HubTenantRegistrationPolicy) string {
-	scope := normalizeSignupScope(policy.SignupScope)
+	scope := normalizeTenantSignupScope(policy.SignupScope)
 	if scope == "inherit" || scope == "" {
 		return normalizeSignupScope(cfg.DefaultSignupScope)
 	}
@@ -303,8 +403,14 @@ func (s *Service) saveRegistrationPolicyStore(ctx context.Context, state hubRegi
 func normalizeHubRegistrationPolicyConfig(cfg HubRegistrationPolicyConfig) HubRegistrationPolicyConfig {
 	cfg.HubOrigin = normalizeHubOrigin(cfg.HubOrigin)
 	cfg.DefaultSignupScope = normalizeSignupScope(cfg.DefaultSignupScope)
+	if cfg.DefaultSignupScope == "public" {
+		cfg.HubOrigin = "official"
+	}
 	normalizedTenants := make(map[string]store.HubTenantRegistrationPolicy, len(cfg.Tenants))
-	for _, value := range cfg.Tenants {
+	for tenantID, value := range cfg.Tenants {
+		if strings.TrimSpace(value.TenantID) == "" {
+			value.TenantID = tenantID
+		}
 		policy := normalizeTenantRegistrationPolicy(value)
 		normalizedTenants[policy.TenantID] = policy
 	}
@@ -326,20 +432,26 @@ func normalizeHubOrigin(value string) string {
 
 func normalizeSignupScope(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "public", "domain_restricted", "invite_only", "inherit":
+	case "public", "domain_restricted", "invite_only":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return "domain_restricted"
 	}
 }
 
+func normalizeTenantSignupScope(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "public", "domain_restricted", "invite_only":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "inherit"
+	}
+}
+
 func normalizeTenantRegistrationPolicy(policy store.HubTenantRegistrationPolicy) store.HubTenantRegistrationPolicy {
 	policy.TenantID = normalizeHubSyncTenantID(policy.TenantID)
 	policy.TenantName = strings.TrimSpace(policy.TenantName)
-	policy.SignupScope = normalizeSignupScope(policy.SignupScope)
-	if policy.SignupScope == "inherit" || policy.SignupScope == "" {
-		policy.SignupScope = "inherit"
-	}
+	policy.SignupScope = normalizeTenantSignupScope(policy.SignupScope)
 	if strings.TrimSpace(policy.Status) == "" {
 		policy.Status = "active"
 	}

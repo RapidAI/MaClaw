@@ -1198,6 +1198,41 @@ func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens,
 	}
 }
 
+// AccumulateLLMLocalCacheRequest records local LLM response-cache request counts
+// for the sidebar cache hit-rate display. Token counts remain provider-reported.
+func (a *App) AccumulateLLMLocalCacheRequest(providerName string, hit bool) {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" || isRemoteToolTokenUsageProvider(providerName) {
+		return
+	}
+	a.tokenUsageMu.Lock()
+	defer a.tokenUsageMu.Unlock()
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[LLM] AccumulateLLMLocalCacheRequest: load config: %v", err)
+		return
+	}
+	if cfg.LLMTokenUsage == nil {
+		cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
+	}
+	stat, ok := cfg.LLMTokenUsage[providerName]
+	if !ok || stat == nil {
+		stat = &corelib.TokenUsageStat{}
+		cfg.LLMTokenUsage[providerName] = stat
+	}
+	stat.LocalCacheRequests++
+	if hit {
+		stat.LocalCacheHits++
+	}
+	if err := a.SaveConfig(cfg); err != nil {
+		log.Printf("[LLM] AccumulateLLMLocalCacheRequest: save config: %v", err)
+		return
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", providerName)
+	}
+}
+
 // GetLLMTokenUsage returns the token usage stats for a specific provider.
 // If provider is empty, returns stats for the current provider.
 func (a *App) GetLLMTokenUsage(provider string) *corelib.TokenUsageStat {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -690,6 +691,18 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if policyTenantResp.Code != http.StatusOK {
 		t.Fatalf("policy tenant update status=%d body=%s", policyTenantResp.Code, policyTenantResp.Body.String())
 	}
+	defaultPolicyResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/registration-policy", map[string]any{
+		"tenant": map[string]any{
+			"tenant_id":    "tenant_default",
+			"signup_scope": "inherit",
+		},
+	}, token)
+	if defaultPolicyResp.Code != http.StatusOK {
+		t.Fatalf("default policy update status=%d body=%s", defaultPolicyResp.Code, defaultPolicyResp.Body.String())
+	}
+	if !bytes.Contains(defaultPolicyResp.Body.Bytes(), []byte(`"tenant_default"`)) || bytes.Contains(defaultPolicyResp.Body.Bytes(), []byte(`"tenants":{""`)) {
+		t.Fatalf("default policy response should expose tenant_default, body=%s", defaultPolicyResp.Body.String())
+	}
 	policyListResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
 	if policyListResp.Code != http.StatusOK {
 		t.Fatalf("hub list should expose policy-only tenant before authorization, status=%d body=%s", policyListResp.Code, policyListResp.Body.String())
@@ -705,13 +718,20 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if err := json.Unmarshal(policyListResp.Body.Bytes(), &policyListBody); err != nil {
 		t.Fatalf("decode policy-only tenant list: %v body=%s", err, policyListResp.Body.String())
 	}
+	foundDefaultTenant := false
 	foundPolicyTenant := false
 	for _, hub := range policyListBody.Hubs {
 		for _, tenant := range hub.Tenants {
+			if tenant.TenantID == "tenant_default" {
+				foundDefaultTenant = true
+			}
 			if tenant.TenantID == "tenant_policy" && tenant.TenantName == "Policy Tenant" {
 				foundPolicyTenant = true
 			}
 		}
+	}
+	if !foundDefaultTenant {
+		t.Fatalf("hub list should expose default tenant as a manageable tenant, decoded=%+v body=%s", policyListBody, policyListResp.Body.String())
 	}
 	if !foundPolicyTenant {
 		t.Fatalf("hub list should expose policy-only tenant before authorization, decoded=%+v body=%s", policyListBody, policyListResp.Body.String())
@@ -724,6 +744,16 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	}, token)
 	if missingTenantResp.Code != http.StatusBadRequest || responseErrorCode(t, missingTenantResp) != "TENANT_ID_REQUIRED" {
 		t.Fatalf("expected missing tenant rejection, status=%d body=%s", missingTenantResp.Code, missingTenantResp.Body.String())
+	}
+
+	defaultTenantResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"tenant_id": "tenant_default",
+		"quota":     1,
+		"years":     1,
+		"enabled":   true,
+	}, token)
+	if defaultTenantResp.Code != http.StatusOK {
+		t.Fatalf("default tenant authorization update status=%d body=%s", defaultTenantResp.Code, defaultTenantResp.Body.String())
 	}
 
 	noSettingsHubService := hubs.NewService(svc.store.Hubs, svc.store.HubUserLinks, svc.store.HubDomainRoutes, svc.store.BlockedEmails, svc.store.BlockedIPs, nil, svc.mailer, "http://127.0.0.1:9388")
@@ -833,8 +863,8 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if err := json.Unmarshal(heartbeatResp.Body.Bytes(), &heartbeatBody); err != nil {
 		t.Fatalf("decode heartbeat response: %v body=%s", err, heartbeatResp.Body.String())
 	}
-	if heartbeatBody.LegacyAuthorization != nil || heartbeatBody.TenantAuthorizations["tenant_a"]["quota"] != float64(4) {
-		t.Fatalf("heartbeat should push tenant digital employee authorization only, decoded=%+v body=%s", heartbeatBody, heartbeatResp.Body.String())
+	if heartbeatBody.LegacyAuthorization["quota"] != float64(1) || heartbeatBody.TenantAuthorizations["tenant_a"]["quota"] != float64(4) {
+		t.Fatalf("heartbeat should push default and tenant digital employee authorizations, decoded=%+v body=%s", heartbeatBody, heartbeatResp.Body.String())
 	}
 
 	tenantResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
@@ -859,17 +889,21 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	if err := json.Unmarshal(listResp.Body.Bytes(), &listBody); err != nil {
 		t.Fatalf("decode hub list response: %v body=%s", err, listResp.Body.String())
 	}
-	if len(listBody.Hubs) != 1 || listBody.Hubs[0].DigitalEmployeeAuthorizations["tenant_b"] == nil || listBody.Hubs[0].DigitalEmployeeAuthorizations[""] != nil {
-		t.Fatalf("hub list should expose tenant auths without legacy empty key, decoded=%+v body=%s", listBody, listResp.Body.String())
+	if len(listBody.Hubs) != 1 || listBody.Hubs[0].DigitalEmployeeAuthorizations["tenant_default"] == nil || listBody.Hubs[0].DigitalEmployeeAuthorizations["tenant_b"] == nil || listBody.Hubs[0].DigitalEmployeeAuthorizations[""] != nil {
+		t.Fatalf("hub list should expose default and tenant auths without legacy empty key, decoded=%+v body=%s", listBody, listResp.Body.String())
 	}
 	foundTenantB := false
+	foundDefaultTenant = false
 	for _, tenant := range listBody.Hubs[0].Tenants {
+		if tenant["tenant_id"] == "tenant_default" {
+			foundDefaultTenant = true
+		}
 		if tenant["tenant_id"] == "tenant_b" {
 			foundTenantB = true
 		}
 	}
-	if !foundTenantB {
-		t.Fatalf("hub list should expose tenant_b in tenants, decoded=%+v body=%s", listBody, listResp.Body.String())
+	if !foundDefaultTenant || !foundTenantB {
+		t.Fatalf("hub list should expose default tenant and tenant_b in tenants, decoded=%+v body=%s", listBody, listResp.Body.String())
 	}
 	tenantHeartbeat := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
 		"hub_secret": hubSecret,
@@ -1037,6 +1071,30 @@ func TestListFailureLogsHandlerReturnsFilteredLogs(t *testing.T) {
 	now := time.Date(2026, 4, 25, 9, 0, 0, 0, time.UTC)
 	for _, item := range []*store.FailureEventLog{
 		{
+			ID:          "center_fail_default_1",
+			TenantID:    "tenant_default",
+			Category:    "registration",
+			EventCode:   "DEFAULT_TENANT_FAILED",
+			Message:     "default tenant registration failed",
+			EntityID:    "hub_default",
+			Email:       "owner@example.com",
+			ClientIP:    "172.16.0.9",
+			DetailsJSON: `{"field":"tenant_id"}`,
+			CreatedAt:   now.Add(-time.Minute),
+		},
+		{
+			ID:          "center_fail_default_legacy_1",
+			TenantID:    "",
+			Category:    "registration",
+			EventCode:   "DEFAULT_TENANT_LEGACY_FAILED",
+			Message:     "legacy default tenant registration failed",
+			EntityID:    "hub_default_legacy",
+			Email:       "owner-legacy@example.com",
+			ClientIP:    "172.16.0.8",
+			DetailsJSON: `{"field":"tenant_id"}`,
+			CreatedAt:   now.Add(-2 * time.Minute),
+		},
+		{
 			ID:          "center_fail_register_1",
 			TenantID:    "tenant_a",
 			Category:    "registration",
@@ -1100,6 +1158,18 @@ func TestListFailureLogsHandlerReturnsFilteredLogs(t *testing.T) {
 	}
 	if strings.Contains(tenantBody, "HA_APPLY_FAILED") || strings.Contains(tenantBody, `"tenant_id":"tenant_b"`) {
 		t.Fatalf("tenant filter leaked other tenant log, body=%s", tenantBody)
+	}
+
+	defaultTenantResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/failure-logs?tenant_id=tenant_default&limit=5", nil, token)
+	if defaultTenantResp.Code != http.StatusOK {
+		t.Fatalf("expected default tenant filtered 200, got %d body=%s", defaultTenantResp.Code, defaultTenantResp.Body.String())
+	}
+	defaultTenantBody := defaultTenantResp.Body.String()
+	if !strings.Contains(defaultTenantBody, `"tenant_id":"tenant_default"`) || !strings.Contains(defaultTenantBody, `"total":2`) || !strings.Contains(defaultTenantBody, "DEFAULT_TENANT_FAILED") || !strings.Contains(defaultTenantBody, "DEFAULT_TENANT_LEGACY_FAILED") {
+		t.Fatalf("expected default tenant failure log, body=%s", defaultTenantBody)
+	}
+	if strings.Contains(defaultTenantBody, `"tenant_id":""`) || strings.Contains(defaultTenantBody, "HUB_REGISTER_VALIDATE_FAILED") || strings.Contains(defaultTenantBody, "HA_APPLY_FAILED") {
+		t.Fatalf("default tenant filter leaked internal or other tenant log, body=%s", defaultTenantBody)
 	}
 }
 
@@ -1190,18 +1260,26 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 	token := issueAdminToken(t, svc)
 
-	_, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
-		OwnerEmail:     "owner@example.com",
-		Name:           "Personal Hub",
-		Description:    "Personal remote hub",
-		BaseURL:        "https://personal.example.com",
-		Host:           "personal.example.com",
-		Port:           9399,
-		Visibility:     "private",
-		EnrollmentMode: "open",
+	registerResult, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
+		OwnerEmail:           "owner@example.com",
+		Name:                 "Personal Hub",
+		Description:          "Personal remote hub",
+		BaseURL:              "https://personal.example.com",
+		Host:                 "personal.example.com",
+		Port:                 9399,
+		Visibility:           "private",
+		EnrollmentMode:       "open",
+		CorporateEmailDomain: "personal.example.com",
 	})
 	if err != nil {
 		t.Fatalf("register hub: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := svc.store.HubUserLinks.Upsert(context.Background(), &store.HubUserLink{ID: "personal-enterprise", HubID: registerResult.HubID, Email: "user@personal.example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed enterprise link: %v", err)
+	}
+	if err := svc.store.HubUserLinks.Upsert(context.Background(), &store.HubUserLink{ID: "personal-guest", HubID: registerResult.HubID, Email: "user@external.example", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed guest link: %v", err)
 	}
 
 	resp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
@@ -1219,8 +1297,96 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"last_seen_at"`)) {
 		t.Fatalf("expected last_seen_at in response, body=%s", body)
 	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"guest_domains":["external.example"]`)) {
+		t.Fatalf("expected filtered guest_domains in response, body=%s", body)
+	}
+	if bytes.Contains(resp.Body.Bytes(), []byte(`"guest_domains":["example.com"`)) {
+		t.Fatalf("owner email domain should not be listed as scattered guest domain, body=%s", body)
+	}
 	if bytes.Contains(resp.Body.Bytes(), []byte(`"OwnerEmail"`)) || bytes.Contains(resp.Body.Bytes(), []byte(`"BaseURL"`)) {
 		t.Fatalf("expected snake_case response fields, body=%s", body)
+	}
+
+	domainResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/routing/enterprise-mail-domains", nil, token)
+	if domainResp.Code != http.StatusOK {
+		t.Fatalf("enterprise domains status = %d, body = %s", domainResp.Code, domainResp.Body.String())
+	}
+	domainBody := domainResp.Body.String()
+	if !bytes.Contains(domainResp.Body.Bytes(), []byte(`"enterprise_domain":"personal.example.com"`)) {
+		t.Fatalf("expected enterprise domain in response, body=%s", domainBody)
+	}
+	if !bytes.Contains(domainResp.Body.Bytes(), []byte(`"tenant_id":"tenant_default"`)) || bytes.Contains(domainResp.Body.Bytes(), []byte(`"tenant_id":""`)) {
+		t.Fatalf("enterprise domain response should expose default tenant with admin id, body=%s", domainBody)
+	}
+	if !bytes.Contains(domainResp.Body.Bytes(), []byte(`"guest_domains":["external.example"]`)) {
+		t.Fatalf("expected filtered guest domains in enterprise response, body=%s", domainBody)
+	}
+	var domainList struct {
+		Items []struct {
+			TenantID          string   `json:"tenant_id"`
+			EnterpriseDomain  string   `json:"enterprise_domain"`
+			EnterpriseDomains []string `json:"enterprise_domains"`
+			GuestDomains      []string `json:"guest_domains"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(domainResp.Body.Bytes(), &domainList); err != nil {
+		t.Fatalf("decode enterprise domains response: %v body=%s", err, domainBody)
+	}
+	if len(domainList.Items) != 1 || domainList.Items[0].TenantID != "tenant_default" || !reflect.DeepEqual(domainList.Items[0].EnterpriseDomains, []string{"personal.example.com"}) || !reflect.DeepEqual(domainList.Items[0].GuestDomains, []string{"external.example"}) {
+		t.Fatalf("enterprise domains should be grouped once per tenant, decoded=%+v body=%s", domainList, domainBody)
+	}
+
+	dashboardResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/users/dashboard", nil, token)
+	if dashboardResp.Code != http.StatusOK {
+		t.Fatalf("user dashboard status = %d, body = %s", dashboardResp.Code, dashboardResp.Body.String())
+	}
+	dashboardBody := dashboardResp.Body.String()
+	if !bytes.Contains(dashboardResp.Body.Bytes(), []byte(`"tenant_id":"tenant_default"`)) || bytes.Contains(dashboardResp.Body.Bytes(), []byte(`"tenant_id":""`)) {
+		t.Fatalf("user dashboard should expose default tenant with admin id, body=%s", dashboardBody)
+	}
+}
+
+func TestAdminHubDefaultTenantIsManageableWithoutInventory(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	registerResult, err := svc.hubs.RegisterHub(context.Background(), hubs.RegisterHubRequest{
+		OwnerEmail:           "owner-default-tenant@example.com",
+		Name:                 "Default Tenant Hub",
+		BaseURL:              "https://default-tenant.example.com",
+		Visibility:           "shared",
+		EnrollmentMode:       "open",
+		CorporateEmailDomain: "default-tenant.example.com",
+	})
+	if err != nil {
+		t.Fatalf("register hub: %v", err)
+	}
+
+	listResp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("list hubs status = %d, body = %s", listResp.Code, listResp.Body.String())
+	}
+	if !bytes.Contains(listResp.Body.Bytes(), []byte(`"tenant_id":"tenant_default"`)) {
+		t.Fatalf("admin hub list should always expose default tenant, body=%s", listResp.Body.String())
+	}
+	if !bytes.Contains(listResp.Body.Bytes(), []byte(`"corporate_email_domain":"default-tenant.example.com"`)) {
+		t.Fatalf("admin default tenant should inherit hub mail domain before inventory sync, body=%s", listResp.Body.String())
+	}
+
+	policyResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+registerResult.HubID+"/registration-policy", map[string]any{
+		"hub_origin":           "self_hosted",
+		"default_signup_scope": "domain_restricted",
+		"tenant": map[string]any{
+			"tenant_id":      "tenant_default",
+			"signup_scope":   "inherit",
+			"invite_enabled": true,
+		},
+	}, token)
+	if policyResp.Code != http.StatusOK {
+		t.Fatalf("default tenant registration policy status = %d, body = %s", policyResp.Code, policyResp.Body.String())
+	}
+	if !bytes.Contains(policyResp.Body.Bytes(), []byte(`"tenant_default"`)) || bytes.Contains(policyResp.Body.Bytes(), []byte(`"tenants":{""`)) {
+		t.Fatalf("default tenant policy response should use admin tenant id, body=%s", policyResp.Body.String())
 	}
 }
 
@@ -1364,7 +1530,7 @@ func TestAdminRouteQueryByDomainReturnsOnlyExactMatches(t *testing.T) {
 	if result.DefaultHubID != exactHub["hub_id"] {
 		t.Fatalf("expected exact hub %v, got %+v", exactHub["hub_id"], result)
 	}
-	if len(result.Hubs) != 1 || result.Hubs[0].CorporateEmailDomain != "qianxin.com" {
+	if len(result.Hubs) != 1 || result.Hubs[0].CorporateEmailDomain != "qianxin.com" || result.Hubs[0].TenantID != "tenant_default" {
 		t.Fatalf("expected exact domain route only, got %+v", result.Hubs)
 	}
 }
@@ -1463,6 +1629,18 @@ func TestAdminUserMigrationHandlerMovesEmailRoute(t *testing.T) {
 	}, token)
 	if migrateResp.Code != http.StatusOK {
 		t.Fatalf("migrate status=%d body=%s", migrateResp.Code, migrateResp.Body.String())
+	}
+	var migrateBody struct {
+		Migration struct {
+			SourceTenantID string `json:"source_tenant_id"`
+			TargetTenantID string `json:"target_tenant_id"`
+		} `json:"migration"`
+	}
+	if err := json.Unmarshal(migrateResp.Body.Bytes(), &migrateBody); err != nil {
+		t.Fatalf("decode migrate response: %v body=%s", err, migrateResp.Body.String())
+	}
+	if migrateBody.Migration.SourceTenantID != "tenant_default" || migrateBody.Migration.TargetTenantID != "tenant_default" {
+		t.Fatalf("migration response should expose default tenant with admin id, decoded=%+v body=%s", migrateBody, migrateResp.Body.String())
 	}
 
 	resolveResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{"email": "moved@example.com"}, "")

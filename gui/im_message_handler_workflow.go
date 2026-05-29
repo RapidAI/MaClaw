@@ -1627,6 +1627,10 @@ func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
 // applyWorkflowToolFilter restricts the tool list based on the current
 // workflow phase's ToolFilterPolicy.
 func (h *IMMessageHandler) applyWorkflowToolFilter(userID string, tools []map[string]interface{}) []map[string]interface{} {
+	return h.applyWorkflowToolFilterWithCatalog(userID, tools, nil)
+}
+
+func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalog(userID string, tools, allTools []map[string]interface{}) []map[string]interface{} {
 	engine := h.getWorkflowEngine()
 	if engine == nil {
 		return tools
@@ -1635,6 +1639,10 @@ func (h *IMMessageHandler) applyWorkflowToolFilter(userID string, tools []map[st
 	if policy == workflow.ToolFilterNone && engine.HasActiveWorkflow(userID) && engine.IsPhaseExecutionBlocked(userID) {
 		return nil
 	}
+	if len(workflow.RequiredToolNamesForPolicy(policy)) > 0 && len(allTools) == 0 {
+		allTools = h.getTools()
+	}
+	tools = ensureWorkflowRequiredTools(policy, tools, allTools)
 	return workflow.FilterToolDefinitions(policy, tools)
 }
 

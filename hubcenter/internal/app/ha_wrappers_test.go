@@ -15,7 +15,6 @@ import (
 
 type fakeSeedSync struct {
 	has                map[string]bool
-	versions           map[string]bool
 	routingHubs        int
 	routingLinks       int
 	routingRoutes      int
@@ -36,13 +35,6 @@ func (f *fakeSeedSync) HasEntityTypeOps(_ context.Context, entityTypes ...string
 		}
 	}
 	return false, nil
-}
-
-func (f *fakeSeedSync) HasEntityVersion(_ context.Context, entityType, entityID string) (bool, error) {
-	if f.versions == nil {
-		return false, nil
-	}
-	return f.versions[entityType+":"+entityID], nil
 }
 
 func (f *fakeSeedSync) AppendHubInstance(_ context.Context, _ *store.HubInstance) {
@@ -412,24 +404,27 @@ func TestHASystemSettingsRecordsTenantDigitalEmployeeAuthorization(t *testing.T)
 	}
 }
 
-func TestSeedInitialHASnapshotsSkipsExistingCategories(t *testing.T) {
+func TestSeedInitialHASnapshotsSkipsSeededSnapshotCategoriesButChecksNews(t *testing.T) {
 	sync := &fakeSeedSync{has: map[string]bool{ha.EntityHubInstance: true, ha.EntityHubUserLink: true, ha.EntityHubDomainRoute: true, ha.EntitySystemSetting: true, ha.EntityGossipSnapshot: true, ha.EntityNewsArticle: true, ha.EntitySkillHubSnapshot: true, ha.EntitySkillMarketSnapshot: true}}
 	refresher := &fakeSeedRefresher{}
 	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
-	if sync.routingHubs != 0 || sync.routingLinks != 0 || sync.routingRoutes != 0 || sync.systemSettingSeeds != 0 || sync.gossipSeeds != 0 || sync.newsSeeds != 0 || sync.skillHubSeeds != 0 || sync.skillMarketSeeds != 0 {
+	if sync.routingHubs != 0 || sync.routingLinks != 0 || sync.routingRoutes != 0 || sync.systemSettingSeeds != 0 || sync.gossipSeeds != 0 || sync.skillHubSeeds != 0 || sync.skillMarketSeeds != 0 {
 		t.Fatalf("unexpected seeds: routing=%d/%d/%d settings=%d gossip=%d news=%d skillhub=%d skillmarket=%d", sync.routingHubs, sync.routingLinks, sync.routingRoutes, sync.systemSettingSeeds, sync.gossipSeeds, sync.newsSeeds, sync.skillHubSeeds, sync.skillMarketSeeds)
+	}
+	if sync.newsSeeds != 2 {
+		t.Fatalf("news seeds = %d, want 2 idempotent checks even when category ops exist", sync.newsSeeds)
 	}
 	if refresher.calls != 1 {
 		t.Fatalf("refresher calls = %d, want 1", refresher.calls)
 	}
 }
 
-func TestSeedInitialHASnapshotsSkipsNewsWithExistingEntityVersion(t *testing.T) {
-	sync := &fakeSeedSync{has: map[string]bool{}, versions: map[string]bool{"news_article:news-1": true}}
+func TestSeedInitialHASnapshotsAlwaysChecksNewsForMissingOrStaleOps(t *testing.T) {
+	sync := &fakeSeedSync{has: map[string]bool{ha.EntityNewsArticle: true}}
 	refresher := &fakeSeedRefresher{}
 	seedInitialHASnapshots(context.Background(), sync, refresher, &fakeSeedHubStore{}, &fakeSeedLinkStore{}, &fakeSeedRouteStore{}, &fakeSeedSystemSettingsRepo{}, &fakeSeedGossipRepo{}, &fakeSeedNewsRepo{}, &fakeSeedSkillStore{}, &fakeSeedSkillMarketStore{})
-	if sync.newsSeeds != 1 {
-		t.Fatalf("news seeds = %d, want 1", sync.newsSeeds)
+	if sync.newsSeeds != 2 {
+		t.Fatalf("news seeds = %d, want 2", sync.newsSeeds)
 	}
 	if sync.systemSettingSeeds != 2 {
 		t.Fatalf("system setting seeds = %d, want 2", sync.systemSettingSeeds)
@@ -477,12 +472,12 @@ func TestSeedNewsArticlesPagedUsesBoundedPages(t *testing.T) {
 	}
 	repo := &fakePagedNewsRepo{items: items}
 	sync := &fakeSeedSync{has: map[string]bool{}}
-	seeded, skipped, err := seedNewsArticlesPaged(context.Background(), sync, repo)
+	seeded, err := seedNewsArticlesPaged(context.Background(), sync, repo)
 	if err != nil {
 		t.Fatalf("seedNewsArticlesPaged() error = %v", err)
 	}
-	if seeded != len(items) || skipped != 0 || sync.newsSeeds != len(items) {
-		t.Fatalf("seeded/skipped/newsSeeds = %d/%d/%d, want %d/0/%d", seeded, skipped, sync.newsSeeds, len(items), len(items))
+	if seeded != len(items) || sync.newsSeeds != len(items) {
+		t.Fatalf("seeded/newsSeeds = %d/%d, want %d/%d", seeded, sync.newsSeeds, len(items), len(items))
 	}
 	if len(repo.limits) != 2 || repo.limits[0] != haSeedPageSize || repo.limits[1] != haSeedPageSize {
 		t.Fatalf("limits = %v, want two bounded pages", repo.limits)

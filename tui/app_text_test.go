@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
@@ -2551,5 +2552,87 @@ func TestChatSendWithoutLLMUsesLegacyLLMConfigAsSetupReady(t *testing.T) {
 	}
 	if got.root.Config.ActiveTab() != views.CfgTabLLM {
 		t.Fatalf("config active tab = %d, want LLM", got.root.Config.ActiveTab())
+	}
+}
+
+func TestExtractCodeGenSSOTokenInput(t *testing.T) {
+	cases := map[string]string{
+		"raw-token":                                        "raw-token",
+		"https://callback.example/?token=abc123":           "abc123",
+		"https://callback.example/?access_token=xyz":       "xyz",
+		"https://callback.example/#access_token=fragment":  "fragment",
+		"https://callback.example/#header.payload.sig":     "header.payload.sig",
+		"http://127.0.0.1:12345/?header.payload.signature": "header.payload.signature",
+	}
+	for input, want := range cases {
+		if got := extractCodeGenSSOTokenInput(input); got != want {
+			t.Fatalf("extractCodeGenSSOTokenInput(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestApplyCodeGenSSOResultToConfigSetsUsableProviderDefaults(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{Name: "Custom", TimeoutSec: 300}},
+	}
+	applyCodeGenSSOResultToConfig(&cfg, oauth.CodeGenSSOResult{
+		AccessToken:   "sso-token",
+		BaseURL:       "https://codegen.example/api/v1",
+		ModelID:       "codegen-model",
+		ContextLength: 220000,
+	})
+
+	if cfg.MaclawLLMCurrentProvider != "CodeGen" || len(cfg.MaclawLLMProviders) != 2 {
+		t.Fatalf("CodeGen provider not selected/prepended: current=%q providers=%#v", cfg.MaclawLLMCurrentProvider, cfg.MaclawLLMProviders)
+	}
+	provider := cfg.MaclawLLMProviders[0]
+	if provider.Name != "CodeGen" || provider.AuthType != "sso" || provider.Key != "sso-token" || provider.Model != "codegen-model" {
+		t.Fatalf("CodeGen provider fields = %#v", provider)
+	}
+	if provider.TimeoutSec != corelib.DefaultLLMTimeoutSec || cfg.MaclawLLMTimeoutSec != corelib.DefaultLLMTimeoutSec {
+		t.Fatalf("CodeGen timeout = provider %d config %d, want %d", provider.TimeoutSec, cfg.MaclawLLMTimeoutSec, corelib.DefaultLLMTimeoutSec)
+	}
+	if provider.ContextLength != 220000 || cfg.MaclawLLMContextLength != 220000 {
+		t.Fatalf("CodeGen context = provider %d config %d", provider.ContextLength, cfg.MaclawLLMContextLength)
+	}
+	if cfg.MaclawLLMUrl != "https://codegen.example/api/v1" || cfg.MaclawLLMKey != "sso-token" || cfg.MaclawLLMModel != "codegen-model" {
+		t.Fatalf("top-level LLM config not synced: url=%q key=%q model=%q", cfg.MaclawLLMUrl, cfg.MaclawLLMKey, cfg.MaclawLLMModel)
+	}
+}
+
+func TestCancelCodeGenSSOFlowInvokesRegisteredCancel(t *testing.T) {
+	m := &tuiModel{}
+	canceled := false
+	m.registerCodeGenSSOCancel("flow-1", func() { canceled = true })
+
+	m.cancelCodeGenSSOFlow("flow-1")
+	if !canceled {
+		t.Fatal("cancelCodeGenSSOFlow should invoke registered cancel")
+	}
+
+	canceled = false
+	m.cancelCodeGenSSOFlow("flow-1")
+	if canceled {
+		t.Fatal("cancelCodeGenSSOFlow should remove cancel after first use")
+	}
+}
+
+func TestStaleCodeGenSSOSuccessDoesNotReloadConfig(t *testing.T) {
+	m := &tuiModel{
+		app:  &TUIApp{appConfig: corelib.AppConfig{MaclawLLMCurrentProvider: "before-sentinel"}},
+		root: views.NewRootModel("en"),
+	}
+	m.root.StatusBar.SetMessage("before")
+
+	updated, cmd := m.Update(views.OnboardingSSOResultMsg{FlowID: "stale-flow", Success: true, ModelID: "new-model"})
+	if cmd != nil {
+		t.Fatalf("stale success command = %v, want nil", cmd)
+	}
+	got := updated.(*tuiModel)
+	if got.app.appConfig.MaclawLLMCurrentProvider != "before-sentinel" {
+		t.Fatalf("stale SSO success reloaded config: provider=%q", got.app.appConfig.MaclawLLMCurrentProvider)
+	}
+	if strings.Contains(got.root.View(), tuiText("en", "codeGenSSOSuccess")) {
+		t.Fatal("stale SSO success should not show success status")
 	}
 }

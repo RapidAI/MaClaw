@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,10 +32,12 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/needleruntime"
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -528,6 +531,12 @@ type tuiModel struct {
 	ready      bool
 	startupCmd tea.Cmd
 	activeCb   cancellable // non-nil while agent loop is running
+	ssoMu      sync.Mutex
+	ssoCancels map[string]*codeGenSSOCancel
+}
+
+type codeGenSSOCancel struct {
+	cancel context.CancelFunc
 }
 
 func (m *tuiModel) Init() tea.Cmd {
@@ -870,6 +879,19 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.OnboardingActivateRemoteMsg:
 		return m, m.activateRemoteFromTUI(msg.Email, msg.HubCenterURL)
 
+	case views.OnboardingStartSSOMsg:
+		return m, m.startCodeGenSSOFromTUI(msg.FlowID)
+
+	case views.OnboardingPollSSOMsg:
+		return m, m.pollCodeGenSSOFromTUI(msg.FlowID, msg.Client)
+
+	case views.OnboardingSubmitSSOInputMsg:
+		return m, m.submitCodeGenSSOInputFromTUI(msg.FlowID, msg.Input)
+
+	case views.OnboardingCancelSSOMsg:
+		m.cancelCodeGenSSOFlow(msg.FlowID)
+		return m, nil
+
 	case views.OnboardingStartWeixinMsg:
 		return m, m.startWeixinFromTUI()
 
@@ -895,6 +917,27 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.root.StatusBar.SetMessage(status)
 		} else {
 			m.root.StatusBar.SetMessage(tuiFormat(m.uiLang(), "hubActivationFailed", msg.Message))
+		}
+		return m, cmd
+
+	case views.OnboardingSSOQRMsg, views.OnboardingSSOResultMsg:
+		var cmd tea.Cmd
+		accepted := true
+		if result, ok := msg.(views.OnboardingSSOResultMsg); ok {
+			accepted = m.root.Onboarding.AcceptsSSOFlow(result.FlowID)
+		}
+		if result, ok := msg.(views.OnboardingSSOResultMsg); ok && result.Success && accepted {
+			if saveErr := m.saveAcceptedCodeGenSSOResultToConfig(result); saveErr != nil {
+				msg = views.OnboardingSSOResultMsg{FlowID: result.FlowID, Success: false, Message: saveErr.Error(), KeepOpen: true, FromManual: result.FromManual}
+				accepted = true
+			} else {
+				m.cancelCodeGenSSOFlow(result.FlowID)
+			}
+		}
+		m.root, cmd = m.root.Update(msg)
+		if result, ok := msg.(views.OnboardingSSOResultMsg); ok && result.Success && accepted {
+			m.reloadConfigBackedViews()
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "codeGenSSOSuccess"))
 		}
 		return m, cmd
 
@@ -1785,6 +1828,243 @@ func (m *tuiModel) activateRemoteFromTUI(email, hubCenterURL string) tea.Cmd {
 	}
 }
 
+func (m *tuiModel) startCodeGenSSOFromTUI(flowID string) tea.Cmd {
+	lang := m.uiLang()
+	m.logCodeGenSSO("start flow=%s", flowID)
+	return func() tea.Msg {
+		qr, client, loginURL, err := oauth.ExtractSSOQRCodeURL()
+		if err != nil {
+			m.logCodeGenSSO("qr fallback flow=%s err=%v", flowID, err)
+			loginURL = oauth.HeadlessSSOLoginURL()
+			return views.OnboardingSSOQRMsg{FlowID: flowID, Success: true, QR: loginURL, LoginURL: loginURL, Message: err.Error()}
+		}
+		qr = strings.TrimSpace(qr)
+		if qr == "" {
+			m.logCodeGenSSO("qr empty flow=%s loginURL=%s", flowID, loginURL)
+			loginURL = oauth.HeadlessSSOLoginURL()
+			return views.OnboardingSSOQRMsg{FlowID: flowID, Success: true, QR: loginURL, LoginURL: loginURL, Message: tuiText(lang, "ssoQREmpty")}
+		}
+		m.logCodeGenSSO("qr ready flow=%s qrLen=%d loginURL=%s poll=%v", flowID, len(qr), loginURL, client != nil)
+		return views.OnboardingSSOQRMsg{FlowID: flowID, Success: true, QR: qr, LoginURL: loginURL, PollClient: client}
+	}
+}
+
+func (m *tuiModel) pollCodeGenSSOFromTUI(flowID string, client *http.Client) tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		if strings.TrimSpace(flowID) == "" {
+			m.logCodeGenSSO("poll rejected: empty flow")
+			return views.OnboardingSSOResultMsg{FlowID: flowID, Success: false, Message: tuiText(lang, "ssoSessionEmpty")}
+		}
+		m.logCodeGenSSO("poll start flow=%s", flowID)
+		ctx, cancel := context.WithTimeout(context.Background(), oauth.CodeGenTimeout)
+		entry := m.registerCodeGenSSOCancel(flowID, cancel)
+		defer m.finishCodeGenSSOFlow(flowID, entry)
+		result, err := oauth.PollCodeGenSSOResultContext(ctx, oauth.CodeGenTimeout, client)
+		if err != nil {
+			m.logCodeGenSSO("poll failed flow=%s err=%v", flowID, err)
+			return views.OnboardingSSOResultMsg{FlowID: flowID, Success: false, Message: err.Error(), KeepOpen: true}
+		}
+		m.logCodeGenSSO("poll success flow=%s email=%s model=%s", flowID, result.Email, result.ModelID)
+		return codeGenSSOResultMsgFromResult(lang, flowID, result, false)
+	}
+}
+
+func (m *tuiModel) submitCodeGenSSOInputFromTUI(flowID, input string) tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		token := extractCodeGenSSOTokenInput(input)
+		if token == "" {
+			m.logCodeGenSSO("manual submit rejected flow=%s empty token inputLen=%d", flowID, len(input))
+			return views.OnboardingSSOResultMsg{FlowID: flowID, Success: false, Message: tuiText(lang, "ssoInputEmpty"), KeepOpen: true, FromManual: true}
+		}
+		m.logCodeGenSSO("manual submit start flow=%s inputLen=%d tokenLen=%d", flowID, len(input), len(token))
+		result, err := oauth.ValidateAndBuildCodeGenResult(token)
+		if err != nil {
+			m.logCodeGenSSO("manual submit failed flow=%s err=%v", flowID, err)
+			return views.OnboardingSSOResultMsg{FlowID: flowID, Success: false, Message: err.Error(), KeepOpen: true, FromManual: true}
+		}
+		m.logCodeGenSSO("manual submit success flow=%s email=%s model=%s", flowID, result.Email, result.ModelID)
+		return codeGenSSOResultMsgFromResult(lang, flowID, result, true)
+	}
+}
+
+func codeGenSSOResultMsgFromResult(lang, flowID string, result oauth.CodeGenSSOResult, fromManual bool) views.OnboardingSSOResultMsg {
+	return views.OnboardingSSOResultMsg{
+		FlowID:        flowID,
+		Success:       true,
+		Message:       tuiText(lang, "codeGenSSOSuccess"),
+		AccessToken:   result.AccessToken,
+		BaseURL:       result.BaseURL,
+		Email:         result.Email,
+		ModelID:       result.ModelID,
+		ContextLength: result.ContextLength,
+		FromManual:    fromManual,
+	}
+}
+
+func (m *tuiModel) saveAcceptedCodeGenSSOResultToConfig(msg views.OnboardingSSOResultMsg) error {
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		m.logCodeGenSSO("save load-config failed flow=%s err=%v", msg.FlowID, err)
+		return fmt.Errorf("%s", tuiFormat(m.uiLang(), "loadConfigFailed", err.Error()))
+	}
+	result := oauth.CodeGenSSOResult{
+		AccessToken:   msg.AccessToken,
+		BaseURL:       msg.BaseURL,
+		Email:         msg.Email,
+		ModelID:       msg.ModelID,
+		ContextLength: msg.ContextLength,
+	}
+	applyCodeGenSSOResultToConfig(&cfg, result)
+	if err := store.SaveConfig(cfg); err != nil {
+		m.logCodeGenSSO("save app-config failed flow=%s err=%v", msg.FlowID, err)
+		return fmt.Errorf("%s", tuiFormat(m.uiLang(), "saveConfigFailed", err.Error()))
+	}
+	if err := configfile.WriteCodeGenSettings(result.AccessToken, result.BaseURL, result.ModelID); err != nil {
+		m.logCodeGenSSO("save codegen-settings failed flow=%s err=%v", msg.FlowID, err)
+		return err
+	}
+	m.logCodeGenSSO("save success flow=%s provider=CodeGen model=%s baseURL=%s", msg.FlowID, result.ModelID, result.BaseURL)
+	return nil
+}
+
+func (m *tuiModel) logCodeGenSSO(format string, args ...interface{}) {
+	if m == nil || m.app == nil || m.app.logger == nil {
+		return
+	}
+	m.app.logger.Info("codegen sso: "+format, args...)
+}
+
+func (m *tuiModel) registerCodeGenSSOCancel(flowID string, cancel context.CancelFunc) *codeGenSSOCancel {
+	flowID = strings.TrimSpace(flowID)
+	if m == nil || flowID == "" || cancel == nil {
+		return nil
+	}
+	m.ssoMu.Lock()
+	defer m.ssoMu.Unlock()
+	if m.ssoCancels == nil {
+		m.ssoCancels = make(map[string]*codeGenSSOCancel)
+	}
+	if prev := m.ssoCancels[flowID]; prev != nil && prev.cancel != nil {
+		prev.cancel()
+	}
+	entry := &codeGenSSOCancel{cancel: cancel}
+	m.ssoCancels[flowID] = entry
+	return entry
+}
+
+func (m *tuiModel) cancelCodeGenSSOFlow(flowID string) {
+	flowID = strings.TrimSpace(flowID)
+	if m == nil || flowID == "" {
+		return
+	}
+	m.ssoMu.Lock()
+	entry := m.ssoCancels[flowID]
+	delete(m.ssoCancels, flowID)
+	m.ssoMu.Unlock()
+	if entry != nil && entry.cancel != nil {
+		m.logCodeGenSSO("cancel flow=%s", flowID)
+		entry.cancel()
+	}
+}
+
+func (m *tuiModel) finishCodeGenSSOFlow(flowID string, entry *codeGenSSOCancel) {
+	flowID = strings.TrimSpace(flowID)
+	if entry != nil && entry.cancel != nil {
+		entry.cancel()
+	}
+	if m == nil || flowID == "" {
+		return
+	}
+	m.ssoMu.Lock()
+	if m.ssoCancels[flowID] == entry {
+		delete(m.ssoCancels, flowID)
+	}
+	m.ssoMu.Unlock()
+}
+
+func extractCodeGenSSOTokenInput(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(input); err == nil {
+		query := parsed.Query()
+		for _, key := range []string{"token", "access_token"} {
+			if value := strings.TrimSpace(query.Get(key)); value != "" {
+				return value
+			}
+		}
+		if parsed.Fragment != "" {
+			if values, err := url.ParseQuery(parsed.Fragment); err == nil {
+				for _, key := range []string{"token", "access_token"} {
+					if value := strings.TrimSpace(values.Get(key)); value != "" {
+						return value
+					}
+				}
+			}
+			if strings.Count(parsed.Fragment, ".") == 2 && !strings.Contains(parsed.Fragment, "=") {
+				return strings.TrimSpace(parsed.Fragment)
+			}
+		}
+		if parsed.Scheme != "" && parsed.Host != "" && strings.Count(parsed.RawQuery, ".") == 2 && !strings.Contains(parsed.RawQuery, "=") {
+			return strings.TrimSpace(parsed.RawQuery)
+		}
+	}
+	if idx := strings.Index(input, "?"); idx >= 0 && idx < len(input)-1 {
+		if values, err := url.ParseQuery(input[idx+1:]); err == nil {
+			for _, key := range []string{"token", "access_token"} {
+				if value := strings.TrimSpace(values.Get(key)); value != "" {
+					return value
+				}
+			}
+		}
+	}
+	return input
+}
+
+func applyCodeGenSSOResultToConfig(cfg *corelib.AppConfig, result oauth.CodeGenSSOResult) {
+	provider := corelib.MaclawLLMProvider{
+		Name:          "CodeGen",
+		URL:           strings.TrimSpace(result.BaseURL),
+		Key:           strings.TrimSpace(result.AccessToken),
+		Model:         strings.TrimSpace(result.ModelID),
+		Protocol:      "openai",
+		AuthType:      "sso",
+		ContextLength: result.ContextLength,
+		AgentType:     "openclaw",
+	}
+	if provider.ContextLength <= 0 {
+		provider.ContextLength = corelib.DefaultContextTokens
+	}
+	if provider.TimeoutSec <= 0 {
+		provider.TimeoutSec = corelib.DefaultLLMTimeoutSec
+	}
+	if provider.URL == "" {
+		provider.URL = oauth.CodeGenBaseURL
+	}
+	found := false
+	for i := range cfg.MaclawLLMProviders {
+		if strings.EqualFold(strings.TrimSpace(cfg.MaclawLLMProviders[i].Name), "CodeGen") {
+			cfg.MaclawLLMProviders[i] = provider
+			found = true
+			break
+		}
+	}
+	if !found {
+		cfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider{provider}, cfg.MaclawLLMProviders...)
+	}
+	cfg.MaclawLLMCurrentProvider = "CodeGen"
+	cfg.MaclawLLMUrl = provider.URL
+	cfg.MaclawLLMKey = provider.Key
+	cfg.MaclawLLMModel = provider.Model
+	cfg.MaclawLLMProtocol = provider.Protocol
+	cfg.MaclawLLMContextLength = provider.ContextLength
+	cfg.MaclawLLMTimeoutSec = provider.TimeoutSec
+}
+
 func (m *tuiModel) startWeixinFromTUI() tea.Cmd {
 	lang := m.uiLang()
 	return func() tea.Msg {
@@ -2174,6 +2454,12 @@ func (c *tuiCallbacks) IsToolAllowed(name string) bool {
 }
 
 func (c *tuiCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c == nil || c.app == nil {
+		return true, ""
+	}
+	if c.app.isWorkflowPhaseExecutionBlockedTUI() {
+		return false, "current workflow phase is waiting for required input or review; tool execution is paused"
+	}
 	var args map[string]interface{}
 	if strings.TrimSpace(argsJSON) != "" {
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -2191,7 +2477,21 @@ func (c *tuiCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
 }
 
 func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
+	if app == nil {
+		return true
+	}
+	if app.isWorkflowPhaseExecutionBlockedTUI() {
+		return false
+	}
 	return workflow.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
+}
+
+func (app *TUIApp) isWorkflowPhaseExecutionBlockedTUI() bool {
+	if app == nil {
+		return false
+	}
+	engine := app.getWorkflowEngine()
+	return engine != nil && engine.IsPhaseExecutionBlocked("tui-user")
 }
 
 func (app *TUIApp) currentWorkflowToolFilterTUI() workflow.ToolFilterPolicy {
@@ -2202,7 +2502,7 @@ func (app *TUIApp) currentWorkflowToolFilterTUI() workflow.ToolFilterPolicy {
 	if engine == nil {
 		return workflow.ToolFilterNone
 	}
-	return engine.GetPhaseToolFilter("tui-user")
+	return engine.GetActivePhaseToolFilter("tui-user")
 }
 
 func (c *tuiCallbacks) OnToken(delta string) {

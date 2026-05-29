@@ -22,11 +22,17 @@ type BlockIPRequest struct {
 }
 
 type ToggleHubRequest struct {
+	HubID  string `json:"hub_id,omitempty"`
 	Reason string `json:"reason"`
 }
 
 type UpdateHubVisibilityRequest struct {
+	HubID      string `json:"hub_id,omitempty"`
 	Visibility string `json:"visibility"`
+}
+
+type HubIDRequest struct {
+	HubID string `json:"hub_id,omitempty"`
 }
 
 type MigrateHubUserRequest struct {
@@ -42,10 +48,13 @@ type MigrateHubUserRequest struct {
 
 type adminHubView struct {
 	*store.HubInstance
+	GuestDomains                  []string                                         `json:"guest_domains,omitempty"`
 	Tenants                       []hubs.HubUserDashboardItem                      `json:"tenants,omitempty"`
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
 	RegistrationPolicy            hubs.HubRegistrationPolicyConfig                 `json:"registration_policy"`
 }
+
+const adminDefaultTenantID = "tenant_default"
 
 func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +68,7 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "LIST_HUBS_FAILED", err.Error())
 			return
 		}
+		dashboardByHub := map[string]hubs.HubUserDashboardItem{}
 		tenantsByHub := map[string][]hubs.HubUserDashboardItem{}
 		policyByHub, err := service.HubRegistrationPolicies(r.Context())
 		if err != nil {
@@ -67,6 +77,7 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 		}
 		for _, item := range dashboard {
 			if strings.TrimSpace(item.TenantID) == "" {
+				dashboardByHub[item.HubID] = item
 				continue
 			}
 			tenantsByHub[item.HubID] = append(tenantsByHub[item.HubID], item)
@@ -84,22 +95,20 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 			}
 			tenantAuths := map[string]*corelib.DigitalEmployeeAuthorization{}
 			for tenantID, auth := range auths {
-				tenantID = strings.TrimSpace(tenantID)
-				if tenantID == "" || auth == nil {
+				tenantID = adminExternalTenantID(tenantID)
+				if auth == nil {
 					continue
 				}
 				tenantAuths[tenantID] = auth
 			}
-			tenantItems := append([]hubs.HubUserDashboardItem(nil), tenantsByHub[item.ID]...)
+			tenantItems := []hubs.HubUserDashboardItem{adminDefaultTenantItem(item, dashboardByHub[item.ID])}
+			tenantItems = append(tenantItems, tenantsByHub[item.ID]...)
 			seenTenants := map[string]struct{}{}
 			for _, tenant := range tenantItems {
 				seenTenants[strings.TrimSpace(tenant.TenantID)] = struct{}{}
 			}
 			for tenantID, tenantPolicy := range policy.Tenants {
-				tenantID = strings.TrimSpace(tenantID)
-				if tenantID == "" {
-					continue
-				}
+				tenantID = adminExternalTenantID(tenantID)
 				if _, ok := seenTenants[tenantID]; ok {
 					continue
 				}
@@ -113,10 +122,43 @@ func ListHubsHandler(service *hubs.Service) http.HandlerFunc {
 				}
 				tenantItems = append(tenantItems, hubs.HubUserDashboardItem{HubID: item.ID, TenantID: tenantID, HubName: item.Name, BaseURL: item.BaseURL, Status: item.Status, IsDisabled: item.IsDisabled, AcceptPublicSignup: item.AcceptPublicSignup, SignupMode: item.EnrollmentMode, LastSeenAt: item.LastSeenAt})
 			}
-			views = append(views, adminHubView{HubInstance: item, Tenants: tenantItems, DigitalEmployeeAuthorizations: tenantAuths, RegistrationPolicy: policy})
+			views = append(views, adminHubView{HubInstance: item, GuestDomains: dashboardByHub[item.ID].GuestDomains, Tenants: tenantItems, DigitalEmployeeAuthorizations: tenantAuths, RegistrationPolicy: adminExternalRegistrationPolicy(policy)})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"hubs": views})
 	}
+}
+
+func adminExternalTenantID(tenantID string) string {
+	if strings.TrimSpace(tenantID) == "" {
+		return adminDefaultTenantID
+	}
+	return strings.TrimSpace(tenantID)
+}
+
+func adminDefaultTenantItem(hub *store.HubInstance, item hubs.HubUserDashboardItem) hubs.HubUserDashboardItem {
+	if item.HubID == "" && hub != nil {
+		item = hubs.HubUserDashboardItem{HubID: hub.ID, HubName: hub.Name, BaseURL: hub.BaseURL, Status: hub.Status, IsDisabled: hub.IsDisabled, CorporateEmailDomain: hub.CorporateEmailDomain, CorporateEmailDomains: adminHubMailDomains(hub), AcceptPublicSignup: hub.AcceptPublicSignup, SignupMode: hub.EnrollmentMode, LastSeenAt: hub.LastSeenAt}
+	}
+	item.TenantID = adminDefaultTenantID
+	return item
+}
+
+func adminHubMailDomains(hub *store.HubInstance) []string {
+	if hub == nil || strings.TrimSpace(hub.CorporateEmailDomain) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(hub.CorporateEmailDomain)}
+}
+
+func adminExternalRegistrationPolicy(policy hubs.HubRegistrationPolicyConfig) hubs.HubRegistrationPolicyConfig {
+	out := policy
+	out.Tenants = map[string]store.HubTenantRegistrationPolicy{}
+	for tenantID, tenantPolicy := range policy.Tenants {
+		externalID := adminExternalTenantID(tenantID)
+		tenantPolicy.TenantID = externalID
+		out.Tenants[externalID] = tenantPolicy
+	}
+	return out
 }
 
 func ListEnterpriseMailDomainsHandler(service *hubs.Service) http.HandlerFunc {
@@ -126,20 +168,32 @@ func ListEnterpriseMailDomainsHandler(service *hubs.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "LIST_ENTERPRISE_MAIL_DOMAINS_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		writeJSON(w, http.StatusOK, map[string]any{"items": adminExternalEnterpriseMailDomainItems(items)})
 	}
+}
+
+func adminExternalEnterpriseMailDomainItems(items []hubs.EnterpriseMailDomainItem) []hubs.EnterpriseMailDomainItem {
+	out := make([]hubs.EnterpriseMailDomainItem, 0, len(items))
+	for _, item := range items {
+		item.TenantID = adminExternalTenantID(item.TenantID)
+		out = append(out, item)
+	}
+	return out
 }
 
 func UpdateHubRegistrationPolicyHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.PathValue("id")
-		if hubID == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
-			return
-		}
 		var req hubs.UpdateHubRegistrationPolicyRequest
 		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		hubID := strings.TrimSpace(r.PathValue("id"))
+		if hubID == "" {
+			hubID = strings.TrimSpace(req.HubID)
+		}
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
 		}
 		cfg, err := service.UpdateHubRegistrationPolicy(r.Context(), hubID, req)
@@ -155,7 +209,7 @@ func UpdateHubRegistrationPolicyHandler(service *hubs.Service) http.HandlerFunc 
 			writeError(w, http.StatusInternalServerError, "UPDATE_REGISTRATION_POLICY_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "registration_policy": cfg})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "registration_policy": adminExternalRegistrationPolicy(cfg)})
 	}
 }
 
@@ -171,11 +225,28 @@ func ListUserDashboardHandler(service *hubs.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "USER_REGISTRATION_REPORT_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items, "registration_report": report})
+		writeJSON(w, http.StatusOK, map[string]any{"items": adminExternalUserDashboardItems(items), "registration_report": adminExternalUserRegistrationReport(report)})
 	}
 }
 
+func adminExternalUserDashboardItems(items []hubs.HubUserDashboardItem) []hubs.HubUserDashboardItem {
+	out := make([]hubs.HubUserDashboardItem, 0, len(items))
+	for _, item := range items {
+		item.TenantID = adminExternalTenantID(item.TenantID)
+		out = append(out, item)
+	}
+	return out
+}
+
+func adminExternalUserRegistrationReport(report hubs.UserRegistrationReport) hubs.UserRegistrationReport {
+	for i := range report.Hubs {
+		report.Hubs[i].TenantID = adminExternalTenantID(report.Hubs[i].TenantID)
+	}
+	return report
+}
+
 type UpdateDigitalEmployeeAuthorizationRequest struct {
+	HubID     string `json:"hub_id,omitempty"`
 	TenantID  string `json:"tenant_id,omitempty"`
 	Quota     int    `json:"quota"`
 	Years     int    `json:"years"`
@@ -185,14 +256,14 @@ type UpdateDigitalEmployeeAuthorizationRequest struct {
 
 func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.PathValue("id")
-		if hubID == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
-			return
-		}
 		var req UpdateDigitalEmployeeAuthorizationRequest
 		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		hubID := adminHubIDFromRequest(r, req.HubID)
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
 		}
 		tenantID := strings.TrimSpace(req.TenantID)
@@ -247,20 +318,19 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 			writeError(w, http.StatusInternalServerError, "UPDATE_DIGITAL_EMPLOYEE_AUTHORIZATION_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenant_id": tenantID, "digital_employee_authorization": auth})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenant_id": adminExternalTenantID(tenantID), "digital_employee_authorization": auth})
 	}
 }
 func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.PathValue("id")
-		if hubID == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
-			return
-		}
-
 		var req UpdateHubVisibilityRequest
 		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		hubID := adminHubIDFromRequest(r, req.HubID)
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
 		}
 		if strings.TrimSpace(req.Visibility) == "" {
@@ -278,12 +348,12 @@ func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {
 
 func DisableHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.PathValue("id")
 		var req ToggleHubRequest
 		if err := decodeOptionalLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
+		hubID := adminHubIDFromRequest(r, req.HubID)
 		if hubID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
@@ -298,7 +368,12 @@ func DisableHubHandler(service *hubs.Service) http.HandlerFunc {
 
 func EnableHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.PathValue("id")
+		var req HubIDRequest
+		if err := decodeOptionalLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		hubID := adminHubIDFromRequest(r, req.HubID)
 		if hubID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
@@ -313,7 +388,12 @@ func EnableHubHandler(service *hubs.Service) http.HandlerFunc {
 
 func ConfirmHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.PathValue("id")
+		var req HubIDRequest
+		if err := decodeOptionalLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		hubID := adminHubIDFromRequest(r, req.HubID)
 		if hubID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
@@ -328,7 +408,12 @@ func ConfirmHubHandler(service *hubs.Service) http.HandlerFunc {
 
 func DeleteHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		hubID := r.PathValue("id")
+		var req HubIDRequest
+		if err := decodeOptionalLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		hubID := adminHubIDFromRequest(r, req.HubID)
 		if hubID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
 			return
@@ -339,6 +424,15 @@ func DeleteHubHandler(service *hubs.Service) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "unregistered"})
 	}
+}
+
+func adminHubIDFromRequest(r *http.Request, bodyHubID string) string {
+	if r != nil {
+		if hubID := strings.TrimSpace(r.PathValue("id")); hubID != "" {
+			return hubID
+		}
+	}
+	return strings.TrimSpace(bodyHubID)
 }
 
 func RefreshHubUserInventoryHandler(service *hubs.Service) http.HandlerFunc {
@@ -392,8 +486,18 @@ func MigrateHubUserHandler(service *hubs.Service) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "MIGRATE_USER_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "migration": result})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "migration": adminExternalMigrationResult(result)})
 	}
+}
+
+func adminExternalMigrationResult(result *hubs.MigrationResult) *hubs.MigrationResult {
+	if result == nil {
+		return nil
+	}
+	out := *result
+	out.SourceTenantID = adminExternalTenantID(out.SourceTenantID)
+	out.TargetTenantID = adminExternalTenantID(out.TargetTenantID)
+	return &out
 }
 
 func ListBlockedEmailsHandler(service *hubs.Service) http.HandlerFunc {

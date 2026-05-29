@@ -40,12 +40,14 @@ func CapabilityMarketCustomerAccountHandler(settings store.SystemSettingsReposit
 	return func(w http.ResponseWriter, r *http.Request) {
 		account := loadCapabilityMarketCustomerAccount(r.Context(), settings)
 		queryHubID := strings.TrimSpace(r.URL.Query().Get("hub_id"))
-		queryTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		rawQueryTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		queryTenantID := capabilityMarketInternalTenantID(rawQueryTenantID)
+		queryTenantIDSet := rawQueryTenantID != ""
 		queryEmail := strings.TrimSpace(firstCapabilityMarketNonEmpty(r.URL.Query().Get("admin_email"), r.URL.Query().Get("buyer_email"), r.URL.Query().Get("email")))
 		if queryHubID != "" {
 			account.HubID = queryHubID
 		}
-		if queryTenantID != "" {
+		if queryTenantIDSet {
 			account.TenantID = queryTenantID
 		}
 		if queryEmail != "" {
@@ -61,10 +63,14 @@ func CapabilityMarketCustomerAccountHandler(settings store.SystemSettingsReposit
 			account.BillingEmail = account.AdminEmail
 		}
 		if account.CustomerID == "" {
-			account.CustomerID = capabilityMarketCustomerID(account.HubID, account.TenantID, account.AdminEmail)
+			customerTenantID := account.TenantID
+			if queryTenantIDSet {
+				customerTenantID = capabilityMarketExternalTenantID(queryTenantID)
+			}
+			account.CustomerID = capabilityMarketCustomerID(account.HubID, customerTenantID, account.AdminEmail)
 		}
 		if account.IdentitySource == "" {
-			if queryHubID != "" || queryTenantID != "" || queryEmail != "" {
+			if queryHubID != "" || queryTenantIDSet || queryEmail != "" {
 				account.IdentitySource = "request"
 			} else if account.CustomerID != "" || account.AdminEmail != "" {
 				account.IdentitySource = "settings"
@@ -90,6 +96,9 @@ func CapabilityMarketCustomerAccountHandler(settings store.SystemSettingsReposit
 				account.Status = "not_configured"
 				account.Message = "Hub customer account uses hub_id plus admin_email. Set admin_email or pass it in the billing request."
 			}
+		}
+		if queryTenantIDSet || strings.TrimSpace(account.TenantID) != "" {
+			account.TenantID = capabilityMarketExternalTenantID(account.TenantID)
 		}
 		writeJSON(w, http.StatusOK, account)
 	}
@@ -137,25 +146,31 @@ func CapabilityMarketBillingLicensesHandler(deps ...any) http.HandlerFunc {
 			return
 		}
 		hubID := strings.TrimSpace(r.URL.Query().Get("hub_id"))
-		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		rawTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		tenantID := capabilityMarketInternalTenantID(rawTenantID)
+		tenantFilterSet := rawTenantID != ""
 		adminEmail := strings.TrimSpace(firstCapabilityMarketNonEmpty(r.URL.Query().Get("admin_email"), r.URL.Query().Get("buyer_email"), r.URL.Query().Get("email")))
 		items := make([]CapabilityMarketLicenseRecord, 0, len(purchases.Items))
 		for _, item := range purchases.Items {
 			if hubID != "" && item.HubID != hubID {
 				continue
 			}
-			if tenantID != "" && item.TenantID != tenantID {
+			if tenantFilterSet && capabilityMarketInternalTenantID(item.TenantID) != tenantID {
 				continue
 			}
 			if adminEmail != "" && !strings.EqualFold(item.AdminEmail, adminEmail) {
 				continue
 			}
-			items = append(items, CapabilityMarketLicenseRecord{CapabilityType: corelib.CapabilityTypeMCP, CapabilityID: item.CapabilityID, Source: corelib.CapabilitySourceHubCenter, PurchaseID: item.PurchaseID, HubID: item.HubID, TenantID: item.TenantID, AdminEmail: item.AdminEmail, VersionKey: item.VersionKey, Status: item.Status, Pricing: item.Pricing, License: item.License, CreatedAt: item.CreatedAt})
+			items = append(items, CapabilityMarketLicenseRecord{CapabilityType: corelib.CapabilityTypeMCP, CapabilityID: item.CapabilityID, Source: corelib.CapabilitySourceHubCenter, PurchaseID: item.PurchaseID, HubID: item.HubID, TenantID: capabilityMarketExternalTenantID(item.TenantID), AdminEmail: item.AdminEmail, VersionKey: item.VersionKey, Status: item.Status, Pricing: item.Pricing, License: item.License, CreatedAt: item.CreatedAt})
 		}
 		if skillLicenses != nil {
 			var skillItems []CapabilityMarketLicenseRecord
 			if tenantProvider, ok := skillLicenses.(capabilityMarketTenantSkillLicenseProvider); ok {
-				skillItems, err = tenantProvider.CapabilityMarketSkillLicensesForTenant(r.Context(), adminEmail, hubID, tenantID)
+				skillTenantID := tenantID
+				if tenantFilterSet {
+					skillTenantID = rawTenantID
+				}
+				skillItems, err = tenantProvider.CapabilityMarketSkillLicensesForTenant(r.Context(), adminEmail, hubID, skillTenantID)
 			} else {
 				skillItems, err = skillLicenses.CapabilityMarketSkillLicenses(r.Context(), adminEmail)
 			}
@@ -163,7 +178,7 @@ func CapabilityMarketBillingLicensesHandler(deps ...any) http.HandlerFunc {
 				writeError(w, http.StatusInternalServerError, "SKILL_PURCHASES_LOAD_FAILED", err.Error())
 				return
 			}
-			items = append(items, skillItems...)
+			items = append(items, capabilityMarketExternalLicenseRecords(capabilityMarketFilterLicenseRecords(skillItems, hubID, tenantFilterSet, tenantID, adminEmail))...)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
@@ -298,7 +313,7 @@ func CapabilityMarketMCPPurchaseHandler(settings store.SystemSettingsRepository)
 			now := time.Now().UTC()
 			record := CapabilityMarketMCPPurchaseRecord{
 				HubID:        strings.TrimSpace(req.HubID),
-				TenantID:     strings.TrimSpace(req.TenantID),
+				TenantID:     capabilityMarketInternalTenantID(req.TenantID),
 				AdminEmail:   strings.TrimSpace(req.AdminEmail),
 				RequestID:    strings.TrimSpace(req.RequestID),
 				CapabilityID: item.CapabilityID,
@@ -317,7 +332,7 @@ func CapabilityMarketMCPPurchaseHandler(settings store.SystemSettingsRepository)
 				"purchase_id": record.PurchaseID,
 				"status":      "purchased",
 				"hub_id":      record.HubID,
-				"tenant_id":   record.TenantID,
+				"tenant_id":   capabilityMarketExternalTenantID(record.TenantID),
 				"admin_email": record.AdminEmail,
 				"request_id":  record.RequestID,
 				"pricing":     item.Pricing,
@@ -543,6 +558,7 @@ func saveCapabilityMarketMCPPurchases(ctx context.Context, settings store.System
 }
 
 func appendCapabilityMarketMCPPurchase(ctx context.Context, settings store.SystemSettingsRepository, record CapabilityMarketMCPPurchaseRecord) error {
+	record.TenantID = capabilityMarketInternalTenantID(record.TenantID)
 	purchases, err := loadCapabilityMarketMCPPurchases(ctx, settings)
 	if err != nil {
 		return err
@@ -560,7 +576,7 @@ func appendCapabilityMarketMCPPurchase(ctx context.Context, settings store.Syste
 func capabilityMarketMCPPurchaseID(record CapabilityMarketMCPPurchaseRecord) string {
 	parts := []string{
 		strings.TrimSpace(record.HubID),
-		strings.TrimSpace(record.TenantID),
+		capabilityMarketInternalTenantID(record.TenantID),
 		strings.TrimSpace(record.AdminEmail),
 		strings.TrimSpace(record.RequestID),
 		strings.TrimSpace(record.CapabilityID),
@@ -582,8 +598,44 @@ func capabilityMarketSamePurchaseRequest(existing, next CapabilityMarketMCPPurch
 		return false
 	}
 	return strings.TrimSpace(existing.HubID) == strings.TrimSpace(next.HubID) &&
-		strings.TrimSpace(existing.TenantID) == strings.TrimSpace(next.TenantID) &&
+		capabilityMarketInternalTenantID(existing.TenantID) == capabilityMarketInternalTenantID(next.TenantID) &&
 		strings.EqualFold(strings.TrimSpace(existing.AdminEmail), strings.TrimSpace(next.AdminEmail))
+}
+
+func capabilityMarketInternalTenantID(tenantID string) string {
+	return normalizeHubSyncTenantID(tenantID)
+}
+
+func capabilityMarketExternalTenantID(tenantID string) string {
+	return adminExternalTenantID(tenantID)
+}
+
+func capabilityMarketExternalLicenseRecords(items []CapabilityMarketLicenseRecord) []CapabilityMarketLicenseRecord {
+	out := make([]CapabilityMarketLicenseRecord, 0, len(items))
+	for _, item := range items {
+		item.TenantID = capabilityMarketExternalTenantID(item.TenantID)
+		out = append(out, item)
+	}
+	return out
+}
+
+func capabilityMarketFilterLicenseRecords(items []CapabilityMarketLicenseRecord, hubID string, tenantFilterSet bool, tenantID string, adminEmail string) []CapabilityMarketLicenseRecord {
+	hubID = strings.TrimSpace(hubID)
+	adminEmail = strings.TrimSpace(adminEmail)
+	out := make([]CapabilityMarketLicenseRecord, 0, len(items))
+	for _, item := range items {
+		if hubID != "" && strings.TrimSpace(item.HubID) != hubID {
+			continue
+		}
+		if tenantFilterSet && capabilityMarketInternalTenantID(item.TenantID) != tenantID {
+			continue
+		}
+		if adminEmail != "" && !strings.EqualFold(strings.TrimSpace(item.AdminEmail), adminEmail) && !strings.EqualFold(strings.TrimSpace(item.BuyerEmail), adminEmail) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func saveCapabilityMarketMCPCatalog(ctx context.Context, settings store.SystemSettingsRepository, catalog capabilityMarketMCPCatalog) error {

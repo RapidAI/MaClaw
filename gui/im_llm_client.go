@@ -28,7 +28,11 @@ func (h *IMMessageHandler) doLLMRequest(cfg corelib.MaclawLLMConfig, messages []
 
 func (h *IMMessageHandler) doOpenAILLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
 	ctx := context.Background()
-	resp, err := llm.DoOpenAIRequest(ctx, cfg, messages, tools, httpClient)
+	requestFn := llm.DoOpenAIRequest
+	if h.app != nil {
+		requestFn = h.app.cachedOpenAIRequest
+	}
+	resp, err := requestFn(ctx, cfg, messages, tools, httpClient)
 	if err != nil {
 		// Re-wrap with dumpLLMContext for HTTP 500 context dump support.
 		// DoOpenAIRequest returns "HTTP %d: ..." errors; extract status if 500.
@@ -49,27 +53,13 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg corelib.MaclawLLMConfig, messa
 // doAnthropicLLMRequest sends a request using the Anthropic Messages API protocol
 // and converts the response to the internal llm.Response format for compatibility.
 func (h *IMMessageHandler) doAnthropicLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llm.Response, error) {
-	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
-
-	converted := convertToAnthropicMessages(messages)
-
-	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
-		"messages":   converted.Messages,
-		"max_tokens": 4096,
+	if h.app != nil {
+		return h.app.cachedAnthropicRequest(context.Background(), cfg, messages, tools, httpClient)
 	}
-	if converted.SystemText != "" {
-		reqBody["system"] = converted.SystemText
+	endpoint, data, err := llm.BuildAnthropicMessagesRequestData(cfg, messages, llm.AnthropicMessagesRequestOptions{Stream: false, Tools: tools})
+	if err != nil {
+		return nil, err
 	}
-
-	// Convert OpenAI-style tools to Anthropic tool format
-	if len(tools) > 0 {
-		if at := convertToAnthropicTools(tools); len(at) > 0 {
-			reqBody["tools"] = at
-		}
-	}
-
-	data, _ := json.Marshal(reqBody)
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err

@@ -202,10 +202,10 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 	}
 
 	// Mutual exclusion with OnlineExtractor: if the online pipeline has
-	// successfully extracted facts recently, skip this fallback extraction
-	// to avoid producing duplicate entries.
+	// recently run extraction (even if all facts were NOOP), skip this
+	// fallback extraction to avoid producing duplicate entries.
 	if ke.store != nil {
-		if oe := ke.store.OnlineExtractor(); oe != nil && oe.HasRecentSuccess(60*time.Minute) {
+		if oe := ke.store.OnlineExtractor(); oe != nil && oe.HasRecentActivity(60*time.Minute) {
 			log.Printf("[knowledge_extractor] skipped: online extractor active in last 60min")
 			return nil
 		}

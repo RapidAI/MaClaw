@@ -435,7 +435,8 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 		return
 	}
 	hubID := strings.TrimSpace(r.URL.Query().Get("hub_id"))
-	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	rawTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	tenantID := normalizeHubSyncTenantID(rawTenantID)
 
 	ctx := r.Context()
 
@@ -482,7 +483,7 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 
 		if !voucherUsed {
 			// 检查版本升级折扣
-			isUpgrade, _ := h.checkUpgradePurchase(ctx, buyer.ID, skillID, hubID, tenantID)
+			isUpgrade, _ := h.checkUpgradePurchase(ctx, buyer.ID, skillID, hubID, rawTenantID)
 			actualPrice := price
 			if isUpgrade {
 				actualPrice = price / 2 // 50% 折扣
@@ -599,9 +600,16 @@ func (h *SkillMarketHandlers) checkUpgradePurchase(ctx context.Context, buyerID,
 	var count int
 	where := `buyer_id = ? AND skill_id = ? AND status = 'active'`
 	args := []any{buyerID, skillID}
-	if strings.TrimSpace(hubID) != "" || strings.TrimSpace(tenantID) != "" {
-		where += ` AND hub_id = ? AND tenant_id = ?`
-		args = append(args, strings.TrimSpace(hubID), strings.TrimSpace(tenantID))
+	rawTenantID := strings.TrimSpace(tenantID)
+	if strings.TrimSpace(hubID) != "" || rawTenantID != "" {
+		where += ` AND hub_id = ?`
+		args = append(args, strings.TrimSpace(hubID))
+		if rawTenantID != "" && normalizeHubSyncTenantID(rawTenantID) == "" {
+			where += ` AND (tenant_id = '' OR tenant_id = 'tenant_default')`
+		} else {
+			where += ` AND tenant_id = ?`
+			args = append(args, normalizeHubSyncTenantID(rawTenantID))
+		}
 	}
 	err := h.store.ReadDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_purchase_records WHERE `+where, args...).Scan(&count)
 	return count > 0, err
@@ -611,7 +619,7 @@ func (h *SkillMarketHandlers) createPurchaseRecord(ctx context.Context, id strin
 	return h.store.CreatePurchase(ctx, &skillmarket.PurchaseRecord{
 		ID:               id,
 		HubID:            strings.TrimSpace(hubID),
-		TenantID:         strings.TrimSpace(tenantID),
+		TenantID:         normalizeHubSyncTenantID(tenantID),
 		BuyerEmail:       buyer.Email,
 		BuyerID:          buyer.ID,
 		SkillID:          skillID,
@@ -1093,8 +1101,8 @@ func (h *SkillMarketHandlers) CapabilityMarketSkillLicensesForTenant(ctx context
 		return []CapabilityMarketLicenseRecord{}, nil
 	}
 	hubID = strings.TrimSpace(hubID)
-	tenantID = strings.TrimSpace(tenantID)
-	records, _, err := h.store.ListPurchasesByTenant(ctx, hubID, tenantID, strings.TrimSpace(buyerEmail), "", 0, 200)
+	rawTenantID := strings.TrimSpace(tenantID)
+	records, _, err := h.store.ListPurchasesByTenant(ctx, hubID, rawTenantID, strings.TrimSpace(buyerEmail), "", 0, 200)
 	if err != nil {
 		return nil, err
 	}
@@ -1109,7 +1117,7 @@ func (h *SkillMarketHandlers) CapabilityMarketSkillLicensesForTenant(ctx context
 			Source:         corelib.CapabilitySourceHubCenter,
 			PurchaseID:     rec.ID,
 			HubID:          rec.HubID,
-			TenantID:       rec.TenantID,
+			TenantID:       adminExternalTenantID(rec.TenantID),
 			BuyerEmail:     rec.BuyerEmail,
 			AdminEmail:     rec.BuyerEmail,
 			Status:         rec.Status,

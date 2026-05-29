@@ -634,6 +634,8 @@ type TokenUsageStat struct {
 	TotalCostRMB             float64 `json:"total_cost_rmb,omitempty"`
 	Requests                 int64   `json:"requests,omitempty"`
 	CachedRequests           int64   `json:"cached_requests,omitempty"`
+	LocalCacheRequests       int64   `json:"local_cache_requests,omitempty"`
+	LocalCacheHits           int64   `json:"local_cache_hits,omitempty"`
 }
 
 const (

@@ -138,6 +138,9 @@ type App struct {
 	remoteInfraReady           atomic.Bool // fast-path check for ensureRemoteInfra
 	warmupDone                 atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
 	mcpAutoDiscovery           *MCPAutoDiscovery
+	llmPromptCache             *corelib.LLMPromptResponseCache
+	llmPromptCacheDir          string
+	llmPromptCacheMu           sync.Mutex
 	toolVersionCache           *ToolVersionCache
 	securityFirewall           *SecurityFirewall
 	securityRiskAnalyzer       *SecurityRiskAnalyzer
@@ -4261,27 +4264,28 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 							CurrentModel: "Original",
 							Models:       defaultCursorModels,
 						},
-						Projects:            oldConfig.Projects,
-						CurrentProject:      oldConfig.CurrentProj,
-						ActiveTool:          "claude",
-						ShowGemini:          true,
-						ShowCodex:           true,
-						ShowOpenCode:        true,
-						ShowCursor:          true,
-						ShowCodeBuddy:       true,
-						ShowIFlow:           true,
-						ShowKilo:            true,
-						PowerOptimization:   true,
-						RemoteEnabled:       false,
-						RemoteHubURL:        "",
-						RemoteHubCenterURL:  defaultRemoteHubCenterURL,
-						RemoteEmail:         "",
-						RemoteSN:            "",
-						RemoteUserID:        "",
-						RemoteMachineID:     "",
-						RemoteMachineToken:  "",
-						RemoteHeartbeatSec:  10,
-						SubAgentConcurrency: corelib.DefaultSubAgentConcurrency,
+						Projects:               oldConfig.Projects,
+						CurrentProject:         oldConfig.CurrentProj,
+						ActiveTool:             "claude",
+						ShowGemini:             true,
+						ShowCodex:              true,
+						ShowOpenCode:           true,
+						ShowCursor:             true,
+						ShowCodeBuddy:          true,
+						ShowIFlow:              true,
+						ShowKilo:               true,
+						PowerOptimization:      true,
+						RemoteEnabled:          false,
+						RemoteHubURL:           "",
+						RemoteHubCenterURL:     defaultRemoteHubCenterURL,
+						RemoteEmail:            "",
+						RemoteSN:               "",
+						RemoteUserID:           "",
+						RemoteMachineID:        "",
+						RemoteMachineToken:     "",
+						RemoteHeartbeatSec:     10,
+						SubAgentConcurrency:    corelib.DefaultSubAgentConcurrency,
+						IMProgressNudgeEnabled: boolPtr(true),
 					}
 					if err := a.saveToPath(path, config); err != nil {
 						return corelib.AppConfig{}, err
@@ -4335,41 +4339,42 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 					YoloMode: false,
 				},
 			},
-			CurrentProject:       "default",
-			ActiveTool:           "claude",
-			ShowGemini:           true,
-			ShowCodex:            true,
-			ShowOpenCode:         true,
-			ShowCodeBuddy:        true,
-			ShowIFlow:            true,
-			ShowKilo:             true,
-			ShowCursor:           true,
-			PowerOptimization:    true,
-			CheckUpdateOnStartup: true,
-			EnvCheckInterval:     7,    // Default to 7 days
-			UseWindowsTerminal:   true, // Default to true, will only work if Windows Terminal is installed
-			RemoteEnabled:        false,
-			RemoteHubURL:         "",
-			RemoteHubCenterURL:   defaultRemoteHubCenterURL,
-			RemoteEmail:          "",
-			RemoteSN:             "",
-			RemoteUserID:         "",
-			RemoteMachineID:      "",
-			RemoteMachineToken:   "",
-			RemoteHeartbeatSec:   10,
-			ScreenDimTimeoutMin:  3, // Default: dim display after 3 minutes of inactivity
-			GossipAutoPublish:    true,
-			YoloModeAllowed:      true,
-			GossipEnabled:        true,
-			FileOutboundEnabled:  true,
-			ImageOutboundEnabled: true,
-			SubAgentConcurrency:  corelib.DefaultSubAgentConcurrency,
-			VectorSearchEnabled:  true,
-			ASREnabled:           true,
-			TTSEnabled:           true,
-			ScreenParsingEnabled: boolPtr(true),
-			NetworkLevel:         "full",
-			SandboxMode:          "none",
+			CurrentProject:         "default",
+			ActiveTool:             "claude",
+			ShowGemini:             true,
+			ShowCodex:              true,
+			ShowOpenCode:           true,
+			ShowCodeBuddy:          true,
+			ShowIFlow:              true,
+			ShowKilo:               true,
+			ShowCursor:             true,
+			PowerOptimization:      true,
+			CheckUpdateOnStartup:   true,
+			EnvCheckInterval:       7,    // Default to 7 days
+			UseWindowsTerminal:     true, // Default to true, will only work if Windows Terminal is installed
+			RemoteEnabled:          false,
+			RemoteHubURL:           "",
+			RemoteHubCenterURL:     defaultRemoteHubCenterURL,
+			RemoteEmail:            "",
+			RemoteSN:               "",
+			RemoteUserID:           "",
+			RemoteMachineID:        "",
+			RemoteMachineToken:     "",
+			RemoteHeartbeatSec:     10,
+			ScreenDimTimeoutMin:    3, // Default: dim display after 3 minutes of inactivity
+			GossipAutoPublish:      true,
+			YoloModeAllowed:        true,
+			GossipEnabled:          true,
+			FileOutboundEnabled:    true,
+			ImageOutboundEnabled:   true,
+			SubAgentConcurrency:    corelib.DefaultSubAgentConcurrency,
+			VectorSearchEnabled:    true,
+			ASREnabled:             true,
+			TTSEnabled:             true,
+			ScreenParsingEnabled:   boolPtr(true),
+			IMProgressNudgeEnabled: boolPtr(true),
+			NetworkLevel:           "full",
+			SandboxMode:            "none",
 		}
 		err = a.saveToPath(path, defaultConfig)
 		if err == nil {
@@ -4379,18 +4384,19 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		return defaultConfig, err
 	}
 	config := corelib.AppConfig{
-		ShowGemini:           true,
-		ShowCodex:            true,
-		ShowOpenCode:         true,
-		ShowCursor:           true,
-		ShowCodeBuddy:        true,
-		ShowIFlow:            true,
-		ShowKilo:             true,
-		PowerOptimization:    true,
-		CheckUpdateOnStartup: true,
-		RemoteHubCenterURL:   defaultRemoteHubCenterURL,
-		RemoteHeartbeatSec:   10,
-		SmartRouteEnabled:    true,
+		ShowGemini:             true,
+		ShowCodex:              true,
+		ShowOpenCode:           true,
+		ShowCursor:             true,
+		ShowCodeBuddy:          true,
+		ShowIFlow:              true,
+		ShowKilo:               true,
+		PowerOptimization:      true,
+		CheckUpdateOnStartup:   true,
+		RemoteHubCenterURL:     defaultRemoteHubCenterURL,
+		RemoteHeartbeatSec:     10,
+		SmartRouteEnabled:      true,
+		IMProgressNudgeEnabled: boolPtr(true),
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -4453,6 +4459,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if _, ok := rawConfig["screen_parsing_enabled"]; ok {
 		hasScreenParsingEnabled = true
 	}
+	hasIMProgressNudgeEnabled := false
+	if _, ok := rawConfig["im_progress_nudge_enabled"]; ok {
+		hasIMProgressNudgeEnabled = true
+	}
 
 	err = json.Unmarshal(data, &config)
 	if err != nil {
@@ -4498,6 +4508,9 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	}
 	if !hasScreenParsingEnabled {
 		config.ScreenParsingEnabled = boolPtr(true)
+	}
+	if !hasIMProgressNudgeEnabled {
+		config.IMProgressNudgeEnabled = boolPtr(true)
 	}
 	if config.NetworkLevel == "" {
 		config.NetworkLevel = "full"
@@ -4923,6 +4936,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	normalizeCurrentModel(&config.Kilo)
 	normalizeCurrentModel(&config.Cursor)
 	normalizeConfigTimeouts(&config)
+	config.LLMPromptCache = config.LLMPromptCache.WithDefaults()
+	if err := migrateLLMPromptCacheDirIfNeeded(corelib.DefaultLLMPromptCacheConfig(), config.LLMPromptCache); err != nil {
+		log.Printf("[config] LoadConfig:llm_cache_migrate_failed err=%v", err)
+	}
 	log.Printf("[config] LoadConfig:done total=%s", time.Since(start))
 	a.configCache = config
 	a.configCacheValid = true
@@ -5068,8 +5085,22 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	sanitizePetConfig(&config)
 	// Load old config to compare for sync logic
 	var oldConfig corelib.AppConfig
+	oldConfigLoaded := false
 	if data, err := os.ReadFile(path); err == nil {
-		json.Unmarshal(data, &oldConfig)
+		if json.Unmarshal(data, &oldConfig) == nil {
+			oldConfigLoaded = true
+		}
+	}
+	config.LLMPromptCache = config.LLMPromptCache.WithDefaults()
+	oldCacheConfig := corelib.DefaultLLMPromptCacheConfig()
+	if oldConfigLoaded {
+		oldCacheConfig = oldConfig.LLMPromptCache
+	}
+	if err := migrateLLMPromptCacheDirIfNeeded(oldCacheConfig, config.LLMPromptCache); err != nil {
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		log.Printf("[config] SaveConfig:llm_cache_migrate_failed after=%s err=%v", time.Since(start), err)
+		return err
 	}
 	if strings.TrimSpace(oldConfig.DefaultLaunchMode) != "" {
 		config.DefaultLaunchMode = oldConfig.DefaultLaunchMode

@@ -4,6 +4,7 @@ import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
+import { localizeText } from "./aiAssistantI18n";
 
 export interface Theme {
     text: string;
@@ -501,6 +502,7 @@ function renderActions(
     actions: ChatAction[],
     executeAction: (command: string) => void,
     t: Theme,
+    lang = "en",
 ): React.ReactNode {
     return (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "4px 0" }}>
@@ -526,11 +528,22 @@ function renderActions(
                         whiteSpace: "normal",
                     }}
                 >
-                    {a.label}
+                    {formatActionLabel(a, lang)}
                 </button>
             ))}
         </div>
     );
+}
+
+function formatActionLabel(action: ChatAction, lang: string): string {
+    const normalizedLabel = (action.label || '').trim().toLowerCase();
+    if (/^__confirm_execution__\s+\S+$/.test(action.command) && (!normalizedLabel || normalizedLabel === 'confirm and start')) {
+        return localizeText(lang, "Confirm and start", "\u786e\u8ba4\u5e76\u5f00\u59cb", "\u78ba\u8a8d\u4e26\u958b\u59cb");
+    }
+    if (/^__cancel_execution__\s+\S+$/.test(action.command) && (!normalizedLabel || normalizedLabel === 'cancel')) {
+        return localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88");
+    }
+    return action.label;
 }
 
 function renderConfirmationList(testId: string, title: string, items: string[], t: Theme): React.ReactNode {
@@ -555,6 +568,7 @@ function renderConfirmationCard(
     actions: ChatAction[] | undefined,
     executeAction: (command: string) => void,
     t: Theme,
+    lang: string,
 ): React.ReactNode {
     const targetPaths = confirmation.targetPaths || [];
     const plannedActions = confirmation.plannedActions || [];
@@ -563,12 +577,12 @@ function renderConfirmationCard(
     const taskType = confirmation.taskType?.trim() || '';
     const status = confirmation.status?.trim() || '';
     const labels = confirmation.labels;
-    const titleLabel = labels?.title || "\u6267\u884c\u524d\u786e\u8ba4";
-    const statusLabel = labels?.status || "\u72b6\u6001";
-    const targetPathsLabel = labels?.target_paths || "\u76ee\u6807\u8def\u5f84";
-    const plannedActionsLabel = labels?.planned_actions || "\u8ba1\u5212\u64cd\u4f5c";
-    const riskFlagsLabel = labels?.risk_flags || "\u98ce\u9669\u6807\u8bb0";
-    const revisionHintsLabel = labels?.revision_hints || "\u4fee\u8ba2\u63d0\u793a";
+    const titleLabel = labels?.title || localizeText(lang, "Pre-execution confirmation", "\u6267\u884c\u524d\u786e\u8ba4", "\u57f7\u884c\u524d\u78ba\u8a8d");
+    const statusLabel = labels?.status || localizeText(lang, "Status", "\u72b6\u6001", "\u72c0\u614b");
+    const targetPathsLabel = labels?.target_paths || localizeText(lang, "Target paths", "\u76ee\u6807\u8def\u5f84", "\u76ee\u6a19\u8def\u5f91");
+    const plannedActionsLabel = labels?.planned_actions || localizeText(lang, "Planned actions", "\u8ba1\u5212\u64cd\u4f5c", "\u8a08\u5283\u64cd\u4f5c");
+    const riskFlagsLabel = labels?.risk_flags || localizeText(lang, "Risk flags", "\u98ce\u9669\u6807\u8bb0", "\u98a8\u96aa\u6a19\u8a18");
+    const revisionHintsLabel = labels?.revision_hints || localizeText(lang, "Revision hints", "\u4fee\u8ba2\u63d0\u793a", "\u4fee\u8a02\u63d0\u793a");
     return (
         <div
             data-testid="confirmation-card"
@@ -581,11 +595,11 @@ function renderConfirmationCard(
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
-                {taskType ? `${titleLabel} - ${taskType}` : titleLabel}
+                {taskType ? `${titleLabel} - ${formatConfirmationTaskType(taskType, lang)}` : titleLabel}
             </div>
             {status && (
                 <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
-                    {statusLabel}: {status}
+                    {statusLabel}: {formatConfirmationStatus(status, lang)}
                 </div>
             )}
             <div data-testid="confirmation-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
@@ -595,9 +609,32 @@ function renderConfirmationCard(
             {renderConfirmationList("confirmation-planned-actions", plannedActionsLabel, plannedActions, t)}
             {renderConfirmationList("confirmation-risk-flags", riskFlagsLabel, riskFlags, t)}
             {renderConfirmationList("confirmation-revision-hints", revisionHintsLabel, revisionHints, t)}
-            {actions && actions.length > 0 && renderActions(actions, executeAction, t)}
+            {actions && actions.length > 0 && renderActions(actions, executeAction, t, lang)}
         </div>
     );
+}
+
+function formatConfirmationStatus(status: string, lang: string): string {
+    const normalized = status.trim().toLowerCase();
+    const labels: Record<string, string> = {
+        pending: localizeText(lang, "Pending", "\u5f85\u786e\u8ba4", "\u5f85\u78ba\u8a8d"),
+        running: localizeText(lang, "Running", "\u6267\u884c\u4e2d", "\u57f7\u884c\u4e2d"),
+        confirmed: localizeText(lang, "Confirmed", "\u5df2\u786e\u8ba4", "\u5df2\u78ba\u8a8d"),
+        cancelled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+        canceled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+        expired: localizeText(lang, "Expired", "\u5df2\u8fc7\u671f", "\u5df2\u904e\u671f"),
+    };
+    return labels[normalized] || status;
+}
+
+function formatConfirmationTaskType(taskType: string, lang: string): string {
+    const normalized = taskType.trim().toLowerCase();
+    const labels: Record<string, string> = {
+        coding: localizeText(lang, "Coding", "\u4ee3\u7801\u4efb\u52a1", "\u7a0b\u5f0f\u78bc\u4efb\u52d9"),
+        ssh: localizeText(lang, "SSH", "\u8fdc\u7a0b\u4efb\u52a1", "\u9060\u7aef\u4efb\u52d9"),
+        ambiguous: localizeText(lang, "Ambiguous", "\u5f85\u6f84\u6e05\u4efb\u52a1", "\u5f85\u91d0\u6e05\u4efb\u52d9"),
+    };
+    return labels[normalized] || taskType;
 }
 
 function formatUnfinishedSlotStatus(status: string, lang: string) {
@@ -659,7 +696,7 @@ function renderUnfinishedSlotCard(
                     </a>
                 </div>
             )}
-            {actions.length > 0 && renderActions(actions, executeAction, t)}
+            {actions.length > 0 && renderActions(actions, executeAction, t, lang)}
         </div>
     );
 }
@@ -739,7 +776,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         </details>
                     )}
                     {renderContentWithCodeBlocks(msg.content, t)}
-                    {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t)}
+                    {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
                     {savedPaths.length > 0 && (
                         <div style={{ margin: "4px 0" }}>
@@ -756,7 +793,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         </div>
                     )}
                     {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
-                    {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t)}
+                    {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
                 </div>
             );
         }

@@ -17,6 +17,44 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+type AnthropicMessagesRequestOptions struct {
+	Stream bool
+	Tools  []map[string]interface{}
+}
+
+func BuildAnthropicMessagesRequestBody(
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	opts AnthropicMessagesRequestOptions,
+) map[string]interface{} {
+	converted := ConvertToAnthropicMessages(messages)
+	reqBody := map[string]interface{}{
+		"model":      cfg.Model,
+		"messages":   converted.Messages,
+		"max_tokens": 4096,
+		"stream":     opts.Stream,
+	}
+	if converted.SystemText != "" {
+		reqBody["system"] = converted.SystemText
+	}
+	if len(opts.Tools) > 0 {
+		if at := ConvertToAnthropicTools(opts.Tools); len(at) > 0 {
+			reqBody["tools"] = at
+		}
+	}
+	return reqBody
+}
+
+func BuildAnthropicMessagesRequestData(
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	opts AnthropicMessagesRequestOptions,
+) (endpoint string, body []byte, err error) {
+	endpoint = corelib.AnthropicMessagesEndpoint(cfg.URL)
+	body, err = json.Marshal(BuildAnthropicMessagesRequestBody(cfg, messages, opts))
+	return endpoint, body, err
+}
+
 // DoAnthropicRequest sends a non-streaming Anthropic Messages API request.
 // It converts OpenAI-style messages/tools to Anthropic format, sends the
 // request, and converts the response back to the unified *Response type.
@@ -27,26 +65,7 @@ func DoAnthropicRequest(
 	tools []map[string]interface{},
 	client *http.Client,
 ) (*Response, error) {
-	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
-
-	converted := ConvertToAnthropicMessages(messages)
-
-	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
-		"messages":   converted.Messages,
-		"max_tokens": 4096,
-		"stream":     false,
-	}
-	if converted.SystemText != "" {
-		reqBody["system"] = converted.SystemText
-	}
-	if len(tools) > 0 {
-		if at := ConvertToAnthropicTools(tools); len(at) > 0 {
-			reqBody["tools"] = at
-		}
-	}
-
-	data, err := json.Marshal(reqBody)
+	endpoint, data, err := BuildAnthropicMessagesRequestData(cfg, messages, AnthropicMessagesRequestOptions{Stream: false, Tools: tools})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}

@@ -128,7 +128,7 @@ func (s *Store) RecallByMode(query string, category Category, mode string, proje
 	}
 	switch mode {
 	case "dynamic":
-		result.Entries = s.RecallDynamic(query, category, projectPath, ownerID...)
+		result.Entries = s.RecallDynamicForTool(query, category, projectPath, ownerID...)
 	case "hybrid", "recall":
 		result.Entries = s.SearchByMode(query, SearchHybrid, category, projectPath, limit, ownerID...)
 	case "lightmem", "light_mem", "planned":
@@ -142,7 +142,7 @@ func (s *Store) RecallByMode(query string, category Category, mode string, proje
 			result.Entries = entries
 			result.AdaptivePlan = &plan
 		} else {
-			result.Entries = s.RecallDynamic(query, category, projectPath, ownerID...)
+			result.Entries = s.RecallDynamicForTool(query, category, projectPath, ownerID...)
 		}
 	case "adaptive", "hier", "adaptive_hier":
 		s.EnsureThemesUpToDate()

@@ -261,6 +261,29 @@ func TestResolveByEmailNormalizesStoredRegistrationPolicy(t *testing.T) {
 	}
 }
 
+func TestResolveByEmailCanonicalizesSelfHostedPublicDefaultPolicy(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_legacy_self_hosted_public", OwnerEmail: "owner@example.com", Name: "Legacy Public Hub", BaseURL: "https://legacy-public.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_legacy_self_hosted_public":{"hub_origin":"self_hosted","default_signup_scope":"public","tenants":{"tenant_default":{"signup_scope":"inherit","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "guest@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "" {
+		t.Fatalf("legacy self-hosted public default should canonicalize to official fallback, got %+v", result)
+	}
+}
+
 func TestResolveByEmailUsesOfficialDefaultTenantPublicFallbackPolicy(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -367,6 +390,29 @@ func TestResolveByEmailPublicFallbackRequiresEffectivePublicScope(t *testing.T) 
 	}
 	if result.Mode != "none" || len(result.Hubs) != 0 {
 		t.Fatalf("expected inherit/domain_restricted fallback to be ignored, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPublicFallbackIgnoresInvalidHubDefaultInherit(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_default_inherit", OwnerEmail: "owner@example.com", Name: "Official Default Inherit", BaseURL: "https://official-default-inherit.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_official_default_inherit":{"hub_origin":"official","default_signup_scope":"inherit","tenants":{"public":{"tenant_id":"public","signup_scope":"inherit","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "guest@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "none" || len(result.Hubs) != 0 {
+		t.Fatalf("expected invalid hub default inherit fallback to be ignored, got %+v", result)
 	}
 }
 

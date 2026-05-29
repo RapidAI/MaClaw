@@ -7,6 +7,7 @@ import { TelegramBotSettings } from './TelegramBotSettings';
 import { WeixinSettings } from './WeixinSettings';
 import { LansengerSettings } from './LansengerSettings';
 import { IMSubTabs, type IMSubTab } from './IMSubTabs';
+import { IMProgressHintSettings } from './IMProgressHintSettings';
 type IMSettingsPanelProps = {
     settingsTab: string;
     config: main.AppConfig | null;
@@ -77,6 +78,11 @@ export const IMSettingsPanel = ({
     setWeixinQRError,
 }: IMSettingsPanelProps) => (
                             <div className="settings-content settings-panel im-settings-panel" hidden={settingsTab !== 'im'}>
+                                <IMProgressHintSettings
+                                    lang={lang}
+                                    enabled={config?.im_progress_nudge_enabled !== false}
+                                    onChange={(enabled) => saveRemoteConfigField({ im_progress_nudge_enabled: enabled })}
+                                />
                                 <IMSubTabs lang={lang} imSubTab={imSubTab} setImSubTab={setImSubTab} showLansenger={showLansenger} />
 
                                 {imSubTab === 'qq' && (

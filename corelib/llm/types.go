@@ -13,8 +13,9 @@ import (
 // Shared LLM types for both stream and non-stream responses
 
 type Response struct {
-	Choices []Choice `json:"choices"`
-	Usage   *Usage   `json:"usage,omitempty"`
+	Choices       []Choice `json:"choices"`
+	Usage         *Usage   `json:"usage,omitempty"`
+	LocalCacheHit bool     `json:"-"`
 }
 
 type Choice struct {

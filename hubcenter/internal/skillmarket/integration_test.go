@@ -420,6 +420,49 @@ func TestIntegration_FullPurchaseFlow(t *testing.T) {
 
 // ── Task 44.2: 新功能 E2E 集成测试 ──────────────────────────────────────
 
+func TestStorePurchaseDefaultTenantNormalization(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := store.CreatePurchase(ctx, &PurchaseRecord{
+		ID: "p-default-normalized", HubID: "hub-1", TenantID: "tenant_default", BuyerEmail: "buyer@test.com", BuyerID: "buyer-1",
+		SkillID: "skill-1", PurchasedVersion: 1, PurchaseType: "purchase", Status: "active", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePurchase normalized default: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO sm_purchase_records (id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "p-default-legacy", "hub-1", "tenant_default", "buyer@test.com", "buyer-1", "skill-2", 1, "purchase", 0, 0, 0, "", "", "", "active", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert legacy default purchase: %v", err)
+	}
+	if err := store.CreatePurchase(ctx, &PurchaseRecord{
+		ID: "p-tenant-a", HubID: "hub-1", TenantID: "tenant-a", BuyerEmail: "buyer@test.com", BuyerID: "buyer-1",
+		SkillID: "skill-3", PurchasedVersion: 1, PurchaseType: "purchase", Status: "active", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePurchase tenant-a: %v", err)
+	}
+
+	items, total, err := store.ListPurchasesByTenant(ctx, "hub-1", "tenant_default", "buyer@test.com", "", 0, 20)
+	if err != nil {
+		t.Fatalf("ListPurchasesByTenant default: %v", err)
+	}
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("default tenant purchases total=%d len=%d items=%+v", total, len(items), items)
+	}
+	seen := map[string]bool{}
+	for _, item := range items {
+		seen[item.ID] = true
+		if item.ID == "p-tenant-a" {
+			t.Fatalf("default tenant query leaked tenant-a purchase: %+v", items)
+		}
+	}
+	if !seen["p-default-normalized"] || !seen["p-default-legacy"] {
+		t.Fatalf("default tenant query missed normalized or legacy purchases: %+v", items)
+	}
+}
+
 func TestIntegration_RefundFullFlow(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

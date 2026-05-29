@@ -147,6 +147,14 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 	m.StatusBar, sbCmd = m.StatusBar.Update(msg)
 
 	switch msg.(type) {
+	case OnboardingRemoteResultMsg, OnboardingSSOQRMsg, OnboardingSSOResultMsg, OnboardingSSOTickMsg, OnboardingWeixinQRMsg, OnboardingWeixinPollResultMsg, OnboardingWeixinTickMsg:
+		var onboardingCmd tea.Cmd
+		m.Onboarding, onboardingCmd = m.Onboarding.Update(msg)
+		if m.tab == TabOnboarding {
+			return m, tea.Batch(onboardingCmd, sbCmd)
+		}
+		activeCmd := m.updateActiveTab(msg)
+		return m, tea.Batch(onboardingCmd, activeCmd, sbCmd)
 	case ToolSkillSearchResultMsg, ToolSkillInstallResultMsg, ToolOperationResultMsg:
 		var toolCmd tea.Cmd
 		m.Tools, toolCmd = m.Tools.Update(msg)

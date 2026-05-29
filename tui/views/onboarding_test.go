@@ -1,6 +1,7 @@
 package views
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -9,6 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+func init() {
+	onboardingTigerClawDefault = false
+}
 
 func TestOnboardingHubCenterDefaultsAndLoadsConfig(t *testing.T) {
 	m := NewOnboardingModel("zh")
@@ -646,6 +651,7 @@ func TestOnboardingQREmptyTokenPollDuringActiveQRIsIgnored(t *testing.T) {
 
 func TestOnboardingQRMessageTrimsTokenForPolling(t *testing.T) {
 	m := NewOnboardingModel("en")
+	m.weixinBusy = true
 
 	m, cmd := m.Update(OnboardingWeixinQRMsg{Success: true, QR: " https://example.com/qr ", Token: " token-test "})
 	if m.weixinQR != "https://example.com/qr" || m.weixinToken != "token-test" {
@@ -685,8 +691,234 @@ func TestOnboardingQRExpiredAutoRefreshes(t *testing.T) {
 	if m.weixinRefreshes != 1 || !m.weixinBusy || m.weixinQR != "" || m.weixinToken != "" {
 		t.Fatalf("refresh state = refreshes=%d busy=%v qr=%q token=%q", m.weixinRefreshes, m.weixinBusy, m.weixinQR, m.weixinToken)
 	}
-	if _, ok := cmd().(OnboardingStartWeixinMsg); !ok {
+	if !onboardingStartMsgFromCmdForTest(cmd) {
 		t.Fatalf("command = %#v, want OnboardingStartWeixinMsg", cmd())
+	}
+}
+
+func TestOnboardingQRBusyTickShowsProgress(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinBusy = true
+	m.weixinStatus = onboardingText("en", "requestingQR")
+
+	m, cmd := m.Update(OnboardingWeixinTickMsg{})
+	if m.weixinElapsed != 1 || cmd == nil {
+		t.Fatalf("busy tick should advance and keep ticking, elapsed=%d cmdNil=%v", m.weixinElapsed, cmd == nil)
+	}
+	view := stripANSIForTest(m.View())
+	if !strings.Contains(view, "(1s)") {
+		t.Fatalf("busy view should show elapsed progress:\n%s", view)
+	}
+}
+
+func TestOnboardingQRAutoRefreshCanBeCancelled(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.weixinBusy = true
+	m.weixinStatus = onboardingText("en", "refreshingQR")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatalf("cancel command = %#v, want nil", cmd)
+	}
+	if m.weixinBusy || m.weixinQR != "" || m.weixinToken != "" || m.weixinStatus != onboardingText("en", "notBound") {
+		t.Fatalf("cancel state busy=%v qr=%q token=%q status=%q", m.weixinBusy, m.weixinQR, m.weixinToken, m.weixinStatus)
+	}
+
+	m, _ = m.Update(OnboardingWeixinQRMsg{Success: true, QR: "https://example.com/stale", Token: "stale-token"})
+	if m.weixinQR != "" || m.weixinToken != "" {
+		t.Fatalf("stale QR response should be ignored after cancel, qr=%q token=%q", m.weixinQR, m.weixinToken)
+	}
+}
+
+func TestTigerClawOnboardingShowsSSOFlowOnly(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.cursor = onboardingRowSSO
+	m.focusCursor()
+
+	view := stripANSIForTest(m.View())
+	if !strings.Contains(view, "Enterprise SSO") || strings.Contains(view, "Hub activation") || strings.Contains(view, "Email") {
+		t.Fatalf("TigerClaw onboarding should show SSO without Hub/email rows:\n%s", view)
+	}
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || !m.ssoBusy || m.ssoFlowID == "" {
+		t.Fatalf("enter on SSO should start async flow, busy=%v flow=%q cmdNil=%v", m.ssoBusy, m.ssoFlowID, cmd == nil)
+	}
+	if !m.ssoTicking {
+		t.Fatal("enter on SSO should start one progress ticker")
+	}
+	if !onboardingStartSSOMsgFromCmdForTest(cmd) {
+		t.Fatalf("command = %#v, want OnboardingStartSSOMsg", cmd())
+	}
+}
+
+func TestOnboardingSSOQRMessageStartsPollingAndTicks(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoBusy = true
+	m.ssoFlowID = "flow-1"
+
+	m, cmd := m.Update(OnboardingSSOQRMsg{FlowID: "flow-1", Success: true, QR: " https://example.com/sso ", LoginURL: " https://login.example ", PollClient: &http.Client{}})
+	if m.ssoQR != "https://example.com/sso" || m.ssoLoginURL != "https://login.example" {
+		t.Fatalf("SSO QR state not trimmed, qr=%q login=%q", m.ssoQR, m.ssoLoginURL)
+	}
+	msg, ok := onboardingPollSSOMsgFromCmdForTest(cmd)
+	if !ok || msg.FlowID != "flow-1" {
+		t.Fatalf("poll cmd = %#v, want SSO poll", msg)
+	}
+	if !m.ssoTicking {
+		t.Fatal("SSO QR should keep a single progress ticker active")
+	}
+
+	m, cmd = m.Update(OnboardingSSOTickMsg{FlowID: "flow-1"})
+	if m.ssoElapsed != 1 || cmd == nil {
+		t.Fatalf("SSO tick should advance, elapsed=%d cmdNil=%v", m.ssoElapsed, cmd == nil)
+	}
+	if !m.ssoTicking {
+		t.Fatal("SSO tick should schedule the next ticker")
+	}
+	if !strings.Contains(stripANSIForTest(m.View()), "(1s)") {
+		t.Fatalf("SSO QR view should show elapsed progress:\n%s", stripANSIForTest(m.View()))
+	}
+}
+
+func TestOnboardingSSOManualFallbackDoesNotStartPolling(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoBusy = true
+	m.ssoFlowID = "flow-1"
+
+	m, cmd := m.Update(OnboardingSSOQRMsg{FlowID: "flow-1", Success: true, QR: "https://codegen.example/login", LoginURL: "https://codegen.example/login", Message: "open manually"})
+	if cmd != nil {
+		t.Fatalf("manual fallback should not start polling without session client: %#v", cmd())
+	}
+	if m.ssoBusy || m.ssoQR == "" || !m.ssoInput.Focused() || m.ssoStatus != "open manually" {
+		t.Fatalf("manual fallback state busy=%v qr=%q focused=%v status=%q", m.ssoBusy, m.ssoQR, m.ssoInput.Focused(), m.ssoStatus)
+	}
+}
+
+func TestOnboardingSSOTerminalFailureClearsFlow(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoQR = "https://example.com/sso"
+	m.ssoFlowID = "flow-1"
+	m.ssoInput.Focus()
+	m.ssoInput.SetValue("stale")
+
+	m, _ = m.Update(OnboardingSSOResultMsg{FlowID: "flow-1", Success: false, Message: "fatal"})
+	if m.ssoQR != "" || m.ssoFlowID != "" || m.ssoInput.Focused() || m.ssoInput.Value() != "" {
+		t.Fatalf("terminal failure should clear SSO flow, qr=%q flow=%q focused=%v input=%q", m.ssoQR, m.ssoFlowID, m.ssoInput.Focused(), m.ssoInput.Value())
+	}
+
+	m, _ = m.Update(OnboardingSSOResultMsg{FlowID: "flow-1", Success: true, Email: "stale@example.com"})
+	if m.ssoDone {
+		t.Fatal("late success after terminal failure should be ignored")
+	}
+}
+
+func TestOnboardingSSOCancelIgnoresStaleResults(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoBusy = true
+	m.ssoFlowID = "flow-1"
+	m.ssoStatus = onboardingText("en", "ssoRequestingQR")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if msg, ok := onboardingCancelSSOMsgFromCmdForTest(cmd); !ok || msg.FlowID != "flow-1" {
+		t.Fatalf("cancel command = %#v, want cancel flow-1", msg)
+	}
+	if m.ssoBusy || m.ssoQR != "" || m.ssoFlowID != "" || m.ssoStatus != onboardingText("en", "ssoNotSignedIn") {
+		t.Fatalf("cancel state busy=%v qr=%q flow=%q status=%q", m.ssoBusy, m.ssoQR, m.ssoFlowID, m.ssoStatus)
+	}
+	m, _ = m.Update(OnboardingSSOQRMsg{FlowID: "flow-1", Success: true, QR: "https://example.com/stale"})
+	m, _ = m.Update(OnboardingSSOResultMsg{FlowID: "flow-1", Success: true, Email: "user@example.com"})
+	if m.ssoDone || m.ssoQR != "" {
+		t.Fatalf("stale SSO result should be ignored, done=%v qr=%q", m.ssoDone, m.ssoQR)
+	}
+}
+
+func TestOnboardingSSOQRAcceptsPastedReturnURL(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoQR = "https://example.com/sso"
+	m.ssoFlowID = "flow-1"
+	m.ssoInput.Focus()
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("https://callback.example/?token=abc")})
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected pasted SSO input submit command")
+	}
+	msg, ok := onboardingSubmitSSOMsgFromCmdForTest(cmd)
+	if !ok || msg.FlowID != "flow-1" || !strings.Contains(msg.Input, "token=abc") {
+		t.Fatalf("submit cmd = %#v", msg)
+	}
+	if !m.ssoBusy || m.ssoStatus != onboardingText("en", "ssoValidating") {
+		t.Fatalf("manual validation state busy=%v status=%q", m.ssoBusy, m.ssoStatus)
+	}
+
+	_, duplicateCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if duplicateCmd != nil {
+		t.Fatalf("enter during manual validation should not submit again: %#v", duplicateCmd())
+	}
+}
+
+func TestOnboardingSSOQRAllowsManualSubmitWhilePolling(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoBusy = true
+	m.ssoPolling = true
+	m.ssoQR = "https://example.com/sso"
+	m.ssoFlowID = "flow-1"
+	m.ssoInput.Focus()
+	m.ssoInput.SetValue("https://callback.example/?token=manual")
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg, ok := onboardingSubmitSSOMsgFromCmdForTest(cmd)
+	if !ok || msg.FlowID != "flow-1" || !strings.Contains(msg.Input, "token=manual") {
+		t.Fatalf("submit cmd = %#v", msg)
+	}
+	if !m.ssoBusy || !m.ssoPolling || !m.ssoSubmitting || m.ssoStatus != onboardingText("en", "ssoValidating") {
+		t.Fatalf("manual submit during poll state busy=%v polling=%v submitting=%v status=%q", m.ssoBusy, m.ssoPolling, m.ssoSubmitting, m.ssoStatus)
+	}
+}
+
+func TestOnboardingSSOPollFailureDoesNotCancelManualSubmit(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoBusy = true
+	m.ssoPolling = true
+	m.ssoSubmitting = true
+	m.ssoQR = "https://example.com/sso"
+	m.ssoFlowID = "flow-1"
+	m.ssoStatus = onboardingText("en", "ssoValidating")
+
+	m, _ = m.Update(OnboardingSSOResultMsg{FlowID: "flow-1", Success: false, Message: "poll timeout", KeepOpen: true})
+	if !m.ssoBusy || m.ssoPolling || !m.ssoSubmitting || m.ssoStatus != onboardingText("en", "ssoValidating") {
+		t.Fatalf("poll failure should leave manual validation active, busy=%v polling=%v submitting=%v status=%q", m.ssoBusy, m.ssoPolling, m.ssoSubmitting, m.ssoStatus)
+	}
+
+	m, _ = m.Update(OnboardingSSOResultMsg{FlowID: "flow-1", Success: false, Message: "bad token", KeepOpen: true, FromManual: true})
+	if m.ssoBusy || m.ssoSubmitting || m.ssoStatus != "bad token" || m.ssoQR == "" {
+		t.Fatalf("manual failure should stop validation and keep QR open, busy=%v submitting=%v status=%q qr=%q", m.ssoBusy, m.ssoSubmitting, m.ssoStatus, m.ssoQR)
+	}
+}
+
+func TestOnboardingSSOPollFailureKeepsManualInputOpen(t *testing.T) {
+	m := NewOnboardingModel("en")
+	m.tigerClaw = true
+	m.ssoQR = "https://example.com/sso"
+	m.ssoFlowID = "flow-1"
+	m.ssoInput.Focus()
+	m.ssoInput.SetValue("https://callback.example/?token=abc")
+
+	m, _ = m.Update(OnboardingSSOResultMsg{FlowID: "flow-1", Success: false, Message: "network timeout", KeepOpen: true})
+	if m.ssoQR == "" || !m.ssoInput.Focused() || m.ssoInput.Value() == "" {
+		t.Fatalf("poll failure should keep manual input open, qr=%q focused=%v input=%q", m.ssoQR, m.ssoInput.Focused(), m.ssoInput.Value())
+	}
+	m, cmd := m.Update(OnboardingSSOTickMsg{FlowID: "flow-1"})
+	if m.ssoElapsed != 0 || cmd != nil {
+		t.Fatalf("tick after poll failure should stop, elapsed=%d cmd=%v", m.ssoElapsed, cmd)
 	}
 }
 
@@ -757,6 +989,121 @@ func onboardingPollMsgFromCmdForTest(cmd tea.Cmd) (OnboardingPollWeixinMsg, bool
 		}
 	}
 	return OnboardingPollWeixinMsg{}, false
+}
+
+func onboardingStartMsgFromCmdForTest(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if _, ok := msg.(OnboardingStartWeixinMsg); ok {
+		return true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return false
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if _, ok := item().(OnboardingStartWeixinMsg); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func onboardingPollSSOMsgFromCmdForTest(cmd tea.Cmd) (OnboardingPollSSOMsg, bool) {
+	if cmd == nil {
+		return OnboardingPollSSOMsg{}, false
+	}
+	msg := cmd()
+	if poll, ok := msg.(OnboardingPollSSOMsg); ok {
+		return poll, true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return OnboardingPollSSOMsg{}, false
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if poll, ok := item().(OnboardingPollSSOMsg); ok {
+			return poll, true
+		}
+	}
+	return OnboardingPollSSOMsg{}, false
+}
+
+func onboardingStartSSOMsgFromCmdForTest(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if _, ok := msg.(OnboardingStartSSOMsg); ok {
+		return true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return false
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if _, ok := item().(OnboardingStartSSOMsg); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func onboardingSubmitSSOMsgFromCmdForTest(cmd tea.Cmd) (OnboardingSubmitSSOInputMsg, bool) {
+	if cmd == nil {
+		return OnboardingSubmitSSOInputMsg{}, false
+	}
+	msg := cmd()
+	if submit, ok := msg.(OnboardingSubmitSSOInputMsg); ok {
+		return submit, true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return OnboardingSubmitSSOInputMsg{}, false
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if submit, ok := item().(OnboardingSubmitSSOInputMsg); ok {
+			return submit, true
+		}
+	}
+	return OnboardingSubmitSSOInputMsg{}, false
+}
+
+func onboardingCancelSSOMsgFromCmdForTest(cmd tea.Cmd) (OnboardingCancelSSOMsg, bool) {
+	if cmd == nil {
+		return OnboardingCancelSSOMsg{}, false
+	}
+	msg := cmd()
+	if cancel, ok := msg.(OnboardingCancelSSOMsg); ok {
+		return cancel, true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return OnboardingCancelSSOMsg{}, false
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if cancel, ok := item().(OnboardingCancelSSOMsg); ok {
+			return cancel, true
+		}
+	}
+	return OnboardingCancelSSOMsg{}, false
 }
 
 func stripANSIForTest(s string) string {

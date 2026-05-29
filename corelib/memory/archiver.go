@@ -57,7 +57,7 @@ func (a *Archiver) Archive(userID string, entries []ConversationEntry) error {
 	}
 
 	if a.store != nil {
-		if oe := a.store.OnlineExtractor(); oe != nil && oe.HasRecentSuccess(60*time.Minute) {
+		if oe := a.store.OnlineExtractor(); oe != nil && oe.HasRecentActivity(60*time.Minute) {
 			return nil
 		}
 	}

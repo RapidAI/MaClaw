@@ -520,10 +520,11 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 
 	// Progress callback -> send intermediate status to the WeChat user.
 	// Use a rate limiter to avoid flooding: at most one progress message per 5s.
+	progressFilter := newIMProgressVisibilityFilter(m.app)
 	var lastProgress time.Time
 	var lastProgressText string
 	onProgress := func(progressText string) {
-		if progressText == "" || progressText == imHeartbeatMsg {
+		if !progressFilter.ShouldSendProgress(progressText) {
 			return
 		}
 		now := time.Now()

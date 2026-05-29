@@ -368,7 +368,7 @@ func buildIMFormGuidanceText(schema *workflow.PhaseInputSchema) string {
 // to use as the synthetic user message that triggers the agent loop.
 func buildFormSubmissionSummary(data map[string]interface{}) string {
 	if len(data) == 0 {
-		return "The user submitted the workflow form. Generate the phase output from the persisted form data."
+		return avTr("The user submitted the workflow form. Generate the phase output from the persisted form data.", "\u7528\u6237\u5df2\u63d0\u4ea4\u5de5\u4f5c\u6d41\u8868\u5355\u3002\u8bf7\u57fa\u4e8e\u5df2\u4fdd\u5b58\u7684\u8868\u5355\u6570\u636e\u751f\u6210\u9636\u6bb5\u8f93\u51fa\u3002")
 	}
 	var parts []string
 	for k, v := range data {
@@ -378,11 +378,11 @@ func buildFormSubmissionSummary(data map[string]interface{}) string {
 		}
 	}
 	if len(parts) == 0 {
-		return "The user submitted the workflow form. Generate the phase output from the persisted form data."
+		return avTr("The user submitted the workflow form. Generate the phase output from the persisted form data.", "\u7528\u6237\u5df2\u63d0\u4ea4\u5de5\u4f5c\u6d41\u8868\u5355\u3002\u8bf7\u57fa\u4e8e\u5df2\u4fdd\u5b58\u7684\u8868\u5355\u6570\u636e\u751f\u6210\u9636\u6bb5\u8f93\u51fa\u3002")
 	}
 	summary := strings.Join(parts, "; ")
 	if len([]rune(summary)) > 200 {
 		summary = string([]rune(summary)[:200]) + "..."
 	}
-	return "The user submitted workflow form data: " + summary
+	return avTr("The user submitted workflow form data: ", "\u7528\u6237\u5df2\u63d0\u4ea4\u5de5\u4f5c\u6d41\u8868\u5355\u6570\u636e\uff1a") + summary
 }

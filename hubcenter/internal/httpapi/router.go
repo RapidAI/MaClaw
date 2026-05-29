@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -369,7 +370,17 @@ func AdminRouteQueryHandler(service *entry.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "ADMIN_ROUTE_QUERY_FAILED", err.Error())
 			return
 		}
+		externalizeAdminResolveResult(resp)
 		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func externalizeAdminResolveResult(resp *entry.ResolveResult) {
+	if resp == nil {
+		return
+	}
+	for i := range resp.Hubs {
+		resp.Hubs[i].TenantID = adminExternalTenantID(resp.Hubs[i].TenantID)
 	}
 }
 
@@ -401,12 +412,19 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/routing/enterprise-mail-domains", RequireAdmin(adminService, ListEnterpriseMailDomainsHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/hubs/runtime", RequireAdmin(adminService, ListHubRuntimeStatusesHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/users/dashboard", RequireAdmin(adminService, ListUserDashboardHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/registration-policy", RequireAdmin(adminService, UpdateHubRegistrationPolicyHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/registration-policy", RequireAdmin(adminService, UpdateHubRegistrationPolicyHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/digital-employee-authorization", RequireAdmin(adminService, UpdateDigitalEmployeeAuthorizationHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/digital-employee-authorization", RequireAdmin(adminService, UpdateDigitalEmployeeAuthorizationHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/disable", RequireAdmin(adminService, DisableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/disable", RequireAdmin(adminService, DisableHubHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/enable", RequireAdmin(adminService, EnableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/enable", RequireAdmin(adminService, EnableHubHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/confirm", RequireAdmin(adminService, ConfirmHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/confirm", RequireAdmin(adminService, ConfirmHubHandler(hubService)))
+	mux.HandleFunc("DELETE /api/admin/hubs", RequireAdmin(adminService, DeleteHubHandler(hubService)))
 	mux.HandleFunc("DELETE /api/admin/hubs/{id}", RequireAdmin(adminService, DeleteHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/users/refresh-inventory", RequireAdmin(adminService, RefreshHubUserInventoryHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/users/migrate", RequireAdmin(adminService, MigrateHubUserHandler(hubService)))
@@ -554,5 +572,53 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))
 		mux.HandleFunc("GET /api/v1/admin/purchases", RequireAdmin(adminService, smHandlers.AdminListPurchases))
 	}
-	return mux
+	return adminOpaqueHubIDCompat(mux, adminService, hubService)
+}
+
+func adminOpaqueHubIDCompat(next http.Handler, adminService *auth.AdminService, hubService *hubs.Service) http.Handler {
+	routes := []struct {
+		method  string
+		suffix  string
+		handler http.HandlerFunc
+	}{
+		{http.MethodPost, "/registration-policy", RequireAdmin(adminService, UpdateHubRegistrationPolicyHandler(hubService))},
+		{http.MethodPost, "/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService))},
+		{http.MethodPost, "/digital-employee-authorization", RequireAdmin(adminService, UpdateDigitalEmployeeAuthorizationHandler(hubService))},
+		{http.MethodPost, "/disable", RequireAdmin(adminService, DisableHubHandler(hubService))},
+		{http.MethodPost, "/enable", RequireAdmin(adminService, EnableHubHandler(hubService))},
+		{http.MethodPost, "/confirm", RequireAdmin(adminService, ConfirmHubHandler(hubService))},
+	}
+	deleteHandler := RequireAdmin(adminService, DeleteHubHandler(hubService))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "/api/admin/hubs/"
+		escapedPath := r.URL.EscapedPath()
+		if strings.HasPrefix(escapedPath, prefix) {
+			afterPrefix := strings.TrimPrefix(escapedPath, prefix)
+			for _, route := range routes {
+				if r.Method != route.method || !strings.HasSuffix(afterPrefix, route.suffix) {
+					continue
+				}
+				escapedID := strings.TrimSuffix(afterPrefix, route.suffix)
+				if escapedID == "" {
+					continue
+				}
+				if id, err := url.PathUnescape(escapedID); err == nil && strings.TrimSpace(id) != "" {
+					r.SetPathValue("id", id)
+					route.handler.ServeHTTP(w, r)
+					return
+				}
+			}
+			if r.Method == http.MethodDelete {
+				escapedID := afterPrefix
+				if escapedID != "" {
+					if id, err := url.PathUnescape(escapedID); err == nil && strings.TrimSpace(id) != "" {
+						r.SetPathValue("id", id)
+						deleteHandler.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

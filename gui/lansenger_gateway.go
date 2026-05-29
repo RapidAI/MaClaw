@@ -502,10 +502,11 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		return
 	}
 
+	progressFilter := newIMProgressVisibilityFilter(m.app)
 	var lastProgress time.Time
 	var lastProgressText string
 	onProgress := func(progressText string) {
-		if progressText == "" || progressText == imHeartbeatMsg {
+		if !progressFilter.ShouldSendProgress(progressText) {
 			return
 		}
 		now := time.Now()

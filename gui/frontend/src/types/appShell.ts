@@ -16,6 +16,8 @@ export interface SidebarTokenUsageStat {
     cache_write_tokens?: number;
     requests?: number;
     cached_requests?: number;
+    local_cache_requests?: number;
+    local_cache_hits?: number;
     InputTokens?: number;
     OutputTokens?: number;
     TotalTokens?: number;
@@ -23,6 +25,8 @@ export interface SidebarTokenUsageStat {
     CacheWriteTokens?: number;
     Requests?: number;
     CachedRequests?: number;
+    LocalCacheRequests?: number;
+    LocalCacheHits?: number;
 }
 
 export interface SidebarCurrentProviderTokenUsage {
@@ -35,6 +39,8 @@ export interface SidebarCurrentProviderTokenUsage {
     cacheWrite?: number;
     requests?: number;
     cachedRequests?: number;
+    localCacheRequests?: number;
+    localCacheHits?: number;
 }
 
 export interface SidebarHubCreditGrant {

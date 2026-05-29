@@ -98,7 +98,7 @@ func TestAdminStaticRoutesServeSplitAssets(t *testing.T) {
 			if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, tc.wantContentType) {
 				t.Fatalf("content-type = %q, want %s", contentType, tc.wantContentType)
 			}
-			assertStaticAssetHeaders(t, rec)
+			assertAdminStaticAssetHeaders(t, rec)
 		})
 	}
 
@@ -134,6 +134,16 @@ func assertStaticAssetHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
 	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "max-age=300") {
 		t.Fatalf("cache-control = %q, want max-age=300", cacheControl)
+	}
+	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Fatalf("x-content-type-options = %q, want nosniff", nosniff)
+	}
+}
+
+func assertAdminStaticAssetHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if cacheControl := rec.Header().Get("Cache-Control"); cacheControl != staticHTMLCacheControl {
+		t.Fatalf("admin asset cache-control = %q, want %q", cacheControl, staticHTMLCacheControl)
 	}
 	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
 		t.Fatalf("x-content-type-options = %q, want nosniff", nosniff)
@@ -276,11 +286,23 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		`else if(tenantScoped){domains=Array.isArray(item&&item.corporate_email_domains)?item.corporate_email_domains.filter(Boolean):[]}`,
 		`if(item&&(item.accept_public_signup||item.signup_mode==='public_signup'))`,
 		`function renderHubTenantPanel`,
-		`No tenant data yet. Enter a tenant_id to grant digital employee authorization before first user inventory sync.`,
+		`function hubTenantsForAdmin`,
+		`tenant_id:'tenant_default'`,
+		`hub_id:String(id||'')`,
+		`api('/api/admin/hubs/visibility'`,
+		`api('/api/admin/hubs/registration-policy'`,
+		`api('/api/admin/hubs/digital-employee-authorization'`,
+		`'/api/admin/hubs/disable':'/api/admin/hubs/enable'`,
+		`api('/api/admin/hubs/confirm'`,
+		`api('/api/admin/hubs',{method:'DELETE'`,
+		`data.error&&data.error.message`,
+		`No tenant data yet. Enter a tenant ID to grant digital employee authorization before first user inventory sync.`,
 		`function updateHubVEAuthManual(id)`,
 		`if(!tenantID){showToast(tr('veAuthTenantRequired'),'error');return}`,
-		`var body={tenant_id:tenantID,quota:quotaVal,years:yearsVal,enabled:true}`,
-		`var body={tenant_id:tenantID,enabled:false}`,
+		`var body={hub_id:String(id||''),tenant_id:tenantID,quota:quotaVal,years:yearsVal,enabled:true}`,
+		`var body={hub_id:String(id||''),tenant_id:tenantID,enabled:false}`,
+		`Array.isArray(data.logs)?data.logs`,
+		`item.tenant_id==='tenant_default'?tr('defaultTenant'):item.tenant_id`,
 		`function hubMailDomains`,
 		`if(!single)return []`,
 		`function hubTenantDomainText`,

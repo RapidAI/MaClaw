@@ -987,6 +987,36 @@ func (r *hubUserLinkRepo) ListUserCountsByHubTenant(ctx context.Context) ([]stor
 	return out, rows.Err()
 }
 
+func (r *hubUserLinkRepo) ListUserDomainsByHubTenant(ctx context.Context) ([]store.HubTenantUserDomain, error) {
+	rows, err := r.readDB.QueryContext(ctx, `
+		SELECT DISTINCT l.hub_id,
+		       CASE WHEN trim(l.tenant_id) = 'tenant_default' THEN '' ELSE trim(l.tenant_id) END AS tenant_id,
+		       lower(trim(substr(l.email, instr(l.email, '@') + 1))) AS domain
+		FROM hub_user_links l
+		LEFT JOIN hub_instances h ON h.id = l.hub_id
+		WHERE trim(l.hub_id) <> ''
+		  AND trim(l.email) <> ''
+		  AND instr(l.email, '@') > 0
+		  AND instr(l.email, '*') = 0
+		  AND lower(trim(l.email)) <> lower(trim(coalesce(h.owner_email, '')))
+		ORDER BY hub_id, tenant_id, domain
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]store.HubTenantUserDomain, 0)
+	for rows.Next() {
+		var item store.HubTenantUserDomain
+		if err := rows.Scan(&item.HubID, &item.TenantID, &item.Domain); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (r *hubUserLinkRepo) ListUserFirstSeen(ctx context.Context) ([]store.HubUserFirstSeen, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT hub_id,
@@ -2365,7 +2395,7 @@ func (r *failureEventLogRepo) Create(ctx context.Context, log *store.FailureEven
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO failure_event_logs (id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, log.ID, strings.TrimSpace(log.TenantID), log.Category, log.EventCode, log.Message, log.EntityID, log.Email, log.ClientIP, log.DetailsJSON, log.CreatedAt.Format(time.RFC3339))
+	`, log.ID, normalizeStoreTenantID(log.TenantID), log.Category, log.EventCode, log.Message, log.EntityID, log.Email, log.ClientIP, log.DetailsJSON, log.CreatedAt.Format(time.RFC3339))
 	return err
 }
 
@@ -2380,12 +2410,16 @@ func (r *failureEventLogRepo) List(ctx context.Context, filter store.FailureEven
 	}
 	keyword := strings.TrimSpace(filter.Keyword)
 	category := strings.TrimSpace(filter.Category)
-	tenantID := strings.TrimSpace(filter.TenantID)
+	tenantID := normalizeStoreTenantID(filter.TenantID)
 	where := make([]string, 0, 2)
 	args := make([]any, 0, 8)
-	if tenantID != "" {
-		where = append(where, "tenant_id = ?")
-		args = append(args, tenantID)
+	if filter.TenantIDSet {
+		if tenantID == "" {
+			where = append(where, "(tenant_id = '' OR tenant_id = 'tenant_default')")
+		} else {
+			where = append(where, "tenant_id = ?")
+			args = append(args, tenantID)
+		}
 	}
 	if category != "" {
 		where = append(where, "category = ?")

@@ -43,7 +43,7 @@ func adminPageBundleAssetRefs(t *testing.T, html string) []string {
 	matches := assetRef.FindAllStringSubmatch(html, -1)
 	refs := make([]string, 0, len(matches))
 	for _, match := range matches {
-		ref := match[1]
+		ref := strings.SplitN(match[1], "?", 2)[0]
 		if strings.HasPrefix(ref, "admin/assets/") || ref == "pro-ui.css" {
 			refs = append(refs, ref)
 		}
@@ -63,7 +63,7 @@ func adminPageAssetRefs(t *testing.T, html string) []string {
 	}
 	refs := make([]string, 0, len(matches))
 	for _, match := range matches {
-		refs = append(refs, match[1])
+		refs = append(refs, strings.SplitN(match[1], "?", 2)[0])
 	}
 	return refs
 }
@@ -253,10 +253,11 @@ func adminPageSplitScriptRefs(t *testing.T, html string) []adminPageScriptRef {
 	matches := scriptRef.FindAllStringSubmatch(html, -1)
 	refs := make([]adminPageScriptRef, 0, len(matches))
 	for _, match := range matches {
-		if !strings.HasPrefix(match[1], "assets/js/") {
+		src := strings.SplitN(match[1], "?", 2)[0]
+		if !strings.HasPrefix(src, "assets/js/") {
 			continue
 		}
-		refs = append(refs, adminPageScriptRef{tag: match[0], src: match[1], attrs: match[2]})
+		refs = append(refs, adminPageScriptRef{tag: match[0], src: src, attrs: match[2]})
 	}
 	return refs
 }

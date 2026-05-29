@@ -57,6 +57,50 @@ func TestFilterToolDefinitionsDocOnlyCanReturnEmpty(t *testing.T) {
 	}
 }
 
+func TestDocOnlyPolicyKeepsWorkflowWriteToolsConsistent(t *testing.T) {
+	for _, name := range []string{"write_file", "read_file", "edit_file", "edit_lines", "bash"} {
+		if !IsToolAllowedByPolicy(ToolFilterDocOnly, name) {
+			t.Fatalf("expected %s to be allowed by doc-only workflow policy", name)
+		}
+	}
+	if err := ValidateToolCallByPolicy(ToolFilterDocOnly, "write_file", map[string]interface{}{"path": "out.md", "content": "body"}); err != nil {
+		t.Fatalf("doc-only write_file validation failed: %v", err)
+	}
+
+	required := RequiredToolNamesForPolicy(ToolFilterDocOnly)
+	requiredSet := make(map[string]bool, len(required))
+	for _, name := range required {
+		requiredSet[name] = true
+	}
+	for _, name := range []string{"write_file", "read_file", "edit_file", "edit_lines", "bash"} {
+		if !requiredSet[name] {
+			t.Fatalf("expected %s to be a required doc-only workflow tool; got %#v", name, required)
+		}
+	}
+}
+
+func TestRequiredToolNamesForPolicyReturnsCopy(t *testing.T) {
+	first := RequiredToolNamesForPolicy(ToolFilterDocOnly)
+	if len(first) == 0 {
+		t.Fatal("expected doc-only policy to declare required tools")
+	}
+	first[0] = "mutated"
+	second := RequiredToolNamesForPolicy(ToolFilterDocOnly)
+	if second[0] == "mutated" {
+		t.Fatal("RequiredToolNamesForPolicy must return a copy")
+	}
+}
+
+func TestRequiredToolNamesForPolicyAreAllowed(t *testing.T) {
+	for _, policy := range []ToolFilterPolicy{ToolFilterDocOnly, ToolFilterOpsControlled} {
+		for _, name := range RequiredToolNamesForPolicy(policy) {
+			if !IsToolAllowedByPolicy(policy, name) {
+				t.Fatalf("required tool %s must be allowed by policy %s", name, policy)
+			}
+		}
+	}
+}
+
 func TestIsToolAllowedByPolicyTrimsToolName(t *testing.T) {
 	if !IsToolAllowedByPolicy(ToolFilterOpsControlled, " bash ") {
 		t.Fatal("expected tool policy to trim tool names before checking allowlist")

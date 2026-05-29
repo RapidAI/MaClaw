@@ -683,6 +683,16 @@ func (h *IMMessageHandler) doLLMRequestStream(
 	// lets us stream incrementally and discard tokens we don't need to display.
 	tokenBuffer := newTransactionalTokenBuffer(onToken)
 	meteredOnToken := withFirstTokenMetrics(tokenBuffer.Write, metrics)
+	if h.app != nil {
+		if cachedResp, ok := h.app.cachedStreamHit(reqCtx, cfg, messages, tools, meteredOnToken); ok {
+			if responseHasToolCalls(cachedResp) {
+				tokenBuffer.Discard()
+			} else {
+				tokenBuffer.Flush()
+			}
+			return cachedResp, nil
+		}
+	}
 	var resp *llm.Response
 	var err error
 	if cfg.IsResponsesWebSocket() {
@@ -698,6 +708,9 @@ func (h *IMMessageHandler) doLLMRequestStream(
 		tokenBuffer.Discard()
 	} else {
 		tokenBuffer.Flush()
+		if h.app != nil {
+			h.app.storeStreamResponse(cfg, messages, tools, resp)
+		}
 	}
 	return resp, err
 }
@@ -1079,26 +1092,10 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	metrics *llmStreamMetrics,
 ) (*llm.Response, error) {
 	requestBuildStartedAt := time.Now()
-	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
-
-	converted := convertToAnthropicMessages(messages)
-
-	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
-		"messages":   converted.Messages,
-		"max_tokens": 4096,
-		"stream":     true,
+	endpoint, data, err := llm.BuildAnthropicMessagesRequestData(cfg, messages, llm.AnthropicMessagesRequestOptions{Stream: true, Tools: tools})
+	if err != nil {
+		return nil, err
 	}
-	if converted.SystemText != "" {
-		reqBody["system"] = converted.SystemText
-	}
-	if len(tools) > 0 {
-		if at := convertToAnthropicTools(tools); len(at) > 0 {
-			reqBody["tools"] = at
-		}
-	}
-
-	data, _ := json.Marshal(reqBody)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err

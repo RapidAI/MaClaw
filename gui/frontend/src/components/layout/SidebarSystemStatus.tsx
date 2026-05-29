@@ -12,6 +12,7 @@ type SidebarSystemStatusProps = {
     weixinStatus: string;
     lansengerStatus: string;
     backgroundTaskCount?: number;
+    localLLMCacheEnabled?: boolean;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     formatSidebarTokens: (value: number) => string;
@@ -80,6 +81,7 @@ export const SidebarSystemStatus = ({
     weixinStatus,
     lansengerStatus,
     backgroundTaskCount = 0,
+    localLLMCacheEnabled = false,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -95,13 +97,20 @@ export const SidebarSystemStatus = ({
     codingAgentTurnSnapshot = null,
 }: SidebarSystemStatusProps) => {
     const providerLabel = sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b');
-    const cacheRequests = sidebarCurrentProviderTokenUsage.requests ?? 0;
-    const cachedRequests = sidebarCurrentProviderTokenUsage.cachedRequests ?? 0;
+    const localCacheRequests = sidebarCurrentProviderTokenUsage.localCacheRequests ?? 0;
+    const localCacheHits = sidebarCurrentProviderTokenUsage.localCacheHits ?? 0;
+    const cacheRequests = localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService
+        ? localCacheRequests
+        : sidebarCurrentProviderTokenUsage.requests ?? 0;
+    const cachedRequests = localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService
+        ? localCacheHits
+        : sidebarCurrentProviderTokenUsage.cachedRequests ?? 0;
     const cachedInput = sidebarCurrentProviderTokenUsage.cachedInput ?? 0;
     const cacheWrite = sidebarCurrentProviderTokenUsage.cacheWrite ?? 0;
+    const shouldShowCacheRate = cacheRequests > 0 || (localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService);
     const cacheHitRate = cacheRequests > 0
         ? Math.round((cachedRequests / cacheRequests) * 100)
-        : null;
+        : shouldShowCacheRate ? 0 : null;
     const cacheTitle = cacheHitRate === null
         ? ''
         : `${textForLang(lang, 'Cache hit', '\u7f13\u5b58\u547d\u4e2d', '\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Read', '\u8bfb\u53d6', '\u8b80\u53d6')} ${formatSidebarTokens(cachedInput)}${CREDIT_SEPARATOR}${textForLang(lang, 'Write', '\u5199\u5165', '\u5beb\u5165')} ${formatSidebarTokens(cacheWrite)}`;

@@ -751,6 +751,27 @@ func waitForCodeGenTokenWithContext(ctx context.Context, timeout time.Duration, 
 	}
 }
 
+// PollCodeGenSSOResultContext waits for a CodeGen SSO scan using the provided
+// session client, then validates the returned token and resolves model metadata.
+// The client must be the cookie-jar client returned by ExtractSSOQRCodeURL.
+func PollCodeGenSSOResultContext(ctx context.Context, timeout time.Duration, pollClient *http.Client) (CodeGenSSOResult, error) {
+	if pollClient == nil {
+		pollClient = codeGenHTTPClient
+	}
+	token, email, err := waitForCodeGenTokenWithContext(ctx, timeout, pollClient)
+	if err != nil {
+		return CodeGenSSOResult{}, err
+	}
+	result, err := ValidateAndBuildCodeGenResult(token)
+	if err != nil {
+		return CodeGenSSOResult{}, err
+	}
+	if strings.TrimSpace(result.Email) == "" {
+		result.Email = strings.TrimSpace(email)
+	}
+	return result, nil
+}
+
 // ewmImgRegexp 匹配含 class="ewm-img" 的 <img> 标签并捕获 src 属性值。
 // 使用两个备选分支支持 class 和 src 属性的任意顺序。
 var ewmImgRegexp = regexp.MustCompile(

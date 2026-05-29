@@ -271,12 +271,14 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 		}
 		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
 		offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
+		tenantID, tenantIDSet := adminFailureLogTenantFilter(r)
 		items, total, err := repo.List(r.Context(), store.FailureEventLogFilter{
-			TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
-			Keyword:  strings.TrimSpace(r.URL.Query().Get("keyword")),
-			Category: strings.TrimSpace(r.URL.Query().Get("category")),
-			Offset:   offset,
-			Limit:    limit,
+			TenantID:    tenantID,
+			TenantIDSet: tenantIDSet,
+			Keyword:     strings.TrimSpace(r.URL.Query().Get("keyword")),
+			Category:    strings.TrimSpace(r.URL.Query().Get("category")),
+			Offset:      offset,
+			Limit:       limit,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILURE_LOGS_FAILED", err.Error())
@@ -293,7 +295,7 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 			}
 			logs = append(logs, FailureLogView{
 				ID:        item.ID,
-				TenantID:  item.TenantID,
+				TenantID:  adminExternalTenantID(item.TenantID),
 				Category:  item.Category,
 				EventCode: item.EventCode,
 				Message:   item.Message,
@@ -306,4 +308,12 @@ func ListFailureLogsHandler(repo store.FailureEventLogRepository) http.HandlerFu
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "total": total, "offset": offset, "limit": limit})
 	}
+}
+
+func adminFailureLogTenantFilter(r *http.Request) (string, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if raw == "" {
+		return "", false
+	}
+	return normalizeHubSyncTenantID(raw), true
 }

@@ -4,6 +4,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -23,6 +24,22 @@ type GUIWorkflowAdapter struct {
 	// Set by EmitPhaseUpdate when a new active workflow is detected; cleared on
 	// workflow completion/cancellation.
 	activeWorkflowID string
+
+	// activeWorkflowType is the workflow type for the current active workflow.
+	// Used to determine the Project_Storage subdirectory path (kebab-case).
+	// Protected by mu.
+	activeWorkflowType workflow.WorkflowType
+
+	// workflowStartDate is the start time of the current workflow instance.
+	// Used to generate the date subdirectory (YYYY-MM-DD) in Project_Storage.
+	// Protected by mu.
+	workflowStartDate time.Time
+
+	// projectStorageDir is the cached resolved Project_Storage date directory path.
+	// Lazily resolved on first publish call and reused for the lifetime of the workflow.
+	// Reset to empty string when a new workflow starts (forcing re-resolution).
+	// Protected by mu.
+	projectStorageDir string
 
 	// suggestMaximizeSent tracks whether the fullscreen suggestion banner
 	// has already been emitted for each user in the current app session.
@@ -61,10 +78,37 @@ func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.Work
 	if state != nil {
 		a.mu.Lock()
 		if state.Status == workflow.WorkflowActive && state.ID != "" {
+			// Only set workflowStartDate when a new workflow instance is detected
+			// (different ID from current). This prevents resetting the date on
+			// every phase transition within the same workflow.
+			if a.activeWorkflowID != state.ID {
+				a.workflowStartDate = time.Now()
+				a.projectStorageDir = "" // force re-resolution for new workflow
+			}
 			a.activeWorkflowID = state.ID
+			a.activeWorkflowType = state.Type
 		} else {
-			// Workflow completed or cancelled — clear the instance namespace.
+			// Workflow completed or cancelled — write manifest before clearing fields,
+			// because writeWorkflowManifest depends on activeWorkflowType and workflowStartDate
+			// (via resolveProjectStorageDir). We snapshot the needed fields under lock,
+			// then release the lock before calling writeManifestOnCompletion to avoid
+			// holding the lock during I/O.
+			if state.Status == workflow.WorkflowCompleted || state.Status == workflow.WorkflowCancelled {
+				a.mu.Unlock()
+				a.writeManifestOnCompletion(state)
+				// Clean Internal_Storage only on successful completion (Req 3.3).
+				// Must be called before activeWorkflowID is cleared below.
+				if state.Status == workflow.WorkflowCompleted {
+					a.cleanInternalStorageOnCompletion()
+				}
+				a.mu.Lock()
+			}
+			// Clear the instance namespace and all Project_Storage related fields
+			// so the next workflow starts fresh.
 			a.activeWorkflowID = ""
+			a.activeWorkflowType = ""
+			a.workflowStartDate = time.Time{}
+			a.projectStorageDir = ""
 		}
 		a.mu.Unlock()
 	}
@@ -88,6 +132,9 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 	content = stripDocPreamble(content)
 	// Persist first.
 	a.persistWorkflowDoc(phaseID, content)
+	// Publish to Project_Storage (best-effort, non-blocking).
+	// This is called after persistWorkflowDoc succeeds so we know the content is valid.
+	a.publishToProjectStorage(phaseID, content)
 	// Read back the persisted file — this is the single source of truth
 	// for the preview panel. If the file can't be read, fall back to
 	// the in-memory content.

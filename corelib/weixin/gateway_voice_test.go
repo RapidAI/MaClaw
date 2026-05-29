@@ -32,6 +32,9 @@ func TestVoiceUploadPayloadEncodesWAVToSilk(t *testing.T) {
 	if meta == nil || meta.sampleRate != weixinVoiceSampleRate || meta.playtimeMS != 3000 {
 		t.Fatalf("meta = %#v, want sample_rate=%d playtime=3000", meta, weixinVoiceSampleRate)
 	}
+	if meta.bitsPerSample != 0 || meta.channels != 1 {
+		t.Fatalf("converted SILK meta bits=%d channels=%d, want compressed mono metadata", meta.bitsPerSample, meta.channels)
+	}
 	if meta.payloadSize != len(payload) || meta.payloadMD5 == "" {
 		t.Fatalf("meta payload fields = size %d md5 %q, want size %d and md5", meta.payloadSize, meta.payloadMD5, len(payload))
 	}
@@ -164,7 +167,23 @@ func TestValidateAPIStatusRejectsSendMessageError(t *testing.T) {
 	if err := validateAPIStatus("sendmessage", []byte(`{"ret":0,"errcode":0}`)); err != nil {
 		t.Fatalf("validateAPIStatus(success) error = %v", err)
 	}
+	if err := validateAPIStatus("sendmessage", []byte(`{"code":200,"message":"ok"}`)); err != nil {
+		t.Fatalf("validateAPIStatus(code 200 success) error = %v", err)
+	}
 	if err := validateAPIStatus("sendmessage", []byte(`{"ret":0,"errcode":-1,"errmsg":"bad voice"}`)); err == nil {
 		t.Fatal("validateAPIStatus(error) = nil, want error")
+	}
+	if err := validateAPIStatus("sendmessage", []byte(`{"code":500,"message":"bad voice"}`)); err == nil {
+		t.Fatal("validateAPIStatus(code error) = nil, want error")
+	}
+}
+
+func TestCompactAPIResponseLog(t *testing.T) {
+	if got := compactAPIResponseLog([]byte("   \n")); got != "<empty>" {
+		t.Fatalf("compactAPIResponseLog(empty) = %q", got)
+	}
+	long := []byte(`{"ret":0,"data":"` + string(make([]byte, 600)) + `"}`)
+	if got := compactAPIResponseLog(long); len(got) != 512 {
+		t.Fatalf("compactAPIResponseLog(long) length = %d, want 512", len(got))
 	}
 }

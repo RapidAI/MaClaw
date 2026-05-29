@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -141,6 +142,11 @@ const (
 type codingToolExecutionResult struct {
 	Text    string
 	Outcome codingToolOutcome
+}
+
+var codingSubAgentFreeformSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)((?:"|')?authorization(?:"|')?\s*[:=]\s*(?:"|')?(?:bearer|basic)\s+)[^\s,"';]+`),
+	regexp.MustCompile(`(?i)((?:"|')?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)(?:"|')?\s*[:=]\s*(?:"|')?)[^\s,"';]+`),
 }
 
 // NewCodingSubAgent creates a SubAgent bound to the host's tool implementations.
@@ -350,12 +356,18 @@ func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) a
 
 func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {
 	if c.ShouldStop() {
-		return codingToolExecutionResult{Text: "coding subagent cancelled before tool execution", Outcome: codingToolOutcomeFailed}
+		toolResult = codingToolExecutionResult{Text: "coding subagent cancelled before tool execution", Outcome: codingToolOutcomeFailed}
+		logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, 0)
+		return toolResult
 	}
 	toolStartedAt := time.Now()
 	c.emitToolStartedEvent(name)
 	defer func() {
-		c.emitToolFinishedEvent(name, toolResult.Text, toolResult.Outcome, time.Since(toolStartedAt))
+		duration := time.Since(toolStartedAt)
+		c.emitToolFinishedEvent(name, toolResult.Text, toolResult.Outcome, duration)
+		if toolResult.Outcome != codingToolOutcomeSuccess {
+			logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, duration)
+		}
 	}()
 
 	if !codingSubAgentToolNames[name] {
@@ -492,16 +504,13 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.Kind == codingCommandResultOK)
 		return commandResult.toolResult()
 	case "list_directory":
-		if h == nil {
-			return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", args, "coding subagent host tool handler is unavailable"), Outcome: codingToolOutcomeBlocked}
-		}
 		listArgs := c.withProjectRelativePath(args, true)
 		if p, _ := listArgs["path"].(string); p != "" {
 			if msg := c.requireProjectReadScope(p, "list_directory"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", listArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		return codingToolExecutionResult{Text: h.toolListDirectory(listArgs), Outcome: codingToolOutcomeSuccess}
+		return executeCodingListDirectory(listArgs)
 	case "git_diff":
 		diffArgs := c.withProjectRelativePath(args, true)
 		if p, _ := diffArgs["path"].(string); p != "" {
@@ -509,9 +518,11 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				return codingToolExecutionResult{Text: c.rejectToolCall("git_diff", diffArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		result := c.toolGitDiff(diffArgs)
-		c.trackGitDiff(result)
-		return codingToolExecutionResult{Text: result, Outcome: codingToolOutcomeSuccess}
+		result := c.toolGitDiffResult(diffArgs)
+		if result.Outcome == codingToolOutcomeSuccess {
+			c.trackGitDiff(result.Text)
+		}
+		return result
 	default:
 		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s", name), Outcome: codingToolOutcomeFailed}
 	}
@@ -522,6 +533,121 @@ func codingOutcomeFromSuccess(success bool) codingToolOutcome {
 		return codingToolOutcomeSuccess
 	}
 	return codingToolOutcomeFailed
+}
+
+func logCodingSubAgentOperationFailure(c *codingSubAgentCallbacks, name, argsJSON string, result codingToolExecutionResult, duration time.Duration) {
+	projectPath := ""
+	taskIndex := -1
+	taskTitle := ""
+	if c != nil {
+		if c.subagent != nil {
+			projectPath = c.subagent.projectPath
+		}
+		if c.task != nil {
+			taskIndex = c.task.Index
+			taskTitle = compactSubAgentTaskTitle(c.task.Title)
+		}
+	}
+	log.Printf("[coding-subagent] operation failed: tool=%s outcome=%s duration=%s task=%d title=%q project=%q args=%s result=%s",
+		name,
+		result.Outcome,
+		duration,
+		taskIndex,
+		taskTitle,
+		projectPath,
+		compactCodingSubAgentArgsLogText(argsJSON, 500),
+		compactCodingSubAgentLogText(result.Text, 500),
+	)
+}
+
+func compactCodingSubAgentArgsLogText(argsJSON string, maxRunes int) string {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return compactCodingSubAgentLogText(argsJSON, maxRunes)
+	}
+	redactCodingSubAgentLogArgs(args)
+	data, err := json.Marshal(args)
+	if err != nil {
+		return compactCodingSubAgentLogText(argsJSON, maxRunes)
+	}
+	return compactCodingSubAgentLogText(string(data), maxRunes)
+}
+
+func redactCodingSubAgentLogArgs(args map[string]interface{}) {
+	for key, value := range args {
+		switch lower := strings.ToLower(strings.TrimSpace(key)); {
+		case isCodingSubAgentContentLogKey(lower):
+			if s, ok := value.(string); ok {
+				args[key] = fmt.Sprintf("[redacted %d runes]", len([]rune(s)))
+			} else {
+				args[key] = "[redacted]"
+			}
+		case isCodingSubAgentSecretLogKey(lower):
+			args[key] = "[redacted]"
+		default:
+			redactCodingSubAgentLogValue(value)
+		}
+	}
+}
+
+func isCodingSubAgentContentLogKey(key string) bool {
+	normalized := normalizeCodingSubAgentLogKey(key)
+	switch normalized {
+	case "content", "oldstring", "newstring", "replacement", "text":
+		return true
+	}
+	return strings.Contains(normalized, "content") || strings.HasSuffix(normalized, "text")
+}
+
+func isCodingSubAgentSecretLogKey(key string) bool {
+	normalized := normalizeCodingSubAgentLogKey(key)
+	switch normalized {
+	case "password", "passwd", "token", "accesstoken", "refreshtoken", "apikey", "secret", "authorization":
+		return true
+	}
+	return strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "authorization")
+}
+
+func normalizeCodingSubAgentLogKey(key string) string {
+	return strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+}
+
+func redactCodingSubAgentLogValue(value interface{}) {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		redactCodingSubAgentLogArgs(typed)
+	case []interface{}:
+		for _, item := range typed {
+			redactCodingSubAgentLogValue(item)
+		}
+	}
+}
+
+func compactCodingSubAgentLogText(text string, maxRunes int) string {
+	text = strings.TrimSpace(strings.Join(strings.Fields(text), " "))
+	if text == "" {
+		return ""
+	}
+	text = redactCodingSubAgentFreeformLogText(text)
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func redactCodingSubAgentFreeformLogText(text string) string {
+	for _, pattern := range codingSubAgentFreeformSecretPatterns {
+		text = pattern.ReplaceAllString(text, `${1}[redacted]`)
+	}
+	return text
 }
 
 func codingOutcomeFromSearchOutcome(outcome agent.SearchToolOutcome) codingToolOutcome {
@@ -900,6 +1026,10 @@ func hasRecursiveDeleteFlag(normalizedCommand string) bool {
 }
 
 func (c *codingSubAgentCallbacks) toolGitDiff(args map[string]interface{}) string {
+	return c.toolGitDiffResult(args).Text
+}
+
+func (c *codingSubAgentCallbacks) toolGitDiffResult(args map[string]interface{}) codingToolExecutionResult {
 	workDir, _ := args["path"].(string)
 	if workDir == "" {
 		workDir = c.projectPath()
@@ -912,11 +1042,11 @@ func (c *codingSubAgentCallbacks) toolGitDiff(args map[string]interface{}) strin
 	if staged, _ := args["staged"].(bool); staged {
 		command = "git diff --staged -- ."
 	}
-	return agent.ToolBash(map[string]interface{}{
+	return executeCodingBash(map[string]interface{}{
 		"command":     command,
 		"working_dir": workDir,
 		"timeout":     float64(30),
-	}, nil)
+	}, nil).toolResult()
 }
 
 func (c *codingSubAgentCallbacks) projectPath() string {
@@ -1165,9 +1295,11 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified []string) (bo
 		return false, ""
 	}
 
-	result := c.toolGitDiff(map[string]interface{}{})
-	c.trackGitDiff(result)
-	return true, compactSubAgentDiff(result)
+	result := c.executeToolWithOutcome("git_diff", `{}`)
+	if result.Outcome != codingToolOutcomeSuccess {
+		return false, compactSubAgentDiff(result.Text)
+	}
+	return true, compactSubAgentDiff(result.Text)
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {

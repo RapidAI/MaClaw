@@ -42,11 +42,12 @@ type FailureEventLog struct {
 }
 
 type FailureEventLogFilter struct {
-	TenantID string
-	Keyword  string
-	Category string
-	Offset   int
-	Limit    int
+	TenantID    string
+	TenantIDSet bool
+	Keyword     string
+	Category    string
+	Offset      int
+	Limit       int
 }
 
 type HubInstance struct {
@@ -130,6 +131,12 @@ type HubTenantUserCount struct {
 	TenantID   string `json:"tenant_id,omitempty"`
 	Count      int    `json:"count"`
 	AllTenants bool   `json:"all_tenants,omitempty"`
+}
+
+type HubTenantUserDomain struct {
+	HubID    string `json:"hub_id"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Domain   string `json:"domain"`
 }
 
 type HubUserFirstSeen struct {

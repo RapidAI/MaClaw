@@ -87,37 +87,19 @@ func DoAnthropicRequestStream(
 	client *http.Client,
 	onToken TokenCallback,
 ) (*Response, error) {
-	converted := ConvertToAnthropicMessages(messages)
-	anthropicTools := ConvertToAnthropicTools(tools)
-
-	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
-		"max_tokens": 4096,
-		"stream":     true,
-	}
-	if converted.SystemText != "" {
-		reqBody["system"] = converted.SystemText
-	}
-	reqBody["messages"] = converted.Messages
-	if len(anthropicTools) > 0 {
-		reqBody["tools"] = anthropicTools
-	}
-
-	data, err := json.Marshal(reqBody)
+	endpoint, data, err := BuildAnthropicMessagesRequestData(cfg, messages, AnthropicMessagesRequestOptions{Stream: true, Tools: tools})
 	if err != nil {
 		return nil, err
 	}
 
-	endpoint := strings.TrimSuffix(cfg.URL, "/") + "/v1/messages"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(data)))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if cfg.Key != "" {
-		req.Header.Set("x-api-key", cfg.Key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
 
 	resp, err := client.Do(req)
 	if err != nil {

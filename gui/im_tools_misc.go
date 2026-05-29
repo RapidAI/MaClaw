@@ -1273,6 +1273,15 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			if h.app != nil {
 				h.app.triggerMemoryPipelineSoon(45 * time.Second)
 			}
+			// Invalidate the frozen memory snapshot so the next message's
+			// system prompt reflects the newly saved/deleted memory.
+			// Without this, user_fact changes (e.g. "remember my name is X")
+			// are invisible to the LLM until the next /new or topic switch.
+			userID := h.lastUserID
+			if userID == "" {
+				userID = desktopUserID
+			}
+			h.RefreshMemorySnapshot(userID)
 		},
 	})
 }

@@ -200,6 +200,69 @@ func TestHASyncOpRepoAppendLocalKeepsChangedRoutingPayload(t *testing.T) {
 	}
 }
 
+func TestHASyncOpRepoAppendLocalDoesNotSkipAfterDelete(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ha-recreate-after-delete-test.db")
+	provider, err := NewProvider(Config{DSN: dbPath, WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	defer provider.Close()
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	repo := &haSyncOpRepo{db: provider.Write, readDB: provider.Read}
+	ctx := context.Background()
+	payload := `{"id":"news-1","title":"hello","content":"body","category":"notice","pinned":false,"created_at":"2026-05-29T00:00:00Z","updated_at":"2026-05-29T00:00:00Z"}`
+
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-news-upsert-1", SourceNodeID: "hc-1", EntityType: "news_article", EntityID: "news-1", OpType: "upsert", OccurredAt: time.Now().UTC(), PayloadJSON: payload, PayloadHash: "hash-news"}); err != nil || version != 1 {
+		t.Fatalf("first upsert version=%d err=%v, want version=1", version, err)
+	}
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-news-delete", SourceNodeID: "hc-1", EntityType: "news_article", EntityID: "news-1", OpType: "delete", OccurredAt: time.Now().UTC().Add(time.Minute), PayloadJSON: `{"id":"news-1"}`, PayloadHash: "hash-delete"}); err != nil || version != 2 {
+		t.Fatalf("delete version=%d err=%v, want version=2", version, err)
+	}
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-news-upsert-2", SourceNodeID: "hc-1", EntityType: "news_article", EntityID: "news-1", OpType: "upsert", OccurredAt: time.Now().UTC().Add(2 * time.Minute), PayloadJSON: payload, PayloadHash: "hash-news"}); err != nil || version != 3 {
+		t.Fatalf("recreate upsert version=%d err=%v, want version=3", version, err)
+	}
+
+	items, err := repo.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq() error = %v", err)
+	}
+	if len(items) != 3 || items[2].OpID != "op-news-upsert-2" {
+		t.Fatalf("items = %+v, want recreate upsert after delete", items)
+	}
+}
+
+func TestHASyncOpRepoAppendLocalSkipsUnchangedNewsUpsert(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ha-news-idempotent-test.db")
+	provider, err := NewProvider(Config{DSN: dbPath, WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	defer provider.Close()
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	repo := &haSyncOpRepo{db: provider.Write, readDB: provider.Read}
+	ctx := context.Background()
+	payload := `{"id":"news-1","title":"hello","content":"body","category":"notice","pinned":false,"created_at":"2026-05-29T00:00:00Z","updated_at":"2026-05-29T00:00:00Z"}`
+
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-news-1", SourceNodeID: "hc-1", EntityType: "news_article", EntityID: "news-1", OpType: "upsert", OccurredAt: time.Now().UTC(), PayloadJSON: payload, PayloadHash: "hash-news"}); err != nil || version != 1 {
+		t.Fatalf("first upsert version=%d err=%v, want version=1", version, err)
+	}
+	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-news-2", SourceNodeID: "hc-1", EntityType: "news_article", EntityID: "news-1", OpType: "upsert", OccurredAt: time.Now().UTC().Add(time.Minute), PayloadJSON: payload, PayloadHash: "hash-news"}); err != nil || version != 0 {
+		t.Fatalf("unchanged upsert version=%d err=%v, want skipped version=0", version, err)
+	}
+
+	items, err := repo.ListAfterSeq(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListAfterSeq() error = %v", err)
+	}
+	if len(items) != 1 || items[0].OpID != "op-news-1" {
+		t.Fatalf("items = %+v, want one unchanged news upsert", items)
+	}
+}
+
 func TestHASyncOpRepoPruneHistoryKeepsLatestEntityOps(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ha-prune-test.db")
 	provider, err := NewProvider(Config{DSN: dbPath, WAL: false})

@@ -47,8 +47,8 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
-function renderAssistantHook() {
-    return renderHook(() => useAIAssistant());
+function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
+    return renderHook(() => useAIAssistant(options));
 }
 
 function parseSentRequest(index = 0) {
@@ -1958,7 +1958,7 @@ describe('useAIAssistant property tests', () => {
             return { text: 'ok', error: '', fields: null, actions: null, request_id: req.request_id || 'req' };
         });
 
-        const { result } = renderAssistantHook();
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
 
         await act(async () => {
             await result.current.executeAction('__resume_unfinished__ slot-99');
@@ -1970,6 +1970,9 @@ describe('useAIAssistant property tests', () => {
         expect(calls[1]?.start_new_task).toBe(true);
         expect(calls[2]?.dismiss_slot_id).toBe('slot-99');
         expect(calls[2]?.start_new_task).toBe(true);
+        const userMessages = result.current.messages.filter(m => m.role === 'user');
+        expect(userMessages[0]?.content).toBe('\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
+        expect(userMessages[2]?.content).toBe('\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
     });
 
     it('normalizes confirmation payloads into assistant messages', async () => {
@@ -2100,6 +2103,61 @@ describe('useAIAssistant property tests', () => {
         const finalAssistantMsgs = assistantMessages(result.current.messages);
         expect(finalAssistantMsgs[0].confirmation?.status).toBe('running');
         expect(finalAssistantMsgs[1].content).toBe('已开始处理');
+    });
+
+    it('uses localized structured confirmation action labels as the user echo', async () => {
+        mockSendResponse = {
+            text: '请先确认',
+            error: '',
+            fields: null,
+            actions: [
+                { label: 'Confirm and start', command: '__confirm_execution__ c1', style: 'primary' },
+                { label: 'Cancel', command: '__cancel_execution__ c1', style: 'secondary' },
+            ],
+            confirmation: {
+                id: 'c1',
+                summary: '确认任务',
+                task_type: 'coding',
+                status: 'pending',
+            },
+        };
+
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
+
+        await act(async () => {
+            await result.current.sendMessage('修复登录问题');
+        });
+
+        mockSendResponse = { text: '已开始', error: '', fields: null, actions: null };
+
+        await act(async () => {
+            await result.current.executeAction('__confirm_execution__ c1');
+        });
+
+        const userMessages = result.current.messages.filter(m => m.role === 'user');
+        expect(userMessages.at(-1)?.content).toBe('确认并开始');
+        expect(parseSentRequest(1).text).toBe('__confirm_execution__ c1');
+    });
+
+    it('localizes legacy task panel fallback user echoes', async () => {
+        (SubmitAgentView as any).mockImplementationOnce(async () => {
+            throw new Error('legacy submit path');
+        });
+        (DismissAgentView as any).mockImplementationOnce(async () => {
+            throw new Error('legacy dismiss path');
+        });
+        mockSendResponse = { text: 'ok', error: '', fields: null, actions: null };
+        const { result } = renderAssistantHook({ lang: 'zh-Hans' });
+
+        await act(async () => {
+            await result.current.submitAgentView('plain-form', { value: 1 });
+        });
+        expect(result.current.messages.filter(m => m.role === 'user').at(-1)?.content).toBe('\u63d0\u4ea4\u7ed3\u6784\u5316\u6570\u636e');
+
+        await act(async () => {
+            await result.current.dismissAgentView('plain-form', { value: 1 });
+        });
+        expect(result.current.messages.filter(m => m.role === 'user').at(-1)?.content).toBe('\u5173\u95ed\u4efb\u52a1\u9762\u677f');
     });
 
     it('normalizes action styles from assistant responses', async () => {

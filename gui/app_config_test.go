@@ -65,6 +65,9 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if cfg.ScreenParsingEnabled == nil || !*cfg.ScreenParsingEnabled {
 		t.Fatal("ScreenParsingEnabled = false/nil, want true for first-run default config")
 	}
+	if !cfg.IsIMProgressNudgeEnabled() {
+		t.Fatal("IMProgressNudgeEnabled = false, want true for first-run default config")
+	}
 
 	matches, err := filepath.Glob(configPath + ".tmp*")
 	if err != nil {
@@ -106,6 +109,9 @@ func TestLoadConfigDefaultsLocalAIModelsWhenFieldsAbsent(t *testing.T) {
 	if cfg.ScreenParsingEnabled == nil || !*cfg.ScreenParsingEnabled {
 		t.Fatal("absent screen_parsing_enabled should default to true")
 	}
+	if !cfg.IsIMProgressNudgeEnabled() {
+		t.Fatal("absent im_progress_nudge_enabled should default to true")
+	}
 	if cfg.SubAgentConcurrency != corelib.DefaultSubAgentConcurrency {
 		t.Fatalf("absent subagent_concurrency should default to %d, got %d", corelib.DefaultSubAgentConcurrency, cfg.SubAgentConcurrency)
 	}
@@ -126,7 +132,8 @@ func TestLoadConfigPreservesExplicitLocalAIModelDisable(t *testing.T) {
 		"vector_search_enabled": false,
 		"asr_enabled": false,
 		"tts_enabled": false,
-		"screen_parsing_enabled": false
+		"screen_parsing_enabled": false,
+		"im_progress_nudge_enabled": false
 	}`
 	if err := os.WriteFile(configPath, []byte(raw), 0644); err != nil {
 		t.Fatalf("Write config.json error = %v", err)
@@ -148,6 +155,9 @@ func TestLoadConfigPreservesExplicitLocalAIModelDisable(t *testing.T) {
 	}
 	if cfg.ScreenParsingEnabled == nil || *cfg.ScreenParsingEnabled {
 		t.Fatal("explicit screen_parsing_enabled=false should be preserved")
+	}
+	if cfg.IsIMProgressNudgeEnabled() {
+		t.Fatal("explicit im_progress_nudge_enabled=false should be preserved")
 	}
 }
 

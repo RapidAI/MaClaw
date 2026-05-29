@@ -4,6 +4,7 @@ import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
+import { localizeText } from "./aiAssistantI18n";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -795,6 +796,23 @@ function isConfirmationApprovalAction(action: ChatAction | undefined): boolean {
     const text = `${action.label} ${action.command}`.toLocaleLowerCase();
     if (text.includes('cancel') || text.includes('reject')) return false;
     return true;
+}
+
+function localizedExecutionActionText(command: string, label: string | undefined, lang: string): string | undefined {
+    const normalizedLabel = (label || '').trim().toLowerCase();
+    if (/^__confirm_execution__\s+\S+$/.test(command)) {
+        if (!normalizedLabel || normalizedLabel === 'confirm and start') {
+            return localizeText(lang, "Confirm and start", "\u786e\u8ba4\u5e76\u5f00\u59cb", "\u78ba\u8a8d\u4e26\u958b\u59cb");
+        }
+        return label;
+    }
+    if (/^__cancel_execution__\s+\S+$/.test(command)) {
+        if (!normalizedLabel || normalizedLabel === 'cancel') {
+            return localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88");
+        }
+        return label;
+    }
+    return label;
 }
 
 function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage {
@@ -2030,7 +2048,8 @@ function normalizeAgentTimeoutSeconds(value: unknown): number {
     return Math.min(MAX_AGENT_TIMEOUT_SEC, Math.max(MIN_AGENT_TIMEOUT_SEC, Math.floor(seconds)));
 }
 
-export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void>; activeSessionKey?: string }) {
+export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void>; activeSessionKey?: string; lang?: string }) {
+    const uiLang = options?.lang || "en";
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
     const [submittedPrompts, setSubmittedPrompts] = useState<string[]>(loadPersistedPrompts);
@@ -3020,11 +3039,20 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         const executionConfirmMatch = command.match(/^__confirm_execution__\s+(\S+)$/);
         if (executionConfirmMatch) {
-            return sendMessage(command, { uiAction: true, displayText: 'Confirm and start', markConfirmationRunning: true });
+            const action = findLatestConfirmationAction(latestMessagesRef.current, command);
+            return sendMessage(command, {
+                uiAction: true,
+                displayText: localizedExecutionActionText(command, action?.label, uiLang),
+                markConfirmationRunning: true,
+            });
         }
         const executionCancelMatch = command.match(/^__cancel_execution__\s+(\S+)$/);
         if (executionCancelMatch) {
-            return sendMessage(command, { uiAction: true, displayText: '取消' });
+            const action = findLatestConfirmationAction(latestMessagesRef.current, command);
+            return sendMessage(command, {
+                uiAction: true,
+                displayText: localizedExecutionActionText(command, action?.label, uiLang),
+            });
         }
         const legacyConfirmationAction = findLatestConfirmationAction(latestMessagesRef.current, command);
         if (isConfirmationApprovalAction(legacyConfirmationAction)) {
@@ -3044,20 +3072,32 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         const resumeMatch = command.match(/^__resume_unfinished__\s+(\S+)$/);
         if (resumeMatch) {
-            return sendMessage('Continue previous unfinished task', { resumeSlotID: resumeMatch[1]?.trim() || '' });
+            return sendMessage('Continue previous unfinished task', {
+                resumeSlotID: resumeMatch[1]?.trim() || '',
+                displayText: localizeText(uiLang, "Continue previous unfinished task", "\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9"),
+            });
         }
         // Backward compat: __start_new_task__ is no longer emitted by the
         // backend (merged into __dismiss_unfinished__), but keep the handler
         // in case older backend versions are still in use.
         if (command === '__start_new_task__') {
-            return sendMessage('开始一个新任务', { startNewTask: true, uiAction: true });
+            return sendMessage('Start a new task', {
+                startNewTask: true,
+                uiAction: true,
+                displayText: localizeText(uiLang, "Start a new task", "\u5f00\u59cb\u4e00\u4e2a\u65b0\u4efb\u52a1", "\u958b\u59cb\u4e00\u500b\u65b0\u4efb\u52d9"),
+            });
         }
         const dismissMatch = command.match(/^__dismiss_unfinished__\s+(\S+)$/);
         if (dismissMatch) {
-            return sendMessage('Dismiss previous unfinished task', { dismissSlotID: dismissMatch[1]?.trim() || '', startNewTask: true, uiAction: true });
+            return sendMessage('Dismiss previous unfinished task', {
+                dismissSlotID: dismissMatch[1]?.trim() || '',
+                startNewTask: true,
+                uiAction: true,
+                displayText: localizeText(uiLang, "Dismiss previous unfinished task", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9"),
+            });
         }
         return sendMessage(command);
-    }, [sendMessage]);
+    }, [sendMessage, uiLang]);
 
     useEffect(() => {
         const handler = (payload: unknown) => {
@@ -3342,9 +3382,12 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const message = `__agent_view_submit__ ${payload}`;
         const injected = await injectSupplementary(message);
         if (!injected) {
-            await sendMessage(message, { uiAction: true, displayText: "Submit structured data" });
+            await sendMessage(message, {
+                uiAction: true,
+                displayText: localizeText(uiLang, "Submit structured data", "\u63d0\u4ea4\u7ed3\u6784\u5316\u6570\u636e", "\u63d0\u4ea4\u7d50\u69cb\u5316\u8cc7\u6599"),
+            });
         }
-    }, [clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, injectSupplementary, preferences, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, waitForForegroundIdle]);
+    }, [clearTransientProgress, emitPetStateForAssistant, flushStreamTokenBuffer, injectSupplementary, preferences, resetActiveRound, resetStreamTokenBuffer, sendMessage, setRoundState, startResponseTimeout, stopResponseTimeout, uiLang, waitForForegroundIdle]);
 
     const dismissAgentView = useCallback(async (viewId: string | undefined, data?: Record<string, unknown>) => {
         const isWorkflowFormDismiss = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
@@ -3363,9 +3406,12 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const message = `__agent_view_dismiss__ ${payload}`;
         const injected = await injectSupplementary(message);
         if (!injected) {
-            await sendMessage(message, { uiAction: true, displayText: "Close task panel" });
+            await sendMessage(message, {
+                uiAction: true,
+                displayText: localizeText(uiLang, "Close task panel", "\u5173\u95ed\u4efb\u52a1\u9762\u677f", "\u95dc\u9589\u4efb\u52d9\u9762\u677f"),
+            });
         }
-    }, [injectSupplementary, sendMessage]);
+    }, [injectSupplementary, sendMessage, uiLang]);
 
     // panelState / panelActions: pre-built objects matching AIAssistantPanelStateProps
     // and AIAssistantPanelActionProps. App.tsx spreads these directly into

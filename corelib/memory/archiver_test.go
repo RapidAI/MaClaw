@@ -28,7 +28,7 @@ func TestArchiverSkipsWhenOnlineExtractorRecentlySucceeded(t *testing.T) {
 	}
 	defer store.Stop()
 
-	store.SetOnlineExtractor(&OnlineExtractor{lastSuccess: time.Now()})
+	store.SetOnlineExtractor(&OnlineExtractor{lastActivity: time.Now()})
 	summarizer := &archiverTestSummarizer{}
 	archiver := NewArchiver(store, summarizer)
 

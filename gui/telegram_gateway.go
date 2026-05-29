@@ -387,9 +387,10 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 		return
 	}
 
+	progressFilter := newIMProgressVisibilityFilter(m.app)
 	var lastProgress time.Time
 	onProgress := func(progressText string) {
-		if progressText == "" || progressText == imHeartbeatMsg {
+		if !progressFilter.ShouldSendProgress(progressText) {
 			return
 		}
 		now := time.Now()

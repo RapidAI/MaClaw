@@ -49,6 +49,19 @@ describe("AgentTaskPanel", () => {
         expect(screen.getByText(/邮箱 必须是有效的邮箱地址/)).toBeTruthy();
     });
 
+    it("localizes built-in form controls in Chinese", () => {
+        const view: AgentView = {
+            type: "form",
+            id: "localized-controls-zh",
+            title: "\u5de5\u4f5c\u6d41\u53c2\u6570",
+            fields: [{ name: "goal", label: "\u76ee\u6807", type: "text", value: "" }],
+        };
+
+        render(<AgentTaskPanel view={view} theme={lightTheme} lang="zh-Hans" />);
+
+        expect(screen.getByRole("button", { name: "\u63d0\u4ea4" })).toBeTruthy();
+    });
+
     it("submits valid formatted values", () => {
         const onSubmit = vi.fn();
         const view: AgentView = {

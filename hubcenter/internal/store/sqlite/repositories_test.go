@@ -610,3 +610,56 @@ func TestGossipRepositoryCountSnapshotRecords(t *testing.T) {
 		t.Fatalf("CountSnapshotRecords() = %d, want 2", got)
 	}
 }
+
+func TestFailureEventLogTenantDefaultFilterMatchesLegacyRows(t *testing.T) {
+	provider, err := NewProvider(Config{
+		DSN:               filepath.Join(t.TempDir(), "hubcenter-test.db"),
+		WAL:               true,
+		BusyTimeoutMS:     5000,
+		MaxReadOpenConns:  4,
+		MaxReadIdleConns:  2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	st := NewStore(provider)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if err := st.FailureLogs.Create(ctx, &store.FailureEventLog{ID: "default_normalized", TenantID: "tenant_default", Category: "registration", EventCode: "DEFAULT_NORMALIZED", CreatedAt: now}); err != nil {
+		t.Fatalf("create normalized log: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `
+		INSERT INTO failure_event_logs (id, tenant_id, category, event_code, message, entity_id, email, client_ip, details_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "default_legacy", "tenant_default", "registration", "DEFAULT_LEGACY", "", "", "", "", "{}", now.Add(time.Second).Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert legacy log: %v", err)
+	}
+	if err := st.FailureLogs.Create(ctx, &store.FailureEventLog{ID: "tenant_a", TenantID: "tenant_a", Category: "registration", EventCode: "TENANT_A", CreatedAt: now.Add(2 * time.Second)}); err != nil {
+		t.Fatalf("create tenant log: %v", err)
+	}
+
+	items, total, err := st.FailureLogs.List(ctx, store.FailureEventLogFilter{TenantID: "tenant_default", TenantIDSet: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("default tenant filter returned total=%d len=%d items=%+v", total, len(items), items)
+	}
+	seen := map[string]bool{}
+	for _, item := range items {
+		seen[item.EventCode] = true
+		if item.EventCode == "TENANT_A" {
+			t.Fatalf("default tenant filter leaked tenant_a: %+v", items)
+		}
+	}
+	if !seen["DEFAULT_NORMALIZED"] || !seen["DEFAULT_LEGACY"] {
+		t.Fatalf("default tenant filter missed normalized or legacy rows: %+v", items)
+	}
+}

@@ -47,6 +47,53 @@ func TestBugCondition_SSE_SingleChunk(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicMessagesRequestDataUsesSharedEndpointAndOptions(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://anthropic.test/api/v1", Model: "claude-test"}
+	messages := []interface{}{
+		map[string]interface{}{"role": "system", "content": "be brief"},
+		map[string]interface{}{"role": "user", "content": "hello"},
+	}
+	tools := []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "lookup",
+			"description": "look up value",
+			"parameters": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}},
+			},
+		},
+	}}
+
+	endpoint, body, err := BuildAnthropicMessagesRequestData(cfg, messages, AnthropicMessagesRequestOptions{Stream: true, Tools: tools})
+	if err != nil {
+		t.Fatalf("BuildAnthropicMessagesRequestData: %v", err)
+	}
+	if endpoint != "https://anthropic.test/api/v1/messages" {
+		t.Fatalf("endpoint = %q", endpoint)
+	}
+	var req struct {
+		Model     string                   `json:"model"`
+		System    string                   `json:"system"`
+		Stream    bool                     `json:"stream"`
+		MaxTokens int                      `json:"max_tokens"`
+		Messages  []map[string]interface{} `json:"messages"`
+		Tools     []map[string]interface{} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if req.Model != "claude-test" || req.System != "be brief" || !req.Stream || req.MaxTokens != 4096 {
+		t.Fatalf("request body scalar fields = %+v", req)
+	}
+	if len(req.Messages) != 1 || req.Messages[0]["role"] != "user" {
+		t.Fatalf("messages = %#v", req.Messages)
+	}
+	if len(req.Tools) != 1 || req.Tools[0]["name"] != "lookup" {
+		t.Fatalf("tools = %#v", req.Tools)
+	}
+}
+
 // TestBugCondition_SSE_MultiChunk verifies that DoOpenAIRequest can handle
 // a multi-chunk SSE response with incremental content deltas. On UNFIXED code
 // this test FAILS — confirming the bug exists.
@@ -155,7 +202,7 @@ func TestBuildOpenAIChatRequestData_MergesSystemAndAddsExtrasForMiniMax(t *testi
 	endpoint, body, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
 		Stream: true,
 		Tools: []map[string]interface{}{{
-			"type": "function",
+			"type":     "function",
 			"function": map[string]interface{}{"name": "search"},
 		}},
 		ExtraBody: map[string]interface{}{
@@ -261,7 +308,7 @@ func TestParseNonStreamOpenAIResponseBody_NormalizesContentPartsAndPreservesTool
 	}
 }
 
-	func TestNewOpenAIChatRequest_SetsHeaders(t *testing.T) {
+func TestNewOpenAIChatRequest_SetsHeaders(t *testing.T) {
 	cfg := corelib.MaclawLLMConfig{
 		URL:       "https://example.com/v1",
 		Model:     "test-model",
@@ -457,24 +504,24 @@ func TestBuildOpenAIChatRequestData_PassesThroughCommonChatOptions(t *testing.T)
 	_, body, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
 		Stream: false,
 		ToolChoice: map[string]interface{}{
-			"type": "function",
+			"type":     "function",
 			"function": map[string]interface{}{"name": "search"},
 		},
 		ResponseFormat: map[string]interface{}{
 			"type": "json_schema",
 		},
 		PassThrough: map[string]interface{}{
-			"temperature":         0.2,
-			"top_p":               0.9,
-			"max_tokens":          123,
+			"temperature":           0.2,
+			"top_p":                 0.9,
+			"max_tokens":            123,
 			"max_completion_tokens": 321,
-			"presence_penalty":    0.1,
-			"frequency_penalty":   0.3,
-			"stop":                []interface{}{"END"},
-			"parallel_tool_calls": true,
-			"user":                "u-1",
-			"seed":                float64(7),
-			"n":                   float64(2),
+			"presence_penalty":      0.1,
+			"frequency_penalty":     0.3,
+			"stop":                  []interface{}{"END"},
+			"parallel_tool_calls":   true,
+			"user":                  "u-1",
+			"seed":                  float64(7),
+			"n":                     float64(2),
 		},
 	})
 	if err != nil {
@@ -511,7 +558,6 @@ func TestParseNonStreamOpenAIResponseBody_ContentParts(t *testing.T) {
 		t.Fatalf("raw content = %#v, want original 3-part content array", msg.RawContent)
 	}
 }
-
 
 // TestPreservation_StandardJSONResponse verifies that DoOpenAIRequest correctly
 // parses a standard JSON response with content and finish_reason.

@@ -1,4 +1,4 @@
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'security' | 'im' | 'system';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'security' | 'im' | 'system';
 
 export interface SettingsTabOption {
     id: SettingsTabId;
@@ -56,6 +56,11 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             id: 'llm' as const,
             label: textForLang(lang, 'LLM Config', 'LLM 配置', 'LLM 配置'),
             desc: textForLang(lang, 'Configure LLM for MaClaw agent', '配置 MaClaw 代理使用的 LLM', '配置 MaClaw 代理使用的 LLM'),
+        },
+        {
+            id: 'llmCache' as const,
+            label: textForLang(lang, 'Cache Service', '\u7f13\u5b58\u670d\u52a1', '\u5feb\u53d6\u670d\u52d9'),
+            desc: textForLang(lang, 'Local cache for OpenAI-compatible LLM requests', '\u672c\u5730\u7f13\u5b58 OpenAI \u517c\u5bb9 LLM \u8bf7\u6c42', '\u672c\u5730\u5feb\u53d6 OpenAI \u76f8\u5bb9 LLM \u8acb\u6c42'),
         },
         {
             id: 'memory' as const,

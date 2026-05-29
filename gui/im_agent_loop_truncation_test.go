@@ -6,6 +6,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func TestEnsureTruncationFallbackToolsAddsRealAlternates(t *testing.T) {
@@ -89,6 +90,43 @@ func TestEnsureTruncationFallbackToolsRespectsBlockedSet(t *testing.T) {
 	}
 	if names["bash"] {
 		t.Fatalf("bash should not be added as truncation fallback: %v", names)
+	}
+}
+
+func TestTruncationFallbackCatalogRestoresWorkflowDocRequiredTools(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "truncation-fallback-workflow-tools-user"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build docs",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+		toolDef("edit_file", "edit", nil, nil),
+		toolDef("task", "task", nil, nil),
+	})
+
+	got := handler.truncationFallbackToolCatalog(nil, userID, nil, []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+		toolDef("task", "task", nil, nil),
+	})
+	names := map[string]bool{}
+	for _, td := range got {
+		names[tool.ExtractToolName(td)] = true
+	}
+
+	if !names["read_file"] || !names["write_file"] || !names["edit_file"] {
+		t.Fatalf("workflow truncation fallback should restore doc-required tools, got %v", names)
+	}
+	if names["task"] {
+		t.Fatalf("workflow truncation fallback should still remove disallowed tools, got %v", names)
 	}
 }
 

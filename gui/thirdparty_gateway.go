@@ -782,10 +782,11 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 	}
 
 	handler := m.ensureLocalHandler()
+	progressFilter := newIMProgressVisibilityFilter(m.app)
 	var lastProgress time.Time
 	var lastProgressText string
 	onProgress := func(progressText string) {
-		if progressText == "" || progressText == imHeartbeatMsg {
+		if !progressFilter.ShouldSendProgress(progressText) {
 			return
 		}
 		now := time.Now()

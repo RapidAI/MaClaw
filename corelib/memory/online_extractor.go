@@ -39,10 +39,11 @@ type OnlineExtractor struct {
 	store *Store
 	llm   LLMChatCaller
 
-	mu          sync.Mutex
-	cooldown    time.Duration
-	lastExtract time.Time
-	lastSuccess time.Time // set only when at least one fact was applied (ADD/UPDATE/DELETE)
+	mu           sync.Mutex
+	cooldown     time.Duration
+	lastExtract  time.Time
+	lastSuccess  time.Time // set only when at least one fact was applied (ADD/UPDATE/DELETE)
+	lastActivity time.Time // set whenever extraction runs (even if all NOOP)
 }
 
 // NewOnlineExtractor creates an OnlineExtractor with a 3-minute cooldown.
@@ -74,8 +75,9 @@ func (oe *OnlineExtractor) SetLLM(llm LLMChatCaller) {
 
 // HasRecentSuccess returns true if the OnlineExtractor has successfully
 // applied at least one fact (ADD/UPDATE/DELETE) within the given time window.
-// Used by KnowledgeExtractor and Archiver to skip redundant extraction when
-// the online pipeline is actively maintaining memories.
+// This is narrower than HasRecentActivity: it only returns true when the
+// pipeline actually mutated the memory store. Useful for UI indicators
+// ("memory is actively learning") or metrics.
 func (oe *OnlineExtractor) HasRecentSuccess(window time.Duration) bool {
 	if oe == nil {
 		return false
@@ -83,6 +85,20 @@ func (oe *OnlineExtractor) HasRecentSuccess(window time.Duration) bool {
 	oe.mu.Lock()
 	defer oe.mu.Unlock()
 	return !oe.lastSuccess.IsZero() && time.Since(oe.lastSuccess) < window
+}
+
+// HasRecentActivity returns true if the OnlineExtractor has run extraction
+// (regardless of outcome) within the given time window. This is broader than
+// HasRecentSuccess: it includes runs where all facts were NOOP (already known).
+// Used by KnowledgeExtractor to avoid redundant extraction even when the online
+// pipeline is actively running but finding no new information to save.
+func (oe *OnlineExtractor) HasRecentActivity(window time.Duration) bool {
+	if oe == nil {
+		return false
+	}
+	oe.mu.Lock()
+	defer oe.mu.Unlock()
+	return !oe.lastActivity.IsZero() && time.Since(oe.lastActivity) < window
 }
 
 // ExtractAndIntegrate is the main entry point. It extracts facts from the
@@ -144,6 +160,12 @@ func (oe *OnlineExtractor) ExtractAndIntegrate(
 	if len(facts) == 0 {
 		return result
 	}
+
+	// Mark activity: extraction ran and produced facts (even if all NOOP).
+	// This prevents KnowledgeExtractor from running redundantly.
+	oe.mu.Lock()
+	oe.lastActivity = time.Now()
+	oe.mu.Unlock()
 
 	// Phase 2: For each fact, classify operation and execute.
 	for _, fact := range facts {

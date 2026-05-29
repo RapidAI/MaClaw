@@ -3,6 +3,8 @@ package corelib
 // AppConfig is the complete application configuration for MaClaw.
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -72,19 +74,20 @@ type AppConfig struct {
 	RemoteClientID          string   `json:"remote_client_id"`
 	DefaultLaunchMode       string   `json:"default_launch_mode"`
 	// MaClaw LLM configuration
-	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
-	MaclawLLMKey             string              `json:"maclaw_llm_key"`
-	MaclawLLMModel           string              `json:"maclaw_llm_model"`
-	MaclawLLMProtocol        string              `json:"maclaw_llm_protocol,omitempty"`
-	MaclawLLMContextLength   int                 `json:"maclaw_llm_context_length,omitempty"`
-	MaclawLLMTimeoutSec      int                 `json:"maclaw_llm_timeout_sec,omitempty"`
-	AgentResponseTimeoutSec  int                 `json:"agent_response_timeout_sec,omitempty"`
-	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
-	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
-	WebSearchProviders       []WebSearchProvider `json:"web_search_providers,omitempty"`
-	WebSearchCurrentProvider string              `json:"web_search_current_provider,omitempty"`
-	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"`
-	SubAgentConcurrency      int                 `json:"subagent_concurrency,omitempty"`
+	MaclawLLMUrl             string               `json:"maclaw_llm_url"`
+	MaclawLLMKey             string               `json:"maclaw_llm_key"`
+	MaclawLLMModel           string               `json:"maclaw_llm_model"`
+	MaclawLLMProtocol        string               `json:"maclaw_llm_protocol,omitempty"`
+	MaclawLLMContextLength   int                  `json:"maclaw_llm_context_length,omitempty"`
+	MaclawLLMTimeoutSec      int                  `json:"maclaw_llm_timeout_sec,omitempty"`
+	AgentResponseTimeoutSec  int                  `json:"agent_response_timeout_sec,omitempty"`
+	MaclawLLMProviders       []MaclawLLMProvider  `json:"maclaw_llm_providers,omitempty"`
+	MaclawLLMCurrentProvider string               `json:"maclaw_llm_current_provider,omitempty"`
+	LLMPromptCache           LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
+	WebSearchProviders       []WebSearchProvider  `json:"web_search_providers,omitempty"`
+	WebSearchCurrentProvider string               `json:"web_search_current_provider,omitempty"`
+	MaclawAgentMaxIterations int                  `json:"maclaw_agent_max_iterations,omitempty"`
+	SubAgentConcurrency      int                  `json:"subagent_concurrency,omitempty"`
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
@@ -168,6 +171,10 @@ type AppConfig struct {
 	ThirdPartyGatewayHost      string `json:"thirdparty_gateway_host,omitempty"`
 	ThirdPartyGatewayPort      int    `json:"thirdparty_gateway_port,omitempty"`
 	ThirdPartyGatewayLocalMode *bool  `json:"thirdparty_gateway_local_mode,omitempty"`
+	// IMProgressNudgeEnabled controls whether IM channels show intermediate
+	// progress/nudge messages. Nil means default true. When false, only the
+	// first progress message and the final result are sent to the user.
+	IMProgressNudgeEnabled *bool `json:"im_progress_nudge_enabled,omitempty"`
 	// Extra tool configs for OEM brands (keyed by ExtraToolDef.ConfigKey)
 	ExtraToolConfigs map[string]ToolConfig `json:"extra_tool_configs,omitempty"`
 	// UI mode: "pro" (full coding tools) or "lite" (default, simplified, no coding tools)
@@ -292,6 +299,131 @@ const (
 	MaxSubAgentConcurrency     = 4
 )
 
+type LLMPromptCacheConfig struct {
+	Enabled                      bool   `json:"enabled"`
+	OpenAIEnabled                *bool  `json:"openai_enabled,omitempty"`
+	AnthropicEnabled             *bool  `json:"anthropic_enabled,omitempty"`
+	StreamSynthesisEnabled       *bool  `json:"stream_synthesis_enabled,omitempty"`
+	CacheDir                     string `json:"cache_dir,omitempty"`
+	TTLSeconds                   int    `json:"ttl_seconds,omitempty"`
+	MemoryMaxEntries             int    `json:"memory_max_entries,omitempty"`
+	MemoryMaxBytes               int64  `json:"memory_max_bytes,omitempty"`
+	DiskMaxBytes                 int64  `json:"disk_max_bytes,omitempty"`
+	NormalizeDeterministicParams bool   `json:"normalize_deterministic_params,omitempty"`
+	IgnoreModelField             bool   `json:"ignore_model_field,omitempty"`
+	IgnoreUserField              bool   `json:"ignore_user_field,omitempty"`
+	IgnoreMetadataField          bool   `json:"ignore_metadata_field,omitempty"`
+	SingleflightWaitTimeoutMS    int    `json:"singleflight_wait_timeout_ms,omitempty"`
+}
+
+func DefaultLLMPromptCacheConfig() LLMPromptCacheConfig {
+	return LLMPromptCacheConfig{
+		Enabled:                      false,
+		OpenAIEnabled:                boolPtrValue(true),
+		AnthropicEnabled:             boolPtrValue(true),
+		StreamSynthesisEnabled:       boolPtrValue(true),
+		CacheDir:                     DefaultLLMPromptCacheDir(),
+		TTLSeconds:                   1800,
+		MemoryMaxEntries:             256,
+		MemoryMaxBytes:               8 * 1024 * 1024,
+		DiskMaxBytes:                 64 * 1024 * 1024,
+		NormalizeDeterministicParams: true,
+		IgnoreModelField:             true,
+		IgnoreUserField:              true,
+		IgnoreMetadataField:          true,
+		SingleflightWaitTimeoutMS:    15000,
+	}
+}
+
+func DefaultLLMPromptCacheDir() string {
+	return filepath.Join(MaclawDefaultBaseDir(), "llm_prompt_cache")
+}
+
+func boolPtrValue(v bool) *bool {
+	return &v
+}
+
+func (c LLMPromptCacheConfig) WithDefaults() LLMPromptCacheConfig {
+	defaults := DefaultLLMPromptCacheConfig()
+	if c.OpenAIEnabled == nil {
+		c.OpenAIEnabled = defaults.OpenAIEnabled
+	}
+	if c.AnthropicEnabled == nil {
+		c.AnthropicEnabled = defaults.AnthropicEnabled
+	}
+	if c.StreamSynthesisEnabled == nil {
+		c.StreamSynthesisEnabled = defaults.StreamSynthesisEnabled
+	}
+	if !c.EffectiveOpenAIEnabled() && !c.EffectiveAnthropicEnabled() && !c.EffectiveStreamSynthesisEnabled() {
+		c.Enabled = false
+	}
+	if strings.TrimSpace(c.CacheDir) == "" {
+		c.CacheDir = defaults.CacheDir
+	} else {
+		c.CacheDir = ExpandLLMPromptCacheDir(c.CacheDir)
+	}
+	if c.TTLSeconds <= 0 {
+		c.TTLSeconds = defaults.TTLSeconds
+	}
+	if c.MemoryMaxEntries <= 0 {
+		c.MemoryMaxEntries = defaults.MemoryMaxEntries
+	}
+	if c.MemoryMaxBytes <= 0 {
+		c.MemoryMaxBytes = defaults.MemoryMaxBytes
+	}
+	if c.DiskMaxBytes <= 0 {
+		c.DiskMaxBytes = defaults.DiskMaxBytes
+	}
+	if c.SingleflightWaitTimeoutMS <= 0 {
+		c.SingleflightWaitTimeoutMS = defaults.SingleflightWaitTimeoutMS
+	}
+	return c
+}
+
+func ExpandLLMPromptCacheDir(dir string) string {
+	dir = strings.TrimSpace(os.ExpandEnv(dir))
+	if dir == "" {
+		return DefaultLLMPromptCacheDir()
+	}
+	if dir == "~" || strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			if dir == "~" {
+				dir = home
+			} else {
+				dir = filepath.Join(home, strings.TrimLeft(dir[1:], `/\`))
+			}
+		}
+	}
+	return filepath.Clean(dir)
+}
+
+func (c LLMPromptCacheConfig) EffectiveCacheDir() string {
+	return ExpandLLMPromptCacheDir(c.CacheDir)
+}
+
+func (c LLMPromptCacheConfig) EffectiveOpenAIEnabled() bool {
+	return c.OpenAIEnabled == nil || *c.OpenAIEnabled
+}
+
+func (c LLMPromptCacheConfig) EffectiveAnthropicEnabled() bool {
+	return c.AnthropicEnabled == nil || *c.AnthropicEnabled
+}
+
+func (c LLMPromptCacheConfig) EffectiveStreamSynthesisEnabled() bool {
+	return c.StreamSynthesisEnabled == nil || *c.StreamSynthesisEnabled
+}
+
+func (c LLMPromptCacheConfig) Options() LLMPromptCacheOptions {
+	c = c.WithDefaults()
+	return LLMPromptCacheOptions{
+		Enabled:                      c.Enabled,
+		NormalizeDeterministicParams: c.NormalizeDeterministicParams,
+		IgnoreModelField:             c.IgnoreModelField,
+		IgnoreUserField:              c.IgnoreUserField,
+		IgnoreMetadataField:          c.IgnoreMetadataField,
+	}
+}
+
 func NormalizeSubAgentConcurrency(n int) int {
 	if n <= 0 {
 		return DefaultSubAgentConcurrency
@@ -303,6 +435,10 @@ func NormalizeSubAgentConcurrency(n int) int {
 		return MaxSubAgentConcurrency
 	}
 	return n
+}
+
+func (c AppConfig) IsIMProgressNudgeEnabled() bool {
+	return c.IMProgressNudgeEnabled == nil || *c.IMProgressNudgeEnabled
 }
 
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
@@ -530,6 +666,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		FileOutboundEnabled  *bool                  `json:"file_outbound_enabled"`
 		ImageOutboundEnabled *bool                  `json:"image_outbound_enabled"`
 		GroupDiscussion      *GroupDiscussionConfig `json:"group_discussion,omitempty"`
+		LLMPromptCache       *LLMPromptCacheConfig  `json:"llm_prompt_cache,omitempty"`
 	}
 
 	var raw rawAppConfig
@@ -563,6 +700,11 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	} else {
 		c.GroupDiscussion = *raw.GroupDiscussion
 		c.applyGroupDiscussionFieldDefaults()
+	}
+	if raw.LLMPromptCache == nil {
+		c.LLMPromptCache = DefaultLLMPromptCacheConfig()
+	} else {
+		c.LLMPromptCache = raw.LLMPromptCache.WithDefaults()
 	}
 	c.CapabilityMarketPolicy = c.CapabilityMarketPolicy.WithDefaults()
 	return nil

@@ -222,6 +222,37 @@ func TestRootQuestionMarkDoesNotStealOnboardingEmailInput(t *testing.T) {
 	}
 }
 
+func TestRootRoutesOnboardingProgressWhileOnAnotherTab(t *testing.T) {
+	m := NewRootModel("en")
+	m.SetTab(TabChat)
+	m.Onboarding.weixinBusy = true
+	m.Onboarding.weixinStatus = onboardingText("en", "requestingQR")
+
+	updated, cmd := m.Update(OnboardingWeixinTickMsg{})
+	if updated.ActiveTab() != TabChat {
+		t.Fatalf("active tab = %d, want chat", updated.ActiveTab())
+	}
+	if updated.Onboarding.weixinElapsed != 1 || cmd == nil {
+		t.Fatalf("onboarding progress not updated off-tab: elapsed=%d cmdNil=%v", updated.Onboarding.weixinElapsed, cmd == nil)
+	}
+}
+
+func TestRootRoutesOnboardingSSOProgressWhileOnAnotherTab(t *testing.T) {
+	m := NewRootModel("en")
+	m.SetTab(TabChat)
+	m.Onboarding.ssoBusy = true
+	m.Onboarding.ssoFlowID = "flow-1"
+	m.Onboarding.ssoStatus = onboardingText("en", "ssoRequestingQR")
+
+	updated, cmd := m.Update(OnboardingSSOTickMsg{FlowID: "flow-1"})
+	if updated.ActiveTab() != TabChat {
+		t.Fatalf("active tab = %d, want chat", updated.ActiveTab())
+	}
+	if updated.Onboarding.ssoElapsed != 1 || cmd == nil {
+		t.Fatalf("SSO progress not updated off-tab: elapsed=%d cmdNil=%v", updated.Onboarding.ssoElapsed, cmd == nil)
+	}
+}
+
 func TestRootQuestionMarkOpensHelpOnConfigWhenNotEditing(t *testing.T) {
 	m := NewRootModel("en")
 	m.SetTab(TabConfig)

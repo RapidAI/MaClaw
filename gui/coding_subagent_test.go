@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -2008,5 +2010,79 @@ func TestLimitSubAgentResultAuditSlices(t *testing.T) {
 	}
 	if got := len(limitSubAgentGuardrailViolations(guardrails, codingSubAgentResultAuditMax)); got != codingSubAgentResultAuditMax {
 		t.Fatalf("limited guardrails = %d, want %d", got, codingSubAgentResultAuditMax)
+	}
+}
+
+func TestCodingSubAgentLogsFailedOperationWithRedactedArgs(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+	}()
+
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: t.TempDir()},
+		task:     &TaskItem{Index: 7, Title: "write failure"},
+	}
+	args, _ := json.Marshal(map[string]string{"path": "out.txt", "content": "secret-token-value" + strings.Repeat("x", writeFileMaxSize)})
+	result := cb.executeToolWithOutcome("write_file", string(args))
+	if result.Outcome == codingToolOutcomeSuccess {
+		t.Fatal("expected write_file to fail")
+	}
+	logText := buf.String()
+	if !strings.Contains(logText, "[coding-subagent] operation failed") || !strings.Contains(logText, "tool=write_file") || !strings.Contains(logText, "outcome=failed") {
+		t.Fatalf("missing failure log details: %s", logText)
+	}
+	if strings.Contains(logText, "secret-token-value") {
+		t.Fatalf("log should redact content argument, got: %s", logText)
+	}
+	if !strings.Contains(logText, "[redacted") {
+		t.Fatalf("log should include redaction marker, got: %s", logText)
+	}
+
+	argsText := compactCodingSubAgentArgsLogText(`{"token":"abc123","password":"pw","path":"main.go","file_content":"full text","headers":{"authorization":"Bearer secret-token","x-api-key":"header-key"},"items":[{"api_key":"nested-key"}]}`, 500)
+	if strings.Contains(argsText, "abc123") || strings.Contains(argsText, "pw") || strings.Contains(argsText, "full text") || strings.Contains(argsText, "secret-token") || strings.Contains(argsText, "header-key") || strings.Contains(argsText, "nested-key") {
+		t.Fatalf("sensitive arg keys should be redacted, got: %s", argsText)
+	}
+
+	freeform := compactCodingSubAgentLogText(`failed: token=abc123 Authorization: Bearer secret-token api-key: header-key {"access_token":"json-token","password":"json-password"} Authorization: Basic basic-token path=D:\workprj\aicoder\main.go`, 500)
+	if strings.Contains(freeform, "abc123") || strings.Contains(freeform, "secret-token") || strings.Contains(freeform, "header-key") || strings.Contains(freeform, "json-token") || strings.Contains(freeform, "json-password") || strings.Contains(freeform, "basic-token") {
+		t.Fatalf("freeform log text should redact secret-looking values, got: %s", freeform)
+	}
+	if !strings.Contains(freeform, `path=D:\workprj\aicoder\main.go`) {
+		t.Fatalf("freeform log text should preserve non-secret diagnostics, got: %s", freeform)
+	}
+}
+
+func TestCodingSubAgentListDirectoryFailureHasErrorOutcome(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Index: 1, Title: "list missing directory"},
+	}
+	result := cb.executeToolWithOutcome("list_directory", `{"path":"missing"}`)
+	if result.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("list_directory outcome = %q, want failed; result=%s", result.Outcome, result.Text)
+	}
+}
+
+func TestCodingSubAgentFinalGitDiffFailureDoesNotMarkChecked(t *testing.T) {
+	missingProject := filepath.Join(t.TempDir(), "missing-project")
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: missingProject},
+		task:     &TaskItem{Index: 2, Title: "diff outside repo"},
+	}
+	checked, summary := cb.ensureFinalGitDiff([]string{"main.go"})
+	if checked {
+		t.Fatalf("git diff failure should not mark diff checked; summary=%q", summary)
+	}
+	if strings.TrimSpace(summary) == "" {
+		t.Fatal("git diff failure should return diagnostic summary")
+	}
+	if cb.gitDiffChecked {
+		t.Fatal("gitDiffChecked should remain false after failed final diff")
 	}
 }

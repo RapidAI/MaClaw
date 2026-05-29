@@ -34,16 +34,17 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 
 	var latestPayloadJSON string
 	var latestPayloadHash string
+	var latestOpType string
 	var current sql.NullInt64
 	if err := conn.QueryRowContext(ctx, `
-		SELECT payload_json, payload_hash
+		SELECT op_type, payload_json, payload_hash
 		FROM ha_sync_ops INDEXED BY idx_ha_sync_ops_entity_seq
-		WHERE entity_type = ? AND entity_id = ? AND op_type = ?
+		WHERE entity_type = ? AND entity_id = ?
 		ORDER BY seq DESC
 		LIMIT 1
-	`, op.EntityType, op.EntityID, op.OpType).Scan(&latestPayloadJSON, &latestPayloadHash); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	`, op.EntityType, op.EntityID).Scan(&latestOpType, &latestPayloadJSON, &latestPayloadHash); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
-	} else if err == nil && haPayloadEquivalent(op.EntityType, op.OpType, op.PayloadJSON, op.PayloadHash, latestPayloadJSON, latestPayloadHash) {
+	} else if err == nil && latestOpType == op.OpType && haPayloadEquivalent(op.EntityType, op.OpType, op.PayloadJSON, op.PayloadHash, latestPayloadJSON, latestPayloadHash) {
 		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 			return 0, err
 		}

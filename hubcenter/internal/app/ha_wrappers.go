@@ -296,7 +296,6 @@ type haSeedSystemSettingsStore interface {
 
 type haSeedSyncChecker interface {
 	HasEntityTypeOps(ctx context.Context, entityTypes ...string) (bool, error)
-	HasEntityVersion(ctx context.Context, entityType, entityID string) (bool, error)
 	AppendHubInstance(ctx context.Context, item *store.HubInstance)
 	AppendHubUserLink(ctx context.Context, item *store.HubUserLink)
 	AppendHubDomainRoute(ctx context.Context, item *store.HubDomainRoute)
@@ -401,15 +400,13 @@ func seedInitialHASnapshots(ctx context.Context, sync haSeedSyncChecker, refresh
 		log.Printf("[hubcenter][ha] inspect gossip seed state failed: %v", err)
 	}
 
-	if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntityNewsArticle); err == nil && !seeded && news != nil {
-		seededCount, skippedCount, listErr := seedNewsArticlesPaged(ctx, sync, news)
+	if news != nil {
+		checkedCount, listErr := seedNewsArticlesPaged(ctx, sync, news)
 		if listErr != nil {
 			log.Printf("[hubcenter][ha] seed news snapshot failed: %v", listErr)
-		} else if seededCount > 0 || skippedCount > 0 {
-			log.Printf("[hubcenter][ha] seeded news snapshot: articles=%d skipped=%d", seededCount, skippedCount)
+		} else if checkedCount > 0 {
+			log.Printf("[hubcenter][ha] checked news HA seed candidates: articles=%d", checkedCount)
 		}
-	} else if err != nil {
-		log.Printf("[hubcenter][ha] inspect news seed state failed: %v", err)
 	}
 
 	if seeded, err := sync.HasEntityTypeOps(ctx, ha.EntitySkillHubSnapshot); err == nil && !seeded && skills != nil {
@@ -533,32 +530,22 @@ func seedRoutesPaged(ctx context.Context, sync haSeedSyncChecker, routes haSeedR
 	return seed(items), nil
 }
 
-func seedNewsArticlesPaged(ctx context.Context, sync haSeedSyncChecker, news haSeedNewsRepo) (int, int, error) {
-	seededCount := 0
-	skippedCount := 0
+func seedNewsArticlesPaged(ctx context.Context, sync haSeedSyncChecker, news haSeedNewsRepo) (int, error) {
+	checkedCount := 0
 	for offset := 0; ; offset += haSeedPageSize {
 		items, total, err := news.List(ctx, offset, haSeedPageSize)
 		if err != nil {
-			return seededCount, skippedCount, err
+			return checkedCount, err
 		}
 		for _, item := range items {
 			if item == nil {
 				continue
 			}
-			exists, existsErr := sync.HasEntityVersion(ctx, ha.EntityNewsArticle, item.ID)
-			if existsErr != nil {
-				log.Printf("[hubcenter][ha] inspect news entity version failed for %s: %v", item.ID, existsErr)
-				continue
-			}
-			if exists {
-				skippedCount++
-				continue
-			}
 			sync.AppendNewsArticle(ctx, item)
-			seededCount++
+			checkedCount++
 		}
 		if len(items) == 0 || offset+len(items) >= total || len(items) < haSeedPageSize {
-			return seededCount, skippedCount, nil
+			return checkedCount, nil
 		}
 	}
 }

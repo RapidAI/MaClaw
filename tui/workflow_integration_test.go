@@ -414,6 +414,45 @@ allowed_commands:
 	}
 }
 
+func TestTUIWorkflowBlockedPhaseRejectsTools(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	_, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm("tui-user"); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	if _, _, err := app.workflowEngine.SavePhaseOutputAndMaybeAdvance("tui-user", strings.Repeat("requirements\n", 80)); err != nil {
+		t.Fatalf("SavePhaseOutputAndMaybeAdvance failed: %v", err)
+	}
+	if !app.workflowEngine.IsPhaseExecutionBlocked("tui-user") {
+		t.Fatal("review gate should block phase execution")
+	}
+	if policy := app.currentWorkflowToolFilterTUI(); policy != workflow.ToolFilterDocOnly {
+		t.Fatalf("active phase filter should remain doc-only while blocked, got %s", policy)
+	}
+
+	tools := []map[string]interface{}{
+		agent.ToolDef("read_file", "read file", nil, nil),
+		agent.ToolDef("write_file", "write file", nil, nil),
+	}
+	got := agent.FilterToolDefinitionsByAuthorizer(&tuiCallbacks{app: app}, tools)
+	if len(got) != 0 {
+		t.Fatalf("blocked workflow phase should expose no executable tools, got %v", got)
+	}
+	allowed, reason := (&tuiCallbacks{app: app}).IsToolCallAllowed("write_file", `{"path":"out.md","content":"body"}`)
+	if allowed {
+		t.Fatal("blocked workflow phase should reject tool calls")
+	}
+	if !strings.Contains(reason, "paused") {
+		t.Fatalf("unexpected blocked reason: %q", reason)
+	}
+}
+
 func TestTUIWorkflowTextOnlyInputSchemaWaitsForUserDetails(t *testing.T) {
 	app := newWorkflowTestApp(&tuiWorkflowTestLLM{
 		response: `{"intent":{"category":"coding","summary":"build app","goals":["build app"],"confidence":0.9,"ready":true},"reply":"Please confirm starting coding workflow.","ready":true}`,

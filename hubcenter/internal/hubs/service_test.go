@@ -103,6 +103,7 @@ type countingHubUserLinkRepo struct {
 	listAllCalls     int
 	listByHubIDCalls int
 	countCalls       int
+	domainCalls      int
 	firstSeenCalls   int
 	migrationCalls   int
 }
@@ -126,6 +127,13 @@ func (r *countingHubUserLinkRepo) ListUserCountsByHubTenant(ctx context.Context)
 	r.countCalls++
 	r.mu.Unlock()
 	return r.HubUserLinkRepository.(hubUserCountByTenantLister).ListUserCountsByHubTenant(ctx)
+}
+
+func (r *countingHubUserLinkRepo) ListUserDomainsByHubTenant(ctx context.Context) ([]store.HubTenantUserDomain, error) {
+	r.mu.Lock()
+	r.domainCalls++
+	r.mu.Unlock()
+	return r.HubUserLinkRepository.(hubUserDomainByTenantLister).ListUserDomainsByHubTenant(ctx)
 }
 
 func (r *countingHubUserLinkRepo) ListUserFirstSeen(ctx context.Context) ([]store.HubUserFirstSeen, error) {
@@ -152,6 +160,12 @@ func (r *countingHubUserLinkRepo) CountCalls() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.countCalls
+}
+
+func (r *countingHubUserLinkRepo) DomainCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.domainCalls
 }
 
 func (r *countingHubUserLinkRepo) FirstSeenCalls() int {
@@ -277,7 +291,7 @@ func TestUpdateHubRegistrationPolicyRejectsSelfHostedPublicFallback(t *testing.T
 	}
 }
 
-func TestUpdateHubRegistrationPolicyRejectsSelfHostedPublicDefault(t *testing.T) {
+func TestUpdateHubRegistrationPolicyCanonicalizesPublicDefaultToOfficial(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	ctx := context.Background()
@@ -287,9 +301,12 @@ func TestUpdateHubRegistrationPolicyRejectsSelfHostedPublicDefault(t *testing.T)
 		t.Fatalf("create hub: %v", err)
 	}
 	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
-	_, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "self_hosted", DefaultSignupScope: "public"})
-	if err == nil || !errors.Is(err, ErrInvalidRegistrationPolicy) {
-		t.Fatalf("expected ErrInvalidRegistrationPolicy, got %v", err)
+	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "self_hosted", DefaultSignupScope: "public"})
+	if err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+	if cfg.HubOrigin != "official" || cfg.DefaultSignupScope != "public" {
+		t.Fatalf("public default should imply official hub origin, got %+v", cfg)
 	}
 }
 
@@ -341,9 +358,12 @@ func TestUpdateHubRegistrationPolicyRejectsOriginChangeWithExistingPublicFallbac
 	if _, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "public", SignupScope: "public", IsPublicFallback: &publicFallback}}); err != nil {
 		t.Fatalf("seed public fallback: %v", err)
 	}
-	_, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "self_hosted"})
-	if err == nil || !errors.Is(err, ErrInvalidRegistrationPolicy) {
-		t.Fatalf("expected ErrInvalidRegistrationPolicy, got %v", err)
+	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "self_hosted"})
+	if err != nil {
+		t.Fatalf("public default should keep origin official until default scope changes: %v", err)
+	}
+	if cfg.HubOrigin != "official" || cfg.DefaultSignupScope != "public" {
+		t.Fatalf("public default should imply official hub origin, got %+v", cfg)
 	}
 }
 
@@ -381,6 +401,166 @@ func TestHubRegistrationPoliciesDefaultMissingInviteEnabledToTrue(t *testing.T) 
 	}
 	if !policies["hub_policy_missing_invite"].Tenants["tenant_a"].InviteEnabled {
 		t.Fatalf("missing invite_enabled should default to true: %+v", policies["hub_policy_missing_invite"].Tenants["tenant_a"])
+	}
+}
+
+func TestHubRegistrationPoliciesPreservesTenantMapKeyWhenTenantIDMissing(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_policy_key_only":{"hub_origin":"self_hosted","default_signup_scope":"invite_only","tenants":{"tenant_key_only":{"signup_scope":"invite_only","status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+
+	policies, err := svc.HubRegistrationPolicies(ctx)
+	if err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+	policy := policies["hub_policy_key_only"].Tenants["tenant_key_only"]
+	if policy.TenantID != "tenant_key_only" || policy.SignupScope != "invite_only" {
+		t.Fatalf("tenant map key should be preserved when tenant_id is missing, got %+v", policies["hub_policy_key_only"].Tenants)
+	}
+	if _, ok := policies["hub_policy_key_only"].Tenants[""]; ok {
+		t.Fatalf("key-only tenant should not collapse into default tenant, got %+v", policies["hub_policy_key_only"].Tenants)
+	}
+}
+
+func TestHubRegistrationPoliciesDefaultTenantSignupScopeToInherit(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_policy_tenant_inherit":{"hub_origin":"official","default_signup_scope":"public","tenants":{"public":{"tenant_id":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+
+	policies, err := svc.HubRegistrationPolicies(ctx)
+	if err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+	policy := policies["hub_policy_tenant_inherit"].Tenants["public"]
+	if policy.SignupScope != "inherit" || !policy.IsPublicFallback {
+		t.Fatalf("missing tenant signup_scope should inherit hub default, got %+v", policy)
+	}
+	if err := validateRegistrationPolicyStore(hubRegistrationPolicyStore{Hubs: policies}); err != nil {
+		t.Fatalf("inherited public fallback should remain valid: %v", err)
+	}
+}
+
+func TestHubRegistrationPoliciesRejectHubDefaultInheritAsPublicFallback(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_policy_default_inherit":{"hub_origin":"official","default_signup_scope":"inherit","tenants":{"public":{"tenant_id":"public","signup_scope":"inherit","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+
+	policies, err := svc.HubRegistrationPolicies(ctx)
+	if err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+	cfg := policies["hub_policy_default_inherit"]
+	if cfg.DefaultSignupScope != "domain_restricted" || cfg.Tenants["public"].SignupScope != "inherit" {
+		t.Fatalf("hub default should normalize invalid inherit while tenant remains inherit, got %+v", cfg)
+	}
+	if err := validateRegistrationPolicyStore(hubRegistrationPolicyStore{Hubs: policies}); err != ErrInvalidRegistrationPolicy {
+		t.Fatalf("inherited non-public fallback should remain invalid, got %v", err)
+	}
+}
+
+func TestUpdateHubRegistrationPolicyIgnoresUnrelatedInvalidStoredPolicy(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_policy_target", OwnerEmail: "owner@example.com", Name: "Target Hub", BaseURL: "https://target.example.com", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"stale_invalid":{"hub_origin":"self_hosted","default_signup_scope":"public","tenants":{}}}}`); err != nil {
+		t.Fatalf("seed stale policy: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+
+	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public"})
+	if err != nil {
+		t.Fatalf("update policy should ignore unrelated stale invalid policy: %v", err)
+	}
+	if cfg.HubOrigin != "official" || cfg.DefaultSignupScope != "public" {
+		t.Fatalf("unexpected updated policy: %+v", cfg)
+	}
+}
+
+func TestUpdateHubRegistrationPolicyRejectsSecondPublicFallback(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_policy_fallback_a", OwnerEmail: "owner-a@example.com", Name: "Fallback A", BaseURL: "https://fallback-a.example.com", Status: "online", HubSecretHash: "secret-a", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_policy_fallback_b", OwnerEmail: "owner-b@example.com", Name: "Fallback B", BaseURL: "https://fallback-b.example.com", Status: "online", HubSecretHash: "secret-b", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_policy_fallback_a":{"hub_origin":"official","default_signup_scope":"public","tenants":{"public":{"tenant_id":"public","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("seed public fallback: %v", err)
+	}
+	publicFallback := true
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+
+	_, err := svc.UpdateHubRegistrationPolicy(ctx, "hub_policy_fallback_b", UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "public-b", SignupScope: "public", IsPublicFallback: &publicFallback}})
+	if err == nil || !errors.Is(err, ErrInvalidRegistrationPolicy) {
+		t.Fatalf("expected ErrInvalidRegistrationPolicy for second public fallback, got %v", err)
+	}
+}
+
+func TestUpdateHubRegistrationPolicyIgnoresDeletedHubPublicFallback(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_policy_live_fallback", OwnerEmail: "owner-live@example.com", Name: "Live Fallback", BaseURL: "https://live-fallback.example.com", Status: "online", HubSecretHash: "secret-live", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"deleted_fallback":{"hub_origin":"official","default_signup_scope":"public","tenants":{"public":{"tenant_id":"public","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("seed deleted hub fallback policy: %v", err)
+	}
+	publicFallback := true
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+
+	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "tenant_default", SignupScope: "inherit", IsPublicFallback: &publicFallback}})
+	if err != nil {
+		t.Fatalf("deleted hub fallback should not block live fallback: %v", err)
+	}
+	if !cfg.Tenants[""].IsPublicFallback {
+		t.Fatalf("expected default tenant public fallback, cfg=%+v", cfg)
+	}
+	raw, err := st.System.Get(ctx, systemKeyHubRegistrationPolicies)
+	if err != nil {
+		t.Fatalf("load policy store: %v", err)
+	}
+	if strings.Contains(raw, "deleted_fallback") {
+		t.Fatalf("deleted hub policy should be pruned, raw=%s", raw)
+	}
+}
+
+func TestValidateRegistrationPolicyStoreCanonicalizesLegacySelfHostedPublicDefault(t *testing.T) {
+	state := hubRegistrationPolicyStore{Hubs: map[string]HubRegistrationPolicyConfig{
+		"legacy_public_default": {
+			HubOrigin:          "self_hosted",
+			DefaultSignupScope: "public",
+			Tenants: map[string]store.HubTenantRegistrationPolicy{
+				"": {SignupScope: "inherit", IsPublicFallback: true, Status: "active"},
+			},
+		},
+	}}
+	if err := validateRegistrationPolicyStore(state); err != nil {
+		t.Fatalf("legacy self-hosted public default should canonicalize before validation: %v", err)
 	}
 }
 
@@ -818,8 +998,22 @@ func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) 
 	}
 
 	enabled := true
-	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "", Quota: 3, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeTenantRequired {
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "", Quota: 2, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeTenantRequired {
 		t.Fatalf("missing tenant error = %v, want ErrDigitalEmployeeTenantRequired", err)
+	}
+	defaultAuth, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_default", Quota: 2, Years: 1, Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("default tenant authorization update: %v", err)
+	}
+	if defaultAuth == nil || !defaultAuth.Active || defaultAuth.Quota != 2 {
+		t.Fatalf("unexpected default tenant authorization: %+v", defaultAuth)
+	}
+	storedDefaultHub, err := st.Hubs.GetByID(ctx, hub.ID)
+	if err != nil {
+		t.Fatalf("reload hub after default auth: %v", err)
+	}
+	if storedDefaultHub.DigitalEmployeeQuota != 2 || !storedDefaultHub.DigitalEmployeeAuthorizationEnabled || storedDefaultHub.DigitalEmployeeAuthorizationExpiresAt == nil {
+		t.Fatalf("default tenant authorization should persist to hub-level columns: %+v", storedDefaultHub)
 	}
 	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{TenantID: "tenant_a", Quota: 0, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeQuotaRequired {
 		t.Fatalf("zero enabled quota error = %v, want ErrDigitalEmployeeQuotaRequired", err)
@@ -842,8 +1036,8 @@ func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) 
 	if err != nil {
 		t.Fatalf("reload hub after tenant auth: %v", err)
 	}
-	if storedHub.DigitalEmployeeQuota != 0 || storedHub.DigitalEmployeeAuthorizationEnabled || storedHub.DigitalEmployeeAuthorizationExpiresAt != nil {
-		t.Fatalf("tenant authorization must not mutate legacy hub-level authorization columns: %+v", storedHub)
+	if storedHub.DigitalEmployeeQuota != 2 || !storedHub.DigitalEmployeeAuthorizationEnabled || storedHub.DigitalEmployeeAuthorizationExpiresAt == nil {
+		t.Fatalf("tenant authorization must not mutate default hub-level authorization columns: %+v", storedHub)
 	}
 	firstExpiry := auth.ExpiresAt
 
@@ -889,11 +1083,12 @@ func TestTenantDigitalEmployeeAuthorizationsSanitizeTenantKeys(t *testing.T) {
 		t.Fatalf("create hub: %v", err)
 	}
 	seed := map[string]*corelib.DigitalEmployeeAuthorization{
-		" tenant_a ": {Quota: 2, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
-		" tenant_b ": {Quota: 1, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
-		"tenant_b":   {Quota: 5, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
-		"":           {Quota: 9, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
-		"tenant_nil": nil,
+		" tenant_a ":     {Quota: 2, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		" tenant_b ":     {Quota: 1, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		"tenant_b":       {Quota: 5, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		"tenant_default": {Quota: 9, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		"":               {Quota: 8, Enabled: true, ExpiresAt: now.AddDate(1, 0, 0).Format(time.RFC3339)},
+		"tenant_nil":     nil,
 	}
 	data, err := json.Marshal(seed)
 	if err != nil {
@@ -907,8 +1102,8 @@ func TestTenantDigitalEmployeeAuthorizationsSanitizeTenantKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load authorizations: %v", err)
 	}
-	if _, ok := auths[" tenant_a "]; ok || auths[""] != nil || auths["tenant_nil"] != nil {
-		t.Fatalf("authorizations should drop empty/nil keys and trim tenant ids: %+v", auths)
+	if _, ok := auths[" tenant_a "]; ok || auths[""] != nil || auths["tenant_default"] != nil || auths["tenant_nil"] != nil {
+		t.Fatalf("authorizations should drop empty/default/nil keys and trim tenant ids: %+v", auths)
 	}
 	if auth := auths["tenant_a"]; auth == nil || auth.Quota != 2 || !auth.Active {
 		t.Fatalf("tenant_a auth = %+v, want active quota 2", auth)
@@ -1103,7 +1298,6 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 	if err := st.Hubs.Create(ctx, hub); err != nil {
 		t.Fatalf("seed hub: %v", err)
 	}
-
 	items, err := svc.ListUserDashboard(ctx)
 	if err != nil {
 		t.Fatalf("ListUserDashboard: %v", err)
@@ -1156,8 +1350,8 @@ func TestListUserDashboardUsesAggregatedUserCounts(t *testing.T) {
 		t.Fatalf("dashboard counts = %+v", byTenant)
 	}
 	listAll, _ := links.Calls()
-	if listAll != 0 || links.CountCalls() != 1 {
-		t.Fatalf("link repo calls = ListAll:%d Count:%d, want 0/1", listAll, links.CountCalls())
+	if listAll != 0 || links.CountCalls() != 1 || links.DomainCalls() != 1 {
+		t.Fatalf("link repo calls = ListAll:%d Count:%d Domains:%d, want 0/1/1", listAll, links.CountCalls(), links.DomainCalls())
 	}
 }
 
@@ -1185,6 +1379,18 @@ func TestListUserDashboardDoesNotExposeTenantDomainsOnOpenHubRow(t *testing.T) {
 	if err := st.Hubs.Create(ctx, hub); err != nil {
 		t.Fatalf("seed hub: %v", err)
 	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "tenant-guest", HubID: hub.ID, TenantID: "tenant_a", Email: "user@guest.example", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant guest link: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "tenant-enterprise", HubID: hub.ID, TenantID: "tenant_a", Email: "user@tenant-a.example", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant enterprise link: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "tenant-wildcard", HubID: hub.ID, TenantID: "tenant_a", Email: "*@wildcard.example", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant wildcard link: %v", err)
+	}
+	if err := st.HubDomainRoutes.Upsert(ctx, &store.HubDomainRoute{ID: "tenant-extra-route", HubID: hub.ID, TenantID: "tenant_a", Domain: "tenant-extra.example", Enabled: true, Priority: 10, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant route: %v", err)
+	}
 
 	items, err := svc.ListUserDashboard(ctx)
 	if err != nil {
@@ -1200,8 +1406,52 @@ func TestListUserDashboardDoesNotExposeTenantDomainsOnOpenHubRow(t *testing.T) {
 	if byTenant[""].SignupMode != "public_signup" {
 		t.Fatalf("physical hub signup mode = %q", byTenant[""].SignupMode)
 	}
-	if got := byTenant["tenant_a"].CorporateEmailDomains; !reflect.DeepEqual(got, []string{"tenant-a.example"}) {
+	if got := byTenant["tenant_a"].CorporateEmailDomains; !reflect.DeepEqual(got, []string{"tenant-a.example", "tenant-extra.example"}) {
 		t.Fatalf("tenant row domains = %#v", got)
+	}
+	if got := byTenant["tenant_a"].GuestDomains; !reflect.DeepEqual(got, []string{"guest.example"}) {
+		t.Fatalf("tenant row guest domains = %#v items=%+v", got, items)
+	}
+}
+
+func TestListEnterpriseMailDomainsNormalizesDefaultTenant(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	hub := &store.HubInstance{
+		ID:         "hub_enterprise_default",
+		OwnerEmail: "owner@example.com",
+		Name:       "Enterprise Default",
+		BaseURL:    "https://enterprise-default.example.com",
+		Status:     "online",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		CapabilitiesJSON: mustJSON(map[string]any{
+			"tenant_domains": map[string]any{"tenant_default": []any{"default.example"}, "tenant_a": []any{"tenant-a.example", "tenant-a-extra.example"}},
+		}),
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("seed hub: %v", err)
+	}
+
+	items, err := svc.ListEnterpriseMailDomains(ctx)
+	if err != nil {
+		t.Fatalf("ListEnterpriseMailDomains: %v", err)
+	}
+	byDomain := map[string]EnterpriseMailDomainItem{}
+	for _, item := range items {
+		byDomain[item.EnterpriseDomain] = item
+	}
+	if got := byDomain["default.example"].TenantID; got != "" {
+		t.Fatalf("default tenant enterprise domain tenant id = %q, want empty internal id; items=%+v", got, items)
+	}
+	if got := byDomain["tenant-a.example"].TenantID; got != "tenant_a" {
+		t.Fatalf("tenant_a enterprise domain tenant id = %q, items=%+v", got, items)
+	}
+	if got := byDomain["tenant-a.example"].EnterpriseDomains; !reflect.DeepEqual(got, []string{"tenant-a.example", "tenant-a-extra.example"}) {
+		t.Fatalf("tenant_a enterprise domains = %#v, items=%+v", got, items)
 	}
 }
 

@@ -1,6 +1,11 @@
 package main
 
-import "time"
+import (
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
+)
 
 type agentLoopToolSet struct {
 	Tools            []map[string]interface{}
@@ -38,10 +43,11 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
 	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
 	if engine := h.getWorkflowEngine(); engine != nil && shouldApplyWorkflowFilter(skipNeedsConfirmGate, engine.IsAwaitingReview(userID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(userID)) {
-		if p := engine.GetActivePhaseToolFilter(userID); p != "" {
-			workflowFilterPolicy = workflowToolFilterDecision(p)
+		policy := engine.GetActivePhaseToolFilter(userID)
+		if policy != "" {
+			workflowFilterPolicy = workflowToolFilterDecision(policy)
 		}
-		tools = h.applyWorkflowToolFilter(userID, tools)
+		tools = h.applyWorkflowToolFilterWithCatalog(userID, tools, allTools)
 	} else if skipNeedsConfirmGate {
 		workflowFilterPolicy = workflowToolFilterSkippedConfirmBypass
 		workflowFilterSkipped = true
@@ -57,4 +63,37 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserBeforeWF:  browserBeforeWF,
 		BrowserPinned:    browserSessionPinned,
 	}
+}
+
+func ensureWorkflowRequiredTools(policy workflow.ToolFilterPolicy, routed, allTools []map[string]interface{}) []map[string]interface{} {
+	required := workflow.RequiredToolNamesForPolicy(policy)
+	if len(required) == 0 || len(allTools) == 0 {
+		return routed
+	}
+	seen := make(map[string]bool, len(routed))
+	for _, def := range routed {
+		if name := tool.ExtractToolName(def); name != "" {
+			seen[name] = true
+		}
+	}
+	byName := make(map[string]map[string]interface{}, len(allTools))
+	for _, def := range allTools {
+		name := tool.ExtractToolName(def)
+		if name != "" && byName[name] == nil {
+			byName[name] = def
+		}
+	}
+	merged := routed
+	for _, name := range required {
+		if seen[name] {
+			continue
+		}
+		def := byName[name]
+		if def == nil {
+			continue
+		}
+		merged = append(merged, def)
+		seen[name] = true
+	}
+	return merged
 }

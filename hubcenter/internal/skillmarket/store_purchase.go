@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 // 鈹€鈹€ PurchaseRepository implementation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -14,7 +15,7 @@ func (s *Store) CreatePurchase(ctx context.Context, rec *PurchaseRecord) error {
 			purchase_type, amount_paid, platform_fee, seller_earning, seller_id,
 			key_status, api_key_id, status, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rec.ID, rec.HubID, rec.TenantID, rec.BuyerEmail, rec.BuyerID, rec.SkillID, rec.PurchasedVersion,
+		rec.ID, rec.HubID, normalizePurchaseTenantID(rec.TenantID), rec.BuyerEmail, rec.BuyerID, rec.SkillID, rec.PurchasedVersion,
 		rec.PurchaseType, rec.AmountPaid, rec.PlatformFee, rec.SellerEarning, rec.SellerID,
 		rec.KeyStatus, rec.APIKeyID, rec.Status, fmtTime(rec.CreatedAt),
 	)
@@ -80,9 +81,13 @@ func (s *Store) ListPurchasesByTenant(ctx context.Context, hubID, tenantID, buye
 		where += " AND hub_id = ?"
 		args = append(args, hubID)
 	}
-	if tenantID != "" {
-		where += " AND tenant_id = ?"
-		args = append(args, tenantID)
+	if strings.TrimSpace(tenantID) != "" {
+		if normalizePurchaseTenantID(tenantID) == "" {
+			where += " AND (tenant_id = '' OR tenant_id = 'tenant_default')"
+		} else {
+			where += " AND tenant_id = ?"
+			args = append(args, normalizePurchaseTenantID(tenantID))
+		}
 	}
 	if buyerEmail != "" {
 		where += " AND buyer_email = ?"
@@ -93,6 +98,14 @@ func (s *Store) ListPurchasesByTenant(ctx context.Context, hubID, tenantID, buye
 		args = append(args, skillID)
 	}
 	return s.listPurchasesWhere(ctx, where, args, offset, limit)
+}
+
+func normalizePurchaseTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "tenant_default" {
+		return ""
+	}
+	return tenantID
 }
 
 func (s *Store) GetOldestPendingKeyPurchase(ctx context.Context, skillID string) (*PurchaseRecord, error) {

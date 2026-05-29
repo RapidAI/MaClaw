@@ -1715,10 +1715,61 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	return s.recallDynamicWithEventContext(query, category, projectPath, lifecycle.EventContext{}, ownerID...)
 }
 
+// RecallDynamicForTool is the recall entry point for the memory tool's recall
+// action. Unlike RecallDynamic (used by proactive recall in system prompts),
+// this method uses a minimal exclusion list when category is empty—only
+// session_checkpoint and conversation_summary are excluded. user_fact and
+// self_identity are legitimate recall targets when the user asks about
+// personal info.
+//
+// Root cause: the exclusion policy belongs to the caller, not the data layer.
+// Proactive recall excludes user_fact because it's already injected via the
+// frozen UserFactSummary. Tool recall has no such redundancy, so it should
+// not exclude user_fact.
+func (s *Store) RecallDynamicForTool(query string, category Category, projectPath string, ownerID ...string) []Entry {
+	results := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
+		strictProject:         false,
+		excludeWhenNoCategory: toolRecallExcludeCategories,
+	}, ownerID...)
+	s.recordRecallExperienceEvent("dynamic_tool", query, results, lifecycle.EventContext{})
+	return results
+}
+
 func (s *Store) recallDynamicWithEventContext(query string, category Category, projectPath string, eventContext lifecycle.EventContext, ownerID ...string) []Entry {
-	results := s.recallDynamicCore(query, category, projectPath, false, ownerID...)
+	results := s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
+		strictProject:         false,
+		excludeWhenNoCategory: proactiveRecallExcludeCategories,
+	}, ownerID...)
 	s.recordRecallExperienceEvent("dynamic", query, results, eventContext)
 	return results
+}
+
+// recallFilterOptions controls the entry filtering behavior of recallDynamicCoreWithOptions.
+// This is the mechanism that separates "what to exclude" from "how to recall"—
+// the exclusion policy belongs to the caller, not the recall engine.
+type recallFilterOptions struct {
+	strictProject         bool
+	excludeWhenNoCategory []Category // categories to exclude when caller passes category=""
+}
+
+// proactiveRecallExcludeCategories is the exclusion list for system prompt
+// proactive recall. user_fact is excluded because it's already injected via
+// the frozen UserFactSummary snapshot. self_identity is excluded because it's
+// injected separately. session_checkpoint and conversation_summary are internal
+// bookkeeping not useful for LLM context.
+var proactiveRecallExcludeCategories = []Category{
+	CategoryUserFact,
+	CategorySelfIdentity,
+	CategorySessionCheckpoint,
+	CategoryConversationSummary,
+}
+
+// toolRecallExcludeCategories is the exclusion list for the memory tool's
+// recall action. Only internal bookkeeping categories are excluded. user_fact
+// and self_identity are legitimate recall targets.
+var toolRecallExcludeCategories = []Category{
+	CategorySessionCheckpoint,
+	CategoryConversationSummary,
 }
 
 // recallDynamicCore is the shared implementation for RecallDynamic and RecallDynamicStrict.
@@ -1726,6 +1777,16 @@ func (s *Store) recallDynamicWithEventContext(query string, category Category, p
 // other projects' project_knowledge is excluded; ScopeGlobal + user_fact + preference always allowed.
 // When strictProject=false: default behavior (soft project filtering) unchanged.
 func (s *Store) recallDynamicCore(query string, category Category, projectPath string, strictProject bool, ownerID ...string) []Entry {
+	return s.recallDynamicCoreWithOptions(query, category, projectPath, recallFilterOptions{
+		strictProject:         strictProject,
+		excludeWhenNoCategory: proactiveRecallExcludeCategories,
+	}, ownerID...)
+}
+
+// recallDynamicCoreWithOptions is the unified recall engine. The exclusion
+// policy is passed in via opts.excludeWhenNoCategory, making the engine
+// agnostic to caller-specific filtering needs.
+func (s *Store) recallDynamicCoreWithOptions(query string, category Category, projectPath string, opts recallFilterOptions, ownerID ...string) []Entry {
 	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
 	expanded := ExpandQuery(query)
 	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
@@ -1798,14 +1859,14 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 		if !e.IsActive() {
 			continue
 		}
-		if strictProject && projectLower != "" {
+		if opts.strictProject && projectLower != "" {
 			// Strict project mode: use recallStrictProjectEntryAllowed for
 			// ScopeProject entries, and allow ScopeGlobal + user_fact + preference.
 			if !recallDynamicEntryAllowedStrict(e, category, projectLower, filterOwner) {
 				continue
 			}
 		} else {
-			if !recallDynamicEntryAllowed(e, category, projectLower, filterOwner) {
+			if !recallDynamicEntryAllowedWithExclusions(e, category, projectLower, filterOwner, opts.excludeWhenNoCategory) {
 				continue
 			}
 		}
@@ -1867,10 +1928,10 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 	// Re-apply the full dynamic visibility contract after graph expansion: graph
 	// edges can cross owner, project, or category boundaries that the seed set had
 	// already filtered out.
-	if strictProject && projectLower != "" {
+	if opts.strictProject && projectLower != "" {
 		candidates = filterRecallDynamicCandidatesStrict(candidates, category, projectLower, filterOwner)
 	} else {
-		candidates = filterRecallDynamicCandidates(candidates, category, projectLower, filterOwner)
+		candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, filterOwner, opts.excludeWhenNoCategory)
 	}
 	if ClassifyComplexity(query, expanded.Entities, nil) != ComplexitySimple && s.themeManager != nil {
 		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
@@ -2096,6 +2157,15 @@ func (s *Store) SearchByMode(query string, mode SearchMode, category Category, p
 }
 
 func recallDynamicEntryAllowed(e Entry, category Category, projectLower, filterOwner string) bool {
+	return recallDynamicEntryAllowedWithExclusions(e, category, projectLower, filterOwner, proactiveRecallExcludeCategories)
+}
+
+// recallDynamicEntryAllowedWithExclusions is the single parameterized entry
+// filter for recall. The exclusion list determines which categories are
+// filtered out when the caller does not specify a category. This is the
+// mechanism that separates "what to exclude" (caller policy) from "how to
+// filter" (data layer logic).
+func recallDynamicEntryAllowedWithExclusions(e Entry, category Category, projectLower, filterOwner string, excludeWhenNoCategory []Category) bool {
 	if !e.IsActive() || !recallProjectEntryAllowed(e, projectLower) {
 		return false
 	}
@@ -2108,21 +2178,26 @@ func recallDynamicEntryAllowed(e Entry, category Category, projectLower, filterO
 	if category != "" {
 		return recallCategoryMatches(e.Category, category)
 	}
-	switch e.Category {
-	case CategoryUserFact, CategorySelfIdentity, CategorySessionCheckpoint, CategoryConversationSummary:
-		return false
-	default:
-		return true
+	// No category specified: apply caller's exclusion policy.
+	for _, excluded := range excludeWhenNoCategory {
+		if e.Category == excluded {
+			return false
+		}
 	}
+	return true
 }
 
 func filterRecallDynamicCandidates(candidates []recallScored, category Category, projectLower, filterOwner string) []recallScored {
+	return filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, filterOwner, proactiveRecallExcludeCategories)
+}
+
+func filterRecallDynamicCandidatesWithExclusions(candidates []recallScored, category Category, projectLower, filterOwner string, excludeWhenNoCategory []Category) []recallScored {
 	if len(candidates) == 0 {
 		return candidates
 	}
 	filtered := candidates[:0]
 	for _, c := range candidates {
-		if recallDynamicEntryAllowed(c.entry, category, projectLower, filterOwner) {
+		if recallDynamicEntryAllowedWithExclusions(c.entry, category, projectLower, filterOwner, excludeWhenNoCategory) {
 			filtered = append(filtered, c)
 		}
 	}

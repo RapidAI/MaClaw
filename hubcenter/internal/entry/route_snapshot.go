@@ -352,18 +352,17 @@ func normalizeRegistrationPolicyConfig(cfg registrationPolicyConfig) registratio
 	if cfg.HubOrigin != "official" {
 		cfg.HubOrigin = "self_hosted"
 	}
-	cfg.DefaultSignupScope = normalizeRegistrationSignupScope(cfg.DefaultSignupScope)
+	cfg.DefaultSignupScope = normalizeRegistrationDefaultSignupScope(cfg.DefaultSignupScope)
+	if cfg.DefaultSignupScope == "public" {
+		cfg.HubOrigin = "official"
+	}
 	normalizedTenants := make(map[string]store.HubTenantRegistrationPolicy, len(cfg.Tenants))
 	for tenantID, policy := range cfg.Tenants {
 		if strings.TrimSpace(policy.TenantID) == "" {
 			policy.TenantID = tenantID
 		}
 		policy.TenantID = normalizeCapabilityTenantID(policy.TenantID)
-		rawSignupScope := policy.SignupScope
-		policy.SignupScope = normalizeRegistrationSignupScope(rawSignupScope)
-		if strings.EqualFold(strings.TrimSpace(rawSignupScope), "inherit") {
-			policy.SignupScope = "inherit"
-		}
+		policy.SignupScope = normalizeRegistrationTenantSignupScope(policy.SignupScope)
 		policy.Status = strings.ToLower(strings.TrimSpace(policy.Status))
 		if policy.Status == "" {
 			policy.Status = "active"
@@ -374,12 +373,21 @@ func normalizeRegistrationPolicyConfig(cfg registrationPolicyConfig) registratio
 	return cfg
 }
 
-func normalizeRegistrationSignupScope(scope string) string {
+func normalizeRegistrationDefaultSignupScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
-	case "public", "invite_only", "inherit":
+	case "public", "invite_only", "domain_restricted":
 		return strings.ToLower(strings.TrimSpace(scope))
 	default:
 		return "domain_restricted"
+	}
+}
+
+func normalizeRegistrationTenantSignupScope(scope string) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "public", "invite_only", "domain_restricted":
+		return strings.ToLower(strings.TrimSpace(scope))
+	default:
+		return "inherit"
 	}
 }
 

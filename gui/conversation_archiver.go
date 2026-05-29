@@ -83,7 +83,7 @@ func (a *ConversationArchiver) Archive(userID string, entries []agent.Conversati
 	// so generating it when OnlineExtractor is active wastes LLM calls and capacity.
 	skipSummary := false
 	if a.memoryStore != nil {
-		if oe := a.memoryStore.OnlineExtractor(); oe != nil && oe.HasRecentSuccess(60*time.Minute) {
+		if oe := a.memoryStore.OnlineExtractor(); oe != nil && oe.HasRecentActivity(60*time.Minute) {
 			skipSummary = true
 		}
 	}

@@ -88,6 +88,62 @@ func TestRouteToAgent_ProgressResetsTimeout(t *testing.T) {
 	}
 }
 
+// TestRouteToAgent_ProgressHeartbeatIsSilent verifies that heartbeat progress
+// updates keep the pending request alive without sending user-visible IM text.
+func TestRouteToAgent_ProgressHeartbeatIsSilent(t *testing.T) {
+	df := &mockDeviceFinder{machineID: "m1", llmConfigured: true, found: true}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+
+	var mu sync.Mutex
+	var progressTexts []string
+
+	router.SetProgressDelivery(func(ctx context.Context, userID, platformName, platformUID, text string) {
+		mu.Lock()
+		progressTexts = append(progressTexts, text)
+		mu.Unlock()
+	})
+
+	resultCh := make(chan *GenericResponse, 1)
+	go func() {
+		resp, _ := router.RouteToAgent(context.Background(), "user1", "test", "uid1", "find files")
+		resultCh <- resp
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	router.mu.Lock()
+	var reqID string
+	for id := range router.pendingReqs {
+		reqID = id
+		break
+	}
+	router.mu.Unlock()
+
+	if reqID == "" {
+		t.Fatal("expected a pending request")
+	}
+
+	router.HandleAgentProgress(reqID, progressHeartbeat)
+	time.Sleep(50 * time.Millisecond)
+	router.HandleAgentResponse(reqID, &AgentResponse{Text: "done"})
+
+	select {
+	case resp := <-resultCh:
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, resp.Body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for response")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(progressTexts) != 0 {
+		t.Fatalf("expected no delivered progress for heartbeat, got %q", progressTexts)
+	}
+}
+
 // TestRouteToAgent_TimeoutWithProgressInfo verifies that when a timeout
 // occurs after progress was received, the error message includes the last
 // progress status.

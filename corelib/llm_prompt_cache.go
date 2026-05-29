@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+var ErrLLMPromptCacheInvalidResponse = errors.New("llm prompt cache invalid response")
 
 type LLMPromptCacheOptions struct {
 	Enabled                      bool
@@ -28,6 +31,9 @@ func LLMPromptCacheable(body map[string]any, opts LLMPromptCacheOptions) LLMProm
 	if len(body) == 0 {
 		return LLMPromptCacheDecision{Reason: "empty_body"}
 	}
+	if store, ok := body["store"].(bool); ok && store {
+		return LLMPromptCacheDecision{Reason: "store"}
+	}
 	if n, ok := promptCacheIntValue(body["n"]); ok && n > 1 {
 		return LLMPromptCacheDecision{Reason: "multi_choice"}
 	}
@@ -47,7 +53,7 @@ func LLMPromptCacheable(body map[string]any, opts LLMPromptCacheOptions) LLMProm
 }
 
 func LLMPromptCacheKey(authorizedModel string, requestedModel string, body map[string]any, opts LLMPromptCacheOptions) (string, string, error) {
-	authorizedModel = strings.ToLower(strings.TrimSpace(authorizedModel))
+	authorizedModel = strings.TrimSpace(authorizedModel)
 	if authorizedModel == "" {
 		return "", "", fmt.Errorf("authorized model is required")
 	}
@@ -56,7 +62,7 @@ func LLMPromptCacheKey(authorizedModel string, requestedModel string, body map[s
 	if err != nil {
 		return "", "", err
 	}
-	requestedModel = strings.ToLower(strings.TrimSpace(requestedModel))
+	requestedModel = strings.TrimSpace(requestedModel)
 	if opts.IgnoreModelField {
 		requestedModel = ""
 	}

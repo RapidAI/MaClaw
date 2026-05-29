@@ -45,6 +45,82 @@ func TestPrepareAgentLoopToolsWorkflowAgentLoopStillAppliesWorkflowFilter(t *tes
 	}
 }
 
+func TestEnsureWorkflowRequiredToolsRestoresDocWriteFileBeforePolicyFilter(t *testing.T) {
+	allTools := []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+	}
+	routed := []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("task", "task", nil, nil),
+	}
+
+	merged := ensureWorkflowRequiredTools(workflow.ToolFilterDocOnly, routed, allTools)
+	filtered := workflow.FilterToolDefinitions(workflow.ToolFilterDocOnly, merged)
+	names := toolNameSetForWorkflowFilterTest(filtered)
+
+	if !names["write_file"] || !names["read_file"] || !names["edit_file"] {
+		t.Fatalf("doc-only workflow required tools missing after merge/filter: %#v", names)
+	}
+	if names["task"] {
+		t.Fatalf("workflow policy must still remove disallowed tools after merge, got %#v", names)
+	}
+
+	nonWorkflow := ensureWorkflowRequiredTools(workflow.ToolFilterNone, routed, allTools)
+	if len(nonWorkflow) != len(routed) {
+		t.Fatalf("non-restricted policy should not add tools, got %#v", toolNameSetForWorkflowFilterTest(nonWorkflow))
+	}
+}
+
+func TestApplyWorkflowToolFilterRestoresDocRequiredTools(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-filter-restores-doc-tools-user"
+	_, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+	})
+
+	filtered := handler.applyWorkflowToolFilter(userID, []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("task", "task", nil, nil),
+	})
+	names := toolNameSetForWorkflowFilterTest(filtered)
+	if !names["write_file"] || !names["read_file"] || !names["edit_file"] {
+		t.Fatalf("workflow filter should restore required doc tools from full catalog, got %#v", names)
+	}
+	if names["task"] {
+		t.Fatalf("workflow filter must still remove disallowed tools, got %#v", names)
+	}
+}
+
+func TestApplyWorkflowToolFilterNoneDoesNotForceCatalogBuild(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("write_file", "write file", nil, nil),
+	})
+	tools := []map[string]interface{}{toolDef("read_file", "read file", nil, nil)}
+
+	filtered := handler.applyWorkflowToolFilter("no-active-workflow-user", tools)
+	names := toolNameSetForWorkflowFilterTest(filtered)
+	if !names["read_file"] || names["write_file"] {
+		t.Fatalf("no active workflow should leave routed tools unchanged, got %#v", names)
+	}
+}
+
 func TestWorkflowAgentLoopStillHonorsNeedsConfirmGateAfterSkip(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-agent-loop-needs-confirm-user"

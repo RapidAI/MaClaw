@@ -37,8 +37,8 @@ const (
 	DefaultBaseURL        = "https://ilinkai.weixin.qq.com"
 	DefaultCDNBaseURL     = "https://novac2c.cdn.weixin.qq.com/c2c"
 	DefaultBotType        = "3"
-	weixinVoiceSampleRate = 24000
-	weixinVoiceBitRate    = 24000
+	weixinVoiceSampleRate = 8000
+	weixinVoiceBitRate    = 8000
 
 	longPollTimeout        = 35 * time.Second
 	apiTimeout             = 15 * time.Second
@@ -240,9 +240,11 @@ type getUploadURLResp struct {
 }
 
 type apiStatusResp struct {
-	Ret     int    `json:"ret,omitempty"`
-	Errcode int    `json:"errcode,omitempty"`
+	Ret     *int   `json:"ret,omitempty"`
+	Errcode *int   `json:"errcode,omitempty"`
+	Code    *int   `json:"code,omitempty"`
 	ErrMsg  string `json:"errmsg,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type qrCodeResponse struct {
@@ -598,10 +600,10 @@ func (g *Gateway) Start(ctx context.Context) error {
 	pollCtx, cancel := context.WithCancel(ctx)
 	g.cancel = cancel
 	g.running = true
+	g.emitStatus("connecting")
 	g.wg.Add(1)
 	go g.pollLoop(pollCtx)
 	log.Printf("[weixin/gw] started (baseURL=%s)", g.config.baseURL())
-	g.emitStatus("connecting")
 	return nil
 }
 
@@ -686,10 +688,32 @@ func validateAPIStatus(label string, data []byte) error {
 	if err := json.Unmarshal(trimmed, &status); err != nil {
 		return nil
 	}
-	if status.Ret != 0 || status.Errcode != 0 {
-		return fmt.Errorf("weixin: %s API error ret=%d errcode=%d errmsg=%q resp=%s", label, status.Ret, status.Errcode, status.ErrMsg, string(trimmed[:min(len(trimmed), 512)]))
+	if apiStatusValue(status.Ret) != 0 || apiStatusValue(status.Errcode) != 0 || apiStatusCodeError(status.Code) {
+		return fmt.Errorf("weixin: %s API error ret=%d errcode=%d code=%d errmsg=%q resp=%s", label, apiStatusValue(status.Ret), apiStatusValue(status.Errcode), apiStatusValue(status.Code), firstNonEmpty(status.ErrMsg, status.Message), compactAPIResponseLog(trimmed))
 	}
 	return nil
+}
+
+func apiStatusValue(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func apiStatusCodeError(v *int) bool {
+	if v == nil {
+		return false
+	}
+	return *v != 0 && *v != http.StatusOK
+}
+
+func compactAPIResponseLog(data []byte) string {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return "<empty>"
+	}
+	return string(trimmed[:min(len(trimmed), 512)])
 }
 
 func (g *Gateway) apiPost(ctx context.Context, endpoint string, body []byte, timeout time.Duration) ([]byte, error) {
@@ -1329,7 +1353,11 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	if err != nil {
 		return err
 	}
-	return validateAPIStatus("sendmessage", data)
+	if err := validateAPIStatus("sendmessage", data); err != nil {
+		return err
+	}
+	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "OK media=%s sendmessage_resp=%s", msg.MediaType, compactAPIResponseLog(data))
+	return nil
 }
 
 func buildVoiceItem(media *cdnMedia, meta *voiceMetadata) *voiceItem {
