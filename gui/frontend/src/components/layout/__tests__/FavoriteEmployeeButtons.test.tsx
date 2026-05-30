@@ -9,6 +9,14 @@ const slots = [
 ];
 
 describe('FavoriteEmployeeButtons', () => {
+    it('renders configured favorite employee avatar images', () => {
+        render(<FavoriteEmployeeButtons slots={[{ ...slots[0], avatarDataURL: 'data:image/jpeg;base64,/9j/' }]} veAuthorized onStartConversation={vi.fn()} onReorder={vi.fn()} />);
+
+        const avatar = screen.getByTestId('fav-ve-avatar-ve-1') as HTMLImageElement;
+        expect(avatar.getAttribute('src')).toBe('data:image/jpeg;base64,/9j/');
+        expect(screen.getByTestId('fav-ve-ve-1').textContent).not.toContain('RE');
+    });
+
     it('hides favorite employees when digital employee navigation is unavailable', () => {
         render(<FavoriteEmployeeButtons slots={slots} veAuthorized={false} onStartConversation={vi.fn()} onReorder={vi.fn()} />);
 

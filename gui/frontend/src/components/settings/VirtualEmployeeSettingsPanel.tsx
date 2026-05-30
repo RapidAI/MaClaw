@@ -11,7 +11,7 @@ import {
   SetVEAllowedDirectories,
   LoadConfig,
 } from "../../../wailsjs/go/main/App";
-import { safeAvatarDataURL, safeAvatarSourceDataURL } from "../ai/virtualEmployeeAvatar";
+import { avatarImageMaxBytes, avatarSourceImageMaxBytes, safeAvatarDataURL, safeAvatarSourceDataURL } from "../ai/virtualEmployeeAvatar";
 import { VEApprovalCapabilitySection } from "./VEApprovalCapabilitySection";
 
 type VEStatusResponse = {
@@ -55,6 +55,9 @@ type VEFormStateSetter = {
   setSkillError: (value: string) => void;
   setPolicyError: (value: string) => void;
 };
+
+const avatarMaxFileSizeMB = avatarSourceImageMaxBytes / (1024 * 1024);
+const avatarSavedMaxSizeMB = avatarImageMaxBytes / (1024 * 1024);
 
 function resetVEFormState(setter: VEFormStateSetter) {
   setter.setRegistered(false);
@@ -269,11 +272,16 @@ const copy = (lang?: string) => ({
   avatarCircle: textForLang(lang, "Circular display", "\u5706\u5f62\u663e\u793a", "\u5713\u5f62\u986f\u793a"),
   avatarHint: textForLang(
     lang,
-    "Preview is what other users will see. Leave empty to keep the current default display.",
-    "\u9884\u89c8\u5373\u5176\u4ed6\u7528\u6237\u770b\u5230\u7684\u6548\u679c\u3002\u4e0d\u8bbe\u7f6e\u5219\u4fdd\u6301\u73b0\u6709\u9ed8\u8ba4\u663e\u793a\u3002",
-    "\u9810\u89bd\u5373\u5176\u4ed6\u7528\u6236\u770b\u5230\u7684\u6548\u679c\u3002\u4e0d\u8a2d\u5b9a\u5247\u4fdd\u6301\u73fe\u6709\u9810\u8a2d\u986f\u793a\u3002",
+    `Supports PNG, JPG/JPEG, and WebP up to ${avatarMaxFileSizeMB} MB. Large photos are resized locally before preview. The cropped avatar is saved as JPEG up to ${avatarSavedMaxSizeMB} MB. Preview is what other users will see. Leave empty to keep the current default display.`,
+    `\u652f\u6301 PNG\u3001JPG/JPEG\u3001WebP\uff0c\u539f\u56fe\u6700\u5927 ${avatarMaxFileSizeMB} MB\u3002\u5927\u56fe\u4f1a\u5148\u5728\u672c\u5730\u7f29\u5c0f\u518d\u9884\u89c8\u3002\u88c1\u526a\u540e\u5934\u50cf\u4fdd\u5b58\u4e3a JPEG\uff0c\u6700\u5927 ${avatarSavedMaxSizeMB} MB\u3002\u9884\u89c8\u5373\u5176\u4ed6\u7528\u6237\u770b\u5230\u7684\u6548\u679c\u3002\u4e0d\u8bbe\u7f6e\u5219\u4fdd\u6301\u73b0\u6709\u9ed8\u8ba4\u663e\u793a\u3002`,
+    `\u652f\u63f4 PNG\u3001JPG/JPEG\u3001WebP\uff0c\u539f\u5716\u6700\u5927 ${avatarMaxFileSizeMB} MB\u3002\u5927\u5716\u6703\u5148\u5728\u672c\u5730\u7e2e\u5c0f\u518d\u9810\u89bd\u3002\u88c1\u526a\u5f8c\u982d\u50cf\u5132\u5b58\u70ba JPEG\uff0c\u6700\u5927 ${avatarSavedMaxSizeMB} MB\u3002\u9810\u89bd\u5373\u5176\u4ed6\u7528\u6236\u770b\u5230\u7684\u6548\u679c\u3002\u4e0d\u8a2d\u5b9a\u5247\u4fdd\u6301\u73fe\u6709\u9810\u8a2d\u986f\u793a\u3002`,
   ),
-  avatarInvalid: textForLang(lang, "Please select an image file.", "\u8bf7\u9009\u62e9\u56fe\u7247\u6587\u4ef6\u3002", "\u8acb\u9078\u64c7\u5716\u7247\u6a94\u6848\u3002"),
+  avatarInvalid: textForLang(
+    lang,
+    `Please upload a PNG, JPG/JPEG, or WebP image up to ${avatarMaxFileSizeMB} MB.`,
+    `\u8bf7\u4e0a\u4f20 PNG\u3001JPG/JPEG \u6216 WebP \u56fe\u7247\uff0c\u5927\u5c0f\u4e0d\u8d85\u8fc7 ${avatarMaxFileSizeMB} MB\u3002`,
+    `\u8acb\u4e0a\u50b3 PNG\u3001JPG/JPEG \u6216 WebP \u5716\u7247\uff0c\u5927\u5c0f\u4e0d\u8d85\u904e ${avatarMaxFileSizeMB} MB\u3002`,
+  ),
   sensitiveTitle: textForLang(
     lang,
     "Password or sensitive information query",
@@ -345,7 +353,9 @@ const copy = (lang?: string) => ({
 
 const avatarCanvasSize = 256;
 const avatarPreviewSize = 112;
-const avatarMaxFileSize = 5 * 1024 * 1024;
+const avatarMaxFileSize = avatarSourceImageMaxBytes;
+const avatarSourceMaxDimension = 1024;
+const avatarSourceJPEGQuality = 0.9;
 const avatarAcceptedMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 const avatarAcceptAttr = "image/png,image/jpeg,image/webp";
 
@@ -385,6 +395,36 @@ function buildCroppedAvatarDataURL(sourceURL: string, scale: number, offsetX: nu
   });
 }
 
+function shrinkAvatarSourceDataURL(sourceURL: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const width = img.width || avatarSourceMaxDimension;
+      const height = img.height || avatarSourceMaxDimension;
+      const ratio = Math.min(1, avatarSourceMaxDimension / Math.max(width, height));
+      const targetW = Math.max(1, Math.round(width * ratio));
+      const targetH = Math.max(1, Math.round(height * ratio));
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("canvas unavailable"));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      resolve(canvas.toDataURL("image/jpeg", avatarSourceJPEGQuality));
+    };
+    img.onerror = () => reject(new Error("image load failed"));
+    img.src = sourceURL;
+  });
+}
+
+async function prepareAvatarSourceDataURL(sourceURL: string, sourceBytes: number): Promise<string> {
+  if (sourceBytes <= avatarImageMaxBytes) return sourceURL;
+  return shrinkAvatarSourceDataURL(sourceURL);
+}
+
 const normalizeSensitivePolicy = (policy: string): SensitiveQueryPolicy => {
   const normalized = String(policy || "")
     .trim()
@@ -416,6 +456,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const [avatarImageSize, setAvatarImageSize] = useState<{ width: number; height: number } | null>(null);
   const [avatarError, setAvatarError] = useState("");
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
+  const avatarFileLoadSeqRef = useRef(0);
   const [approvalNotice, setApprovalNotice] = useState("");
   const [sensitiveQueryPolicy, setSensitiveQueryPolicy] =
     useState<SensitiveQueryPolicy>("confirm");
@@ -429,7 +470,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const [allowedDirs, setAllowedDirs] = useState<string[]>([]);
   const [dirDuplicateWarning, setDirDuplicateWarning] = useState("");
 
-  async function loadStatus() {
+  async function loadStatus(avatarDataURLFallback = "") {
     try {
       const resp = (await GetVEStatus()) as VEStatusResponse;
       if (!mountedRef.current) return;
@@ -440,7 +481,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         setAccessPolicy((resp.employee.access_policy as AccessPolicy) || "");
         setWhitelist(Array.isArray(resp.employee.whitelist) ? resp.employee.whitelist : []);
         setBlacklist(Array.isArray(resp.employee.blacklist) ? resp.employee.blacklist : []);
-        const avatarDataURL = safeAvatarDataURL(resp.employee.avatar_data_url);
+        const avatarDataURL = safeAvatarDataURL(resp.employee.avatar_data_url) || safeAvatarDataURL(avatarDataURLFallback);
         setAvatarDataURL(avatarDataURL);
         setAvatarSourceURL(avatarDataURL);
         setAvatarScale(1);
@@ -525,32 +566,49 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   function handleAvatarFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const loadSeq = ++avatarFileLoadSeqRef.current;
     if (!avatarAcceptedMimeTypes.has(file.type) || file.size > avatarMaxFileSize) {
       setAvatarError(c.avatarInvalid);
       e.target.value = "";
       return;
     }
+    setAvatarError("");
     const reader = new FileReader();
     reader.onload = () => {
+      if (!mountedRef.current || loadSeq !== avatarFileLoadSeqRef.current) return;
       const dataURL = String(reader.result || "");
       if (!safeAvatarSourceDataURL(dataURL)) {
         setAvatarError(c.avatarInvalid);
         return;
       }
-      setAvatarSourceURL(dataURL);
-      setAvatarScale(1);
-      setAvatarOffsetX(0);
-      setAvatarOffsetY(0);
-      setAvatarNeedsCrop(true);
-      setAvatarImageSize(null);
-      setAvatarError("");
+      prepareAvatarSourceDataURL(dataURL, file.size)
+        .then((preparedURL) => {
+          if (!mountedRef.current || loadSeq !== avatarFileLoadSeqRef.current) return;
+          if (!safeAvatarSourceDataURL(preparedURL)) {
+            setAvatarError(c.avatarInvalid);
+            return;
+          }
+          setAvatarSourceURL(preparedURL);
+          setAvatarScale(1);
+          setAvatarOffsetX(0);
+          setAvatarOffsetY(0);
+          setAvatarNeedsCrop(true);
+          setAvatarImageSize(null);
+          setAvatarError("");
+        })
+        .catch(() => {
+          if (mountedRef.current && loadSeq === avatarFileLoadSeqRef.current) setAvatarError(c.avatarInvalid);
+        });
     };
-    reader.onerror = () => setAvatarError(c.avatarInvalid);
+    reader.onerror = () => {
+      if (mountedRef.current && loadSeq === avatarFileLoadSeqRef.current) setAvatarError(c.avatarInvalid);
+    };
     reader.readAsDataURL(file);
     e.target.value = "";
   }
 
   function handleClearAvatar() {
+    avatarFileLoadSeqRef.current += 1;
     setAvatarSourceURL("");
     setAvatarDataURL("");
     setAvatarScale(1);
@@ -757,7 +815,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         setAvatarImageSize(null);
         setAvatarNeedsCrop(false);
       }
-      await loadStatus();
+      await loadStatus(finalAvatarDataURL);
     } catch (err: any) {
       const msg = err?.message || String(err || "");
       if (msg) {

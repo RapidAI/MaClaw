@@ -1270,6 +1270,10 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 		Visibility:           "private",
 		EnrollmentMode:       "open",
 		CorporateEmailDomain: "personal.example.com",
+		CorporateEmailDomains: []string{
+			"personal.example.com",
+			"team.personal.example.com",
+		},
 	})
 	if err != nil {
 		t.Fatalf("register hub: %v", err)
@@ -1299,6 +1303,9 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	}
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"guest_domains":["external.example"]`)) {
 		t.Fatalf("expected filtered guest_domains in response, body=%s", body)
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"corporate_email_domains":["personal.example.com","team.personal.example.com"]`)) {
+		t.Fatalf("expected configured default tenant domains in response, body=%s", body)
 	}
 	if bytes.Contains(resp.Body.Bytes(), []byte(`"guest_domains":["example.com"`)) {
 		t.Fatalf("owner email domain should not be listed as scattered guest domain, body=%s", body)
@@ -1332,7 +1339,7 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	if err := json.Unmarshal(domainResp.Body.Bytes(), &domainList); err != nil {
 		t.Fatalf("decode enterprise domains response: %v body=%s", err, domainBody)
 	}
-	if len(domainList.Items) != 1 || domainList.Items[0].TenantID != "tenant_default" || !reflect.DeepEqual(domainList.Items[0].EnterpriseDomains, []string{"personal.example.com"}) || !reflect.DeepEqual(domainList.Items[0].GuestDomains, []string{"external.example"}) {
+	if len(domainList.Items) != 1 || domainList.Items[0].TenantID != "tenant_default" || !reflect.DeepEqual(domainList.Items[0].EnterpriseDomains, []string{"personal.example.com", "team.personal.example.com"}) || !reflect.DeepEqual(domainList.Items[0].GuestDomains, []string{"external.example"}) {
 		t.Fatalf("enterprise domains should be grouped once per tenant, decoded=%+v body=%s", domainList, domainBody)
 	}
 

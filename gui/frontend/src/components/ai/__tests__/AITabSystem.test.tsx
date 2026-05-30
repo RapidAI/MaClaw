@@ -53,6 +53,7 @@ describe('useAITabManager', () => {
                 id: 'profile-ve',
                 machine_id: 'machine-ve',
                 name: 'Machine VE',
+                avatar_data_url: 'data:image/jpeg;base64,/9j/',
                 skill_description: '',
                 access_policy: 'public',
                 status: 'active',
@@ -62,7 +63,7 @@ describe('useAITabManager', () => {
         }));
 
         await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
-        expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online');
+        expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online', 'data:image/jpeg;base64,/9j/');
     });
 
     describe('initial state', () => {
@@ -90,6 +91,17 @@ describe('useAITabManager', () => {
             expect(tab!.closable).toBe(true);
             expect(result.current.tabState.tabs).toHaveLength(2);
             expect(result.current.activeTab.id).toBe(tab!.id);
+        });
+
+        it('stores safe avatars on VE tabs', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tab: AITab | null = null;
+            act(() => {
+                tab = result.current.createVETab("ve-123", "Avatar Agent", undefined, "online", "data:image/jpeg;base64,/9j/");
+            });
+
+            expect((tab as AITab | null)?.avatarDataURL).toBe("data:image/jpeg;base64,/9j/");
         });
 
         it('creates a group tab', () => {
@@ -170,6 +182,22 @@ describe('useAITabManager', () => {
             expect(result.current.activeTab.id).toBe(tab!.id);
             expect(result.current.getTabState(tab!.id)?.sessionId).toBe("session-next");
             expect(result.current.tabState.tabs.find(t => t.id === tab!.id)?.onlineStatus).toBe("offline");
+        });
+
+        it('refreshes avatars on upgraded VE group tabs', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tabId = "";
+            act(() => {
+                const tab = result.current.createVETab("ve-1", "Agent A");
+                tabId = tab!.id;
+                result.current.upgradeVETabToGroup(tabId, ["ve-1", "local-maclaw"]);
+            });
+            act(() => {
+                result.current.createVETab("ve-1", "Agent A", "session-group", "online", "data:image/jpeg;base64,/9j/");
+            });
+
+            expect(result.current.tabState.tabs.find(t => t.id === tabId)?.avatarDataURL).toBe("data:image/jpeg;base64,/9j/");
         });
 
         it('activates upgraded live group tab when reopening the same VE', () => {

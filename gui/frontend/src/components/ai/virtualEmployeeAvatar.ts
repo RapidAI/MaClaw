@@ -1,22 +1,23 @@
-const avatarImageMaxBytes = 1024 * 1024;
+export const avatarImageMaxBytes = 1024 * 1024;
+export const avatarSourceImageMaxBytes = 5 * 1024 * 1024;
 const avatarDataURLMaxLength = "data:image/jpeg;base64,".length + Math.ceil(avatarImageMaxBytes / 3) * 4;
 
 export function safeAvatarDataURL(value: string | undefined): string {
     const avatar = String(value || "").trim();
     if (avatar.length > avatarDataURLMaxLength) return "";
-    return safeAvatarImageDataURL(avatar);
+    return safeAvatarImageDataURL(avatar, avatarImageMaxBytes);
 }
 
 export function safeAvatarSourceDataURL(value: string | undefined): string {
-    return safeAvatarImageDataURL(String(value || "").trim());
+    return safeAvatarImageDataURL(String(value || "").trim(), avatarSourceImageMaxBytes);
 }
 
-function safeAvatarImageDataURL(avatar: string): string {
+function safeAvatarImageDataURL(avatar: string, maxBytes: number): string {
     const match = avatar.match(/^data:image\/(png|jpe?g|webp);base64,([a-z0-9+/=]+)$/i);
     if (!match) return "";
     try {
         const bytes = atob(match[2]);
-        if (bytes.length > avatarImageMaxBytes) return "";
+        if (bytes.length > maxBytes) return "";
         return hasImageSignature(match[1].toLowerCase(), bytes) ? avatar : "";
     } catch {
         return "";

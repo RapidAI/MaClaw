@@ -22,6 +22,7 @@ const GetVEApprovalConfigMock = vi.fn();
 const SaveVEApprovalConfigMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const pngSignatureBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const avatarInvalidText = "\u8bf7\u4e0a\u4f20 PNG\u3001JPG/JPEG \u6216 WebP \u56fe\u7247\uff0c\u5927\u5c0f\u4e0d\u8d85\u8fc7 5 MB\u3002";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
   RegisterVirtualEmployee: (...args: unknown[]) =>
@@ -319,6 +320,71 @@ describe("VirtualEmployeeSettingsPanel", () => {
     }
   });
 
+  it("keeps saved cropped avatar when status refresh has not returned it yet", async () => {
+    const originalImage = globalThis.Image;
+    class MockImage {
+      width = 640;
+      height = 320;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        window.setTimeout(() => this.onload?.(), 0);
+      }
+    }
+    (globalThis as any).Image = MockImage;
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as any);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:image/jpeg;base64,/9j/Q1JPUA==");
+    GetVEStatusMock
+      .mockResolvedValueOnce({ registered: false })
+      .mockResolvedValueOnce({
+        registered: true,
+        employee: {
+          name: "My Digital Employee",
+          skill_description: "AI assistant",
+          access_policy: "public",
+          status: "active",
+        },
+      });
+    RegisterVirtualEmployeeMock.mockResolvedValue(undefined);
+
+    try {
+      const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+      await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
+      fireEvent.change(screen.getByLabelText("\u540d\u79f0"), {
+        target: { value: "My Digital Employee" },
+      });
+      fireEvent.change(screen.getByLabelText("\u6280\u80fd\u63cf\u8ff0"), {
+        target: { value: "AI assistant" },
+      });
+      fireEvent.change(screen.getByLabelText("\u8bbf\u95ee\u7b56\u7565"), {
+        target: { value: "public" },
+      });
+      fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
+        target: { files: [new File([pngSignatureBytes], "avatar.png", { type: "image/png" })] },
+      });
+
+      await waitFor(() => {
+        const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+        expect(preview?.src).toContain("data:image/png;base64");
+      });
+      fireEvent.click(screen.getByTestId("ve-submit-btn"));
+
+      await waitFor(() => {
+        const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+        expect(preview?.src).toContain("data:image/jpeg;base64,/9j/Q1JPUA==");
+      });
+      expect(toDataURLSpy).toHaveBeenCalledWith("image/jpeg", 0.86);
+    } finally {
+      (globalThis as any).Image = originalImage;
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+    }
+  });
+
   it("keeps edited avatar state when saving cropped avatar fails", async () => {
     const originalImage = globalThis.Image;
     class MockImage {
@@ -384,7 +450,7 @@ describe("VirtualEmployeeSettingsPanel", () => {
     });
 
     expect(container.querySelector(".ve-avatar-editor__image")).toBeNull();
-    expect(screen.getByRole("alert").textContent).toBe("\u8bf7\u9009\u62e9\u56fe\u7247\u6587\u4ef6\u3002");
+    expect(screen.getByRole("alert").textContent).toBe(avatarInvalidText);
   });
 
   it("rejects spoofed avatar file content before preview", async () => {
@@ -396,26 +462,106 @@ describe("VirtualEmployeeSettingsPanel", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("alert").textContent).toBe("\u8bf7\u9009\u62e9\u56fe\u7247\u6587\u4ef6\u3002");
+      expect(screen.getByRole("alert").textContent).toBe(avatarInvalidText);
     });
     expect(container.querySelector(".ve-avatar-editor__image")).toBeNull();
   });
 
-  it("allows large valid source photos because saved avatar is cropped smaller", async () => {
-    const largeValidPng = new Uint8Array(900 * 1024);
+  it("resizes large valid source photos locally before preview", async () => {
+    const originalImage = globalThis.Image;
+    class MockImage {
+      width = 4000;
+      height = 2000;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        window.setTimeout(() => this.onload?.(), 0);
+      }
+    }
+    (globalThis as any).Image = MockImage;
+    const drawImage = vi.fn();
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ clearRect: vi.fn(), drawImage } as any);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:image/jpeg;base64,/9j/U01BTEw=");
+    const largeValidPng = new Uint8Array(1100 * 1024);
     largeValidPng.set(pngSignatureBytes, 0);
-    const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-    await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
 
-    fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
-      target: { files: [new File([largeValidPng], "large.png", { type: "image/png" })] },
-    });
+    try {
+      const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+      await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
 
-    await waitFor(() => {
+      fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
+        target: { files: [new File([largeValidPng], "large.png", { type: "image/png" })] },
+      });
+
+      await waitFor(() => {
+        const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+        expect(preview?.src).toContain("data:image/jpeg;base64,/9j/U01BTEw=");
+      });
+      expect(toDataURLSpy).toHaveBeenCalledWith("image/jpeg", 0.9);
+      expect(drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0, 1024, 512);
+      expect(screen.queryByRole("alert")).toBeNull();
+    } finally {
+      (globalThis as any).Image = originalImage;
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+    }
+  });
+
+  it("ignores stale large-avatar resize after a newer upload", async () => {
+    const originalImage = globalThis.Image;
+    const images: Array<{ onload: (() => void) | null }> = [];
+    class MockImage {
+      width = 4000;
+      height = 2000;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        images.push(this);
+      }
+      set src(_value: string) {}
+    }
+    (globalThis as any).Image = MockImage;
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as any);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:image/jpeg;base64,/9j/T0xE");
+    const largeValidPng = new Uint8Array(1100 * 1024);
+    largeValidPng.set(pngSignatureBytes, 0);
+
+    try {
+      const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+      await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
+      const input = screen.getByTestId("ve-avatar-file-input");
+
+      fireEvent.change(input, {
+        target: { files: [new File([largeValidPng], "large.png", { type: "image/png" })] },
+      });
+      await waitFor(() => expect(images.length).toBe(1));
+
+      fireEvent.change(input, {
+        target: { files: [new File([pngSignatureBytes], "small.png", { type: "image/png" })] },
+      });
+      await waitFor(() => {
+        const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+        expect(preview?.src).toContain("data:image/png;base64");
+      });
+
+      images[0].onload?.();
+      await waitFor(() => expect(toDataURLSpy).toHaveBeenCalledWith("image/jpeg", 0.9));
       const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
       expect(preview?.src).toContain("data:image/png;base64");
-    });
-    expect(screen.queryByRole("alert")).toBeNull();
+      expect(preview?.src).not.toContain("/9j/T0xE");
+    } finally {
+      (globalThis as any).Image = originalImage;
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+    }
   });
 
   it("clears uploaded avatar preview when the browser cannot decode it", async () => {
@@ -436,7 +582,7 @@ describe("VirtualEmployeeSettingsPanel", () => {
     await waitFor(() => {
       expect(container.querySelector(".ve-avatar-editor__image")).toBeNull();
     });
-    expect(screen.getByRole("alert").textContent).toBe("\u8bf7\u9009\u62e9\u56fe\u7247\u6587\u4ef6\u3002");
+    expect(screen.getByRole("alert").textContent).toBe(avatarInvalidText);
   });
 
   it("drops unsafe avatar data URLs loaded from status", async () => {

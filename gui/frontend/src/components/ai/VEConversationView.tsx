@@ -11,6 +11,7 @@ import { useAssistantInputHistory } from "./useAssistantInputHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
+import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
 type WailsAppModule = typeof import("../../../wailsjs/go/main/App");
 
@@ -141,6 +142,7 @@ export type VEConversationError =
 export interface VEConversationViewProps {
     veId: string;
     veName: string;
+    avatarDataURL?: string;
     theme: Theme;
     lang?: string;
     /** Initial online status of the VE. Defaults to true (optimistic). Updated via ve:status_change events. */
@@ -331,6 +333,7 @@ function groupSessionVEIds(primaryVEId: string, participants: MentionParticipant
 export const VEConversationView = forwardRef<VEConversationHandle, VEConversationViewProps>(function VEConversationView({
     veId,
     veName,
+    avatarDataURL,
     theme,
     lang,
     initialOnlineStatus,
@@ -415,6 +418,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const isZh = !lang || lang.startsWith("zh");
     const localSpeakerName = isZh ? "\u6211" : "Me";
     const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, isZh), [isZh, veId, veName]);
+    const safeAssistantAvatar = useMemo(() => safeAvatarDataURL(avatarDataURL), [avatarDataURL]);
     const canSend = veOnline && !readOnly && !sending && (!!inputText.trim() || pendingAttachments.length > 0);
     const inputReady = veOnline && !readOnly;
     const inputThemeMode: "light" | "dark" = isDarkHexColor(theme.bg) ? "dark" : "light";
@@ -1306,6 +1310,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         isZh={isZh}
                         assistantName={readableSpeakerName(msg.fromName, msg.fromId, participants, assistantDisplayName)}
                         userName={readableSpeakerName(msg.fromName, msg.fromId, participants, localSpeakerName)}
+                        assistantAvatarDataURL={safeAssistantAvatar}
                     />
                 ))}
 
@@ -1557,9 +1562,10 @@ interface MessageBubbleProps {
     isZh: boolean;
     assistantName: string;
     userName: string;
+    assistantAvatarDataURL?: string;
 }
 
-function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName }: MessageBubbleProps) {
+function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
     const isUser = message.role === "user";
     const speakerName = isUser ? userName : assistantName;
     const hasAttachments = !!message.attachments?.length;
@@ -1585,9 +1591,21 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                     color: theme.textMuted,
                     fontSize: 11,
                     fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    flexDirection: isUser ? "row-reverse" : "row",
                 }}
             >
-                {speakerName}
+                {!isUser && assistantAvatarDataURL && (
+                    <img
+                        data-testid={`ve-msg-avatar-${message.id}`}
+                        src={assistantAvatarDataURL}
+                        alt=""
+                        style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                    />
+                )}
+                <span>{speakerName}</span>
             </div>
             {shouldRenderContent && (
                 <div

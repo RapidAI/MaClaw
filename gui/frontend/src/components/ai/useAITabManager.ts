@@ -5,6 +5,7 @@ import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession } 
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
+import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -120,7 +121,7 @@ export interface UseAITabManagerResult {
     /** Switch to a tab by ID */
     activateTab: (tabId: string) => void;
     /** Create a new VE conversation tab. Returns the tab or null if limit reached. */
-    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline") => AITab | null;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string) => AITab | null;
     /** Create a new group chat tab */
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     /** Create a new project tab. Returns the tab or null if limit reached. */
@@ -354,10 +355,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         }
     }, [updateTabState]);
 
-    const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline"): AITab | null => {
+    const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string): AITab | null => {
         const prev = tabStateRef.current;
         const canonicalVEId = String(veId || "").trim();
         if (!canonicalVEId) return null;
+        const safeAvatar = safeAvatarDataURL(avatarDataURL);
 
         const canonicalTabId = canonicalVETabId(canonicalVEId);
 
@@ -391,10 +393,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                     participants: existing.participants?.length ? existing.participants : [canonicalVEId],
                     participantNames: veName ? { ...(existing.participantNames || {}), [canonicalVEId]: veName } : existing.participantNames,
                     onlineStatus: onlineStatus || existing.onlineStatus || "online",
+                    avatarDataURL: safeAvatar || existing.avatarDataURL,
                     readOnly: false,
                 }
-                : existing.type === "ve" && onlineStatus
-                    ? { ...existing, onlineStatus }
+                : isLiveVETab(existing) && (onlineStatus || safeAvatar)
+                    ? { ...existing, ...(onlineStatus ? { onlineStatus } : {}), ...(safeAvatar ? { avatarDataURL: safeAvatar } : {}) }
                     : existing;
             updateTabState(() => ({
                 ...prev,
@@ -420,6 +423,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             title: veName,
             veId: canonicalVEId,
             onlineStatus: onlineStatus || "online",
+            avatarDataURL: safeAvatar,
             closable: true,
         };
 

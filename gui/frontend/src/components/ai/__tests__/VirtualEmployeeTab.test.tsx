@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VirtualEmployeeTab, truncateText, policyIcon } from '../VirtualEmployeeTab';
 import type { VirtualEmployeeEntry, VETabProps } from '../VirtualEmployeeTab';
 import type { Theme } from '../aiAssistantPanelTheme';
-import { safeAvatarDataURL } from '../virtualEmployeeAvatar';
+import { safeAvatarDataURL, safeAvatarSourceDataURL } from '../virtualEmployeeAvatar';
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -170,6 +170,12 @@ describe('VirtualEmployeeTab', () => {
 
         it('rejects oversized avatar data URLs before decoding', () => {
             expect(safeAvatarDataURL(`data:image/png;base64,${'a'.repeat(2 * 1024 * 1024)}`)).toBe('');
+        });
+
+        it('allows source photos larger than the final saved avatar limit', () => {
+            const sourcePhoto = `data:image/png;base64,${btoa(`\x89PNG\r\n\x1a\n${'\0'.repeat(1100 * 1024)}`)}`;
+            expect(safeAvatarDataURL(sourcePhoto)).toBe('');
+            expect(safeAvatarSourceDataURL(sourcePhoto)).toBe(sourcePhoto);
         });
     });
 

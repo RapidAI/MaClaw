@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
+import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
 const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
     lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
@@ -75,6 +76,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
     const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
     const displayTitle = getAITabDisplayTitle(tab, lang);
     const accessibleTitle = readOnlyLabel ? `${displayTitle} - ${readOnlyLabel}` : displayTitle;
+    const avatarDataURL = safeAvatarDataURL(tab.avatarDataURL);
 
     // Tab icon by type — inline SVG for consistent cross-platform rendering
     // Each tab type has a distinct silhouette for instant recognition.
@@ -83,7 +85,14 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         ? "#22c55e"  // green for online VE/group — replaces the separate green dot
         : (active ? theme.btnColor : theme.textMuted);
 
-    const tabIconElement = isLocal ? (
+    const tabIconElement = avatarDataURL ? (
+        <img
+            data-testid={`ai-tab-avatar-${tab.id}`}
+            src={avatarDataURL}
+            alt=""
+            style={{ width: 14, height: 14, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+        />
+    ) : isLocal ? (
         // Sparkle/star — AI assistant main session
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
             <path d="M8 1l1.5 4.5L14 7l-4.5 1.5L8 13l-1.5-4.5L2 7l4.5-1.5L8 1z" fill={iconColor} />

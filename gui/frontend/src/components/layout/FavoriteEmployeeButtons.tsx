@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react';
+import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
 import { MAX_FAVORITE_EMPLOYEES } from '../settings/favoriteEmployees';
 
 export interface FavoriteEmployeeSlot {
@@ -6,6 +7,7 @@ export interface FavoriteEmployeeSlot {
     name: string;
     online: boolean;
     skillDescription?: string;
+    avatarDataURL?: string;
 }
 
 interface FavoriteEmployeeButtonsProps {
@@ -219,7 +221,9 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', width: '100%' }}>
-            {slots.map((slot, index) => (
+            {slots.map((slot, index) => {
+                const avatarDataURL = safeAvatarDataURL(slot.avatarDataURL);
+                return (
                 <button
                     key={slot.veId}
                     type="button"
@@ -252,21 +256,30 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                 >
                     {/* Avatar circle with online indicator */}
                     <div style={{ position: 'relative', width: '28px', height: '28px' }}>
-                        <div style={{
-                            width: '28px',
-                            height: '28px',
-                            borderRadius: '50%',
-                            background: avatarColor(slot.name),
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '11px',
-                            fontWeight: 700,
-                            color: '#fff',
-                            letterSpacing: 0,
-                        }}>
-                            {avatarInitials(slot.name)}
-                        </div>
+                        {avatarDataURL ? (
+                            <img
+                                src={avatarDataURL}
+                                alt=""
+                                data-testid={`fav-ve-avatar-${slot.veId}`}
+                                style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover', display: 'block' }}
+                            />
+                        ) : (
+                            <div style={{
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '50%',
+                                background: avatarColor(slot.name),
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                color: '#fff',
+                                letterSpacing: 0,
+                            }}>
+                                {avatarInitials(slot.name)}
+                            </div>
+                        )}
                         <span style={{
                             position: 'absolute',
                             bottom: '0px',
@@ -293,7 +306,8 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         {slot.name.length > 4 ? slot.name.slice(0, 4) + '...' : slot.name}
                     </span>
                 </button>
-            ))}
+                );
+            })}
             {contextMenu && (
                 <div
                     role="menu"

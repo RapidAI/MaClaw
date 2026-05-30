@@ -287,6 +287,7 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
                     ref={veRef}
                     veId={tab.veId!}
                     veName={tab.title}
+                    avatarDataURL={tab.avatarDataURL}
                     theme={theme}
                     lang={lang}
                     initialOnlineStatus={tab.onlineStatus}

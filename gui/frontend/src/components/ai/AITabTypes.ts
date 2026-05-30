@@ -37,6 +37,8 @@ export interface AITab {
     archived?: boolean;
     /** Online status of the VE (only for type="ve"). Updated via ve:status_change events. */
     onlineStatus?: "online" | "offline";
+    /** Safe data URL avatar for a digital employee tab. */
+    avatarDataURL?: string;
     /** Bumped when the visible conversation should clear and start a fresh session. */
     conversationResetSeq?: number;
     /** Whether this tab can be closed. The local tab is always false. */

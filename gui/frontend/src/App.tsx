@@ -362,7 +362,7 @@ function App() {
             if (ve && (isOwnVirtualEmployeeId(ve.id, config?.remote_machine_id) || isOwnVirtualEmployeeId(ve.machine_id || '', config?.remote_machine_id))) return [];
             const participantId = String(ve?.machine_id || id).trim();
             const customName = favoriteEmployeeNames[id] || favoriteEmployeeNames[participantId] || (ve?.id ? favoriteEmployeeNames[ve.id] : '');
-            return { veId: participantId, name: customName || ve?.name || id.slice(0, 6), online: ve?.online_status === 'online', skillDescription: ve?.skill_description || '' };
+            return { veId: participantId, name: customName || ve?.name || id.slice(0, 6), online: ve?.online_status === 'online', skillDescription: ve?.skill_description || '', avatarDataURL: ve?.avatar_data_url || '' };
         });
     }, [favoriteEmployeeIds, veList, config?.remote_machine_id, favoriteEmployeeNames]);
 

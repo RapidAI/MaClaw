@@ -12,6 +12,23 @@ const theme = {
 } as Theme;
 
 describe("AITabItem", () => {
+    it("renders a digital employee avatar when the tab has one", () => {
+        const tab = {
+            id: "ve-avatar-tab",
+            type: "ve" as const,
+            title: "Avatar Agent",
+            veId: "ve-avatar",
+            avatarDataURL: "data:image/jpeg;base64,/9j/",
+            closable: true,
+        };
+
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onClose={vi.fn()} lang="en" />);
+
+        const avatar = screen.getByTestId("ai-tab-avatar-ve-avatar-tab") as HTMLImageElement;
+        expect(avatar.getAttribute("src")).toBe("data:image/jpeg;base64,/9j/");
+        expect(screen.getByTestId("ai-tab-ve-avatar-tab").textContent).toContain("Avatar Agent");
+    });
+
     it("shows live group participant names instead of raw ids in the tab title", () => {
         const tab = {
             id: "group-live",
