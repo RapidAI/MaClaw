@@ -37,6 +37,9 @@ func TestAdminBootstrapInitializeLoginMeLogout(t *testing.T) {
 	if status["initialized"] != false || status["setup_required"] != true || status["setup_token_required"] != true {
 		t.Fatalf("unexpected bootstrap status: %#v", status)
 	}
+	if status["default_locale"] == "" || len(status["locales"].([]any)) == 0 {
+		t.Fatalf("bootstrap status missing locale metadata: %#v", status)
+	}
 
 	initBody := `{"setup_token":"setup-token-123456","username":"Admin.Owner","password":"strong-password-123","display_name":"Owner","locale":"en-US"}`
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/bootstrap/initialize", bytes.NewBufferString(initBody))
@@ -548,8 +551,8 @@ func TestAdminOwnerCanCreateOperatorAndOperatorCannotManageAdmins(t *testing.T) 
 		{http.MethodPut, "/api/v1/admin/skill-sources/global", `{"enabled":true,"allowed_sources":["github"]}`},
 		{http.MethodPut, "/api/v1/admin/skill-sources/tenant/" + ownerTenant.ID, `{"enabled":true,"allowed_sources":["github"]}`},
 		{http.MethodDelete, "/api/v1/admin/skill-sources/tenant/" + ownerTenant.ID, ``},
-		{http.MethodPut, "/api/v1/admin/skill-sources/user/operator@example.test", `{"enabled":true,"allowed_sources":["github"]}`},
-		{http.MethodDelete, "/api/v1/admin/skill-sources/user/operator@example.test", ``},
+		{http.MethodPut, "/api/v1/admin/skill-sources/tenants/" + ownerTenant.ID + "/users/" + ownerUser.ID, `{"enabled":true,"allowed_sources":["github"]}`},
+		{http.MethodDelete, "/api/v1/admin/skill-sources/tenants/" + ownerTenant.ID + "/users/" + ownerUser.ID, ``},
 		{http.MethodPatch, "/api/v1/admin/tenants/" + ownerTenant.ID, `{"name":"operator update"}`},
 		{http.MethodPost, "/api/v1/admin/tenants/" + ownerTenant.ID + "/pause", ``},
 		{http.MethodPost, "/api/v1/admin/tenants/" + ownerTenant.ID + "/resume", ``},

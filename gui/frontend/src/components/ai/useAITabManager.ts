@@ -4,6 +4,7 @@ import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
 import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { veStatusEventInfo } from "./veStatusEvent";
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -310,19 +311,19 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     // Listen for VE online status changes and update tab onlineStatus accordingly.
     useEffect(() => {
         const unsub = EventsOn("ve:status_change", (data: any) => {
-            // data may be { ve_id: string, online_status: "online"|"offline" } or a full list refresh signal
+            // data may be a flat event or a Hub admin event with payload.employee.
             if (!data) return;
-            const veId = data.ve_id || data.id;
-            const status = data.online_status;
-            if (!veId || !status) return;
+            const { ids, status } = veStatusEventInfo(data);
+            if (status !== "online" && status !== "offline") return;
+            if (ids.length === 0 || !status) return;
 
             updateTabState(prev => {
-                const hasMatch = prev.tabs.some(t => (t.type === "ve" || t.type === "group") && sameTabParticipantId(t.veId, veId) && t.onlineStatus !== status);
+                const hasMatch = prev.tabs.some(t => (t.type === "ve" || t.type === "group") && ids.some(id => sameTabParticipantId(t.veId, id)) && t.onlineStatus !== status);
                 if (!hasMatch) return prev;
                 return {
                     ...prev,
                     tabs: prev.tabs.map(t =>
-                        (t.type === "ve" || t.type === "group") && sameTabParticipantId(t.veId, veId) ? { ...t, onlineStatus: status } : t
+                        (t.type === "ve" || t.type === "group") && ids.some(id => sameTabParticipantId(t.veId, id)) ? { ...t, onlineStatus: status } : t
                     ),
                 };
             });

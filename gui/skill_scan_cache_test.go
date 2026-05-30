@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -555,6 +556,47 @@ func TestSkillInstallReviewNeedsConfirmationByMode(t *testing.T) {
 	}
 	if (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallReviewNeedsConfirmation(criticalReport) || (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallScanShouldBlock(criticalReport) {
 		t.Fatal("developer mode should only record critical skill risk")
+	}
+}
+
+func TestTrustedMarketplaceSkillInstallRecordsRiskWithoutBlocking(t *testing.T) {
+	criticalReport := &cskill.ScanReport{FinalLevel: security.RiskCritical, Summary: "critical", ScannedBy: "pattern"}
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("strict")}
+
+	for _, source := range []string{"skillhub", "skillmarket", corelib.CapabilitySourceHubCenter, corelib.CapabilitySourceEnterpriseHub} {
+		if source == corelib.CapabilitySourceHubCenter && normalizeSkillInstallAdmissionSource(source) != corelib.CapabilitySourceHubCenter {
+			t.Fatalf("hubcenter source should stay canonical, got %q", normalizeSkillInstallAdmissionSource(source))
+		}
+		if got := skillInstallRiskAllowedStatusForSource(source); !strings.Contains(got, "trusted marketplace policy") {
+			t.Fatalf("%s allowed-risk status = %q, want trusted marketplace policy", source, got)
+		}
+		if app.skillInstallScanShouldBlockForSource(criticalReport, source) {
+			t.Fatalf("%s marketplace install should record risk without blocking", source)
+		}
+		if app.skillInstallReviewNeedsConfirmationForSource(criticalReport, source) {
+			t.Fatalf("%s marketplace install should not require confirmation", source)
+		}
+		if got := app.skillInstallFinalAuditActionForSource(criticalReport, source); got != security.PolicyAudit {
+			t.Fatalf("%s audit action = %s, want audit", source, got)
+		}
+		entry := &corelib.NLSkillEntry{Name: "market-risk-" + source}
+		if err := app.admitManualSkillInstall(context.Background(), entry, source, criticalReport); err != nil {
+			t.Fatalf("%s admitManualSkillInstall() error = %v", source, err)
+		}
+	}
+
+	if !app.skillInstallScanShouldBlockForSource(criticalReport, "github") {
+		t.Fatal("github install should still be blocked by strict security policy")
+	}
+	if got := skillInstallRiskAllowedStatusForSource("github"); !strings.Contains(got, "current policy") {
+		t.Fatalf("github allowed-risk status = %q, want current policy", got)
+	}
+}
+
+func TestConfirmManualSkillInstallRejectsCriticalRiskWithoutUIContext(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("standard")}
+	if app.confirmManualSkillInstall(context.Background(), "dangerous", "manual zip", security.RiskCritical, []string{"dangerous command"}) {
+		t.Fatal("confirmManualSkillInstall() allowed critical risk without UI context")
 	}
 }
 

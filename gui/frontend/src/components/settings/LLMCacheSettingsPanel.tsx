@@ -6,6 +6,7 @@ type LLMCacheSettingsPanelProps = {
     config: main.AppConfig | null;
     setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
     lang: string;
+    showToastMessage?: (message: string, duration?: number) => void;
 };
 
 const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
@@ -50,7 +51,7 @@ const normalizeSwitchPatch = (current: any, patch: Record<string, any>) => {
     return next;
 };
 
-export const LLMCacheSettingsPanel = ({ config, setConfig, lang }: LLMCacheSettingsPanelProps) => {
+export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessage }: LLMCacheSettingsPanelProps) => {
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState('');
     const cache = normalizeCache((config as any)?.llm_prompt_cache);
@@ -72,8 +73,11 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang }: LLMCacheSetti
         try {
             await SaveConfig(next);
             setConfig(next);
+            showToastMessage?.(textForLang(lang, 'Saved successfully', '\u4fdd\u5b58\u6210\u529f', '\u5132\u5b58\u6210\u529f'));
         } catch (err) {
-            setSaveError(err instanceof Error ? err.message : String(err));
+            const message = err instanceof Error ? err.message : String(err);
+            setSaveError(message);
+            showToastMessage?.(message, 5000);
         } finally {
             setSaving(false);
         }
@@ -111,11 +115,11 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang }: LLMCacheSetti
                 )}
             </div>
 
-            <div className="proxy-settings-grid proxy-settings-grid--server">
+            <div className="proxy-settings-grid llm-cache-settings-dir-grid">
                 <Field label={textForLang(lang, 'Cache directory', '\u7f13\u5b58\u76ee\u5f55', '\u5feb\u53d6\u76ee\u9304')}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <input className="form-input" type="text" value={cache.cache_dir} style={{ minWidth: 0 }} onChange={(e) => updateCache({ cache_dir: e.target.value })} />
-                        <button className="btn-secondary" type="button" style={{ whiteSpace: 'nowrap' }} onClick={() => updateCache({ cache_dir: defaultCacheDir })}>
+                    <div className="llm-cache-settings-dir-row">
+                        <input className="form-input llm-cache-settings-dir-input" type="text" value={cache.cache_dir} title={cache.cache_dir} onChange={(e) => updateCache({ cache_dir: e.target.value })} />
+                        <button className="btn-secondary llm-cache-settings-dir-reset" type="button" onClick={() => updateCache({ cache_dir: defaultCacheDir })}>
                             {textForLang(lang, 'Restore default', '\u6062\u590d\u9ed8\u8ba4', '\u6062\u5fa9\u9810\u8a2d')}
                         </button>
                     </div>

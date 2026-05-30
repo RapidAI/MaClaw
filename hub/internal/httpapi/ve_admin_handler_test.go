@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,8 @@ type sentVEMachineEvent struct {
 	msg       map[string]any
 }
 
+const testAvatarPNGDataURL = "data:image/png;base64,iVBORw0KGgo="
+
 func (f *fakeVEMachineEventSender) SendToMachine(machineID string, msg any) error {
 	mapped, _ := msg.(map[string]any)
 	f.messages = append(f.messages, sentVEMachineEvent{machineID: machineID, msg: mapped})
@@ -78,6 +81,7 @@ func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
 	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
 		"name":              "Legal Researcher",
 		"skill_description": "Contract review",
+		"avatar_data_url":   testAvatarPNGDataURL,
 		"access_policy":     "public",
 	}, "machine-a", "machine-token")
 	if registerRR.Code != http.StatusOK {
@@ -102,8 +106,92 @@ func TestDigitalEmployeeRegisterApproveAndDiscover(t *testing.T) {
 	}
 
 	discoverRR := doVEMachineJSON(t, VEDiscoverableHandler(settings, authn), http.MethodGet, "/api/ve/discoverable", nil, "machine-b", "machine-token")
-	if discoverRR.Code != http.StatusOK || !bytes.Contains(discoverRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) {
+	if discoverRR.Code != http.StatusOK || !bytes.Contains(discoverRR.Body.Bytes(), []byte(`"id":"ve_machine-a"`)) || !bytes.Contains(discoverRR.Body.Bytes(), []byte(`"avatar_data_url":"`+testAvatarPNGDataURL+`"`)) {
 		t.Fatalf("discover status=%d body=%s", discoverRR.Code, discoverRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeRegisterRejectsInvalidAvatarDataURL(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+		},
+	}
+
+	for _, avatarDataURL := range []string{
+		"javascript:alert(1)",
+		"data:image/png;base64,QUJD",
+		strings.Replace(testAvatarPNGDataURL, "data:image/png", "data:image/jpeg", 1),
+		"data:image/png;base64,%%%",
+		"data:image/png;base64,QR==",
+		"data:image/png;base64," + strings.Repeat("A", veAvatarDataURLMaxSize),
+	} {
+		t.Run(avatarDataURL, func(t *testing.T) {
+			rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+				"name":              "Legal Researcher",
+				"skill_description": "Contract review",
+				"avatar_data_url":   avatarDataURL,
+				"access_policy":     "public",
+			}, "machine-a", "machine-token")
+			if rr.Code != http.StatusBadRequest || !bytes.Contains(rr.Body.Bytes(), []byte(`"code":"INVALID_INPUT"`)) {
+				t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestDigitalEmployeeRegisterAcceptsOneMiBAvatarDataURL(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+		},
+	}
+	payload := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, make([]byte, veAvatarImageMaxBytes-8)...)
+	avatar := "data:image/png;base64," + base64.StdEncoding.EncodeToString(payload)
+	rr := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":              "Legal Researcher",
+		"skill_description": "Contract review",
+		"avatar_data_url":   avatar,
+		"access_policy":     "public",
+	}, "machine-a", "machine-token")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestLoadVERegistryDropsInvalidAvatarDataURL(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	seed := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_bad", MachineID: "machine-bad", AvatarDataURL: "data:image/png;base64,QUJD"},
+		{ID: "ve_huge", MachineID: "machine-huge", AvatarDataURL: "data:image/png;base64," + strings.Repeat("A", veAvatarDataURLMaxSize)},
+		{ID: "ve_good", MachineID: "machine-good", AvatarDataURL: " " + testAvatarPNGDataURL + " "},
+	}}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := settings.Set(context.Background(), veRegistryKey, string(data)); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	registry := loadVERegistry(context.Background(), settings)
+	badIdx := registry.findByIDOrMachineIDOrPlatformEmployeeID("ve_bad")
+	goodIdx := registry.findByIDOrMachineIDOrPlatformEmployeeID("ve_good")
+	if badIdx < 0 || registry.Employees[badIdx].AvatarDataURL != "" {
+		t.Fatalf("invalid avatar should be cleared: %+v", registry.Employees)
+	}
+	hugeIdx := registry.findByIDOrMachineIDOrPlatformEmployeeID("ve_huge")
+	if hugeIdx < 0 || registry.Employees[hugeIdx].AvatarDataURL != "" {
+		t.Fatalf("oversized avatar should be cleared: %+v", registry.Employees)
+	}
+	if goodIdx < 0 || registry.Employees[goodIdx].AvatarDataURL != testAvatarPNGDataURL {
+		t.Fatalf("valid avatar should be trimmed and preserved: %+v", registry.Employees)
 	}
 }
 
@@ -598,6 +686,337 @@ func TestDigitalEmployeeInitiateRejectsInactiveSelfAndAccessDenied(t *testing.T)
 		t.Fatalf("expected access denied, got %d body=%s", deniedRec.Code, deniedRec.Body.String())
 	}
 }
+
+func TestDigitalEmployeePerRequestConfirmationAllowLongAndBlock(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {UserID: "owner-a", MachineID: "machine-a"},
+			"machine-b": {UserID: "user-b", MachineID: "machine-b"},
+			"machine-c": {UserID: "user-c", MachineID: "machine-c"},
+		},
+	}
+	sender := &fakeVEMachineEventSender{}
+	groupSvc := NewGroupDiscussionService()
+
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":          "Private Analyst",
+		"access_policy": "per_request",
+	}, "machine-a", "machine-token")
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq.SetPathValue("id", "ve_machine-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	pendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	pendingReq.Header.Set("X-Machine-ID", "machine-b")
+	pendingReq.Header.Set("Authorization", "Bearer machine-token")
+	pendingReq.SetPathValue("id", "ve_machine-a")
+	pendingRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, groupSvc, authn, sender).ServeHTTP(pendingRec, pendingReq)
+	if pendingRec.Code != http.StatusAccepted || !strings.Contains(pendingRec.Body.String(), "pending_confirmation") {
+		t.Fatalf("expected pending confirmation, got %d body=%s", pendingRec.Code, pendingRec.Body.String())
+	}
+	if len(sender.messages) == 0 || sender.messages[0].machineID != "machine-a" || sender.messages[0].msg["type"] != "ve:auth_request" {
+		t.Fatalf("expected auth request event to owner, got %#v", sender.messages)
+	}
+	var pendingBody map[string]any
+	if err := json.NewDecoder(pendingRec.Body).Decode(&pendingBody); err != nil {
+		t.Fatalf("decode pending: %v", err)
+	}
+	requestID, _ := pendingBody["request_id"].(string)
+	if requestID == "" {
+		t.Fatalf("missing request_id in %v", pendingBody)
+	}
+	repeatedPendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	repeatedPendingReq.Header.Set("X-Machine-ID", "machine-b")
+	repeatedPendingReq.Header.Set("Authorization", "Bearer machine-token")
+	repeatedPendingReq.SetPathValue("id", "ve_machine-a")
+	repeatedPendingRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, groupSvc, authn, sender).ServeHTTP(repeatedPendingRec, repeatedPendingReq)
+	if repeatedPendingRec.Code != http.StatusAccepted || !strings.Contains(repeatedPendingRec.Body.String(), requestID) {
+		t.Fatalf("repeated pending request should return existing request id %q, got %d body=%s", requestID, repeatedPendingRec.Code, repeatedPendingRec.Body.String())
+	}
+	requests := loadVEAccessRequests(context.Background(), settings)
+	if len(requests.Requests) == 0 {
+		t.Fatalf("missing stored request after pending confirmation")
+	}
+	requests.Requests[0].ExpiresAt = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if err := saveVEAccessRequests(context.Background(), settings, requests); err != nil {
+		t.Fatalf("save expired request: %v", err)
+	}
+	expiredRR := doVEMachineJSON(t, VEAuthRespondHandler(settings, authn, sender), http.MethodPost, "/api/ve/auth/respond", map[string]any{
+		"request_id": requestID,
+		"decision":   "allow_once",
+	}, "machine-a", "machine-token")
+	if expiredRR.Code != http.StatusConflict {
+		t.Fatalf("expired request should reject response, got %d body=%s", expiredRR.Code, expiredRR.Body.String())
+	}
+	freshPendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	freshPendingReq.Header.Set("X-Machine-ID", "machine-b")
+	freshPendingReq.Header.Set("Authorization", "Bearer machine-token")
+	freshPendingReq.SetPathValue("id", "ve_machine-a")
+	freshPendingRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, groupSvc, authn, sender).ServeHTTP(freshPendingRec, freshPendingReq)
+	if freshPendingRec.Code != http.StatusAccepted || !strings.Contains(freshPendingRec.Body.String(), "pending_confirmation") {
+		t.Fatalf("expired pending request should be replaced, got %d body=%s", freshPendingRec.Code, freshPendingRec.Body.String())
+	}
+	var freshPendingBody map[string]any
+	if err := json.NewDecoder(freshPendingRec.Body).Decode(&freshPendingBody); err != nil {
+		t.Fatalf("decode fresh pending: %v", err)
+	}
+	requestID, _ = freshPendingBody["request_id"].(string)
+	if requestID == "" || requestID == pendingBody["request_id"] {
+		t.Fatalf("fresh pending request id = %q, previous=%v", requestID, pendingBody["request_id"])
+	}
+
+	allowOnceRR := doVEMachineJSON(t, VEAuthRespondHandler(settings, authn, sender), http.MethodPost, "/api/ve/auth/respond", map[string]any{
+		"request_id": requestID,
+		"decision":   "allow_once",
+	}, "machine-a", "machine-token")
+	if allowOnceRR.Code != http.StatusOK {
+		t.Fatalf("allow once status=%d body=%s", allowOnceRR.Code, allowOnceRR.Body.String())
+	}
+	foundAuthResultWithMachineID := false
+	for _, sent := range sender.messages {
+		if sent.machineID != "machine-b" || sent.msg["type"] != "ve:auth_result" {
+			continue
+		}
+		payload, _ := sent.msg["payload"].(map[string]any)
+		if payload["target_machine_id"] == "machine-a" && payload["target_ve_id"] == "ve_machine-a" {
+			foundAuthResultWithMachineID = true
+		}
+	}
+	if !foundAuthResultWithMachineID {
+		t.Fatalf("auth_result should include target machine id, messages=%#v", sender.messages)
+	}
+	onceReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	onceReq.Header.Set("X-Machine-ID", "machine-b")
+	onceReq.Header.Set("Authorization", "Bearer machine-token")
+	onceReq.SetPathValue("id", "ve_machine-a")
+	onceRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, groupSvc, authn, sender).ServeHTTP(onceRec, onceReq)
+	if onceRec.Code != http.StatusCreated || !strings.Contains(onceRec.Body.String(), "session_id") {
+		t.Fatalf("allow_once should permit next initiate, got %d body=%s", onceRec.Code, onceRec.Body.String())
+	}
+	requests = loadVEAccessRequests(context.Background(), settings)
+	foundUsedAllowOnce := false
+	for _, req := range requests.Requests {
+		if req.ID == requestID && req.Status == "used" {
+			foundUsedAllowOnce = true
+		}
+	}
+	if !foundUsedAllowOnce {
+		t.Fatalf("allow_once request should be consumed after initiate: %+v", requests.Requests)
+	}
+
+	secondPendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	secondPendingReq.Header.Set("X-Machine-ID", "machine-b")
+	secondPendingReq.Header.Set("Authorization", "Bearer machine-token")
+	secondPendingReq.SetPathValue("id", "ve_machine-a")
+	secondPendingRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn, sender).ServeHTTP(secondPendingRec, secondPendingReq)
+	if secondPendingRec.Code != http.StatusAccepted || !strings.Contains(secondPendingRec.Body.String(), "pending_confirmation") {
+		t.Fatalf("used allow_once should require confirmation again, got %d body=%s", secondPendingRec.Code, secondPendingRec.Body.String())
+	}
+	var secondPendingBody map[string]any
+	if err := json.NewDecoder(secondPendingRec.Body).Decode(&secondPendingBody); err != nil {
+		t.Fatalf("decode second pending: %v", err)
+	}
+	requestID, _ = secondPendingBody["request_id"].(string)
+	if requestID == "" {
+		t.Fatalf("missing second request_id in %v", secondPendingBody)
+	}
+
+	allowRR := doVEMachineJSON(t, VEAuthRespondHandler(settings, authn, sender), http.MethodPost, "/api/ve/auth/respond", map[string]any{
+		"request_id": requestID,
+		"decision":   "allow_long",
+	}, "machine-a", "machine-token")
+	if allowRR.Code != http.StatusOK {
+		t.Fatalf("allow status=%d body=%s", allowRR.Code, allowRR.Body.String())
+	}
+	registry := loadVERegistry(context.Background(), settings)
+	idx := registry.findByIDOrMachineIDOrPlatformEmployeeID("ve_machine-a")
+	if idx < 0 || !containsVEValue(registry.Employees[idx].Whitelist, "user-b") {
+		t.Fatalf("allow_long should whitelist requester: %+v", registry.Employees)
+	}
+
+	replayRR := doVEMachineJSON(t, VEAuthRespondHandler(settings, authn, sender), http.MethodPost, "/api/ve/auth/respond", map[string]any{
+		"request_id": requestID,
+		"decision":   "deny",
+	}, "machine-a", "machine-token")
+	if replayRR.Code != http.StatusConflict {
+		t.Fatalf("handled request should reject replay, got %d body=%s", replayRR.Code, replayRR.Body.String())
+	}
+
+	blockPendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	blockPendingReq.Header.Set("X-Machine-ID", "machine-c")
+	blockPendingReq.Header.Set("Authorization", "Bearer machine-token")
+	blockPendingReq.SetPathValue("id", "ve_machine-a")
+	blockPendingRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn, sender).ServeHTTP(blockPendingRec, blockPendingReq)
+	if blockPendingRec.Code != http.StatusAccepted || !strings.Contains(blockPendingRec.Body.String(), "pending_confirmation") {
+		t.Fatalf("expected pending confirmation for blocked requester, got %d body=%s", blockPendingRec.Code, blockPendingRec.Body.String())
+	}
+	var blockPendingBody map[string]any
+	if err := json.NewDecoder(blockPendingRec.Body).Decode(&blockPendingBody); err != nil {
+		t.Fatalf("decode block pending: %v", err)
+	}
+	blockRequestID, _ := blockPendingBody["request_id"].(string)
+	if blockRequestID == "" {
+		t.Fatalf("missing block request_id in %v", blockPendingBody)
+	}
+
+	blockRR := doVEMachineJSON(t, VEAuthRespondHandler(settings, authn, sender), http.MethodPost, "/api/ve/auth/respond", map[string]any{
+		"request_id": blockRequestID,
+		"decision":   "block",
+	}, "machine-a", "machine-token")
+	if blockRR.Code != http.StatusOK {
+		t.Fatalf("block status=%d body=%s", blockRR.Code, blockRR.Body.String())
+	}
+	registry = loadVERegistry(context.Background(), settings)
+	idx = registry.findByIDOrMachineIDOrPlatformEmployeeID("ve_machine-a")
+	if idx < 0 || !containsVEValue(registry.Employees[idx].Whitelist, "user-b") || !containsVEValue(registry.Employees[idx].Blacklist, "user-c") {
+		t.Fatalf("block should move requester from whitelist to blacklist: %+v", registry.Employees)
+	}
+
+	blockedReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	blockedReq.Header.Set("X-Machine-ID", "machine-c")
+	blockedReq.Header.Set("Authorization", "Bearer machine-token")
+	blockedReq.SetPathValue("id", "ve_machine-a")
+	blockedRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn, sender).ServeHTTP(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusForbidden || !strings.Contains(blockedRec.Body.String(), "VE_ACCESS_DENIED") {
+		t.Fatalf("blacklisted requester should be denied before confirmation, got %d body=%s", blockedRec.Code, blockedRec.Body.String())
+	}
+}
+
+func TestDigitalEmployeeAccessPolicyFallsBackToMachineID(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {UserID: "owner-a", MachineID: "machine-a"},
+			"machine-d": {MachineID: "machine-d"},
+		},
+	}
+
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":          "Machine Scoped Analyst",
+		"access_policy": "whitelist",
+		"whitelist":     []string{"machine-d"},
+	}, "machine-a", "machine-token")
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq.SetPathValue("id", "ve_machine-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	initReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	initReq.Header.Set("X-Machine-ID", "machine-d")
+	initReq.Header.Set("Authorization", "Bearer machine-token")
+	initReq.SetPathValue("id", "ve_machine-a")
+	initRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn).ServeHTTP(initRec, initReq)
+	if initRec.Code != http.StatusCreated || !strings.Contains(initRec.Body.String(), "session_id") {
+		t.Fatalf("machine-id whitelist fallback should allow initiate, got %d body=%s", initRec.Code, initRec.Body.String())
+	}
+}
+
+func TestDigitalEmployeePerRequestAllowLongFallsBackToMachineID(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 2)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {UserID: "owner-a", MachineID: "machine-a"},
+			"machine-d": {MachineID: "machine-d"},
+		},
+	}
+	sender := &fakeVEMachineEventSender{}
+
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":          "Machine Confirm Analyst",
+		"access_policy": "per_request",
+	}, "machine-a", "machine-token")
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/approve", nil)
+	approveReq.SetPathValue("id", "ve_machine-a")
+	approveRec := httptest.NewRecorder()
+	VEAdminActionHandler(settings, "approve").ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	pendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
+	pendingReq.Header.Set("X-Machine-ID", "machine-d")
+	pendingReq.Header.Set("Authorization", "Bearer machine-token")
+	pendingReq.SetPathValue("id", "ve_machine-a")
+	pendingRec := httptest.NewRecorder()
+	VEInitiateHandler(settings, NewGroupDiscussionService(), authn, sender).ServeHTTP(pendingRec, pendingReq)
+	if pendingRec.Code != http.StatusAccepted {
+		t.Fatalf("pending status=%d body=%s", pendingRec.Code, pendingRec.Body.String())
+	}
+	var pendingBody map[string]any
+	if err := json.NewDecoder(pendingRec.Body).Decode(&pendingBody); err != nil {
+		t.Fatalf("decode pending: %v", err)
+	}
+	requestID, _ := pendingBody["request_id"].(string)
+	if requestID == "" {
+		t.Fatalf("missing request_id in %v", pendingBody)
+	}
+
+	allowRR := doVEMachineJSON(t, VEAuthRespondHandler(settings, authn, sender), http.MethodPost, "/api/ve/auth/respond", map[string]any{
+		"request_id": requestID,
+		"decision":   "allow_long",
+	}, "machine-a", "machine-token")
+	if allowRR.Code != http.StatusOK {
+		t.Fatalf("allow_long status=%d body=%s", allowRR.Code, allowRR.Body.String())
+	}
+	registry := loadVERegistry(context.Background(), settings)
+	idx := registry.findByIDOrMachineIDOrPlatformEmployeeID("ve_machine-a")
+	if idx < 0 || !containsVEValue(registry.Employees[idx].Whitelist, "machine-d") {
+		t.Fatalf("allow_long should whitelist machine id fallback: %+v", registry.Employees)
+	}
+}
+
+func TestDigitalEmployeeAccessListsCompareCaseInsensitiveAndTrimmed(t *testing.T) {
+	values := normalizeVEStringList([]string{" User-A ", "user-a", "USER-B"})
+	if len(values) != 2 {
+		t.Fatalf("normalizeVEStringList length = %d values=%v, want 2", len(values), values)
+	}
+	entry := digitalEmployeeEntry{
+		AccessPolicy: "whitelist",
+		Whitelist:    values,
+		Blacklist:    []string{" blocked-user "},
+	}
+	if !veAccessAllowed(entry, "user-a") {
+		t.Fatalf("whitelist should match case-insensitively: %+v", entry)
+	}
+	if !veAccessAllowed(entry, " user-b ") {
+		t.Fatalf("whitelist should match trimmed requester ids: %+v", entry)
+	}
+	if veAccessAllowed(entry, "BLOCKED-USER") {
+		t.Fatalf("blacklist should override whitelist case-insensitively: %+v", entry)
+	}
+}
+
 func TestVEAdminActionEventType(t *testing.T) {
 	cases := map[string]string{
 		"approve": "ve:approved",

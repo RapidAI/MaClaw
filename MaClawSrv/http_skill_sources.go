@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -14,9 +13,11 @@ func (s *HTTPServer) handleSkillSourcesAvailable(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sources": cskill.AllSkillSources,
 		"description": map[string]string{
-			"skillhub": "SkillHub/SkillMarket",
-			"clawhub":  "ClawHub (community mirror)",
-			"github":   "GitHub (open source)",
+			"skillhub":       "SkillHub/SkillMarket",
+			"clawhub":        "ClawHub (community mirror)",
+			"github":         "GitHub (open source)",
+			"enterprise_hub": "Enterprise Hub",
+			"local":          "Local zip/import upload",
 		},
 	})
 }
@@ -94,9 +95,13 @@ func (s *HTTPServer) handleSkillSourcesDeleteTenant(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *HTTPServer) handleSkillSourcesGetUser(w http.ResponseWriter, r *http.Request) {
-	email := decodeEmail(r)
-	cfg, err := s.skillSourceSvc.GetUser(r.Context(), email)
+func (s *HTTPServer) handleSkillSourcesGetTenantUser(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.PathValue("tenantId")
+	userID := r.PathValue("userId")
+	if !s.requireExistingTenantUser(w, r, tenantID, userID) {
+		return
+	}
+	cfg, err := s.skillSourceSvc.GetTenantUser(r.Context(), tenantID, userID)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
@@ -107,47 +112,58 @@ func (s *HTTPServer) handleSkillSourcesGetUser(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, cfg)
 }
 
-func (s *HTTPServer) handleSkillSourcesSetUser(w http.ResponseWriter, r *http.Request) {
+func (s *HTTPServer) handleSkillSourcesSetTenantUser(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdminOwner(w, r) {
 		return
 	}
-	email := decodeEmail(r)
+	tenantID := r.PathValue("tenantId")
+	userID := r.PathValue("userId")
+	if !s.requireExistingTenantUser(w, r, tenantID, userID) {
+		return
+	}
 	var cfg cskill.SourceControlConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
-	if err := s.skillSourceSvc.SetUser(r.Context(), email, &cfg); err != nil {
+	if err := s.skillSourceSvc.SetTenantUser(r.Context(), tenantID, userID, &cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
-	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_user_updated", "skill_source_policy", email, skillSourceAuditMetadata(r, &cfg, email))
+	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_tenant_user_updated", "skill_source_policy", tenantID+":"+userID, skillSourceAuditMetadata(r, &cfg, tenantID+":"+userID))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *HTTPServer) handleSkillSourcesDeleteUser(w http.ResponseWriter, r *http.Request) {
+func (s *HTTPServer) handleSkillSourcesDeleteTenantUser(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdminOwner(w, r) {
 		return
 	}
-	email := decodeEmail(r)
-	if err := s.skillSourceSvc.DeleteUser(r.Context(), email); err != nil {
+	tenantID := r.PathValue("tenantId")
+	userID := r.PathValue("userId")
+	if !s.requireExistingTenantUser(w, r, tenantID, userID) {
+		return
+	}
+	if err := s.skillSourceSvc.DeleteTenantUser(r.Context(), tenantID, userID); err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_user_deleted", "skill_source_policy", email, map[string]string{"email": email, "remote_ip": requestClientIP(r)})
+	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_tenant_user_deleted", "skill_source_policy", tenantID+":"+userID, map[string]string{"tenant_id": tenantID, "user_id": userID, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *HTTPServer) handleSkillSourcesResolve(w http.ResponseWriter, r *http.Request) {
-	email := decodeEmail(r)
-	tenantID := r.URL.Query().Get("tenant_id")
-	resolved := s.skillSourceSvc.ResolveForUser(r.Context(), email, tenantID)
+func (s *HTTPServer) handleSkillSourcesResolveTenantUser(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.PathValue("tenantId")
+	userID := r.PathValue("userId")
+	if !s.requireExistingTenantUser(w, r, tenantID, userID) {
+		return
+	}
+	resolved := s.skillSourceSvc.ResolveForUser(r.Context(), userID, tenantID)
 	if resolved == nil {
 		resolved = cskill.AllSkillSources
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"email":           email,
 		"tenant_id":       tenantID,
+		"user_id":         userID,
 		"allowed_sources": resolved,
 	})
 }
@@ -162,13 +178,4 @@ func skillSourceAuditMetadata(r *http.Request, cfg *cskill.SourceControlConfig, 
 		metadata["subject"] = subject
 	}
 	return metadata
-}
-
-func decodeEmail(r *http.Request) string {
-	raw := r.PathValue("email")
-	decoded, err := url.PathUnescape(raw)
-	if err != nil {
-		return raw
-	}
-	return decoded
 }

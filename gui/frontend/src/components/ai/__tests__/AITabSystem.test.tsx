@@ -41,6 +41,30 @@ describe('AITabTypes', () => {
 });
 
 describe('useAITabManager', () => {
+    it('opens pending digital employees by machine id when available', async () => {
+        const createVETab = vi.fn().mockReturnValue(null);
+        const onHandled = vi.fn();
+
+        renderHook(() => usePendingAssistantTabOpen({
+            createVETab,
+            createGroupTab: vi.fn(),
+            createProjectTab: vi.fn(),
+            pendingVEOpen: {
+                id: 'profile-ve',
+                machine_id: 'machine-ve',
+                name: 'Machine VE',
+                skill_description: '',
+                access_policy: 'public',
+                status: 'active',
+                online_status: 'online',
+            },
+            onPendingVEOpenHandled: onHandled,
+        }));
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+        expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online');
+    });
+
     describe('initial state', () => {
         it('starts with only the local tab active', () => {
             const { result } = renderHook(() => useAITabManager());

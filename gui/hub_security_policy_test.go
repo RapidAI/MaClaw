@@ -482,6 +482,51 @@ func TestPersistHubSecurityPolicyClearsRemovedSliceSettings(t *testing.T) {
 	}
 }
 
+func TestPersistHubSecurityPolicyPreservesIndependentBlockAll(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+
+	app.persistHubSecurityPolicy(&HubSecurityPolicy{
+		CentralizedSecurity:    false,
+		SkillSourcesRestricted: true,
+		SkillSourcesAllowed:    []string{},
+	})
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.SkillSourcesAllowed) != 1 || cfg.SkillSourcesAllowed[0] != "__none__" {
+		t.Fatalf("SkillSourcesAllowed = %#v, want block-all sentinel", cfg.SkillSourcesAllowed)
+	}
+}
+
+func TestPersistHubSecurityPolicyPreservesCentralizedBlockAll(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+
+	app.persistHubSecurityPolicy(&HubSecurityPolicy{
+		CentralizedSecurity: true,
+		Policy: &HubEffectivePolicy{
+			YoloModeAllowed:        true,
+			SkillSourcesRestricted: true,
+			SkillSourcesAllowed:    []string{},
+		},
+	})
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.SkillSourcesAllowed) != 1 || cfg.SkillSourcesAllowed[0] != "__none__" {
+		t.Fatalf("SkillSourcesAllowed = %#v, want block-all sentinel", cfg.SkillSourcesAllowed)
+	}
+}
+
 func TestIsSkillSourceAllowedNormalizesAliases(t *testing.T) {
 	app := &App{}
 	app.hubSecurityCache.mu.Lock()

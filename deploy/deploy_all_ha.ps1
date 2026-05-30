@@ -141,6 +141,32 @@ function New-CleanDirectory {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
 }
 
+function Assert-DeployFileExists {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw ("Missing deploy payload: {0} ({1})" -f $Label, $Path)
+    }
+}
+
+function Assert-DeployDirectoryHasFiles {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw ("Missing deploy directory: {0} ({1})" -f $Label, $Path)
+    }
+    $file = Get-ChildItem -LiteralPath $Path -File -Recurse -Force | Select-Object -First 1
+    if ($null -eq $file) {
+        throw ("Deploy directory is empty: {0} ({1})" -f $Label, $Path)
+    }
+}
+
 function Test-StageExcludedPath {
     param(
         [string]$RelativePath,
@@ -319,6 +345,11 @@ function Stage-DeployAssets {
             Copy-StageDirectory -SourceRoot $src -DestinationRoot $dst -ExcludePaths $dir.ExcludePaths -ExcludeFilePatterns @('*.exe', '*.exe~')
         }
     }
+
+    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hubcenter\web\admin') -Label 'hubcenter admin web assets'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\admin-core.js') -Label 'hubcenter admin core script'
+    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\admin') -Label 'hub admin web assets'
+    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\dist') -Label 'hub pwa web dist'
 }
 
 function Build-LocalBinaries {
@@ -458,6 +489,21 @@ function Write-InventoryFile {
             CorporateEmailDomain  = ''
             CorporateEmailDomains = @()
             AcceptPublicSignup    = `$true
+        },
+        @{
+            FileName              = 'hub2-maclaw.yaml'
+            PublicBaseURL         = 'https://hub2.maclaw.top'
+            PrimaryCenterBaseURL  = 'https://hubs2.maclaw.top'
+            CenterBaseURLs        = @(
+                'https://hubs.mypapers.top',
+                'https://hubs.maclaw.top',
+                'https://hubs2.maclaw.top'
+            )
+            DatabaseDSN           = './data/codeclaw-hub.db'
+            Visibility            = 'shared'
+            CorporateEmailDomain  = ''
+            CorporateEmailDomains = @()
+            AcceptPublicSignup    = `$true
         }
     )
 }
@@ -540,6 +586,26 @@ function Write-RemoteScript {
         '  ps -eo pid=,args= | awk -v cmd="$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME" ''$2 == cmd { print $1 }'' | while read -r pid; do',
         '    if [ -n "${pid:-}" ]; then',
         '      echo "[remote] Stopping stale hubcenter process before DB rebuild: $pid"',
+        '      kill "$pid" 2>/dev/null || true',
+        '      sleep 1',
+        '      if kill -0 "$pid" 2>/dev/null; then',
+        '        kill -9 "$pid" 2>/dev/null || true',
+        '      fi',
+        '    fi',
+        '  done',
+        '  ps -eo pid=,args= | awk -v dir="$REMOTE_HUBCENTER_DIR/" ''index($0, dir) && ($0 ~ /maclaw-hubcenter/ || $0 ~ /tigerclaw-hubcenter/) { print $1 }'' | while read -r pid; do',
+        '    if [ -n "${pid:-}" ] && [ "$pid" != "$$" ]; then',
+        '      echo "[remote] Stopping hubcenter process from deploy dir before update: $pid"',
+        '      kill "$pid" 2>/dev/null || true',
+        '      sleep 1',
+        '      if kill -0 "$pid" 2>/dev/null; then',
+        '        kill -9 "$pid" 2>/dev/null || true',
+        '      fi',
+        '    fi',
+        '  done',
+        '  ps -eo pid=,args= | awk ''$0 ~ /(^|[\/ ])(maclaw-hubcenter|tigerclaw-hubcenter)( |$)/ { print $1 }'' | while read -r pid; do',
+        '    if [ -n "${pid:-}" ] && [ "$pid" != "$$" ]; then',
+        '      echo "[remote] Stopping hubcenter process by binary name before update: $pid"',
         '      kill "$pid" 2>/dev/null || true',
         '      sleep 1',
         '      if kill -0 "$pid" 2>/dev/null; then',
@@ -719,6 +785,7 @@ function Write-RemoteScript {
         '    echo "[ERROR] Missing hubcenter binary: $SRC_ROOT/bin/$HUBCENTER_BINARY_NAME" >&2',
         '    exit 1',
         '  fi',
+        '  stop_hubcenter_process',
         '  cp -f "$SRC_ROOT/bin/$HUBCENTER_BINARY_NAME" "$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME"',
         '  chmod +x "$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME"',
         '  if [ -f "$SRC_ROOT/hubcenter/start.sh" ]; then',
@@ -888,11 +955,24 @@ function Invoke-PscpUpload {
 function Invoke-UrlStatusCheck {
     param(
         [string]$Url,
+        [string]$Method = 'Get',
+        [string]$Body = $null,
+        [string]$ContentType = 'application/json',
         [int]$TimeoutSec = 10
     )
 
     try {
-        $response = Invoke-WebRequest -Uri $Url -Method Get -UseBasicParsing -TimeoutSec $TimeoutSec
+        $args = @{
+            Uri = $Url
+            Method = $Method
+            UseBasicParsing = $true
+            TimeoutSec = $TimeoutSec
+        }
+        if (-not [string]::IsNullOrEmpty($Body) -and $Method -notin @('Get', 'Head')) {
+            $args.Body = $Body
+            $args.ContentType = $ContentType
+        }
+        $response = Invoke-WebRequest @args
         return [int]$response.StatusCode
     }
     catch {
@@ -926,7 +1006,8 @@ function Invoke-PostDeploySmokeCheck {
     foreach ($target in $Targets) {
         $checks = @(
             [pscustomobject]@{ Label = 'hubcenter healthz'; Url = ("https://{0}/healthz" -f $target.Host); Want = 200 },
-            [pscustomobject]@{ Label = 'hubcenter admin'; Url = ("https://{0}/admin" -f $target.Host); Want = 200 }
+            [pscustomobject]@{ Label = 'hubcenter admin'; Url = ("https://{0}/admin" -f $target.Host); Want = 200 },
+            [pscustomobject]@{ Label = 'hubcenter hub action route'; Url = ("https://{0}/api/admin/hubs/registration-policy" -f $target.Host); Method = 'Post'; Body = '{"hub_id":"smoke"}'; Want = 401 }
         )
         if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
             $checks += [pscustomobject]@{ Label = 'hub healthz'; Url = ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
@@ -935,7 +1016,9 @@ function Invoke-PostDeploySmokeCheck {
 
         foreach ($check in $checks) {
             try {
-                $status = Invoke-UrlStatusCheck -Url $check.Url -TimeoutSec $TimeoutSec
+                $method = if ($check.PSObject.Properties.Name -contains 'Method') { $check.Method } else { 'Get' }
+                $body = if (($check.PSObject.Properties.Name -contains 'Body') -and -not [string]::IsNullOrEmpty($check.Body)) { $check.Body } else { $null }
+                $status = Invoke-UrlStatusCheck -Url $check.Url -Method $method -Body $body -TimeoutSec $TimeoutSec
                 Write-Host ("  - {0}: {1} -> {2}" -f $target.Host, $check.Label, $status)
                 if ($status -ne $check.Want) {
                     $failures += ("{0}: {1} expected {2}, got {3} ({4})" -f $target.Host, $check.Label, $check.Want, $status, $check.Url)
@@ -1039,7 +1122,7 @@ $targets = @(
     [pscustomobject]@{
         Name = 'hc-3'
         Host = Get-TargetSetting 'DEPLOY_HOST' 'hc-3' 'hubs2.maclaw.top'
-        HostKey = Get-EnvOrDefault 'DEPLOY_HOSTKEY_HC3' 'ssh-ed25519 255 SHA256:zmZI3syY35EV3kgVz1xjpqHBiU+CzfnmO+QPGcL76Mc'
+        HostKey = Get-EnvOrDefault 'DEPLOY_HOSTKEY_HC3' 'ssh-ed25519 255 SHA256:e4P6+FeRZk+ERuReXtR+bE95uZCm1v2Ebei97bdJ5s4'
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-3' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-3' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-3' '/data/soft/hubcenter'
@@ -1127,7 +1210,7 @@ try {
     Write-Host '[3/9] Preparing build workspace...' -ForegroundColor Cyan
     New-CleanDirectory -Path $buildRoot
     New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $renderedDir -Force | Out-Null
+    New-CleanDirectory -Path $renderedDir
 
     Write-Host '[4/9] Rendering hubcenter/hub configs...' -ForegroundColor Cyan
     Write-InventoryFile -Path $inventoryPath -ClusterSecret $clusterSecret
@@ -1157,6 +1240,11 @@ try {
         $hubCenterConfigPath = Join-Path $renderedDir $target.HubCenterConfig
         $hubConfigPath = if ($target.DeployHub) { Join-Path $renderedDir $target.HubConfig } else { '' }
         $ensureHubModels = '0'
+
+        Assert-DeployFileExists -Path $hubCenterConfigPath -Label ("hubcenter config for {0}" -f $target.Name)
+        if ($target.DeployHub) {
+            Assert-DeployFileExists -Path $hubConfigPath -Label ("hub config for {0}" -f $target.Name)
+        }
 
         Write-Host ''
         Write-Host ("[8/9][{0}/{1}] Uploading artifacts to {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan

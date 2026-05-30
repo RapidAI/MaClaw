@@ -592,9 +592,17 @@ func adminOpaqueHubIDCompat(next http.Handler, adminService *auth.AdminService, 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "/api/admin/hubs/"
 		escapedPath := r.URL.EscapedPath()
+		if r.Method == http.MethodDelete && escapedPath == strings.TrimSuffix(prefix, "/") {
+			deleteHandler.ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(escapedPath, prefix) {
 			afterPrefix := strings.TrimPrefix(escapedPath, prefix)
 			for _, route := range routes {
+				if r.Method == route.method && afterPrefix == strings.TrimPrefix(route.suffix, "/") {
+					route.handler.ServeHTTP(w, r)
+					return
+				}
 				if r.Method != route.method || !strings.HasSuffix(afterPrefix, route.suffix) {
 					continue
 				}

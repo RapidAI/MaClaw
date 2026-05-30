@@ -114,8 +114,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .md-content a { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 2px; }
 .md-content blockquote { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--line-strong); color: var(--muted); background: color-mix(in srgb, var(--panel-muted) 58%, transparent); border-radius: 0 8px 8px 0; white-space: pre-wrap; }
 .md-content hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0 4px; }
-.md-content .md-table-wrap { margin: 8px 0 0; max-width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
-.md-content table { width: 100%; border-collapse: collapse; font-size: .94em; }
+.md-content .md-table-wrap { margin: 8px 0 0; max-width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.md-content table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: .94em; white-space: normal; }
 .md-content th, .md-content td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); padding: 7px 9px; text-align: left; vertical-align: top; }
 .md-content th:last-child, .md-content td:last-child { border-right: 0; }
 .md-content tr:last-child td { border-bottom: 0; }
@@ -213,6 +213,10 @@ pre.code { margin: 0; overflow: auto; max-height: 320px; padding: 12px; border-r
 .knowledge-import-grid textarea { min-height: 120px; }
 .knowledge-picker-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .knowledge-picker-row button { white-space: nowrap; }
+.knowledge-progress { min-height: 24px; color: var(--accent-strong); font-weight: 700; }
+.knowledge-progress:empty { display: none; }
+.knowledge-field-error { border-color: var(--danger) !important; background: var(--danger-soft) !important; }
+.knowledge-field-help { margin: -2px 0 4px; font-size: 12px; }
 .inline-check { display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .inline-check input { width: auto; }
 #knowledgeImportStatus:empty { display: none; }

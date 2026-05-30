@@ -3,6 +3,7 @@ import { ArchiveProject, GetArchivedExperience, GetProjectScene, HideTask, OpenF
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
+import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
 
@@ -105,6 +106,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; item: ProjectSearchItem } | null>(null);
     const [renamingPath, setRenamingPath] = useState<string | null>(null);
     const [renameVal, setRenameVal] = useState("");
+    const [forkNameOpen, setForkNameOpen] = useState(false);
     const [archivedExperience, setArchivedExperience] = useState<{ name: string; content: string } | null>(null);
     const [archivedLoading, setArchivedLoading] = useState(false);
     const [sceneDetail, setSceneDetail] = useState<ProjectSceneDetail | null>(null);
@@ -178,11 +180,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
                     <button
                         type="button"
                         onClick={() => {
-                            // TODO: Replace window.prompt with inline input for better UX in Wails WebView.
-                            const name = prompt(localizeText(lang, "Task name (optional):", "\u4efb\u52a1\u540d\u79f0\uff08\u53ef\u9009\uff09:"), "");
-                            if (name === null) return; // cancelled
-                            search.close();
-                            onForkCurrentChat(name.trim());
+                            setForkNameOpen(true);
                         }}
                         style={{ background: "none", border: "none", cursor: "pointer", color: t.headingColor, fontSize: "16px", padding: "2px 4px", lineHeight: 1, flexShrink: 0, fontWeight: 700 }}
                         title={localizeText(lang, "New task from current chat", "\u4ece\u5f53\u524d\u5bf9\u8bdd\u65b0\u5efa\u4efb\u52a1")}
@@ -190,6 +188,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
                 )}
                 <button {...(inline ? { onMouseDown: (event: React.MouseEvent) => { event.preventDefault(); event.stopPropagation(); search.close(); } } : { onClick: () => search.close() })} style={{ background: "none", border: "none", cursor: "pointer", color: t.text, opacity: 0.5, fontSize: "12px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 }} title={localizeText(lang, "Close", "\u5173\u95ed")}>{"x"}</button>
             </div>
+            <ProjectSearchForkForm open={forkNameOpen} lang={lang} theme={t} onCancel={() => setForkNameOpen(false)} onSubmit={name => { setForkNameOpen(false); search.close(); onForkCurrentChat?.(name); }} />
             <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
                 {search.loading && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
                 {!search.loading && visibleResults.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "\u672a\u627e\u5230\u4efb\u52a1") : localizeText(lang, "No recent tasks", "\u6682\u65e0\u6700\u8fd1\u4efb\u52a1")}</div>}

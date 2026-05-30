@@ -92,6 +92,7 @@ import {
 
 type Props = {
     lang?: string;
+    showToastMessage?: (message: string, duration?: number) => void;
 };
 
 type Source = {
@@ -1143,7 +1144,7 @@ export function knowledgeHealthActionManualLabel(action: any) {
 type KnowledgeSubTab = 'overview' | 'ingest' | 'search' | 'sources' | 'quality';
 
 
-export function KnowledgeSettingsPanel({ lang }: Props) {
+export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const t = (en: string, zhHans: string, zhHant: string = zhHans) => (
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
     );
@@ -1159,7 +1160,6 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [executionContext, setExecutionContext] = useState<{ source?: string; action?: string; dryRun?: boolean } | null>(null);
     const [importJob, setImportJob] = useState<ImportJob | null>(null);
     const [operationResult, setOperationResult] = useState<any>(null);
-    const [successMessage, setSuccessMessage] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const [busy, setBusy] = useState('');
@@ -1174,6 +1174,10 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [showImportDialog, setShowImportDialog] = useState(false);
     const [confirmDialog, setConfirmDialog] = useState<{ show: boolean; title: string; message: string; onConfirm: () => void }>({ show: false, title: '', message: '', onConfirm: () => {} });
     const [deepCrawlBusy, setDeepCrawlBusy] = useState(false);
+
+    const notifySuccess = useCallback((message: string) => {
+        showToastMessage?.(message, 3000);
+    }, [showToastMessage]);
 
     const confirmT = (key: string) => {
         const isZh = lang?.startsWith('zh') ?? false;
@@ -1241,12 +1245,6 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
         void refresh();
     }, []);
 
-    useEffect(() => {
-        if (!successMessage) return;
-        const timer = setTimeout(() => setSuccessMessage(''), 6000);
-        return () => clearTimeout(timer);
-    }, [successMessage]);
-
     const summary = knowledgeHealthSummaryModel(health);
     const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
     const knowledgeTabs = useMemo(() => ([
@@ -1278,10 +1276,9 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
         return nextSources;
     };
 
-    const runTask = async (name: string, task: () => Promise<any>, options: { refreshSources?: boolean; refreshHealth?: boolean } = {}) => {
+    const runTask = async (name: string, task: () => Promise<any>, options: { refreshSources?: boolean; refreshHealth?: boolean; successMessage?: string | false } = {}) => {
         setBusy(name);
         setError('');
-        setSuccessMessage('');
         if (name !== 'executeQuality') {
             setExecutionResult(null);
             setExecutionContext(null);
@@ -1291,6 +1288,9 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             setOperationResult(result ?? { ok: true });
             if (options.refreshSources) await refreshSourceList();
             if (options.refreshHealth) await refresh();
+            if (options.successMessage !== false) {
+                notifySuccess(options.successMessage || t('Operation completed successfully.', '操作成功完成。', '操作成功完成。'));
+            }
             return result;
         } catch (err: any) {
             setError(err?.message || String(err));
@@ -1335,12 +1335,12 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             distill_mode: textForm.distillMode,
             labels: parseLabelList(textForm.labels),
             auto_labels: true,
-        }), { refreshSources: true, refreshHealth: true });
+        }), { refreshSources: true, refreshHealth: true, successMessage: false });
         if (result) {
             if (result.save_status === 'duplicate') {
-                setSuccessMessage(t('⚠️ Content already exists in knowledge base (updated).', '⚠️ 内容已存在于知识库中（已更新）。'));
+                notifySuccess(t('⚠️ Content already exists in knowledge base (updated).', '⚠️ 内容已存在于知识库中（已更新）。'));
             } else {
-                setSuccessMessage(t('✅ Text saved to knowledge base successfully.', '✅ 文本已成功保存到知识库。'));
+                notifySuccess(t('✅ Text saved to knowledge base successfully.', '✅ 文本已成功保存到知识库。'));
             }
         }
     };
@@ -1353,14 +1353,14 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
         }
         const result = await runTask('saveURLs', () => urls.length === 1
             ? KnowledgeSaveURL(urls[0], urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels)
-            : KnowledgeSaveURLs(urls, urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels), { refreshSources: true, refreshHealth: true });
+            : KnowledgeSaveURLs(urls, urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels), { refreshSources: true, refreshHealth: true, successMessage: false });
         if (result) {
             if (urls.length === 1) {
                 // Single URL: result is a Source with save_status
                 if (result.save_status === 'duplicate') {
-                    setSuccessMessage(t('⚠️ URL already exists in knowledge base (updated).', '⚠️ URL 已存在于知识库中（已更新）。'));
+                    notifySuccess(t('⚠️ URL already exists in knowledge base (updated).', '⚠️ URL 已存在于知识库中（已更新）。'));
                 } else {
-                    setSuccessMessage(t('✅ URL saved to knowledge base successfully.', '✅ URL 已成功保存到知识库。'));
+                    notifySuccess(t('✅ URL saved to knowledge base successfully.', '✅ URL 已成功保存到知识库。'));
                 }
             } else {
                 // Batch URLs: result is URLBatchSaveResult with duplicates count
@@ -1382,7 +1382,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                 if (failed > 0) {
                     msg += t(` ${failed} failed.`, ` ${failed} 个失败。`);
                 }
-                setSuccessMessage(msg);
+                notifySuccess(msg);
             }
         }
     };
@@ -1558,7 +1558,6 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                 </div>
             </div>
             {error ? <div className="knowledge-alert knowledge-alert--error">{error}</div> : null}
-            {successMessage ? <div className="knowledge-alert knowledge-alert--success">{successMessage}</div> : null}
             <div className="settings-subtab-bar settings-subtab-bar--knowledge" role="tablist" aria-label={t('Knowledge sections', '知识库分区')}>
                 {knowledgeTabs.map(tab => (
                     <button

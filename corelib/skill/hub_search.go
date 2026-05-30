@@ -169,6 +169,8 @@ func normalizeHubSearchSource(source string) string {
 		return "clawhub"
 	case "git_hub":
 		return "github"
+	case "zip", "local_upload":
+		return "local"
 	default:
 		return strings.TrimSpace(strings.ToLower(source))
 	}

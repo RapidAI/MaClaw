@@ -57,10 +57,10 @@ func NewSecurityService(
 	return svc
 }
 
-// SkillSourcesResolver resolves per-user skill source restrictions.
+// SkillSourcesResolver resolves per-runtime-user skill source restrictions.
 // Defined here (consumer side) to avoid import cycles with hub/internal/skill.
 type SkillSourcesResolver interface {
-	ResolveForUser(ctx context.Context, email, tenantID string) []string
+	ResolveForUser(ctx context.Context, userID, tenantID string) []string
 }
 
 // SetSkillSourcesProvider injects the skill source control provider.
@@ -607,7 +607,7 @@ func validatePolicyOverrides(policy map[string]interface{}) error {
 
 func isAllowedSkillSourceValue(source string) bool {
 	switch canonicalSource(source) {
-	case "skillhub", "clawhub", "github", "enterprise_hub":
+	case "skillhub", "clawhub", "github", "enterprise_hub", "local":
 		return true
 	default:
 		return false
@@ -812,6 +812,11 @@ func applyPolicyOverrides(p *EffectivePolicy, overrides map[string]interface{}) 
 		case "skill_sources_allowed":
 			if arr, ok := toStringSlice(v); ok {
 				p.SkillSourcesAllowed = arr
+				p.SkillSourcesRestricted = true
+			}
+		case "skill_sources_restricted":
+			if b, ok := toBool(v); ok {
+				p.SkillSourcesRestricted = b
 			}
 		}
 	}
@@ -887,13 +892,14 @@ func policyToMap(p EffectivePolicy) map[string]interface{} {
 		"yolo_mode_allowed":      p.YoloModeAllowed,
 		"smart_route_enabled":    p.SmartRouteEnabled,
 	}
-	if len(p.SkillSourcesAllowed) > 0 {
+	if p.SkillSourcesRestricted || len(p.SkillSourcesAllowed) > 0 {
 		// Convert to []interface{} for JSON compatibility in sparse override storage.
 		arr := make([]interface{}, len(p.SkillSourcesAllowed))
 		for i, s := range p.SkillSourcesAllowed {
 			arr[i] = s
 		}
 		m["skill_sources_allowed"] = arr
+		m["skill_sources_restricted"] = true
 	}
 	if len(p.NetworkAllowlist) > 0 {
 		arr := make([]interface{}, len(p.NetworkAllowlist))
@@ -1157,12 +1163,13 @@ func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string)
 		// control if configured (it's an independent control plane).
 		if s.skillSourcesProvider != nil {
 			tenantID := s.resolveUserTenantID(ctx, userID)
-			srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, policyUser, tenantID)
+			srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, userID, tenantID)
 			if srcAllowed != nil {
 				// Push skill source restriction even without centralized security.
 				return &HeartbeatSecurityPayload{
-					CentralizedSecurity: false,
-					SkillSourcesAllowed: srcAllowed,
+					CentralizedSecurity:    false,
+					SkillSourcesAllowed:    canonicalSourceList(srcAllowed),
+					SkillSourcesRestricted: true,
 				}, nil
 			}
 		}
@@ -1185,10 +1192,11 @@ func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string)
 	// EffectivePolicy cache (sync.Map stores pointers).
 	if s.skillSourcesProvider != nil {
 		tenantID := s.resolveUserTenantID(ctx, userID)
-		srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, policyUser, tenantID)
-		if srcAllowed != nil || len(policy.SkillSourcesAllowed) > 0 {
+		srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, userID, tenantID)
+		groupRestricted := policy.SkillSourcesRestricted || len(policy.SkillSourcesAllowed) > 0
+		if srcAllowed != nil || groupRestricted {
 			policyCopy := *policy
-			policyCopy.SkillSourcesAllowed = intersectSources(policy.SkillSourcesAllowed, srcAllowed)
+			policyCopy.SkillSourcesAllowed, policyCopy.SkillSourcesRestricted = mergeSkillSourceRestrictions(policy.SkillSourcesAllowed, groupRestricted, srcAllowed)
 			policy = &policyCopy
 		}
 	}
@@ -1248,6 +1256,27 @@ func intersectSources(a, b []string) []string {
 		}
 	}
 	return result
+}
+
+func mergeSkillSourceRestrictions(groupAllowed []string, groupRestricted bool, sourceAllowed []string) ([]string, bool) {
+	sourceRestricted := sourceAllowed != nil
+	if !groupRestricted && !sourceRestricted {
+		return nil, false
+	}
+	if groupRestricted && sourceRestricted {
+		return intersectRestrictedSources(groupAllowed, sourceAllowed), true
+	}
+	if groupRestricted {
+		return canonicalSourceList(groupAllowed), true
+	}
+	return canonicalSourceList(sourceAllowed), true
+}
+
+func intersectRestrictedSources(a, b []string) []string {
+	if len(a) == 0 || len(b) == 0 {
+		return []string{}
+	}
+	return intersectSources(a, b)
 }
 
 func canonicalSourceList(sources []string) []string {

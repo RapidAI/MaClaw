@@ -34,6 +34,7 @@ const platformProviderRegistryKey = "ve_platform_provider_registry"
 const macLawSrvRuntimeRegistryKey = "maclawsrv_runtime_registry"
 const platformRequestNonceRegistryKey = "ve_platform_request_nonce_registry"
 const platformRequestReplayWindow = 10 * time.Minute
+const platformSignedBodyMaxBytes = int64(veAvatarDataURLMaxSize + 512*1024)
 const platformA2ADeliveryTimeout = time.Duration(corelib.DefaultAgentTimeoutSec) * time.Second
 const maclawSrvRuntimePlatformID = "maclawsrv"
 
@@ -95,6 +96,7 @@ type platformEmployeeRequest struct {
 	VirtualEmail       string `json:"virtual_email"`
 	SkillDescription   string `json:"skill_description"`
 	SkillTags          string `json:"skill_tags"`
+	AvatarDataURL      string `json:"avatar_data_url"`
 	SourceType         string `json:"source_type"`
 	AccountType        string `json:"account_type"`
 	ReviewStatus       string `json:"review_status"`
@@ -1184,6 +1186,22 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 			writeError(w, http.StatusBadRequest, "EMPLOYEE_ID_REQUIRED", "employee_id is required")
 			return
 		}
+		avatarDataURL := strings.TrimSpace(req.AvatarDataURL)
+		if avatarDataURL != "" {
+			if len(avatarDataURL) > veAvatarDataURLMaxSize {
+				writeError(w, http.StatusBadRequest, "INVALID_EMPLOYEE", "avatar image is too large")
+				return
+			}
+			valid, tooLarge := validateVEAvatarDataURL(avatarDataURL)
+			if tooLarge {
+				writeError(w, http.StatusBadRequest, "INVALID_EMPLOYEE", "avatar image is too large")
+				return
+			}
+			if !valid {
+				writeError(w, http.StatusBadRequest, "INVALID_EMPLOYEE", "avatar image must be a data URL")
+				return
+			}
+		}
 		if users == nil {
 			writeError(w, http.StatusServiceUnavailable, "USER_REPOSITORY_UNAVAILABLE", "user repository is unavailable")
 			return
@@ -1245,7 +1263,7 @@ func PlatformEmployeeRegisterHandler(system store.SystemSettingsRepository, tena
 		machineIDSource := platformEmployeeMachineIDSource(reg, req.EmployeeID, platformEmployeeID)
 		machineID := "ve_" + strings.Trim(machineIDSource, "_")
 		veID := "ve_" + strings.TrimPrefix(machineID, "ve_")
-		veEntry := digitalEmployeeEntry{ID: veID, MachineID: machineID, EmployeeType: veEmployeeTypeVirtual, PlatformID: entry.PlatformID, PlatformEmployeeID: platformEmployeeID, RuntimeProviderID: runtimeProviderID, OwnerUserID: userID, OwnerEmail: email, Name: name, SkillDescription: strings.TrimSpace(req.SkillDescription), AccessPolicy: "public", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: time.Now().UTC().Format(time.RFC3339), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		veEntry := digitalEmployeeEntry{ID: veID, MachineID: machineID, EmployeeType: veEmployeeTypeVirtual, PlatformID: entry.PlatformID, PlatformEmployeeID: platformEmployeeID, RuntimeProviderID: runtimeProviderID, OwnerUserID: userID, OwnerEmail: email, Name: name, SkillDescription: strings.TrimSpace(req.SkillDescription), AvatarDataURL: avatarDataURL, AccessPolicy: "public", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline, RegisteredAt: time.Now().UTC().Format(time.RFC3339), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 		if i := findPlatformEmployeeRegistrationIndex(reg, veID, machineID, entry.PlatformID, platformEmployeeID); i >= 0 {
 			veEntry.RegisteredAt = reg.Employees[i].RegisteredAt
 			reg.Employees[i] = veEntry
@@ -1777,9 +1795,12 @@ func readSignedPlatformBody(r *http.Request) ([]byte, string, string, string, er
 	if len(nonce) > 128 {
 		return nil, "", "", "", errors.New("X-VE-Nonce is too long")
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, platformSignedBodyMaxBytes+1))
 	if err != nil {
 		return nil, "", "", "", err
+	}
+	if int64(len(body)) > platformSignedBodyMaxBytes {
+		return nil, "", "", "", errors.New("request body is too large")
 	}
 	return body, platformID, timestamp, nonce, nil
 }

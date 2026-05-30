@@ -92,9 +92,9 @@ func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userM
 		return
 	}
 
-	b.WriteString("\n## 知识库参考（自动检索）\n")
-	b.WriteString("以下内容来自知识库，与当前问题可能相关。请自然引用相关内容；不相关则忽略。\n")
-	b.WriteString("如需更多信息，可调用 knowledge_search 或 knowledge_context_pack 深入检索。\n\n")
+	b.WriteString("\n## 知识库参考（自动检索） / evidence\n")
+	b.WriteString("以下条目是来自知识库的依据。只使用相关条目回答，回答时标注来源/引用；依据中没有的事实必须说“材料中未提及”或“无法确认”。\n")
+	b.WriteString("数量/列表类问题必须先枚举有依据的项目，再给总数；如需更多依据，可调用 knowledge_search 或 knowledge_context_pack。\n\n")
 
 	injected := 0
 	for _, r := range results {
@@ -104,13 +104,6 @@ func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userM
 		if r.Score < knowledgeAutoRecallScoreThreshold {
 			break
 		}
-		source := r.Source.Title
-		if source == "" {
-			source = r.Source.RelativePath
-		}
-		if source == "" {
-			source = r.Source.URI
-		}
 		text := knowledgeSnippet(r)
 		if text == "" {
 			continue
@@ -118,9 +111,37 @@ func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userM
 		if len([]rune(text)) > 200 {
 			text = string([]rune(text)[:200]) + "..."
 		}
-		b.WriteString(fmt.Sprintf("- [%s] %s\n", source, text))
+		b.WriteString(fmt.Sprintf("- Source: %s; Citation: %s; Evidence: %s\n", knowledgeSourceLabel(r), knowledgeCitationLabel(r), text))
 		injected++
 	}
+}
+
+func knowledgeSourceLabel(r knowledge.SearchResult) string {
+	for _, value := range []string{r.Source.Title, r.Source.RelativePath, r.Source.URI, r.Source.ID} {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return "unknown source"
+}
+
+func knowledgeCitationLabel(r knowledge.SearchResult) string {
+	parts := make([]string, 0, 4)
+	if strings.TrimSpace(r.Citation) != "" {
+		parts = append(parts, strings.TrimSpace(r.Citation))
+	}
+	if r.Page > 0 {
+		parts = append(parts, fmt.Sprintf("page %d", r.Page))
+	}
+	for _, value := range []string{r.SheetName, r.RowRange, r.ColRange, r.NodeTitle} {
+		if strings.TrimSpace(value) != "" {
+			parts = append(parts, strings.TrimSpace(value))
+		}
+	}
+	if len(parts) == 0 {
+		return "source item"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // knowledgeSnippet extracts the best display text from a search result.
@@ -533,6 +554,7 @@ func buildSearchOptions(args map[string]interface{}, tenantID, userID string) kn
 func formatSearchResults(results []knowledge.SearchResult) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d results:\n\n", len(results)))
+	b.WriteString("Use these as evidence only. Cite Source/Citation when answering, and say material is not mentioned or cannot be confirmed when no result supports a fact.\n\n")
 	for i, r := range results {
 		b.WriteString(fmt.Sprintf("### Result %d (score: %.2f, type: %s)\n", i+1, r.Score, r.ResultType))
 		if r.CardTitle != "" {
@@ -550,16 +572,8 @@ func formatSearchResults(results []knowledge.SearchResult) string {
 		if r.Subject != "" {
 			b.WriteString(fmt.Sprintf("**Fact**: %s %s %s\n", r.Subject, r.Predicate, r.Object))
 		}
-		if r.Citation != "" {
-			b.WriteString(fmt.Sprintf("**Citation**: %s\n", r.Citation))
-		}
-		source := r.Source.Title
-		if source == "" {
-			source = r.Source.URI
-		}
-		if source != "" {
-			b.WriteString(fmt.Sprintf("**Source**: %s\n", source))
-		}
+		b.WriteString(fmt.Sprintf("**Source**: %s\n", knowledgeSourceLabel(r)))
+		b.WriteString(fmt.Sprintf("**Citation**: %s\n", knowledgeCitationLabel(r)))
 		b.WriteString("\n")
 	}
 	return b.String()

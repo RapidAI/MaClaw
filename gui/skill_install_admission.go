@@ -101,7 +101,14 @@ func (a *App) securityPolicyMode() string {
 }
 
 func (a *App) skillInstallReviewNeedsConfirmation(report *cskill.ScanReport) bool {
+	return a.skillInstallReviewNeedsConfirmationForSource(report, "")
+}
+
+func (a *App) skillInstallReviewNeedsConfirmationForSource(report *cskill.ScanReport, source string) bool {
 	if report == nil || report.IsSafe() || a.isSecurityDeveloperMode() {
+		return false
+	}
+	if skillInstallAuditOnlyMarketplaceSource(source) {
 		return false
 	}
 	switch a.securityPolicyMode() {
@@ -115,15 +122,29 @@ func (a *App) skillInstallReviewNeedsConfirmation(report *cskill.ScanReport) boo
 }
 
 func (a *App) skillInstallScanShouldBlock(report *cskill.ScanReport) bool {
+	return a.skillInstallScanShouldBlockForSource(report, "")
+}
+
+func (a *App) skillInstallScanShouldBlockForSource(report *cskill.ScanReport, source string) bool {
 	if report == nil || report.IsSafe() || a.isSecurityDeveloperMode() {
+		return false
+	}
+	if skillInstallAuditOnlyMarketplaceSource(source) {
 		return false
 	}
 	return a.securityPolicyMode() == "strict" && (report.IsDangerous() || report.NeedsUserReview())
 }
 
 func (a *App) skillInstallFinalAuditAction(report *cskill.ScanReport) security.PolicyAction {
+	return a.skillInstallFinalAuditActionForSource(report, "")
+}
+
+func (a *App) skillInstallFinalAuditActionForSource(report *cskill.ScanReport, source string) security.PolicyAction {
 	if report == nil {
 		return security.PolicyAllow
+	}
+	if skillInstallAuditOnlyMarketplaceSource(source) && !report.IsSafe() {
+		return security.PolicyAudit
 	}
 	if a != nil && a.isSecurityDeveloperMode() {
 		if report.IsDangerous() || report.NeedsUserReview() {
@@ -140,12 +161,54 @@ func (a *App) skillInstallFinalAuditAction(report *cskill.ScanReport) security.P
 	return security.PolicyAllow
 }
 
+func skillInstallAuditOnlyMarketplaceSource(source string) bool {
+	switch normalizeSkillInstallAdmissionSource(source) {
+	case "skillhub", corelib.CapabilitySourceHubCenter, corelib.CapabilitySourceEnterpriseHub:
+		return true
+	default:
+		return false
+	}
+}
+
+func skillInstallRiskAllowedStatusForSource(source string) string {
+	if skillInstallAuditOnlyMarketplaceSource(source) {
+		return "Security scan recorded risk and allowed installation by trusted marketplace policy."
+	}
+	return "Security scan recorded risk and allowed installation by current policy."
+}
+
+func normalizeSkillInstallAdmissionSource(source string) string {
+	source = strings.TrimSpace(strings.ToLower(source))
+	switch source {
+	case "hubcenter", "hub_center", "hub center":
+		return corelib.CapabilitySourceHubCenter
+	case "skillmarket", "market", "skill_hub", "hub skill", "hub_skill", "hub", "skillhub":
+		return "skillhub"
+	case "enterprise", "enterprisehub", "enterprise_hub":
+		return corelib.CapabilitySourceEnterpriseHub
+	case "claw_hub":
+		return "clawhub"
+	case "git_hub":
+		return "github"
+	}
+	if strings.Contains(source, "enterprise") && strings.Contains(source, "hub") {
+		return corelib.CapabilitySourceEnterpriseHub
+	}
+	if strings.Contains(source, "hubcenter") || strings.Contains(source, "hub center") {
+		return corelib.CapabilitySourceHubCenter
+	}
+	if strings.Contains(source, "skillhub") || strings.Contains(source, "skillmarket") || strings.Contains(source, "hub skill") {
+		return "skillhub"
+	}
+	return source
+}
+
 func (a *App) skillSearchPolicySource() string {
 	if a == nil {
 		return "skillhub"
 	}
 	allowed := a.GetAllowedSkillSources()
-	if len(allowed) == 0 {
+	if allowed == nil {
 		return "skillhub"
 	}
 	for _, source := range allowed {
@@ -203,11 +266,7 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 		return false
 	}
 	if a.ctx == nil {
-		if strings.TrimSpace(a.testHomeDir) != "" || a.securityPolicyMode() != "strict" {
-			log.Printf("[skill-install-confirm] no UI context for skill %q; allowing install under %s mode", skillName, a.securityPolicyMode())
-			return true
-		}
-		log.Printf("[skill-install-confirm] no UI context for skill %q; rejecting high-risk install in strict mode", skillName)
+		log.Printf("[skill-install-confirm] no UI context for skill %q; rejecting high-risk install under %s mode", skillName, a.securityPolicyMode())
 		return false
 	}
 	if ctx == nil {
@@ -341,6 +400,17 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 			report.FinalLevel,
 			security.PolicyAllow,
 			fmt.Sprintf("pre-install scan allowed skill %s, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
+		)
+		return nil
+	}
+	if skillInstallAuditOnlyMarketplaceSource(source) {
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", skillInstallRiskAllowedStatusForSource(source), report)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"manual_skill_install",
+			report.FinalLevel,
+			security.PolicyAudit,
+			fmt.Sprintf("trusted marketplace policy recorded and allowed skill %s after pre-install scan, source=%s, scanned_by=%s, level=%s, summary=%s", entry.Name, normalizeSkillInstallAdmissionSource(source), report.ScannedBy, report.FinalLevel, report.Summary),
 		)
 		return nil
 	}

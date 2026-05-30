@@ -597,6 +597,130 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByText('stay in selected session')).toBeTruthy();
     });
 
+    it('auto-drains input queued during a busy turn once the assistant is idle', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, sendMessage };
+        props.state = { ...props.state, sending: true, streaming: false, ready: true };
+        const { getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'queued while busy' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while busy'));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('auto-drains a persisted type-ahead queue entry when the assistant is already idle', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'auto-drain-idle', text: 'queued before idle', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { queryByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued before idle'));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('waits for assistant readiness before auto-draining a persisted type-ahead entry', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'auto-drain-not-ready', text: 'queued until ready', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, sendMessage };
+        props.state = { ...props.state, messages: [], sending: false, streaming: false, ready: false };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, ready: true };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued until ready'));
+    });
+
+    it('auto-drains all restored queue entries one by one after restart', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'restore-one', text: 'restored first', attachments: [], createdAt: 1 },
+            { id: 'restore-two', text: 'restored second', attachments: [], createdAt: 2 },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { queryByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, 'restored first'));
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'restored second'));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('does not start the next restored queue entry until the current one is accepted', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'restore-slow-one', text: 'slow restored first', attachments: [], createdAt: 1 },
+            { id: 'restore-slow-two', text: 'slow restored second', attachments: [], createdAt: 2 },
+        ]));
+        let resolveFirst!: (value: boolean) => void;
+        const sendMessage = vi.fn((text: string) => {
+            if (text === 'slow restored first') {
+                return new Promise<boolean>((resolve) => { resolveFirst = resolve; });
+            }
+            return Promise.resolve(true);
+        });
+        renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+        expect(sendMessage).toHaveBeenCalledWith('slow restored first');
+        expect(sendMessage).not.toHaveBeenCalledWith('slow restored second');
+
+        resolveFirst(true);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'slow restored second'));
+    });
+
+    it('sanitizes restored queue attachments before auto-draining', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            {
+                id: 'restore-attachments',
+                text: 'restored with attachments',
+                attachments: [
+                    { filePath: ' D:\\cases\\report.pdf ', fileName: '', extension: '' },
+                    { filePath: '' },
+                    { bogus: true },
+                ],
+                createdAt: 1,
+            },
+            { id: 'restore-empty', text: '   ', attachments: [], createdAt: 2 },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+        const sentText = String(sendMessage.mock.calls[0]?.[0] || '');
+        expect(sentText).toContain('restored with attachments');
+        expect(sentText).toContain('D:\\cases\\report.pdf');
+        expect(sentText).not.toContain('[object Object]');
+    });
+
     it('does not downgrade rejected project guide fire into global supplementary injection', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const injectSupplementary = vi.fn().mockResolvedValue(true);
@@ -926,7 +1050,7 @@ describe('AIAssistantPanel property tests', () => {
 
     it('keeps a queued edit in the queue after Enter even when the assistant is idle', async () => {
         localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
-            { id: 'queued-idle-edit', text: 'queued before idle edit', attachments: [], createdAt: 1 },
+            { id: 'queued-idle-edit', text: 'queued before idle edit', attachments: [], createdAt: 1, autoDrain: false },
         ]));
         const sendMessage = vi.fn().mockResolvedValue(undefined);
         const { getByTestId, getByText } = renderPanel({
@@ -951,7 +1075,7 @@ describe('AIAssistantPanel property tests', () => {
 
     it('clears a queued edit without sending when the edited content is empty', async () => {
         localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
-            { id: 'queued-empty-edit', text: 'clear me from queue', attachments: [], createdAt: 1 },
+            { id: 'queued-empty-edit', text: 'clear me from queue', attachments: [], createdAt: 1, autoDrain: false },
         ]));
         const sendMessage = vi.fn().mockResolvedValue(undefined);
         const { getByTestId, getByText, queryByTestId } = renderPanel({
@@ -1070,7 +1194,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('unfinished-slot-project').textContent).toContain('D:/work/project');
         expect(getByTestId('unfinished-slot-status').textContent).toBeTruthy();
         expect(getByText('Resume previous task')).toBeTruthy();
-        expect(getByText('Start a new task')).toBeTruthy();
+        expect(getByText('Start new task')).toBeTruthy();
     });
 
     it('localizes unfinished slot status in Chinese', () => {
@@ -1093,6 +1217,36 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(getByTestId('unfinished-slot-status').textContent || '').toContain('已恢复');
+    });
+
+    it('localizes unfinished slot notice, title, and action labels in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Continue system optimization. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-localized',
+                    title: '继续优化系统性能',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-localized', style: 'default' },
+                        { label: 'Start new task', command: '__dismiss_unfinished__ slot-localized', style: 'default' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText(/检测到未完成任务/)).toBeTruthy();
+        expect(getByText('未完成项')).toBeTruthy();
+        expect(getByText('继续上次任务')).toBeTruthy();
+        expect(getByText('开始新任务')).toBeTruthy();
+        expect(queryByText('Unfinished item')).toBeNull();
+        expect(queryByText('Start new task')).toBeNull();
     });
 
     it('unfinished slot card buttons reuse executeAction', async () => {

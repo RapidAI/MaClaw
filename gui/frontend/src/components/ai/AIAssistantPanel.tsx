@@ -39,7 +39,6 @@ import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-
 function compactCodingAgentProgressMessages(messages: ChatMessage[]): ChatMessage[] {
     let latestCodingIndex = -1;
     const isCodingProgress = messages.map(message => !!parseCodingAgentProgress(message.content || ""));
@@ -52,7 +51,6 @@ function compactCodingAgentProgressMessages(messages: ChatMessage[]): ChatMessag
     if (latestCodingIndex < 0) return messages;
     return messages.filter((_message, index) => index === latestCodingIndex || !isCodingProgress[index]);
 }
-
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled } = props;
     const state = props.state || props;
@@ -145,11 +143,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         await clearHistory();
     }, [activeTab.id, activeTab.type, activeTab.veId, clearHistory, clearTabConversation]);
-
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const showChatUI = isLocalTabActive || isProjectTabActive;
-
     const activeSessionKey = isProjectTabActive && activeTab.projectPath
         ? `desktop-user:${activeTab.projectPath}`
         : 'desktop-user';
@@ -159,7 +155,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (getActiveSessionKey() === activeSessionKey) setActiveSessionKey('');
         };
     }, [activeSessionKey]);
-
     const [projectTabMessages, setProjectTabMessages] = useState<ChatMessage[]>([]);
     const [projectTabRouteVersion, setProjectTabRouteVersion] = useState(0);
     const activeTabIdRef = useRef<string>(activeTab.id);
@@ -172,7 +167,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const prevTab = tabState.tabs.find(t => t.id === prevTabId);
         if (prevTab && prevTab.type === "project") {
             const scrollTop = outputContainerRef.current?.scrollTop || 0;
-
             let historyToSave = projectTabMessages;
             if (sending && projectTabMsgBaselineRef.current >= 0 && projectTabRoundTabIdRef.current === prevTabId) {
                 const inFlightMessages = messages.slice(projectTabMsgBaselineRef.current);
@@ -285,11 +279,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         const unique = newMessages.filter((m: ChatMessage) => !existingIds.has(m.id));
                         return unique.length === 0 ? existingHistory : [...existingHistory, ...unique];
                     };
-
                     if (isProjectTabActive && activeTab.id === roundTabId) {
                         setProjectTabMessages(prev => appendUnique(prev));
                     }
-
                     const existingState = getTabState(roundTabId);
                     const baseHistory = isProjectTabActive && activeTab.id === roundTabId
                         ? mergeChatMessages(existingState?.history, projectTabMessages)
@@ -415,6 +407,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const prevSubmitLockedRef = useRef(submitLocked);
     const prevShowChatUIRef = useRef(showChatUI);
     const continueQueueDrainRef = useRef(false);
+    const queueAutoDrainArmedRef = useRef(false);
     const latestSubmitLockedRef = useRef(submitLocked);
     const latestShowChatUIRef = useRef(showChatUI);
     latestSubmitLockedRef.current = submitLocked;
@@ -587,7 +580,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const ext = "." + (fileName.split(".").pop() || "").toLowerCase();
                 attachments.push({ filePath: fp, isImage: isImageFilePath(fp), fileName, extension: ext });
             }
-            addEntry(inputValue, attachments);
+            addEntry(inputValue, attachments, { autoDrain: submitLocked });
+            if (submitLocked) {
+                queueAutoDrainArmedRef.current = true;
+            }
             resetHistoryBrowsing();
             updateInputValue("");
             setQueueEditDraftActive(false);
@@ -615,11 +611,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainRef.current = false;
+            queueAutoDrainArmedRef.current = false;
         }
-        const becameIdle = prevSubmitLockedRef.current && !submitLocked;
-        const returnedToChatIdle = !prevShowChatUIRef.current && showChatUI && !submitLocked;
-        const continueIdleDrain = continueQueueDrainRef.current && !submitLocked;
-        if ((becameIdle || returnedToChatIdle || continueIdleDrain) && showChatUI && queue.length > 0) {
+        const readyToDrainQueue = ready && showChatUI && !submitLocked;
+        const becameIdle = prevSubmitLockedRef.current && readyToDrainQueue;
+        const returnedToChatIdle = !prevShowChatUIRef.current && readyToDrainQueue;
+        const continueIdleDrain = continueQueueDrainRef.current && readyToDrainQueue;
+        const armedIdleDrain = queueAutoDrainArmedRef.current && readyToDrainQueue;
+        const persistedAutoDrain = !!queue[0]?.autoDrain && readyToDrainQueue;
+        if ((becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
             const entry = queue[0];
             if (firingEntryIdsRef.current.has(entry.id) || drainingEntryIdsRef.current.has(entry.id)) {
                 prevSubmitLockedRef.current = submitLocked;
@@ -627,6 +627,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 return;
             }
             continueQueueDrainRef.current = false;
+            queueAutoDrainArmedRef.current = false;
             drainingEntryIdsRef.current.add(entry.id);
             refreshQueueInFlight();
             const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
@@ -642,7 +643,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendMessageForTab, showChatUI, submitLocked]);
+    }, [queue, queueEditDraftActive, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendMessageForTab, showChatUI, submitLocked]);
     const appendProjectGuideReferenceEcho = useCallback((text: string, targetTabId: string | null) => {
         if (!targetTabId) return;
         const targetTab = tabState.tabs.find(tab => tab.id === targetTabId);

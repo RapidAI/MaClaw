@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -238,10 +239,16 @@ func TestPrepareVEAttachmentMessageDoesNotLeakLocalPathsForRemoteUpload(t *testi
 	if err != nil {
 		t.Fatalf("prepareVEAttachmentMessage remote: %v", err)
 	}
-	if msg.TextAttachments[0].LocalPath != "" || msg.ImageAttachments[0].LocalPath != "" || msg.FileAttachments[0].LocalPath != "" {
+	if len(msg.TextAttachments) != 0 {
+		t.Fatalf("remote text files should be sent through relay file attachments: %+v", msg)
+	}
+	if len(msg.FileAttachments) != 2 {
+		t.Fatalf("remote text and document files should both be relay file attachments: %+v", msg)
+	}
+	if msg.ImageAttachments[0].LocalPath != "" || msg.FileAttachments[0].LocalPath != "" || msg.FileAttachments[1].LocalPath != "" {
 		t.Fatalf("remote attachment message leaked local paths: %+v", msg)
 	}
-	if msg.ImageAttachments[0].FileURL == "" || msg.FileAttachments[0].FileURL == "" {
+	if msg.ImageAttachments[0].FileURL == "" || msg.FileAttachments[0].FileURL == "" || msg.FileAttachments[1].FileURL == "" {
 		t.Fatalf("remote file attachments must have file URLs: %+v", msg)
 	}
 
@@ -249,10 +256,16 @@ func TestPrepareVEAttachmentMessageDoesNotLeakLocalPathsForRemoteUpload(t *testi
 	if err != nil {
 		t.Fatalf("prepareVEAttachmentMessage local: %v", err)
 	}
-	if localMsg.TextAttachments[0].LocalPath != textPath || localMsg.ImageAttachments[0].LocalPath != imagePath || localMsg.FileAttachments[0].LocalPath != docPath {
+	if len(localMsg.TextAttachments) != 0 {
+		t.Fatalf("local text files should be passed as local-path file attachments: %+v", localMsg)
+	}
+	if len(localMsg.FileAttachments) != 2 {
+		t.Fatalf("local text and document files should both be file attachments: %+v", localMsg)
+	}
+	if localMsg.FileAttachments[0].LocalPath != textPath || localMsg.ImageAttachments[0].LocalPath != imagePath || localMsg.FileAttachments[1].LocalPath != docPath {
 		t.Fatalf("local attachment message missing local paths: %+v", localMsg)
 	}
-	if localMsg.ImageAttachments[0].FileURL != "" || localMsg.FileAttachments[0].FileURL != "" {
+	if localMsg.ImageAttachments[0].FileURL != "" || localMsg.FileAttachments[0].FileURL != "" || localMsg.FileAttachments[1].FileURL != "" {
 		t.Fatalf("local-only attachment message should not upload files: %+v", localMsg)
 	}
 }
@@ -296,26 +309,23 @@ func TestValidateFileSize(t *testing.T) {
 	}
 }
 
-func TestBase64EncodeFile(t *testing.T) {
+func TestPrepareVEAttachmentMessageAllowsLargeTextAsFileAttachment(t *testing.T) {
 	tmpDir := t.TempDir()
-	testFile := filepath.Join(tmpDir, "test.txt")
-	content := "Hello, World!"
-	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+	largeText := filepath.Join(tmpDir, "large.log")
+	if err := os.WriteFile(largeText, []byte(strings.Repeat("x", maxTextFileSize+1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	encoded, err := base64EncodeFile(testFile)
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{}}
+	msg, err := app.prepareVEAttachmentMessage("session-1", "large text", []string{largeText}, false)
 	if err != nil {
-		t.Fatalf("base64EncodeFile failed: %v", err)
+		t.Fatalf("prepareVEAttachmentMessage large text: %v", err)
 	}
-	if encoded != "SGVsbG8sIFdvcmxkIQ==" {
-		t.Errorf("unexpected encoding: %s", encoded)
+	if len(msg.TextAttachments) != 0 || len(msg.FileAttachments) != 1 {
+		t.Fatalf("large text should be carried as file attachment: %+v", msg)
 	}
-
-	// Nonexistent file.
-	_, err = base64EncodeFile(filepath.Join(tmpDir, "nope.txt"))
-	if err == nil {
-		t.Error("expected error for nonexistent file")
+	if msg.FileAttachments[0].LocalPath != largeText {
+		t.Fatalf("large text local path = %q, want %q", msg.FileAttachments[0].LocalPath, largeText)
 	}
 }
 

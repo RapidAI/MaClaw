@@ -85,6 +85,35 @@ func TestBuildPromptBundleRoleOverrideHonorsAssignedIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildPromptBundleIncludesEvidenceBoundFactualRules(t *testing.T) {
+	prompt := BuildSystemPrompt(SystemPromptDeps{
+		Config: SystemPromptConfig{RoleName: "MaClaw", RoleDescription: "test agent"},
+	}, "马勇博士写了几本书？", true)
+
+	for _, want := range []string{
+		"Evidence-bound factual answering for virtual employees",
+		"事实回答必须有依据，禁止脑补",
+		"无依据则不回答事实结论",
+		"输出前做一次证据自检",
+		"knowledge search results, context packs, memory recall sections, web search/fetch results",
+		"If the evidence does not explicitly state a fact",
+		"Do not infer, complete, estimate, generalize",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing evidence rule %q: %s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "模型知识兜底") {
+		t.Fatalf("prompt should not permit model-knowledge fallback for factual answers: %s", prompt)
+	}
+	if strings.Contains(prompt, "哪些来自模型训练数据") {
+		t.Fatalf("prompt should not present model training data as a factual source: %s", prompt)
+	}
+	if strings.Contains(prompt, "直接用训练数据回答") {
+		t.Fatalf("prompt should not suggest training data fallback: %s", prompt)
+	}
+}
+
 func TestBuildPromptBundleSplitsDynamicSections(t *testing.T) {
 	bundle := BuildPromptBundle(SystemPromptDeps{
 		Config: SystemPromptConfig{RoleName: "MaClaw", RoleDescription: "test agent"},

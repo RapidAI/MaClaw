@@ -489,6 +489,7 @@ export namespace main {
 	    chat_font_size: number;
 	    workflow_enabled?: boolean;
 	    favorite_employees?: string[];
+	    favorite_employee_names?: Record<string, string>;
 	    show_coding_tool_entry?: boolean;
 	    tts_enabled?: boolean;
 	    tts_voice_id?: string;
@@ -658,6 +659,7 @@ export namespace main {
 	        this.chat_font_size = source["chat_font_size"];
 	        this.workflow_enabled = source["workflow_enabled"];
 	        this.favorite_employees = source["favorite_employees"];
+	        this.favorite_employee_names = source["favorite_employee_names"];
 	        this.show_coding_tool_entry = source["show_coding_tool_entry"];
 	        this.tts_enabled = source["tts_enabled"];
 	        this.tts_voice_id = source["tts_voice_id"];

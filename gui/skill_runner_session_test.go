@@ -221,3 +221,31 @@ func TestWriteAutoResumeHintPrefersResumeSessionID(t *testing.T) {
 		t.Fatalf("expected ClaudeSessionID fallback to be skipped when ResumeSessionID exists, got: %s", out)
 	}
 }
+
+func TestWriteAutoResumeHintUsesConfiguredChineseLanguage(t *testing.T) {
+	previousLang, _ := agentViewCurrentLang.Load().(string)
+	setAgentViewLang("zh-Hans")
+	t.Cleanup(func() { setAgentViewLang(previousLang) })
+
+	var b strings.Builder
+	writeAutoResumeHint(&b, &SessionResumeContext{
+		Tool:            "codex",
+		ProjectPath:     "/tmp/project",
+		OriginalTask:    "修复任务接续",
+		LastProgress:    "已定位续接提示",
+		CompletedFiles:  []string{"gui/im_tools_session_resume_hint.go"},
+		ResumeSessionID: "thread-789",
+		ResumeCount:     1,
+	}, "编程工具已正常退出，任务可能未完成。")
+	out := b.String()
+	for _, leaked := range []string{"Legacy resume context available", "Original task:", "Last progress:", "Completed files:", "for audit only"} {
+		if contains(out, leaked) {
+			t.Fatalf("auto resume hint leaked English %q: %s", leaked, out)
+		}
+	}
+	for _, want := range []string{"已有旧外部会话续接上下文", "原始任务：修复任务接续", "最近进度：已定位续接提示", "已完成文件：gui/im_tools_session_resume_hint.go", "旧 resume_session_id 仅用于审计：thread-789"} {
+		if !contains(out, want) {
+			t.Fatalf("auto resume hint missing %q: %s", want, out)
+		}
+	}
+}

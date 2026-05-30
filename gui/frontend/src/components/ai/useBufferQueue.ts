@@ -17,13 +17,14 @@ export interface BufferEntry {
     text: string;
     attachments: AttachmentInfo[];
     createdAt: number;
+    autoDrain?: boolean;
 }
 
 export interface UseBufferQueueReturn {
     queue: BufferEntry[];
-    addEntry: (text: string, attachments: AttachmentInfo[]) => void;
+    addEntry: (text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => void;
     removeEntry: (id: string) => void;
-    updateEntry: (id: string, text: string, attachments: AttachmentInfo[]) => void;
+    updateEntry: (id: string, text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => void;
     reorderEntry: (fromIndex: number, toIndex: number) => void;
     /** Extract a single entry from the queue by id, removing it. Returns null if not found. */
     extractEntry: (id: string) => BufferEntry | null;
@@ -44,6 +45,39 @@ export function _resetIdCounter(): void {
 
 function nextBufferId(): string {
     return `buf-${Date.now()}-${_bufIdCounter++}`;
+}
+
+function normalizePersistedAttachment(attachment: any): AttachmentInfo | null {
+    if (!attachment || typeof attachment.filePath !== "string") return null;
+    const filePath = attachment.filePath.trim();
+    if (!filePath) return null;
+    const fileName = typeof attachment.fileName === "string" && attachment.fileName.trim()
+        ? attachment.fileName.trim()
+        : filePath.split(/[/\\]/).pop() || filePath;
+    const extension = typeof attachment.extension === "string" && attachment.extension.trim()
+        ? attachment.extension.trim()
+        : `.${(fileName.split(".").pop() || "").toLowerCase()}`;
+    return {
+        filePath,
+        isImage: !!attachment.isImage,
+        fileName,
+        extension,
+    };
+}
+
+function normalizePersistedEntry(entry: any): BufferEntry | null {
+    if (!entry || typeof entry.id !== "string" || typeof entry.text !== "string") return null;
+    const attachments = Array.isArray(entry.attachments)
+        ? entry.attachments.map(normalizePersistedAttachment).filter((attachment: AttachmentInfo | null): attachment is AttachmentInfo => !!attachment)
+        : [];
+    if (!entry.text.trim() && attachments.length === 0) return null;
+    return {
+        id: entry.id,
+        text: entry.text,
+        attachments,
+        createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+        autoDrain: entry.autoDrain === false ? false : true,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -92,9 +126,7 @@ export function useBufferQueue(): UseBufferQueueReturn {
             if (!raw) return [];
             const parsed = JSON.parse(raw);
             if (!Array.isArray(parsed)) return [];
-            return parsed.filter(
-                (e: any) => e && typeof e.id === "string" && typeof e.text === "string",
-            ) as BufferEntry[];
+            return parsed.map(normalizePersistedEntry).filter((entry): entry is BufferEntry => !!entry);
         } catch {
             return [];
         }
@@ -111,7 +143,7 @@ export function useBufferQueue(): UseBufferQueueReturn {
         setQueue(next);
     }, []);
 
-    const addEntry = useCallback((text: string, attachments: AttachmentInfo[]) => {
+    const addEntry = useCallback((text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => {
         // Reject whitespace-only text with no attachments
         if (!text.trim() && attachments.length === 0) return;
 
@@ -120,6 +152,7 @@ export function useBufferQueue(): UseBufferQueueReturn {
             text,
             attachments,
             createdAt: Date.now(),
+            autoDrain: options?.autoDrain === false ? false : options?.autoDrain || undefined,
         };
         commitQueue([...queueRef.current, entry]);
     }, [commitQueue]);
@@ -129,13 +162,14 @@ export function useBufferQueue(): UseBufferQueueReturn {
     }, [commitQueue]);
 
     const updateEntry = useCallback(
-        (id: string, text: string, attachments: AttachmentInfo[]) => {
+        (id: string, text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => {
             // If both empty, remove the entry
             if (!text.trim() && attachments.length === 0) {
                 commitQueue(queueRef.current.filter(e => e.id !== id));
                 return;
             }
-            commitQueue(queueRef.current.map(e => (e.id === id ? { ...e, text, attachments } : e)));
+            const autoDrain = options?.autoDrain === false ? false : options?.autoDrain || undefined;
+            commitQueue(queueRef.current.map(e => (e.id === id ? { ...e, text, attachments, autoDrain } : e)));
         },
         [commitQueue],
     );
@@ -178,9 +212,7 @@ export function useBufferQueue(): UseBufferQueueReturn {
                 console.warn("Corrupted buffer queue data in localStorage — expected array");
                 return [];
             }
-            const entries: BufferEntry[] = parsed.filter(
-                (e: any) => e && typeof e.id === "string" && typeof e.text === "string",
-            );
+            const entries: BufferEntry[] = parsed.map(normalizePersistedEntry).filter((entry): entry is BufferEntry => !!entry);
             commitQueue(entries);
             return entries;
         } catch {

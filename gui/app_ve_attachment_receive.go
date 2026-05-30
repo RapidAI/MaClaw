@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 
@@ -16,10 +15,9 @@ import (
 const veAttachmentContextMaxBytes = 20 * 1024 * 1024
 
 // ProcessMessageAttachments extracts attachment content from a GroupDiscussionMessage
-// and returns a formatted context string to be appended to the AI Agent input.
-// - TextAttachment: base64 decode → append text content as context
-// - ImageAttachment/FileAttachment: download via file_url → extract text or pass as vision input
-// On download failure, logs error and continues processing the text message.
+// and returns formatted context to append to the AI agent input. Remote file_url
+// attachments are downloaded into this machine's discussion attachment directory
+// first, then the saved local path is included in the agent context.
 func (h *VEMessageHandler) ProcessMessageAttachments(msg a2a.GroupDiscussionMessage) string {
 	return h.ProcessMessageAttachmentsForSession("", msg)
 }
@@ -34,32 +32,32 @@ func (h *VEMessageHandler) ProcessMessageAttachmentsForSession(sessionID string,
 			log.Printf("[ve-attachment] failed to decode text attachment %s: %v", att.Filename, err)
 			continue
 		}
-		contextParts = append(contextParts, formatTextAttachmentContext(att.Filename, content))
+		contextParts = append(contextParts, formatTextAttachmentContext(att.Filename, att.LocalPath, content))
 	}
 
 	// Process image attachments (prefer local_path for direct local dispatch)
 	for _, att := range msg.ImageAttachments {
-		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath)
+		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath, att.Filename)
 		if err != nil {
 			log.Printf("[ve-attachment] failed to read image %s: %v", att.Filename, err)
 			continue
 		}
 		// For images, we provide a description placeholder
 		// In production, this would be passed as vision input to the AI Agent
-		contextParts = append(contextParts, formatImageAttachmentContext(att.Filename, att.MimeType, len(content)))
+		contextParts = append(contextParts, formatImageAttachmentContext(att.Filename, att.MimeType, len(content.Data), content.LocalPath))
 	}
 
 	// Process file/document attachments (prefer local_path for direct local dispatch)
 	for _, att := range msg.FileAttachments {
-		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath)
+		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath, att.Filename)
 		if err != nil {
 			log.Printf("[ve-attachment] failed to read file %s: %v", att.Filename, err)
 			continue
 		}
 		// For documents, extract text content if possible
-		textContent := extractTextFromDocument(att.Filename, att.MimeType, content)
+		textContent := extractTextFromDocument(att.Filename, att.MimeType, content.Data)
 		if textContent != "" {
-			contextParts = append(contextParts, formatDocAttachmentContext(att.Filename, textContent))
+			contextParts = append(contextParts, formatDocAttachmentContext(att.Filename, content.LocalPath, textContent))
 		}
 	}
 
@@ -67,20 +65,36 @@ func (h *VEMessageHandler) ProcessMessageAttachmentsForSession(sessionID string,
 		return ""
 	}
 
-	return "\n\n---\n[附件内容]\n" + strings.Join(contextParts, "\n\n")
+	return "\n\n---\n[Attachment content]\n" + strings.Join(contextParts, "\n\n")
 }
 
-func (h *VEMessageHandler) attachmentContent(sessionID, fileURL, localPath string) ([]byte, error) {
+type veAttachmentContent struct {
+	Data      []byte
+	LocalPath string
+}
+
+func (h *VEMessageHandler) attachmentContent(sessionID, fileURL, localPath, filename string) (veAttachmentContent, error) {
 	localPath = strings.TrimSpace(localPath)
 	if localPath != "" {
 		f, err := os.Open(localPath)
 		if err != nil {
-			return nil, err
+			return veAttachmentContent{}, err
 		}
 		defer f.Close()
-		return readVEAttachmentContextContent(f)
+		data, err := readVEAttachmentContextContent(f)
+		if err != nil {
+			return veAttachmentContent{}, err
+		}
+		return veAttachmentContent{Data: data, LocalPath: localPath}, nil
 	}
-	return h.downloadAttachmentContent(sessionID, fileURL)
+	if h == nil || h.app == nil {
+		return veAttachmentContent{}, fmt.Errorf("app unavailable")
+	}
+	result, err := h.app.GroupDiscussionDownloadAttachment(sessionID, fileURL, filename)
+	if err != nil {
+		return veAttachmentContent{}, err
+	}
+	return h.attachmentContent(sessionID, "", result.LocalPath, filename)
 }
 
 func readVEAttachmentContextContent(r io.Reader) ([]byte, error) {
@@ -117,78 +131,27 @@ func decodeTextAttachment(att a2a.TextAttachment) (string, error) {
 	return string(decoded), nil
 }
 
-// downloadAttachmentContent downloads file content from a Hub file relay URL.
-func (h *VEMessageHandler) downloadAttachmentContent(sessionID, fileURL string) ([]byte, error) {
-	if fileURL == "" {
-		return nil, fmt.Errorf("empty file URL")
-	}
-	if h.app == nil {
-		return nil, fmt.Errorf("app unavailable")
-	}
-	hubURL, token, err := h.app.getHubCredentials()
-	if err != nil {
-		return nil, fmt.Errorf("Hub credentials unavailable: %w", err)
-	}
-	cfg, _ := h.app.LoadConfig()
-	participantID := strings.TrimSpace(groupDiscussionAgentID(cfg))
-	downloadURL, _, err := groupDiscussionAttachmentDownloadURL(hubURL, fileURL, sessionID, participantID)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if participantID != "" {
-		req.Header.Set("X-Machine-ID", participantID)
-	}
-
-	resp, err := veFileRelayHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("download request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download failed (HTTP %d)", resp.StatusCode)
-	}
-
-	data, err := readVEAttachmentContextContent(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
-	}
-
-	return data, nil
-}
-
 // extractTextFromDocument attempts to extract readable text from a document.
 // For plain text MIME types, returns the content directly.
 // For binary formats (PDF, DOCX), returns a placeholder indicating the file was received.
 func extractTextFromDocument(filename, mimeType string, content []byte) string {
-	// Plain text types: return content directly
 	if isPlainTextMime(mimeType) {
-		// Truncate very long text to avoid overwhelming the AI context
 		text := string(content)
 		if len([]rune(text)) > 10000 {
-			text = string([]rune(text)[:10000]) + "\n...[内容已截断，共 " + fmt.Sprintf("%d", len([]rune(string(content)))) + " 字符]"
+			text = string([]rune(text)[:10000]) + "\n...[content truncated, total " + fmt.Sprintf("%d", len([]rune(string(content)))) + " chars]"
 		}
 		return text
 	}
 
-	// Binary formats: provide metadata only
 	ext := strings.ToLower(filename)
 	if strings.HasSuffix(ext, ".pdf") {
-		return fmt.Sprintf("[PDF 文档: %s, %s]", filename, formatBytesSize(int64(len(content))))
+		return fmt.Sprintf("[PDF document: %s, %s]", filename, formatBytesSize(int64(len(content))))
 	}
 	if strings.HasSuffix(ext, ".docx") {
-		return fmt.Sprintf("[Word 文档: %s, %s]", filename, formatBytesSize(int64(len(content))))
+		return fmt.Sprintf("[Word document: %s, %s]", filename, formatBytesSize(int64(len(content))))
 	}
 
-	return fmt.Sprintf("[文件: %s, %s, %s]", filename, mimeType, formatBytesSize(int64(len(content))))
+	return fmt.Sprintf("[File: %s, %s, %s]", filename, mimeType, formatBytesSize(int64(len(content))))
 }
 
 // isPlainTextMime checks if a MIME type represents plain text content.
@@ -215,18 +178,26 @@ func isPlainTextMime(mimeType string) bool {
 }
 
 // formatTextAttachmentContext formats a text attachment for AI context injection.
-func formatTextAttachmentContext(filename, content string) string {
-	return fmt.Sprintf("📄 文件: %s\n```\n%s\n```", filename, content)
+func formatTextAttachmentContext(filename, localPath, content string) string {
+	return fmt.Sprintf("File: %s%s\n```\n%s\n```", filename, formatAttachmentSavedPath(localPath), content)
 }
 
 // formatImageAttachmentContext formats an image attachment description for AI context.
-func formatImageAttachmentContext(filename, mimeType string, sizeBytes int) string {
-	return fmt.Sprintf("🖼️ 图片: %s (%s, %s)", filename, mimeType, formatBytesSize(int64(sizeBytes)))
+func formatImageAttachmentContext(filename, mimeType string, sizeBytes int, localPath string) string {
+	return fmt.Sprintf("Image: %s (%s, %s)%s", filename, mimeType, formatBytesSize(int64(sizeBytes)), formatAttachmentSavedPath(localPath))
 }
 
 // formatDocAttachmentContext formats a document attachment for AI context injection.
-func formatDocAttachmentContext(filename, textContent string) string {
-	return fmt.Sprintf("📄 文档: %s\n```\n%s\n```", filename, textContent)
+func formatDocAttachmentContext(filename, localPath, textContent string) string {
+	return fmt.Sprintf("Document: %s%s\n```\n%s\n```", filename, formatAttachmentSavedPath(localPath), textContent)
+}
+
+func formatAttachmentSavedPath(localPath string) string {
+	localPath = strings.TrimSpace(localPath)
+	if localPath == "" {
+		return ""
+	}
+	return fmt.Sprintf("\nSaved path: %s", localPath)
 }
 
 // formatBytesSize formats a byte count as a human-readable string.

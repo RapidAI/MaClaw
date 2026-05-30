@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -44,6 +45,36 @@ func TestImplicitInFlightRecoveryDecisionResumesOnlyForExplicitResume(t *testing
 	}
 	if decision.StartNewTask {
 		t.Fatal("did not expect explicit resume input to start a new task")
+	}
+}
+
+func TestBuildUnfinishedSlotHintUsesConfiguredChineseLanguage(t *testing.T) {
+	previousLang, _ := agentViewCurrentLang.Load().(string)
+	setAgentViewLang("zh-Hans")
+	t.Cleanup(func() { setAgentViewLang(previousLang) })
+
+	slot := &agent.UnfinishedTaskSlot{SlotID: "slot-zh", LastTask: "继续优化系统性能"}
+	got := buildUnfinishedSlotHint(slot)
+
+	if strings.Contains(got, "Detected an unfinished task") || strings.Contains(got, "Choose resume") {
+		t.Fatalf("hint leaked English text: %q", got)
+	}
+	if !strings.Contains(got, "检测到未完成任务") || !strings.Contains(got, "继续上次任务") {
+		t.Fatalf("hint not localized to Chinese: %q", got)
+	}
+}
+
+func TestBuildResumeSlotActionsUseConfiguredChineseLanguage(t *testing.T) {
+	previousLang, _ := agentViewCurrentLang.Load().(string)
+	setAgentViewLang("zh-Hans")
+	t.Cleanup(func() { setAgentViewLang(previousLang) })
+
+	actions := buildResumeSlotActions(&agent.UnfinishedTaskSlot{SlotID: "slot-zh"})
+	if len(actions) != 2 {
+		t.Fatalf("actions len = %d, want 2", len(actions))
+	}
+	if actions[0].Label != "继续上次任务" || actions[1].Label != "开始新任务" {
+		t.Fatalf("actions not localized: %#v", actions)
 	}
 }
 

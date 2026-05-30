@@ -361,37 +361,12 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 		"/api/v1/admin/skill-sources/available",
 		"/api/v1/admin/skill-sources/global",
 		"/api/v1/admin/skill-sources/tenant/{id}",
-		"/api/v1/admin/skill-sources/user/{email...}",
-		"/api/v1/admin/skill-sources/resolve/{email...}",
+		"/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}",
+		"/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}/resolve",
 	} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Fatalf("expected admin knowledge/skill path %s in openapi doc", path)
 		}
-	}
-	skillResolvePath, ok := doc.Paths["/api/v1/admin/skill-sources/resolve/{email...}"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected skill source resolve path object")
-	}
-	skillResolveGet, ok := skillResolvePath["get"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected GET skill source resolve operation")
-	}
-	skillResolveParams, ok := skillResolveGet["parameters"].([]any)
-	if !ok {
-		t.Fatalf("expected skill source resolve parameters")
-	}
-	foundTenantID := false
-	for _, item := range skillResolveParams {
-		param, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if param["name"] == "tenant_id" {
-			foundTenantID = true
-		}
-	}
-	if !foundTenantID {
-		t.Fatalf("expected tenant_id query parameter in skill source resolve OpenAPI: %#v", skillResolveParams)
 	}
 }
 
@@ -586,8 +561,8 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 		{http.MethodPut, "/api/v1/admin/skill-sources/global", "owner"},
 		{http.MethodPut, "/api/v1/admin/skill-sources/tenant/{id}", "owner"},
 		{http.MethodDelete, "/api/v1/admin/skill-sources/tenant/{id}", "owner"},
-		{http.MethodPut, "/api/v1/admin/skill-sources/user/{email...}", "owner"},
-		{http.MethodDelete, "/api/v1/admin/skill-sources/user/{email...}", "owner"},
+		{http.MethodPut, "/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", "owner"},
 	}
 	for _, tc := range checks {
 		pathItem, ok := paths[tc.path]

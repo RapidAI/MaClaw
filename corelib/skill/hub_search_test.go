@@ -3,8 +3,8 @@ package skill
 import "testing"
 
 func TestIsSourceAllowedNormalizesAliases(t *testing.T) {
-	allowed := []string{"hubcenter", "git_hub", "enterprise"}
-	for _, source := range []string{"skillhub", "github", "enterprise_hub"} {
+	allowed := []string{"hubcenter", "git_hub", "enterprise", "zip"}
+	for _, source := range []string{"skillhub", "github", "enterprise_hub", "local", "local_upload"} {
 		if !IsSourceAllowed(source, allowed) {
 			t.Fatalf("source %q should be allowed by aliases %#v", source, allowed)
 		}

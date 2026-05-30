@@ -116,6 +116,29 @@ function isOwnVirtualEmployeeId(id: string, machineId?: string): boolean {
     return normalizedId === normalizedMachineId || normalizedId === virtualEmployeeIdForMachine(normalizedMachineId).toLowerCase();
 }
 
+function normalizeFavoriteEmployeeNames(value: unknown): Record<string, string> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, rawName]) => {
+        const id = String(key || '').trim();
+        const name = String(rawName || '').trim();
+        if (id && name) acc[id] = name;
+        return acc;
+    }, {});
+}
+
+function favoriteEmployeeAliasIds(veId: string, veList: VirtualEmployeeEntry[]): string[] {
+    const aliases = new Set<string>();
+    const add = (value?: string) => {
+        const id = String(value || '').trim();
+        if (id) aliases.add(id);
+    };
+    add(veId);
+    const ve = veList.find(v => v.id === veId || v.machine_id === veId);
+    add(ve?.id);
+    add(ve?.machine_id);
+    return Array.from(aliases);
+}
+
 function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
@@ -204,6 +227,7 @@ function App() {
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
+    const [favoriteEmployeeNames, setFavoriteEmployeeNames] = useState<Record<string, string>>({});
     const [veList, setVeList] = useState<VirtualEmployeeEntry[]>([]);
     const [digitalEmployeeFeatureStatus, setDigitalEmployeeFeatureStatus] = useState<any>({ visible: false, actual_count: 0 });
     const [showFavReplacePicker, setShowFavReplacePicker] = useState<{ ve: VirtualEmployeeEntry } | null>(null);
@@ -212,6 +236,10 @@ function App() {
     useEffect(() => {
         setFavoriteEmployeeIds(normalizeFavoriteEmployeeIds(config?.favorite_employees));
     }, [config?.favorite_employees]);
+
+    useEffect(() => {
+        setFavoriteEmployeeNames(normalizeFavoriteEmployeeNames((config as any)?.favorite_employee_names));
+    }, [(config as any)?.favorite_employee_names]);
 
     // Fetch VE list for sidebar favorites resolution
     useEffect(() => {
@@ -330,31 +358,47 @@ function App() {
     const favoriteEmployeeSlots = useMemo(() => {
         return favoriteEmployeeIds.flatMap(id => {
             if (isOwnVirtualEmployeeId(id, config?.remote_machine_id)) return [];
-            const ve = veList.find(v => v.id === id);
+            const ve = veList.find(v => v.id === id || v.machine_id === id);
             if (ve && (isOwnVirtualEmployeeId(ve.id, config?.remote_machine_id) || isOwnVirtualEmployeeId(ve.machine_id || '', config?.remote_machine_id))) return [];
-            return { veId: id, name: ve?.name || id.slice(0, 6), online: ve?.online_status === 'online', skillDescription: ve?.skill_description || '' };
+            const participantId = String(ve?.machine_id || id).trim();
+            const customName = favoriteEmployeeNames[id] || favoriteEmployeeNames[participantId] || (ve?.id ? favoriteEmployeeNames[ve.id] : '');
+            return { veId: participantId, name: customName || ve?.name || id.slice(0, 6), online: ve?.online_status === 'online', skillDescription: ve?.skill_description || '' };
         });
-    }, [favoriteEmployeeIds, veList, config?.remote_machine_id]);
+    }, [favoriteEmployeeIds, veList, config?.remote_machine_id, favoriteEmployeeNames]);
 
-    const updateFavoriteEmployees = useCallback(async (newList: string[]) => {
+    const saveFavoriteEmployeeConfig = useCallback(async (newList: string[], newNames: Record<string, string>, options?: { throwOnError?: boolean }) => {
         const normalized = normalizeFavoriteEmployeeIds(newList);
+        const normalizedNames = normalizeFavoriteEmployeeNames(newNames);
         setFavoriteEmployeeIds(normalized);
+        setFavoriteEmployeeNames(normalizedNames);
         try {
             const latest = await LoadConfig();
-            const updated = new main.AppConfig({ ...latest, favorite_employees: normalized } as any);
+            const updated = new main.AppConfig({ ...latest, favorite_employees: normalized, favorite_employee_names: normalizedNames } as any);
             await SaveConfig(updated);
             setConfig(updated);
-        } catch {}
+        } catch (error) {
+            if (options?.throwOnError) throw error;
+        }
     }, []);
 
+    const updateFavoriteEmployees = useCallback(async (newList: string[]) => {
+        await saveFavoriteEmployeeConfig(newList, favoriteEmployeeNames);
+    }, [favoriteEmployeeNames, saveFavoriteEmployeeConfig]);
+
+    const updateFavoriteEmployeeNames = useCallback(async (newNames: Record<string, string>) => {
+        await saveFavoriteEmployeeConfig(favoriteEmployeeIds, newNames, { throwOnError: true });
+    }, [favoriteEmployeeIds, saveFavoriteEmployeeConfig]);
+
     const handleSetFavoriteEmployee = useCallback((ve: VirtualEmployeeEntry) => {
-        if (favoriteEmployeeIds.includes(ve.id)) return;
+        const favoriteId = String(ve.machine_id || ve.id || '').trim();
+        if (!favoriteId) return;
+        if (favoriteEmployeeIds.some(id => id === favoriteId || id === ve.id || id === ve.machine_id)) return;
         // Ensure the VE is in veList so favoriteEmployeeSlots can resolve it immediately.
         // Without this, if veList hasn't loaded yet or the fetch failed, the slot would
         // show a fallback name (id.slice(0,6)) instead of the actual VE name.
-        setVeList(prev => prev.some(v => v.id === ve.id) ? prev : [...prev, ve]);
+        setVeList(prev => prev.some(v => v.id === ve.id || (!!v.machine_id && !!ve.machine_id && v.machine_id === ve.machine_id)) ? prev : [...prev, ve]);
         if (favoriteEmployeeIds.length < MAX_FAVORITE_EMPLOYEES) {
-            updateFavoriteEmployees([...favoriteEmployeeIds, ve.id]);
+            updateFavoriteEmployees([...favoriteEmployeeIds, favoriteId]);
         } else {
             setShowFavReplacePicker({ ve });
         }
@@ -368,23 +412,38 @@ function App() {
         }
         const ve = showFavReplacePicker.ve;
         // Ensure the VE is in veList for immediate resolution (same as handleSetFavoriteEmployee)
-        setVeList(prev => prev.some(v => v.id === ve.id) ? prev : [...prev, ve]);
+        setVeList(prev => prev.some(v => v.id === ve.id || (!!v.machine_id && !!ve.machine_id && v.machine_id === ve.machine_id)) ? prev : [...prev, ve]);
         const newList = [...favoriteEmployeeIds];
-        newList[index] = ve.id;
-        updateFavoriteEmployees(newList);
+        const previousId = newList[index];
+        newList[index] = String(ve.machine_id || ve.id || '').trim() || ve.id;
+        const nextNames = { ...favoriteEmployeeNames };
+        favoriteEmployeeAliasIds(previousId, veList).forEach(id => { delete nextNames[id]; });
+        saveFavoriteEmployeeConfig(newList, nextNames);
         setShowFavReplacePicker(null);
-    }, [favoriteEmployeeIds, showFavReplacePicker, updateFavoriteEmployees]);
+    }, [favoriteEmployeeIds, favoriteEmployeeNames, saveFavoriteEmployeeConfig, showFavReplacePicker, veList]);
 
     const handleRemoveFavoriteEmployee = useCallback((veId: string) => {
-        updateFavoriteEmployees(favoriteEmployeeIds.filter(id => id !== veId));
-    }, [favoriteEmployeeIds, updateFavoriteEmployees]);
+        const aliases = new Set(favoriteEmployeeAliasIds(veId, veList));
+        const nextIds = favoriteEmployeeIds.filter(id => !aliases.has(id));
+        const nextNames = { ...favoriteEmployeeNames };
+        aliases.forEach(id => { delete nextNames[id]; });
+        saveFavoriteEmployeeConfig(nextIds, nextNames);
+    }, [favoriteEmployeeIds, favoriteEmployeeNames, saveFavoriteEmployeeConfig, veList]);
+
+    const handleRenameFavoriteEmployee = useCallback((veId: string, name: string) => {
+        const nextName = name.trim();
+        if (!nextName) return;
+        const ve = veList.find(v => v.id === veId || v.machine_id === veId);
+        const favoriteId = favoriteEmployeeIds.find(id => id === veId || id === ve?.id || id === ve?.machine_id) || veId;
+        return updateFavoriteEmployeeNames({ ...favoriteEmployeeNames, [favoriteId]: nextName });
+    }, [favoriteEmployeeIds, favoriteEmployeeNames, updateFavoriteEmployeeNames, veList]);
 
     const handleReorderFavorites = useCallback((newOrder: string[]) => {
         updateFavoriteEmployees(newOrder);
     }, [updateFavoriteEmployees]);
 
     const handleStartFavoriteVEConversation = useCallback((veId: string) => {
-        const ve = veList.find(v => v.id === veId);
+        const ve = veList.find(v => v.id === veId || v.machine_id === veId);
         if (ve) {
             setPendingVEOpen(ve);
         } else {
@@ -517,6 +576,7 @@ function App() {
     );
     const [toastMessage, setToastMessage] = useState<string>("");
     const [showToast, setShowToast] = useState(false);
+    const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [sensitivePermissionRequest, setSensitivePermissionRequest] = useState<SensitivePermissionRequest | null>(null);
     const sensitivePermissionRequestRef = useRef<SensitivePermissionRequest | null>(null);
     const [sensitivePermissionQueue, setSensitivePermissionQueue] = useState<SensitivePermissionRequest[]>([]);
@@ -560,13 +620,24 @@ function App() {
     const [selectedProviderForUrl, setSelectedProviderForUrl] = useState<ProviderEndpoint | null>(null);
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
 
-    const showToastMessage = (message: string, duration: number = 3000) => {
+    const showToastMessage = useCallback((message: string, duration: number = 3000) => {
         setToastMessage(message);
         setShowToast(true);
-        setTimeout(() => {
+        if (toastTimerRef.current) {
+            clearTimeout(toastTimerRef.current);
+        }
+        toastTimerRef.current = setTimeout(() => {
             setShowToast(false);
+            toastTimerRef.current = null;
         }, duration);
-    };
+    }, []);
+
+    useEffect(() => () => {
+        if (toastTimerRef.current) {
+            clearTimeout(toastTimerRef.current);
+            toastTimerRef.current = null;
+        }
+    }, []);
 
 
     useEffect(() => {
@@ -2480,7 +2551,9 @@ ${instruction}`;
                 showDigitalEmployeeNavigation={veNavigationAvailable}
                 onStartVEConversation={handleStartFavoriteVEConversation}
                 onReorderFavorites={handleReorderFavorites}
+                onRenameFavoriteEmployee={handleRenameFavoriteEmployee}
                 onSetFavoriteEmployee={handleSetFavoriteEmployee}
+                onRemoveFavoriteEmployeeById={handleRemoveFavoriteEmployee}
                 onRemoveFavoriteEmployee={(ve) => handleRemoveFavoriteEmployee(ve.id)}
                 favoriteEmployeeIds={favoriteEmployeeIds}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
@@ -2693,7 +2766,7 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'llmCache'}>
-                                <LLMCacheSettingsPanel config={config} setConfig={setConfig} lang={lang} />
+                                <LLMCacheSettingsPanel config={config} setConfig={setConfig} lang={lang} showToastMessage={showToastMessage} />
                             </div>
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'redeem'}>
@@ -2705,7 +2778,7 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'knowledge'}>
-                                <KnowledgeSettingsPanel lang={lang} />
+                                <KnowledgeSettingsPanel lang={lang} showToastMessage={showToastMessage} />
                             </div>
 
                             <div className="settings-content settings-panel" hidden={settingsTab !== 'misData'}>
@@ -2769,7 +2842,7 @@ ${instruction}`;
                                         <FavoriteEmployeeSettingsPanel
                                             favoriteEmployeeIds={favoriteEmployeeIds}
                                             veList={veList}
-                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
+                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId || v.machine_id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
                                             onRemove={handleRemoveFavoriteEmployee}
                                             onReorder={handleReorderFavorites}
                                             lang={lang}

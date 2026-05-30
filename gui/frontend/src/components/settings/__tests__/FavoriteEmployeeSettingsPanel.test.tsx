@@ -8,6 +8,10 @@ const veList = [
     { id: 've-2', name: 'Analyst', skill_description: 'Data work', access_policy: 'public' as const, status: 'active', online_status: 'offline' as const },
 ];
 
+const veListWithMachines = [
+    { id: 'profile-1', machine_id: 'machine-1', name: 'Machine Bot', skill_description: 'Ops', access_policy: 'public' as const, status: 'active', online_status: 'online' as const },
+];
+
 describe('FavoriteEmployeeSettingsPanel', () => {
     it('adds a favorite from settings so parent state can update the left rail', () => {
         const onAdd = vi.fn();
@@ -34,5 +38,19 @@ describe('FavoriteEmployeeSettingsPanel', () => {
         fireEvent.dragOver(analystRow);
         fireEvent.drop(analystRow);
         expect(onReorder).toHaveBeenCalledWith(['ve-2', 've-1']);
+    });
+
+    it('stores and resolves favorites by machine id when profile id differs', () => {
+        const onAdd = vi.fn();
+        render(<FavoriteEmployeeSettingsPanel favoriteEmployeeIds={['machine-1']} veList={veListWithMachines} onAdd={onAdd} onRemove={vi.fn()} onReorder={vi.fn()} lang="en" />);
+
+        expect(screen.getByText('Machine Bot')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: /Add Favorite/i }));
+        expect(screen.queryByRole('button', { name: 'Machine Bot' })).toBeNull();
+
+        render(<FavoriteEmployeeSettingsPanel favoriteEmployeeIds={[]} veList={veListWithMachines} onAdd={onAdd} onRemove={vi.fn()} onReorder={vi.fn()} lang="en" />);
+        fireEvent.click(screen.getAllByRole('button', { name: /Add Favorite/i })[1]);
+        fireEvent.click(screen.getByRole('button', { name: 'Machine Bot' }));
+        expect(onAdd).toHaveBeenCalledWith('machine-1');
     });
 });

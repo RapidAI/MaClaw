@@ -2420,6 +2420,20 @@ body {
     background: #9ca3af;
 }
 
+.favorite-employee-settings__avatar {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--theme-border);
+}
+
+.favorite-employee-settings__avatar--picker {
+    width: 22px;
+    height: 22px;
+}
+
 .favorite-employee-settings__status[data-online="true"],
 .favorite-employee-settings__picker-status[data-online="true"] {
     background: var(--theme-success, #22c55e);
@@ -2597,6 +2611,117 @@ body {
 .ve-notice--compact {
     margin-top: 4px;
     margin-bottom: 4px;
+}
+
+.ve-avatar-editor {
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+}
+
+.ve-avatar-editor__stage {
+    width: 112px;
+    height: 112px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 1px solid var(--theme-border);
+    border-radius: 12px;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-muted);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.ve-avatar-editor__stage[data-circle="true"] {
+    border-radius: 50%;
+}
+
+.ve-avatar-editor__image {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform-origin: center;
+    user-select: none;
+    pointer-events: none;
+}
+
+.ve-avatar-editor__image--fit {
+    transform: translate(-50%, -50%);
+}
+
+.ve-avatar-editor__fallback {
+    width: 54px;
+    height: 54px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--theme-primary-bg);
+    color: var(--theme-primary-strong);
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.ve-avatar-editor__controls {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ve-avatar-editor__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.ve-avatar-editor__file {
+    display: none;
+}
+
+.ve-avatar-editor__switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    min-height: 28px;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+}
+
+.ve-avatar-editor__switch input {
+    width: 16px;
+    height: 16px;
+}
+
+.ve-avatar-editor__sliders {
+    display: grid;
+    gap: 6px;
+}
+
+.ve-avatar-editor__sliders label {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    color: var(--theme-text-muted);
+    font-size: 0.75rem;
+}
+
+.ve-avatar-editor__sliders input[type="range"] {
+    width: 100%;
+}
+
+@media (max-width: 560px) {
+    .ve-avatar-editor {
+        grid-template-columns: 1fr;
+    }
 }
 
 .knowledge-import-overlay {
@@ -2859,6 +2984,7 @@ body {
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-md);
     background: var(--theme-surface);
+    text-align: left;
 }
 
 .knowledge-panel-header {
@@ -2939,6 +3065,8 @@ body {
     padding: 10px 12px;
     border-radius: var(--radius-sm);
     font-size: 0.82rem;
+    line-height: 1.45;
+    text-align: left;
 }
 
 .knowledge-alert--error {
@@ -2989,7 +3117,10 @@ body {
     background: var(--theme-surface-muted);
 }
 
-.knowledge-stat { padding: 10px; }
+.knowledge-stat {
+    padding: 10px;
+    text-align: left;
+}
 .knowledge-stat-label { color: var(--theme-text-muted); font-size: 0.75rem; }
 .knowledge-stat-value { margin-top: 4px; color: var(--theme-text-primary); font-size: 1.05rem; font-weight: 750; }
 
@@ -3003,6 +3134,7 @@ body {
     color: var(--theme-text-primary);
     font-size: 0.82rem;
     font-weight: 800;
+    text-align: left;
 }
 
 .knowledge-row {
@@ -3111,6 +3243,7 @@ body {
     cursor: pointer;
     font-size: 0.76rem;
     font-weight: 700;
+    text-align: left;
 }
 
 .knowledge-raw-pre {
@@ -3123,6 +3256,9 @@ body {
     background: var(--theme-surface-muted);
     color: var(--theme-text-primary);
     font-size: 0.76rem;
+    line-height: 1.45;
+    text-align: left;
+    white-space: pre-wrap;
 }
 
 @media (max-width: 640px) {
@@ -5716,6 +5852,56 @@ body {
 
 .sensitive-permission-modal__actions {
     justify-content: flex-end;
+}
+
+@keyframes ve-auth-request-pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.36); }
+    50% { opacity: 0.58; box-shadow: 0 0 0 4px rgba(248, 113, 113, 0); }
+}
+
+.ve-auth-request-trigger--blink {
+    animation: ve-auth-request-pulse 1s ease-in-out infinite;
+}
+
+.ve-auth-action {
+    min-height: 28px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    background: rgba(148, 163, 184, 0.1);
+    color: inherit;
+}
+
+.ve-auth-action:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.ve-auth-action--primary {
+    background: #6366f1;
+    border-color: #6366f1;
+    color: #ffffff;
+}
+
+.ve-auth-action--secondary {
+    background: rgba(99, 102, 241, 0.14);
+    border-color: rgba(99, 102, 241, 0.42);
+    color: #818cf8;
+}
+
+.ve-auth-action--danger {
+    background: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.36);
+    color: #f87171;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ve-auth-request-trigger--blink {
+        animation: none;
+    }
 }
 
 .install-log-modal {
@@ -9561,6 +9747,28 @@ body {
     font-size: 0.78rem;
 }
 
+.llm-cache-settings-dir-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.llm-cache-settings-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.llm-cache-settings-dir-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+}
+
+.llm-cache-settings-dir-reset {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
 .proxy-settings-hint {
     color: var(--theme-text-muted);
     font-size: 0.72rem;
@@ -9633,6 +9841,15 @@ body {
     .proxy-settings-grid--server,
     .proxy-settings-grid--auth {
         grid-template-columns: 1fr;
+    }
+
+    .llm-cache-settings-dir-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .llm-cache-settings-dir-reset {
+        width: 100%;
     }
 
     .system-settings-field input[type="number"] {

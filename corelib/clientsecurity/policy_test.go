@@ -117,6 +117,9 @@ func TestEnforceConfigManageSkillActionAware(t *testing.T) {
 	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "skill_id": "demo"}); ok || !strings.Contains(reason, "network") {
 		t.Fatalf("manage_skill install allowed=%v reason=%q, want network rejection", ok, reason)
 	}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "zip", "zip_base64": "e30="}); !ok {
+		t.Fatalf("local zip install should not need network, reason=%q", reason)
+	}
 }
 
 func TestEnforceConfigSkillSourcePolicy(t *testing.T) {
@@ -124,6 +127,9 @@ func TestEnforceConfigSkillSourcePolicy(t *testing.T) {
 
 	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "github", "install_ref": "https://github.com/acme/skill"}); ok || !strings.Contains(reason, "skill source") {
 		t.Fatalf("github install allowed=%v reason=%q, want source rejection", ok, reason)
+	}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "github", "install_ref": "https://github.com/acme/skill"}); ok || !strings.Contains(reason, "当前企业策略不允许") || !strings.Contains(reason, "Your organization policy does not allow") {
+		t.Fatalf("github install localized denial allowed=%v reason=%q", ok, reason)
 	}
 	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "skillhub", "skill_id": "demo"}); !ok {
 		t.Fatalf("skillhub install blocked reason=%q", reason)
@@ -137,6 +143,24 @@ func TestEnforceConfigSkillSourcePolicy(t *testing.T) {
 	}
 	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "github", "skill_id": "demo"}); !ok {
 		t.Fatalf("git_hub alias should allow github, reason=%q", reason)
+	}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "zip", "zip_base64": "e30="}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("zip install allowed=%v reason=%q, want source rejection without local", ok, reason)
+	}
+	cfg.SkillSourcesAllowed = []string{"local"}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "zip", "zip_base64": "e30="}); !ok {
+		t.Fatalf("local policy should allow zip install source, reason=%q", reason)
+	}
+	cfg.SkillSourcesAllowed = []string{corelib.CapabilitySourceEnterpriseHub}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": corelib.CapabilitySourceHubCenter, "skill_id": "demo"}); ok || !strings.Contains(reason, "当前企业策略不允许") || !strings.Contains(reason, "Your organization policy does not allow") {
+		t.Fatalf("hubcenter install with enterprise-only policy allowed=%v reason=%q, want localized source rejection", ok, reason)
+	}
+	cfg.SkillSourcesAllowed = []string{"__none__"}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "search", "query": "demo"}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("block-all skill policy search allowed=%v reason=%q, want source rejection", ok, reason)
+	}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "source": "zip", "zip_base64": "e30="}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("block-all skill policy install allowed=%v reason=%q, want source rejection", ok, reason)
 	}
 }
 
@@ -157,6 +181,28 @@ func TestEnforceConfigSkillSearchDefersUnknownSource(t *testing.T) {
 	}
 }
 
+func TestEnforceConfigSkillInstallInfersSourceFromInstallFields(t *testing.T) {
+	cfg := corelib.AppConfig{HubSecurityCentralized: false, SkillSourcesAllowed: []string{"skillhub"}}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "repo_url": "https://github.com/acme/weather"}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("repo_url install allowed=%v reason=%q, want github source rejection", ok, reason)
+	}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "raw_url": "https://raw.githubusercontent.com/acme/weather/main/SKILL.md"}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("raw_url install allowed=%v reason=%q, want github source rejection", ok, reason)
+	}
+	cfg.SkillSourcesAllowed = []string{"github"}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "repo_full_name": "acme/weather"}); !ok {
+		t.Fatalf("repo_full_name install should infer github, reason=%q", reason)
+	}
+	cfg.SkillSourcesAllowed = []string{"skillhub"}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "zip_base64": "e30="}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("zip_base64 install allowed=%v reason=%q, want local source rejection", ok, reason)
+	}
+	cfg.SkillSourcesAllowed = []string{"local"}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", map[string]interface{}{"action": "install", "zip_base64": "e30="}); !ok {
+		t.Fatalf("zip_base64 install should infer local, reason=%q", reason)
+	}
+}
+
 func TestEnforceConfigSkillSearchInfersKnownSourceEndpointForAllowlist(t *testing.T) {
 	cfg := corelib.AppConfig{HubSecurityCentralized: true, NetworkLevel: "allowlist", NetworkAllowlist: []string{"github.com", "cn.clawhub-mirror.com"}, FileOutboundEnabled: true, ImageOutboundEnabled: true, SkillSourcesAllowed: []string{"github", "clawhub"}}
 
@@ -168,6 +214,34 @@ func TestEnforceConfigSkillSearchInfersKnownSourceEndpointForAllowlist(t *testin
 	}
 	if ok, reason := EnforceConfig(cfg, "search_and_install_skill", map[string]interface{}{"query": "deploy", "source": "skillhub"}); ok || !strings.Contains(reason, "skill source") {
 		t.Fatalf("skillhub source should still be rejected by source policy, allowed=%v reason=%q", ok, reason)
+	}
+}
+
+func TestEnforceConfigSkillInstallRefChecksEmbeddedURLs(t *testing.T) {
+	cfg := corelib.AppConfig{HubSecurityCentralized: true, NetworkLevel: "allowlist", NetworkAllowlist: []string{"github.com"}, FileOutboundEnabled: true, ImageOutboundEnabled: true, SkillSourcesAllowed: []string{"github"}}
+	args := map[string]interface{}{
+		"action":      "install",
+		"source":      "github",
+		"install_ref": `{"repo_url":"https://github.com/acme/weather","raw_url":"https://raw.githubusercontent.com/acme/weather/main/SKILL.md"}`,
+	}
+	if ok, reason := EnforceConfig(cfg, "manage_skill", args); ok || !strings.Contains(reason, "allowlist") {
+		t.Fatalf("embedded raw URL should be checked, allowed=%v reason=%q", ok, reason)
+	}
+	cfg.NetworkAllowlist = append(cfg.NetworkAllowlist, "raw.githubusercontent.com")
+	if ok, reason := EnforceConfig(cfg, "manage_skill", args); !ok {
+		t.Fatalf("embedded GitHub URLs should be allowed, reason=%q", reason)
+	}
+}
+
+func TestEnforceConfigChecksEmbeddedURLsInStringSlices(t *testing.T) {
+	cfg := corelib.AppConfig{HubSecurityCentralized: true, NetworkLevel: "allowlist", NetworkAllowlist: []string{"github.com"}, FileOutboundEnabled: true, ImageOutboundEnabled: true}
+	args := map[string]interface{}{"urls": []string{`{"raw_url":"https://raw.githubusercontent.com/acme/weather/main/SKILL.md"}`}}
+	if ok, reason := EnforceConfig(cfg, "web_fetch", args); ok || !strings.Contains(reason, "allowlist") {
+		t.Fatalf("embedded string-slice URL should be checked, allowed=%v reason=%q", ok, reason)
+	}
+	cfg.NetworkAllowlist = append(cfg.NetworkAllowlist, "raw.githubusercontent.com")
+	if ok, reason := EnforceConfig(cfg, "web_fetch", args); !ok {
+		t.Fatalf("embedded string-slice URL should be allowed, reason=%q", reason)
 	}
 }
 

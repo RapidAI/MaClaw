@@ -85,8 +85,10 @@ interface AppSidebarShellProps {
     onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
     onStartVEConversation?: (veId: string) => void;
     onReorderFavorites?: (newOrder: string[]) => void;
+    onRenameFavoriteEmployee?: (veId: string, name: string) => void | Promise<void>;
     onSetFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
     onRemoveFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
+    onRemoveFavoriteEmployeeById?: (veId: string) => void;
     favoriteEmployeeIds?: string[];
     showCodingToolEntry?: boolean;
 }
@@ -156,8 +158,10 @@ export const AppSidebarShell = ({
     onOpenHistoryDiscussion,
     onStartVEConversation,
     onReorderFavorites,
+    onRenameFavoriteEmployee,
     onSetFavoriteEmployee,
     onRemoveFavoriteEmployee,
+    onRemoveFavoriteEmployeeById,
     favoriteEmployeeIds = [],
     showCodingToolEntry = false,
 }: AppSidebarShellProps) => (
@@ -190,6 +194,8 @@ export const AppSidebarShell = ({
                     veAuthorized={veAuthorized}
                     onStartVEConversation={onStartVEConversation || (() => {})}
                     onReorderFavorites={onReorderFavorites || (() => {})}
+                    onRemoveFavorite={onRemoveFavoriteEmployeeById || (() => {})}
+                    onRenameFavorite={onRenameFavoriteEmployee || (() => {})}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane
                         recentTasksPaneWidth={recentTasksPaneWidth}

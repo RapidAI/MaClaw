@@ -103,8 +103,8 @@ type AppConfig struct {
 	SkillHubURLs      []SkillHubEntry `json:"skill_hub_urls,omitempty"`
 	ExternalSkillDirs []string        `json:"external_skill_dirs,omitempty"` // user-added external skill directories
 	// Memory
-	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
-	MemoryMaxBackups   int  `json:"memory_max_backups,omitempty"` // 0 means use default (20)
+	MemoryAutoCompress bool `json:"memory_auto_compress"`
+	MemoryMaxBackups   int  `json:"memory_max_backups"` // 0 means use default (20)
 	// Security
 	SecurityPolicyMode     string                 `json:"security_policy_mode,omitempty"`
 	HubSecurityCentralized bool                   `json:"hub_security_centralized,omitempty"`
@@ -116,7 +116,7 @@ type AppConfig struct {
 	GossipEnabled          bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
 	FileOutboundEnabled    bool                   `json:"file_outbound_enabled"`           // default true
 	ImageOutboundEnabled   bool                   `json:"image_outbound_enabled"`          // default true
-	SkillSourcesAllowed    []string               `json:"skill_sources_allowed,omitempty"` // nil/empty = all; values: "skillhub","clawhub","github"
+	SkillSourcesAllowed    []string               `json:"skill_sources_allowed,omitempty"` // nil/empty = all; "__none__" = block all; values: "skillhub","clawhub","github","enterprise_hub","local"
 	CapabilityMarketPolicy CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
 	MaclawDebugToolCalls   bool                   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry       bool                   `json:"show_ai_trace_entry,omitempty"`
@@ -240,7 +240,7 @@ type AppConfig struct {
 	// SSH host presets.
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 	// Knowledge Skill token budget.
-	KnowledgeSkillTokenBudget int `json:"knowledge_skill_token_budget,omitempty"`
+	KnowledgeSkillTokenBudget int `json:"knowledge_skill_token_budget"`
 	// AuxiliaryLLM — lightweight LLM for background tasks (compression,
 	// skill repair, session search summarization). When configured, used
 	// in preference to the main LLM to reduce cost and latency.
@@ -281,6 +281,8 @@ type AppConfig struct {
 	// FavoriteEmployees stores the IDs of up to 5 pinned digital employees
 	// shown as quick-access buttons in the sidebar nav rail. Order matters.
 	FavoriteEmployees []string `json:"favorite_employees,omitempty"`
+	// FavoriteEmployeeNames stores user-defined display names for pinned digital employees.
+	FavoriteEmployeeNames map[string]string `json:"favorite_employee_names,omitempty"`
 	// ShowCodingToolEntry controls whether the coding tool selector (Claude Code,
 	// Gemini CLI, etc.) is visible in the sidebar. Default: false (hidden).
 	ShowCodingToolEntry bool `json:"show_coding_tool_entry,omitempty"`

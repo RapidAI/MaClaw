@@ -137,6 +137,9 @@ func (s *HTTPServer) handleAdminBootstrapStatus(w http.ResponseWriter, r *http.R
 		"initialized":          initialized,
 		"setup_required":       !initialized,
 		"setup_token_required": strings.TrimSpace(os.Getenv(adminBootstrapSetupTokenEnv)) != "",
+		"default_locale":       defaultAdminLocale(),
+		"enabled_locales":      adminEnabledLocales(),
+		"locales":              adminLocaleMetadata(),
 		"password_policy": map[string]any{
 			"min_length":            adminPasswordMinLength,
 			"require_mixed_classes": false,

@@ -107,13 +107,16 @@ export const SidebarSystemStatus = ({
         : sidebarCurrentProviderTokenUsage.cachedRequests ?? 0;
     const cachedInput = sidebarCurrentProviderTokenUsage.cachedInput ?? 0;
     const cacheWrite = sidebarCurrentProviderTokenUsage.cacheWrite ?? 0;
+    const isLocalCacheRate = localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService;
     const shouldShowCacheRate = cacheRequests > 0 || (localLLMCacheEnabled && !sidebarCurrentProviderTokenUsage.isHubService);
     const cacheHitRate = cacheRequests > 0
         ? Math.round((cachedRequests / cacheRequests) * 100)
         : shouldShowCacheRate ? 0 : null;
     const cacheTitle = cacheHitRate === null
         ? ''
-        : `${textForLang(lang, 'Cache hit', '\u7f13\u5b58\u547d\u4e2d', '\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Read', '\u8bfb\u53d6', '\u8b80\u53d6')} ${formatSidebarTokens(cachedInput)}${CREDIT_SEPARATOR}${textForLang(lang, 'Write', '\u5199\u5165', '\u5beb\u5165')} ${formatSidebarTokens(cacheWrite)}`;
+        : isLocalCacheRate
+            ? `${textForLang(lang, 'Local cache hit', '\u672c\u5730\u7f13\u5b58\u547d\u4e2d', '\u672c\u5730\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Hits', '\u547d\u4e2d', '\u547d\u4e2d')} ${cachedRequests}/${cacheRequests}`
+            : `${textForLang(lang, 'Cache hit', '\u7f13\u5b58\u547d\u4e2d', '\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Read', '\u8bfb\u53d6', '\u8b80\u53d6')} ${formatSidebarTokens(cachedInput)}${CREDIT_SEPARATOR}${textForLang(lang, 'Write', '\u5199\u5165', '\u5beb\u5165')} ${formatSidebarTokens(cacheWrite)}`;
     const onlineText = textForLang(lang, 'Online', '\u5728\u7ebf', '\u5728\u7dda');
     const offlineText = textForLang(lang, 'Offline', '\u79bb\u7ebf', '\u96e2\u7dda');
     const imOnline = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || (showLansenger && lansengerStatus === 'connected');

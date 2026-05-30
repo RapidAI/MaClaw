@@ -150,6 +150,8 @@ describe('SidebarSystemStatus Hub credits', () => {
         );
 
         expect(screen.getByText(/cache 25%/)).toBeTruthy();
+        const cacheTitles = screen.getAllByTitle(/Local cache hit: 25%/);
+        expect(cacheTitles[0].getAttribute('title')).toContain('Hits 1/4');
     });
 
     it('shows background task count immediately after IM status', () => {

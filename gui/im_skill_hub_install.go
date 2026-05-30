@@ -321,7 +321,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		scanReport := scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
 		installScanReport = scanReport
 
-		if h.app != nil && h.app.skillInstallScanShouldBlock(scanReport) {
+		if h.app != nil && h.app.skillInstallScanShouldBlockForSource(scanReport, source) {
 			cskill.CleanupStaging(stagingDir)
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
@@ -339,7 +339,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 			}
 		}
 
-		if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(scanReport) {
+		if h.app != nil && h.app.skillInstallReviewNeedsConfirmationForSource(scanReport, source) {
 			confirmed := h.confirmRiskSkillInstall(
 				ctx, displayName, source, scanReport.FinalLevel, scanReport.PatternAssessment.Factors, platform, userID,
 			)
@@ -423,7 +423,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		if installScanReport != nil {
 			riskLevel = installScanReport.FinalLevel
 			if h.app != nil {
-				policyAction = h.app.skillInstallFinalAuditAction(installScanReport)
+				policyAction = h.app.skillInstallFinalAuditActionForSource(installScanReport, source)
 			} else if installScanReport.NeedsUserReview() {
 				policyAction = security.PolicyAudit
 			}

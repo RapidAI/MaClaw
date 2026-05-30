@@ -20,6 +20,8 @@ type SidebarNavRailProps = {
     veAuthorized?: boolean;
     onStartVEConversation?: (veId: string) => void;
     onReorderFavorites?: (newOrder: string[]) => void;
+    onRemoveFavorite?: (veId: string) => void;
+    onRenameFavorite?: (veId: string, name: string) => void | Promise<void>;
 };
 
 const zhHans = {
@@ -64,6 +66,8 @@ export const SidebarNavRail = ({
     veAuthorized = false,
     onStartVEConversation = () => {},
     onReorderFavorites = () => {},
+    onRemoveFavorite = () => {},
+    onRenameFavorite = () => {},
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
 
@@ -149,6 +153,9 @@ export const SidebarNavRail = ({
                     onStartVEConversation(veId);
                 }}
                 onReorder={onReorderFavorites}
+                onRemove={onRemoveFavorite}
+                onRename={onRenameFavorite}
+                lang={lang}
             />
 
             {/* Spacer */}

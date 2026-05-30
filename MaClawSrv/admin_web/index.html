@@ -8,9 +8,9 @@
   <title>MaClawSrv Admin</title>
   <link rel="stylesheet" href="/admin/styles.css" />
 </head>
-<body>
-  <a class="skip-link" href="#content">Skip to main content</a>
-  <div id="app" class="app-shell">
+<body class="auth-screen">
+  <a id="skipLink" class="skip-link" href="#loginPanel">Skip to main content</a>
+  <div id="app" class="app-shell auth-only">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">M</div>
@@ -36,8 +36,8 @@
         </div>
         <div id="authBadge" class="badge">...</div>
       </header>
-      <section id="bootstrapPanel" class="panel hidden"></section>
-      <section id="loginPanel" class="panel hidden"></section>
+      <section id="bootstrapPanel" class="panel hidden" tabindex="-1"></section>
+      <section id="loginPanel" class="panel hidden" tabindex="-1"></section>
       <section id="content" class="content"></section>
     </main>
     <div id="toast" class="toast hidden"></div>

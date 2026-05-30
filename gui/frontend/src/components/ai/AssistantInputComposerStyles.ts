@@ -53,6 +53,7 @@ export function getAssistantInputComposerStyles({ cancelPending, inline, isExpan
             flex: 1,
             minWidth: 0,
             width: "100%",
+            boxSizing: "border-box",
             height: isExpandedInput ? "100%" : undefined,
             background: "transparent",
             border: "none",

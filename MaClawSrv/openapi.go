@@ -171,10 +171,10 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/admin/skill-sources/tenant/{id}", Summary: "Get tenant skill source policy", Description: "Returns one tenant-level skill source override.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPut, Path: "/api/v1/admin/skill-sources/tenant/{id}", Summary: "Update tenant skill source policy", Description: "Updates one tenant-level skill source override.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/admin/skill-sources/tenant/{id}", Summary: "Delete tenant skill source policy", Description: "Deletes one tenant-level skill source override so the global policy applies.", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodGet, Path: "/api/v1/admin/skill-sources/user/{email...}", Summary: "Get user skill source policy", Description: "Returns one user-level skill source override by email.", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodPut, Path: "/api/v1/admin/skill-sources/user/{email...}", Summary: "Update user skill source policy", Description: "Updates one user-level skill source override by email.", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodDelete, Path: "/api/v1/admin/skill-sources/user/{email...}", Summary: "Delete user skill source policy", Description: "Deletes one user-level skill source override so tenant or global policy applies.", Tag: "admin", Security: adminSecurity()},
-	{Method: http.MethodGet, Path: "/api/v1/admin/skill-sources/resolve/{email...}", Summary: "Resolve skill source policy", Description: "Returns effective allowed skill sources for one user after user, tenant, and global policy are applied.", Tag: "admin", Security: adminSecurity(), QueryParams: []string{"tenant_id"}},
+	{Method: http.MethodGet, Path: "/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", Summary: "Get tenant user skill source policy", Description: "Returns one tenant-scoped user skill source override by runtime user ID.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodPut, Path: "/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", Summary: "Update tenant user skill source policy", Description: "Updates one tenant-scoped user skill source override by runtime user ID.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", Summary: "Delete tenant user skill source policy", Description: "Deletes one tenant-scoped user skill source override so tenant or global policy applies.", Tag: "admin", Security: adminSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}/resolve", Summary: "Resolve tenant user skill source policy", Description: "Returns effective allowed skill sources for one runtime user after tenant-user, tenant, and global policy are applied.", Tag: "admin", Security: adminSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/auth/token", Summary: "Issue bearer token", Description: "Exchanges tenant user API key and secret for a bearer token.", Tag: "auth"},
 	{Method: http.MethodPost, Path: "/api/v1/web/exchange", Summary: "Exchange web launch token", Description: "Consumes a one-time VE Platform web launch token and returns a short-lived bearer token for the user web app.", Tag: "auth"},
 	{Method: http.MethodGet, Path: "/api/v1/me", Summary: "Current principal", Tag: "auth", Security: bearerSecurity()},
@@ -334,8 +334,8 @@ func isOwnerOpenAPIRoute(method, path string) bool {
 		http.MethodPut + " /api/v1/admin/skill-sources/global",
 		http.MethodPut + " /api/v1/admin/skill-sources/tenant/{id}",
 		http.MethodDelete + " /api/v1/admin/skill-sources/tenant/{id}",
-		http.MethodPut + " /api/v1/admin/skill-sources/user/{email...}",
-		http.MethodDelete + " /api/v1/admin/skill-sources/user/{email...}":
+		http.MethodPut + " /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}",
+		http.MethodDelete + " /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}":
 		return true
 	default:
 		return false

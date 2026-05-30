@@ -332,7 +332,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		})
 		installScanReport = scanReport
 
-		if h.app != nil && h.app.skillInstallScanShouldBlock(scanReport) {
+		if h.app != nil && h.app.skillInstallScanShouldBlockForSource(scanReport, effectiveSource) {
 			cskill.CleanupStaging(stagingDir)
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
@@ -347,7 +347,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			return FormatScanReportForUser(scanReport, entry.Name) +
 				"\n" + localizedSkillInstallBlockedMessage(h.skillConfirmLang(), entry.Name, true)
 		}
-		if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(scanReport) {
+		if h.app != nil && h.app.skillInstallReviewNeedsConfirmationForSource(scanReport, effectiveSource) {
 			platform := ""
 			if h.currentLoopCtx != nil {
 				platform = h.currentLoopCtx.Platform
@@ -454,7 +454,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		if installScanReport != nil {
 			riskLevel = installScanReport.FinalLevel
 			if h.app != nil {
-				policyAction = h.app.skillInstallFinalAuditAction(installScanReport)
+				policyAction = h.app.skillInstallFinalAuditActionForSource(installScanReport, effectiveSource)
 			} else if installScanReport.NeedsUserReview() {
 				policyAction = security.PolicyAudit
 			}

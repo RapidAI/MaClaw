@@ -205,6 +205,12 @@ describe("VEConversationView", () => {
             expect(formatError(err, true)).toBe("消息发送失败：MESSAGE_DELIVERY_FAILED");
             expect(formatError(err, false)).toBe("Message send failed: MESSAGE_DELIVERY_FAILED");
         });
+
+        it("formats access confirmation states", () => {
+            expect(formatError({ type: "auth_pending", message: "" }, false)).toBe("Waiting for access confirmation");
+            expect(formatError({ type: "access_denied", message: "denied" }, false)).toBe("Access was not approved");
+            expect(formatError({ type: "access_denied", message: "blocked" }, false)).toBe("This digital employee is unavailable");
+        });
     });
 
     describe("classifyAttachmentType", () => {
@@ -303,6 +309,135 @@ describe("VEConversationView", () => {
             renderConversation({ initiateConversation: initiate });
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(screen.getByTestId("ve-error-banner")).toBeTruthy();
+        });
+
+        it("shows waiting state when first access needs confirmation", async () => {
+            const initiate = vi.fn().mockRejectedValue(new Error("pending_confirmation"));
+            renderConversation({ initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("等待对方确认");
+        });
+
+        it("retries session creation after access is allowed", async () => {
+            const initiate = vi
+                .fn()
+                .mockRejectedValueOnce(new Error("pending_confirmation"))
+                .mockResolvedValueOnce({ session_id: "allowed-session", ve_id: "ve-1", ve_name: "Test VE" });
+            renderConversation({ initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve-1", decision: "allow_once", status: "allowed" } });
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(initiate).toHaveBeenCalledTimes(2);
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+        });
+
+        it("does not recreate an existing session on duplicate access allow events", async () => {
+            const { initiate } = renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve-1", decision: "allow_once", status: "allowed" } });
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledTimes(1);
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+        });
+
+        it("coalesces rapid duplicate access allow retries while session creation is pending", async () => {
+            let resolveAllowed!: (value: { session_id: string; ve_id: string; ve_name: string }) => void;
+            const allowedSession = new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => {
+                resolveAllowed = resolve;
+            });
+            const initiate = vi
+                .fn()
+                .mockRejectedValueOnce(new Error("pending_confirmation"))
+                .mockReturnValueOnce(allowedSession);
+            renderConversation({ initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve-1", decision: "allow_once", status: "allowed" } });
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve-1", decision: "allow_once", status: "allowed" } });
+            });
+
+            expect(initiate).toHaveBeenCalledTimes(2);
+            resolveAllowed({ session_id: "allowed-session", ve_id: "ve-1", ve_name: "Test VE" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(initiate).toHaveBeenCalledTimes(2);
+        });
+
+        it("matches access result by target machine id", async () => {
+            const initiate = vi
+                .fn()
+                .mockRejectedValueOnce(new Error("pending_confirmation"))
+                .mockResolvedValueOnce({ session_id: "machine-session", ve_id: "ve_machine-a", ve_name: "Machine VE" });
+            renderConversation({ veId: "machine-a", initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve_machine-a", target_machine_id: "machine-a", decision: "allow_once", status: "allowed" } });
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledTimes(2);
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+        });
+
+        it("matches machine id auth result when opened by generated ve id", async () => {
+            const initiate = vi
+                .fn()
+                .mockRejectedValueOnce(new Error("pending_confirmation"))
+                .mockResolvedValueOnce({ session_id: "generated-session", ve_id: "ve_machine-a", ve_name: "Machine VE" });
+            renderConversation({ veId: "ve_machine-a", initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_machine_id: "machine-a", decision: "allow_once", status: "allowed" } });
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledTimes(2);
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+        });
+
+        it("ignores access result events that do not target this digital employee", async () => {
+            const initiate = vi.fn().mockRejectedValue(new Error("pending_confirmation"));
+            renderConversation({ initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { decision: "allow_once", status: "allowed" } });
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve-other", decision: "allow_once", status: "allowed" } });
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("等待对方确认");
+        });
+
+        it("keeps access denied when a stale session creation resolves after denial", async () => {
+            let resolveSession!: (value: { session_id: string; ve_id: string; ve_name: string }) => void;
+            const pendingSession = new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => {
+                resolveSession = resolve;
+            });
+            const initiate = vi.fn().mockReturnValueOnce(pendingSession);
+            const onSessionIdChange = vi.fn();
+            renderConversation({ initiateConversation: initiate, onSessionIdChange });
+            await act(async () => { await Promise.resolve(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve-1", decision: "deny", status: "denied" } });
+            });
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("访问未通过");
+
+            resolveSession({ session_id: "stale-session", ve_id: "ve-1", ve_name: "Test VE" });
+            await act(async () => { await Promise.resolve(); });
+
+            expect(onSessionIdChange).not.toHaveBeenCalledWith("stale-session");
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("访问未通过");
         });
 
         it("shows timeout error when session creation exceeds 5s", async () => {
@@ -2284,6 +2419,92 @@ describe("VEConversationView", () => {
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(screen.queryByText("old answer")).toBeNull();
             expect(close).toHaveBeenCalledWith("test-session-1");
+        });
+
+        it("ignores stale session creation result after clear starts a fresh session", async () => {
+            let resolveOld!: (value: { session_id: string; ve_id: string; ve_name: string }) => void;
+            let resolveFresh!: (value: { session_id: string; ve_id: string; ve_name: string }) => void;
+            const oldSession = new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveOld = resolve; });
+            const freshSession = new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveFresh = resolve; });
+            const initiate = vi.fn()
+                .mockReturnValueOnce(oldSession)
+                .mockReturnValueOnce(freshSession);
+            const onSessionIdChange = vi.fn();
+            const { rerender } = renderConversation({ initiateConversation: initiate, onSessionIdChange, clearSignal: 0 });
+            await act(async () => { await Promise.resolve(); });
+            expect(initiate).toHaveBeenCalledTimes(1);
+
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    initiateConversation={initiate}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    onSessionIdChange={onSessionIdChange}
+                    clearSignal={1}
+                />
+            );
+            await act(async () => { await Promise.resolve(); });
+            expect(initiate).toHaveBeenCalledTimes(2);
+
+            resolveOld({ session_id: "stale-session", ve_id: "ve-1", ve_name: "Test VE" });
+            await act(async () => { await Promise.resolve(); });
+            expect(onSessionIdChange).not.toHaveBeenCalledWith("stale-session");
+
+            resolveFresh({ session_id: "fresh-session", ve_id: "ve-1", ve_name: "Test VE" });
+            await act(async () => { await Promise.resolve(); });
+            expect(onSessionIdChange).toHaveBeenCalledWith("fresh-session");
+            expect(onSessionIdChange).not.toHaveBeenCalledWith("stale-session");
+        });
+
+        it("does not register the local executor into a stale group session after clear", async () => {
+            let resolveOld!: (value: { session_id: string; ve_id: string; ve_name: string }) => void;
+            let resolveFresh!: (value: { session_id: string; ve_id: string; ve_name: string }) => void;
+            const oldSession = new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveOld = resolve; });
+            const freshSession = new Promise<{ session_id: string; ve_id: string; ve_name: string }>((resolve) => { resolveFresh = resolve; });
+            const initiateGroupConversation = vi.fn()
+                .mockReturnValueOnce(oldSession)
+                .mockReturnValueOnce(freshSession);
+            const registerLocalExecutorInGroup = vi.fn().mockResolvedValue({ participant_id: "machine-local" });
+            const participants = [
+                { id: "ve-1", name: "Agent A", online: true },
+                { id: "machine-local", name: "Local AI", online: true },
+            ];
+            const { rerender } = renderConversation({
+                participants,
+                initiateGroupConversation,
+                registerLocalExecutorInGroup,
+                clearSignal: 0,
+            });
+            await act(async () => { await Promise.resolve(); });
+
+            rerender(
+                <VEConversationView
+                    veId="ve-1"
+                    veName="Agent A"
+                    theme={mockTheme}
+                    lang="en"
+                    initiateGroupConversation={initiateGroupConversation}
+                    registerLocalExecutorInGroup={registerLocalExecutorInGroup}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    participants={participants}
+                    clearSignal={1}
+                />
+            );
+            await act(async () => { await Promise.resolve(); });
+
+            resolveOld({ session_id: "stale-group-session", ve_id: "ve-1", ve_name: "Group" });
+            await act(async () => { await Promise.resolve(); });
+            expect(registerLocalExecutorInGroup).not.toHaveBeenCalledWith("stale-group-session");
+
+            resolveFresh({ session_id: "fresh-group-session", ve_id: "ve-1", ve_name: "Group" });
+            await act(async () => { await Promise.resolve(); });
+            expect(registerLocalExecutorInGroup).toHaveBeenCalledWith("fresh-group-session");
+            expect(registerLocalExecutorInGroup).not.toHaveBeenCalledWith("stale-group-session");
         });
     });
 });

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
+
+const testPlatformAvatarDataURL = "data:image/png;base64,iVBORw0KGgo="
 
 func TestPlatformVirtualEmployeeProvisionCreatesRuntimeInstance(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -27,6 +30,9 @@ func TestPlatformVirtualEmployeeProvisionCreatesRuntimeInstance(t *testing.T) {
 	}
 	if inst.Metadata["ve_employee_id"] != "emp-001" || inst.Metadata["llm_service_group_id"] != "group-legal" {
 		t.Fatalf("unexpected instance metadata: %#v", inst.Metadata)
+	}
+	if inst.Metadata["ve_avatar_data_url"] != testPlatformAvatarDataURL {
+		t.Fatalf("expected avatar metadata, got %#v", inst.Metadata)
 	}
 	if inst.Metadata["ve_name"] != "Contract Reviewer" || inst.Metadata["ve_skill_description"] != "Review contract risks" || inst.Metadata["ve_skill_tags"] != "contract, review" {
 		t.Fatalf("expected platform identity metadata for system prompt, got %#v", inst.Metadata)
@@ -87,6 +93,72 @@ func TestPlatformVirtualEmployeeConfigUpdatesIMSettingsAndClearsAutoMode(t *test
 	if err := server.updatePlatformUserMaclawSrvConfig(httptest.NewRequest(http.MethodPost, "/", nil), principal, platformMaclawSrvConfig{ThirdPartyGatewayPort: &badPort}); err == nil {
 		t.Fatalf("expected invalid gateway port error")
 	}
+}
+
+func TestPlatformVirtualEmployeeConfigUpdatesAvatarMetadata(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees/emp-001/config", map[string]any{
+		"tenant_id":       "hub-tenant-001",
+		"virtual_email":   "contract_reviewer@example.test",
+		"avatar_data_url": "",
+	}, http.StatusOK)
+	_, _, inst := platformRuntimeForTest(t, svc, "emp-001")
+	if _, ok := inst.Metadata["ve_avatar_data_url"]; ok {
+		t.Fatalf("expected avatar metadata cleared, got %#v", inst.Metadata)
+	}
+}
+
+func TestPlatformVirtualEmployeeProvisionRejectsInvalidAvatarDataURL(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees", map[string]any{
+		"employee_id":      "emp-bad-avatar",
+		"tenant_id":        "hub-tenant-001",
+		"name":             "Bad Avatar",
+		"virtual_email":    "bad_avatar@example.test",
+		"avatar_data_url":  "data:image/png;base64,QUJD",
+		"hub_llm_endpoint": "https://hub.example.test/llm",
+		"hub_llm_api_key":  "test-hub-key",
+	}, http.StatusBadRequest)
+}
+
+func TestNormalizePlatformAvatarAcceptsOneMiBImageDataURL(t *testing.T) {
+	payload := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, make([]byte, platformAvatarImageMaxBytes-8)...)
+	avatar := "data:image/png;base64," + base64.StdEncoding.EncodeToString(payload)
+	if len(avatar) <= 1024*1024 {
+		t.Fatalf("test avatar should exceed old encoded limit")
+	}
+	if _, err := normalizePlatformAvatarDataURL(avatar); err != nil {
+		t.Fatalf("normalize one MiB avatar: %v", err)
+	}
+}
+
+func TestPlatformVirtualEmployeeProvisionAcceptsOneMiBAvatarDataURL(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	payload := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, make([]byte, platformAvatarImageMaxBytes-8)...)
+	avatar := "data:image/png;base64," + base64.StdEncoding.EncodeToString(payload)
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees", map[string]any{
+		"employee_id":      "emp-big-avatar",
+		"tenant_id":        "hub-tenant-001",
+		"name":             "Big Avatar",
+		"virtual_email":    "big_avatar@example.test",
+		"avatar_data_url":  avatar,
+		"hub_llm_endpoint": "https://hub.example.test/llm",
+		"hub_llm_api_key":  "test-hub-key",
+	}, http.StatusOK)
 }
 
 func TestRuntimeVirtualEmployeeDiscussionMessageRunsBoundRuntime(t *testing.T) {
@@ -2274,6 +2346,7 @@ func provisionPlatformEmployeeForTest(t *testing.T, server *HTTPServer) {
 		"virtual_email":        "contract_reviewer@example.test",
 		"skill_description":    "Review contract risks",
 		"skill_tags":           []string{"contract", "review"},
+		"avatar_data_url":      testPlatformAvatarDataURL,
 		"hub_llm_endpoint":     "https://hub.example.test/llm",
 		"hub_llm_api_key":      "test-hub-key",
 		"llm_service_group_id": "group-legal",

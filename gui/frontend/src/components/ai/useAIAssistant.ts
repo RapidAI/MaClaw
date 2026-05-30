@@ -1640,6 +1640,16 @@ function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: stri
         }];
 }
 
+function isTimeoutErrorText(errorText: unknown): boolean {
+    const normalized = String(errorText || '').toLowerCase();
+    return normalized.includes('timeout')
+        || normalized.includes('timed out')
+        || normalized.includes('time out')
+        || normalized.includes('deadline exceeded')
+        || normalized.includes('\u8bf7\u6c42\u8d85\u65f6')
+        || normalized.includes('\u8d85\u65f6');
+}
+
 export const CANCELED_BY_USER_LINE = "任务已经应用户要求取消";
 
 export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null): ChatMessage[] {
@@ -1659,9 +1669,9 @@ export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: 
 
 function resolveSendResult(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
     return errorText
-        ? replaceRoundWithError(messages, assistantMessageId, requestId, errorText)
+        ? replaceRoundWithError(messages, assistantMessageId, requestId, errorText, isTimeoutErrorText(errorText))
         : response?.error
-            ? replaceRoundWithError(messages, assistantMessageId, requestId, response.error)
+            ? replaceRoundWithError(messages, assistantMessageId, requestId, response.error, isTimeoutErrorText(response.error))
             : finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
 }
 
@@ -3072,28 +3082,31 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         const resumeMatch = command.match(/^__resume_unfinished__\s+(\S+)$/);
         if (resumeMatch) {
-            return sendMessage('Continue previous unfinished task', {
+            const resumeText = localizeText(uiLang, "Continue previous unfinished task", "\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9");
+            return sendMessage(resumeText, {
                 resumeSlotID: resumeMatch[1]?.trim() || '',
-                displayText: localizeText(uiLang, "Continue previous unfinished task", "\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9"),
+                displayText: resumeText,
             });
         }
         // Backward compat: __start_new_task__ is no longer emitted by the
         // backend (merged into __dismiss_unfinished__), but keep the handler
         // in case older backend versions are still in use.
         if (command === '__start_new_task__') {
-            return sendMessage('Start a new task', {
+            const startNewText = localizeText(uiLang, "Start a new task", "\u5f00\u59cb\u4e00\u4e2a\u65b0\u4efb\u52a1", "\u958b\u59cb\u4e00\u500b\u65b0\u4efb\u52d9");
+            return sendMessage(startNewText, {
                 startNewTask: true,
                 uiAction: true,
-                displayText: localizeText(uiLang, "Start a new task", "\u5f00\u59cb\u4e00\u4e2a\u65b0\u4efb\u52a1", "\u958b\u59cb\u4e00\u500b\u65b0\u4efb\u52d9"),
+                displayText: startNewText,
             });
         }
         const dismissMatch = command.match(/^__dismiss_unfinished__\s+(\S+)$/);
         if (dismissMatch) {
-            return sendMessage('Dismiss previous unfinished task', {
+            const dismissText = localizeText(uiLang, "Dismiss previous unfinished task", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9");
+            return sendMessage(dismissText, {
                 dismissSlotID: dismissMatch[1]?.trim() || '',
                 startNewTask: true,
                 uiAction: true,
-                displayText: localizeText(uiLang, "Dismiss previous unfinished task", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9"),
+                displayText: dismissText,
             });
         }
         return sendMessage(command);

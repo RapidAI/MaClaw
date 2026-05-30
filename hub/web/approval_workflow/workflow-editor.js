@@ -241,6 +241,33 @@
     try { if (window.localStorage) window.localStorage.removeItem(key); } catch (_) {}
   }
 
+  function scrubWorkflowAuthFromLocation() {
+    try {
+      if (!window.history || typeof window.history.replaceState !== 'function') return;
+      var url = new URL(window.location.href);
+      var changed = false;
+      ['machine_id', 'token', 'machine_token'].forEach(function (key) {
+        if (url.searchParams.has(key)) {
+          url.searchParams.delete(key);
+          changed = true;
+        }
+      });
+      var rawHash = String(url.hash || '').replace(/^#/, '');
+      if (rawHash) {
+        var hashParams = new URLSearchParams(rawHash);
+        ['machine_id', 'token', 'machine_token'].forEach(function (key) {
+          if (hashParams.has(key)) {
+            hashParams.delete(key);
+            changed = true;
+          }
+        });
+        var nextHash = hashParams.toString();
+        url.hash = nextHash ? '#' + nextHash : '';
+      }
+      if (changed) window.history.replaceState(window.history.state, document.title, url.pathname + url.search + url.hash);
+    } catch (_) {}
+  }
+
   function isReadOnlyPreview() {
     return !!state.isReadOnlyPreview;
   }
@@ -285,10 +312,15 @@
   }
 
   function getWorkflowAuth() {
-    var machineID = getUrlParam('machine_id') || storageGet('maclaw-approval-workflow-machine-id');
-    var token = getUrlParam('token') || getUrlParam('machine_token') || storageGet('maclaw-approval-workflow-machine-token');
-    storageSet('maclaw-approval-workflow-machine-id', machineID);
-    storageSet('maclaw-approval-workflow-machine-token', token);
+    var rawMachineID = getUrlParam('machine_id') || storageGet('maclaw-approval-workflow-machine-id');
+    var rawToken = getUrlParam('token') || getUrlParam('machine_token') || storageGet('maclaw-approval-workflow-machine-token');
+    var machineID = String(rawMachineID || '').trim();
+    var token = String(rawToken || '').trim();
+    if (machineID) storageSet('maclaw-approval-workflow-machine-id', machineID);
+    else storageRemove('maclaw-approval-workflow-machine-id');
+    if (token) storageSet('maclaw-approval-workflow-machine-token', token);
+    else storageRemove('maclaw-approval-workflow-machine-token');
+    if (rawMachineID || rawToken) scrubWorkflowAuthFromLocation();
     return { machineID: machineID, token: token };
   }
 

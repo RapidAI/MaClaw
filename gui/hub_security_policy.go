@@ -14,16 +14,17 @@ import (
 // HubEffectivePolicy mirrors hub/internal/security.EffectivePolicy on the client side.
 // We define a local copy to avoid importing the hub internal package.
 type HubEffectivePolicy struct {
-	FileOutboundEnabled  bool     `json:"file_outbound_enabled"`
-	ImageOutboundEnabled bool     `json:"image_outbound_enabled"`
-	GossipEnabled        bool     `json:"gossip_enabled"`
-	GuardrailMode        string   `json:"guardrail_mode"`
-	SandboxMode          string   `json:"sandbox_mode"`
-	NetworkLevel         string   `json:"network_level"`
-	NetworkAllowlist     []string `json:"network_allowlist,omitempty"`
-	YoloModeAllowed      bool     `json:"yolo_mode_allowed"`
-	SmartRouteEnabled    bool     `json:"smart_route_enabled"`
-	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed
+	FileOutboundEnabled    bool     `json:"file_outbound_enabled"`
+	ImageOutboundEnabled   bool     `json:"image_outbound_enabled"`
+	GossipEnabled          bool     `json:"gossip_enabled"`
+	GuardrailMode          string   `json:"guardrail_mode"`
+	SandboxMode            string   `json:"sandbox_mode"`
+	NetworkLevel           string   `json:"network_level"`
+	NetworkAllowlist       []string `json:"network_allowlist,omitempty"`
+	YoloModeAllowed        bool     `json:"yolo_mode_allowed"`
+	SmartRouteEnabled      bool     `json:"smart_route_enabled"`
+	SkillSourcesAllowed    []string `json:"skill_sources_allowed,omitempty"` // nil = all allowed; empty with SkillSourcesRestricted=true blocks all.
+	SkillSourcesRestricted bool     `json:"skill_sources_restricted,omitempty"`
 }
 
 type digitalEmployeeAuthorizationCache struct {
@@ -118,7 +119,8 @@ type HubSecurityPolicy struct {
 	// SkillSourcesAllowed is set independently of CentralizedSecurity.
 	// When centralized=false but source control is configured on maclawsrv,
 	// this field carries the restriction.
-	SkillSourcesAllowed []string `json:"skill_sources_allowed,omitempty"`
+	SkillSourcesAllowed    []string `json:"skill_sources_allowed,omitempty"`
+	SkillSourcesRestricted bool     `json:"skill_sources_restricted,omitempty"`
 }
 
 // hubSecurityCache holds the cached security policy received from Hub heartbeat acks.
@@ -200,7 +202,7 @@ func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 
 	// Log skill source restrictions even when centralized security is off
 	// (independent source control plane).
-	if len(policy.SkillSourcesAllowed) > 0 {
+	if policy.SkillSourcesRestricted || len(policy.SkillSourcesAllowed) > 0 {
 		log.Printf("[hub-security] skill_sources_allowed applied (independent): %v", policy.SkillSourcesAllowed)
 	}
 
@@ -234,7 +236,7 @@ func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 	}
 
 	// 5. skill_sources_allowed -> restrict skill search/download sources
-	if len(ep.SkillSourcesAllowed) > 0 {
+	if ep.SkillSourcesRestricted || len(ep.SkillSourcesAllowed) > 0 {
 		log.Printf("[hub-security] skill_sources_allowed applied (centralized): %v", ep.SkillSourcesAllowed)
 	}
 }
@@ -245,7 +247,7 @@ func (a *App) persistHubSecurityPolicy(policy *HubSecurityPolicy) {
 	}
 	if err := a.patchConfig(func(cfg *corelib.AppConfig) {
 		cfg.HubSecurityCentralized = policy.CentralizedSecurity
-		cfg.SkillSourcesAllowed = append([]string(nil), policy.SkillSourcesAllowed...)
+		cfg.SkillSourcesAllowed = skillSourcesForAppConfig(policy.SkillSourcesAllowed, policy.SkillSourcesRestricted)
 		if !policy.CentralizedSecurity || policy.Policy == nil {
 			return
 		}
@@ -265,7 +267,7 @@ func (a *App) persistHubSecurityPolicy(policy *HubSecurityPolicy) {
 		cfg.GossipEnabled = ep.GossipEnabled
 		cfg.FileOutboundEnabled = ep.FileOutboundEnabled
 		cfg.ImageOutboundEnabled = ep.ImageOutboundEnabled
-		cfg.SkillSourcesAllowed = append([]string(nil), ep.SkillSourcesAllowed...)
+		cfg.SkillSourcesAllowed = skillSourcesForAppConfig(ep.SkillSourcesAllowed, ep.SkillSourcesRestricted)
 	}, true); err != nil {
 		log.Printf("[hub-security] failed to persist hub policy to local config: %v", err)
 	}
@@ -332,12 +334,12 @@ func (a *App) GetAllowedSkillSources() []string {
 	if p != nil {
 		// Case 1: Centralized security on - use Policy.SkillSourcesAllowed (already
 		// merged with independent source control on the server side).
-		if p.CentralizedSecurity && p.Policy != nil && len(p.Policy.SkillSourcesAllowed) > 0 {
-			return p.Policy.SkillSourcesAllowed
+		if p.CentralizedSecurity && p.Policy != nil && (p.Policy.SkillSourcesRestricted || len(p.Policy.SkillSourcesAllowed) > 0) {
+			return cloneAllowedSkillSources(p.Policy.SkillSourcesAllowed)
 		}
 		// Case 2: Centralized security off but independent source control is active - the server pushes SkillSourcesAllowed at the payload level.
-		if len(p.SkillSourcesAllowed) > 0 {
-			return p.SkillSourcesAllowed
+		if p.SkillSourcesRestricted || len(p.SkillSourcesAllowed) > 0 {
+			return cloneAllowedSkillSources(p.SkillSourcesAllowed)
 		}
 	}
 	// 3. Check local config (standalone mode, no Hub connection).
@@ -346,7 +348,7 @@ func (a *App) GetAllowedSkillSources() []string {
 		return nil
 	}
 	if err == nil && len(cfg.SkillSourcesAllowed) > 0 {
-		return cfg.SkillSourcesAllowed
+		return cloneAllowedSkillSources(cfg.SkillSourcesAllowed)
 	}
 	// 4. Default: all sources allowed (nil = no filter).
 	return nil
@@ -356,9 +358,12 @@ func (a *App) GetAllowedSkillSources() []string {
 // Returns true when all sources are allowed (nil/empty list) or when the
 // source is in the allowed list.
 func (a *App) IsSkillSourceAllowed(source string) bool {
-	allowed := a.GetAllowedSkillSources()
-	if len(allowed) == 0 {
-		return true // all allowed
+	return isAllowedSkillSourceList(source, a.GetAllowedSkillSources())
+}
+
+func isAllowedSkillSourceList(source string, allowed []string) bool {
+	if allowed == nil {
+		return true
 	}
 	source = normalizeHubSkillSource(source)
 	for _, s := range allowed {
@@ -367,6 +372,15 @@ func (a *App) IsSkillSourceAllowed(source string) bool {
 		}
 	}
 	return false
+}
+
+func cloneAllowedSkillSources(sources []string) []string {
+	if sources == nil {
+		return nil
+	}
+	out := make([]string, len(sources))
+	copy(out, sources)
+	return out
 }
 
 func normalizeHubSkillSource(source string) string {

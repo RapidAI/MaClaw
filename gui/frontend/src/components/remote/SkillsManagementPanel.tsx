@@ -241,6 +241,14 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
             fn: () => localizeText("Invalid GitHub install reference", "GitHub 安装引用无效", "GitHub 安裝引用無效"),
         },
         {
+            re: /当前企业策略不允许从该能力市场安装此 Skill|Your organization policy does not allow installing this skill from this capability marketplace|skill source .*allowed sources|skill source .*not allowed by policy/,
+            fn: () => localizeText(
+                "Your organization policy does not allow installing this Skill from this capability marketplace.",
+                "当前企业策略不允许从该能力市场安装此 Skill。",
+                "目前企業策略不允許從此能力市場安裝此 Skill。",
+            ),
+        },
+        {
             re: /unsupported skill source/,
             fn: () => localizeText("Unsupported skill source", "不支持的技能来源", "不支援的技能來源"),
         },
@@ -280,7 +288,7 @@ function learnedSourceIcon(source: string): string {
     return "📁";
 }
 
-const LEARNED_DESCRIPTION_PREVIEW_CHARS = 80;
+const LEARNED_DESCRIPTION_PREVIEW_CHARS = 20;
 export function getLearnedSkillDescriptionPreview(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS): string {
     const normalized = description.trim().replace(/\s+/g, " ");
     if (!normalized) return "-"; const chars = Array.from(normalized);

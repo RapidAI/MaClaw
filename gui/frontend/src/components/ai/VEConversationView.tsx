@@ -2,11 +2,15 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { AssistantInputIcon, getInputActionButtonStyle } from "./aiAssistantPanelTheme";
-import { getAssistantInputComposerStyles } from "./AssistantInputComposerStyles";
+import { AssistantInputComposer } from "./AssistantInputComposer";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { getParticipantColor } from "./VEGroupChat";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { veStatusEventInfo } from "./veStatusEvent";
+import { useAssistantInputHistory } from "./useAssistantInputHistory";
+import { usePastedImageAttachments } from "./usePastedImageAttachments";
+import type { AttachmentInfo } from "./useBufferQueue";
+import type { UseVoiceInputResult } from "./useVoiceInput";
 
 type WailsAppModule = typeof import("../../../wailsjs/go/main/App");
 
@@ -45,12 +49,6 @@ export interface VEMessageAttachment {
     /** For files: size in bytes */
     sizeBytes?: number;
 }
-
-type PendingVEAttachment = {
-    name: string;
-    size: number;
-    path?: string;
-};
 
 type QueuedVEMessage = {
     id: string;
@@ -135,6 +133,8 @@ export interface VEConversationState {
 export type VEConversationError =
     | { type: "hub_disconnected"; message: string }
     | { type: "ve_offline"; message: string }
+    | { type: "auth_pending"; message: string }
+    | { type: "access_denied"; message: string }
     | { type: "send_failed"; message: string }
     | { type: "session_timeout"; message: string };
 
@@ -192,6 +192,8 @@ const LOCAL_CONFIG_CHANGED_EVENT = "maclaw-config-changed";
 const RECONNECT_DELAYS = [2000, 4000, 8000, 16000, 30000]; // exponential backoff
 const MAX_RECONNECT_RETRIES = 5;
 const MENTION_TRIGGER_PATTERN = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/;
+const VE_PROMPT_HISTORY_STORAGE_PREFIX = "ve-conversation-prompt-history:";
+const MAX_VE_PROMPT_HISTORY = 100;
 
 // --- Helpers ---
 
@@ -248,7 +250,7 @@ function readableConversationPartnerName(name: string, id: string, isZh: boolean
     const candidate = String(name || "").trim();
     const normalizedId = String(id || "").trim();
     if (candidate && candidate !== normalizedId && !looksLikeRawParticipantId(candidate)) return candidate;
-    return isZh ? "数字员工" : "Digital employee";
+    return isZh ? "\u6570\u5b57\u5458\u5de5" : "Digital employee";
 }
 
 function participantColorById(participants: MentionParticipant[] | undefined, id: string | undefined, fallback: string): string {
@@ -279,10 +281,13 @@ function mentionLabelsForParticipant(participant: MentionParticipant): string[] 
         labels.add(LOCAL_AI_DISPLAY_NAME_EN);
         labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANS);
         labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANT);
-        labels.add("本机 AI");
-        labels.add("本機 AI");
-        labels.add("本地AI");
-        labels.add("本地 AI");
+        labels.add("\u672c\u5730AI");
+        labels.add("\u672c\u5730 AI");
+        labels.add("\u672c\u673aAI");
+        labels.add("\u672c\u673a AI");
+        labels.add("\u672c\u6a5f AI");
+        labels.add("\u672c\u5730\u667a\u80fd\u4f53");
+        labels.add("\u672c\u673a\u667a\u80fd\u4f53");
     }
     return [...labels];
 }
@@ -366,8 +371,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
     const [sending, setSending] = useState(false);
     const [awaitingReplyVisible, setAwaitingReplyVisible] = useState(false);
-    const [pendingAttachments, setPendingAttachments] = useState<PendingVEAttachment[]>([]);
+    const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const [visibleQueue, setVisibleQueue] = useState<QueuedVEMessage[]>([]);
+    const [promptHistoryState, setPromptHistoryState] = useState(() => ({ veId, history: loadVEPromptHistory(veId) }));
     // Track VE online status; input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
     const [responseWatchdogTimeoutSec, setResponseWatchdogTimeoutSec] = useState(DEFAULT_AGENT_TIMEOUT_SEC);
@@ -400,23 +406,32 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const queueDrainRunningRef = useRef(false);
     const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadedHistorySessionRef = useRef<string>("");
+    const sessionInitInFlightRef = useRef<Promise<boolean> | null>(null);
+    const sessionInitGenerationRef = useRef(0);
     const [queueDrainSignal, setQueueDrainSignal] = useState(0);
 
     sendingRef.current = sending;
 
     const isZh = !lang || lang.startsWith("zh");
-    const localSpeakerName = isZh ? "我" : "Me";
+    const localSpeakerName = isZh ? "\u6211" : "Me";
     const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, isZh), [isZh, veId, veName]);
     const canSend = veOnline && !readOnly && !sending && (!!inputText.trim() || pendingAttachments.length > 0);
     const inputReady = veOnline && !readOnly;
     const inputThemeMode: "light" | "dark" = isDarkHexColor(theme.bg) ? "dark" : "light";
-    const inputStyles = getAssistantInputComposerStyles({
-        cancelPending: sending,
-        inline: false,
-        isExpandedInput: false,
-        ready: inputReady,
-        theme,
-    });
+    const voiceInputDisabledRef = useRef<((level: number) => void) | null>(null);
+    const disabledVoiceInput = useMemo<UseVoiceInputResult>(() => ({
+        state: "idle",
+        asrReady: false,
+        toggle: async () => {},
+        startHold: async () => {},
+        stopHold: () => {},
+        holdRecording: false,
+        duration: 0,
+        isSpeaking: false,
+        segmentCount: 0,
+        error: null,
+        onAudioLevelRef: voiceInputDisabledRef,
+    }), []);
 
     const closeMentionPopover = useCallback(() => {
         setMentionOpen(false);
@@ -461,6 +476,30 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             inputRef.current?.setSelectionRange(target, target);
         }, 0);
     }, []);
+
+    const resizeInput = useCallback(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        input.style.height = "auto";
+        input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+    }, []);
+
+    const applyInputValue = useCallback((nextValue: string) => {
+        setInputText(nextValue);
+        requestAnimationFrame(() => {
+            resizeInput();
+            scheduleInputFocus(nextValue.length);
+        });
+    }, [resizeInput, scheduleInputFocus]);
+
+    const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue: inputText, submittedPrompts: promptHistoryState.veId === veId ? promptHistoryState.history : [] });
+
+    const recordSubmittedPrompt = useCallback((prompt: string) => {
+        setPromptHistoryState(prev => {
+            const history = prev.veId === veId ? prev.history : loadVEPromptHistory(veId);
+            return { veId, history: appendVEPromptHistory(history, prompt) };
+        });
+    }, [veId]);
 
     const updateMentionState = useCallback((value: string, caret: number | null | undefined) => {
         if (readOnly || !participants?.length || caret == null) {
@@ -555,6 +594,14 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     }, [onSessionIdChange, state.sessionId]);
 
     useEffect(() => {
+        setPromptHistoryState({ veId, history: loadVEPromptHistory(veId) });
+    }, [veId]);
+
+    useEffect(() => {
+        persistVEPromptHistory(promptHistoryState.veId, promptHistoryState.history);
+    }, [promptHistoryState]);
+
+    useEffect(() => {
         const sessionId = String(state.sessionId || "").trim();
         if (!sessionId || loadedHistorySessionRef.current === sessionId || state.messages.length > 0) return;
         loadedHistorySessionRef.current = sessionId;
@@ -589,9 +636,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     useEffect(() => {
         const unsub = EventsOn("ve:status_change", (data: any) => {
             if (!data) return;
-            const id = data.ve_id || data.id;
-            if (id !== veId) return;
-            const status = data.online_status;
+            const { ids, status } = veStatusEventInfo(data);
+            if (!ids.includes(normalizeParticipantId(veId))) return;
             if (status === "online") setVeOnline(true);
             else if (status === "offline") setVeOnline(false);
         });
@@ -628,6 +674,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     // --- Session Management ---
 
     const initSession = useCallback(async () => {
+        if (sessionInitInFlightRef.current) return sessionInitInFlightRef.current;
+        const initGeneration = sessionInitGenerationRef.current;
         const veIds = participants?.length ? groupSessionVEIds(veId, participants) : [veId];
         const shouldRegisterLocalExecutor = !!participants?.some(isLocalGroupParticipant);
         const startSession = async () => {
@@ -644,56 +692,73 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             return (mod as any).InitiateVEConversation(veId);
         };
 
-        try {
-            const result = await createSessionWithTimeout<{ session_id: string; ve_id: string; ve_name: string }>(
-                startSession(),
-                SESSION_TIMEOUT_MS
-            );
-            const sessionId = String(result?.session_id || "").trim();
-            let localRegistrationError: VEConversationError | null = null;
-            if (shouldRegisterLocalExecutor && sessionId) {
-                try {
-                    if (registerLocalExecutorInGroup) {
-                        await registerLocalExecutorInGroup(sessionId);
-                    } else {
-                        const mod = await getWailsAppModule();
-                        if (typeof (mod as any).RegisterLocalExecutorInGroup === "function") {
-                            await (mod as any).RegisterLocalExecutorInGroup(sessionId);
+        const run = (async () => {
+            try {
+                const result = await createSessionWithTimeout<{ session_id: string; ve_id: string; ve_name: string }>(
+                    startSession(),
+                    SESSION_TIMEOUT_MS
+                );
+                const sessionId = String(result?.session_id || "").trim();
+                let localRegistrationError: VEConversationError | null = null;
+                if (sessionInitGenerationRef.current !== initGeneration) return false;
+                if (shouldRegisterLocalExecutor && sessionId) {
+                    try {
+                        if (registerLocalExecutorInGroup) {
+                            await registerLocalExecutorInGroup(sessionId);
+                        } else {
+                            const mod = await getWailsAppModule();
+                            if (typeof (mod as any).RegisterLocalExecutorInGroup === "function") {
+                                await (mod as any).RegisterLocalExecutorInGroup(sessionId);
+                            }
                         }
+                    } catch (err: any) {
+                        localRegistrationError = {
+                            type: "send_failed",
+                            message: err?.message || "Local AI registration failed",
+                        } as VEConversationError;
                     }
-                } catch (err: any) {
-                    localRegistrationError = {
-                        type: "send_failed",
-                        message: err?.message || "Local AI registration failed",
-                    } as VEConversationError;
                 }
+                if (sessionInitGenerationRef.current !== initGeneration) return false;
+                if (sessionId) sessionIdRef.current = sessionId;
+                if (mountedRef.current) {
+                    setState((prev) => ({
+                        ...prev,
+                        sessionId,
+                        error: localRegistrationError,
+                        connectionState: "connected",
+                        reconnectAttempt: 0,
+                    }));
+                }
+                return true;
+            } catch (err: any) {
+                if (sessionInitGenerationRef.current !== initGeneration) return false;
+                if (mountedRef.current) {
+                    const message = String(err?.message || "");
+                    const errorType = message.includes("pending_confirmation")
+                        ? "auth_pending"
+                        : message.includes("VE_ACCESS_DENIED") || message.includes("VE_AUTH_BLOCKED") || message.includes("forbidden")
+                        ? "access_denied"
+                        : message.includes("session_timeout")
+                        ? "session_timeout"
+                        : message.includes("offline")
+                        ? "ve_offline"
+                        : "hub_disconnected";
+                    setState((prev) => ({
+                        ...prev,
+                        error: {
+                            type: errorType,
+                            message: err?.message || "Connection failed",
+                        } as VEConversationError,
+                    }));
+                }
+                return false;
             }
-            if (mountedRef.current) {
-                setState((prev) => ({
-                    ...prev,
-                    sessionId,
-                    error: localRegistrationError,
-                    connectionState: "connected",
-                    reconnectAttempt: 0,
-                }));
-            }
-            return true;
-        } catch (err: any) {
-            if (mountedRef.current) {
-                const errorType = err?.message?.includes("session_timeout")
-                    ? "session_timeout"
-                    : err?.message?.includes("offline")
-                    ? "ve_offline"
-                    : "hub_disconnected";
-                setState((prev) => ({
-                    ...prev,
-                    error: {
-                        type: errorType,
-                        message: err?.message || "Connection failed",
-                    } as VEConversationError,
-                }));
-            }
-            return false;
+        })();
+        sessionInitInFlightRef.current = run;
+        try {
+            return await run;
+        } finally {
+            if (sessionInitInFlightRef.current === run) sessionInitInFlightRef.current = null;
         }
     }, [initiateConversation, initiateGroupConversation, participants, registerLocalExecutorInGroup, veId]);
 
@@ -744,9 +809,45 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         }
     }, [veOnline, initSession]);
 
+    useEffect(() => {
+        const handleAuthResult = (data: any) => {
+            const payload = data?.payload && typeof data.payload === "object" ? data.payload : data;
+            const normalizedVEIds = authResultCandidateIds(veId);
+            const targetIds = [payload?.target_ve_id, payload?.ve_id, payload?.target_machine_id]
+                .flatMap((value) => authResultCandidateIds(value));
+            if (!targetIds.some((id) => normalizedVEIds.includes(id))) return;
+            const decision = String(payload?.decision || "").trim();
+            const status = String(payload?.status || "").trim();
+            if (status === "allowed" || decision === "allow_once" || decision === "allow_long" || decision === "allow") {
+                const hasSession = !!sessionIdRef.current;
+                setState((prev) => ({ ...prev, error: null, connectionState: hasSession || prev.sessionId ? "connected" : "reconnecting" }));
+                if (!hasSession) void initSession();
+                return;
+            }
+            const blocked = status === "blocked" || decision === "block";
+            sessionInitGenerationRef.current += 1;
+            sessionInitInFlightRef.current = null;
+            setState((prev) => ({
+                ...prev,
+                connectionState: "disconnected",
+                error: {
+                    type: "access_denied",
+                    message: blocked ? "blocked" : "denied",
+                } as VEConversationError,
+            }));
+        };
+        const unsub = EventsOn("ve:auth_result", handleAuthResult);
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("ve:auth_result");
+        };
+    }, [initSession, veId]);
+
     const clearConversation = useCallback(async () => {
         if (readOnly) return;
         const oldSessionId = sessionIdRef.current;
+        sessionInitGenerationRef.current += 1;
+        sessionInitInFlightRef.current = null;
             queuedMessagesRef.current = [];
             setVisibleQueue([]);
         if (reconnectTimerRef.current) {
@@ -762,6 +863,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         queueDrainRunningRef.current = false;
         setPendingAttachments([]);
         setInputText("");
+        resetHistoryBrowsing();
+        setPromptHistoryState({ veId, history: [] });
         closeMentionPopover();
         sessionIdRef.current = null;
         setState((prev) => ({
@@ -793,7 +896,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             }
         }
         if (veOnline) void initSession();
-    }, [closeMentionPopover, closeSession, hideAwaitingReply, initSession, onConversationCleared, readOnly, veOnline]);
+    }, [closeMentionPopover, closeSession, hideAwaitingReply, initSession, onConversationCleared, readOnly, resetHistoryBrowsing, veOnline]);
 
     const lastClearSignalRef = useRef(clearSignal);
     useEffect(() => {
@@ -1028,12 +1131,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         }));
         const sent = await doSendMessage(msg.content, msg.filePaths, msg.id);
         queueDrainRunningRef.current = false;
+        if (sent) recordSubmittedPrompt(msg.content);
         if (sent && awaitingReplyRef.current) {
             armResponseWatchdog();
         } else {
             releaseResponseGate();
         }
-    }, [armResponseWatchdog, doSendMessage, releaseResponseGate, showAwaitingReply]);
+    }, [armResponseWatchdog, doSendMessage, recordSubmittedPrompt, releaseResponseGate, showAwaitingReply]);
 
     useEffect(() => {
         if (readOnly || state.connectionState !== "connected" || !state.sessionId || state.streaming) return;
@@ -1052,7 +1156,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         sendingRef.current = true;
 
         const filePaths = pendingAttachments.length > 0
-            ? pendingAttachments.map((f) => f.path || "").filter(Boolean)
+            ? pendingAttachments.map((f) => f.filePath || "").filter(Boolean)
             : undefined;
 
         const userMsg: VEMessage = {
@@ -1063,10 +1167,9 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             fromId: "user",
             fromName: localSpeakerName,
             attachments: pendingAttachments.map((f) => ({
-                type: classifyAttachmentType(f.name),
-                filename: f.name,
-                localPath: f.path,
-                sizeBytes: f.size,
+                type: classifyAttachmentType(f.fileName),
+                filename: f.fileName,
+                localPath: f.filePath,
             })),
         };
 
@@ -1074,7 +1177,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         // assistant turn to finish streaming, keep the draft in the visible
         // pre-input queue. It enters the transcript only when it is really sent.
         if (state.connectionState !== "connected" || !state.sessionId || state.streaming || awaitingReplyRef.current) {
-            const queued = { id: userMsg.id, content, message: userMsg, filePaths, attachmentNames: pendingAttachments.map((f) => f.name) };
+            const queued = { id: userMsg.id, content, message: userMsg, filePaths, attachmentNames: pendingAttachments.map((f) => f.fileName) };
             queuedMessagesRef.current.push(queued);
             setVisibleQueue((prev) => [...prev, queued]);
             setInputText("");
@@ -1098,6 +1201,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             awaitingReplyRef.current = true;
             showAwaitingReply();
             const sent = await doSendMessage(content, filePaths, userMsg.id);
+            if (sent) recordSubmittedPrompt(content);
             if (sent && awaitingReplyRef.current) {
                 armResponseWatchdog();
             } else {
@@ -1107,18 +1211,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             sendingRef.current = false;
             if (mountedRef.current) setSending(false);
         }
-    }, [armResponseWatchdog, clearConversation, doSendMessage, inputText, localSpeakerName, pendingAttachments, readOnly, releaseResponseGate, showAwaitingReply, state.connectionState, state.sessionId, state.streaming]);
-
-    const handleKeyDown = useCallback(
-        (e: React.KeyboardEvent) => {
-            if (mentionKeyDown(e)) return;
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-            }
-        },
-        [handleSend, mentionKeyDown]
-    );
+    }, [armResponseWatchdog, clearConversation, doSendMessage, inputText, localSpeakerName, pendingAttachments, readOnly, recordSubmittedPrompt, releaseResponseGate, showAwaitingReply, state.connectionState, state.sessionId, state.streaming]);
 
     // --- Attachment Handling ---
 
@@ -1130,11 +1223,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (Array.isArray(selected) && selected.length > 0) {
                 setPendingAttachments((prev) => [
                     ...prev,
-                    ...selected.map((filePath: string) => ({
-                        name: fileNameFromPath(filePath),
-                        size: 0,
-                        path: filePath,
-                    })),
+                    ...selected.map((filePath: string) => attachmentInfoFromPath(filePath)),
                 ]);
                 return;
             }
@@ -1151,19 +1240,16 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 setPendingAttachments((prev) => [
                     ...prev,
                     ...Array.from(input.files!).map((file) => ({
-                        name: file.name,
-                        size: file.size,
-                        path: (file as any).path,
+                        fileName: file.name,
+                        filePath: (file as any).path || file.name,
+                        extension: `.${(file.name.split(".").pop() || "").toLowerCase()}`,
+                        isImage: classifyAttachmentType(file.name) === "image",
                     })),
                 ]);
             }
         };
         input.click();
     }, [readOnly]);
-
-    const removeAttachment = useCallback((index: number) => {
-        setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
-    }, []);
 
     // --- Render ---
 
@@ -1226,19 +1312,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 {/* Awaiting first response chunk */}
                 {awaitingReplyVisible && !state.streaming && (
                     <div data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
-                        <div
-                            style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 6,
-                                padding: "8px 12px",
-                                borderRadius: 8,
-                                background: theme.fieldBg,
-                                borderLeft: `3px solid ${theme.responseBorderLeft}`,
-                                fontSize: 13,
-                                color: theme.textMuted || theme.text,
-                            }}
-                        >
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 8, background: theme.fieldBg, borderLeft: `3px solid ${theme.responseBorderLeft}`, fontSize: 13, color: theme.textMuted || theme.text }}>
                             <span>{isZh ? "思考中" : "Thinking"}</span>
                             <span className="ve-cursor-blink">...</span>
                         </div>
@@ -1273,7 +1347,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                     ))}
                                 </div>
                             )}
-                            <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>▍</span>
+                            <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>{"|"}</span>
                         </div>
                     </div>
                 )}
@@ -1285,147 +1359,124 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 <QueuedMessagePanel queue={visibleQueue} theme={theme} isZh={isZh} />
             )}
 
-            <div data-testid="ve-input-area" style={{ ...inputStyles.inputBarStyle, opacity: inputReady ? 1 : 0.55 }}>
-                {pendingAttachments.length > 0 && (
-                    <div
-                        data-testid="ve-attachment-preview-bar"
-                        style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
-                    >
-                        {pendingAttachments.map((file, idx) => (
-                            <PendingAttachmentChip key={`${file.path || file.name}-${idx}`} file={file} index={idx} onRemove={removeAttachment} theme={theme} isZh={isZh} />
-                        ))}
-                    </div>
-                )}
-
-                <div data-testid="ve-input-row" style={inputStyles.inputRowStyle}>
-                    <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0, display: "flex" }}>
-                    {mentionOpen && (
-                        <MentionPopover
-                            filtered={mentionFiltered}
-                            selectedIndex={mentionSelectedIndex}
-                            onSelect={insertMentionParticipant}
-                            onHover={setMentionSelectedIndex}
-                            onClose={closeMentionPopover}
-                            anchorRef={inputRef}
-                            theme={theme}
-                            lang={lang}
-                        />
-                    )}
-                    <textarea
-                    ref={inputRef}
-                    data-testid="ve-input-textarea"
-                    aria-label={isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}` : `Message ${assistantDisplayName}`}
-                    value={inputText}
-                    onChange={(e) => {
-                        setInputText(e.target.value);
-                        updateMentionState(e.target.value, e.currentTarget.selectionStart);
-                    }}
-                    onClick={(e) => updateMentionState(inputText, e.currentTarget.selectionStart)}
-                    onKeyUp={(e) => {
-                        if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key)) return;
-                        updateMentionState(e.currentTarget.value, e.currentTarget.selectionStart);
-                    }}
-                    onKeyDown={handleKeyDown}
-                    disabled={!veOnline || readOnly}
-                    placeholder={readOnly
-                        ? (isZh ? "只读会话，不能继续发言" : "Read-only session")
-                        : !veOnline
-                        ? (isZh ? `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${assistantDisplayName} is offline`)
-                        : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...` : `Message ${assistantDisplayName}...`)}
-                    rows={1}
-                    style={{ ...inputStyles.textareaStyle, boxSizing: "border-box" }}
+            <AssistantInputComposer
+                attachButtonTestId="ve-attach-button"
+                browseFile={handleAttachmentSelect}
+                canSend={canSend}
+                cancelPending={sending}
+                clearSelectedFile={() => setPendingAttachments([])}
+                exitHistoryBrowsing={exitHistoryBrowsing}
+                finishVoicePointer={() => {}}
+                handleCancel={() => {}}
+                handlePaste={handlePaste}
+                handleSend={handleSend}
+                handleTextareaClick={(e) => updateMentionState(inputText, e.currentTarget.selectionStart)}
+                handleTextareaKeyDownBefore={(e) => mentionKeyDown(e)}
+                handleTextareaKeyUp={(e) => {
+                    if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key)) return;
+                    updateMentionState(e.currentTarget.value, e.currentTarget.selectionStart);
+                }}
+                handleVoiceClick={() => {}}
+                handleVoicePointerDown={() => {}}
+                handleVoicePointerLeave={() => {}}
+                inputAreaHeight={null}
+                inputBarTestId="ve-input-area"
+                inputLocked={!inputReady}
+                inputOverlay={mentionOpen ? (
+                    <MentionPopover
+                        filtered={mentionFiltered}
+                        selectedIndex={mentionSelectedIndex}
+                        onSelect={insertMentionParticipant}
+                        onHover={setMentionSelectedIndex}
+                        onClose={closeMentionPopover}
+                        anchorRef={inputRef}
+                        theme={theme}
+                        lang={lang}
                     />
-                    </div>
-                </div>
-
-                <div data-testid="ve-input-toolbar" style={inputStyles.toolbarStyle}>
-                    <div style={inputStyles.toolbarLeftStyle} role="group" aria-label={isZh ? "输入操作" : "Input actions"}>
-                        <button
-                            type="button"
-                            data-testid="ve-attach-button"
-                            onClick={handleAttachmentSelect}
-                            disabled={!inputReady}
-                            style={getInputActionButtonStyle(theme, inputThemeMode, "attach", !inputReady)}
-                            title={isZh ? "\u6dfb\u52a0\u9644\u4ef6" : "Add attachment"}
-                            aria-label={isZh ? "\u6dfb\u52a0\u9644\u4ef6" : "Add attachment"}
-                        >
-                            <AssistantInputIcon name="paperclip" size={13} />
-                        </button>
-                    </div>
-                    <div style={inputStyles.toolbarRightStyle}>
-                        <span aria-hidden="true" style={{ fontSize: 11, color: theme.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
-                            {isZh ? "Enter" : "Enter"}
-                        </span>
-                        <button
-                            type="button"
-                            data-testid="ve-send-button"
-                            onClick={handleSend}
-                            disabled={!canSend}
-                            style={{ ...getInputActionButtonStyle(theme, inputThemeMode, canSend ? "send" : "neutral", !canSend), minWidth: 54, width: 54, flexShrink: 0 }}
-                            aria-label={isZh ? "\u53d1\u9001" : "Send"}
-                            title={isZh ? "\u53d1\u9001 (Enter)" : "Send (Enter)"}
-                        >
-                            {sending ? <span style={{ width: 12, height: 12, borderRadius: "50%", border: `2px solid ${theme.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="cornerDownLeft" size={13} />}
-                        </button>
-                    </div>
-                </div>
-            </div>
+                ) : null}
+                inputRef={inputRef}
+                inputRowTestId="ve-input-row"
+                inputValue={inputText}
+                inline={false}
+                isBusy={sending}
+                isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
+                lang={lang || "zh"}
+                pendingAttachments={pendingAttachments}
+                pendingAttachmentsTestId="ve-attachment-preview-bar"
+                placeholderText={readOnly
+                    ? (isZh ? "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00" : "Read-only session")
+                    : !veOnline
+                    ? (isZh ? `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${assistantDisplayName} is offline`)
+                    : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...` : `Message ${assistantDisplayName}...`)}
+                ready={inputReady}
+                recallHistory={recallHistory}
+                rememberHistoryEdit={rememberHistoryEdit}
+                resizeInput={resizeInput}
+                selectedFilePaths={[]}
+                sendButtonStyle={{ minWidth: 54, width: 54, flexShrink: 0 }}
+                sendButtonTestId="ve-send-button"
+                setPendingAttachments={setPendingAttachments}
+                showBusySpinner={sending}
+                showMemoryUsage={false}
+                showVoiceInput={false}
+                textareaTestId="ve-input-textarea"
+                theme={theme}
+                themeMode={inputThemeMode}
+                toolbarTestId="ve-input-toolbar"
+                updateInputValue={(value) => {
+                    setInputText(value);
+                    updateMentionState(value, inputRef.current?.selectionStart ?? value.length);
+                }}
+                voiceInput={disabledVoiceInput}
+            />
         </div>
     );
 });
 
 // --- Sub-components ---
 
-interface PendingAttachmentChipProps {
-    file: PendingVEAttachment;
-    index: number;
-    onRemove: (index: number) => void;
-    theme: Theme;
-    isZh: boolean;
+function vePromptHistoryKey(veId: string): string {
+    return `${VE_PROMPT_HISTORY_STORAGE_PREFIX}${veId || "default"}`;
+}
+
+function loadVEPromptHistory(veId: string): string[] {
+    try {
+        const raw = localStorage.getItem(vePromptHistoryKey(veId));
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((value: unknown): value is string => typeof value === "string").map(value => value.trim()).filter(Boolean).slice(-MAX_VE_PROMPT_HISTORY);
+    } catch {
+        return [];
+    }
+}
+
+function appendVEPromptHistory(history: string[], prompt: string): string[] {
+    const trimmed = prompt.trim();
+    if (!trimmed) return history;
+    if (history[history.length - 1] === trimmed) return history;
+    return [...history, trimmed].slice(-MAX_VE_PROMPT_HISTORY);
+}
+
+function persistVEPromptHistory(veId: string, history: string[]) {
+    try {
+        const normalized = history.map(item => item.trim()).filter(Boolean).slice(-MAX_VE_PROMPT_HISTORY);
+        const key = vePromptHistoryKey(veId);
+        if (normalized.length === 0) localStorage.removeItem(key);
+        else localStorage.setItem(key, JSON.stringify(normalized));
+    } catch {}
+}
+
+function attachmentInfoFromPath(filePath: string): AttachmentInfo {
+    const fileName = fileNameFromPath(filePath);
+    const extension = `.${(fileName.split(".").pop() || "").toLowerCase()}`;
+    return { filePath, fileName, extension, isImage: classifyAttachmentType(fileName) === "image" };
 }
 
 function normalizeAgentTimeoutSeconds(value: unknown): number {
     const seconds = Number(value || 0);
     if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_AGENT_TIMEOUT_SEC;
     return Math.min(MAX_AGENT_TIMEOUT_SEC, Math.max(MIN_AGENT_TIMEOUT_SEC, Math.floor(seconds)));
-}
-
-function PendingAttachmentChip({ file, index, onRemove, theme, isZh }: PendingAttachmentChipProps) {
-    const type = classifyAttachmentType(file.name);
-    const label = attachmentKindLabel(file.name, type);
-    return (
-        <div
-            data-testid={`ve-attachment-preview-${index}`}
-            title={file.path || file.name}
-            style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 7,
-                maxWidth: 240,
-                minWidth: 0,
-                padding: "5px 7px",
-                borderRadius: 7,
-                background: theme.codeBlockBg || theme.fieldBg,
-                border: `1px solid ${theme.codeBlockBorder || theme.divider}`,
-                color: theme.text,
-                fontSize: 11,
-            }}
-        >
-            <AttachmentTypeBadge label={label} theme={theme} />
-            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>
-                {file.name}
-            </span>
-            {formatFileSize(file.size) && <span style={{ color: theme.textMuted, flexShrink: 0 }}>{formatFileSize(file.size)}</span>}
-            <button
-                type="button"
-                onClick={() => onRemove(index)}
-                style={{ border: "none", background: "transparent", cursor: "pointer", color: theme.closeBtnColor || theme.textMuted, padding: "0 2px" }}
-                aria-label={isZh ? `移除 ${file.name}` : `Remove ${file.name}`}
-            >
-                x
-            </button>
-        </div>
-    );
 }
 
 function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) {
@@ -1477,19 +1528,19 @@ function QueuedMessagePanel({ queue, theme, isZh }: QueuedMessagePanelProps) {
             }}
         >
             <div data-testid="ve-queued-message-header" style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: theme.headingColor }}>
-                <span>{isZh ? `${queue.length} 条预输入队列` : `${queue.length} queued`}</span>
-                <span style={{ fontWeight: 400, color: theme.textMuted }}>{isZh ? "回复结束后自动发送" : "Auto-sends after current reply"}</span>
+                <span>{isZh ? `${queue.length} \u6761\u5f85\u53d1\u9001` : `${queue.length} queued`}</span>
+                <span style={{ fontWeight: 400, color: theme.textMuted }}>{isZh ? "\u56de\u590d\u7ed3\u675f\u540e\u81ea\u52a8\u53d1\u9001" : "Auto-sends after current reply"}</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 66, overflowY: "auto" }}>
                 {queue.map((item, index) => (
                     <div key={item.id} data-testid={`ve-queued-message-${index}`} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                         <span style={{ color: theme.textMuted, flexShrink: 0 }}>#{index + 1}</span>
                         <span style={{ color: theme.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {item.content || (isZh ? "仅附件" : "Attachments only")}
+                            {item.content || (isZh ? "\u4ec5\u9644\u4ef6" : "Attachments only")}
                         </span>
                         {!!item.attachmentNames?.length && (
                             <span style={{ flexShrink: 0, color: theme.pathColor }}>
-                                {isZh ? `附件 ${item.attachmentNames.length}` : `${item.attachmentNames.length} files`}
+                                {isZh ? `\u9644\u4ef6 ${item.attachmentNames.length}` : `${item.attachmentNames.length} files`}
                             </span>
                         )}
                     </div>
@@ -1570,7 +1621,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
             {hasAttachments && (
                 <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: "80%" }}>
                     {message.attachments?.map((att, idx) => (
-                        <AttachmentDisplay key={`${att.type}-${att.filename}-${att.fileUrl || att.localPath || idx}`} attachment={att} sessionId={sessionId} theme={theme} />
+                        <AttachmentDisplay key={`${att.type}-${att.filename}-${att.fileUrl || att.localPath || idx}`} attachment={att} sessionId={sessionId || ""} theme={theme} />
                     ))}
                 </div>
             )}
@@ -1759,21 +1810,33 @@ function AttachmentDisplay({ attachment, sessionId, theme, prefetchRemoteImage =
 
 // --- Utility Functions ---
 
+function authResultCandidateIds(value: unknown): string[] {
+    const normalized = normalizeParticipantId(String(value || ""));
+    if (!normalized) return [];
+    const paired = normalized.startsWith("ve_") ? normalized.slice(3) : `ve_${normalized}`;
+    return paired && paired !== normalized ? [normalized, paired] : [normalized];
+}
+
 function formatError(error: VEConversationError, isZh: boolean): string {
     switch (error.type) {
         case "hub_disconnected":
-            return isZh ? "Hub 连接中断" : "Hub disconnected";
+            return isZh ? "Hub \u8fde\u63a5\u4e2d\u65ad" : "Hub disconnected";
         case "ve_offline":
-            return isZh ? "该数字员工当前不在线" : "Digital employee is offline";
+            return isZh ? "\u8be5\u6570\u5b57\u5458\u5de5\u5f53\u524d\u4e0d\u5728\u7ebf" : "Digital employee is offline";
+        case "auth_pending":
+            return isZh ? "\u6b63\u5728\u8bf7\u6c42\u8bbf\u95ee\uff0c\u7b49\u5f85\u5bf9\u65b9\u786e\u8ba4" : "Waiting for access confirmation";
+        case "access_denied":
+            return error.message === "blocked"
+                ? (isZh ? "\u5f53\u524d\u65e0\u6cd5\u8bbf\u95ee\u8be5\u6570\u5b57\u5458\u5de5" : "This digital employee is unavailable")
+                : (isZh ? "\u8bbf\u95ee\u672a\u901a\u8fc7\uff0c\u5bf9\u65b9\u6682\u672a\u5141\u8bb8\u672c\u6b21\u8bbf\u95ee" : "Access was not approved");
         case "send_failed":
-            return error.message ? (isZh ? `消息发送失败：${error.message}` : `Message send failed: ${error.message}`) : (isZh ? "消息发送失败" : "Message send failed");
+            return error.message ? (isZh ? `\u6d88\u606f\u53d1\u9001\u5931\u8d25\uff1a${error.message}` : `Message send failed: ${error.message}`) : (isZh ? "\u6d88\u606f\u53d1\u9001\u5931\u8d25" : "Message send failed");
         case "session_timeout":
-            return isZh ? "会话创建超时（5秒）" : "Session creation timed out (5s)";
+            return isZh ? "\u4f1a\u8bdd\u521b\u5efa\u8d85\u65f6\uff085\u79d2\uff09" : "Session creation timed out (5s)";
         default:
             return (error as VEConversationError).message;
     }
 }
-
 function extractErrorMessage(err: unknown): string {
     if (typeof err === "string") return err;
     if (!err || typeof err !== "object") return "";
@@ -1790,8 +1853,8 @@ function extractErrorMessage(err: unknown): string {
     }
 }
 
-function classifyAttachmentType(filename: string): "text" | "image" | "file" {
-    const ext = filename.toLowerCase().split(".").pop() || "";
+function classifyAttachmentType(filename: string | null | undefined): "text" | "image" | "file" {
+    const ext = String(filename || "").toLowerCase().split(".").pop() || "";
     const imageExts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"];
     const textExts = ["txt", "md", "csv", "json", "xml", "yaml", "yml", "log", "go", "py", "js", "ts", "html", "css"];
     if (imageExts.includes(ext)) return "image";
@@ -1799,9 +1862,9 @@ function classifyAttachmentType(filename: string): "text" | "image" | "file" {
     return "file";
 }
 
-function attachmentKindLabel(filename: string, type?: "text" | "image" | "file"): string {
+function attachmentKindLabel(filename: string | null | undefined, type?: "text" | "image" | "file"): string {
     if (type === "image") return "IMG";
-    const ext = filename.match(/\.([^./\\]+)$/)?.[1]?.trim();
+    const ext = String(filename || "").match(/\.([^./\\]+)$/)?.[1]?.trim();
     if (!ext) return type === "text" ? "TXT" : "FILE";
     return ext.slice(0, 4).toUpperCase();
 }

@@ -151,6 +151,9 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	if h == nil {
 		return toolExecutionResult{Text: "[system rejected] CodingSubAgent host is unavailable.", ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureExecutionPanic}, true
 	}
+	if allowed, reason := h.allowCodingWorkflowDelegate(request, opts); !allowed {
+		return toolExecutionResult{Text: "[system rejected] delegate_task(coding_workflow) is only allowed for semantically confirmed coding work. " + reason, ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}, true
+	}
 	projectPath := firstCodingDelegateProjectPathArg(args)
 	if projectPath == "" {
 		projectPath = extractCodingDelegateProjectPath(request)
@@ -225,6 +228,49 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 		text += "\n\nError: " + result.Error
 	}
 	return toolExecutionResult{Text: text, ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}, true
+}
+
+func (h *IMMessageHandler) allowCodingWorkflowDelegate(request string, opts agentLoopToolExecutionOptions) (bool, string) {
+	text := strings.TrimSpace(opts.UserText)
+	if text == "" {
+		text = strings.TrimSpace(request)
+	}
+	if text == "" {
+		return false, "empty request cannot be classified."
+	}
+	result, ok := h.classifyCodingWorkflowDelegateIntent(text, opts.UserID)
+	if !ok {
+		return false, "semantic intent classifier is unavailable."
+	}
+	if !isSemanticCodingWorkflowDelegateResult(result) {
+		return false, fmt.Sprintf("classified as %s (confidence %.2f, layer %d): %s", result.Intent, result.Confidence, result.Layer, result.Reason)
+	}
+	return true, ""
+}
+
+func (h *IMMessageHandler) classifyCodingWorkflowDelegateIntent(text, userID string) (GateIntentResult, bool) {
+	if h == nil {
+		return GateIntentResult{}, false
+	}
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		return classifyUnifiedGateIntent(uic, text, userID)
+	}
+	if uic := unifiedClassifierPtr.Load(); uic != nil {
+		return classifyUnifiedGateIntent(uic, text, userID)
+	}
+	return GateIntentResult{}, false
+}
+
+func isSemanticCodingWorkflowDelegateResult(result GateIntentResult) bool {
+	if !isTrustedSemanticGateResult(result) {
+		return false
+	}
+	switch result.Intent {
+	case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance:
+		return true
+	default:
+		return false
+	}
 }
 
 var windowsPathInTextPattern = regexp.MustCompile(`(?i)([a-z]:\\[^\s\r\n\t"'<>|*?,;\x{ff0c}\x{3002}\x{ff1b}\x{ff1a}\x{3001}\x{ff09}\x{3011}\x{300b}]+)`)

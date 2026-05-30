@@ -63,6 +63,7 @@ export const localizeSkillInstallStatus = (status: string | undefined, summary: 
         'installation rejected.': installSkillText(lang, 'Installation rejected.', '安装已拒绝。', '安裝已拒絕。'),
         'user approved high-risk installation.': installSkillText(lang, 'User approved high-risk installation.', '用户已批准高风险安装。', '使用者已核准高風險安裝。'),
         'security scan recorded risk and allowed installation by current policy.': installSkillText(lang, 'Security scan recorded risk and allowed installation by current policy.', '安全扫描已记录风险，当前策略允许安装。', '安全掃描已記錄風險，目前策略允許安裝。'),
+        'security scan recorded risk and allowed installation by trusted marketplace policy.': installSkillText(lang, 'Security scan recorded risk and allowed installation by trusted marketplace policy.', '安全扫描已记录风险，受信能力市场策略允许安装。', '安全掃描已記錄風險，受信能力市場策略允許安裝。'),
         'developer mode enabled; security scan will not block installation.': installSkillText(lang, 'Developer mode enabled; security scan will not block installation.', '开发者模式已启用；安全扫描不会阻止安装。', '開發者模式已啟用；安全掃描不會封鎖安裝。'),
         'developer mode enabled; high-risk scan result allowed.': installSkillText(lang, 'Developer mode enabled; high-risk scan result allowed.', '开发者模式已启用；高风险扫描结果已允许。', '開發者模式已啟用；高風險掃描結果已允許。'),
     };

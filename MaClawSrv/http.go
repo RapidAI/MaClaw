@@ -78,6 +78,7 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	if sourceSvc == nil {
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
+	wireSkillSourceFilter(svc, sourceSvc)
 	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()
@@ -446,10 +447,10 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesGetTenant))
 	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesSetTenant))
 	s.mux.HandleFunc("DELETE /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesDeleteTenant))
-	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/user/{email...}", s.withAdmin(s.handleSkillSourcesGetUser))
-	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/user/{email...}", s.withAdmin(s.handleSkillSourcesSetUser))
-	s.mux.HandleFunc("DELETE /api/v1/admin/skill-sources/user/{email...}", s.withAdmin(s.handleSkillSourcesDeleteUser))
-	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/resolve/{email...}", s.withAdmin(s.handleSkillSourcesResolve))
+	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleSkillSourcesGetTenantUser))
+	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleSkillSourcesSetTenantUser))
+	s.mux.HandleFunc("DELETE /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleSkillSourcesDeleteTenantUser))
+	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}/resolve", s.withAdmin(s.handleSkillSourcesResolveTenantUser))
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1059,7 +1060,7 @@ func riskEventFromAudit(dataRoot string, event agentservice.AuditEvent) (adminRi
 		severity, kind, summary = "medium", "knowledge_policy_changed", "Knowledge access policy or tenant knowledge data was changed."
 	case "admin.public_knowledge_library_created", "admin.public_knowledge_library_deleted", "admin.public_knowledge_import_text", "admin.public_knowledge_import_urls", "admin.public_knowledge_import_file":
 		severity, kind, summary = "medium", "public_knowledge_changed", "A public knowledge library or its imported sources were changed."
-	case "admin.skill_sources_global_updated", "admin.skill_sources_tenant_updated", "admin.skill_sources_tenant_deleted", "admin.skill_sources_user_updated", "admin.skill_sources_user_deleted":
+	case "admin.skill_sources_global_updated", "admin.skill_sources_tenant_updated", "admin.skill_sources_tenant_deleted", "admin.skill_sources_tenant_user_updated", "admin.skill_sources_tenant_user_deleted":
 		severity, kind, summary = "medium", "skill_source_policy_changed", "Skill source policy was changed."
 	case "admin.support_bundle_downloaded", "admin.sandbox_support_bundle_downloaded":
 		severity, kind, summary = "medium", "diagnostics_bundle_downloaded", "An admin downloaded a troubleshooting bundle."
@@ -2456,6 +2457,7 @@ func (s *HTTPServer) handleGetConfigSchema(w http.ResponseWriter, r *http.Reques
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	out = filterUserConfigSchema(out)
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 func (s *HTTPServer) handleGetConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -2468,6 +2470,7 @@ func (s *HTTPServer) handleGetConfig(w http.ResponseWriter, r *http.Request, p a
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	out.AppConfig = stripUserComplexConfig(out.AppConfig)
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -2480,16 +2483,23 @@ func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
 		return
 	}
+	*inPtr = stripUserComplexConfig(*inPtr)
 	out, err := s.svc.UpdateUserConfig(r.Context(), p, *inPtr)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	out.AppConfig = stripUserComplexConfig(out.AppConfig)
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleValidateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	candidate, ok := decodeOptionalAppConfig(w, r)
 	if !ok {
+		return
+	}
+	candidate, err := s.userVisibleConfigCandidate(r.Context(), p, candidate)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	out, err := s.svc.ValidateConfigCandidate(r.Context(), p, candidate)
@@ -2502,6 +2512,11 @@ func (s *HTTPServer) handleValidateConfig(w http.ResponseWriter, r *http.Request
 func (s *HTTPServer) handleTestConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	candidate, ok := decodeOptionalAppConfig(w, r)
 	if !ok {
+		return
+	}
+	candidate, err := s.userVisibleConfigCandidate(r.Context(), p, candidate)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	out, err := s.svc.TestConfigCandidate(r.Context(), p, candidate)
@@ -2789,6 +2804,55 @@ func (s *HTTPServer) handleExportSkill(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+var userComplexConfigKeys = map[string]struct{}{
+	"maclaw_llm_protocol":         {},
+	"maclaw_llm_context_length":   {},
+	"maclaw_llm_timeout_sec":      {},
+	"maclaw_llm_current_provider": {},
+	"maclaw_llm_providers":        {},
+	"auxiliary_llm":               {},
+	"model_routes":                {},
+}
+
+func filterUserConfigSchema(defs []agentservice.ParameterDefinition) []agentservice.ParameterDefinition {
+	out := make([]agentservice.ParameterDefinition, 0, len(defs))
+	for _, def := range defs {
+		if _, hidden := userComplexConfigKeys[def.Key]; hidden {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
+func (s *HTTPServer) userVisibleConfigCandidate(ctx context.Context, p agentservice.Principal, cfg *corelib.AppConfig) (*corelib.AppConfig, error) {
+	if cfg == nil {
+		current, err := s.svc.GetUserConfig(ctx, p)
+		if err != nil {
+			if errors.Is(err, agentservice.ErrUserConfigNotFound) {
+				out := corelib.AppConfig{}
+				return &out, nil
+			}
+			return nil, err
+		}
+		out := stripUserComplexConfig(current.AppConfig)
+		return &out, nil
+	}
+	out := stripUserComplexConfig(*cfg)
+	return &out, nil
+}
+
+func stripUserComplexConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	cfg.MaclawLLMProtocol = ""
+	cfg.MaclawLLMContextLength = 0
+	cfg.MaclawLLMTimeoutSec = 0
+	cfg.MaclawLLMCurrentProvider = ""
+	cfg.MaclawLLMProviders = nil
+	cfg.AuxiliaryLLM = corelib.AuxiliaryLLMConfig{}
+	cfg.ModelRoutes = nil
+	return cfg
 }
 func (s *HTTPServer) handleValidateSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ValidateSkill(r.Context(), p, r.PathValue("skillName"))
@@ -4176,6 +4240,21 @@ func errorStatusCode(err error) int {
 	}
 	return code
 }
+
+func (s *HTTPServer) requireExistingTenantUser(w http.ResponseWriter, r *http.Request, tenantID, userID string) bool {
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tenant_id and user_id are required"})
+		return false
+	}
+	if _, err := s.svc.GetUser(r.Context(), tenantID, userID); err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return false
+	}
+	return true
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

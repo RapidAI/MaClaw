@@ -86,6 +86,13 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"function renderMarkdown(text)",
 		"function renderMarkdownParagraph(lines)",
 		"function renderMarkdownTable(rows)",
+		"function isMarkdownTableRow(line)",
+		"if (isMarkdownTableDivider(line)) return false",
+		"function splitFlattenedMarkdownTable(line)",
+		"const rows = [header]",
+		"const cellsForRow = (row) => Array.isArray(row) ? row : splitMarkdownTableRow(row)",
+		"const flattenedRows = splitFlattenedMarkdownTable(line)",
+		"const hasDivider = rows.length > 1 && isMarkdownTableDivider(rows[1])",
 		"function isMarkdownTableDivider(line)",
 		"state.messages = []; state.copySnippets = []; updateJumpLatestButton(false);",
 		"state.messages.map(messageIdentity).filter(Boolean).forEach((id) => hidden.add(id));",
@@ -165,6 +172,12 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"configGroups",
 		"HIDDEN_CONFIG_KEYS",
 		"!HIDDEN_CONFIG_KEYS.has(key)",
+		"CLEARED_USER_COMPLEX_CONFIG_KEYS",
+		"function stripUserComplexConfig",
+		"state.config = stripUserComplexConfig(cfgResp.app_config)",
+		"const next = stripUserComplexConfig(state.config)",
+		"\"maclaw_llm_protocol\", \"maclaw_llm_context_length\", \"maclaw_llm_timeout_sec\", \"maclaw_llm_current_provider\", \"maclaw_llm_providers\", \"auxiliary_llm\", \"model_routes\"",
+		"keys: [\"maclaw_llm_url\", \"maclaw_llm_key\", \"maclaw_llm_model\"]",
 		"llm_token_usage",
 		"remote_machine_token",
 		"noise_floor_calibrated",
@@ -201,19 +214,15 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"security_policy_mode: [\"none\", \"standard\", \"relaxed\", \"strict\", \"developer\"]",
 		"sandbox_mode: [\"none\", \"os\", \"docker\"]",
 		"network_level: [\"none\", \"intranet\", \"allowlist\", \"full\"]",
-		"maclaw_llm_protocol: [\"openai\", \"anthropic\"]",
 		"default_proxy_protocol: [\"http\", \"https\", \"socks5\"]",
 		"skill_purchase_mode: [\"auto\", \"free_only\"]",
 		"ui_mode: [\"lite\", \"pro\"]",
 		"pet_interaction_mode: [\"quiet\", \"balanced\", \"active\"]",
 		"function providerChoiceOptions(key)",
-		"maclaw_llm_current_provider",
 		"web_search_current_provider",
 		"function stringChoiceInput(key, value)",
 		"genericChoiceOptions(key).length",
 		"CONFIG_NUMBER_CHOICE_FIELDS",
-		"maclaw_llm_context_length: [32000, 64000, 110000, 200000]",
-		"maclaw_llm_timeout_sec: [60, 120, 300, 480, 900]",
 		"subagent_concurrency: [1, 2, 3, 4]",
 		"ui_zoom_factor: [0, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 2]",
 		"thirdparty_gateway_port: [0, 8080, 18080, 28080, 38080]",
@@ -264,10 +273,6 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"COMMON_LINE_FALLBACK_SUGGESTIONS",
 		"el.value.split(/\\r?\\n/)",
 		"CONFIG_OBJECT_LIST_FIELDS",
-		"maclaw_llm_providers: {",
-		"wire_api",
-		"context_length",
-		"timeout_sec",
 		"function objectListInput(key)",
 		"data-object-list=\"${esc(key)}\"",
 		"data-list-field",
@@ -282,7 +287,6 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"languages",
 		"allowed_roles",
 		"use_cross_agent_experience",
-		"auxiliary_llm: {",
 		"capability_market_policy: {",
 		"enterprise_only_install",
 		"managed_deployment.retry_interval_minutes",
@@ -292,9 +296,6 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"resource_types.skill.allowed_sources",
 		"data-object-form=\"${esc(key)}\"",
 		"CONFIG_OBJECT_MAP_FIELDS",
-		"model_routes: {",
-		"kind: \"provider\"",
-		"keyOptions: [\"intent\", \"fast\", \"reasoning\", \"vision\", \"summary\", \"default\"]",
 		"data-object-map=\"${esc(key)}\"",
 		"function objectMapInput(key)",
 		"function objectFieldValue(item, field)",
@@ -358,8 +359,6 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"local_needle_model_path: [\"~/.maclaw/models/needle\", \"models/needle\"]",
 		"maclaw_llm_model: LLM_MODEL_SUGGESTIONS",
 		"auth_type",
-		"agent_type",
-		"supports_vision",
 		"f.suggestions?.length",
 		"keySuggestions",
 		"valueSuggestions",
@@ -416,6 +415,9 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"KNOWLEDGE_URL_SUGGESTIONS",
 		"function datalistTextInput(id, suggestions",
 		"function formChoiceValue(id)",
+		"function requireKnowledgeChoiceValue(",
+		"function clearKnowledgeChoiceError(el)",
+		"aria-invalid",
 		"function setFormChoiceValue(id, value)",
 		"class=\"choice-custom knowledge-choice",
 		"function knowledgeDepthInput()",
@@ -432,8 +434,13 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"connectedKnowledge",
 		"function loadKnowledgeAccessSummary()",
 		"function formatKnowledgeImportStatus(value)",
+		"function knowledgeProgressText(value)",
 		"value.result && typeof value.result === \"object\" ? value.result : value",
 		"stats.forEach(([key, label])",
+		"setKnowledgeImportStatus({ id: jobID, status: \"queued\"",
+		"}, true)",
+		"importProgress",
+		"function runKnowledgeImport(buttonID, task)",
 		"lines.join(\"\\n\")",
 		"for (let i = 0; i < 60; i++)",
 		"function toastKnowledgeImportResult(job)",
@@ -477,6 +484,30 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	if strings.Contains(body, "Number.parseInt") {
 		t.Fatalf("user app should reject partial integer strings instead of parseInt truncation")
 	}
+	if strings.Contains(body, `keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes"]`) {
+		t.Fatalf("LLM settings tab should not render advanced provider route editors")
+	}
+	if strings.Contains(body, `keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_current_provider"]`) {
+		t.Fatalf("LLM settings tab should not render provider selection without provider editor")
+	}
+	if strings.Contains(body, `keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec"]`) {
+		t.Fatalf("LLM settings tab should not render advanced protocol/context/timeout fields")
+	}
+	for _, stale := range []string{
+		`maclaw_llm_protocol: ["openai", "anthropic"]`,
+		`maclaw_llm_context_length: [32000, 64000, 110000, 200000]`,
+		`maclaw_llm_timeout_sec: [60, 120, 300, 480, 900]`,
+		"maclaw_llm_providers: {",
+		"auxiliary_llm: {",
+		"model_routes: {",
+	} {
+		if strings.Contains(body, stale) {
+			t.Fatalf("user app should not carry stale complex LLM editor code %s", stale)
+		}
+	}
+	if strings.Contains(body, "HIDDEN_CONFIG_KEYS.forEach((key) => delete next[key])") {
+		t.Fatalf("user config save should only clear known complex user-facing fields, not every hidden managed key")
+	}
 	if strings.Contains(body, "prompt(t(\"instanceName\")") {
 		t.Fatalf("new instance flow should not require browser text prompt")
 	}
@@ -516,7 +547,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	assertAdminSecurityHeaders(t, w.Result())
 	css := w.Body.String()
-	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".channel-overview", ".channel-card.managed", ".channel-protocol", ".knowledge-access-summary", ".knowledge-scope-chip", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
+	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".channel-overview", ".channel-card.managed", ".channel-protocol", ".knowledge-access-summary", ".knowledge-scope-chip", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("user css missing marker %s", needle)
 		}

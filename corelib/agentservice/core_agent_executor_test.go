@@ -199,6 +199,15 @@ func (noOpKnowledgeStore) Stats(context.Context) (knowledge.Stats, error) {
 	return knowledge.Stats{}, nil
 }
 
+type stubKnowledgeStore struct {
+	noOpKnowledgeStore
+	results []knowledge.SearchResult
+}
+
+func (s stubKnowledgeStore) Search(context.Context, knowledge.SearchOptions) ([]knowledge.SearchResult, error) {
+	return s.results, nil
+}
+
 func TestCoreAgentBuildSystemPromptIncludesKnowledgeRulesWhenStoreConfigured(t *testing.T) {
 	cb := &coreAgentCallbacks{knowledgeStore: noOpKnowledgeStore{}}
 	prompt := cb.BuildSystemPrompt("what is in my docs?", true)
@@ -207,6 +216,56 @@ func TestCoreAgentBuildSystemPromptIncludesKnowledgeRulesWhenStoreConfigured(t *
 	}
 	if !strings.Contains(prompt, "knowledge_import_files") || !strings.Contains(prompt, "knowledge_import_directory") {
 		t.Fatalf("expected knowledge import tool guidance in core agent prompt")
+	}
+}
+
+func TestKnowledgeAutoRecallFormatsEvidenceWithCitation(t *testing.T) {
+	r := knowledge.SearchResult{
+		Source:    knowledge.Source{ID: "src-1", Title: "材料原文"},
+		Citation:  "section 3",
+		Page:      7,
+		NodeTitle: "专利记录",
+		Snippet:   "马勇博士共有 3 项发明专利。",
+	}
+
+	if got := knowledgeSourceLabel(r); got != "材料原文" {
+		t.Fatalf("knowledgeSourceLabel = %q", got)
+	}
+	if got := knowledgeCitationLabel(r); !strings.Contains(got, "section 3") || !strings.Contains(got, "page 7") || !strings.Contains(got, "专利记录") {
+		t.Fatalf("knowledgeCitationLabel missing evidence details: %q", got)
+	}
+	if got := knowledgeSnippet(r); got != "马勇博士共有 3 项发明专利。" {
+		t.Fatalf("knowledgeSnippet = %q", got)
+	}
+}
+
+func TestKnowledgeSearchResultsRequireEvidenceCitation(t *testing.T) {
+	out := formatSearchResults([]knowledge.SearchResult{{
+		Source:   knowledge.Source{Title: "材料原文"},
+		Citation: "section 3",
+		Page:     7,
+		Snippet:  "马勇博士共有 3 项发明专利。",
+		Score:    2.5,
+	}})
+
+	for _, want := range []string{"Use these as evidence only", "**Source**: 材料原文", "**Citation**: section 3, page 7", "马勇博士共有 3 项发明专利"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("formatted search results missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestCoreAgentBuildSystemPromptAutoRecallsKnowledgeAfterFirstTurn(t *testing.T) {
+	store := stubKnowledgeStore{results: []knowledge.SearchResult{{
+		Source:  knowledge.Source{Title: "材料原文"},
+		Snippet: "马勇博士共有 3 项发明专利。",
+		Score:   3.2,
+	}}}
+	cb := &coreAgentCallbacks{knowledgeStore: store}
+	prompt := cb.BuildSystemPrompt("马勇博士有几个专利？", false)
+
+	if !strings.Contains(prompt, "知识库参考") || !strings.Contains(prompt, "马勇博士共有 3 项发明专利") {
+		t.Fatalf("expected knowledge auto recall on follow-up turns, got %q", prompt)
 	}
 }
 
@@ -1440,6 +1499,10 @@ func (maintenancePlanSkillProvider) ListSkills(context.Context, Principal) []Ski
 	return nil
 }
 
+func (maintenancePlanSkillProvider) InstallSkill(context.Context, Principal, map[string]interface{}) ([]corelib.NLSkillEntry, error) {
+	return nil, nil
+}
+
 func (maintenancePlanSkillProvider) RunSkill(context.Context, Principal, string, map[string]interface{}) (string, error) {
 	return "", nil
 }
@@ -1478,6 +1541,105 @@ func TestCoreAgentManageSkillMaintenancePlanIsReadOnly(t *testing.T) {
 	}
 	if len(payload.Plan.Actions) == 0 || payload.Plan.Actions[0].Action != skill.MaintenanceActionMarkNeedsReview {
 		t.Fatalf("expected review action: %#v", payload.Plan.Actions)
+	}
+}
+
+type installCaptureSkillProvider struct {
+	args map[string]interface{}
+}
+
+func (p *installCaptureSkillProvider) ListSkills(context.Context, Principal) []SkillToolEntry {
+	return nil
+}
+
+func (p *installCaptureSkillProvider) InstallSkill(_ context.Context, _ Principal, args map[string]interface{}) ([]corelib.NLSkillEntry, error) {
+	p.args = args
+	return []corelib.NLSkillEntry{{Name: "weather", Description: "Weather lookup"}}, nil
+}
+
+func (p *installCaptureSkillProvider) RunSkill(context.Context, Principal, string, map[string]interface{}) (string, error) {
+	return "", nil
+}
+
+func (p *installCaptureSkillProvider) SearchSkills(context.Context, Principal, string) ([]SkillSearchResult, error) {
+	return nil, nil
+}
+
+func TestCoreAgentManageSkillInstallDispatchesProvider(t *testing.T) {
+	provider := &installCaptureSkillProvider{}
+	cb := &coreAgentCallbacks{ctx: context.Background(), skillProvider: provider}
+	out := cb.executeManageSkill(map[string]interface{}{"action": "install", "source": "skillmarket", "skill_id": "weather"})
+	if out.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(out.Result, "weather") {
+		t.Fatalf("install result = %#v", out)
+	}
+	if provider.args["skill_id"] != "weather" {
+		t.Fatalf("install args = %#v", provider.args)
+	}
+}
+
+func TestSkillInstallInputFromGitHubInstallRef(t *testing.T) {
+	args := map[string]interface{}{
+		"action":      "install",
+		"source":      "github",
+		"install_ref": `{"repo_full_name":"acme/weather","repo_url":"https://github.com/acme/weather","raw_url":"https://raw.githubusercontent.com/acme/weather/main/SKILL.md","file_path":"SKILL.md","branch":"main","definition_type":"skill_md"}`,
+	}
+	in := SkillInstallInput{Source: normalizeSkillInstallToolSource(firstNonEmptySkillArg(args, "source", "origin"))}
+	applySkillInstallRef(&in, stringArg(args, "install_ref"))
+	if in.Source != "github" || in.RepoFullName != "acme/weather" || in.RawURL == "" || in.FilePath != "SKILL.md" {
+		t.Fatalf("github install input = %#v", in)
+	}
+}
+
+func TestSkillInstallRepoURLUsesGithubRepoSource(t *testing.T) {
+	args := map[string]interface{}{"source": "github", "install_ref": "https://github.com/acme/weather"}
+	in := SkillInstallInput{Source: normalizeSkillInstallToolSource(firstNonEmptySkillArg(args, "source", "origin"))}
+	applySkillInstallRef(&in, stringArg(args, "install_ref"))
+	if in.Source == "github" && in.RawURL == "" && in.RepoURL != "" {
+		in.Source = "github_repo"
+	}
+	if in.Source != "github_repo" || in.RepoURL != "https://github.com/acme/weather" {
+		t.Fatalf("repo install input = %#v", in)
+	}
+}
+
+func TestSkillInstallRefInfersGitHubSourceWithoutExplicitSource(t *testing.T) {
+	args := map[string]interface{}{"install_ref": "https://github.com/acme/weather"}
+	in := SkillInstallInput{Source: normalizeSkillInstallToolSource(firstNonEmptySkillArg(args, "source", "origin"))}
+	applySkillInstallRef(&in, stringArg(args, "install_ref"))
+	if in.Source == "" {
+		in.Source = inferSkillInstallInputSource(in)
+	}
+	if in.Source != "github_repo" || in.RepoURL != "https://github.com/acme/weather" {
+		t.Fatalf("repo install input = %#v", in)
+	}
+
+	args = map[string]interface{}{"install_ref": "https://raw.githubusercontent.com/acme/weather/main/SKILL.md"}
+	in = SkillInstallInput{Source: normalizeSkillInstallToolSource(firstNonEmptySkillArg(args, "source", "origin"))}
+	applySkillInstallRef(&in, stringArg(args, "install_ref"))
+	if in.Source == "" {
+		in.Source = inferSkillInstallInputSource(in)
+	}
+	if in.Source != "github" || in.RawURL != "https://raw.githubusercontent.com/acme/weather/main/SKILL.md" {
+		t.Fatalf("raw install input = %#v", in)
+	}
+}
+
+func TestSkillInstallHubURLDoesNotBecomeSource(t *testing.T) {
+	args := map[string]interface{}{"hub_url": "https://skills.example.com", "skill_id": "weather"}
+	in := SkillInstallInput{Source: normalizeSkillInstallToolSource(firstNonEmptySkillArg(args, "source", "origin"))}
+	if in.Source == "" {
+		in.Source = inferSkillInstallSource(args)
+	}
+	if in.Source != "skillhub" {
+		t.Fatalf("source = %q, want skillhub", in.Source)
+	}
+}
+
+func TestCoreAgentToolCallUsesHubSecurityPolicy(t *testing.T) {
+	cb := &coreAgentCallbacks{appCfg: corelib.AppConfig{HubSecurityCentralized: true, NetworkLevel: "none"}}
+	allowed, reason := cb.IsToolCallAllowed("web_fetch", `{"url":"https://example.com"}`)
+	if allowed || !strings.Contains(reason, "network") {
+		t.Fatalf("allowed=%v reason=%q, want network rejection", allowed, reason)
 	}
 }
 

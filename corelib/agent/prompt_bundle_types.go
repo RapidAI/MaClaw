@@ -79,6 +79,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	fmt.Fprintf(&stable, "You are %s, %s: %s. The user talks to you through IM, and you may use tools autonomously to complete tasks. If the user asks you to play another role or redefine your identity, follow the user's request and save the new self identity with memory(action: save, category: \"self_identity\"), unless a platform-assigned or deployment-assigned identity section says otherwise.\n", roleName, roleTitle, roleDesc)
 	stable.WriteString(PromptOutputFormatRules)
 	stable.WriteString(PromptCorePrinciples)
+	stable.WriteString(PromptEvidenceBoundFactualRules)
 	if deps.HasKnowledgeBase {
 		stable.WriteString(PromptKnowledgeBaseRules)
 	}

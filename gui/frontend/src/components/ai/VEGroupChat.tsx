@@ -13,8 +13,10 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
+import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { looksLikeRawParticipantId } from "./localAIIdentity";
+import { looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { veStatusEventInfo } from "./veStatusEvent";
 
 // --- Types ---
 
@@ -373,7 +375,9 @@ export function ParticipantSelector({
                         </div>
                     )}
                     {!loading &&
-                        available.map((ve, index) => (
+                        available.map((ve, index) => {
+                            const avatarDataURL = safeAvatarDataURL(ve.avatar_data_url);
+                            return (
                             <div
                                 key={ve.id}
                                 data-testid={`group-picker-item-${ve.id}`}
@@ -412,18 +416,23 @@ export function ParticipantSelector({
                                     (e.currentTarget as HTMLElement).style.background = "";
                                 }}
                             >
-                                <span
-                                    style={{
-                                        width: 6,
-                                        height: 6,
-                                        borderRadius: "50%",
-                                        background: "#22c55e",
-                                        flexShrink: 0,
-                                    }}
-                                />
+                                {avatarDataURL ? (
+                                    <img src={avatarDataURL} alt="" style={{ width: 22, height: 22, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                                ) : (
+                                    <span
+                                        style={{
+                                            width: 6,
+                                            height: 6,
+                                            borderRadius: "50%",
+                                            background: "#22c55e",
+                                            flexShrink: 0,
+                                        }}
+                                    />
+                                )}
                                 <span>{addingId === ve.id ? (isZh ? "添加中..." : "Adding...") : virtualEmployeeDisplayName(ve, index, lang)}</span>
                             </div>
-                        ))}
+                            );
+                        })}
                 </div>
             )}
         </div>
@@ -572,10 +581,9 @@ export function VEGroupChatView({
     // Listen for ve:status_change to detect participant going offline
     useEffect(() => {
         const handler = (data: any) => {
-            const veId = data?.ve_id || data?.veId;
-            const status = data?.online_status || data?.status;
+            const { ids, status } = veStatusEventInfo(data);
             if (status === "offline") {
-                const participant = participants.find((p) => p.id === veId);
+                const participant = participants.find((p) => ids.includes(normalizeParticipantId(p.id)));
                 if (participant) {
                     setOfflineNotices((prev) => [...prev, participant.name]);
                 }

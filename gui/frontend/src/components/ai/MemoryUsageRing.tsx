@@ -39,9 +39,10 @@ export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: Memory
     useEffect(() => {
         mountedRef.current = true;
 
-        const fetchStatus = async () => {
-            const fn = await resolveGetMemoryStatus();
-            if (!fn || !mountedRef.current) return;
+        let interval: ReturnType<typeof setInterval> | null = null;
+
+        const fetchStatus = async (fn: () => Promise<any>) => {
+            if (!mountedRef.current) return;
             try {
                 const result = await fn();
                 if (mountedRef.current && result && typeof result.capacity_percent === "number") {
@@ -52,11 +53,15 @@ export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: Memory
             }
         };
 
-        fetchStatus();
-        const interval = setInterval(fetchStatus, 60_000);
+        resolveGetMemoryStatus().then((fn) => {
+            if (!fn || !mountedRef.current) return;
+            fetchStatus(fn);
+            interval = setInterval(() => fetchStatus(fn), 60_000);
+        });
+
         return () => {
             mountedRef.current = false;
-            clearInterval(interval);
+            if (interval) clearInterval(interval);
         };
     }, []);
 

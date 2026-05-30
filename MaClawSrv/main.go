@@ -64,9 +64,7 @@ func runServer(ctx context.Context) error {
 	// Wire skill source control — three-level resolution (global/tenant/user).
 	// Uses the same SourceControlService as the hub, backed by a file-based KVStore.
 	skillSourceSvc := cskill.NewSourceControlService(newFileKVStore(filepath.Join(dataRoot, "skill_source_control.json")))
-	svc.SkillSourceFilter = func(tenantID, userID string) []string {
-		return skillSourceSvc.ResolveForUser(context.Background(), userID, tenantID)
-	}
+	wireSkillSourceFilter(svc, skillSourceSvc)
 
 	// Initialize knowledge store (non-fatal: degrades to no-knowledge mode).
 	var knowledgeMgr *knowledgeStoreManager
@@ -164,6 +162,15 @@ func validateStartupSecrets(adminSecret, tokenSecret string) error {
 		return errors.New("default development secrets are not allowed")
 	}
 	return nil
+}
+
+func wireSkillSourceFilter(svc *agentservice.Service, skillSourceSvc *cskill.SourceControlService) {
+	if svc == nil || skillSourceSvc == nil {
+		return
+	}
+	svc.SkillSourceFilter = func(tenantID, userID string) []string {
+		return skillSourceSvc.ResolveForUser(context.Background(), strings.TrimSpace(userID), tenantID)
+	}
 }
 
 func configureServiceLogging(dataRoot string) error {

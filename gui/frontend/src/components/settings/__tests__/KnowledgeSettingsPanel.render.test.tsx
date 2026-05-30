@@ -4,6 +4,7 @@ import { KnowledgeSettingsPanel } from '../KnowledgeSettingsPanel';
 import {
     KnowledgeCapabilities,
     KnowledgeHealth,
+    KnowledgeSaveText,
 } from '../../../../wailsjs/go/main/App';
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -152,5 +153,18 @@ describe('KnowledgeSettingsPanel component', () => {
         expect(screen.getByText('Import files or directories into your knowledge base')).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Import Documents' })).toBeTruthy();
         expect(screen.getByRole('heading', { name: 'Deep Crawl' })).toBeTruthy();
+    });
+
+    it('sends successful knowledge actions to toast instead of inline success text', async () => {
+        const showToastMessage = vi.fn();
+        render(<KnowledgeSettingsPanel lang="en" showToastMessage={showToastMessage} />);
+
+        fireEvent.click(screen.getByRole('tab', { name: 'Ingest' }));
+        fireEvent.change(await screen.findByPlaceholderText('Paste text or notes'), { target: { value: 'note body' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save Text' }));
+
+        await waitFor(() => expect(KnowledgeSaveText).toHaveBeenCalledTimes(1));
+        expect(showToastMessage).toHaveBeenCalledWith('✅ Text saved to knowledge base successfully.', 3000);
+        expect(screen.queryByText('✅ Text saved to knowledge base successfully.')).toBeNull();
     });
 });

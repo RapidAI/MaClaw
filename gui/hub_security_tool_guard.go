@@ -25,16 +25,16 @@ func (a *App) effectiveHubSecurityConfig() corelib.AppConfig {
 			GossipEnabled:          ep.GossipEnabled,
 			FileOutboundEnabled:    ep.FileOutboundEnabled,
 			ImageOutboundEnabled:   ep.ImageOutboundEnabled,
-			SkillSourcesAllowed:    append([]string(nil), ep.SkillSourcesAllowed...),
+			SkillSourcesAllowed:    skillSourcesForAppConfig(ep.SkillSourcesAllowed, ep.SkillSourcesRestricted),
 		}
 	}
-	if p := a.hubSecurityCache.get(); p != nil && len(p.SkillSourcesAllowed) > 0 {
+	if p := a.hubSecurityCache.get(); p != nil && (p.SkillSourcesRestricted || len(p.SkillSourcesAllowed) > 0) {
 		if cfg, err := a.LoadConfig(); err == nil && clientsecurity.IsDeveloperMode(cfg) {
 			return cfg
 		}
 		return corelib.AppConfig{
 			HubSecurityCentralized: false,
-			SkillSourcesAllowed:    append([]string(nil), p.SkillSourcesAllowed...),
+			SkillSourcesAllowed:    skillSourcesForAppConfig(p.SkillSourcesAllowed, p.SkillSourcesRestricted),
 		}
 	}
 	if cfg, err := a.LoadConfig(); err == nil {
@@ -52,4 +52,11 @@ func (h *IMMessageHandler) enforceHubSecurityToolPolicy(name string, args map[st
 
 func enforceClientSecurityPolicy(cfg corelib.AppConfig, name string, args map[string]interface{}) (bool, string) {
 	return clientsecurity.EnforceConfig(cfg, name, args)
+}
+
+func skillSourcesForAppConfig(sources []string, restricted bool) []string {
+	if restricted && len(sources) == 0 {
+		return []string{"__none__"}
+	}
+	return append([]string(nil), sources...)
 }

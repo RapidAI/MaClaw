@@ -100,6 +100,8 @@ Object.assign(I18N.zh, {
 });
 Object.assign(I18N.en, { loading: "Loading...", knowledgeImport: "Knowledge import", knowledgeImportHint: "Add text, documents, document archives, or crawled URLs to this user's knowledge base.", connectedKnowledge: "Connected knowledge", connectedKnowledgeHint: "Effective readable scopes for this user, including public knowledge bases attached by admins.", noConnectedKnowledge: "No extra connected knowledge", selfKnowledge: "Own knowledge", publicKnowledge: "Public knowledge", knowledgeScopeIDs: "Raw IDs", importText: "Text", importFile: "File or archive", importURL: "URL crawl", title: "Title", topicHint: "Topic hint", labels: "Labels", textToImport: "Text to import", chooseFiles: "Choose documents, ZIP, or RAR", urlsToImport: "URLs to import", crawlDepth: "Crawl depth", sameDomainOnly: "Same domain only", import: "Import", importing: "Importing...", importStarted: "Knowledge import started", importedKnowledge: "Knowledge import completed", importCompleted: "Knowledge import completed", importStillRunning: "Knowledge import still running", importTextPlaceholder: "Paste text...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "Template", insertTemplate: "Insert template", urlExample: "URL example", addURL: "Add URL", importJob: "Import job", importStatus: "Status", importSource: "Source", importTitle: "Title", importKind: "Kind", importFiles: "Files", importUrls: "URLs", importProcessed: "Processed", importImported: "Imported", importFailed: "Failed", importSkipped: "Skipped", importDuplicates: "Duplicates", importWarnings: "Warnings" });
 Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u5df2\u63a5\u5165\u77e5\u8bc6", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u6709\u6548\u77e5\u8bc6\u8303\u56f4\uff0c\u5305\u62ec\u7ba1\u7406\u5458\u6302\u8f7d\u7684\u516c\u7528\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u989d\u5916\u63a5\u5165\u77e5\u8bc6", selfKnowledge: "\u81ea\u6709\u77e5\u8bc6", publicKnowledge: "\u516c\u7528\u77e5\u8bc6", knowledgeScopeIDs: "\u539f\u59cb ID", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
+Object.assign(I18N.en, { enterTextFirst: "Enter text before importing.", chooseFileFirst: "Choose at least one document or archive.", enterURLFirst: "Enter at least one URL.", customTopicRequired: "Enter the custom topic hint.", customLabelRequired: "Enter the custom labels.", customTitleRequired: "Enter the custom title.", importQueued: "Import submitted. Checking progress...", importProgress: "Checking progress {current}/{total}..." });
+Object.assign(I18N.zh, { enterTextFirst: "\u8bf7\u5148\u8f93\u5165\u8981\u5bfc\u5165\u7684\u6587\u672c\u3002", chooseFileFirst: "\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u6587\u6863\u6216\u538b\u7f29\u5305\u3002", enterURLFirst: "\u8bf7\u5148\u8f93\u5165\u81f3\u5c11\u4e00\u4e2a URL\u3002", customTopicRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u4e3b\u9898\u63d0\u793a\u3002", customLabelRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u7b7e\u3002", customTitleRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u9898\u3002", importQueued: "\u5bfc\u5165\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6...", importProgress: "\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6 {current}/{total}..." });
 Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
 Object.assign(I18N.zh, { mcpManager: "MCP", mcpManagerHint: "\u4f18\u5148\u4ece\u80fd\u529b\u5e02\u573a\u9009\uff1b\u53ea\u6709\u5fc5\u8981\u65f6\u518d\u7528 JSON \u6216\u7cbe\u7b80\u7f16\u8f91\u754c\u9762\u6dfb\u52a0 MCP \u914d\u7f6e\u3002", mcpMarketplace: "\u80fd\u529b\u5e02\u573a", mcpMarketplaceHint: "\u641c\u7d22\u5e76\u5b89\u88c5 Hub/HubCenter MCP \u80fd\u529b\uff1b\u624b\u52a8\u914d\u7f6e\u4fdd\u6301\u7cbe\u7b80\u3002", mcpInstalled: "\u5df2\u5b89\u88c5 MCP", mcpNoServers: "\u6682\u65e0 MCP \u670d\u52a1", mcpManualAdd: "\u6dfb\u52a0 MCP", mcpModeMarket: "\u80fd\u529b\u5e02\u573a", mcpModeRemote: "\u8fdc\u7a0b HTTP", mcpModeLocal: "\u672c\u5730 stdio", mcpModeJson: "JSON \u5bfc\u5165", mcpName: "\u540d\u79f0", mcpEndpoint: "\u63a5\u5165\u5730\u5740", mcpCommand: "\u547d\u4ee4", mcpArgs: "\u53c2\u6570", mcpEnv: "\u73af\u5883\u53d8\u91cf", mcpHeaders: "Headers", mcpAuthType: "\u8ba4\u8bc1", mcpSecret: "\u5bc6\u94a5", mcpAutoStart: "\u81ea\u52a8\u542f\u52a8", mcpDisabled: "\u7981\u7528", mcpAdd: "\u6dfb\u52a0", mcpEdit: "\u7f16\u8f91", mcpSave: "\u4fdd\u5b58 MCP", mcpClose: "\u6536\u8d77", mcpAddParam: "\u6dfb\u52a0\u53c2\u6570", mcpParamName: "\u53c2\u6570", mcpParamValue: "\u503c", mcpStart: "\u542f\u52a8", mcpStop: "\u505c\u6b62", mcpCheck: "\u68c0\u67e5", mcpDelete: "\u5220\u9664", mcpAdded: "MCP \u5df2\u6dfb\u52a0", mcpUpdated: "MCP \u5df2\u66f4\u65b0", mcpDeleted: "MCP \u5df2\u5220\u9664", mcpJson: "MCP JSON", mcpJsonHint: "\u7c98\u8d34 Claude \u98ce\u683c mcpServers JSON\uff0c\u6216 MaClaw MCP \u6761\u76ee\u6570\u7ec4/\u5bf9\u8c61\u3002", mcpOpenGui: "\u8bf7\u5728 MaClaw GUI > MCP > \u80fd\u529b\u5e02\u573a\u5b8c\u6210\u5e02\u573a\u5b89\u88c5\u3002" });
 Object.assign(I18N.en, { webSearchManager: "Web search", webSearchHint: "Choose current search service and add a provider from common presets. Details stay grouped.", webSearchNoProviders: "No search provider", webSearchCurrent: "Current search service", webSearchAdd: "Add search service", webSearchProviderName: "Name", webSearchProviderType: "Type", webSearchBaseURL: "Base URL", webSearchKey: "Key", webSearchDelete: "Delete" });
@@ -126,11 +128,20 @@ const HIDDEN_CONFIG_KEYS = new Set([
   "show_gemini", "show_codex", "show_opencode", "show_codebuddy", "show_iflow", "show_kilo", "show_cursor",
   "extra_tool_configs", "default_proxy_scope_coding_tools", "use_windows_terminal", "nl_skills", "llm_token_usage",
   "mcp_servers", "local_mcp_servers", "ssh_hosts", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed", "web_search_providers", "web_search_current_provider",
+  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes",
   "remote_user_id", "remote_tenant_id", "remote_tenant_name", "remote_machine_id", "remote_machine_name",
   "remote_machine_token", "remote_viewer_token", "skill_market_session_token", "remote_client_id", "remote_sn",
   "env_check_done", "last_env_check_time", "onboarding_done", "floating_btn_x", "floating_btn_y",
   "floating_btn_position_set", "noise_floor_calibrated", "speech_level_calibrated"
 ]);
+const CLEARED_USER_COMPLEX_CONFIG_KEYS = new Set([
+  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes",
+]);
+function stripUserComplexConfig(config) {
+  const next = { ...(config || {}) };
+  CLEARED_USER_COMPLEX_CONFIG_KEYS.forEach((key) => delete next[key]);
+  return next;
+}
 const requestedLocale = (params.get("lang") || localStorage.getItem("maclaw.user.lang") || document.documentElement.lang || navigator.language || "zh-CN").toLowerCase();
 Object.assign(FIELD_I18N.zh, {
   maclaw_llm_url: ["LLM 服务地址", "旧版平铺 LLM 服务端点地址。由 VE Platform 托管时通常自动填入。"], maclaw_llm_key: ["LLM 访问令牌", "旧版 API Key 或 Hub viewer Bearer token。"], maclaw_llm_model: ["LLM 模型", "旧版默认模型；接入 VE Platform Hub 时使用 auto，服务组由平台元数据管理，不填在这里。"], maclaw_llm_current_provider: ["当前服务商", "从 maclaw_llm_providers 中选择的服务商名称。"], maclaw_llm_providers: ["LLM 服务商列表", "服务商列表。配置后会优先使用选中的服务商，而不是旧版平铺字段。"],
@@ -430,14 +441,45 @@ function renderMarkdownParagraph(lines) {
 }
 function splitMarkdownTableRow(line) {
   const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return trimmed.split("|").map((cell) => cell.trim());
+  const cells = [];
+  let cell = "";
+  let escaped = false;
+  for (const ch of trimmed) {
+    if (escaped) { cell += ch === "|" ? "|" : `\\${ch}`; escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === "|") { cells.push(cell.trim()); cell = ""; continue; }
+    cell += ch;
+  }
+  if (escaped) cell += "\\";
+  cells.push(cell.trim());
+  return cells;
+}
+function isMarkdownTableRow(line) {
+  if (!line.includes("|")) return false;
+  if (isMarkdownTableDivider(line)) return false;
+  const cells = splitMarkdownTableRow(line);
+  return cells.length >= 3 && cells.some(Boolean) && cells.filter((cell) => cell.length).length >= 2;
+}
+function splitFlattenedMarkdownTable(line) {
+  if (!isMarkdownTableRow(line)) return [];
+  const cells = splitMarkdownTableRow(line);
+  const headerEnd = cells.findIndex((cell, idx) => idx > 0 && /^\d+$/.test(cell));
+  if (headerEnd < 3 || !/^(#|\u5e8f\u53f7|\u7f16\u53f7)$/i.test(cells[0])) return [];
+  const header = cells.slice(0, headerEnd);
+  const data = cells.slice(headerEnd);
+  if (!data.length || data.length % header.length !== 0) return [];
+  const rows = [header];
+  for (let i = 0; i < data.length; i += header.length) rows.push(data.slice(i, i + header.length));
+  return rows;
 }
 function isMarkdownTableDivider(line) {
-  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+  return /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(line);
 }
 function renderMarkdownTable(rows) {
-  const header = splitMarkdownTableRow(rows[0]);
-  const body = rows.slice(2).map(splitMarkdownTableRow);
+  const cellsForRow = (row) => Array.isArray(row) ? row : splitMarkdownTableRow(row);
+  const header = cellsForRow(rows[0]);
+  const hasDivider = rows.length > 1 && isMarkdownTableDivider(rows[1]);
+  const body = rows.slice(hasDivider ? 2 : 1).map(cellsForRow);
   const head = `<thead><tr>${header.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead>`;
   const bodyHtml = body.length ? `<tbody>${body.map((row) => `<tr>${header.map((_cell, idx) => `<td>${renderInlineMarkdown(row[idx] || "")}</td>`).join("")}</tr>`).join("")}</tbody>` : "";
   return `<div class="md-table-wrap"><table>${head}${bodyHtml}</table></div>`;
@@ -465,11 +507,22 @@ function renderMarkdown(text) {
     if (!line.trim()) { flushParagraph(); continue; }
     const heading = line.match(/^(#{1,3})\s+(.+)$/);
     if (heading) { flushParagraph(); out.push(`<h${heading[1].length}>${renderInlineMarkdown(heading[2])}</h${heading[1].length}>`); continue; }
-    if (line.includes("|") && i + 1 < lines.length && isMarkdownTableDivider(lines[i + 1])) {
+    const flattenedRows = splitFlattenedMarkdownTable(line);
+    if (flattenedRows.length) { flushParagraph(); out.push(renderMarkdownTable(flattenedRows)); continue; }
+    if (isMarkdownTableRow(line) && i + 1 < lines.length && isMarkdownTableDivider(lines[i + 1])) {
       flushParagraph();
       const rows = [line, lines[i + 1]];
       i += 2;
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(lines[i++]);
+      while (i < lines.length && isMarkdownTableRow(lines[i])) rows.push(lines[i++]);
+      i--;
+      out.push(renderMarkdownTable(rows));
+      continue;
+    }
+    if (isMarkdownTableRow(line) && i + 1 < lines.length && isMarkdownTableRow(lines[i + 1])) {
+      flushParagraph();
+      const rows = [line];
+      i++;
+      while (i < lines.length && isMarkdownTableRow(lines[i])) rows.push(lines[i++]);
       i--;
       out.push(renderMarkdownTable(rows));
       continue;
@@ -695,7 +748,7 @@ async function renderSettings() {
     setBusy(true);
     const [schema, cfgResp, skillsResp, mcpResp] = await Promise.all([api("/api/v1/config/schema"), api("/api/v1/config"), api("/api/v1/skills"), api("/api/v1/mcp/servers")]);
     state.schema = items(schema);
-    state.config = cfgResp.app_config || {};
+    state.config = stripUserComplexConfig(cfgResp.app_config);
     state.skills = items(skillsResp);
     state.mcpServers = items(mcpResp);
     const validation = await api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: state.config }) });
@@ -1000,6 +1053,49 @@ function formChoiceValue(id) {
   if (selectValue === "__custom__") return String($(`${id}Custom`)?.value || "").trim();
   return selectValue.trim();
 }
+function clearKnowledgeFieldError(id) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.remove("knowledge-field-error");
+  el.removeAttribute("aria-invalid");
+  el.removeAttribute("aria-errormessage");
+  $(`${id}Error`)?.remove();
+}
+function showKnowledgeFieldError(id, message) {
+  const el = $(id);
+  if (!el) { toast(message); return false; }
+  clearKnowledgeFieldError(id);
+  el.classList.add("knowledge-field-error");
+  el.setAttribute("aria-invalid", "true");
+  const msg = document.createElement("p");
+  msg.id = `${id}Error`;
+  msg.className = "knowledge-field-help error";
+  msg.textContent = message;
+  el.setAttribute("aria-errormessage", msg.id);
+  (el.closest(".choice-custom") || el).insertAdjacentElement("afterend", msg);
+  toast(message);
+  el.focus();
+  return false;
+}
+function clearKnowledgeImportErrors() {
+  document.querySelectorAll(".knowledge-field-error").forEach((el) => clearKnowledgeFieldError(el.id));
+  document.querySelectorAll(".knowledge-field-help.error").forEach((el) => el.remove());
+}
+function clearKnowledgeChoiceError(el) {
+  if (!el?.id) return;
+  clearKnowledgeFieldError(el.id);
+  if (el.matches("[data-choice-suggest]")) clearKnowledgeFieldError(`${el.id}Custom`);
+  if (el.matches("[data-choice-custom]") && el.id.endsWith("Custom")) clearKnowledgeFieldError(el.id.slice(0, -6));
+}
+function requireKnowledgeChoiceValue(id, emptyMessage) {
+  const select = $(id);
+  if (select?.value !== "__custom__") return formChoiceValue(id);
+  const customID = `${id}Custom`;
+  const value = formChoiceValue(id);
+  if (!value) { showKnowledgeFieldError(customID, emptyMessage); return false; }
+  clearKnowledgeFieldError(customID);
+  return value;
+}
 function setFormChoiceValue(id, value) {
   const select = $(id);
   if (!select || !value) return;
@@ -1022,11 +1118,15 @@ function knowledgeURLExampleInput() {
   return `<div class="knowledge-picker-row"><select id="knowledgeURLExample" aria-label="${esc(t("urlExample"))}"><option value="">${t("unset")}</option>${KNOWLEDGE_URL_SUGGESTIONS.map((item) => `<option value="${esc(item.url)}">${esc(item.url)}</option>`).join("")}</select><button id="addKnowledgeURLBtn" type="button" class="secondary">${t("addURL")}</button></div>`;
 }
 function renderKnowledgeImporter() {
-  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="split"><div><strong>${t("connectedKnowledge")}</strong><span class="helper">${t("connectedKnowledgeHint")}</span></div></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="split"><div><strong>${t("knowledgeImport")}</strong><span class="helper">${t("knowledgeImportHint")}</span></div></div><div class="knowledge-import-grid"><section><h3>${t("importText")}</h3><label for="knowledgeTextTitle">${t("title")}</label>${datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)}<label for="knowledgeTextTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeTextTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeTextLabels">${t("labels")}</label>${datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeTextTemplate">${t("knowledgeTemplate")}</label>${knowledgeTemplateInput()}<label for="knowledgeTextBody">${t("textToImport")}</label><textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea><button id="knowledgeTextImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importFile")}</h3><label for="knowledgeFileTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeFileLabels">${t("labels")}</label>${datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeFileInput">${t("chooseFiles")}</label><input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar"><button id="knowledgeFileImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importURL")}</h3><label for="knowledgeURLTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeURLLabels">${t("labels")}</label>${datalistTextInput("knowledgeURLLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeURLExample">${t("urlExample")}</label>${knowledgeURLExampleInput()}<label for="knowledgeURLText">${t("urlsToImport")}</label><textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea><label for="knowledgeURLDepth">${t("crawlDepth")}</label>${knowledgeDepthInput()}<label class="inline-check"><input id="knowledgeSameDomain" type="checkbox" checked>${t("sameDomainOnly")}</label><button id="knowledgeURLImportBtn" type="button" class="secondary">${t("import")}</button></section></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
+  return `<div class="knowledge-access-summary" role="group" aria-label="${esc(t("connectedKnowledge"))}"><div class="split"><div><strong>${t("connectedKnowledge")}</strong><span class="helper">${t("connectedKnowledgeHint")}</span></div></div><div id="knowledgeAccessSummary" class="knowledge-scope-list" aria-live="polite">${esc(t("loading"))}</div></div><div class="knowledge-importer" role="group" aria-label="${esc(t("knowledgeImport"))}"><div class="split"><div><strong>${t("knowledgeImport")}</strong><span class="helper">${t("knowledgeImportHint")}</span></div></div><div class="knowledge-import-grid"><section><h3>${t("importText")}</h3><label for="knowledgeTextTitle">${t("title")}</label>${datalistTextInput("knowledgeTextTitle", KNOWLEDGE_TITLE_SUGGESTIONS)}<label for="knowledgeTextTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeTextTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeTextLabels">${t("labels")}</label>${datalistTextInput("knowledgeTextLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeTextTemplate">${t("knowledgeTemplate")}</label>${knowledgeTemplateInput()}<label for="knowledgeTextBody">${t("textToImport")}</label><textarea id="knowledgeTextBody" placeholder="${esc(t("importTextPlaceholder"))}"></textarea><button id="knowledgeTextImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importFile")}</h3><label for="knowledgeFileTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeFileTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeFileLabels">${t("labels")}</label>${datalistTextInput("knowledgeFileLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeFileInput">${t("chooseFiles")}</label><input id="knowledgeFileInput" type="file" multiple accept=".doc,.docx,.pdf,.pptx,.xlsx,.xls,.csv,.md,.markdown,.txt,.text,.zip,.rar"><button id="knowledgeFileImportBtn" type="button" class="secondary">${t("import")}</button></section><section><h3>${t("importURL")}</h3><label for="knowledgeURLTopic">${t("topicHint")}</label>${datalistTextInput("knowledgeURLTopic", KNOWLEDGE_TOPIC_SUGGESTIONS)}<label for="knowledgeURLLabels">${t("labels")}</label>${datalistTextInput("knowledgeURLLabels", KNOWLEDGE_LABEL_SUGGESTIONS)}<label for="knowledgeURLExample">${t("urlExample")}</label>${knowledgeURLExampleInput()}<label for="knowledgeURLText">${t("urlsToImport")}</label><textarea id="knowledgeURLText" placeholder="${esc(t("importURLPlaceholder"))}"></textarea><label for="knowledgeURLDepth">${t("crawlDepth")}</label>${knowledgeDepthInput()}<label class="inline-check"><input id="knowledgeSameDomain" type="checkbox" checked>${t("sameDomainOnly")}</label><button id="knowledgeURLImportBtn" type="button" class="secondary">${t("import")}</button></section></div><div id="knowledgeImportProgress" class="knowledge-progress" role="status" aria-live="polite"></div><pre id="knowledgeImportStatus" class="code" aria-live="polite"></pre></div>`;
 }
 function bindKnowledgeImporter() {
   if (!$('knowledgeTextImportBtn')) return;
   bindChoiceCustomControls();
+  document.querySelectorAll(".knowledge-importer input, .knowledge-importer textarea, .knowledge-importer select").forEach((el) => {
+    el.addEventListener("input", () => clearKnowledgeChoiceError(el));
+    el.addEventListener("change", () => clearKnowledgeChoiceError(el));
+  });
   $('insertKnowledgeTemplateBtn').onclick = insertKnowledgeTemplate;
   $('addKnowledgeURLBtn').onclick = addKnowledgeURLExample;
   $('knowledgeTextImportBtn').onclick = importKnowledgeText;
@@ -1058,10 +1158,25 @@ function addKnowledgeURLExample() {
   target.value = lines.join("\n");
   target.focus();
 }
-function setKnowledgeImportStatus(value) {
+function setKnowledgeImportStatus(value, reveal = false) {
   const el = $('knowledgeImportStatus');
-  if (el) el.textContent = formatKnowledgeImportStatus(value);
+  const progress = $('knowledgeImportProgress');
+  if (el) {
+    el.textContent = formatKnowledgeImportStatus(value);
+    if (reveal && el.textContent.trim()) el.scrollIntoView({ block: "nearest" });
+  }
+  if (progress) progress.textContent = knowledgeProgressText(value);
   setConfigOutput(value);
+}
+function knowledgeProgressText(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  if (value.progress_text) return value.progress_text;
+  const status = String(value.status || "").toLowerCase();
+  if (["pending", "queued", "running"].includes(status)) return t("importQueued");
+  if (status === "succeeded") return t("importCompleted");
+  if (status === "failed" || status === "canceled") return `${t("failed")}: ${value.error || status}`;
+  return "";
 }
 function formatKnowledgeImportStatus(value) {
   if (typeof value === "string") return value;
@@ -1109,13 +1224,27 @@ async function loadKnowledgeAccessSummary() {
 async function watchKnowledgeImportJob(jobID) {
   if (!jobID) return null;
   let latest = null;
+  setKnowledgeImportStatus({ id: jobID, status: "queued", progress_text: t("importQueued") }, true);
   for (let i = 0; i < 60; i++) {
+    setKnowledgeImportStatus({ id: jobID, status: latest?.status || "queued", progress_text: t("importProgress", { current: i + 1, total: 60 }), result: latest?.result });
     await new Promise((resolve) => setTimeout(resolve, i === 0 ? 400 : 1200));
     latest = await api(`/api/v1/knowledge/import/jobs/${encodeURIComponent(jobID)}`);
     setKnowledgeImportStatus(latest);
     if (!["pending", "queued", "running"].includes(String(latest.status || "").toLowerCase())) return latest;
   }
   return latest;
+}
+async function runKnowledgeImport(buttonID, task) {
+  const btn = $(buttonID);
+  const oldText = btn?.textContent || "";
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = t("importing"); }
+    setBusy(true);
+    return await task();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText || t("import"); }
+    setBusy(false);
+  }
 }
 function toastKnowledgeImportResult(job) {
   const status = String(job?.status || "").toLowerCase();
@@ -1124,40 +1253,60 @@ function toastKnowledgeImportResult(job) {
   else toast(t("importStillRunning"));
 }
 async function importKnowledgeText() {
+  clearKnowledgeImportErrors();
   const text = $('knowledgeTextBody')?.value?.trim() || "";
-  if (!text) return;
+  if (!text) return showKnowledgeFieldError("knowledgeTextBody", t("enterTextFirst"));
+  const title = requireKnowledgeChoiceValue("knowledgeTextTitle", t("customTitleRequired"));
+  if (title === false) return;
+  const topic = requireKnowledgeChoiceValue("knowledgeTextTopic", t("customTopicRequired"));
+  if (topic === false) return;
+  const labels = requireKnowledgeChoiceValue("knowledgeTextLabels", t("customLabelRequired"));
+  if (labels === false) return;
   try {
-    setBusy(true); setKnowledgeImportStatus(t("importing"));
-    const out = await api("/api/v1/knowledge/import/text", { method: "POST", body: JSON.stringify({ text, title: formChoiceValue("knowledgeTextTitle"), topic_hint: formChoiceValue("knowledgeTextTopic"), labels: formChoiceValue("knowledgeTextLabels") }) });
-    setKnowledgeImportStatus(out); toast(t("importedKnowledge"));
+    await runKnowledgeImport("knowledgeTextImportBtn", async () => {
+      setKnowledgeImportStatus(t("importing"), true);
+      const out = await api("/api/v1/knowledge/import/text", { method: "POST", body: JSON.stringify({ text, title, topic_hint: topic, labels }) });
+      setKnowledgeImportStatus(out); toast(t("importedKnowledge"));
+    });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
-  finally { setBusy(false); }
 }
 async function importKnowledgeFiles() {
+  clearKnowledgeImportErrors();
   const files = [...($('knowledgeFileInput')?.files || [])];
-  if (!files.length) return;
+  if (!files.length) return showKnowledgeFieldError("knowledgeFileInput", t("chooseFileFirst"));
+  const topic = requireKnowledgeChoiceValue("knowledgeFileTopic", t("customTopicRequired"));
+  if (topic === false) return;
+  const labels = requireKnowledgeChoiceValue("knowledgeFileLabels", t("customLabelRequired"));
+  if (labels === false) return;
   try {
-    setBusy(true); setKnowledgeImportStatus(t("importing"));
-    const form = new FormData();
-    files.forEach((file) => form.append("file", file));
-    form.append("topic_hint", formChoiceValue("knowledgeFileTopic"));
-    form.append("labels", formChoiceValue("knowledgeFileLabels"));
-    const resp = await fetch("/api/v1/knowledge/import/file", { method: "POST", headers: headers(false), body: form });
-    const out = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(apiErrorMessage(out, `${resp.status} ${resp.statusText}`));
-    setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+    await runKnowledgeImport("knowledgeFileImportBtn", async () => {
+      setKnowledgeImportStatus(t("importing"), true);
+      const form = new FormData();
+      files.forEach((file) => form.append("file", file));
+      form.append("topic_hint", topic);
+      form.append("labels", labels);
+      const resp = await fetch("/api/v1/knowledge/import/file", { method: "POST", headers: headers(false), body: form });
+      const out = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(apiErrorMessage(out, `${resp.status} ${resp.statusText}`));
+      setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+    });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
-  finally { setBusy(false); }
 }
 async function importKnowledgeURLs() {
+  clearKnowledgeImportErrors();
   const text = $('knowledgeURLText')?.value?.trim() || "";
-  if (!text) return;
+  if (!text) return showKnowledgeFieldError("knowledgeURLText", t("enterURLFirst"));
+  const topic = requireKnowledgeChoiceValue("knowledgeURLTopic", t("customTopicRequired"));
+  if (topic === false) return;
+  const labels = requireKnowledgeChoiceValue("knowledgeURLLabels", t("customLabelRequired"));
+  if (labels === false) return;
   try {
-    setBusy(true); setKnowledgeImportStatus(t("importing"));
-    const out = await api("/api/v1/knowledge/import/urls", { method: "POST", body: JSON.stringify({ text, max_depth: Number($('knowledgeURLDepth')?.value || 0), same_domain_only: $('knowledgeSameDomain')?.checked !== false, topic_hint: formChoiceValue("knowledgeURLTopic"), labels: formChoiceValue("knowledgeURLLabels") }) });
-    setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+    await runKnowledgeImport("knowledgeURLImportBtn", async () => {
+      setKnowledgeImportStatus(t("importing"), true);
+      const out = await api("/api/v1/knowledge/import/urls", { method: "POST", body: JSON.stringify({ text, max_depth: Number($('knowledgeURLDepth')?.value || 0), same_domain_only: $('knowledgeSameDomain')?.checked !== false, topic_hint: topic, labels }) });
+      setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
+    });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
-  finally { setBusy(false); }
 }
 function renderIssues(validation) { $("issues").innerHTML = (validation.issues || []).map((i) => `<p class="error"><strong>${esc(configIssueLabel(i))}</strong><span>${esc(configIssueMessage(i))}</span></p>`).join("") || `<p class="ok">${t("currentConfigOk")}</p>`; }
 function updateConfigStatus(validation) { const el = $("cfgStatus"); if (!el) return; const valid = validation.valid ? "ok" : "error"; el.className = `badge ${valid}`; el.textContent = validation.valid ? t("valid") : t("needsAttention"); }
@@ -1173,7 +1322,6 @@ const CHANNEL_CONFIG_KEYS = [
   "audio_input_device_id", "audio_output_device_id", "pet_voice_input_enabled", "pet_voice_readback_enabled"
 ];
 const CONFIG_CHOICE_FIELDS = {
-  maclaw_llm_protocol: ["openai", "anthropic"],
   default_proxy_protocol: ["http", "https", "socks5"],
   default_launch_mode: ["local", "remote"],
   language: ["zh-CN", "en-US"],
@@ -1196,8 +1344,6 @@ const GENERIC_CHOICE_FIELDS = {
   source: ["enterprise_hub", "hubcenter", "skillhub", "clawhub", "github", "local"]
 };
 const CONFIG_NUMBER_CHOICE_FIELDS = {
-  maclaw_llm_context_length: [32000, 64000, 110000, 200000],
-  maclaw_llm_timeout_sec: [60, 120, 300, 480, 900],
   agent_response_timeout_sec: [60, 120, 300, 480, 900],
   maclaw_agent_max_iterations: [30, 60, 100, 150, 300],
   subagent_concurrency: [1, 2, 3, 4],
@@ -1268,24 +1414,7 @@ const WEB_SEARCH_PROVIDER_TYPES = {
   tinyfish: { name: "TinyFish", base_url: "" },
   searxng: { name: "SearXNG", base_url: "http://localhost:8080" }
 };
-const CONFIG_OBJECT_LIST_FIELDS = {
-  maclaw_llm_providers: {
-    rows: 3,
-    fields: [
-      { key: "name", kind: "text" },
-      { key: "url", kind: "text", suggestions: LLM_URL_SUGGESTIONS },
-      { key: "key", kind: "password" },
-      { key: "model", kind: "text", suggestions: LLM_MODEL_SUGGESTIONS },
-      { key: "protocol", kind: "select", options: ["", "openai", "anthropic"] },
-      { key: "auth_type", kind: "select", options: ["", "apikey", "bearer", "oauth", "sso"] },
-      { key: "agent_type", kind: "select", options: ["", "openclaw", "claude"] },
-      { key: "wire_api", kind: "select", options: ["", "chat", "responses", "responses-ws"] },
-      { key: "supports_vision", kind: "bool" },
-      { key: "context_length", kind: "number", options: [32000, 64000, 110000, 200000] },
-      { key: "timeout_sec", kind: "number", options: [60, 120, 300, 480, 900] }
-    ]
-  }
-};
+const CONFIG_OBJECT_LIST_FIELDS = {};
 const CONFIG_OBJECT_FIELDS = {
   mis_data: {
     fields: [
@@ -1325,14 +1454,6 @@ const CONFIG_OBJECT_FIELDS = {
       { key: "sensitive_query_policy", kind: "select", options: ["", "allow", "confirm", "reject"] }
     ]
   },
-  auxiliary_llm: {
-    fields: [
-      { key: "url", kind: "text", suggestions: LLM_URL_SUGGESTIONS },
-      { key: "key", kind: "password" },
-      { key: "model", kind: "text", suggestions: LLM_MODEL_SUGGESTIONS },
-      { key: "protocol", kind: "select", options: ["", "openai", "anthropic"] }
-    ]
-  },
   capability_market_policy: {
     fields: [
       { key: "view_mode", kind: "select", options: ["", "merged", "enterprise_only", "hubcenter_only"] },
@@ -1352,7 +1473,7 @@ const CONFIG_OBJECT_FIELDS = {
       { key: "source_priority.hubcenter", kind: "number", options: [0, 20, 40, 60, 80, 100] },
       { key: "source_priority.clawhub", kind: "number", options: [0, 20, 40, 60, 80, 100] },
       { key: "source_priority.github", kind: "number", options: [0, 20, 40, 60, 80, 100] },
-      { key: "resource_types.skill.allowed_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
+      { key: "resource_types.skill.allowed_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github", "local"] },
       { key: "resource_types.skill.default_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
       { key: "resource_types.skill.user_configurable_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
       { key: "resource_types.mcp.allowed_sources", kind: "multi", options: ["enterprise_hub", "hubcenter", "clawhub", "github"] },
@@ -1361,20 +1482,7 @@ const CONFIG_OBJECT_FIELDS = {
     ]
   }
 };
-const CONFIG_OBJECT_MAP_FIELDS = {
-  model_routes: {
-    rows: 6,
-    keyName: "route",
-    keyOptions: ["intent", "fast", "reasoning", "vision", "summary", "default"],
-    fields: [
-      { key: "model", kind: "text", suggestions: LLM_MODEL_SUGGESTIONS },
-      { key: "url", kind: "text", suggestions: LLM_URL_SUGGESTIONS },
-      { key: "key", kind: "password" },
-      { key: "protocol", kind: "select", options: ["", "openai", "anthropic"] },
-      { key: "provider", kind: "provider" }
-    ]
-  }
-};
+const CONFIG_OBJECT_MAP_FIELDS = {};
 const CONFIG_JSON_STRING_OBJECT_FIELDS = {
   ve_approval_config: {
     fields: [
@@ -1471,7 +1579,6 @@ function genericNumberOptions(key) {
 }
 const CONFIG_CHOICE_LABELS = {
   en: {
-    maclaw_llm_protocol: { openai: "OpenAI compatible", anthropic: "Anthropic" },
     default_proxy_protocol: { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" },
     default_launch_mode: { local: "Local", remote: "Remote" },
     language: { "zh-CN": "Simplified Chinese", "en-US": "English" },
@@ -1487,7 +1594,6 @@ const CONFIG_CHOICE_LABELS = {
     pet_motion_sound_preset: { classic: "Classic", bubble: "Bubble", chime: "Chime", synth: "Synth", soft: "Soft" }
   },
   zh: {
-    maclaw_llm_protocol: { openai: "OpenAI \u517c\u5bb9", anthropic: "Anthropic" },
     default_proxy_protocol: { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" },
     default_launch_mode: { local: "\u672c\u5730", remote: "\u8fdc\u7a0b" },
     language: { "zh-CN": "\u7b80\u4f53\u4e2d\u6587", "en-US": "\u82f1\u6587" },
@@ -1595,7 +1701,7 @@ function configGroups(defs) {
   const byKey = Object.fromEntries(visibleDefs.map((x) => [x.key, x]));
   const allKeys = [...new Set([...visibleDefs.map((x) => x.key), ...Object.keys(state.config || {}).filter((key) => !HIDDEN_CONFIG_KEYS.has(key))])];
   const groups = [
-    { id: "llm", title: t("groupLLM"), hint: t("groupLLMHint"), keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes"] },
+    { id: "llm", title: t("groupLLM"), hint: t("groupLLMHint"), keys: ["maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model"] },
     { id: "tools", title: t("groupTools"), hint: t("groupToolsHint"), keys: ["web_search_providers", "web_search_current_provider"] },
     { id: "skills", title: t("groupSkills"), hint: t("groupSkillsHint"), keys: [] },
     { id: "memory", title: t("groupMemory"), hint: t("groupMemoryHint"), keys: ["memory_auto_compress", "memory_max_backups", "knowledge_skill_token_budget"] },
@@ -1612,7 +1718,7 @@ function configGroups(defs) {
   );
   const grouped = new Set(groups.flatMap((g) => g.keys));
   groups[groups.length - 1].keys = rest.filter((key) => !grouped.has(key));
-  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key)) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "channels"].includes(g.id));
+  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "channels"].includes(g.id));
 }
 function setActiveConfigTab(tab) {
   state.settingsTab = tab;
@@ -1698,7 +1804,7 @@ function genericChoiceOptions(key) {
   return [];
 }
 function providerChoiceOptions(key) {
-  const listKey = key === "maclaw_llm_current_provider" ? "maclaw_llm_providers" : key === "web_search_current_provider" ? "web_search_providers" : "";
+  const listKey = key === "web_search_current_provider" ? "web_search_providers" : "";
   if (!listKey) return null;
   return items(state.config?.[listKey]).map((x) => String(x.name || x.Name || "").trim()).filter(Boolean);
 }
@@ -2036,7 +2142,7 @@ function renderConfigFields() {
   });
 }
 function collectConfig() {
-  const next = { ...state.config };
+  const next = stripUserComplexConfig(state.config);
   const setObjectPath = (target, field, value) => {
     if (!field.includes(".")) { target[field] = value; return; }
     const parts = field.split(".");

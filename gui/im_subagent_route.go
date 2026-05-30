@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -147,14 +146,6 @@ func (h *IMMessageHandler) shouldRouteBugFixToDirectCodingSubAgent(msg IMUserMes
 }
 
 func (h *IMMessageHandler) classifyDirectCodingSubAgentGateIntent(msg IMUserMessage) (GateIntentResult, bool) {
-	var gic *GateIntentClassifier
-	if h.app != nil {
-		gic = h.getGateIntentClassifier()
-	}
-	if gic != nil {
-		return gic.Classify(msg.Text, msg.UserID), true
-	}
-
 	uic := h.getUnifiedClassifier()
 	if uic == nil {
 		uic = unifiedClassifierPtr.Load()
@@ -162,26 +153,7 @@ func (h *IMMessageHandler) classifyDirectCodingSubAgentGateIntent(msg IMUserMess
 	if uic == nil {
 		return GateIntentResult{}, false
 	}
-	uicResult := uic.Classify(intent.MessageContext{Text: msg.Text, UserID: msg.UserID})
-	gateIntent, confidence, gap, layer, reason := uicResult.ToGateIntent()
-	return GateIntentResult{
-		Intent:     GateIntent(gateIntent),
-		Confidence: confidence,
-		Gap:        gap,
-		Layer:      layer,
-		Reason:     reason,
-		Degraded:   uicResult.Degraded,
-	}, true
-}
-
-func shouldRouteGateConfigToDirectCodingSubAgent(cfg codingToolGateConfig, msg IMUserMessage, loopCtx *LoopContext) bool {
-	if msg.IsBackground || strings.TrimSpace(msg.Text) == "" {
-		return false
-	}
-	if loopCtx != nil && (loopCtx.WorkflowAgentLoop || loopCtx.Kind == LoopKindBackground) {
-		return false
-	}
-	return cfg.intent == intentCoding && cfg.bugFix && !cfg.active
+	return classifyUnifiedGateIntent(uic, msg.Text, msg.UserID)
 }
 
 func shouldRouteGateResultToDirectCodingSubAgent(result GateIntentResult, msg IMUserMessage, loopCtx *LoopContext) bool {
@@ -194,20 +166,11 @@ func shouldRouteGateResultToDirectCodingSubAgent(result GateIntentResult, msg IM
 	if !isSemanticGateResultForDirectCodingSubAgent(result) {
 		return false
 	}
-	cfg := mapGateIntentToConfig(result, result.Intent == GateIntentContinuation)
-	return shouldRouteGateConfigToDirectCodingSubAgent(cfg, msg, loopCtx)
+	return result.Intent == GateIntentBugFix
 }
 
 func isSemanticGateResultForDirectCodingSubAgent(result GateIntentResult) bool {
-	if !shouldAcceptGateResult(result) {
-		return false
-	}
-	switch result.Layer {
-	case 2, 3, 23:
-		return true
-	default:
-		return false
-	}
+	return isTrustedSemanticGateResult(result)
 }
 
 func (h *IMMessageHandler) routeDirectCodingSubAgentExecution(msg IMUserMessage, httpClient *http.Client, loopCtx *LoopContext, history []agent.ConversationEntry, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, []agent.ConversationEntry, bool) {
@@ -227,6 +190,7 @@ func (h *IMMessageHandler) routeDirectCodingSubAgentExecution(msg IMUserMessage,
 	result, handled := h.executeCodingWorkflowDelegateArgs(args, agentLoopToolExecutionOptions{
 		Context:    loopCtx,
 		UserID:     msg.UserID,
+		UserText:   msg.Text,
 		OnProgress: onProgress,
 		OnToken:    onToken,
 	})

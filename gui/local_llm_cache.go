@@ -16,6 +16,7 @@ import (
 func (a *App) cachedOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, client *http.Client) (*llm.Response, error) {
 	cacheCfg, ok := a.effectiveLLMPromptCacheConfig()
 	if !ok || !localLLMCacheSupportsOpenAI(cfg, cacheCfg) {
+		logLocalLLMCacheSkip(cfg, "openai", "unsupported_or_disabled")
 		return llm.DoOpenAIRequest(ctx, cfg, messages, tools, client)
 	}
 	if err := ctx.Err(); err != nil {
@@ -23,9 +24,11 @@ func (a *App) cachedOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConf
 	}
 	bodyMap, key, err := localLLMCacheOpenAIKey(cfg, messages, tools, cacheCfg)
 	if err != nil {
+		logLocalLLMCacheSkip(cfg, "openai", "key_error:"+err.Error())
 		return llm.DoOpenAIRequest(ctx, cfg, messages, tools, client)
 	}
 	if decision := corelib.LLMPromptCacheable(bodyMap, cacheCfg.Options()); !decision.Cacheable {
+		logLocalLLMCacheSkip(cfg, "openai", "uncacheable:"+decision.Reason)
 		return llm.DoOpenAIRequest(ctx, cfg, messages, tools, client)
 	}
 	cache := a.ensureLocalLLMCache(cacheCfg)
@@ -37,10 +40,13 @@ func (a *App) cachedOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConf
 			}
 			parsed.LocalCacheHit = true
 			a.recordLocalLLMCacheRequest(cfg, true)
+			logLocalLLMCacheDecision(cfg, "openai", key, "hit")
 			return parsed, nil
 		}
 		cache.Delete(key)
+		logLocalLLMCacheDecision(cfg, "openai", key, "invalid_hit_deleted")
 	}
+	logLocalLLMCacheDecision(cfg, "openai", key, "miss")
 	body, shared, stored, err := cache.DoSingleflightWithSharedStore(ctx, key, cacheCfg, func() ([]byte, bool, error) {
 		parsed, reqErr := llm.DoOpenAIRequest(ctx, cfg, messages, tools, client)
 		if reqErr != nil {
@@ -62,12 +68,20 @@ func (a *App) cachedOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConf
 	}
 	parsed.LocalCacheHit = shared && stored
 	a.recordLocalLLMCacheRequest(cfg, shared && stored)
+	if shared && stored {
+		logLocalLLMCacheDecision(cfg, "openai", key, "shared_hit")
+	} else if stored {
+		logLocalLLMCacheDecision(cfg, "openai", key, "stored")
+	} else {
+		logLocalLLMCacheDecision(cfg, "openai", key, "store_skipped")
+	}
 	return parsed, nil
 }
 
 func (a *App) cachedAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, client *http.Client) (*llm.Response, error) {
 	cacheCfg, ok := a.effectiveLLMPromptCacheConfig()
 	if !ok || !localLLMCacheSupportsAnthropic(cfg, cacheCfg) {
+		logLocalLLMCacheSkip(cfg, "anthropic", "unsupported_or_disabled")
 		return llm.DoAnthropicRequest(ctx, cfg, messages, tools, client)
 	}
 	if err := ctx.Err(); err != nil {
@@ -75,9 +89,11 @@ func (a *App) cachedAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMC
 	}
 	bodyMap, key, err := localLLMCacheAnthropicKey(cfg, messages, tools, cacheCfg, false)
 	if err != nil {
+		logLocalLLMCacheSkip(cfg, "anthropic", "key_error:"+err.Error())
 		return llm.DoAnthropicRequest(ctx, cfg, messages, tools, client)
 	}
 	if decision := corelib.LLMPromptCacheable(bodyMap, cacheCfg.Options()); !decision.Cacheable {
+		logLocalLLMCacheSkip(cfg, "anthropic", "uncacheable:"+decision.Reason)
 		return llm.DoAnthropicRequest(ctx, cfg, messages, tools, client)
 	}
 	cache := a.ensureLocalLLMCache(cacheCfg)
@@ -89,10 +105,13 @@ func (a *App) cachedAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMC
 			}
 			parsed.LocalCacheHit = true
 			a.recordLocalLLMCacheRequest(cfg, true)
+			logLocalLLMCacheDecision(cfg, "anthropic", key, "hit")
 			return parsed, nil
 		}
 		cache.Delete(key)
+		logLocalLLMCacheDecision(cfg, "anthropic", key, "invalid_hit_deleted")
 	}
+	logLocalLLMCacheDecision(cfg, "anthropic", key, "miss")
 	body, shared, stored, err := cache.DoSingleflightWithSharedStore(ctx, key, cacheCfg, func() ([]byte, bool, error) {
 		parsed, reqErr := llm.DoAnthropicRequest(ctx, cfg, messages, tools, client)
 		if reqErr != nil {
@@ -114,6 +133,13 @@ func (a *App) cachedAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMC
 	}
 	parsed.LocalCacheHit = shared && stored
 	a.recordLocalLLMCacheRequest(cfg, shared && stored)
+	if shared && stored {
+		logLocalLLMCacheDecision(cfg, "anthropic", key, "shared_hit")
+	} else if stored {
+		logLocalLLMCacheDecision(cfg, "anthropic", key, "stored")
+	} else {
+		logLocalLLMCacheDecision(cfg, "anthropic", key, "store_skipped")
+	}
 	return parsed, nil
 }
 
@@ -125,6 +151,7 @@ func (a *App) cachedStreamHit(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	}
 	cacheCfg, ok := a.effectiveLLMPromptCacheConfig()
 	if !ok || !cacheCfg.EffectiveStreamSynthesisEnabled() || strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName || cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		logLocalLLMCacheSkip(cfg, "stream", localLLMCacheStreamDisabledReason(cfg, ok, cacheCfg))
 		return nil, false
 	}
 	var bodyMap map[string]any
@@ -132,25 +159,34 @@ func (a *App) cachedStreamHit(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	var err error
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
 		if !localLLMCacheSupportsAnthropicProtocol(cfg) {
+			logLocalLLMCacheSkip(cfg, "stream", "unsupported_anthropic")
 			return nil, false
 		}
 		bodyMap, key, err = localLLMCacheAnthropicKey(cfg, messages, tools, cacheCfg, false)
 	} else {
 		if !localLLMCacheSupportsOpenAIProtocol(cfg) {
+			logLocalLLMCacheSkip(cfg, "stream", "unsupported_openai")
 			return nil, false
 		}
 		bodyMap, key, err = localLLMCacheOpenAIKey(cfg, messages, tools, cacheCfg)
 	}
-	if err != nil || !corelib.LLMPromptCacheable(bodyMap, cacheCfg.Options()).Cacheable {
+	if err != nil {
+		logLocalLLMCacheSkip(cfg, "stream", "key_error:"+err.Error())
+		return nil, false
+	}
+	if decision := corelib.LLMPromptCacheable(bodyMap, cacheCfg.Options()); !decision.Cacheable {
+		logLocalLLMCacheSkip(cfg, "stream", "uncacheable:"+decision.Reason)
 		return nil, false
 	}
 	body, hit := a.ensureLocalLLMCache(cacheCfg).Get(key, cacheCfg)
 	if !hit {
+		logLocalLLMCacheDecision(cfg, "stream", key, "miss")
 		return nil, false
 	}
 	parsed, err := localLLMCacheParseStoredResponse(body)
 	if err != nil {
 		a.ensureLocalLLMCache(cacheCfg).Delete(key)
+		logLocalLLMCacheDecision(cfg, "stream", key, "invalid_hit_deleted")
 		return nil, false
 	}
 	parsed.LocalCacheHit = true
@@ -160,6 +196,7 @@ func (a *App) cachedStreamHit(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	default:
 	}
 	a.recordLocalLLMCacheRequest(cfg, true)
+	logLocalLLMCacheDecision(cfg, "stream", key, "hit")
 	if onToken != nil && len(parsed.Choices) > 0 && parsed.Choices[0].Message.Content != "" && len(parsed.Choices[0].Message.ToolCalls) == 0 {
 		onToken(parsed.Choices[0].Message.Content)
 	}
@@ -168,10 +205,12 @@ func (a *App) cachedStreamHit(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 
 func (a *App) storeStreamResponse(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, resp *llm.Response) {
 	if resp == nil || responseHasToolCalls(resp) || strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName || cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+		logLocalLLMCacheSkip(cfg, "stream", localLLMCacheStoreIneligibleReason(cfg, resp))
 		return
 	}
 	cacheCfg, ok := a.effectiveLLMPromptCacheConfig()
 	if !ok || !cacheCfg.EffectiveStreamSynthesisEnabled() {
+		logLocalLLMCacheSkip(cfg, "stream", "store_disabled")
 		return
 	}
 	var bodyMap map[string]any
@@ -179,25 +218,106 @@ func (a *App) storeStreamResponse(cfg corelib.MaclawLLMConfig, messages []interf
 	var err error
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
 		if !localLLMCacheSupportsAnthropicProtocol(cfg) {
+			logLocalLLMCacheSkip(cfg, "stream", "store_unsupported_anthropic")
 			return
 		}
 		bodyMap, key, err = localLLMCacheAnthropicKey(cfg, messages, tools, cacheCfg, false)
 	} else {
 		if !localLLMCacheSupportsOpenAIProtocol(cfg) {
+			logLocalLLMCacheSkip(cfg, "stream", "store_unsupported_openai")
 			return
 		}
 		bodyMap, key, err = localLLMCacheOpenAIKey(cfg, messages, tools, cacheCfg)
 	}
-	if err != nil || !corelib.LLMPromptCacheable(bodyMap, cacheCfg.Options()).Cacheable {
+	if err != nil {
+		logLocalLLMCacheSkip(cfg, "stream", "store_key_error:"+err.Error())
+		return
+	}
+	if decision := corelib.LLMPromptCacheable(bodyMap, cacheCfg.Options()); !decision.Cacheable {
+		logLocalLLMCacheSkip(cfg, "stream", "store_uncacheable:"+decision.Reason)
 		return
 	}
 	body, err := marshalLocalLLMCacheResponse(resp)
 	if err != nil {
+		logLocalLLMCacheSkip(cfg, "stream", "store_invalid_response:"+err.Error())
 		return
 	}
 	if a.ensureLocalLLMCache(cacheCfg).Set(key, body, cacheCfg) {
 		a.recordLocalLLMCacheRequest(cfg, false)
+		logLocalLLMCacheDecision(cfg, "stream", key, "stored")
+	} else {
+		logLocalLLMCacheDecision(cfg, "stream", key, "store_failed")
 	}
+}
+
+func logLocalLLMCacheDecision(cfg corelib.MaclawLLMConfig, protocol string, key string, event string) {
+	log.Printf("[llm_cache] event=%s protocol=%s configured_protocol=%q wire_api=%q provider=%q model=%q base_url_hash=%s key=%s", event, protocol, strings.TrimSpace(cfg.Protocol), strings.TrimSpace(cfg.WireAPI), strings.TrimSpace(cfg.ProviderName), strings.TrimSpace(cfg.Model), shortLocalLLMCacheURLHash(cfg.URL), shortLocalLLMCacheKey(key))
+}
+
+func logLocalLLMCacheSkip(cfg corelib.MaclawLLMConfig, protocol string, reason string) {
+	log.Printf("[llm_cache] event=skip protocol=%s configured_protocol=%q wire_api=%q provider=%q model=%q base_url_hash=%s responses_api=%t responses_ws=%t reason=%s", protocol, strings.TrimSpace(cfg.Protocol), strings.TrimSpace(cfg.WireAPI), strings.TrimSpace(cfg.ProviderName), strings.TrimSpace(cfg.Model), shortLocalLLMCacheURLHash(cfg.URL), cfg.IsResponsesAPI(), cfg.IsResponsesWebSocket(), sanitizeLocalLLMCacheLogValue(reason))
+}
+
+func localLLMCacheStreamDisabledReason(cfg corelib.MaclawLLMConfig, cfgLoaded bool, cacheCfg corelib.LLMPromptCacheConfig) string {
+	switch {
+	case !cfgLoaded:
+		return "config_disabled_or_unavailable"
+	case !cacheCfg.EffectiveStreamSynthesisEnabled():
+		return "stream_synthesis_disabled"
+	case strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName:
+		return "official_hub_bypass"
+	case cfg.IsResponsesAPI():
+		return "responses_api_unsupported"
+	case cfg.IsResponsesWebSocket():
+		return "responses_ws_unsupported"
+	default:
+		return "unsupported_or_disabled"
+	}
+}
+
+func localLLMCacheStoreIneligibleReason(cfg corelib.MaclawLLMConfig, resp *llm.Response) string {
+	switch {
+	case resp == nil:
+		return "nil_response"
+	case responseHasToolCalls(resp):
+		return "tool_calls_not_cached"
+	case strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName:
+		return "official_hub_bypass"
+	case cfg.IsResponsesAPI():
+		return "responses_api_unsupported"
+	case cfg.IsResponsesWebSocket():
+		return "responses_ws_unsupported"
+	default:
+		return "store_response_ineligible"
+	}
+}
+
+func shortLocalLLMCacheURLHash(rawURL string) string {
+	rawURL = strings.TrimRight(strings.TrimSpace(rawURL), "/")
+	if rawURL == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(rawURL))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func shortLocalLLMCacheKey(key string) string {
+	key = strings.TrimSpace(key)
+	if len(key) <= 21 {
+		return key
+	}
+	if strings.HasPrefix(key, "llm_resp_") {
+		return key[:21]
+	}
+	return key[:12]
+}
+
+func sanitizeLocalLLMCacheLogValue(value string) string {
+	value = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(strings.TrimSpace(value))
+	if len(value) > 160 {
+		return value[:160]
+	}
+	return value
 }
 
 func (a *App) recordLocalLLMCacheRequest(cfg corelib.MaclawLLMConfig, hit bool) {

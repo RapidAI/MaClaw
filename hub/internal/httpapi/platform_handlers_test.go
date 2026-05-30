@@ -1607,6 +1607,53 @@ func TestPlatformEmployeeRegisterRequiresUserRepoAndEmployeeID(t *testing.T) {
 	}
 }
 
+func TestPlatformEmployeeRegisterStoresAvatarDataURL(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-avatar", "virtual_email": "avatar@tenant.test", "name": "Avatar Worker", "avatar_data_url": testAvatarPNGDataURL, "runtime_provider_id": "maclawsrv", "runtime_base_url": "https://runtime.example"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	registry := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(registry.Employees) != 1 || registry.Employees[0].AvatarDataURL != testAvatarPNGDataURL {
+		t.Fatalf("avatar not stored: %#v", registry.Employees)
+	}
+}
+
+func TestPlatformEmployeeRegisterAllowsOneMiBAvatarDataURL(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active"}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	payload := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, make([]byte, veAvatarImageMaxBytes-8)...)
+	avatar := "data:image/png;base64," + base64.StdEncoding.EncodeToString(payload)
+	if len(avatar) <= 1024*1024 {
+		t.Fatalf("test avatar should exceed old encoded limit")
+	}
+	tenants := fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}
+	req := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/employees", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-big-avatar", "virtual_email": "big-avatar@tenant.test", "name": "Big Avatar Worker", "avatar_data_url": avatar, "runtime_provider_id": "maclawsrv", "runtime_base_url": "https://runtime.example"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeRegisterHandler(settings, tenants, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPlatformEmployeeRegisterRequiresMacLawSrvRuntimeURLWhenRuntimeMissing(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)

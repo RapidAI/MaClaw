@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func EnforceConfig(cfg corelib.AppConfig, name string, args map[string]interface{}) (bool, string) {
@@ -91,7 +93,7 @@ func enforceNetworkLevel(level string, allowlist []string, name string, args map
 	if level == "" || level == "full" {
 		return true, ""
 	}
-	if !isNetworkTool(name) && !isSkillInstallTool(name, args) && !toolArgsContainURL(args) && !toolArgsContainHost(args) && !bashCommandLooksNetworked(name, args) {
+	if !isNetworkTool(name) && !skillInstallNeedsNetwork(name, args) && !toolArgsContainURL(args) && !toolArgsContainHost(args) && !bashCommandLooksNetworked(name, args) {
 		return true, ""
 	}
 	if level == "none" {
@@ -121,6 +123,9 @@ func enforceSkillSourcePolicy(allowedSources []string, name string, args map[str
 	if len(allowedSources) == 0 || !isSkillInstallTool(name, args) {
 		return true, ""
 	}
+	if skillSourcesBlockAll(allowedSources) {
+		return false, skill.FormatSourcePolicyDenied(effectiveSkillSource(args), nil)
+	}
 	if skillSearchSourceIsDeferred(name, args) {
 		return true, ""
 	}
@@ -133,7 +138,11 @@ func enforceSkillSourcePolicy(allowedSources []string, name string, args map[str
 			return true, ""
 		}
 	}
-	return false, fmt.Sprintf("skill source %q is disabled by Hub security policy", source)
+	return false, skill.FormatSourcePolicyDenied(source, allowedSources)
+}
+
+func skillSourcesBlockAll(allowedSources []string) bool {
+	return len(allowedSources) == 1 && strings.EqualFold(strings.TrimSpace(allowedSources[0]), "__none__")
 }
 
 func skillSearchSourceIsDeferred(name string, args map[string]interface{}) bool {
@@ -176,7 +185,7 @@ func explicitSkillSource(args map[string]interface{}) bool {
 	if normalizeSkillSource(stringArg(args, "source")) != "" {
 		return true
 	}
-	return strings.TrimSpace(firstStringArg(args, "hub_url", "install_ref", "url")) != ""
+	return strings.TrimSpace(firstStringArg(args, "hub_url", "install_ref", "url", "repo_url", "raw_url", "repo_full_name")) != "" || strings.TrimSpace(stringArg(args, "zip_base64")) != ""
 }
 
 func isSkillInstallTool(name string, args map[string]interface{}) bool {
@@ -191,10 +200,23 @@ func isSkillInstallTool(name string, args map[string]interface{}) bool {
 	}
 }
 
+func skillInstallNeedsNetwork(name string, args map[string]interface{}) bool {
+	if !isSkillInstallTool(name, args) {
+		return false
+	}
+	return normalizeSkillSource(effectiveSkillSource(args)) != "local"
+}
+
 func effectiveSkillSource(args map[string]interface{}) string {
 	source := normalizeSkillSource(stringArg(args, "source"))
 	if source != "" {
 		return source
+	}
+	if strings.TrimSpace(stringArg(args, "zip_base64")) != "" {
+		return "local"
+	}
+	if strings.TrimSpace(firstStringArg(args, "repo_url", "raw_url", "repo_full_name")) != "" {
+		return "github"
 	}
 	hubURL := strings.ToLower(strings.TrimSpace(firstStringArg(args, "hub_url", "install_ref", "url")))
 	switch {
@@ -220,6 +242,8 @@ func normalizeSkillSource(source string) string {
 		return "clawhub"
 	case "git_hub":
 		return "github"
+	case "zip", "local_upload":
+		return "local"
 	default:
 		return source
 	}
@@ -314,17 +338,26 @@ func urlsFromAny(value interface{}) []string {
 	case []string:
 		var urls []string
 		for _, item := range v {
-			if looksHTTPURL(item) {
-				urls = append(urls, item)
-			}
+			urls = append(urls, urlsFromString(item)...)
 		}
 		return urls
 	case string:
-		if looksHTTPURL(v) {
-			return []string{v}
-		}
+		return urlsFromString(v)
 	}
 	return nil
+}
+
+var embeddedHTTPURLRe = regexp.MustCompile(`https?://[^\s"'<>\\]+`)
+
+func urlsFromString(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if looksHTTPURL(value) {
+		return []string{value}
+	}
+	return embeddedHTTPURLRe.FindAllString(value, -1)
 }
 
 func looksHTTPURL(value string) bool {

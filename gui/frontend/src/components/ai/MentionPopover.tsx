@@ -1,5 +1,5 @@
 /**
- * MentionPopover — @mention participant selector popover.
+ * MentionPopover: @mention participant selector popover.
  *
  * Fully controlled component: parent owns selectedIndex and filtered list.
  * Popover only renders and reports user interactions (click, mouse hover).
@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
+import type { RefObject } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 
 export interface MentionParticipant {
@@ -33,7 +34,7 @@ export interface MentionPopoverProps {
     /** Called when the popover should close without selection */
     onClose: () => void;
     /** Anchor element for click-outside detection */
-    anchorRef: React.RefObject<HTMLTextAreaElement | null>;
+    anchorRef: RefObject<HTMLTextAreaElement | null>;
     /** Theme */
     theme: Theme;
     /** Language */
@@ -55,7 +56,7 @@ export function MentionPopover({
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
 
-    // Click outside to close — uses ref to avoid re-registering on onClose identity change
+    // Keep the outside-click listener stable while still calling the latest onClose.
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
             if (
@@ -69,9 +70,9 @@ export function MentionPopover({
         };
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [anchorRef]); // anchorRef is a stable ref object
+    }, [anchorRef]);
 
-    // Scroll selected item into view
+    // Scroll selected item into view.
     useEffect(() => {
         if (!popoverRef.current) return;
         const items = popoverRef.current.querySelectorAll("[data-mention-item]");
@@ -171,7 +172,7 @@ export type MentionKeyDownHandler = (e: React.KeyboardEvent) => boolean;
  * Parent calls the returned handler in textarea's onKeyDown.
  * Returns true if the event was consumed (parent should not process further).
  *
- * Uses refs internally to avoid stale closures — the returned handler
+ * Uses refs internally to avoid stale closures: the returned handler
  * always reads the latest values of filtered/selectedIndex/onSelect/onClose.
  */
 export function useMentionKeyboard(
@@ -193,7 +194,7 @@ export function useMentionKeyboard(
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
 
-    // Stable handler — never recreated, reads latest values from refs
+    // Stable handler: reads latest values from refs.
     return useCallback(
         (e: React.KeyboardEvent): boolean => {
             if (!activeRef.current) return false;
@@ -223,6 +224,6 @@ export function useMentionKeyboard(
             }
             return false;
         },
-        [setSelectedIndex] // truly stable — only depends on setState identity (never changes)
+        [setSelectedIndex]
     );
 }

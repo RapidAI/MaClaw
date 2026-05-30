@@ -217,9 +217,12 @@ func TestExperienceGovernanceSummaryEmbedsA2ASafeHandoff(t *testing.T) {
 }
 
 func TestExperienceLearningDirectSummarySafeHandoffsAreNormalized(t *testing.T) {
-	t.Parallel()
-
-	app := &App{}
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	app := &App{memoryStore: store}
 	summary := app.GetExperienceGovernanceSummary(ExperienceRoutingSignalQuery{})
 	call, ok := summary["recommended_tool_call"].(map[string]interface{})
 	if !ok || call["non_executing"] != true {

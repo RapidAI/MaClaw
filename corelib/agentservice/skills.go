@@ -235,7 +235,10 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 	// Apply source control filter: remove disallowed sources before searching.
 	if s.SkillSourceFilter != nil {
 		allowed := s.SkillSourceFilter(p.TenantID, p.UserID)
-		if len(allowed) > 0 {
+		if allowed != nil {
+			if len(allowed) == 0 {
+				return nil, nil
+			}
 			sources = filterAllowedSources(sources, allowed)
 			if len(sources) == 0 {
 				return nil, nil // all requested sources are blocked
@@ -287,6 +290,14 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 			for _, item := range found {
 				add(item)
 			}
+		case "clawhub":
+			found := skill.DefaultHubClient().SearchClawHub(ctx, query)
+			for i, item := range found {
+				if i >= topN {
+					break
+				}
+				add(SkillSearchResult{Source: item.Source, ID: item.ID, Name: item.Name, Description: item.Description, Version: item.Version, Author: item.Author, TrustLevel: item.TrustLevel, Downloads: item.Downloads, AvgRating: item.AvgRating})
+			}
 		case "skillmarket":
 			baseURL := strings.TrimRight(strings.TrimSpace(in.SkillMarketURL), "/")
 			if baseURL == "" {
@@ -325,11 +336,14 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 	// Check source control before downloading.
 	if s.SkillSourceFilter != nil {
 		allowed := s.SkillSourceFilter(p.TenantID, p.UserID)
-		if len(allowed) > 0 {
+		if allowed != nil {
+			if len(allowed) == 0 {
+				return nil, fmt.Errorf("%s", skill.FormatSourcePolicyDenied(source, allowed))
+			}
 			// Map install source names to the canonical source identifiers.
 			canonical := installSourceToCanonical(source)
-			if canonical != "" && !isInSlice(canonical, allowed) {
-				return nil, fmt.Errorf("skill source %q is not allowed by policy (allowed: %v)", source, allowed)
+			if canonical != "" && !sourceAllowedByPolicy(canonical, allowed) {
+				return nil, fmt.Errorf("%s", skill.FormatSourcePolicyDenied(source, allowed))
 			}
 		}
 	}
@@ -357,6 +371,12 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	case "skillhub":
 		entry, err := downloadSkillHubEntry(ctx, strings.TrimSpace(in.SkillHubURL), strings.TrimSpace(in.SkillID))
+		if err != nil {
+			return nil, err
+		}
+		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
+	case "clawhub":
+		entry, err := skill.DefaultHubClient().DownloadClawHub(ctx, strings.TrimSpace(in.SkillID))
 		if err != nil {
 			return nil, err
 		}
@@ -794,7 +814,7 @@ func restoreSkillDirFromArchive(skillDir string, archive []byte) error {
 
 func normalizeSkillSearchSources(sources []string) []string {
 	if len(sources) == 0 {
-		return []string{"github", "skillmarket", "skillhub"}
+		return []string{"github", "skillmarket", "skillhub", "clawhub"}
 	}
 	seen := map[string]bool{}
 	out := make([]string, 0, len(sources))
@@ -813,7 +833,7 @@ func normalizeSkillSearchSources(sources []string) []string {
 		out = append(out, normalized)
 	}
 	if len(out) == 0 {
-		return []string{"github", "skillmarket", "skillhub"}
+		return []string{"github", "skillmarket", "skillhub", "clawhub"}
 	}
 	return out
 }
@@ -1409,7 +1429,7 @@ func filterAllowedSources(requested, allowed []string) []string {
 	var result []string
 	for _, src := range normalizeSkillSearchSources(requested) {
 		canonical := searchSourceToCanonical(src)
-		if canonical == "" || skill.IsSourceAllowed(canonical, allowed) {
+		if canonical == "" || sourceAllowedByPolicy(canonical, allowed) {
 			result = append(result, src)
 		}
 	}
@@ -1441,7 +1461,7 @@ func installSourceToCanonical(source string) string {
 	case "clawhub":
 		return "clawhub"
 	case "zip":
-		return "" // zip is local upload, not a remote source; always allowed
+		return "local"
 	default:
 		return ""
 	}
@@ -1449,4 +1469,11 @@ func installSourceToCanonical(source string) string {
 
 func isInSlice(s string, slice []string) bool {
 	return skill.IsSourceAllowed(s, slice)
+}
+
+func sourceAllowedByPolicy(source string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return false
+	}
+	return skill.IsSourceAllowed(source, allowed)
 }

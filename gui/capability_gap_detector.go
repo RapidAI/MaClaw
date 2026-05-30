@@ -131,7 +131,7 @@ func (d *CapabilityGapDetector) Resolve(
 
 	// Step 2: Search SkillHub (if allowed).
 	var candidates []HubSkillMeta
-	if cskill.IsSourceAllowed("skillhub", allowedSources) {
+	if isAllowedSkillSourceList("skillhub", allowedSources) {
 		allowed := true
 		if d.app != nil {
 			guardArgs := map[string]interface{}{"query": query, "source": "skillhub", "hub_url": NewSkillMarketClient(d.app).baseURL()}
@@ -151,7 +151,7 @@ func (d *CapabilityGapDetector) Resolve(
 	lang := d.skillConfirmLang()
 	if len(candidates) == 0 {
 		// Fallback: search GitHub for skill.yaml files (if allowed).
-		if !cskill.IsSourceAllowed("github", allowedSources) {
+		if !isAllowedSkillSourceList("github", allowedSources) {
 			if len(blockedSearch) > 0 {
 				return "", "", fmt.Errorf("skill search blocked by security policy: %s", strings.Join(blockedSearch, "; "))
 			}
@@ -310,7 +310,7 @@ func (d *CapabilityGapDetector) Resolve(
 	{
 		scanner := NewSkillSecurityScanner(d.app, nil)
 		scanReport = scanner.ScanInstallStaged(ctx, skill, stagingDir, sendStatus)
-		if d.app != nil && d.app.skillInstallScanShouldBlock(scanReport) {
+		if d.app != nil && d.app.skillInstallScanShouldBlockForSource(scanReport, "skillhub") {
 			cskill.CleanupStaging(stagingDir)
 			if d.auditLog != nil {
 				_ = d.auditLog.Log(security.AuditEntry{
@@ -324,7 +324,7 @@ func (d *CapabilityGapDetector) Resolve(
 			}
 			return "", "", fmt.Errorf("Skill security scan blocked installation by current policy")
 		}
-		if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(scanReport) {
+		if d.app != nil && d.app.skillInstallReviewNeedsConfirmationForSource(scanReport, "skillhub") {
 			riskDetails := FormatScanReportForUser(scanReport, chosen.Name)
 			confirmed := d.confirmCallback == nil
 			if d.confirmCallback != nil {
@@ -411,7 +411,7 @@ func (d *CapabilityGapDetector) Resolve(
 		if scanReport != nil {
 			riskLevel = scanReport.FinalLevel
 			if d.app != nil {
-				policyAction = d.app.skillInstallFinalAuditAction(scanReport)
+				policyAction = d.app.skillInstallFinalAuditActionForSource(scanReport, "skillhub")
 			} else if scanReport.NeedsUserReview() {
 				policyAction = security.PolicyAudit
 			}

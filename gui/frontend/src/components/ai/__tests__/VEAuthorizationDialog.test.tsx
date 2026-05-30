@@ -2,6 +2,7 @@ import { act, render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     VEAuthorizationDialog,
+    VEAuthorizationRequestCenter,
     VEAuthBlinkingIndicator,
 } from "../VEAuthorizationDialog";
 import type { Theme } from "../aiAssistantPanelTheme";
@@ -362,5 +363,171 @@ describe("VEAuthBlinkingIndicator", () => {
 
         // Opacity should have changed (blink toggle)
         expect(afterBlink).not.toBe(initialOpacity);
+    });
+});
+
+describe("VEAuthorizationRequestCenter", () => {
+    beforeEach(() => {
+        eventHandlers.clear();
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it("does not render when no pending requests", () => {
+        render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={vi.fn()} />);
+        expect(screen.queryByTestId("ve-auth-request-center")).toBeNull();
+    });
+
+    it("shows blinking trigger and opens request list", () => {
+        render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={vi.fn()} />);
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({
+                payload: {
+                    request_id: "center-req-1",
+                    requester_name: "Alice",
+                    requester_machine_id: "machine-a",
+                    target_ve_id: "ve-1",
+                    target_ve_name: "Analyst",
+                },
+            });
+        });
+
+        const trigger = screen.getByTestId("ve-auth-request-trigger");
+        expect(trigger.className).toContain("ve-auth-request-trigger--blink");
+        expect(trigger.textContent).toContain("1");
+
+        fireEvent.click(trigger);
+        expect(screen.getByTestId("ve-auth-request-center-req-1")).toBeTruthy();
+        expect(screen.getByText("Alice")).toBeTruthy();
+        expect(screen.getByText("Analyst")).toBeTruthy();
+    });
+
+    it("sends selected decision and removes handled request", async () => {
+        const respond = vi.fn().mockResolvedValue(undefined);
+        render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={respond} />);
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({
+                payload: {
+                    request_id: "center-req-allow",
+                    requester_name: "Bob",
+                    requester_machine_id: "machine-b",
+                    target_ve_id: "ve-2",
+                    target_ve_name: "Helper",
+                },
+            });
+        });
+
+        fireEvent.click(screen.getByTestId("ve-auth-request-trigger"));
+        fireEvent.click(screen.getByTestId("ve-auth-allow-long-center-req-allow"));
+        await act(async () => { await vi.runAllTimersAsync(); });
+
+        expect(respond).toHaveBeenCalledWith("center-req-allow", "allow_long");
+        expect(screen.queryByTestId("ve-auth-request-center")).toBeNull();
+    });
+
+    it("keeps request visible and shows error when response fails", async () => {
+        const respond = vi.fn().mockRejectedValue(new Error("network down"));
+        render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={respond} />);
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({
+                payload: {
+                    request_id: "center-req-fail",
+                    requester_name: "Dana",
+                    requester_machine_id: "machine-d",
+                    target_ve_id: "ve-4",
+                    target_ve_name: "Reviewer",
+                },
+            });
+        });
+
+        fireEvent.click(screen.getByTestId("ve-auth-request-trigger"));
+        fireEvent.click(screen.getByTestId("ve-auth-deny-center-req-fail"));
+        await act(async () => { await vi.runAllTimersAsync(); });
+
+        expect(screen.getByTestId("ve-auth-request-center-req-fail")).toBeTruthy();
+        expect(screen.getByRole("alert").textContent).toContain("network down");
+    });
+
+    it("ignores duplicate clicks while response is in flight", async () => {
+        let resolveResponse: (() => void) | undefined;
+        const respond = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { resolveResponse = resolve; }));
+        render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={respond} />);
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({
+                payload: {
+                    request_id: "center-req-double",
+                    requester_name: "Eli",
+                    requester_machine_id: "machine-e",
+                    target_ve_id: "ve-5",
+                    target_ve_name: "Ops",
+                },
+            });
+        });
+
+        fireEvent.click(screen.getByTestId("ve-auth-request-trigger"));
+        const allowButton = screen.getByTestId("ve-auth-allow-once-center-req-double");
+        fireEvent.click(allowButton);
+        fireEvent.click(allowButton);
+        expect(respond).toHaveBeenCalledTimes(1);
+
+        await act(async () => { resolveResponse?.(); await vi.runAllTimersAsync(); });
+        expect(screen.queryByTestId("ve-auth-request-center")).toBeNull();
+    });
+
+    it("removes expired requests and hides the trigger", () => {
+        const now = new Date("2026-05-30T10:00:00.000Z");
+        vi.setSystemTime(now);
+        render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={vi.fn()} />);
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({
+                payload: {
+                    request_id: "center-req-expiring",
+                    requester_name: "Eli",
+                    requester_machine_id: "machine-e",
+                    target_ve_id: "ve-5",
+                    target_ve_name: "Ops",
+                    expires_at: new Date(now.getTime() + 1000).toISOString(),
+                },
+            });
+        });
+
+        expect(screen.getByTestId("ve-auth-request-center")).toBeTruthy();
+        act(() => { vi.advanceTimersByTime(1000); });
+        expect(screen.queryByTestId("ve-auth-request-center")).toBeNull();
+    });
+
+    it.each([
+        ["deny", "ve-auth-deny-center-req-action"],
+        ["block", "ve-auth-block-center-req-action"],
+        ["allow_once", "ve-auth-allow-once-center-req-action"],
+    ])("sends %s decision", async (decision, testId) => {
+        const respond = vi.fn().mockResolvedValue(undefined);
+        render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={respond} />);
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({
+                payload: {
+                    request_id: "center-req-action",
+                    requester_name: "Casey",
+                    requester_machine_id: "machine-c",
+                    target_ve_id: "ve-3",
+                    target_ve_name: "Assistant",
+                },
+            });
+        });
+
+        fireEvent.click(screen.getByTestId("ve-auth-request-trigger"));
+        fireEvent.click(screen.getByTestId(testId));
+        await act(async () => { await vi.runAllTimersAsync(); });
+
+        expect(respond).toHaveBeenCalledWith("center-req-action", decision);
     });
 });

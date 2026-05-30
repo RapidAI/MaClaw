@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -33,6 +35,7 @@ type digitalEmployeeEntry struct {
 	OwnerEmail         string   `json:"owner_email,omitempty"`
 	Name               string   `json:"name"`
 	SkillDescription   string   `json:"skill_description"`
+	AvatarDataURL      string   `json:"avatar_data_url,omitempty"`
 	AccessPolicy       string   `json:"access_policy"`
 	Whitelist          []string `json:"whitelist,omitempty"`
 	Blacklist          []string `json:"blacklist,omitempty"`
@@ -47,6 +50,25 @@ type digitalEmployeeEntry struct {
 
 type digitalEmployeeRegistry struct {
 	Employees []digitalEmployeeEntry `json:"employees"`
+}
+
+type digitalEmployeeAccessRequest struct {
+	ID                 string `json:"id"`
+	RequesterUserID    string `json:"requester_user_id"`
+	RequesterMachineID string `json:"requester_machine_id"`
+	RequesterName      string `json:"requester_name,omitempty"`
+	TargetVEID         string `json:"target_ve_id"`
+	TargetMachineID    string `json:"target_machine_id"`
+	TargetVEName       string `json:"target_ve_name"`
+	Status             string `json:"status"`
+	Decision           string `json:"decision,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	ExpiresAt          string `json:"expires_at"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
+}
+
+type digitalEmployeeAccessRequestStore struct {
+	Requests []digitalEmployeeAccessRequest `json:"requests"`
 }
 
 type veMachineAuthenticator interface {
@@ -67,8 +89,9 @@ type veHistorySearchMatch struct {
 }
 
 const (
-	veGroupConfigKey = "ve_group_config"
-	veRegistryKey    = "ve_registry"
+	veGroupConfigKey    = "ve_group_config"
+	veRegistryKey       = "ve_registry"
+	veAccessRequestsKey = "ve_access_requests"
 
 	veStatusPending  = "pending"
 	veStatusActive   = "active"
@@ -169,8 +192,7 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			return
 		}
 		var req veSettingsRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		if !decodeVEJSON(w, r, &req, veSettingsBodyMaxBytes) {
 			return
 		}
 		entry, err := digitalEmployeeFromRequest(principal, req)
@@ -192,6 +214,9 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			previous := registry.Employees[idx]
 			entry.ID = previous.ID
 			entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
+			if req.AvatarDataURL == nil {
+				entry.AvatarDataURL = previous.AvatarDataURL
+			}
 			entry.RegisteredAt = firstNonEmptyVE(previous.RegisteredAt, now)
 			entry.Status = previous.Status
 			if entry.Status == "" || entry.Status == veStatusRejected || entry.Status == veStatusDisabled {
@@ -222,8 +247,7 @@ func VESettingsHandler(system store.SystemSettingsRepository, authenticator veMa
 			return
 		}
 		var req veSettingsRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		if !decodeVEJSON(w, r, &req, veSettingsBodyMaxBytes) {
 			return
 		}
 		entry, err := digitalEmployeeFromRequest(principal, req)
@@ -241,6 +265,9 @@ func VESettingsHandler(system store.SystemSettingsRepository, authenticator veMa
 		previous := registry.Employees[idx]
 		entry.ID = previous.ID
 		entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
+		if req.AvatarDataURL == nil {
+			entry.AvatarDataURL = previous.AvatarDataURL
+		}
 		entry.Status = firstNonEmptyVE(previous.Status, veStatusPending)
 		entry.RegisteredAt = previous.RegisteredAt
 		entry.OnlineStatus = veOnlineStatusOnline
@@ -294,11 +321,12 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 		}
 		registry := loadVERegistry(r.Context(), system)
 		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
+		accessID := veRequesterAccessID(principal)
 		for _, entry := range registry.Employees {
 			if entry.Status != veStatusActive || strings.EqualFold(strings.TrimSpace(entry.MachineID), strings.TrimSpace(principal.MachineID)) {
 				continue
 			}
-			if !veAccessAllowed(entry, principal.UserID) {
+			if !veAccessAllowed(entry, accessID) {
 				continue
 			}
 			employees = append(employees, entry)
@@ -312,7 +340,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 }
 
 // VEInitiateHandler handles POST /api/ve/{id}/initiate for a machine-owned direct discussion.
-func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, authenticator veMachineAuthenticator) http.HandlerFunc {
+func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, authenticator veMachineAuthenticator, senders ...veMachineEventSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
@@ -350,15 +378,73 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			writeError(w, http.StatusBadRequest, "VE_SELF_CHAT_REJECTED", "cannot start a digital employee conversation with the same machine")
 			return
 		}
-		if !veAccessAllowed(target, principal.UserID) {
+		accessID := veRequesterAccessID(principal)
+		if !veAccessAllowed(target, accessID) {
 			writeError(w, http.StatusForbidden, "VE_ACCESS_DENIED", "digital employee access is denied")
 			return
+		}
+		var accessRequests *digitalEmployeeAccessRequestStore
+		allowOnceRequestIndex := -1
+		if target.AccessPolicy == "per_request" && !containsVEValue(target.Whitelist, accessID) {
+			requests := loadVEAccessRequests(r.Context(), system)
+			now := time.Now().UTC()
+			expiredRequests := expirePendingVEAccessRequests(&requests, now)
+			if idx := findConsumableVEAllowOnceRequestIndex(&requests, target, accessID, principal.MachineID, now); idx >= 0 {
+				accessRequests = &requests
+				allowOnceRequestIndex = idx
+				if expiredRequests {
+					if err := saveVEAccessRequests(r.Context(), system, requests); err != nil {
+						writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
+						return
+					}
+				}
+			} else {
+				requestID := newVEAccessRequestID(requests, principal.MachineID, now)
+				req := digitalEmployeeAccessRequest{
+					ID:                 requestID,
+					RequesterUserID:    accessID,
+					RequesterMachineID: principal.MachineID,
+					RequesterName:      firstNonEmptyVE(principal.UserID, principal.MachineID),
+					TargetVEID:         target.ID,
+					TargetMachineID:    target.MachineID,
+					TargetVEName:       target.Name,
+					Status:             "pending",
+					CreatedAt:          now.Format(time.RFC3339),
+					ExpiresAt:          now.Add(5 * time.Minute).Format(time.RFC3339),
+				}
+				req = upsertVEAccessRequest(&requests, req)
+				if err := saveVEAccessRequests(r.Context(), system, requests); err != nil {
+					writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
+					return
+				}
+				if sender := firstVEMachineEventSender(senders...); sender != nil {
+					_ = sender.SendToMachine(target.MachineID, map[string]any{"type": "ve:auth_request", "ts": time.Now().Unix(), "payload": map[string]any{
+						"request_id":           req.ID,
+						"requester_name":       req.RequesterName,
+						"requester_machine_id": req.RequesterMachineID,
+						"target_ve_id":         req.TargetVEID,
+						"target_ve_name":       req.TargetVEName,
+						"source":               "digital_employee_chat",
+						"created_at":           req.CreatedAt,
+						"expires_at":           req.ExpiresAt,
+					}})
+				}
+				writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending_confirmation", "request_id": req.ID, "message": "waiting for digital employee owner confirmation"})
+				return
+			}
 		}
 		topic := strings.TrimSpace(target.Name)
 		if topic == "" {
 			topic = "Digital employee conversation"
 		}
 		if session := findReusableVEDirectSession(groupSvc, store.NormalizeTenantID(principal.TenantID), principal.MachineID, target.MachineID); session != nil {
+			if allowOnceRequestIndex >= 0 {
+				markVEAccessRequestUsed(accessRequests, allowOnceRequestIndex, time.Now().UTC())
+				if err := saveVEAccessRequests(r.Context(), system, *accessRequests); err != nil {
+					writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
+					return
+				}
+			}
 			summary := discussionSummaryFromSession(session)
 			decorateSummaryForParticipant(&summary, session, principal.MachineID)
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -381,6 +467,13 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "SESSION_CREATE_FAILED", err.Error())
 			return
+		}
+		if allowOnceRequestIndex >= 0 {
+			markVEAccessRequestUsed(accessRequests, allowOnceRequestIndex, time.Now().UTC())
+			if err := saveVEAccessRequests(r.Context(), system, *accessRequests); err != nil {
+				writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
+				return
+			}
 		}
 		summary := discussionSummaryFromSession(session)
 		decorateSummaryForParticipant(&summary, session, principal.MachineID)
@@ -412,6 +505,114 @@ func findReusableVEDirectSession(groupSvc *GroupDiscussionService, tenantID, ini
 		}
 	}
 	return nil
+}
+
+func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, senders ...veMachineEventSender) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, ok := authenticateVEMachine(w, r, authenticator)
+		if !ok {
+			return
+		}
+		system := veSystemSettingsForMachine(system, principal)
+		var body struct {
+			RequestID string `json:"request_id"`
+			Decision  string `json:"decision"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		body.RequestID = strings.TrimSpace(body.RequestID)
+		body.Decision = strings.TrimSpace(body.Decision)
+		if body.RequestID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "request_id is required")
+			return
+		}
+		switch body.Decision {
+		case "allow", "allow_once", "allow_long", "deny", "block":
+		default:
+			writeError(w, http.StatusBadRequest, "INVALID_DECISION", "decision must be allow_once, allow_long, deny, or block")
+			return
+		}
+
+		requests := loadVEAccessRequests(r.Context(), system)
+		expiredRequests := expirePendingVEAccessRequests(&requests, time.Now().UTC())
+		idx := -1
+		for i, req := range requests.Requests {
+			if req.ID == body.RequestID {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			writeError(w, http.StatusNotFound, "VE_AUTH_REQUEST_NOT_FOUND", "authorization request not found")
+			return
+		}
+		req := requests.Requests[idx]
+		if !strings.EqualFold(strings.TrimSpace(req.TargetMachineID), strings.TrimSpace(principal.MachineID)) {
+			writeError(w, http.StatusForbidden, "VE_AUTH_REQUEST_FORBIDDEN", "only the target digital employee owner can respond")
+			return
+		}
+		if req.Status != "pending" {
+			if expiredRequests {
+				_ = saveVEAccessRequests(r.Context(), system, requests)
+			}
+			writeError(w, http.StatusConflict, "VE_AUTH_REQUEST_ALREADY_HANDLED", "authorization request was already handled")
+			return
+		}
+		decision := body.Decision
+		if decision == "allow" {
+			decision = "allow_once"
+		}
+		req.Decision = decision
+		req.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		switch decision {
+		case "allow_once", "allow_long":
+			req.Status = "allowed"
+		case "block":
+			req.Status = "blocked"
+		default:
+			req.Status = "denied"
+		}
+		requests.Requests[idx] = req
+
+		registry := loadVERegistry(r.Context(), system)
+		if targetIdx := registry.findByIDOrMachineIDOrPlatformEmployeeID(req.TargetVEID); targetIdx >= 0 {
+			target := &registry.Employees[targetIdx]
+			requesterAccessID := firstNonEmptyVE(req.RequesterUserID, req.RequesterMachineID)
+			switch decision {
+			case "allow_long":
+				if requesterAccessID != "" && !containsVEValue(target.Whitelist, requesterAccessID) {
+					target.Whitelist = append(target.Whitelist, requesterAccessID)
+				}
+				target.Blacklist = removeVEValue(target.Blacklist, requesterAccessID)
+			case "block":
+				target.Whitelist = removeVEValue(target.Whitelist, requesterAccessID)
+				if requesterAccessID != "" && !containsVEValue(target.Blacklist, requesterAccessID) {
+					target.Blacklist = append(target.Blacklist, requesterAccessID)
+				}
+			}
+			if err := saveVERegistry(r.Context(), system, registry); err != nil {
+				writeError(w, http.StatusInternalServerError, "VE_REGISTRY_SAVE_FAILED", err.Error())
+				return
+			}
+		}
+		if err := saveVEAccessRequests(r.Context(), system, requests); err != nil {
+			writeError(w, http.StatusInternalServerError, "VE_AUTH_REQUEST_SAVE_FAILED", err.Error())
+			return
+		}
+
+		if sender := firstVEMachineEventSender(senders...); sender != nil {
+			payload := map[string]any{"request_id": req.ID, "decision": decision, "status": req.Status, "target_ve_id": req.TargetVEID, "target_machine_id": req.TargetMachineID, "target_ve_name": req.TargetVEName}
+			_ = sender.SendToMachine(req.RequesterMachineID, map[string]any{"type": "ve:auth_result", "ts": time.Now().Unix(), "payload": payload})
+			_ = sender.SendToMachine(req.TargetMachineID, map[string]any{"type": "ve:list_update", "ts": time.Now().Unix(), "payload": payload})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": req.Status, "decision": decision})
+	}
 }
 
 func isReusableVEDirectSession(session *coreliba2a.Session, initiatorID, targetID string) bool {
@@ -649,15 +850,38 @@ func VEHistoryDetailHandler(groupSvc *GroupDiscussionService) http.HandlerFunc {
 type veSettingsRequest struct {
 	Name             string   `json:"name"`
 	SkillDescription string   `json:"skill_description"`
+	AvatarDataURL    *string  `json:"avatar_data_url"`
 	AccessPolicy     string   `json:"access_policy"`
 	Whitelist        []string `json:"whitelist"`
 	Blacklist        []string `json:"blacklist"`
 }
 
+const (
+	veAvatarImageMaxBytes  = 1024 * 1024
+	veAvatarDataURLMaxSize = len("data:image/jpeg;base64,") + ((veAvatarImageMaxBytes+2)/3)*4
+	veSettingsBodyMaxBytes = int64(veAvatarDataURLMaxSize + 128*1024)
+)
+
 func digitalEmployeeFromRequest(principal *auth.MachinePrincipal, req veSettingsRequest) (digitalEmployeeEntry, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return digitalEmployeeEntry{}, fmt.Errorf("name is required")
+	}
+	avatarDataURL := ""
+	if req.AvatarDataURL != nil {
+		avatarDataURL = strings.TrimSpace(*req.AvatarDataURL)
+	}
+	if avatarDataURL != "" {
+		if len(avatarDataURL) > veAvatarDataURLMaxSize {
+			return digitalEmployeeEntry{}, fmt.Errorf("avatar image is too large")
+		}
+		valid, tooLarge := validateVEAvatarDataURL(avatarDataURL)
+		if tooLarge {
+			return digitalEmployeeEntry{}, fmt.Errorf("avatar image is too large")
+		}
+		if !valid {
+			return digitalEmployeeEntry{}, fmt.Errorf("avatar image must be a data URL")
+		}
 	}
 	policy := normalizeVEAccessPolicy(req.AccessPolicy)
 	return digitalEmployeeEntry{
@@ -667,10 +891,61 @@ func digitalEmployeeFromRequest(principal *auth.MachinePrincipal, req veSettings
 		OwnerUserID:      principal.UserID,
 		Name:             name,
 		SkillDescription: strings.TrimSpace(req.SkillDescription),
+		AvatarDataURL:    avatarDataURL,
 		AccessPolicy:     policy,
 		Whitelist:        normalizeVEStringList(req.Whitelist),
 		Blacklist:        normalizeVEStringList(req.Blacklist),
 	}, nil
+}
+
+func decodeVEJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "multiple json values")
+		return false
+	}
+	return true
+}
+
+func isValidVEAvatarDataURL(value string) bool {
+	valid, _ := validateVEAvatarDataURL(value)
+	return valid
+}
+
+func validateVEAvatarDataURL(value string) (bool, bool) {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" || len(lower) > veAvatarDataURLMaxSize {
+		return false, len(lower) > veAvatarDataURLMaxSize
+	}
+	declaredType := ""
+	switch {
+	case strings.HasPrefix(lower, "data:image/png;base64,"):
+		declaredType = "image/png"
+	case strings.HasPrefix(lower, "data:image/jpeg;base64,"), strings.HasPrefix(lower, "data:image/jpg;base64,"):
+		declaredType = "image/jpeg"
+	case strings.HasPrefix(lower, "data:image/webp;base64,"):
+		declaredType = "image/webp"
+	default:
+		return false, false
+	}
+	comma := strings.Index(value, ",")
+	if comma < 0 || comma == len(value)-1 {
+		return false, false
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value[comma+1:])
+	if err != nil {
+		return false, false
+	}
+	if len(decoded) > veAvatarImageMaxBytes {
+		return false, true
+	}
+	contentType := http.DetectContentType(decoded)
+	return contentType == declaredType, false
 }
 
 func authenticateVEMachine(w http.ResponseWriter, r *http.Request, authenticator veMachineAuthenticator) (*auth.MachinePrincipal, bool) {
@@ -942,7 +1217,10 @@ func loadVERegistry(ctx context.Context, system store.SystemSettingsRepository) 
 	if registry.Employees == nil {
 		registry.Employees = []digitalEmployeeEntry{}
 	}
-	if normalizeVERegistryOnlineStatuses(&registry) || enrichVERegistryEmployeeTypes(&registry) {
+	onlineChanged := normalizeVERegistryOnlineStatuses(&registry)
+	typeChanged := enrichVERegistryEmployeeTypes(&registry)
+	avatarChanged := normalizeVERegistryAvatarDataURLs(&registry)
+	if onlineChanged || typeChanged || avatarChanged {
 		_ = saveVERegistry(ctx, system, registry)
 	}
 	return registry
@@ -951,11 +1229,158 @@ func loadVERegistry(ctx context.Context, system store.SystemSettingsRepository) 
 func saveVERegistry(ctx context.Context, system store.SystemSettingsRepository, registry digitalEmployeeRegistry) error {
 	normalizeVERegistryOnlineStatuses(&registry)
 	enrichVERegistryEmployeeTypes(&registry)
+	normalizeVERegistryAvatarDataURLs(&registry)
 	data, err := json.Marshal(registry)
 	if err != nil {
 		return err
 	}
 	return system.Set(ctx, veRegistryKey, string(data))
+}
+
+func normalizeVERegistryAvatarDataURLs(registry *digitalEmployeeRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	changed := false
+	for idx := range registry.Employees {
+		avatar := strings.TrimSpace(registry.Employees[idx].AvatarDataURL)
+		if avatar == "" {
+			if registry.Employees[idx].AvatarDataURL != "" {
+				registry.Employees[idx].AvatarDataURL = ""
+				changed = true
+			}
+			continue
+		}
+		if !isValidVEAvatarDataURL(avatar) {
+			registry.Employees[idx].AvatarDataURL = ""
+			changed = true
+		} else if avatar != registry.Employees[idx].AvatarDataURL {
+			registry.Employees[idx].AvatarDataURL = avatar
+			changed = true
+		}
+	}
+	return changed
+}
+
+func loadVEAccessRequests(ctx context.Context, system store.SystemSettingsRepository) digitalEmployeeAccessRequestStore {
+	requests := digitalEmployeeAccessRequestStore{Requests: []digitalEmployeeAccessRequest{}}
+	if system == nil {
+		return requests
+	}
+	raw, err := system.Get(ctx, veAccessRequestsKey)
+	if err == nil && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &requests)
+	}
+	if requests.Requests == nil {
+		requests.Requests = []digitalEmployeeAccessRequest{}
+	}
+	return requests
+}
+
+func saveVEAccessRequests(ctx context.Context, system store.SystemSettingsRepository, requests digitalEmployeeAccessRequestStore) error {
+	data, err := json.Marshal(requests)
+	if err != nil {
+		return err
+	}
+	return system.Set(ctx, veAccessRequestsKey, string(data))
+}
+
+func upsertVEAccessRequest(requests *digitalEmployeeAccessRequestStore, request digitalEmployeeAccessRequest) digitalEmployeeAccessRequest {
+	if requests == nil {
+		return request
+	}
+	for i := range requests.Requests {
+		item := requests.Requests[i]
+		if item.Status == "pending" && strings.EqualFold(item.RequesterMachineID, request.RequesterMachineID) && strings.EqualFold(item.TargetMachineID, request.TargetMachineID) {
+			request.ID = item.ID
+			request.CreatedAt = item.CreatedAt
+			requests.Requests[i] = request
+			return request
+		}
+	}
+	requests.Requests = append(requests.Requests, request)
+	return request
+}
+
+func expirePendingVEAccessRequests(requests *digitalEmployeeAccessRequestStore, now time.Time) bool {
+	if requests == nil {
+		return false
+	}
+	changed := false
+	for i := range requests.Requests {
+		req := &requests.Requests[i]
+		if req.Status == "pending" && veAccessRequestExpired(*req, now) {
+			req.Status = "expired"
+			req.UpdatedAt = now.Format(time.RFC3339)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func newVEAccessRequestID(requests digitalEmployeeAccessRequestStore, requesterMachineID string, now time.Time) string {
+	base := fmt.Sprintf("veauth_%s_%d", strings.NewReplacer("/", "_", "\\", "_", " ", "_").Replace(strings.TrimSpace(requesterMachineID)), now.UnixNano())
+	if base == "veauth__0" {
+		base = fmt.Sprintf("veauth_%d", now.UnixNano())
+	}
+	candidate := base
+	for suffix := 2; ; suffix++ {
+		exists := false
+		for _, req := range requests.Requests {
+			if req.ID == candidate {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s_%d", base, suffix)
+	}
+}
+
+func findConsumableVEAllowOnceRequestIndex(requests *digitalEmployeeAccessRequestStore, target digitalEmployeeEntry, requesterUserID, requesterMachineID string, now time.Time) int {
+	if requests == nil {
+		return -1
+	}
+	for i := range requests.Requests {
+		req := requests.Requests[i]
+		if req.Status != "allowed" || req.Decision != "allow_once" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(req.TargetMachineID), strings.TrimSpace(target.MachineID)) && !strings.EqualFold(strings.TrimSpace(req.TargetVEID), strings.TrimSpace(target.ID)) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(req.RequesterUserID), strings.TrimSpace(requesterUserID)) && !strings.EqualFold(strings.TrimSpace(req.RequesterMachineID), strings.TrimSpace(requesterMachineID)) {
+			continue
+		}
+		if veAccessRequestExpired(req, now) {
+			requests.Requests[i].Status = "expired"
+			requests.Requests[i].UpdatedAt = now.Format(time.RFC3339)
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func markVEAccessRequestUsed(requests *digitalEmployeeAccessRequestStore, idx int, now time.Time) {
+	if requests == nil || idx < 0 || idx >= len(requests.Requests) {
+		return
+	}
+	requests.Requests[idx].Status = "used"
+	requests.Requests[idx].UpdatedAt = now.Format(time.RFC3339)
+}
+
+func veAccessRequestExpired(req digitalEmployeeAccessRequest, now time.Time) bool {
+	if strings.TrimSpace(req.ExpiresAt) == "" {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt))
+	if err != nil {
+		return false
+	}
+	return !expiresAt.After(now)
 }
 
 func normalizeVERegistryOnlineStatuses(registry *digitalEmployeeRegistry) bool {
@@ -1081,33 +1506,64 @@ func normalizeVEStringList(values []string) []string {
 		if value == "" {
 			continue
 		}
-		if _, ok := seen[value]; ok {
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[value] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, value)
 	}
 	return out
 }
 
 func veAccessAllowed(entry digitalEmployeeEntry, requesterUserID string) bool {
+	if containsVEValue(entry.Blacklist, requesterUserID) {
+		return false
+	}
 	switch entry.AccessPolicy {
 	case "whitelist":
 		return containsVEValue(entry.Whitelist, requesterUserID)
 	case "blacklist":
-		return !containsVEValue(entry.Blacklist, requesterUserID)
+		return true
+	case "per_request":
+		return true
 	default:
 		return true
 	}
 }
 
+func veRequesterAccessID(principal *auth.MachinePrincipal) string {
+	if principal == nil {
+		return ""
+	}
+	if userID := strings.TrimSpace(principal.UserID); userID != "" {
+		return userID
+	}
+	return strings.TrimSpace(principal.MachineID)
+}
+
 func containsVEValue(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
 	for _, value := range values {
-		if value == target {
+		if strings.EqualFold(strings.TrimSpace(value), target) {
 			return true
 		}
 	}
 	return false
+}
+
+func removeVEValue(values []string, target string) []string {
+	target = strings.TrimSpace(target)
+	out := values[:0]
+	for _, value := range values {
+		if !strings.EqualFold(strings.TrimSpace(value), target) {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func countVEByStatus(employees []digitalEmployeeEntry, status string) int {

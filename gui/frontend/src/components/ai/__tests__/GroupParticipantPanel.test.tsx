@@ -71,6 +71,25 @@ describe("GroupParticipantPanel", () => {
         });
         expect(screen.getByTestId("participant-status-ve-1").style.background).toBe("rgb(107, 114, 128)");
     });
+
+    it("accepts nested employee status events keyed by machine id", () => {
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        act(() => {
+            for (const handler of eventHandlers.get("ve:status_change") || []) {
+                handler({ payload: { employee: { id: "profile-1", machine_id: "machine-1", online_status: "offline" } } });
+            }
+        });
+
+        expect(screen.getByTestId("participant-status-machine-1").style.background).toBe("rgb(107, 114, 128)");
+    });
+
     it("shows type icons for remote and local participants", () => {
         render(
             <GroupParticipantPanel

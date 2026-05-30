@@ -30,6 +30,7 @@ func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) strin
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Search \"%s\" — %d results:\n\n", query, len(results)))
+	sb.WriteString("Use these search results as web evidence. Cite title/URL/snippet, and call web_fetch on a result URL before making precise claims that require page-level verification.\n\n")
 	for i, r := range results {
 		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.URL))
 		if r.Snippet != "" {
@@ -72,6 +73,7 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 	end := start + len([]rune(result.Content))
 
 	var sb strings.Builder
+	sb.WriteString("Fetched web evidence. Cite the URL/title for any factual claim based on this content; if this page does not state the fact, say it is not confirmed by this source.\n")
 	if result.Title != "" {
 		sb.WriteString(fmt.Sprintf("Title: %s\n", result.Title))
 	}

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react';
 import { MAX_FAVORITE_EMPLOYEES } from '../settings/favoriteEmployees';
 
 export interface FavoriteEmployeeSlot {
@@ -11,8 +11,63 @@ export interface FavoriteEmployeeSlot {
 interface FavoriteEmployeeButtonsProps {
     slots: FavoriteEmployeeSlot[];
     veAuthorized: boolean;
+    lang?: string;
     onStartConversation: (veId: string) => void;
     onReorder: (newOrder: string[]) => void;
+    onRemove?: (veId: string) => void;
+    onRename?: (veId: string, name: string) => void | Promise<void>;
+}
+
+const labels = {
+    en: {
+        rename: 'Rename',
+        remove: 'Remove',
+        renameTitle: 'Rename digital employee',
+        nameLabel: 'Display name',
+        cancel: 'Cancel',
+        save: 'Save',
+        saveFailed: 'Rename failed. Please try again.',
+        offline: 'offline',
+    },
+    zhHans: {
+        rename: '\u6539\u540d',
+        remove: '\u79fb\u9664',
+        renameTitle: '\u6539\u540d\u6570\u5b57\u5458\u5de5',
+        nameLabel: '\u663e\u793a\u540d\u79f0',
+        cancel: '\u53d6\u6d88',
+        save: '\u4fdd\u5b58',
+        saveFailed: '\u6539\u540d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002',
+        offline: '\u79bb\u7ebf',
+    },
+    zhHant: {
+        rename: '\u6539\u540d',
+        remove: '\u79fb\u9664',
+        renameTitle: '\u6539\u540d\u6578\u5b57\u54e1\u5de5',
+        nameLabel: '\u986f\u793a\u540d\u7a31',
+        cancel: '\u53d6\u6d88',
+        save: '\u5132\u5b58',
+        saveFailed: '\u6539\u540d\u5931\u6557\uff0c\u8acb\u91cd\u8a66\u3002',
+        offline: '\u96e2\u7dda',
+    },
+};
+
+const MENU_WIDTH = 120;
+const MENU_HEIGHT = 100;
+const MENU_MARGIN = 8;
+
+function favoriteLabels(lang?: string) {
+    if (lang === 'zh-Hans' || lang === 'zh') return labels.zhHans;
+    if (lang === 'zh-Hant') return labels.zhHant;
+    return labels.en;
+}
+
+function clampMenuPosition(x: number, y: number) {
+    const viewportWidth = window.innerWidth || 0;
+    const viewportHeight = window.innerHeight || 0;
+    return {
+        x: Math.max(MENU_MARGIN, Math.min(x, Math.max(MENU_MARGIN, viewportWidth - MENU_WIDTH - MENU_MARGIN))),
+        y: Math.max(MENU_MARGIN, Math.min(y, Math.max(MENU_MARGIN, viewportHeight - MENU_HEIGHT - MENU_MARGIN))),
+    };
 }
 
 // Generate a stable hue from a string so each employee gets a unique avatar color.
@@ -45,14 +100,49 @@ function avatarInitials(name: string): string {
     return trimmed.slice(0, 2).toUpperCase();
 }
 
-export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversation, onReorder }: FavoriteEmployeeButtonsProps) {
+export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConversation, onReorder, onRemove, onRename }: FavoriteEmployeeButtonsProps) {
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; slot: FavoriteEmployeeSlot } | null>(null);
+    const [renamingSlot, setRenamingSlot] = useState<FavoriteEmployeeSlot | null>(null);
+    const [renameValue, setRenameValue] = useState('');
+    const [renameSaving, setRenameSaving] = useState(false);
+    const [renameError, setRenameError] = useState('');
     const dragSourceIndex = useRef<number | null>(null);
     const didDrag = useRef(false);
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const mountedRef = useRef(true);
+    const text = favoriteLabels(lang);
+
+    useEffect(() => {
+        return () => { mountedRef.current = false; };
+    }, []);
+
+    useEffect(() => {
+        if (!contextMenu && !renamingSlot) return;
+        const handlePointerDown = () => setContextMenu(null);
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setContextMenu(null);
+                if (!renameSaving) setRenamingSlot(null);
+            }
+        };
+        window.addEventListener('pointerdown', handlePointerDown);
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            window.removeEventListener('pointerdown', handlePointerDown);
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [contextMenu, renamingSlot, renameSaving]);
+
+    useEffect(() => {
+        if (!renamingSlot) return;
+        const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
+        return () => window.clearTimeout(timer);
+    }, [renamingSlot]);
 
     if (!veAuthorized || slots.length === 0) return null;
 
-    const handleDragStart = (index: number) => (e: React.DragEvent) => {
+    const handleDragStart = (index: number) => (e: DragEvent) => {
         dragSourceIndex.current = index;
         didDrag.current = true;
         if (e.dataTransfer) {
@@ -61,13 +151,13 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
         }
     };
 
-    const handleDragOver = (index: number) => (e: React.DragEvent) => {
+    const handleDragOver = (index: number) => (e: DragEvent) => {
         e.preventDefault();
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
         setDragOverIndex(index);
     };
 
-    const handleDrop = (targetIndex: number) => (e: React.DragEvent) => {
+    const handleDrop = (targetIndex: number) => (e: DragEvent) => {
         e.preventDefault();
         setDragOverIndex(null);
         const sourceIndex = dragSourceIndex.current;
@@ -92,6 +182,39 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
         onStartConversation(veId);
     };
 
+    const handleContextMenu = (slot: FavoriteEmployeeSlot) => (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setContextMenu({ ...clampMenuPosition(e.clientX, e.clientY), slot });
+    };
+
+    const openRenameDialog = (slot: FavoriteEmployeeSlot) => {
+        setContextMenu(null);
+        setRenamingSlot(slot);
+        setRenameValue(slot.name);
+        setRenameSaving(false);
+        setRenameError('');
+    };
+
+    const saveRename = async () => {
+        if (!renamingSlot || renameSaving) return;
+        const nextName = renameValue.trim();
+        if (!nextName) return;
+        setRenameSaving(true);
+        setRenameError('');
+        try {
+            await onRename?.(renamingSlot.veId, nextName);
+            if (!mountedRef.current) return;
+            setRenamingSlot(null);
+        } catch (error) {
+            if (!mountedRef.current) return;
+            console.error('Failed to rename favorite digital employee:', error);
+            setRenameError(text.saveFailed);
+        } finally {
+            if (mountedRef.current) setRenameSaving(false);
+        }
+    };
+
     const isFull = slots.length >= MAX_FAVORITE_EMPLOYEES;
 
     return (
@@ -107,7 +230,8 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                     onDrop={handleDrop(index)}
                     onDragEnd={handleDragEnd}
                     onClick={handleClick(slot.veId)}
-                    aria-label={`${slot.name}${slot.online ? '' : ' offline'}`}
+                    onContextMenu={handleContextMenu(slot)}
+                    aria-label={`${slot.name}${slot.online ? '' : ` ${text.offline}`}`}
                     title={`${slot.name}${slot.skillDescription ? '\n' + slot.skillDescription : ''}`}
                     style={{
                         display: 'flex',
@@ -139,7 +263,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                             fontSize: '11px',
                             fontWeight: 700,
                             color: '#fff',
-                            letterSpacing: '-0.5px',
+                            letterSpacing: 0,
                         }}>
                             {avatarInitials(slot.name)}
                         </div>
@@ -170,7 +294,118 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                     </span>
                 </button>
             ))}
-            {/* Separator when at full capacity — visually separates employees from system buttons below */}
+            {contextMenu && (
+                <div
+                    role="menu"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    style={{
+                        position: 'fixed',
+                        left: contextMenu.x,
+                        top: contextMenu.y,
+                        minWidth: MENU_WIDTH,
+                        zIndex: 4000,
+                        padding: '6px',
+                        borderRadius: 8,
+                        border: '1px solid var(--theme-border)',
+                        background: 'var(--theme-surface, var(--theme-page-bg))',
+                        boxShadow: '0 10px 28px rgba(15, 23, 42, 0.18)',
+                    }}
+                >
+                    <button type="button" role="menuitem" onClick={() => openRenameDialog(contextMenu.slot)} style={menuItemStyle}>
+                        {text.rename}
+                    </button>
+                    <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                            onRemove?.(contextMenu.slot.veId);
+                            setContextMenu(null);
+                        }}
+                        style={{ ...menuItemStyle, color: 'var(--theme-danger, #dc2626)' }}
+                    >
+                        {text.remove}
+                    </button>
+                </div>
+            )}
+            {renamingSlot && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="favorite-employee-rename-title"
+                    onPointerDown={() => { if (!renameSaving) setRenamingSlot(null); }}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        zIndex: 4100,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'rgba(15, 23, 42, 0.32)',
+                    }}
+                >
+                    <form
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onSubmit={(e) => { e.preventDefault(); void saveRename(); }}
+                        style={{
+                            width: 'min(360px, calc(100vw - 32px))',
+                            padding: '18px',
+                            borderRadius: 8,
+                            border: '1px solid var(--theme-border)',
+                            background: 'var(--theme-page-bg)',
+                            boxShadow: '0 18px 44px rgba(15, 23, 42, 0.24)',
+                        }}
+                    >
+                        <h2 id="favorite-employee-rename-title" style={{ margin: '0 0 14px', fontSize: 16, lineHeight: 1.3, color: 'var(--theme-text-primary)' }}>
+                            {text.renameTitle}
+                        </h2>
+                        <label style={{ display: 'grid', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--theme-text-primary)' }}>
+                            {text.nameLabel}
+                            <input
+                                ref={inputRef}
+                                value={renameValue}
+                                disabled={renameSaving}
+                                aria-invalid={renameError ? 'true' : undefined}
+                                aria-describedby={renameError ? 'favorite-employee-rename-error' : undefined}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                maxLength={32}
+                                style={{
+                                    height: 44,
+                                    borderRadius: 8,
+                                    border: '1px solid var(--theme-border)',
+                                    padding: '0 10px',
+                                    background: 'var(--theme-surface, #fff)',
+                                    color: 'var(--theme-text-primary)',
+                                    font: 'inherit',
+                                }}
+                            />
+                            {renameError && (
+                                <span id="favorite-employee-rename-error" role="alert" style={{ color: 'var(--theme-danger, #dc2626)', fontSize: 12, lineHeight: 1.4 }}>
+                                    {renameError}
+                                </span>
+                            )}
+                        </label>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+                            <button type="button" onClick={() => setRenamingSlot(null)} disabled={renameSaving} style={{ ...dialogButtonStyle, opacity: renameSaving ? 0.55 : 1 }}>
+                                {text.cancel}
+                            </button>
+                            <button
+                                type="submit"
+                                disabled={!renameValue.trim() || renameSaving}
+                                style={{
+                                    ...dialogButtonStyle,
+                                    borderColor: 'var(--theme-primary)',
+                                    background: 'var(--theme-primary)',
+                                    color: '#fff',
+                                    opacity: renameValue.trim() && !renameSaving ? 1 : 0.55,
+                                }}
+                            >
+                                {text.save}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
+            {/* Separator when the rail is full. */}
             {isFull && (
                 <div style={{
                     width: '24px',
@@ -184,3 +419,29 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
         </div>
     );
 }
+
+const menuItemStyle: CSSProperties = {
+    width: '100%',
+    minHeight: 44,
+    border: 0,
+    borderRadius: 6,
+    padding: '0 10px',
+    background: 'transparent',
+    color: 'var(--theme-text-primary)',
+    textAlign: 'left',
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: 13,
+};
+
+const dialogButtonStyle: CSSProperties = {
+    minWidth: 72,
+    minHeight: 44,
+    borderRadius: 8,
+    border: '1px solid var(--theme-border)',
+    background: 'var(--theme-surface, transparent)',
+    color: 'var(--theme-text-primary)',
+    font: 'inherit',
+    fontWeight: 700,
+    cursor: 'pointer',
+};

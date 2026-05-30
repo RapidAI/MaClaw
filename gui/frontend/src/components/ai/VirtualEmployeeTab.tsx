@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
+export { safeAvatarDataURL } from "./virtualEmployeeAvatar";
+import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
 // --- Types ---
 
@@ -10,6 +12,7 @@ export interface VirtualEmployeeEntry {
     machine_id?: string;
     name: string;
     skill_description: string;
+    avatar_data_url?: string;
     access_policy: "public" | "whitelist" | "blacklist" | "per_request";
     status: string;
     online_status: "online" | "offline";
@@ -57,6 +60,46 @@ export function policyIcon(policy: string): string {
         case "per_request": return "\u{1F512}";
         default: return "\u2753";
     }
+}
+
+function EmployeeAvatar({ ve, displayName }: { ve: VirtualEmployeeEntry; displayName: string }) {
+    const avatarDataURL = safeAvatarDataURL(ve.avatar_data_url);
+    if (avatarDataURL) {
+        return (
+            <img
+                src={avatarDataURL}
+                alt=""
+                style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+            />
+        );
+    }
+    return (
+        <span
+            aria-hidden="true"
+            style={{
+                width: 28,
+                height: 28,
+                borderRadius: "50%",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                background: "rgba(99, 102, 241, 0.12)",
+                color: "#6366f1",
+                fontSize: 11,
+                fontWeight: 700,
+            }}
+        >
+            {displayName.trim().slice(0, 1).toUpperCase() || "D"}
+        </span>
+    );
+}
+
+function isFavoriteEmployee(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id">, favoriteEmployeeIds: string[] | undefined): boolean {
+    if (!favoriteEmployeeIds?.length) return false;
+    const id = String(ve.id || "").trim();
+    const machineId = String(ve.machine_id || "").trim();
+    return favoriteEmployeeIds.some((favoriteId) => favoriteId === id || favoriteId === machineId);
 }
 
 // --- Component ---
@@ -248,17 +291,23 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                 >
-                    {/* Online status indicator */}
-                    <span
-                        data-testid={`ve-status-${ve.id}`}
-                        style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            flexShrink: 0,
-                            background: ve.online_status === "online" ? "#22c55e" : "#9ca3af",
-                        }}
-                    />
+                    <span style={{ position: "relative", width: 28, height: 28, flexShrink: 0 }}>
+                        <EmployeeAvatar ve={ve} displayName={displayName} />
+                        <span
+                            data-testid={`ve-status-${ve.id}`}
+                            style={{
+                                position: "absolute",
+                                right: -1,
+                                bottom: -1,
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                background: ve.online_status === "online" ? "#22c55e" : "#9ca3af",
+                                border: `1.5px solid ${theme.bg}`,
+                                boxSizing: "border-box",
+                            }}
+                        />
+                    </span>
 
                     {/* Name + skill description */}
                     <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
@@ -280,7 +329,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                         whiteSpace: "nowrap",
                                     }}
                                 >
-                                    {isZh ? "\u9700\u6388\u6743" : "Auth"}
+                                    {isZh ? "待确认" : "Confirm"}
                                 </span>
                             )}
                         </div>
@@ -294,7 +343,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
             {/* Context menu */}
             {contextMenu && (() => {
-                const isFav = favoriteEmployeeIds?.includes(contextMenu.ve.id);
+                const isFav = isFavoriteEmployee(contextMenu.ve, favoriteEmployeeIds);
                 const hasFavAction = !!(onSetFavorite || onRemoveFavorite);
                 return (
                 <div

@@ -30,11 +30,25 @@ function Invoke-JsonGet {
 function Invoke-StatusGet {
     param(
         [string]$Url,
-        [hashtable]$Headers = @{}
+        [hashtable]$Headers = @{},
+        [string]$Method = 'Get',
+        [string]$Body = $null,
+        [string]$ContentType = 'application/json'
     )
 
     try {
-        $response = Invoke-WebRequest -Uri $Url -Method Get -Headers $Headers -TimeoutSec $TimeoutSec -UseBasicParsing
+        $args = @{
+            Uri = $Url
+            Method = $Method
+            Headers = $Headers
+            TimeoutSec = $TimeoutSec
+            UseBasicParsing = $true
+        }
+        if (-not [string]::IsNullOrEmpty($Body) -and $Method -notin @('Get', 'Head')) {
+            $args.Body = $Body
+            $args.ContentType = $ContentType
+        }
+        $response = Invoke-WebRequest @args
         return [int]$response.StatusCode
     }
     catch {
@@ -71,6 +85,7 @@ foreach ($center in $centers) {
         quality_score   = ""
         routable        = ""
         endpoints_count = ""
+        hub_action_auth = ""
         ha_auth         = ""
         error           = ""
     }
@@ -108,6 +123,14 @@ foreach ($center in $centers) {
         else {
             $row.ha_auth = "unexpected:$haUnauthorized"
         }
+
+        $hubActionUnauthorized = Invoke-StatusGet -Url ($center + "/api/admin/hubs/registration-policy") -Method Post -Body '{"hub_id":"smoke"}'
+        if ($hubActionUnauthorized -eq 401) {
+            $row.hub_action_auth = "unauthorized-ok"
+        }
+        else {
+            $row.hub_action_auth = "unexpected:$hubActionUnauthorized"
+        }
     }
     catch {
         $row.error = (($_ | Out-String).Trim())
@@ -123,6 +146,7 @@ $failed = @($results | Where-Object {
     $_.quality_status -eq "" -or
     $_.routable -ne $true -or
     [int]$_.endpoints_count -lt 3 -or
+    $_.hub_action_auth -ne "unauthorized-ok" -or
     ($_.ha_auth -ne "unauthorized-ok" -and $_.ha_auth -ne "unauthorized:401;authorized:200") -or
     $_.error -ne ""
 })

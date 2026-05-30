@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ import (
 const (
 	veSessionActiveValidationTTL = 30 * time.Second
 	veDiscoverableCacheTTL       = 10 * time.Second
+	veAvatarImageMaxBytes        = 1024 * 1024
+	veAvatarDataURLMaxLength     = len("data:image/jpeg;base64,") + ((veAvatarImageMaxBytes+2)/3)*4
 )
 
 type veDiscoverableCacheEntry struct {
@@ -34,6 +37,7 @@ type VirtualEmployeeEntry struct {
 	MachineID        string   `json:"machine_id,omitempty"`
 	Name             string   `json:"name"`
 	SkillDescription string   `json:"skill_description"`
+	AvatarDataURL    string   `json:"avatar_data_url,omitempty"`
 	AccessPolicy     string   `json:"access_policy"`
 	Status           string   `json:"status"`
 	OnlineStatus     string   `json:"online_status"`
@@ -56,9 +60,13 @@ type VESessionInfo struct {
 }
 
 // RegisterVirtualEmployee submits a VE registration request to the Hub.
-func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []string) error {
+func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []string, avatarDataURL string) error {
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
+		return err
+	}
+	avatarDataURL = strings.TrimSpace(avatarDataURL)
+	if err := validateVEAvatarDataURL(avatarDataURL); err != nil {
 		return err
 	}
 
@@ -66,6 +74,7 @@ func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []str
 		"name":              strings.TrimSpace(name),
 		"skill_description": strings.TrimSpace(skillDesc),
 		"access_policy":     strings.TrimSpace(policy),
+		"avatar_data_url":   avatarDataURL,
 	}
 	if policy == "whitelist" {
 		body["whitelist"] = list
@@ -83,9 +92,13 @@ func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []str
 }
 
 // UpdateVESettings updates the VE's name, skill description, and access policy.
-func (a *App) UpdateVESettings(name, skillDesc, policy string, list []string) error {
+func (a *App) UpdateVESettings(name, skillDesc, policy string, list []string, avatarDataURL string) error {
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
+		return err
+	}
+	avatarDataURL = strings.TrimSpace(avatarDataURL)
+	if err := validateVEAvatarDataURL(avatarDataURL); err != nil {
 		return err
 	}
 
@@ -93,6 +106,7 @@ func (a *App) UpdateVESettings(name, skillDesc, policy string, list []string) er
 		"name":              strings.TrimSpace(name),
 		"skill_description": strings.TrimSpace(skillDesc),
 		"access_policy":     strings.TrimSpace(policy),
+		"avatar_data_url":   avatarDataURL,
 	}
 	if policy == "whitelist" {
 		body["whitelist"] = list
@@ -107,6 +121,36 @@ func (a *App) UpdateVESettings(name, skillDesc, policy string, list []string) er
 	a.emitEvent("ve:list_update", nil)
 	a.emitEvent("ve:status_change", nil)
 	a.emitDigitalEmployeeFeatureStatusChanged()
+	return nil
+}
+
+func validateVEAvatarDataURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > veAvatarDataURLMaxLength {
+		return fmt.Errorf("avatar image is too large")
+	}
+	lower := strings.ToLower(value)
+	declaredType := ""
+	switch {
+	case strings.HasPrefix(lower, "data:image/png;base64,"):
+		declaredType = "image/png"
+	case strings.HasPrefix(lower, "data:image/jpeg;base64,"), strings.HasPrefix(lower, "data:image/jpg;base64,"):
+		declaredType = "image/jpeg"
+	case strings.HasPrefix(lower, "data:image/webp;base64,"):
+		declaredType = "image/webp"
+	default:
+		return fmt.Errorf("avatar image must be a PNG, JPEG, or WebP data URL")
+	}
+	comma := strings.Index(value, ",")
+	if comma < 0 || comma == len(value)-1 {
+		return fmt.Errorf("avatar image must be a PNG, JPEG, or WebP data URL")
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value[comma+1:])
+	if err != nil || len(decoded) > veAvatarImageMaxBytes || http.DetectContentType(decoded) != declaredType {
+		return fmt.Errorf("avatar image must be a valid PNG, JPEG, or WebP data URL")
+	}
 	return nil
 }
 
@@ -164,14 +208,17 @@ func (a *App) InitiateVEConversation(veID string) (*VESessionInfo, error) {
 		return nil, fmt.Errorf("veID is required")
 	}
 
-	hubURL, token, err := a.getHubCredentials()
-	if err != nil {
-		return nil, err
-	}
-
 	// Try to find an existing active session with this VE first.
 	if info := a.findActiveVESession(veID); info != nil {
 		return info, nil
+	}
+	if info := a.findCachedVEDirectSession(veID); info != nil {
+		return info, nil
+	}
+
+	hubURL, token, err := a.getHubCredentials()
+	if err != nil {
+		return nil, err
 	}
 
 	// No active session found; create a new one.
@@ -183,6 +230,17 @@ func (a *App) InitiateVEConversation(veID string) (*VESessionInfo, error) {
 	var info VESessionInfo
 	if err := json.Unmarshal(data, &info); err != nil {
 		return nil, fmt.Errorf("decode session info: %w", err)
+	}
+	if strings.TrimSpace(info.SessionID) == "" {
+		var pending struct {
+			Status    string `json:"status"`
+			RequestID string `json:"request_id"`
+		}
+		_ = json.Unmarshal(data, &pending)
+		if strings.TrimSpace(pending.Status) == "pending_confirmation" {
+			return nil, fmt.Errorf("pending_confirmation")
+		}
+		return nil, fmt.Errorf("create session: missing session id")
 	}
 
 	// Cache the new session for future lookups.
@@ -976,8 +1034,10 @@ func (a *App) RespondAuthRequest(requestID, decision string) error {
 	if requestID == "" {
 		return fmt.Errorf("requestID is required")
 	}
-	if decision != "allow" && decision != "deny" {
-		return fmt.Errorf("decision must be 'allow' or 'deny'")
+	switch decision {
+	case "allow", "allow_once", "allow_long", "deny", "block":
+	default:
+		return fmt.Errorf("decision must be 'allow_once', 'allow_long', 'allow', 'deny', or 'block'")
 	}
 
 	hubURL, token, err := a.getHubCredentials()
@@ -1283,6 +1343,112 @@ func (a *App) findActiveVESession(veID string) *VESessionInfo {
 		SessionID: sessionID,
 		VEID:      veID,
 	}
+}
+
+func (a *App) findCachedVEDirectSession(veID string) *VESessionInfo {
+	veID = strings.TrimSpace(veID)
+	if veID == "" {
+		return nil
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil
+	}
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if localID == "" {
+		return nil
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return nil
+	}
+	defer store.Close()
+	summaries, err := store.CachedSummaries(ctx, false)
+	if err != nil || len(summaries) == 0 {
+		return nil
+	}
+	targetIDs := baseVEDirectSessionCandidateIDs(veID)
+	if info := a.findCachedVEDirectSessionWithCandidates(summaries, localID, veID, targetIDs); info != nil {
+		return info
+	}
+	if a.addDiscoverableVEDirectSessionCandidateIDs(cfg, veID, targetIDs) {
+		if info := a.findCachedVEDirectSessionWithCandidates(summaries, localID, veID, targetIDs); info != nil {
+			return info
+		}
+	}
+	return nil
+}
+
+func (a *App) findCachedVEDirectSessionWithCandidates(summaries []a2a.HubDiscussionSummary, localID, veID string, targetIDs map[string]struct{}) *VESessionInfo {
+	for _, summary := range summaries {
+		if !isCachedVEDirectSessionMatch(summary, localID, targetIDs) {
+			continue
+		}
+		a.cacheVESession(veID, summary.ID)
+		for _, participantID := range summary.ParticipantIDs {
+			participantID = strings.TrimSpace(participantID)
+			if participantID != "" && !strings.EqualFold(participantID, localID) {
+				a.cacheVESession(participantID, summary.ID)
+				a.cacheVESession(virtualEmployeeIDForMachine(participantID), summary.ID)
+			}
+		}
+		return &VESessionInfo{SessionID: summary.ID, VEID: veID}
+	}
+	return nil
+}
+
+func baseVEDirectSessionCandidateIDs(veID string) map[string]struct{} {
+	return lowerStringSet([]string{veID, virtualEmployeeIDForMachine(veID)})
+}
+
+func (a *App) addDiscoverableVEDirectSessionCandidateIDs(cfg corelib.AppConfig, veID string, candidates map[string]struct{}) bool {
+	before := len(candidates)
+	if hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/"); hubURL != "" {
+		if employees, err := a.loadDiscoverableVEEntries(hubURL, strings.TrimSpace(cfg.RemoteMachineToken)); err == nil {
+			for _, employee := range employees {
+				if strings.EqualFold(strings.TrimSpace(employee.ID), veID) || strings.EqualFold(strings.TrimSpace(employee.MachineID), veID) {
+					for _, id := range []string{employee.ID, employee.MachineID, virtualEmployeeIDForMachine(employee.MachineID)} {
+						id = strings.ToLower(strings.TrimSpace(id))
+						if id != "" {
+							candidates[id] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+	}
+	return len(candidates) > before
+}
+
+func isCachedVEDirectSessionMatch(summary a2a.HubDiscussionSummary, localID string, targetIDs map[string]struct{}) bool {
+	if strings.TrimSpace(summary.ID) == "" || !normalizeGroupDiscussionSessionStatus(summary.Status).IsOpen() {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(summary.LocalRelation), "initiated_by_me") && strings.TrimSpace(summary.LocalRelation) != "" {
+		return false
+	}
+	if len(summary.ParticipantIDs) != 2 {
+		return false
+	}
+	hasLocal := false
+	hasTarget := false
+	for _, participantID := range summary.ParticipantIDs {
+		participantID = strings.TrimSpace(participantID)
+		if strings.EqualFold(participantID, localID) {
+			hasLocal = true
+			continue
+		}
+		if _, ok := targetIDs[strings.ToLower(participantID)]; ok {
+			hasTarget = true
+			continue
+		}
+		if _, ok := targetIDs[strings.ToLower(virtualEmployeeIDForMachine(participantID))]; ok {
+			hasTarget = true
+		}
+	}
+	return hasLocal && hasTarget
 }
 
 // findActiveGroupSession checks the local cache for a group session.

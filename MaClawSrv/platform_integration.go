@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,8 +20,11 @@ import (
 )
 
 const (
-	platformHubLLMProviderName = "hub-llm"
-	platformHubLLMModel        = "auto"
+	platformHubLLMProviderName   = "hub-llm"
+	platformHubLLMModel          = "auto"
+	platformAvatarImageMaxBytes  = 1024 * 1024
+	platformAvatarDataURLMaxSize = len("data:image/jpeg;base64,") + ((platformAvatarImageMaxBytes+2)/3)*4
+	platformJSONBodyMaxBytes     = int64(platformAvatarDataURLMaxSize + 512*1024)
 )
 
 func (s *HTTPServer) withPlatformAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -65,6 +69,7 @@ type platformVirtualEmployeeRequest struct {
 	VirtualEmail      string                  `json:"virtual_email"`
 	SkillDescription  string                  `json:"skill_description"`
 	SkillTags         platformSkillTags       `json:"skill_tags"`
+	AvatarDataURL     string                  `json:"avatar_data_url"`
 	DefaultLLM        string                  `json:"default_llm"`
 	LLMServiceGroupID string                  `json:"llm_service_group_id"`
 	HubLLMEndpoint    string                  `json:"hub_llm_endpoint"`
@@ -247,6 +252,12 @@ func (s *HTTPServer) handlePlatformCreateVirtualEmployee(w http.ResponseWriter, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "employee_id is required"})
 		return
 	}
+	avatarDataURL, err := normalizePlatformAvatarDataURL(in.AvatarDataURL)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid avatar_data_url", "detail": err.Error()})
+		return
+	}
+	in.AvatarDataURL = avatarDataURL
 	runtimeTenantKey := firstPlatformNonEmpty(in.TenantID, in.PlatformTenantID, "default")
 	tenant, err := s.findOrCreatePlatformTenant(r, runtimeTenantKey, in)
 	if err != nil {
@@ -472,6 +483,56 @@ func platformLLMCredential(in platformVirtualEmployeeRequest) string {
 	return firstPlatformNonEmpty(in.HubLLMViewerToken, in.ViewerToken, in.AccessToken, in.HubLLMAPIKey)
 }
 
+func normalizePlatformAvatarDataURL(value string) (string, error) {
+	avatarDataURL := strings.TrimSpace(value)
+	if avatarDataURL == "" {
+		return "", nil
+	}
+	if len(avatarDataURL) > platformAvatarDataURLMaxSize {
+		return "", fmt.Errorf("avatar image is too large")
+	}
+	valid, tooLarge := validatePlatformAvatarDataURL(avatarDataURL)
+	if tooLarge {
+		return "", fmt.Errorf("avatar image is too large")
+	}
+	if !valid {
+		return "", fmt.Errorf("avatar image must be a PNG, JPEG, or WebP data URL")
+	}
+	return avatarDataURL, nil
+}
+
+func isValidPlatformAvatarDataURL(value string) bool {
+	valid, _ := validatePlatformAvatarDataURL(value)
+	return valid
+}
+
+func validatePlatformAvatarDataURL(value string) (bool, bool) {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	declaredType := ""
+	switch {
+	case strings.HasPrefix(lower, "data:image/png;base64,"):
+		declaredType = "image/png"
+	case strings.HasPrefix(lower, "data:image/jpeg;base64,"), strings.HasPrefix(lower, "data:image/jpg;base64,"):
+		declaredType = "image/jpeg"
+	case strings.HasPrefix(lower, "data:image/webp;base64,"):
+		declaredType = "image/webp"
+	default:
+		return false, false
+	}
+	comma := strings.Index(value, ",")
+	if comma < 0 || comma == len(value)-1 {
+		return false, false
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value[comma+1:])
+	if err != nil {
+		return false, false
+	}
+	if len(decoded) > platformAvatarImageMaxBytes {
+		return false, true
+	}
+	return http.DetectContentType(decoded) == declaredType, false
+}
+
 func (s *HTTPServer) handlePlatformUpdateVirtualEmployeeConfig(w http.ResponseWriter, r *http.Request) {
 	employeeID := strings.TrimSpace(r.PathValue("employeeId"))
 	if employeeID == "" {
@@ -482,10 +543,20 @@ func (s *HTTPServer) handlePlatformUpdateVirtualEmployeeConfig(w http.ResponseWr
 		TenantID         string                  `json:"tenant_id"`
 		PlatformTenantID string                  `json:"platform_tenant_id"`
 		VirtualEmail     string                  `json:"virtual_email"`
+		AvatarDataURL    *string                 `json:"avatar_data_url"`
 		MaclawSrvConfig  platformMaclawSrvConfig `json:"maclawsrv_config"`
 	}
 	if !decodePlatformJSON(w, r, &in) {
 		return
+	}
+	var avatarDataURL string
+	if in.AvatarDataURL != nil {
+		var err error
+		avatarDataURL, err = normalizePlatformAvatarDataURL(*in.AvatarDataURL)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid avatar_data_url", "detail": err.Error()})
+			return
+		}
 	}
 	if platformRuntimeRequestHubTenantID(r) == "" && strings.TrimSpace(in.TenantID) != "" {
 		r = cloneRequestWithHeader(r, "X-VE-Hub-Tenant-ID", strings.TrimSpace(in.TenantID))
@@ -510,6 +581,15 @@ func (s *HTTPServer) handlePlatformUpdateVirtualEmployeeConfig(w http.ResponseWr
 	if err := s.updatePlatformUserMaclawSrvConfig(r, principal, in.MaclawSrvConfig); err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
+	}
+	if in.AvatarDataURL != nil {
+		metadata := mergePlatformInstanceMetadata(binding.Instance.Metadata, map[string]string{"ve_avatar_data_url": avatarDataURL})
+		if !stringMapEqual(binding.Instance.Metadata, metadata) {
+			if _, err := s.svc.UpdateInstance(r.Context(), principal, binding.Instance.ID, agentservice.UpdateInstanceInput{Metadata: metadata}); err != nil {
+				writeRedactedError(w, err, s.svc.DataRoot())
+				return
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "employee_id": employeeID, "tenant_id": binding.Tenant.ID, "user_id": binding.User.ID})
 }
@@ -1776,6 +1856,7 @@ func platformInstanceMetadata(in platformVirtualEmployeeRequest) map[string]stri
 		"ve_employee_id":        strings.TrimSpace(in.EmployeeID),
 		"ve_name":               strings.TrimSpace(in.Name),
 		"ve_handle":             strings.TrimSpace(in.Handle),
+		"ve_avatar_data_url":    strings.TrimSpace(in.AvatarDataURL),
 		"ve_skill_description":  strings.TrimSpace(in.SkillDescription),
 		"ve_skill_tags":         strings.Join(cleanPlatformSkillTags(in.SkillTags), ", "),
 		"ve_platform_tenant_id": strings.TrimSpace(in.PlatformTenantID),
@@ -1895,7 +1976,7 @@ func firstPlatformNonEmpty(values ...string) string {
 
 func decodePlatformJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, platformJSONBodyMaxBytes)
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(out); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body", "detail": err.Error()})

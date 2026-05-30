@@ -166,7 +166,8 @@ export function usePendingAssistantTabOpen({
 
     useEffect(() => {
         if (!pendingVEOpen) return;
-        createVETab(pendingVEOpen.id, pendingVEOpen.name, undefined, pendingVEOpen.online_status);
+        const participantId = String(pendingVEOpen.machine_id || pendingVEOpen.id || '').trim();
+        createVETab(participantId || pendingVEOpen.id, pendingVEOpen.name, undefined, pendingVEOpen.online_status);
         onPendingVEOpenHandled?.();
     }, [createVETab, onPendingVEOpenHandled, pendingVEOpen]);
 

@@ -1,5 +1,5 @@
-// source_control.go provides skill source access control with three-level
-// resolution: User > Tenant > Global > Default (all allowed).
+// source_control.go provides skill source access control with four-level
+// resolution: Tenant User > User > Tenant > Global > Default (all allowed).
 //
 // This lives in corelib/skill so it can be consumed by both:
 //   - hub (maclawsrv via hub/internal/httpapi)
@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -27,7 +28,7 @@ type KVStore interface {
 
 // AllSkillSources is the canonical list of valid skill source identifiers.
 // This is the single source of truth — all other packages reference this.
-var AllSkillSources = []string{"skillhub", "clawhub", "github", "enterprise_hub"}
+var AllSkillSources = []string{"skillhub", "clawhub", "github", "enterprise_hub", "local"}
 
 // SourceControlConfig represents the allowed sources at one level.
 type SourceControlConfig struct {
@@ -40,31 +41,34 @@ type SourceControlConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
-// SourceControlService manages skill source access control at three levels.
+// SourceControlService manages skill source access control by global, tenant,
+// global user, and tenant-scoped runtime user overrides.
 // Thread-safe. Uses in-memory cache with write-through to KVStore.
 type SourceControlService struct {
 	kv KVStore
 	mu sync.RWMutex
 	// In-memory cache. Populated on first access, updated on writes.
-	globalCache *SourceControlConfig
-	globalReady bool
-	tenantCache map[string]*SourceControlConfig
-	userCache   map[string]*SourceControlConfig
+	globalCache     *SourceControlConfig
+	globalReady     bool
+	tenantCache     map[string]*SourceControlConfig
+	userCache       map[string]*SourceControlConfig
+	tenantUserCache map[string]*SourceControlConfig
 }
 
 const (
 	srcCtlKeyGlobal     = "skill_source_control_global"
 	srcCtlKeyTenant     = "skill_source_control_tenant_"      // + tenantID
-	srcCtlKeyUser       = "skill_source_control_user_"        // + userEmail (legacy global user override)
-	srcCtlKeyTenantUser = "skill_source_control_tenant_user_" // + tenantID + ":" + userEmail
+	srcCtlKeyUser       = "skill_source_control_user_"        // + userID (legacy global user override)
+	srcCtlKeyTenantUser = "skill_source_control_tenant_user_" // + tenantID + ":" + userID
 )
 
 // NewSourceControlService creates a new service backed by the given KVStore.
 func NewSourceControlService(kv KVStore) *SourceControlService {
 	return &SourceControlService{
-		kv:          kv,
-		tenantCache: make(map[string]*SourceControlConfig),
-		userCache:   make(map[string]*SourceControlConfig),
+		kv:              kv,
+		tenantCache:     make(map[string]*SourceControlConfig),
+		userCache:       make(map[string]*SourceControlConfig),
+		tenantUserCache: make(map[string]*SourceControlConfig),
 	}
 }
 
@@ -73,7 +77,7 @@ func NewSourceControlService(kv KVStore) *SourceControlService {
 func (s *SourceControlService) GetGlobal(ctx context.Context) (*SourceControlConfig, error) {
 	s.mu.RLock()
 	if s.globalReady {
-		cfg := s.globalCache
+		cfg := cloneSourceControlConfig(s.globalCache)
 		s.mu.RUnlock()
 		return cfg, nil
 	}
@@ -83,31 +87,33 @@ func (s *SourceControlService) GetGlobal(ctx context.Context) (*SourceControlCon
 		return nil, err
 	}
 	s.mu.Lock()
-	s.globalCache = cfg
+	s.globalCache = cloneSourceControlConfig(cfg)
 	s.globalReady = true
 	s.mu.Unlock()
-	return cfg, nil
+	return cloneSourceControlConfig(cfg), nil
 }
 
 func (s *SourceControlService) SetGlobal(ctx context.Context, cfg *SourceControlConfig) error {
-	if err := ValidateSourceNames(cfg.AllowedSources); err != nil {
+	if err := validateSourceControlConfig(cfg); err != nil {
 		return err
 	}
-	if err := s.save(ctx, srcCtlKeyGlobal, cfg); err != nil {
+	stored := cloneSourceControlConfig(cfg)
+	if err := s.save(ctx, srcCtlKeyGlobal, stored); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.globalCache = cfg
+	s.globalCache = cloneSourceControlConfig(stored)
 	s.globalReady = true
 	s.mu.Unlock()
 	return nil
 }
 
 func (s *SourceControlService) GetTenant(ctx context.Context, tenantID string) (*SourceControlConfig, error) {
+	tenantID = strings.TrimSpace(tenantID)
 	s.mu.RLock()
 	if cfg, ok := s.tenantCache[tenantID]; ok {
 		s.mu.RUnlock()
-		return cfg, nil
+		return cloneSourceControlConfig(cfg), nil
 	}
 	s.mu.RUnlock()
 	cfg, err := s.load(ctx, srcCtlKeyTenant+tenantID)
@@ -115,25 +121,28 @@ func (s *SourceControlService) GetTenant(ctx context.Context, tenantID string) (
 		return nil, err
 	}
 	s.mu.Lock()
-	s.tenantCache[tenantID] = cfg
+	s.tenantCache[tenantID] = cloneSourceControlConfig(cfg)
 	s.mu.Unlock()
-	return cfg, nil
+	return cloneSourceControlConfig(cfg), nil
 }
 
 func (s *SourceControlService) SetTenant(ctx context.Context, tenantID string, cfg *SourceControlConfig) error {
-	if err := ValidateSourceNames(cfg.AllowedSources); err != nil {
+	tenantID = strings.TrimSpace(tenantID)
+	if err := validateSourceControlConfig(cfg); err != nil {
 		return err
 	}
-	if err := s.save(ctx, srcCtlKeyTenant+tenantID, cfg); err != nil {
+	stored := cloneSourceControlConfig(cfg)
+	if err := s.save(ctx, srcCtlKeyTenant+tenantID, stored); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.tenantCache[tenantID] = cfg
+	s.tenantCache[tenantID] = cloneSourceControlConfig(stored)
 	s.mu.Unlock()
 	return nil
 }
 
 func (s *SourceControlService) DeleteTenant(ctx context.Context, tenantID string) error {
+	tenantID = strings.TrimSpace(tenantID)
 	if err := s.kv.Set(ctx, srcCtlKeyTenant+tenantID, ""); err != nil {
 		return err
 	}
@@ -143,29 +152,32 @@ func (s *SourceControlService) DeleteTenant(ctx context.Context, tenantID string
 	return nil
 }
 
-func (s *SourceControlService) GetUser(ctx context.Context, email string) (*SourceControlConfig, error) {
+func (s *SourceControlService) GetUser(ctx context.Context, userID string) (*SourceControlConfig, error) {
+	userID = strings.TrimSpace(userID)
 	s.mu.RLock()
-	if cfg, ok := s.userCache[email]; ok {
+	if cfg, ok := s.userCache[userID]; ok {
 		s.mu.RUnlock()
-		return cfg, nil
+		return cloneSourceControlConfig(cfg), nil
 	}
 	s.mu.RUnlock()
-	cfg, err := s.load(ctx, srcCtlKeyUser+email)
+	cfg, err := s.load(ctx, srcCtlKeyUser+userID)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.userCache[email] = cfg
+	s.userCache[userID] = cloneSourceControlConfig(cfg)
 	s.mu.Unlock()
-	return cfg, nil
+	return cloneSourceControlConfig(cfg), nil
 }
 
-func (s *SourceControlService) GetTenantUser(ctx context.Context, tenantID, email string) (*SourceControlConfig, error) {
-	cacheKey := tenantUserCacheKey(tenantID, email)
+func (s *SourceControlService) GetTenantUser(ctx context.Context, tenantID, userID string) (*SourceControlConfig, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	cacheKey := tenantUserCacheKey(tenantID, userID)
 	s.mu.RLock()
-	if cfg, ok := s.userCache[cacheKey]; ok {
+	if cfg, ok := s.tenantUserCache[cacheKey]; ok {
 		s.mu.RUnlock()
-		return cfg, nil
+		return cloneSourceControlConfig(cfg), nil
 	}
 	s.mu.RUnlock()
 	cfg, err := s.load(ctx, srcCtlKeyTenantUser+cacheKey)
@@ -173,55 +185,63 @@ func (s *SourceControlService) GetTenantUser(ctx context.Context, tenantID, emai
 		return nil, err
 	}
 	s.mu.Lock()
-	s.userCache[cacheKey] = cfg
+	s.tenantUserCache[cacheKey] = cloneSourceControlConfig(cfg)
 	s.mu.Unlock()
-	return cfg, nil
+	return cloneSourceControlConfig(cfg), nil
 }
 
-func (s *SourceControlService) SetUser(ctx context.Context, email string, cfg *SourceControlConfig) error {
-	if err := ValidateSourceNames(cfg.AllowedSources); err != nil {
+func (s *SourceControlService) SetUser(ctx context.Context, userID string, cfg *SourceControlConfig) error {
+	userID = strings.TrimSpace(userID)
+	if err := validateSourceControlConfig(cfg); err != nil {
 		return err
 	}
-	if err := s.save(ctx, srcCtlKeyUser+email, cfg); err != nil {
+	stored := cloneSourceControlConfig(cfg)
+	if err := s.save(ctx, srcCtlKeyUser+userID, stored); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.userCache[email] = cfg
+	s.userCache[userID] = cloneSourceControlConfig(stored)
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *SourceControlService) SetTenantUser(ctx context.Context, tenantID, email string, cfg *SourceControlConfig) error {
-	if err := ValidateSourceNames(cfg.AllowedSources); err != nil {
+func (s *SourceControlService) SetTenantUser(ctx context.Context, tenantID, userID string, cfg *SourceControlConfig) error {
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	if err := validateSourceControlConfig(cfg); err != nil {
 		return err
 	}
-	cacheKey := tenantUserCacheKey(tenantID, email)
-	if err := s.save(ctx, srcCtlKeyTenantUser+cacheKey, cfg); err != nil {
+	cacheKey := tenantUserCacheKey(tenantID, userID)
+	stored := cloneSourceControlConfig(cfg)
+	if err := s.save(ctx, srcCtlKeyTenantUser+cacheKey, stored); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.userCache[cacheKey] = cfg
+	s.tenantUserCache[cacheKey] = cloneSourceControlConfig(stored)
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *SourceControlService) DeleteUser(ctx context.Context, email string) error {
-	if err := s.kv.Set(ctx, srcCtlKeyUser+email, ""); err != nil {
+func (s *SourceControlService) DeleteUser(ctx context.Context, userID string) error {
+	userID = strings.TrimSpace(userID)
+	if err := s.kv.Set(ctx, srcCtlKeyUser+userID, ""); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	delete(s.userCache, email)
+	delete(s.userCache, userID)
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *SourceControlService) DeleteTenantUser(ctx context.Context, tenantID, email string) error {
-	cacheKey := tenantUserCacheKey(tenantID, email)
+func (s *SourceControlService) DeleteTenantUser(ctx context.Context, tenantID, userID string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	cacheKey := tenantUserCacheKey(tenantID, userID)
 	if err := s.kv.Set(ctx, srcCtlKeyTenantUser+cacheKey, ""); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	delete(s.userCache, cacheKey)
+	delete(s.tenantUserCache, cacheKey)
 	s.mu.Unlock()
 	return nil
 }
@@ -229,28 +249,51 @@ func (s *SourceControlService) DeleteTenantUser(ctx context.Context, tenantID, e
 // ResolveForUser computes the effective allowed sources for a user.
 // Resolution priority: Tenant User > User > Tenant > Global > Default (all allowed).
 // Returns nil when all sources are allowed.
-func (s *SourceControlService) ResolveForUser(ctx context.Context, email, tenantID string) []string {
+func (s *SourceControlService) ResolveForUser(ctx context.Context, userID, tenantID string) []string {
+	userID = strings.TrimSpace(userID)
+	tenantID = strings.TrimSpace(tenantID)
 	if tenantID != "" {
-		if cfg, err := s.GetTenantUser(ctx, tenantID, email); err == nil && cfg != nil && cfg.Enabled {
-			return cfg.AllowedSources
+		if cfg, err := s.GetTenantUser(ctx, tenantID, userID); err == nil && cfg != nil && cfg.Enabled {
+			return effectiveAllowedSources(cfg)
 		}
 	}
-	if cfg, err := s.GetUser(ctx, email); err == nil && cfg != nil && cfg.Enabled {
-		return cfg.AllowedSources
+	if cfg, err := s.GetUser(ctx, userID); err == nil && cfg != nil && cfg.Enabled {
+		return effectiveAllowedSources(cfg)
 	}
 	if tenantID != "" {
 		if cfg, err := s.GetTenant(ctx, tenantID); err == nil && cfg != nil && cfg.Enabled {
-			return cfg.AllowedSources
+			return effectiveAllowedSources(cfg)
 		}
 	}
 	if cfg, err := s.GetGlobal(ctx); err == nil && cfg != nil && cfg.Enabled {
-		return cfg.AllowedSources
+		return effectiveAllowedSources(cfg)
 	}
 	return nil
 }
 
-func tenantUserCacheKey(tenantID, email string) string {
-	return tenantID + ":" + email
+func effectiveAllowedSources(cfg *SourceControlConfig) []string {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
+	if len(cfg.AllowedSources) == 0 {
+		return []string{}
+	}
+	return canonicalSourceList(cfg.AllowedSources)
+}
+
+func cloneSourceControlConfig(cfg *SourceControlConfig) *SourceControlConfig {
+	if cfg == nil {
+		return nil
+	}
+	out := *cfg
+	if cfg.AllowedSources != nil {
+		out.AllowedSources = append([]string(nil), cfg.AllowedSources...)
+	}
+	return &out
+}
+
+func tenantUserCacheKey(tenantID, userID string) string {
+	return tenantID + ":" + userID
 }
 
 // --- Helpers ---
@@ -279,10 +322,43 @@ func (s *SourceControlService) save(ctx context.Context, key string, cfg *Source
 func ValidateSourceNames(sources []string) error {
 	for _, s := range sources {
 		if !validSourceName(s) {
-			return fmt.Errorf("invalid skill source: %q (valid: skillhub, clawhub, github, enterprise_hub)", s)
+			return fmt.Errorf("invalid skill source: %q (valid: skillhub, clawhub, github, enterprise_hub, local)", s)
 		}
 	}
 	return nil
+}
+
+func validateSourceControlConfig(cfg *SourceControlConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("skill source config is required")
+	}
+	return ValidateSourceNames(cfg.AllowedSources)
+}
+
+// FormatSourcePolicyDenied returns the localized user-facing denial shown when
+// a skill install source is outside the organization allow-list.
+func FormatSourcePolicyDenied(source string, allowedSources []string) string {
+	source = normalizeHubSearchSource(source)
+	if source == "" {
+		source = "skillhub"
+	}
+	allowed := "none"
+	if len(allowedSources) > 0 {
+		var normalized []string
+		seen := map[string]bool{}
+		for _, item := range allowedSources {
+			v := normalizeHubSearchSource(item)
+			if v == "" || seen[v] {
+				continue
+			}
+			seen[v] = true
+			normalized = append(normalized, v)
+		}
+		if len(normalized) > 0 {
+			allowed = strings.Join(normalized, ", ")
+		}
+	}
+	return fmt.Sprintf("当前企业策略不允许从该能力市场安装此 Skill（skill source: %s，允许来源：%s）。Your organization policy does not allow installing this skill from this capability marketplace (skill source: %s, allowed sources: %s).", source, allowed, source, allowed)
 }
 
 // IntersectSources computes the intersection of two allowed-sources lists.
@@ -313,7 +389,7 @@ func IntersectSources(a, b []string) []string {
 
 func validSourceName(s string) bool {
 	switch normalizeHubSearchSource(s) {
-	case "skillhub", "clawhub", "github", "enterprise_hub":
+	case "skillhub", "clawhub", "github", "enterprise_hub", "local":
 		return true
 	}
 	return false

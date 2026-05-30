@@ -348,7 +348,7 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 			cskill.CleanupStaging(stagingDir)
 			return fmt.Errorf("skill %q already exists", skill.Name)
 		}
-		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "mixed skill search")
+		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "skillhub")
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
 			return err
@@ -464,7 +464,7 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 		cskill.CleanupStaging(stagingDir)
 		return fmt.Errorf("skill %q already exists", entry.Name)
 	}
-	report, err := a.scanAndAdmitSkillBeforeRegister(ctx, entry, hubURL)
+	report, err := a.scanAndAdmitSkillBeforeRegister(ctx, entry, "skillhub")
 	if err != nil {
 		cskill.CleanupStaging(stagingDir)
 		return err

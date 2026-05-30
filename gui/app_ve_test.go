@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +16,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
+
+const testVEAvatarPNGDataURL = "data:image/png;base64,iVBORw0KGgo="
 
 func TestResolveVEInviteMachineIDPrefersMachineID(t *testing.T) {
 	employees := []VirtualEmployeeEntry{
@@ -44,6 +49,106 @@ func TestVirtualEmployeeEntryDecodesAccessLists(t *testing.T) {
 	}
 	if len(resp.Employee.Blacklist) != 1 || resp.Employee.Blacklist[0] != "user-b" {
 		t.Fatalf("blacklist not decoded: %+v", resp.Employee)
+	}
+}
+
+func TestRegisterVirtualEmployeeRejectsInvalidAvatarBeforeHub(t *testing.T) {
+	hubCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hubCalls, 1)
+		t.Errorf("unexpected Hub request: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	for _, avatarDataURL := range []string{
+		"data:image/png;base64,QUJD",
+		strings.Replace(testVEAvatarPNGDataURL, "data:image/png", "data:image/jpeg", 1),
+		"data:image/png;base64," + strings.Repeat("A", veAvatarDataURLMaxLength),
+	} {
+		t.Run(avatarDataURL, func(t *testing.T) {
+			if err := app.RegisterVirtualEmployee("Name", "Skill", "public", nil, avatarDataURL); err == nil {
+				t.Fatal("RegisterVirtualEmployee succeeded with invalid avatar")
+			}
+		})
+	}
+	if got := atomic.LoadInt32(&hubCalls); got != 0 {
+		t.Fatalf("Hub calls = %d, want 0", got)
+	}
+}
+
+func TestUpdateVESettingsRejectsInvalidAvatarBeforeHub(t *testing.T) {
+	hubCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hubCalls, 1)
+		t.Errorf("unexpected Hub request: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.UpdateVESettings("Name", "Skill", "public", nil, "data:image/png;base64,QUJD"); err == nil {
+		t.Fatal("UpdateVESettings succeeded with invalid avatar")
+	}
+	if got := atomic.LoadInt32(&hubCalls); got != 0 {
+		t.Fatalf("Hub calls = %d, want 0", got)
+	}
+}
+
+func TestRegisterVirtualEmployeeSendsValidAvatarToHub(t *testing.T) {
+	hubCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hubCalls, 1)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/ve/register" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Machine-ID"); got != "machine-1" {
+			t.Fatalf("X-Machine-ID = %q, want machine-1", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if got := body["avatar_data_url"]; got != testVEAvatarPNGDataURL {
+			t.Fatalf("avatar_data_url = %#v, want valid avatar", got)
+		}
+		if got := body["name"]; got != "Name" {
+			t.Fatalf("name = %#v, want trimmed Name", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.RegisterVirtualEmployee(" Name ", " Skill ", "public", nil, " "+testVEAvatarPNGDataURL+" "); err != nil {
+		t.Fatalf("RegisterVirtualEmployee: %v", err)
+	}
+	if got := atomic.LoadInt32(&hubCalls); got != 1 {
+		t.Fatalf("Hub calls = %d, want 1", got)
+	}
+}
+
+func TestValidateVEAvatarAllowsDecodedImageUnderOneMiB(t *testing.T) {
+	decoded := append([]byte{0xff, 0xd8, 0xff}, bytes.Repeat([]byte{0}, 800*1024)...)
+	avatarDataURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(decoded)
+	if len(avatarDataURL) <= 1024*1024 {
+		t.Fatalf("test avatar data URL length = %d, want over 1MiB", len(avatarDataURL))
+	}
+	if err := validateVEAvatarDataURL(avatarDataURL); err != nil {
+		t.Fatalf("validateVEAvatarDataURL rejected decoded-under-limit avatar: %v", err)
 	}
 }
 
@@ -209,6 +314,217 @@ func TestInitiateVEConversationValidatesExpiredStickySession(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&validationCalls); got != 1 {
 		t.Fatalf("validation calls = %d, want 1", got)
+	}
+}
+
+func TestInitiateVEConversationReturnsPendingConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/ve-a/initiate":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			if r.Header.Get("X-Machine-ID") != "machine-1" {
+				t.Fatalf("X-Machine-ID = %q, want machine-1", r.Header.Get("X-Machine-ID"))
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "pending_confirmation", "request_id": "req-1"})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.InitiateVEConversation("ve-a"); err == nil || err.Error() != "pending_confirmation" {
+		t.Fatalf("InitiateVEConversation error = %v, want pending_confirmation", err)
+	}
+}
+
+func TestRespondAuthRequestPostsDecision(t *testing.T) {
+	var gotPath, gotDecision, gotRequestID, gotMachineID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMachineID = r.Header.Get("X-Machine-ID")
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		gotRequestID = body["request_id"]
+		gotDecision = body["decision"]
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-owner",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.RespondAuthRequest(" req-1 ", " allow_long "); err != nil {
+		t.Fatalf("RespondAuthRequest: %v", err)
+	}
+	if gotPath != "/api/ve/auth/respond" || gotRequestID != "req-1" || gotDecision != "allow_long" || gotMachineID != "machine-owner" {
+		t.Fatalf("posted path=%q request=%q decision=%q machine=%q", gotPath, gotRequestID, gotDecision, gotMachineID)
+	}
+}
+
+func TestRespondAuthRequestRejectsInvalidDecision(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-owner",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: false},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.RespondAuthRequest("req-1", "approve_forever"); err == nil {
+		t.Fatal("RespondAuthRequest accepted invalid decision")
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("server calls = %d, want 0", got)
+	}
+}
+
+func TestInitiateVEConversationReusesCachedDirectSession(t *testing.T) {
+	hubCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hubCalls, 1)
+		if r.URL.Path == "/api/ve/discoverable" {
+			http.Error(w, "offline", http.StatusServiceUnavailable)
+			return
+		}
+		t.Errorf("unexpected Hub request: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "session-cached", LocalRelation: "initiated_by_me", Status: "open", Topic: "数字员工会话", ParticipantIDs: []string{"machine-1", "ve-machine-2"}, UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+
+	info, err := app.InitiateVEConversation("ve_ve-machine-2")
+	if err != nil {
+		t.Fatalf("InitiateVEConversation: %v", err)
+	}
+	if info.SessionID != "session-cached" {
+		t.Fatalf("session id = %q, want session-cached", info.SessionID)
+	}
+	if _, ok := app.veSessionCache.Load("ve-machine-2"); !ok {
+		t.Fatalf("participant id was not cached for future reuse")
+	}
+	if got := atomic.LoadInt32(&hubCalls); got != 0 {
+		t.Fatalf("Hub calls = %d, want cached direct lookup only", got)
+	}
+}
+
+func TestInitiateVEConversationUsesDiscoverableMappingForCachedDirectSession(t *testing.T) {
+	hubCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hubCalls, 1)
+		if r.URL.Path == "/api/ve/discoverable" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]any{{"id": "ve-remote", "machine_id": "machine-2", "name": "Remote VE"}}})
+			return
+		}
+		t.Errorf("unexpected Hub request: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "session-mapped", LocalRelation: "initiated_by_me", Status: "open", Topic: "VE session", ParticipantIDs: []string{"machine-1", "machine-2"}, UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+
+	info, err := app.InitiateVEConversation("ve-remote")
+	if err != nil {
+		t.Fatalf("InitiateVEConversation: %v", err)
+	}
+	if info.SessionID != "session-mapped" {
+		t.Fatalf("session id = %q, want session-mapped", info.SessionID)
+	}
+	if got := atomic.LoadInt32(&hubCalls); got != 1 {
+		t.Fatalf("Hub calls = %d, want one discoverable lookup", got)
+	}
+}
+
+func TestInitiateVEConversationUsesCachedDirectSessionWithoutHubCredentials(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteMachineID: "machine-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "session-local", LocalRelation: "initiated_by_me", Status: "open", Topic: "数字员工会话", ParticipantIDs: []string{"machine-1", "ve-a"}, UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+
+	info, err := app.InitiateVEConversation("ve-a")
+	if err != nil {
+		t.Fatalf("InitiateVEConversation: %v", err)
+	}
+	if info.SessionID != "session-local" {
+		t.Fatalf("session id = %q, want session-local", info.SessionID)
 	}
 }
 

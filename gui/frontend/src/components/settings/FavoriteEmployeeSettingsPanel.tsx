@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
+import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
 import { MAX_FAVORITE_EMPLOYEES } from './favoriteEmployees';
 
 interface FavoriteEmployeeSettingsPanelProps {
@@ -20,15 +21,22 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
     const onlineLabel = isZh ? '在线' : 'Online';
     const offlineLabel = isZh ? '离线' : 'Offline';
 
-    const veById = useMemo(() => new Map(veList.map(ve => [ve.id, ve])), [veList]);
+    const veById = useMemo(() => {
+        const map = new Map<string, VirtualEmployeeEntry>();
+        for (const ve of veList) {
+            if (ve.id) map.set(ve.id, ve);
+            if (ve.machine_id) map.set(ve.machine_id, ve);
+        }
+        return map;
+    }, [veList]);
     const favoriteIdSet = useMemo(() => new Set(favoriteEmployeeIds), [favoriteEmployeeIds]);
 
     const favoriteVEs = favoriteEmployeeIds.map(id => {
         const ve = veById.get(id);
-        return { id, name: ve?.name || id.slice(0, 8), online: ve?.online_status === 'online' };
+        return { id, name: ve?.name || id.slice(0, 8), online: ve?.online_status === 'online', avatarDataURL: safeAvatarDataURL(ve?.avatar_data_url) };
     });
 
-    const availableVEs = veList.filter(ve => !favoriteIdSet.has(ve.id));
+    const availableVEs = veList.filter(ve => !favoriteIdSet.has(ve.id) && !favoriteIdSet.has(ve.machine_id || ''));
 
     const handleDragStart = (index: number) => (e: React.DragEvent) => {
         dragSourceIndex.current = index;
@@ -96,7 +104,11 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                             onDragEnd={() => { setDragOverIndex(null); dragSourceIndex.current = null; }}
                         >
                             <span className="favorite-employee-settings__index">{index + 1}.</span>
-                            <span className="favorite-employee-settings__status" data-online={fav.online ? 'true' : 'false'} aria-hidden="true" />
+                            {fav.avatarDataURL ? (
+                                <img className="favorite-employee-settings__avatar" src={fav.avatarDataURL} alt="" />
+                            ) : (
+                                <span className="favorite-employee-settings__status" data-online={fav.online ? 'true' : 'false'} aria-hidden="true" />
+                            )}
                             <span className="favorite-employee-settings__sr-only">{fav.online ? onlineLabel : offlineLabel}</span>
                             <span className="favorite-employee-settings__name" title={fav.name}>{fav.name}</span>
                             <button
@@ -132,19 +144,26 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
                                     {isZh ? '无可添加的数字员工' : 'No employees available'}
                                 </div>
                             ) : (
-                                availableVEs.map(ve => (
-                                    <button
-                                        key={ve.id}
-                                        className="favorite-employee-settings__picker-item"
-                                        type="button"
-                                        aria-label={ve.name}
-                                        onClick={() => { onAdd(ve.id); setShowAddPicker(false); }}
-                                    >
-                                        <span className="favorite-employee-settings__picker-status" data-online={ve.online_status === 'online' ? 'true' : 'false'} aria-hidden="true" />
-                                        <span className="favorite-employee-settings__sr-only">{ve.online_status === 'online' ? onlineLabel : offlineLabel}</span>
-                                        <span className="favorite-employee-settings__picker-name" title={ve.name}>{ve.name}</span>
-                                    </button>
-                                ))
+                                availableVEs.map(ve => {
+                                    const avatarDataURL = safeAvatarDataURL(ve.avatar_data_url);
+                                    return (
+                                        <button
+                                            key={ve.id}
+                                            className="favorite-employee-settings__picker-item"
+                                            type="button"
+                                            aria-label={ve.name}
+                                            onClick={() => { onAdd(ve.machine_id || ve.id); setShowAddPicker(false); }}
+                                        >
+                                            {avatarDataURL ? (
+                                                <img className="favorite-employee-settings__avatar favorite-employee-settings__avatar--picker" src={avatarDataURL} alt="" />
+                                            ) : (
+                                                <span className="favorite-employee-settings__picker-status" data-online={ve.online_status === 'online' ? 'true' : 'false'} aria-hidden="true" />
+                                            )}
+                                            <span className="favorite-employee-settings__sr-only">{ve.online_status === 'online' ? onlineLabel : offlineLabel}</span>
+                                            <span className="favorite-employee-settings__picker-name" title={ve.name}>{ve.name}</span>
+                                        </button>
+                                    );
+                                })
                             )}
                         </div>
                     )}

@@ -161,7 +161,8 @@ func TestAdminWebUsesTenantUserSelectors(t *testing.T) {
 		"source_count",
 		"latest_source_at",
 		"tenantSelect(\"skillTenant\",tenantItems,\"\",true,\"selectTenant\")",
-		"userSelect(\"skillUserEmail\",userItems,\"\",\"email\",true,\"selectUser\")",
+		"userSelect(\"skillUser\",userItems,\"\",\"tenantUser\",true,\"selectUser\")",
+		"/api/v1/admin/skill-sources/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}",
 		"tenantSelect(\"jobTenant\",tenantItems)",
 		"userSelect(\"jobUser\",userItems,\"\",\"tenantUser\")",
 		"tenantSelect(\"auditTenant\",tenantItems)",
@@ -269,11 +270,15 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	shell := w.Body.String()
 	for _, needle := range []string{
-		`class="skip-link"`,
+		`id="skipLink" class="skip-link" href="#loginPanel"`,
+		`<body class="auth-screen">`,
+		`<div id="app" class="app-shell auth-only">`,
 		`<meta name="theme-color" content="#121b24" media="(prefers-color-scheme: light)" />`,
 		`<meta name="theme-color" content="#0b1117" media="(prefers-color-scheme: dark)" />`,
 		`<nav id="nav" class="nav" aria-label="Admin sections">`,
 		`<main id="main" class="main" tabindex="-1">`,
+		`<section id="bootstrapPanel" class="panel hidden" tabindex="-1">`,
+		`<section id="loginPanel" class="panel hidden" tabindex="-1">`,
 	} {
 		if !strings.Contains(shell, needle) {
 			t.Fatalf("admin shell missing accessibility marker %s", needle)
@@ -298,12 +303,28 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 		`const sections = ["overview","sandbox","logs","config","tenants","accounts","knowledge","ops"]`,
 		`const initialSection = sections.includes(location.hash.slice(1))`,
 		`function setSection(id, updateHash=true)`,
+		`function setAuthShell(on,target="loginPanel")`,
+		`$("skipLink")?.setAttribute("href",active?` + "`#${target}`" + `:"#content")`,
+		`classList.toggle("auth-only",active)`,
+		`function authLocaleControl()`,
+		`function bindAuthLocale(onChange)`,
+		`function localeOptions(selected=state.locale)`,
+		`function applyLocaleMetadata(out)`,
+		`${selected===x.locale?"selected":""}`,
 		`state.sectionChanged=state.section!==id`,
 		`history.replaceState(null,"",`,
 		`$("main")?.focus({preventScroll:true})`,
 		`state.sectionChanged=false`,
 		`window.addEventListener("hashchange"`,
 		`focusPrimaryInput($("loginPanel"))`,
+		`admin-auth-shell`,
+		`admin-auth-card`,
+		`admin-auth-hero`,
+		`authLocaleSelect`,
+		`bindAuthLocale(()=>renderLogin(focusMode))`,
+		`bindAuthLocale(()=>renderBootstrap(status))`,
+		`setAuthShell(true,"bootstrapPanel")`,
+		`applyLocaleMetadata(bs)`,
 		`role="tablist"`,
 		`role="tab"`,
 		`role="tabpanel"`,
@@ -351,7 +372,7 @@ func TestAdminWebAccessibilityContracts(t *testing.T) {
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	css := w.Body.String()
-	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before", ".modal-backdrop", ".modal-actions"} {
+	for _, needle := range []string{".skip-link", ".badge-on::before", ".badge-off::before", ".modal-backdrop", ".modal-actions", ".app-shell.auth-only .sidebar", ".app-shell.auth-only .topbar", ".app-shell.auth-only #content", ".admin-auth-shell", ".auth-locale"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("admin css missing accessibility marker %s", needle)
 		}

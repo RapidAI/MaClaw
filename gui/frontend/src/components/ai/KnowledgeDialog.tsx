@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { KnowledgeSettingsPanel } from "../settings/KnowledgeSettingsPanel";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -47,16 +47,61 @@ const bodyStyle: CSSProperties = {
     padding: "0 4px 4px",
 };
 
+const toastStyle: CSSProperties = {
+    position: "absolute",
+    right: 18,
+    bottom: 18,
+    maxWidth: "min(420px, calc(100% - 36px))",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    background: "rgba(15, 23, 42, 0.94)",
+    color: "#f8fafc",
+    boxShadow: "0 16px 36px rgba(0, 0, 0, 0.28)",
+    fontSize: "13px",
+    lineHeight: 1.45,
+    zIndex: 1,
+    textAlign: "left",
+};
+
 export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogProps) {
+    const [toastMessage, setToastMessage] = useState("");
+    const toastTimerRef = useRef<number | null>(null);
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
         if (e.key === "Escape") onClose();
     }, [onClose]);
+
+    const showToastMessage = useCallback((message: string, duration = 3000) => {
+        setToastMessage(message);
+        if (toastTimerRef.current !== null) {
+            window.clearTimeout(toastTimerRef.current);
+        }
+        toastTimerRef.current = window.setTimeout(() => {
+            setToastMessage("");
+            toastTimerRef.current = null;
+        }, duration);
+    }, []);
 
     useEffect(() => {
         if (!open) return;
         document.addEventListener("keydown", handleKeyDown);
         return () => document.removeEventListener("keydown", handleKeyDown);
     }, [open, handleKeyDown]);
+
+    useEffect(() => {
+        if (open) return;
+        setToastMessage("");
+        if (toastTimerRef.current !== null) {
+            window.clearTimeout(toastTimerRef.current);
+            toastTimerRef.current = null;
+        }
+    }, [open]);
+
+    useEffect(() => () => {
+        if (toastTimerRef.current !== null) {
+            window.clearTimeout(toastTimerRef.current);
+            toastTimerRef.current = null;
+        }
+    }, []);
 
     if (!open) return null;
 
@@ -70,7 +115,7 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
             aria-modal="true"
             aria-label={title}
         >
-            <div style={{ ...modalStyle, background: theme.bg, border: `1px solid ${theme.divider}` }}>
+            <div style={{ ...modalStyle, position: "relative", background: theme.bg, border: `1px solid ${theme.divider}` }}>
                 <div style={{ ...headerStyle, borderBottom: `1px solid ${theme.divider}` }}>
                     <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: theme.text }}>
                         📚 {title}
@@ -94,8 +139,9 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
                     </button>
                 </div>
                 <div style={bodyStyle}>
-                    <KnowledgeSettingsPanel lang={lang} />
+                    <KnowledgeSettingsPanel lang={lang} showToastMessage={showToastMessage} />
                 </div>
+                {toastMessage ? <div style={toastStyle} role="status">{toastMessage}</div> : null}
             </div>
         </div>
     );

@@ -7,6 +7,7 @@ interface AssistantAttachmentsStripProps {
     cancelPending: boolean;
     clearSelectedFile?: () => void;
     lang: string;
+    pendingAttachmentsTestId?: string;
     pendingAttachments: AttachmentInfo[];
     removeSelectedFile?: (index: number) => void;
     selectedFilePaths: string[];
@@ -53,6 +54,7 @@ export function AssistantAttachmentsStrip({
     cancelPending,
     clearSelectedFile,
     lang,
+    pendingAttachmentsTestId = "ai-pending-attachments",
     pendingAttachments,
     removeSelectedFile,
     selectedFilePaths,
@@ -62,7 +64,7 @@ export function AssistantAttachmentsStrip({
     return (
         <>
             {pendingAttachments.length > 0 && (
-                <div data-testid="ai-pending-attachments" style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <div data-testid={pendingAttachmentsTestId} style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                     {pendingAttachments.map((att, index) => {
                         const fileName = att.fileName || attachmentFileName(att.filePath);
                         const typeLabel = attachmentKindLabel(fileName, att.extension);

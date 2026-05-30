@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { EventsOn, EventsOff, BrowserOpenURL } from "../../../wailsjs/runtime";
 import {
   RegisterVirtualEmployee,
@@ -11,6 +11,7 @@ import {
   SetVEAllowedDirectories,
   LoadConfig,
 } from "../../../wailsjs/go/main/App";
+import { safeAvatarDataURL, safeAvatarSourceDataURL } from "../ai/virtualEmployeeAvatar";
 import { VEApprovalCapabilitySection } from "./VEApprovalCapabilitySection";
 
 type VEStatusResponse = {
@@ -25,6 +26,7 @@ type VEStatusResponse = {
     registered_at?: string;
     whitelist?: string[];
     blacklist?: string[];
+    avatar_data_url?: string;
   };
 };
 
@@ -41,6 +43,14 @@ type VEFormStateSetter = {
   setWhitelist: (value: string[]) => void;
   setBlacklist: (value: string[]) => void;
   setListInput: (value: string) => void;
+  setAvatarDataURL: (value: string) => void;
+  setAvatarSourceURL: (value: string) => void;
+  setAvatarScale: (value: number) => void;
+  setAvatarOffsetX: (value: number) => void;
+  setAvatarOffsetY: (value: number) => void;
+  setAvatarNeedsCrop: (value: boolean) => void;
+  setAvatarImageSize: (value: { width: number; height: number } | null) => void;
+  setAvatarError: (value: string) => void;
   setNameError: (value: string) => void;
   setSkillError: (value: string) => void;
   setPolicyError: (value: string) => void;
@@ -55,6 +65,14 @@ function resetVEFormState(setter: VEFormStateSetter) {
   setter.setWhitelist([]);
   setter.setBlacklist([]);
   setter.setListInput("");
+  setter.setAvatarDataURL("");
+  setter.setAvatarSourceURL("");
+  setter.setAvatarScale(1);
+  setter.setAvatarOffsetX(0);
+  setter.setAvatarOffsetY(0);
+  setter.setAvatarNeedsCrop(false);
+  setter.setAvatarImageSize(null);
+  setter.setAvatarError("");
   setter.setNameError("");
   setter.setSkillError("");
   setter.setPolicyError("");
@@ -135,12 +153,29 @@ const policyOptions = (
     value: "per_request",
     label: textForLang(
       lang,
-      "Authorize each request",
-      "\u6bcf\u6b21\u8bbf\u95ee\u9700\u6388\u6743",
-      "\u6bcf\u6b21\u8a2a\u554f\u9700\u6388\u6b0a",
+      "First access requires confirmation",
+      "首次访问需确认",
+      "首次訪問需確認",
     ),
   },
 ];
+
+function accessListKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function appendAccessListItem(values: string[], value: string): string[] {
+  const item = value.trim();
+  if (!item) return values;
+  const key = accessListKey(item);
+  if (values.some((existing) => accessListKey(existing) === key)) return values;
+  return [...values, item];
+}
+
+function removeAccessListItem(values: string[], value: string): string[] {
+  const key = accessListKey(value);
+  return values.filter((existing) => accessListKey(existing) !== key);
+}
 
 const copy = (lang?: string) => ({
   title: textForLang(
@@ -224,6 +259,21 @@ const copy = (lang?: string) => ({
   ),
   add: textForLang(lang, "Add", "\u6dfb\u52a0", "\u65b0\u589e"),
   remove: textForLang(lang, "Remove", "\u79fb\u9664", "\u79fb\u9664"),
+  avatar: textForLang(lang, "Employee photo", "\u6570\u5b57\u5458\u5de5\u5f62\u8c61", "\u6578\u5b57\u54e1\u5de5\u5f62\u8c61"),
+  avatarUpload: textForLang(lang, "Upload photo", "\u4e0a\u4f20\u7167\u7247", "\u4e0a\u50b3\u7167\u7247"),
+  avatarReplace: textForLang(lang, "Replace", "\u66ff\u6362", "\u66ff\u63db"),
+  avatarClear: textForLang(lang, "Use default", "\u4f7f\u7528\u9ed8\u8ba4", "\u4f7f\u7528\u9810\u8a2d"),
+  avatarZoom: textForLang(lang, "Zoom", "\u7f29\u653e", "\u7e2e\u653e"),
+  avatarHorizontal: textForLang(lang, "Horizontal", "\u6c34\u5e73", "\u6c34\u5e73"),
+  avatarVertical: textForLang(lang, "Vertical", "\u5782\u76f4", "\u5782\u76f4"),
+  avatarCircle: textForLang(lang, "Circular display", "\u5706\u5f62\u663e\u793a", "\u5713\u5f62\u986f\u793a"),
+  avatarHint: textForLang(
+    lang,
+    "Preview is what other users will see. Leave empty to keep the current default display.",
+    "\u9884\u89c8\u5373\u5176\u4ed6\u7528\u6237\u770b\u5230\u7684\u6548\u679c\u3002\u4e0d\u8bbe\u7f6e\u5219\u4fdd\u6301\u73b0\u6709\u9ed8\u8ba4\u663e\u793a\u3002",
+    "\u9810\u89bd\u5373\u5176\u4ed6\u7528\u6236\u770b\u5230\u7684\u6548\u679c\u3002\u4e0d\u8a2d\u5b9a\u5247\u4fdd\u6301\u73fe\u6709\u9810\u8a2d\u986f\u793a\u3002",
+  ),
+  avatarInvalid: textForLang(lang, "Please select an image file.", "\u8bf7\u9009\u62e9\u56fe\u7247\u6587\u4ef6\u3002", "\u8acb\u9078\u64c7\u5716\u7247\u6a94\u6848\u3002"),
   sensitiveTitle: textForLang(
     lang,
     "Password or sensitive information query",
@@ -293,6 +343,48 @@ const copy = (lang?: string) => ({
   ),
 });
 
+const avatarCanvasSize = 256;
+const avatarPreviewSize = 112;
+const avatarMaxFileSize = 5 * 1024 * 1024;
+const avatarAcceptedMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+const avatarAcceptAttr = "image/png,image/jpeg,image/webp";
+
+function calculateAvatarDrawFrame(width: number, height: number, size: number, scale: number, offsetX: number, offsetY: number) {
+  const base = Math.max(size / width, size / height);
+  const drawW = width * base * scale;
+  const drawH = height * base * scale;
+  const maxShiftX = Math.max(0, (drawW - size) / 2);
+  const maxShiftY = Math.max(0, (drawH - size) / 2);
+  return {
+    drawW,
+    drawH,
+    dx: (size - drawW) / 2 + (offsetX / 100) * maxShiftX,
+    dy: (size - drawH) / 2 + (offsetY / 100) * maxShiftY,
+  };
+}
+
+function buildCroppedAvatarDataURL(sourceURL: string, scale: number, offsetX: number, offsetY: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = avatarCanvasSize;
+      canvas.height = avatarCanvasSize;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("canvas unavailable"));
+        return;
+      }
+      ctx.clearRect(0, 0, avatarCanvasSize, avatarCanvasSize);
+      const { drawW, drawH, dx, dy } = calculateAvatarDrawFrame(img.width, img.height, avatarCanvasSize, scale, offsetX, offsetY);
+      ctx.drawImage(img, dx, dy, drawW, drawH);
+      resolve(canvas.toDataURL("image/jpeg", 0.86));
+    };
+    img.onerror = () => reject(new Error("image load failed"));
+    img.src = sourceURL;
+  });
+}
+
 const normalizeSensitivePolicy = (policy: string): SensitiveQueryPolicy => {
   const normalized = String(policy || "")
     .trim()
@@ -314,6 +406,16 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const [status, setStatus] = useState<VEStatus | null>(null);
   const [registered, setRegistered] = useState(false);
   const [listInput, setListInput] = useState("");
+  const [avatarDataURL, setAvatarDataURL] = useState("");
+  const [avatarSourceURL, setAvatarSourceURL] = useState("");
+  const [avatarScale, setAvatarScale] = useState(1);
+  const [avatarOffsetX, setAvatarOffsetX] = useState(0);
+  const [avatarOffsetY, setAvatarOffsetY] = useState(0);
+  const [avatarNeedsCrop, setAvatarNeedsCrop] = useState(false);
+  const [avatarCircle, setAvatarCircle] = useState(true);
+  const [avatarImageSize, setAvatarImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [avatarError, setAvatarError] = useState("");
+  const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
   const [approvalNotice, setApprovalNotice] = useState("");
   const [sensitiveQueryPolicy, setSensitiveQueryPolicy] =
     useState<SensitiveQueryPolicy>("confirm");
@@ -338,6 +440,15 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         setAccessPolicy((resp.employee.access_policy as AccessPolicy) || "");
         setWhitelist(Array.isArray(resp.employee.whitelist) ? resp.employee.whitelist : []);
         setBlacklist(Array.isArray(resp.employee.blacklist) ? resp.employee.blacklist : []);
+        const avatarDataURL = safeAvatarDataURL(resp.employee.avatar_data_url);
+        setAvatarDataURL(avatarDataURL);
+        setAvatarSourceURL(avatarDataURL);
+        setAvatarScale(1);
+        setAvatarOffsetX(0);
+        setAvatarOffsetY(0);
+        setAvatarNeedsCrop(false);
+        setAvatarImageSize(null);
+        setAvatarError("");
         setStatus((resp.employee.status as VEStatus) || null);
       } else {
         resetVEFormState({
@@ -349,6 +460,14 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         setWhitelist,
         setBlacklist,
         setListInput,
+        setAvatarDataURL,
+        setAvatarSourceURL,
+        setAvatarScale,
+        setAvatarOffsetX,
+        setAvatarOffsetY,
+        setAvatarNeedsCrop,
+        setAvatarImageSize,
+        setAvatarError,
         setNameError,
         setSkillError,
         setPolicyError,
@@ -365,6 +484,14 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
           setWhitelist,
           setBlacklist,
           setListInput,
+          setAvatarDataURL,
+          setAvatarSourceURL,
+          setAvatarScale,
+          setAvatarOffsetX,
+          setAvatarOffsetY,
+          setAvatarNeedsCrop,
+          setAvatarImageSize,
+          setAvatarError,
           setNameError,
           setSkillError,
           setPolicyError,
@@ -394,6 +521,45 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
       cancelled = true;
     };
   }, []);
+
+  function handleAvatarFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!avatarAcceptedMimeTypes.has(file.type) || file.size > avatarMaxFileSize) {
+      setAvatarError(c.avatarInvalid);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataURL = String(reader.result || "");
+      if (!safeAvatarSourceDataURL(dataURL)) {
+        setAvatarError(c.avatarInvalid);
+        return;
+      }
+      setAvatarSourceURL(dataURL);
+      setAvatarScale(1);
+      setAvatarOffsetX(0);
+      setAvatarOffsetY(0);
+      setAvatarNeedsCrop(true);
+      setAvatarImageSize(null);
+      setAvatarError("");
+    };
+    reader.onerror = () => setAvatarError(c.avatarInvalid);
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
+
+  function handleClearAvatar() {
+    setAvatarSourceURL("");
+    setAvatarDataURL("");
+    setAvatarScale(1);
+    setAvatarOffsetX(0);
+    setAvatarOffsetY(0);
+    setAvatarNeedsCrop(false);
+    setAvatarImageSize(null);
+    setAvatarError("");
+  }
 
   // Load allowed directories on mount (Requirement 2.2)
   useEffect(() => {
@@ -501,6 +667,25 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const isPending = status === "pending";
   // When rejected, the form is editable for reapply; when pending, the form is read-only.
   const formDisabled = isPending;
+  const avatarPreviewURL = avatarSourceURL || avatarDataURL;
+  let avatarPreviewStyle: CSSProperties | undefined;
+  if (avatarSourceURL && avatarImageSize) {
+    const { drawW, drawH, dx, dy } = calculateAvatarDrawFrame(
+      avatarImageSize.width,
+      avatarImageSize.height,
+      avatarPreviewSize,
+      avatarScale,
+      avatarOffsetX,
+      avatarOffsetY,
+    );
+    avatarPreviewStyle = {
+      width: `${drawW}px`,
+      height: `${drawH}px`,
+      left: `${dx}px`,
+      top: `${dy}px`,
+      transform: "none",
+    };
+  }
 
   function validateName(value: string): string {
     if (!value.trim()) return c.nameRequired;
@@ -531,6 +716,18 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   async function handleSubmit() {
     if (!validate()) return;
     setSubmitting(true);
+    let finalAvatarDataURL = avatarDataURL;
+    let croppedAvatarDataURL = "";
+    if (avatarSourceURL && avatarNeedsCrop) {
+      try {
+        finalAvatarDataURL = await buildCroppedAvatarDataURL(avatarSourceURL, avatarScale, avatarOffsetX, avatarOffsetY);
+        croppedAvatarDataURL = finalAvatarDataURL;
+      } catch {
+        setAvatarError(c.avatarInvalid);
+        if (mountedRef.current) setSubmitting(false);
+        return;
+      }
+    }
     const list =
       accessPolicy === "whitelist"
         ? whitelist
@@ -539,16 +736,26 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
           : [];
     try {
       if (registered && !isRejected) {
-        await UpdateVESettings(name, skillDescription, accessPolicy, list);
+        await UpdateVESettings(name, skillDescription, accessPolicy, list, finalAvatarDataURL);
       } else {
         await RegisterVirtualEmployee(
           name,
           skillDescription,
           accessPolicy,
           list,
+          finalAvatarDataURL,
         );
         setRegistered(true);
         setStatus("pending");
+      }
+      if (croppedAvatarDataURL && mountedRef.current) {
+        setAvatarDataURL(croppedAvatarDataURL);
+        setAvatarSourceURL(croppedAvatarDataURL);
+        setAvatarScale(1);
+        setAvatarOffsetX(0);
+        setAvatarOffsetY(0);
+        setAvatarImageSize(null);
+        setAvatarNeedsCrop(false);
       }
       await loadStatus();
     } catch (err: any) {
@@ -564,18 +771,18 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   function handleAddToList() {
     const item = listInput.trim();
     if (!item) return;
-    if (accessPolicy === "whitelist" && !whitelist.includes(item))
-      setWhitelist([...whitelist, item]);
-    if (accessPolicy === "blacklist" && !blacklist.includes(item))
-      setBlacklist([...blacklist, item]);
+    if (accessPolicy === "whitelist")
+      setWhitelist((prev) => appendAccessListItem(prev, item));
+    if (accessPolicy === "blacklist")
+      setBlacklist((prev) => appendAccessListItem(prev, item));
     setListInput("");
   }
 
   function handleRemoveFromList(item: string) {
     if (accessPolicy === "whitelist")
-      setWhitelist(whitelist.filter((i) => i !== item));
+      setWhitelist((prev) => removeAccessListItem(prev, item));
     if (accessPolicy === "blacklist")
-      setBlacklist(blacklist.filter((i) => i !== item));
+      setBlacklist((prev) => removeAccessListItem(prev, item));
   }
 
   const showListEditor =
@@ -588,17 +795,28 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         </label>
         <div className="ve-form-field">
           <button
+            type="button"
             className="ve-btn ve-btn--secondary"
             data-testid="ve-approval-workflow-design-btn"
             onClick={async () => {
               try {
-                const cfg = await LoadConfig() as { remote_hub_url?: string } | null;
-                const hubUrl = (cfg?.remote_hub_url || "").replace(/\/+$/, "");
+                const cfg = await LoadConfig() as {
+                  remote_hub_url?: string;
+                  remote_machine_id?: string;
+                  remote_machine_token?: string;
+                } | null;
+                const hubUrl = String(cfg?.remote_hub_url || "").trim().replace(/\/+$/, "");
                 if (hubUrl) {
-                  BrowserOpenURL(`${hubUrl}/approval_workflow`);
+                  const machineId = String(cfg?.remote_machine_id || remoteMachineId || "").trim();
+                  const machineToken = String(cfg?.remote_machine_token || "").trim();
+                  const auth = new URLSearchParams();
+                  if (machineId) auth.set("machine_id", machineId);
+                  if (machineToken) auth.set("token", machineToken);
+                  const authFragment = auth.toString();
+                  BrowserOpenURL(`${hubUrl}/approval_workflow${authFragment ? `#${authFragment}` : ""}`);
                 }
               } catch {
-                // Config load failed 闁?ignore silently
+                // Config load failed; keep the settings panel responsive.
               }
             }}
           >
@@ -670,6 +888,101 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                 {nameError}
               </span>
             )}
+          </div>
+        </div>
+
+        <div className="ve-form-row ve-form-row--top">
+          <label className="ve-form-label">{c.avatar}</label>
+          <div className="ve-form-field">
+            <div className="ve-avatar-editor" data-testid="ve-avatar-editor">
+              <div className="ve-avatar-editor__stage" data-circle={avatarCircle ? "true" : "false"}>
+                {avatarPreviewURL ? (
+                  <img
+                    src={avatarPreviewURL}
+                    alt=""
+                    className="ve-avatar-editor__image ve-avatar-editor__image--fit"
+                    style={avatarPreviewStyle}
+                    onLoad={(e) => {
+                      const img = e.currentTarget;
+                      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                        setAvatarImageSize({ width: img.naturalWidth, height: img.naturalHeight });
+                      }
+                    }}
+                    onError={(e) => {
+                      const failedSource = e.currentTarget.currentSrc || e.currentTarget.src;
+                      const replacementFailed = !!avatarSourceURL && avatarSourceURL !== avatarDataURL && failedSource === avatarSourceURL;
+                      setAvatarSourceURL("");
+                      if (!replacementFailed) setAvatarDataURL("");
+                      setAvatarImageSize(null);
+                      setAvatarNeedsCrop(false);
+                      setAvatarError(c.avatarInvalid);
+                    }}
+                  />
+                ) : (
+                  <span className="ve-avatar-editor__fallback" aria-hidden="true">
+                    {name.trim().slice(0, 1).toUpperCase() || "DE"}
+                  </span>
+                )}
+              </div>
+              <div className="ve-avatar-editor__controls">
+                <div className="ve-avatar-editor__actions">
+                  <input
+                    ref={avatarFileInputRef}
+                    data-testid="ve-avatar-file-input"
+                    type="file"
+                    accept={avatarAcceptAttr}
+                    className="ve-avatar-editor__file"
+                    onChange={handleAvatarFileChange}
+                    disabled={formDisabled}
+                  />
+                  <button
+                    type="button"
+                    className="ve-btn ve-btn--secondary"
+                    onClick={() => avatarFileInputRef.current?.click()}
+                    disabled={formDisabled}
+                    data-testid="ve-avatar-upload-btn"
+                  >
+                    {avatarPreviewURL ? c.avatarReplace : c.avatarUpload}
+                  </button>
+                  {avatarPreviewURL && !formDisabled && (
+                    <button
+                      type="button"
+                      className="ve-btn ve-btn--ghost"
+                      onClick={handleClearAvatar}
+                      data-testid="ve-avatar-clear-btn"
+                    >
+                      {c.avatarClear}
+                    </button>
+                  )}
+                </div>
+                <label className="ve-avatar-editor__switch">
+                  <input
+                    type="checkbox"
+                    checked={avatarCircle}
+                    onChange={(e) => setAvatarCircle(e.target.checked)}
+                  />
+                  <span>{c.avatarCircle}</span>
+                </label>
+                {avatarSourceURL && !formDisabled && (
+                  <div className="ve-avatar-editor__sliders">
+                    <label>
+                      <span>{c.avatarZoom}</span>
+                      <input type="range" min="1" max="3" step="0.01" value={avatarScale} onChange={(e) => { setAvatarScale(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
+                    </label>
+                    <label>
+                      <span>{c.avatarHorizontal}</span>
+                      <input type="range" min="-80" max="80" step="1" value={avatarOffsetX} onChange={(e) => { setAvatarOffsetX(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
+                    </label>
+                    <label>
+                      <span>{c.avatarVertical}</span>
+                      <input type="range" min="-80" max="80" step="1" value={avatarOffsetY} onChange={(e) => { setAvatarOffsetY(Number(e.target.value)); setAvatarNeedsCrop(true); }} />
+                    </label>
+                  </div>
+                )}
+                <p className="ve-form-hint">{c.avatarHint}</p>
+                {avatarError && <span role="alert" className="ve-form-error">{avatarError}</span>}
+              </div>
+            </div>
           </div>
         </div>
 

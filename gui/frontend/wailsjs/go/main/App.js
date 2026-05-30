@@ -1925,12 +1925,12 @@ export function ListVirtualEmployees() {
   return window['go']['main']['App']['ListVirtualEmployees']();
 }
 
-export function RegisterVirtualEmployee(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['RegisterVirtualEmployee'](arg1, arg2, arg3, arg4);
+export function RegisterVirtualEmployee(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['RegisterVirtualEmployee'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function UpdateVESettings(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['UpdateVESettings'](arg1, arg2, arg3, arg4);
+export function UpdateVESettings(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateVESettings'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function GetVEStatus() {

@@ -139,4 +139,20 @@ describe("ProjectSearchPanel", () => {
         await waitFor(() => expect(ResumeProject).toHaveBeenCalledWith("D:/p/fallback"));
         expect(onProjectSwitch).toHaveBeenCalledWith("resumed");
     });
+
+    it("creates a task from current chat with inline naming instead of browser prompt", () => {
+        const search = makeSearch([]);
+        const onForkCurrentChat = vi.fn();
+        const promptSpy = vi.spyOn(window, "prompt");
+
+        renderPanel(search, { onForkCurrentChat });
+        fireEvent.click(screen.getByTitle("New task from current chat"));
+        fireEvent.change(screen.getByPlaceholderText("Task name (optional)"), { target: { value: "Research task" } });
+        fireEvent.click(screen.getByText("Create"));
+
+        expect(promptSpy).not.toHaveBeenCalled();
+        expect(search.close).toHaveBeenCalled();
+        expect(onForkCurrentChat).toHaveBeenCalledWith("Research task");
+        promptSpy.mockRestore();
+    });
 });

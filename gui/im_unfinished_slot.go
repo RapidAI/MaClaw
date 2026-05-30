@@ -311,8 +311,8 @@ func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {
 		return nil
 	}
 	return []IMResponseAction{
-		{Label: "继续上次任务", Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
-		{Label: "Start new task", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
+		{Label: avTr("Resume previous task", "\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1"), Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
+		{Label: avTr("Start new task", "\u5f00\u59cb\u65b0\u4efb\u52a1"), Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
 	}
 }
 
@@ -322,9 +322,13 @@ func buildUnfinishedSlotHint(slot *agent.UnfinishedTaskSlot) string {
 	}
 	title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary, slot.ProjectPath))
 	if title == "" {
-		title = "Previous unfinished task"
+		title = avTr("Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1")
 	}
-	return "Detected an unfinished task: " + truncateRunes(title, 60) + ". Choose resume to continue it."
+	title = truncateRunes(title, 60)
+	if avTr("en", "zh") == "en" {
+		return "Detected an unfinished task: " + title + ". Choose resume to continue it."
+	}
+	return "\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a" + title + "\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002"
 }
 
 func isSlotActionCommand(text string) bool {

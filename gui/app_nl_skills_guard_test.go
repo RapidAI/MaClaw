@@ -169,7 +169,7 @@ func TestSkillExecutorExecute_BlocksCreateSessionWhenSemanticUnavailable(t *test
 	if err == nil {
 		t.Fatal("expected Execute to fail for ssh intent")
 	}
-	if !strings.Contains(output, "Cannot determine whether this needs a coding session") || !strings.Contains(err.Error(), "skill execution stopped") {
+	if output != "" || !strings.Contains(err.Error(), "unsupported_step_action") || !strings.Contains(err.Error(), "external coding sessions") {
 		t.Fatalf("unexpected output=%q err=%v", output, err)
 	}
 }

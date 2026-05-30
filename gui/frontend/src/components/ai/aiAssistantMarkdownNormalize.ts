@@ -36,8 +36,7 @@ function normalizeCompactPipeTables(text: string): string {
             const afterIndex = offset + separator.length;
             const after = afterIndex < fullText.length && fullText[afterIndex] !== "\n" ? "\n" : "";
             return `${before}${separator.trim()}${after}`;
-        })
-        .replace(/([^\n])\s+(\|[^\n|]+\|[^\n]+)/g, "$1\n$2");
+        });
 }
 
 /**

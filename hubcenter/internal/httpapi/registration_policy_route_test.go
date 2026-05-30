@@ -125,3 +125,98 @@ func TestUpdateHubRegistrationPolicyBodyHubIDHandlesOpaqueHubID(t *testing.T) {
 		t.Fatalf("default tenant authorization response should be externalized, body=%s", digitalEmployeeResp.Body.String())
 	}
 }
+
+func TestAdminOpaqueHubIDCompatHandlesBodyActionRoutesBeforeMux(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+	now := time.Now().UTC()
+	createHub := func(hubID string, port int) {
+		t.Helper()
+		if err := svc.store.Hubs.Create(context.Background(), &store.HubInstance{
+			ID:                     hubID,
+			InstallationID:         "opaque-body-route-" + hubID,
+			OwnerEmail:             "owner-body@example.com",
+			Name:                   "Opaque Body Route Hub",
+			BaseURL:                hubID,
+			Host:                   "hub.example.com",
+			Port:                   port,
+			Visibility:             "shared",
+			EnrollmentMode:         "open",
+			Status:                 "online",
+			CapabilitiesJSON:       "{}",
+			RegistrationPolicyJSON: "{}",
+			HubSecretHash:          "hash",
+			LastSeenAt:             &now,
+			CreatedAt:              now,
+			UpdatedAt:              now,
+		}); err != nil {
+			t.Fatalf("create opaque hub: %v", err)
+		}
+	}
+	hubID := "https://hub.example.com/body-route"
+	createHub(hubID, 443)
+	deleteHubID := "https://hub.example.com/body-route-delete"
+	createHub(deleteHubID, 444)
+	confirmHubID := "https://hub.example.com/body-route-confirm"
+	if err := svc.store.Hubs.Create(context.Background(), &store.HubInstance{
+		ID:                     confirmHubID,
+		InstallationID:         "opaque-body-route-hub-id",
+		OwnerEmail:             "owner-body@example.com",
+		Name:                   "Opaque Body Route Hub",
+		BaseURL:                confirmHubID,
+		Host:                   "hub.example.com",
+		Port:                   445,
+		Visibility:             "shared",
+		EnrollmentMode:         "open",
+		Status:                 "pending_confirmation",
+		CapabilitiesJSON:       "{}",
+		RegistrationPolicyJSON: "{}",
+		HubSecretHash:          "hash",
+		LastSeenAt:             &now,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}); err != nil {
+		t.Fatalf("create opaque hub: %v", err)
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
+	handler := adminOpaqueHubIDCompat(inner, svc.admins, svc.hubs)
+	resp := doJSONRequest(t, handler, http.MethodPost, "/api/admin/hubs/registration-policy", map[string]any{
+		"hub_id":               hubID,
+		"hub_origin":           "official",
+		"default_signup_scope": "public",
+		"tenant": map[string]any{
+			"tenant_id":    "tenant_default",
+			"signup_scope": "inherit",
+		},
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("compat body action route should not fall through to mux, status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"tenant_default"`)) {
+		t.Fatalf("default tenant should be externalized, body=%s", resp.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   map[string]any
+	}{
+		{name: "visibility", method: http.MethodPost, path: "/api/admin/hubs/visibility", body: map[string]any{"hub_id": hubID, "visibility": "private"}},
+		{name: "digital_employee_authorization", method: http.MethodPost, path: "/api/admin/hubs/digital-employee-authorization", body: map[string]any{"hub_id": hubID, "tenant_id": "tenant_default", "quota": 1, "years": 1, "enabled": true}},
+		{name: "disable", method: http.MethodPost, path: "/api/admin/hubs/disable", body: map[string]any{"hub_id": hubID}},
+		{name: "enable", method: http.MethodPost, path: "/api/admin/hubs/enable", body: map[string]any{"hub_id": hubID}},
+		{name: "confirm", method: http.MethodPost, path: "/api/admin/hubs/confirm", body: map[string]any{"hub_id": confirmHubID}},
+		{name: "delete", method: http.MethodDelete, path: "/api/admin/hubs", body: map[string]any{"hub_id": deleteHubID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doJSONRequest(t, handler, tc.method, tc.path, tc.body, token)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("compat body action route should not fall through to mux, status=%d body=%s", resp.Code, resp.Body.String())
+			}
+		})
+	}
+}

@@ -41,6 +41,32 @@ ps -eo pid=,args= | awk -v cmd="$APP_DIR/$BIN_NAME" '$2 == cmd { print $1 }' | w
   fi
 done
 
+ps -eo pid=,args= | awk -v dir="$APP_DIR/" '
+  index($0, dir) && ($0 ~ /maclaw-hubcenter/ || $0 ~ /tigerclaw-hubcenter/) { print $1 }
+' | while read -r pid; do
+  if [ -n "${pid:-}" ] && [ "$pid" != "$$" ]; then
+    echo "Stopping hubcenter process from deploy dir: $pid"
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  fi
+done
+
+ps -eo pid=,args= | awk '
+  $0 ~ /(^|[\/ ])(maclaw-hubcenter|tigerclaw-hubcenter)( |$)/ { print $1 }
+' | while read -r pid; do
+  if [ -n "${pid:-}" ] && [ "$pid" != "$$" ]; then
+    echo "Stopping hubcenter process by binary name: $pid"
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  fi
+done
+
 echo "Starting $BIN_NAME..."
 nohup "$APP_DIR/$BIN_NAME" --config "$CONFIG_PATH" >>"$LOG_FILE" 2>&1 &
 NEW_PID=$!

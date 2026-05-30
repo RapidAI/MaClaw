@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VirtualEmployeeTab, truncateText, policyIcon } from '../VirtualEmployeeTab';
 import type { VirtualEmployeeEntry, VETabProps } from '../VirtualEmployeeTab';
 import type { Theme } from '../aiAssistantPanelTheme';
+import { safeAvatarDataURL } from '../virtualEmployeeAvatar';
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -147,6 +148,31 @@ describe('VirtualEmployeeTab', () => {
         });
     });
 
+    describe('safeAvatarDataURL', () => {
+        it('accepts image data URLs', () => {
+            expect(safeAvatarDataURL('data:image/jpeg;base64,/9j/')).toBe('data:image/jpeg;base64,/9j/');
+        });
+
+        it('accepts final avatars by decoded byte size instead of raw data URL length', () => {
+            const avatar = `data:image/jpeg;base64,${btoa(`\xff\xd8\xff${'\0'.repeat(800 * 1024)}`)}`;
+            expect(avatar.length).toBeGreaterThan(1024 * 1024);
+            expect(safeAvatarDataURL(avatar)).toBe(avatar);
+        });
+
+        it('rejects script, remote, and malformed URLs', () => {
+            expect(safeAvatarDataURL('javascript:alert(1)')).toBe('');
+            expect(safeAvatarDataURL('https://example.com/avatar.png')).toBe('');
+            expect(safeAvatarDataURL('data:image/png;base64,QUJD')).toBe('');
+            expect(safeAvatarDataURL('data:image/jpeg;base64,iVBORw0KGgo=')).toBe('');
+            expect(safeAvatarDataURL('data:image/png;base64,%%%')).toBe('');
+            expect(safeAvatarDataURL('data:image/png;base64,=')).toBe('');
+        });
+
+        it('rejects oversized avatar data URLs before decoding', () => {
+            expect(safeAvatarDataURL(`data:image/png;base64,${'a'.repeat(2 * 1024 * 1024)}`)).toBe('');
+        });
+    });
+
     // --- Loading state ---
 
     describe('loading state', () => {
@@ -216,11 +242,11 @@ describe('VirtualEmployeeTab', () => {
             expect(offlineIndicator.style.background).toBe("rgb(156, 163, 175)"); // #9ca3af
         });
 
-        it('shows "需授权" badge for per_request policy', async () => {
+        it('shows "待确认" badge for per_request policy', async () => {
             renderVETab();
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(screen.getByTestId("ve-badge-ve-2")).toBeTruthy();
-            expect(screen.getByTestId("ve-badge-ve-2").textContent).toBe("需授权");
+            expect(screen.getByTestId("ve-badge-ve-2").textContent).toBe("待确认");
         });
 
         it('does not show badge for non-per_request policies', async () => {
@@ -273,6 +299,26 @@ describe('VirtualEmployeeTab', () => {
             fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
             fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
             expect(onSetFavorite).toHaveBeenCalledWith(sampleVEs[0]);
+        });
+
+        it('treats machine-id favorites as already favorited in the context menu', async () => {
+            const employee = {
+                id: "profile-1",
+                machine_id: "machine-1",
+                name: "Machine Bot",
+                skill_description: "Ops",
+                access_policy: "public" as const,
+                status: "active",
+                online_status: "online" as const,
+            };
+            const { onRemoveFavorite, onSetFavorite } = renderVETab({ favoriteEmployeeIds: ["machine-1"] }, [employee]);
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.contextMenu(screen.getByTestId("ve-item-profile-1"));
+            fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
+
+            expect(onRemoveFavorite).toHaveBeenCalledWith(employee);
+            expect(onSetFavorite).not.toHaveBeenCalled();
         });
     });
 

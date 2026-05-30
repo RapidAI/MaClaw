@@ -13,7 +13,8 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { ParticipantSelector, useGroupConfig, virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
-import { localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
+import { localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { veStatusEventInfo } from "./veStatusEvent";
 
 export interface Participant {
     id: string;
@@ -118,7 +119,7 @@ export function GroupParticipantPanel({
 }: GroupParticipantPanelProps) {
     const isZh = !lang || lang.startsWith("zh");
     const { maxGroupParticipants } = useGroupConfig(maxParticipants);
-    const participantIdSet = useMemo(() => new Set(participants.map((p) => p.id)), [participants]);
+    const participantIdSet = useMemo(() => new Set(participants.map((p) => normalizeParticipantId(p.id))), [participants]);
 
     // Online status overlay: tracks status changes from events without
     // duplicating the participants array in state. Key = participant ID, value = online.
@@ -169,9 +170,11 @@ export function GroupParticipantPanel({
     useEffect(() => {
         const unsub = EventsOn("ve:status_change", (data: any) => {
             if (!data) return;
-            const id = String(data.ve_id || data.id || "").trim();
-            if (!id || !participantIdSet.has(id)) return;
-            const online = data.online_status === "online";
+            const { ids, status } = veStatusEventInfo(data);
+            if (status !== "online" && status !== "offline") return;
+            const id = ids.find((candidate) => participantIdSet.has(candidate));
+            if (!id) return;
+            const online = status === "online";
             setStatusOverlay(prev => {
                 if (prev[id] === online) return prev;
                 return { ...prev, [id]: online };
@@ -196,10 +199,13 @@ export function GroupParticipantPanel({
     }, [participantIdSet]);
 
     // Merge prop data with status overlay
-    const resolvedParticipants = participants.map(p => ({
-        ...p,
-        online: statusOverlay[p.id] !== undefined ? statusOverlay[p.id] : p.online,
-    }));
+    const resolvedParticipants = participants.map(p => {
+        const normalizedId = normalizeParticipantId(p.id);
+        return {
+            ...p,
+            online: statusOverlay[normalizedId] !== undefined ? statusOverlay[normalizedId] : p.online,
+        };
+    });
 
     const limitReached = resolvedParticipants.length >= maxGroupParticipants;
 

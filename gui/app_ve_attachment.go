@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,15 +82,6 @@ func validateFileSize(path string, category string) error {
 		return fmt.Errorf("unknown file category: %s", category)
 	}
 	return nil
-}
-
-// base64EncodeFile reads the file at path and returns its content as a base64-encoded string.
-func base64EncodeFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read file failed: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(data), nil
 }
 
 // veFileRelayHTTPClient is a shared HTTP client for file relay uploads.
@@ -325,10 +315,9 @@ func (a *App) sendVEFileAttachmentMessage(sessionID, filePath, displayName, cont
 }
 
 // SendVEMessageWithAttachments sends a message with file attachments in a VE conversation.
-// For each file in filePaths:
-//   - Text files (<=500KB): read content, base64 encode, inline TextAttachment
-//   - Image files (<=10MB): upload to Hub file relay as ImageAttachment with file_url
-//   - Document files (<=20MB): upload to Hub file relay as FileAttachment with file_url
+// For remote delivery, files are uploaded through the Hub relay so the receiving
+// digital employee can download and persist them on its own machine before the
+// saved local path is passed into its agent context.
 //
 // On upload failure, returns a specific error; the message text is preserved for retry.
 func (a *App) SendVEMessageWithAttachments(sessionID string, content string, filePaths []string) error {
@@ -436,7 +425,6 @@ func (a *App) prepareVEAttachmentMessage(sessionID, content string, filePaths []
 		}
 	}
 
-	var textAttachments []a2a.TextAttachment
 	var imageAttachments []a2a.ImageAttachment
 	var fileAttachments []a2a.FileAttachment
 	for _, fp := range filePaths {
@@ -444,23 +432,33 @@ func (a *App) prepareVEAttachmentMessage(sessionID, content string, filePaths []
 		if category == "" {
 			return a2a.GroupDiscussionMessage{}, fmt.Errorf("unsupported file type: %s", filepath.Ext(fp))
 		}
-		if err := validateFileSize(fp, category); err != nil {
-			return a2a.GroupDiscussionMessage{}, err
-		}
 		filename := filepath.Base(fp)
 		mimeType := mimeTypeForFile(fp)
 		switch category {
 		case "text":
-			encoded, err := base64EncodeFile(fp)
-			if err != nil {
-				return a2a.GroupDiscussionMessage{}, fmt.Errorf("failed to encode text file %s: %w", filename, err)
+			if err := validateFileSize(fp, "document"); err != nil {
+				return a2a.GroupDiscussionMessage{}, err
 			}
-			att := a2a.TextAttachment{Content: encoded, Filename: filename, MimeType: mimeType}
-			if !uploadRemoteFiles {
+			info, _ := os.Stat(fp)
+			var sizeBytes int64
+			if info != nil {
+				sizeBytes = info.Size()
+			}
+			att := a2a.FileAttachment{Filename: filename, MimeType: mimeType, SizeBytes: sizeBytes}
+			if uploadRemoteFiles {
+				fileURL, err := a.uploadToFileRelay(hubURL, token, fp, sessionID)
+				if err != nil {
+					return a2a.GroupDiscussionMessage{}, fmt.Errorf("failed to upload text file %s: %w", filename, err)
+				}
+				att.FileURL = fileURL
+			} else {
 				att.LocalPath = fp
 			}
-			textAttachments = append(textAttachments, att)
+			fileAttachments = append(fileAttachments, att)
 		case "image":
+			if err := validateFileSize(fp, category); err != nil {
+				return a2a.GroupDiscussionMessage{}, err
+			}
 			att := a2a.ImageAttachment{Filename: filename, MimeType: mimeType}
 			if uploadRemoteFiles {
 				fileURL, err := a.uploadToFileRelay(hubURL, token, fp, sessionID)
@@ -473,6 +471,9 @@ func (a *App) prepareVEAttachmentMessage(sessionID, content string, filePaths []
 			}
 			imageAttachments = append(imageAttachments, att)
 		case "document":
+			if err := validateFileSize(fp, category); err != nil {
+				return a2a.GroupDiscussionMessage{}, err
+			}
 			info, _ := os.Stat(fp)
 			var sizeBytes int64
 			if info != nil {
@@ -495,7 +496,6 @@ func (a *App) prepareVEAttachmentMessage(sessionID, content string, filePaths []
 	return a2a.GroupDiscussionMessage{
 		Kind:             a2a.MessageStatement,
 		Content:          content,
-		TextAttachments:  textAttachments,
 		ImageAttachments: imageAttachments,
 		FileAttachments:  fileAttachments,
 		CreatedAt:        time.Now(),

@@ -48,25 +48,6 @@ func TestSubAgentRouteRequiresPassedIntegrationBeforeWorkflowSave(t *testing.T) 
 	}
 }
 
-func TestShouldRouteGateConfigToDirectCodingSubAgentForBugFix(t *testing.T) {
-	msg := IMUserMessage{Text: "fix the startup bug"}
-	cfg := codingToolGateConfig{intent: intentCoding, bugFix: true}
-	if !shouldRouteGateConfigToDirectCodingSubAgent(cfg, msg, &LoopContext{Kind: LoopKindChat}) {
-		t.Fatal("bug-fix coding requests should route directly to CodingSubAgent")
-	}
-}
-
-func TestShouldRouteGateConfigToDirectCodingSubAgentSkipsWorkflowLoop(t *testing.T) {
-	msg := IMUserMessage{Text: "fix the startup bug"}
-	cfg := codingToolGateConfig{intent: intentCoding, bugFix: true}
-	if shouldRouteGateConfigToDirectCodingSubAgent(cfg, msg, &LoopContext{Kind: LoopKindChat, WorkflowAgentLoop: true}) {
-		t.Fatal("workflow agent loop should keep existing orchestrator/workflow routing")
-	}
-	if shouldRouteGateConfigToDirectCodingSubAgent(codingToolGateConfig{intent: intentCoding, active: true}, msg, &LoopContext{Kind: LoopKindChat}) {
-		t.Fatal("new-project gate should not bypass three-phase workflow")
-	}
-}
-
 func TestDirectCodingSubAgentRouteRequiresSemanticBugFixIntent(t *testing.T) {
 	original := unifiedClassifierPtr.Load()
 	defer unifiedClassifierPtr.Store(original)
@@ -91,12 +72,43 @@ func TestDirectCodingSubAgentRouteAcceptsSemanticBugFixIntent(t *testing.T) {
 	}
 }
 
+func TestDirectCodingSubAgentRouteRejectsCloudflareLoginOpsIntent(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"non_coding","score":0.95,"reason":"operational login guidance, not code repair"}]}`, nil
+	}})
+	h := &IMMessageHandler{unifiedClassifier: uic}
+	msg := IMUserMessage{UserID: "u1", Text: "Cloudflare OAuth login is unavailable; any other operational options?"}
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("ops/login guidance must not route directly to CodingSubAgent")
+	}
+}
+
 func TestDirectCodingSubAgentRouteRejectsKeywordLayerResult(t *testing.T) {
 	msg := IMUserMessage{Text: "fix the startup bug"}
 	result := GateIntentResult{Intent: GateIntentBugFix, Confidence: 0.95, Layer: 1, Reason: "keyword match"}
 
 	if shouldRouteGateResultToDirectCodingSubAgent(result, msg, &LoopContext{Kind: LoopKindChat}) {
 		t.Fatal("layer-1 keyword-only result must not route directly to CodingSubAgent")
+	}
+}
+
+func TestDirectCodingSubAgentRouteRejectsDegradedBugFixIntent(t *testing.T) {
+	msg := IMUserMessage{Text: "fix the startup bug"}
+	result := GateIntentResult{Intent: GateIntentBugFix, Confidence: 0.95, Layer: 2, Degraded: true, Reason: "embedding-only fallback"}
+
+	if shouldRouteGateResultToDirectCodingSubAgent(result, msg, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("degraded semantic result must not route directly to CodingSubAgent")
+	}
+}
+
+func TestDirectCodingSubAgentRouteRejectsNonBugFixCodingIntents(t *testing.T) {
+	msg := IMUserMessage{Text: "build or maintain this project"}
+	for _, intent := range []GateIntent{GateIntentNewProject, GateIntentMaintenance} {
+		result := GateIntentResult{Intent: intent, Confidence: 0.95, Layer: 3, Reason: "semantic coding, not direct bug fix"}
+		if shouldRouteGateResultToDirectCodingSubAgent(result, msg, &LoopContext{Kind: LoopKindChat}) {
+			t.Fatalf("%s must not route directly to CodingSubAgent", intent)
+		}
 	}
 }
 
@@ -114,7 +126,10 @@ func TestRouteDirectCodingSubAgentExecutionRunsCodingSubAgent(t *testing.T) {
 		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "bug fixed"}
 	}
 
-	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h := &IMMessageHandler{memory: agent.NewConversationMemory(), unifiedClassifier: uic}
 	resp, history, handled := h.routeDirectCodingSubAgentExecution(
 		IMUserMessage{UserID: "u1", Text: "fix the startup bug"},
 		nil,

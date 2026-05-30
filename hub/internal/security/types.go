@@ -36,35 +36,37 @@ type PolicyGroupPathItem struct {
 
 // EffectivePolicy 生效策略
 type EffectivePolicy struct {
-	FileOutboundEnabled  bool     `json:"file_outbound_enabled"`
-	ImageOutboundEnabled bool     `json:"image_outbound_enabled"`
-	GossipEnabled        bool     `json:"gossip_enabled"`
-	GuardrailMode        string   `json:"guardrail_mode"`
-	SandboxMode          string   `json:"sandbox_mode"`
-	NetworkLevel         string   `json:"network_level"`
-	NetworkAllowlist     []string `json:"network_allowlist,omitempty"`
-	YoloModeAllowed      bool     `json:"yolo_mode_allowed"`
-	SmartRouteEnabled    bool     `json:"smart_route_enabled"`
-	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed; values: "skillhub","clawhub","github","enterprise_hub"
+	FileOutboundEnabled    bool     `json:"file_outbound_enabled"`
+	ImageOutboundEnabled   bool     `json:"image_outbound_enabled"`
+	GossipEnabled          bool     `json:"gossip_enabled"`
+	GuardrailMode          string   `json:"guardrail_mode"`
+	SandboxMode            string   `json:"sandbox_mode"`
+	NetworkLevel           string   `json:"network_level"`
+	NetworkAllowlist       []string `json:"network_allowlist,omitempty"`
+	YoloModeAllowed        bool     `json:"yolo_mode_allowed"`
+	SmartRouteEnabled      bool     `json:"smart_route_enabled"`
+	SkillSourcesAllowed    []string `json:"skill_sources_allowed,omitempty"` // nil = all allowed; empty with SkillSourcesRestricted=true blocks all.
+	SkillSourcesRestricted bool     `json:"skill_sources_restricted,omitempty"`
 }
 
 // DefaultPolicy 根组默认策略
 var DefaultPolicy = EffectivePolicy{
-	FileOutboundEnabled:  true,
-	ImageOutboundEnabled: true,
-	GossipEnabled:        true,
-	GuardrailMode:        "standard",
-	SandboxMode:          "none",
-	NetworkLevel:         "full",
-	NetworkAllowlist:     nil,
-	YoloModeAllowed:      true,
-	SmartRouteEnabled:    true,
-	SkillSourcesAllowed:  nil, // nil = all sources allowed (skillhub, clawhub, github, enterprise_hub)
+	FileOutboundEnabled:    true,
+	ImageOutboundEnabled:   true,
+	GossipEnabled:          true,
+	GuardrailMode:          "standard",
+	SandboxMode:            "none",
+	NetworkLevel:           "full",
+	NetworkAllowlist:       nil,
+	YoloModeAllowed:        true,
+	SmartRouteEnabled:      true,
+	SkillSourcesAllowed:    nil, // nil = all sources allowed (skillhub, clawhub, github, enterprise_hub, local)
+	SkillSourcesRestricted: false,
 }
 
 // AllSkillSources re-exports the canonical list from corelib/skill.
 // Kept here for admin UI reference when displaying policy options.
-var AllSkillSources = []string{"skillhub", "clawhub", "github", "enterprise_hub"}
+var AllSkillSources = []string{"skillhub", "clawhub", "github", "enterprise_hub", "local"}
 
 // GroupPolicyView 组策略视图（含继承信息）
 type GroupPolicyView struct {
@@ -95,7 +97,8 @@ type HeartbeatSecurityPayload struct {
 	// When centralized=true, sources are in Policy.SkillSourcesAllowed (merged).
 	// When centralized=false but source control is configured, this field carries
 	// the restriction so clients can enforce it without full centralized mode.
-	SkillSourcesAllowed []string `json:"skill_sources_allowed,omitempty"`
+	SkillSourcesAllowed    []string `json:"skill_sources_allowed,omitempty"`
+	SkillSourcesRestricted bool     `json:"skill_sources_restricted,omitempty"`
 }
 
 // SecurityPolicyProvider 安全策略提供者接口（供 OutboundInterceptor 和 ws.Gateway 使用）

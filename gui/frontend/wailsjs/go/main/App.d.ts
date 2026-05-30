@@ -973,9 +973,9 @@ export function RequestHubCapabilityInstallIntent(arg1:any):Promise<any>;
 // Digital Employee bindings
 export function ListVirtualEmployees():Promise<Array<any>>;
 
-export function RegisterVirtualEmployee(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+export function RegisterVirtualEmployee(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<void>;
 
-export function UpdateVESettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+export function UpdateVESettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<void>;
 
 export function GetVEStatus():Promise<any>;
 

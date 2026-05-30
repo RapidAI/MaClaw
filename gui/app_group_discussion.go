@@ -78,15 +78,21 @@ func (a *App) GroupDiscussionListExperts() ([]a2a.GroupProfile, error) {
 }
 
 func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, error) {
+	role = strings.TrimSpace(role)
 	client, cfg, err := a.groupDiscussionClient()
 	if err != nil {
+		if cached, cacheErr := a.cachedGroupDiscussionSummaries(role); cacheErr == nil && len(cached) > 0 {
+			return cached, nil
+		}
 		return nil, err
 	}
 	agentID := strings.TrimSpace(groupDiscussionAgentID(cfg))
 	if agentID == "" {
+		if cached, cacheErr := a.cachedGroupDiscussionSummaries(role); cacheErr == nil && len(cached) > 0 {
+			return cached, nil
+		}
 		return nil, fmt.Errorf("remote machine id is required")
 	}
-	role = strings.TrimSpace(role)
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	discussions, err := client.ListDiscussionsForAgent(ctx, agentID, role)
@@ -95,13 +101,8 @@ func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, 
 		defer store.Close()
 	}
 	if err != nil {
-		if storeErr == nil {
-			if cached, cacheErr := store.CachedSummaries(ctx, false); cacheErr == nil && len(cached) > 0 {
-				cached = filterGroupDiscussionSummariesByRole(cached, role)
-				if len(cached) > 0 {
-					return cached, nil
-				}
-			}
+		if cached, cacheErr := a.cachedGroupDiscussionSummaries(role); cacheErr == nil && len(cached) > 0 {
+			return cached, nil
 		}
 		return nil, err
 	}
@@ -113,6 +114,21 @@ func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, 
 		}
 	}
 	return discussions, nil
+}
+
+func (a *App) cachedGroupDiscussionSummaries(role string) ([]a2a.HubDiscussionSummary, error) {
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	cached, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	return filterGroupDiscussionSummariesByRole(cached, strings.TrimSpace(role)), nil
 }
 
 func (a *App) GroupDiscussionSetLocalHidden(consultationID string, hidden bool) error {
@@ -547,16 +563,28 @@ func lowerStringSet(values []string) map[string]struct{} {
 func (a *App) GroupDiscussionGetConsultation(consultationID string) (a2a.HubDiscussionSummary, error) {
 	client, _, err := a.groupDiscussionClient()
 	if err != nil {
+		if cached, ok, cacheErr := a.cachedGroupDiscussionSummary(consultationID); cacheErr == nil && ok {
+			return cached, nil
+		}
 		return a2a.HubDiscussionSummary{}, err
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	return client.GetConsultation(ctx, consultationID)
+	summary, err := client.GetConsultation(ctx, consultationID)
+	if err != nil {
+		if cached, ok, cacheErr := a.cachedGroupDiscussionSummary(consultationID); cacheErr == nil && ok {
+			return cached, nil
+		}
+	}
+	return summary, err
 }
 
 func (a *App) GroupDiscussionGetConsultationDetail(consultationID string) (a2a.HubDiscussionDetail, error) {
 	client, cfg, err := a.groupDiscussionClient()
 	if err != nil {
+		if cached, ok, cacheErr := a.cachedGroupDiscussionDetail(consultationID); cacheErr == nil && ok {
+			return cached, nil
+		}
 		return a2a.HubDiscussionDetail{}, err
 	}
 	ctx, cancel := groupDiscussionContext()
@@ -567,10 +595,8 @@ func (a *App) GroupDiscussionGetConsultationDetail(consultationID string) (a2a.H
 		defer store.Close()
 	}
 	if err != nil {
-		if storeErr == nil {
-			if cached, ok, cacheErr := store.CachedDetail(ctx, consultationID); cacheErr == nil && ok {
-				return cached, nil
-			}
+		if cached, ok, cacheErr := a.cachedGroupDiscussionDetail(consultationID); cacheErr == nil && ok {
+			return cached, nil
 		}
 		return a2a.HubDiscussionDetail{}, err
 	}
@@ -579,6 +605,41 @@ func (a *App) GroupDiscussionGetConsultationDetail(consultationID string) (a2a.H
 		detail = store.EnrichDetailAttachments(ctx, detail)
 	}
 	return detail, nil
+}
+
+func (a *App) cachedGroupDiscussionSummary(consultationID string) (a2a.HubDiscussionSummary, bool, error) {
+	consultationID = strings.TrimSpace(consultationID)
+	if consultationID == "" {
+		return a2a.HubDiscussionSummary{}, false, nil
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return a2a.HubDiscussionSummary{}, false, err
+	}
+	defer store.Close()
+	cached, err := store.CachedSummaries(ctx, true)
+	if err != nil {
+		return a2a.HubDiscussionSummary{}, false, err
+	}
+	for _, summary := range cached {
+		if strings.EqualFold(strings.TrimSpace(summary.ID), consultationID) {
+			return summary, true, nil
+		}
+	}
+	return a2a.HubDiscussionSummary{}, false, nil
+}
+
+func (a *App) cachedGroupDiscussionDetail(consultationID string) (a2a.HubDiscussionDetail, bool, error) {
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return a2a.HubDiscussionDetail{}, false, err
+	}
+	defer store.Close()
+	return store.CachedDetail(ctx, consultationID)
 }
 
 func (a *App) GroupDiscussionGetReadiness(consultationID string) (GroupDiscussionReadiness, error) {

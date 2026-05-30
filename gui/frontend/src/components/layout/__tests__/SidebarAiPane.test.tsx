@@ -8,7 +8,7 @@ vi.mock('../SidebarToolSelector', () => ({ SidebarToolSelector: () => <div data-
 vi.mock('../SidebarRecentTasks', () => ({ SidebarRecentTasks: () => <div data-testid="recent-tasks" /> }));
 vi.mock('../SidebarSystemStatus', () => ({ SidebarSystemStatus: () => <div data-testid="system-status" /> }));
 vi.mock('../../ai/VirtualEmployeeTab', () => ({ VirtualEmployeeTab: () => <div data-testid="digital-employees" /> }));
-vi.mock('../SidebarHistorySessions', () => ({ SidebarHistorySessions: () => <div data-testid="history-sessions" /> }));
+vi.mock('../SidebarHistorySessions', () => ({ SidebarHistorySessions: ({ enabled = true }: { enabled?: boolean }) => enabled ? <div data-testid="history-sessions" /> : null }));
 
 const noop = vi.fn();
 
@@ -96,6 +96,16 @@ describe('SidebarAiPane digital employee tabs', () => {
 
         fireEvent.click(screen.getByText('Digital Employees'));
         expect(screen.getByTestId('digital-employees')).toBeTruthy();
+
+        fireEvent.click(screen.getByText('History'));
+        expect(screen.getByTestId('history-sessions')).toBeTruthy();
+    });
+
+    it('keeps cached digital employee history visible when group discussion is disabled', () => {
+        renderPane(
+            { visible: false, reason: 'no_digital_employees', actual_count: 0 },
+            { showDigitalEmployeeNavigation: true, config: { group_discussion: { enabled: false } } },
+        );
 
         fireEvent.click(screen.getByText('History'));
         expect(screen.getByTestId('history-sessions')).toBeTruthy();

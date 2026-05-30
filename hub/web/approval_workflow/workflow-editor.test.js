@@ -92,5 +92,81 @@ assertTrue(savedRevisionIndex !== -1 && firstAwaitIndex !== -1 && savedRevisionI
 assertTrue(saveWorkflowDraftSource.indexOf('ensureWorkflowDefinition(name, description)') !== -1, 'saves stable workflow metadata snapshot');
 assertTrue(saveWorkflowDraftSource.indexOf('return { version: ver, clean: clearDirty(savedRevision) };') !== -1, 'reports whether save cleared dirty state');
 
+var getWorkflowAuthSource = extractFunction('getWorkflowAuth');
+assertTrue(getWorkflowAuthSource.indexOf('scrubWorkflowAuthFromLocation()') !== -1, 'scrubs machine credentials from URL after capture');
+
+var storedAuth = {};
+var scrubbedAuth = false;
+var getWorkflowAuth = new Function('getUrlParam', 'storageGet', 'storageSet', 'storageRemove', 'scrubWorkflowAuthFromLocation', getWorkflowAuthSource + '\nreturn getWorkflowAuth;')(
+  function (name) { return name === 'machine_id' ? ' machine-from-url ' : name === 'token' ? ' token-from-url ' : ''; },
+  function (key) { return storedAuth[key] || ''; },
+  function (key, value) { storedAuth[key] = value; },
+  function (key) { delete storedAuth[key]; },
+  function () { scrubbedAuth = true; }
+);
+var auth = getWorkflowAuth();
+assertEqual(auth.machineID, 'machine-from-url', 'reads and trims workflow machine id from URL before storage');
+assertEqual(auth.token, 'token-from-url', 'reads and trims workflow token from URL before storage');
+assertEqual(storedAuth['maclaw-approval-workflow-machine-id'], 'machine-from-url', 'persists workflow machine id for reload');
+assertEqual(storedAuth['maclaw-approval-workflow-machine-token'], 'token-from-url', 'persists workflow machine token for reload');
+assertEqual(scrubbedAuth, true, 'scrubs URL after capturing workflow auth');
+
+storedAuth = {
+  'maclaw-approval-workflow-machine-id': 'stale-machine',
+  'maclaw-approval-workflow-machine-token': 'stale-token'
+};
+scrubbedAuth = false;
+getWorkflowAuth = new Function('getUrlParam', 'storageGet', 'storageSet', 'storageRemove', 'scrubWorkflowAuthFromLocation', getWorkflowAuthSource + '\nreturn getWorkflowAuth;')(
+  function (name) { return name === 'machine_id' ? '   ' : name === 'token' ? '   ' : ''; },
+  function (key) { return storedAuth[key] || ''; },
+  function (key, value) { storedAuth[key] = value; },
+  function (key) { delete storedAuth[key]; },
+  function () { scrubbedAuth = true; }
+);
+auth = getWorkflowAuth();
+assertEqual(auth.machineID, '', 'blank workflow machine id is normalized to empty');
+assertEqual(auth.token, '', 'blank workflow token is normalized to empty');
+assertEqual(storedAuth['maclaw-approval-workflow-machine-id'], undefined, 'blank workflow machine id clears stale storage');
+assertEqual(storedAuth['maclaw-approval-workflow-machine-token'], undefined, 'blank workflow token clears stale storage');
+assertEqual(scrubbedAuth, true, 'blank URL credentials still trigger URL scrub');
+
+storedAuth = {
+  'maclaw-approval-workflow-machine-id': ' stored-machine ',
+  'maclaw-approval-workflow-machine-token': ' stored-token '
+};
+scrubbedAuth = false;
+getWorkflowAuth = new Function('getUrlParam', 'storageGet', 'storageSet', 'storageRemove', 'scrubWorkflowAuthFromLocation', getWorkflowAuthSource + '\nreturn getWorkflowAuth;')(
+  function () { return ''; },
+  function (key) { return storedAuth[key] || ''; },
+  function (key, value) { storedAuth[key] = value; },
+  function (key) { delete storedAuth[key]; },
+  function () { scrubbedAuth = true; }
+);
+auth = getWorkflowAuth();
+assertEqual(auth.machineID, 'stored-machine', 'falls back to trimmed stored workflow machine id');
+assertEqual(auth.token, 'stored-token', 'falls back to trimmed stored workflow token');
+assertEqual(storedAuth['maclaw-approval-workflow-machine-id'], 'stored-machine', 'rewrites stored machine id in normalized form');
+assertEqual(storedAuth['maclaw-approval-workflow-machine-token'], 'stored-token', 'rewrites stored token in normalized form');
+
+var scrubWorkflowAuthFromLocation = new Function(extractFunction('scrubWorkflowAuthFromLocation') + '\nreturn scrubWorkflowAuthFromLocation;')();
+var replacedURL = null;
+global.document = { title: 'Approval Workflow Designer' };
+global.window = {
+  location: { href: 'https://hub.example/approval_workflow/?workflow_id=wf1&token=secret#machine_id=m1&machine_token=secret2&review_version_id=v1' },
+  history: {
+    state: { page: 'designer' },
+    replaceState: function (_state, _title, url) { replacedURL = url; }
+  }
+};
+scrubWorkflowAuthFromLocation();
+assertEqual(replacedURL, '/approval_workflow/?workflow_id=wf1#review_version_id=v1', 'removes machine credentials from query and hash but keeps route params');
+
+replacedURL = null;
+global.window.location.href = 'https://hub.example/approval_workflow/?workflow_id=wf1#review_version_id=v1';
+scrubWorkflowAuthFromLocation();
+assertEqual(replacedURL, null, 'does not rewrite URL when no machine credentials are present');
+delete global.window;
+delete global.document;
+
 console.log('\n=== Results: ' + passCount + '/' + testCount + ' passed ===\n');
 if (passCount < testCount) process.exit(1);

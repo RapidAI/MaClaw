@@ -3,10 +3,14 @@ package main
 import (
 	"encoding/base64"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
 
@@ -32,12 +36,15 @@ func TestAttachmentContentReadsLocalContextFileAtLimit(t *testing.T) {
 		t.Fatalf("writeZeroFile: %v", err)
 	}
 
-	content, err := (&VEMessageHandler{}).attachmentContent("disc-1", "", path)
+	content, err := (&VEMessageHandler{}).attachmentContent("disc-1", "", path, "small.txt")
 	if err != nil {
 		t.Fatalf("attachmentContent: %v", err)
 	}
-	if len(content) != veAttachmentContextMaxBytes {
-		t.Fatalf("content len = %d, want %d", len(content), veAttachmentContextMaxBytes)
+	if len(content.Data) != veAttachmentContextMaxBytes {
+		t.Fatalf("content len = %d, want %d", len(content.Data), veAttachmentContextMaxBytes)
+	}
+	if content.LocalPath != path {
+		t.Fatalf("content local path = %q, want %q", content.LocalPath, path)
 	}
 }
 
@@ -52,6 +59,57 @@ func TestDecodeTextAttachmentRejectsOversizedEncodedContent(t *testing.T) {
 	oversizedEncoded := strings.Repeat("A", base64.StdEncoding.EncodedLen(veAttachmentContextMaxBytes)+1)
 	if _, err := decodeTextAttachment(a2a.TextAttachment{Filename: "big.txt", Content: oversizedEncoded}); err == nil {
 		t.Fatal("expected oversized encoded text attachment to be rejected")
+	}
+}
+
+func TestRemoteAttachmentIsSavedAndPathIncludedForAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/files/download/file-1":
+			_, _ = w.Write([]byte("remote note"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	handler := NewVEMessageHandler(app)
+	got := handler.ProcessMessageAttachmentsForSession("disc-remote", a2a.GroupDiscussionMessage{
+		FileAttachments: []a2a.FileAttachment{{FileURL: "/api/ve/files/download/file-1", Filename: "note.txt", MimeType: "text/plain"}},
+	})
+
+	if !strings.Contains(got, "remote note") {
+		t.Fatalf("context missing downloaded content: %q", got)
+	}
+	if !strings.Contains(got, "Saved path:") {
+		t.Fatalf("context missing saved path: %q", got)
+	}
+	attachmentDir := app.groupDiscussionAttachmentRoot("disc-remote")
+	entries, err := os.ReadDir(attachmentDir)
+	if err != nil {
+		t.Fatalf("read attachment dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("saved attachments = %d, want 1", len(entries))
+	}
+	savedPath := filepath.Join(attachmentDir, entries[0].Name())
+	if !strings.Contains(got, savedPath) {
+		t.Fatalf("context saved path %q missing from %q", savedPath, got)
+	}
+	data, err := os.ReadFile(savedPath)
+	if err != nil {
+		t.Fatalf("read saved attachment: %v", err)
+	}
+	if string(data) != "remote note" {
+		t.Fatalf("saved content = %q", string(data))
 	}
 }
 

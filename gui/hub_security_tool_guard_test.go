@@ -144,6 +144,50 @@ func TestHubSecurityAppGuardBlocksIndependentSkillSource(t *testing.T) {
 	}
 }
 
+func TestHubSecurityAppGuardBlocksAllSkillSources(t *testing.T) {
+	app := &App{policyEngine: NewPolicyEngineWithMode("standard")}
+	app.hubSecurityCache.mu.Lock()
+	app.hubSecurityCache.policy = &HubSecurityPolicy{
+		CentralizedSecurity:    false,
+		SkillSourcesRestricted: true,
+		SkillSourcesAllowed:    []string{},
+	}
+	app.hubSecurityCache.mu.Unlock()
+
+	if allowed := app.GetAllowedSkillSources(); allowed == nil || len(allowed) != 0 {
+		t.Fatalf("GetAllowedSkillSources() = %#v, want non-nil empty block-all list", allowed)
+	}
+	if app.IsSkillSourceAllowed("skillhub") {
+		t.Fatal("skillhub should be blocked by empty restricted source policy")
+	}
+	if ok, reason := app.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "search", "query": "demo"}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("skill search allowed=%v reason=%q, want source rejection", ok, reason)
+	}
+}
+
+func TestHubSecurityAppGuardCentralizedBlocksAllSkillSources(t *testing.T) {
+	app := &App{policyEngine: NewPolicyEngineWithMode("standard")}
+	app.hubSecurityCache.mu.Lock()
+	app.hubSecurityCache.policy = &HubSecurityPolicy{
+		CentralizedSecurity: true,
+		Policy: &HubEffectivePolicy{
+			FileOutboundEnabled:    true,
+			ImageOutboundEnabled:   true,
+			NetworkLevel:           "full",
+			SkillSourcesRestricted: true,
+			SkillSourcesAllowed:    []string{},
+		},
+	}
+	app.hubSecurityCache.mu.Unlock()
+
+	if allowed := app.GetAllowedSkillSources(); allowed == nil || len(allowed) != 0 {
+		t.Fatalf("GetAllowedSkillSources() = %#v, want non-nil empty block-all list", allowed)
+	}
+	if ok, reason := app.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "install", "source": "zip", "zip_base64": "e30="}); ok || !strings.Contains(reason, "skill source") {
+		t.Fatalf("skill install allowed=%v reason=%q, want source rejection", ok, reason)
+	}
+}
+
 func TestHubSecurityAppGuardDeveloperModeAllowsIndependentSkillSource(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("developer")}
 	if err := app.SaveConfig(corelib.AppConfig{SecurityPolicyMode: "developer", SkillSourcesAllowed: []string{"skillhub"}}); err != nil {

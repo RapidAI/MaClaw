@@ -4,6 +4,7 @@ import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
+import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, parseMarkdownTableCells } from "./aiAssistantMarkdownTable";
 import { localizeText } from "./aiAssistantI18n";
 
 export interface Theme {
@@ -57,15 +58,12 @@ const baseInputBtnStyle: React.CSSProperties = {
     justifyContent: "center",
     transition: "transform 120ms ease, box-shadow 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease",
 };
-
 /* Themed inline markdown rendering */
-
 function looksLikeFilePath(s: string): boolean {
     if (/^[A-Za-z]:\\/.test(s)) return true;
     if (/^(~|\/(?:Users|home|tmp|var|opt|etc|usr))[/\\]/.test(s)) return true;
     return false;
 }
-
 /**
  * Extract a file path from a string that may contain a path with surrounding noise.
  * Uses the same patterns as the inline regex path groups to find the path substring.
@@ -88,15 +86,11 @@ function renderPathLink(filePath: string, key: number, t: Theme, trimTrailing = 
         >{"\uD83D\uDCC2 "}{display}</a>
     );
 }
-
-
 const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|]+\.\w+)/g;
-
 function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
     const display = filePath.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
     return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={display}>{display}</a>;
 }
-
 function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
@@ -114,7 +108,6 @@ function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return parts;
 }
-
 function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     const parts: React.ReactNode[] = [];
@@ -190,7 +183,6 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
 export function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
     return renderInlineMarkdownRestored(text, t);
 }
-
 function renderInlineMarkdownLegacyUnused(text: string, t: Theme): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     const parts: React.ReactNode[] = [];
@@ -268,7 +260,6 @@ function renderInlineMarkdownLegacyUnused(text: string, t: Theme): React.ReactNo
 
 function renderMarkdownLine(text: string, key: string | number, t: Theme): React.ReactNode {
     const trimmed = text.trimStart();
-
     const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (headingMatch) {
         const level = headingMatch[1].length;
@@ -336,43 +327,23 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
 /* Structured response rendering */
 
 function isTableRow(line: string): boolean {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("|") && trimmed.length > 1) return true;
-    if (!trimmed.includes("|")) return false;
-    return parseTableCells(trimmed).length >= 2;
+    return isMarkdownTableRow(line);
 }
 
 function isSeparatorRow(line: string): boolean {
-    const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-    return /^[\s|:\-]+$/.test(trimmed) && trimmed.includes("-");
-}
-
-function parseTableCells(line: string): string[] {
-    let trimmed = line.trim();
-    if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
-    if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
-    return trimmed.split("|").map(c => c.trim());
+    return isMarkdownTableSeparatorRow(line);
 }
 
 function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNode {
-    const dataRows = tableLines.filter(line => !isSeparatorRow(line));
-    if (tableLines.length < 2 || dataRows.length === 0) return null;
-    const hasSeparator = tableLines.some(isSeparatorRow);
-    const allRowsUseOuterPipes = tableLines.every(line => line.trim().startsWith("|"));
-    if (!hasSeparator && !allRowsUseOuterPipes) return null;
-    let headerCells = parseTableCells(dataRows[0]);
-    const separatorCells = parseTableCells(tableLines.find(isSeparatorRow) || "");
-    if (headerCells.length === 1 && separatorCells.length >= 2) {
-        headerCells = [headerCells[0], ""];
-    }
-    if (headerCells.length < 2) return null;
-    const bodyRows = dataRows.slice(1);
-    const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, padding: "5px 10px", textAlign: "left", fontSize: "0.9em", lineHeight: 1.5 };
+    const model = buildMarkdownTableModel(tableLines);
+    if (!model) return null;
+    const { headerCells, bodyRows, columnAlignments, minTableWidth } = model;
+    const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, boxSizing: "border-box", overflowWrap: "anywhere", padding: "5px 10px", textAlign: "left", verticalAlign: "top", wordBreak: "break-word", fontSize: "0.9em", lineHeight: 1.5 };
     return (
         <div key={key} style={{ overflowX: "auto", margin: "6px 0" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
-                <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, fontWeight: 600, background: t.fieldBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em" }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
-                {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseTableCells(row); return <tr key={ri} style={{ background: ri % 2 === 1 ? t.fieldBg : undefined }}>{headerCells.map((_, ci) => <td key={ci} style={cellStyle}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
+            <table style={{ borderCollapse: "collapse", minWidth: minTableWidth, tableLayout: "fixed", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
+                <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], fontWeight: 600, background: t.fieldBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em" }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
+                {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseMarkdownTableCells(row); return <tr key={ri} style={{ background: ri % 2 === 1 ? t.fieldBg : undefined }}>{headerCells.map((_, ci) => <td key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci] }}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
             </table>
         </div>
     );
@@ -380,10 +351,7 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
 
 export function renderContentWithCodeBlocks(content: string, t: Theme): React.ReactNode[] {
     const elements: React.ReactNode[] = [];
-    // Normalize: insert newline before list markers that appear mid-line (outside code blocks).
-    // Handles LLM outputs that omit newlines before list items, e.g.:
-    //   "文件等- 📖 阅读本地文件" → "文件等\n- 📖 阅读本地文件"
-    // Only applies outside fenced code blocks to avoid corrupting code content.
+    // Normalize compact LLM output outside fenced code blocks.
     const normalized = normalizeInlineListMarkers(content);
     const lines = normalized.split("\n");
     let inCodeBlock = false;
@@ -537,6 +505,12 @@ function renderActions(
 
 function formatActionLabel(action: ChatAction, lang: string): string {
     const normalizedLabel = (action.label || '').trim().toLowerCase();
+    if (/^__resume_unfinished__\s+\S+$/.test(action.command)) {
+        return localizeText(lang, "Resume previous task", "\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u4efb\u52d9");
+    }
+    if (/^__dismiss_unfinished__\s+\S+$/.test(action.command) || action.command === "__start_new_task__") {
+        return localizeText(lang, "Start new task", "\u5f00\u59cb\u65b0\u4efb\u52a1", "\u958b\u59cb\u65b0\u4efb\u52d9");
+    }
     if (/^__confirm_execution__\s+\S+$/.test(action.command) && (!normalizedLabel || normalizedLabel === 'confirm and start')) {
         return localizeText(lang, "Confirm and start", "\u786e\u8ba4\u5e76\u5f00\u59cb", "\u78ba\u8a8d\u4e26\u958b\u59cb");
     }
@@ -648,6 +622,20 @@ function formatUnfinishedSlotStatus(status: string, lang: string) {
     return `\u72b6\u6001\uff1a${labels[status] || normalized}`;
 }
 
+function formatUnfinishedSlotNotice(content: string, slot: ChatUnfinishedSlot | undefined, lang: string): string {
+    if (!slot) return content;
+    const normalized = content.trim();
+    const isUnfinishedNotice = /^Detected an unfinished task:/i.test(normalized) || /^\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/.test(normalized);
+    if (!isUnfinishedNotice) return content;
+    const title = (slot.title || slot.summary || slot.projectPath || localizeText(lang, "Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9")).trim();
+    return localizeText(
+        lang,
+        `Detected an unfinished task: ${title}. Choose resume to continue it.`,
+        `\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a${title}\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002`,
+        `\u5075\u6e2c\u5230\u672a\u5b8c\u6210\u4efb\u52d9\uff1a${title}\u3002\u9078\u64c7\u300c\u7e7c\u7e8c\u4e0a\u6b21\u4efb\u52d9\u300d\u53ef\u7e7c\u7e8c\u3002`,
+    );
+}
+
 function renderUnfinishedSlotCard(
     slot: ChatUnfinishedSlot,
     executeAction: (command: string) => void,
@@ -667,7 +655,7 @@ function renderUnfinishedSlotCard(
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
-                {"Unfinished item"}
+                {localizeText(lang, "Unfinished item", "\u672a\u5b8c\u6210\u9879", "\u672a\u5b8c\u6210\u9805")}
             </div>
             {slot.status && (
                 <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
@@ -775,7 +763,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                             </div>
                         </details>
                     )}
-                    {renderContentWithCodeBlocks(msg.content, t)}
+                    {renderContentWithCodeBlocks(formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang), t)}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
                     {savedPaths.length > 0 && (

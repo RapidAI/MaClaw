@@ -130,6 +130,38 @@ function assistantMessages(messages: Array<{ role: string; content: string; fiel
     return messages.filter(message => message.role === 'assistant');
 }
 
+async function expectStreamedPartialPreservedOnBackendError(errorText: string, partialText: string, prompt = 'tail timeout error') {
+    const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+    (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+    const { result } = renderAssistantHook();
+
+    await act(async () => {
+        void result.current.sendMessage(prompt);
+    });
+
+    const req = requestEvent();
+    await act(async () => {
+        emitRuntimeEvent('ai-assistant-new-round', req);
+        emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, text: partialText });
+    });
+
+    await act(async () => {
+        pending.resolve({
+            text: '',
+            error: errorText,
+            fields: null,
+            actions: null,
+            request_id: req.request_id || '',
+        });
+        await pending.promise;
+    });
+
+    expect(assistantMessages(result.current.messages)).toHaveLength(1);
+    expect(assistantMessages(result.current.messages)[0].content).toBe(partialText);
+    expect(result.current.messages.find(message => message.role === 'error')?.content).toBe(errorText);
+}
+
 function deferred<T>() {
     let resolve!: (value: T) => void;
     let reject!: (reason?: unknown) => void;
@@ -1612,6 +1644,14 @@ describe('useAIAssistant property tests', () => {
         expect(messageContents(result.current.messages)).not.toContain('streamed');
     });
 
+    it.each([
+        ['请求超时', 'partial output before timeout'],
+        ['context deadline exceeded', 'partial output before deadline'],
+        ['request time out', 'partial output before spaced timeout'],
+    ])('preserves streamed partial content when backend returns timeout-like error %s', async (errorText, partialText) => {
+        await expectStreamedPartialPreservedOnBackendError(errorText, partialText);
+    });
+
     it('keeps streamed tokens on the active tail message across many updates', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -1967,9 +2007,12 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(calls[0]?.resume_slot_id).toBe('slot-99');
+        expect(calls[0]?.text).toBe('\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
         expect(calls[1]?.start_new_task).toBe(true);
+        expect(calls[1]?.text).toBe('\u5f00\u59cb\u4e00\u4e2a\u65b0\u4efb\u52a1');
         expect(calls[2]?.dismiss_slot_id).toBe('slot-99');
         expect(calls[2]?.start_new_task).toBe(true);
+        expect(calls[2]?.text).toBe('\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
         const userMessages = result.current.messages.filter(m => m.role === 'user');
         expect(userMessages[0]?.content).toBe('\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');
         expect(userMessages[2]?.content).toBe('\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1');

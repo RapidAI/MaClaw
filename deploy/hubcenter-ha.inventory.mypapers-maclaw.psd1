@@ -47,6 +47,17 @@
                 'https://hubs2.maclaw.top'
             )
             DatabaseDSN = './data/maclaw-hub-maclaw.db'
+        },
+        @{
+            FileName             = 'hub2-maclaw.yaml'
+            PublicBaseURL        = 'https://hub2.maclaw.top'
+            PrimaryCenterBaseURL = 'https://hubs2.maclaw.top'
+            CenterBaseURLs       = @(
+                'https://hubs.mypapers.top',
+                'https://hubs.maclaw.top',
+                'https://hubs2.maclaw.top'
+            )
+            DatabaseDSN = './data/maclaw-hub2-maclaw.db'
         }
     )
 }

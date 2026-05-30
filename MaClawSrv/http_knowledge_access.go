@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -250,21 +249,7 @@ func (s *HTTPServer) recordPublicKnowledgeAccessAudit(r *http.Request, action, t
 }
 
 func (s *HTTPServer) requireExistingKnowledgeUser(w http.ResponseWriter, r *http.Request, tenantID, userID string) bool {
-	tenantID = strings.TrimSpace(tenantID)
-	userID = strings.TrimSpace(userID)
-	if tenantID == "" || userID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tenant_id and user_id are required"})
-		return false
-	}
-	if _, err := s.svc.GetUser(r.Context(), tenantID, userID); err != nil {
-		if errors.Is(err, agentservice.ErrTenantNotFound) || errors.Is(err, agentservice.ErrUserNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant or user not found"})
-			return false
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
-		return false
-	}
-	return true
+	return s.requireExistingTenantUser(w, r, tenantID, userID)
 }
 
 func (s *HTTPServer) requireExistingKnowledgeScopeUsers(w http.ResponseWriter, r *http.Request, scopes []knowledgeScope) bool {

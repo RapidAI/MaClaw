@@ -141,6 +141,61 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("Waiting")).toBeTruthy();
     });
 
+    it("keeps table header and body columns aligned when cells contain long text", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("Title | Content\n--- | ---\nLong | ThisIsAVeryLongUnbrokenDigitalEmployeeTableCellThatShouldWrapInsideItsColumn", lightTheme)}</div>
+        );
+
+        const table = container.querySelector("table") as HTMLTableElement;
+        const th = container.querySelector("th") as HTMLTableCellElement;
+        const td = container.querySelector("td") as HTMLTableCellElement;
+        expect(table.style.tableLayout).toBe("fixed");
+        expect(table.style.minWidth).toBe("360px");
+        expect(th.style.overflowWrap).toBe("anywhere");
+        expect(td.style.wordBreak).toBe("break-word");
+        expect(td.style.verticalAlign).toBe("top");
+    });
+
+    it("preserves extra body columns so cells do not shift under the wrong header", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("Name | Status\n--- | ---\nAlpha | Ready | Notes", lightTheme)}</div>
+        );
+
+        expect(container.querySelectorAll("th")).toHaveLength(3);
+        expect(container.querySelectorAll("td")).toHaveLength(3);
+        expect(screen.getByText("Notes")).toBeTruthy();
+    });
+
+    it("keeps escaped pipes inside table cells", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("Name | Note\n--- | ---\nAlpha | A \\| B", lightTheme)}</div>
+        );
+
+        expect(container.querySelectorAll("th")).toHaveLength(2);
+        expect(container.querySelectorAll("td")).toHaveLength(2);
+        expect(screen.getByText("A | B")).toBeTruthy();
+    });
+
+    it("keeps escaped trailing pipes inside table cells", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("Name | Note\n--- | ---\nAlpha | Ends with \\|", lightTheme)}</div>
+        );
+
+        expect(container.querySelectorAll("td")).toHaveLength(2);
+        expect(screen.getByText("Ends with |")).toBeTruthy();
+    });
+
+    it("uses markdown table alignment markers for headers and cells", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("Name | Count | Score\n:--- | ---: | :---:\nAlpha | 12 | 98", lightTheme)}</div>
+        );
+
+        const headers = Array.from(container.querySelectorAll("th"));
+        const cells = Array.from(container.querySelectorAll("td"));
+        expect(headers.map(cell => (cell as HTMLElement).style.textAlign)).toEqual(["left", "right", "center"]);
+        expect(cells.map(cell => (cell as HTMLElement).style.textAlign)).toEqual(["left", "right", "center"]);
+    });
+
     it("renders escaped-newline GitHub-style pipe tables from digital employee text", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("Name | Status\\n--- | ---\\nAlpha | Ready", lightTheme)}</div>

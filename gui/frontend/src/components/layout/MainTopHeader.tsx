@@ -21,7 +21,7 @@ interface MainTopHeaderProps {
 }
 
 const zhHans = {
-    minimizeWindow: '\u6700\u5c0f\u5316\u7a97\u53e3',
+    hideWindow: '\u9690\u85cf\u7a97\u53e3',
     maximizeWindow: '\u6700\u5927\u5316\u7a97\u53e3',
     restoreWindow: '\u8fd8\u539f\u7a97\u53e3',
 };
@@ -86,11 +86,13 @@ export const MainTopHeader = ({
             <div className="top-header-window-controls" style={{ display: 'flex', gap: '4px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
                 <button
                     onMouseDown={handleWindowHide}
-                    aria-label={lang === 'en' ? 'Minimize window' : zhHans.minimizeWindow}
-                    title={lang === 'en' ? 'Minimize window' : zhHans.minimizeWindow}
+                    aria-label={lang === 'en' ? 'Hide window' : zhHans.hideWindow}
+                    title={lang === 'en' ? 'Hide window' : zhHans.hideWindow}
                     style={windowControlBtnStyle}
                 >
-                    <span style={{ width: '10px', borderTop: '1.5px solid currentColor', transform: 'translateY(4px)' }} />
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+                        <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" />
+                    </svg>
                 </button>
                 <button
                     onMouseDown={handleWindowMaximizeToggle}

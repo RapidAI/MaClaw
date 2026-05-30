@@ -121,6 +121,68 @@ func TestInstallSourcePolicyNormalizesAliases(t *testing.T) {
 	if !isInSlice(installSourceToCanonical("skillhub"), []string{"hubcenter"}) {
 		t.Fatal("skillhub installs should be allowed by hubcenter alias")
 	}
+	if !isInSlice(installSourceToCanonical("zip"), []string{"local"}) {
+		t.Fatal("zip installs should be controlled by local source policy")
+	}
+	if isInSlice(installSourceToCanonical("zip"), []string{"skillhub"}) {
+		t.Fatal("zip installs should not be allowed by remote skillhub policy")
+	}
+}
+
+func TestInstallSkillSourcePolicyDenialIsLocalized(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	svc.SkillSourceFilter = func(tenantID, userID string) []string {
+		if tenantID != tenant.ID || userID != user.ID {
+			t.Fatalf("unexpected principal tenant=%s user=%s", tenantID, userID)
+		}
+		return []string{"skillhub"}
+	}
+
+	_, err := svc.InstallSkill(context.Background(), Principal{TenantID: tenant.ID, UserID: user.ID}, SkillInstallInput{Source: "github", RawURL: "https://raw.githubusercontent.com/acme/demo/main/SKILL.md"})
+	if err == nil {
+		t.Fatal("InstallSkill github allowed by skillhub-only policy, want denial")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "当前企业策略不允许") || !strings.Contains(msg, "Your organization policy does not allow") {
+		t.Fatalf("InstallSkill source denial = %q, want bilingual localized message", msg)
+	}
+}
+
+func TestInstallSkillEmptySourcePolicyBlocksAllSources(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	svc.SkillSourceFilter = func(tenantID, userID string) []string {
+		if tenantID != tenant.ID || userID != user.ID {
+			t.Fatalf("unexpected principal tenant=%s user=%s", tenantID, userID)
+		}
+		return []string{}
+	}
+
+	archive := makeSkillZipBytes(t, map[string]string{"skill.md": "---\nname: local-demo\ndescription: demo\n---\n\n# Demo\n"})
+	_, err := svc.InstallSkill(context.Background(), Principal{TenantID: tenant.ID, UserID: user.ID}, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(archive)})
+	if err == nil || !strings.Contains(err.Error(), "allowed sources: none") {
+		t.Fatalf("InstallSkill with block-all policy error = %v, want policy denial", err)
+	}
+}
+
+func TestSearchSkillsEmptySourcePolicyBlocksAllSources(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createSkillMarketInstallTestUser(t, svc)
+	svc.SkillSourceFilter = func(tenantID, userID string) []string {
+		if tenantID != tenant.ID || userID != user.ID {
+			t.Fatalf("unexpected principal tenant=%s user=%s", tenantID, userID)
+		}
+		return []string{}
+	}
+
+	items, err := svc.SearchSkills(context.Background(), Principal{TenantID: tenant.ID, UserID: user.ID}, SkillSearchInput{Query: "demo", Sources: []string{"skillhub"}})
+	if err != nil {
+		t.Fatalf("SearchSkills: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("SearchSkills with block-all policy = %#v, want none", items)
+	}
 }
 
 func TestInstallSkillFromSkillMarket(t *testing.T) {

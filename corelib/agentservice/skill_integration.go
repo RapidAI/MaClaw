@@ -12,6 +12,7 @@ import (
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -21,6 +22,9 @@ import (
 type SkillToolProvider interface {
 	// ListSkills returns all active skills for the principal.
 	ListSkills(ctx context.Context, p Principal) []SkillToolEntry
+
+	// InstallSkill installs a skill from an allowed source for the principal.
+	InstallSkill(ctx context.Context, p Principal, args map[string]interface{}) ([]corelib.NLSkillEntry, error)
 
 	// RunSkill executes a skill by name with the given arguments.
 	RunSkill(ctx context.Context, p Principal, name string, args map[string]interface{}) (string, error)
@@ -84,6 +88,42 @@ func (b *SkillToolBridge) BuildSkillMaintenancePlan(ctx context.Context, p Princ
 		opts.Now = time.Now()
 	}
 	return skill.BuildSkillMaintenancePlan(items, opts), nil
+}
+
+// InstallSkill installs a skill using the Service's user-scoped skill
+// lifecycle. Source allow-lists are enforced by Service.InstallSkill.
+func (b *SkillToolBridge) InstallSkill(ctx context.Context, p Principal, args map[string]interface{}) ([]corelib.NLSkillEntry, error) {
+	in := SkillInstallInput{
+		Source:         normalizeSkillInstallToolSource(firstNonEmptySkillArg(args, "source", "origin")),
+		RepoURL:        stringArg(args, "repo_url"),
+		RawURL:         stringArg(args, "raw_url"),
+		RepoFullName:   stringArg(args, "repo_full_name"),
+		FilePath:       stringArg(args, "file_path"),
+		Branch:         stringArg(args, "branch"),
+		DefinitionType: stringArg(args, "definition_type"),
+		ZipBase64:      stringArg(args, "zip_base64"),
+		SkillHubURL:    firstNonEmptySkillArg(args, "skill_hub_url", "hub_url"),
+		SkillMarketURL: firstNonEmptySkillArg(args, "skill_market_url", "market_url"),
+		SkillID:        firstNonEmptySkillArg(args, "skill_id", "id"),
+		Overwrite:      skillBoolArg(args, "overwrite"),
+		GitHubToken:    stringArg(args, "github_token"),
+	}
+	applySkillInstallRef(&in, stringArg(args, "install_ref"))
+	if in.Source == "" {
+		in.Source = inferSkillInstallInputSource(in)
+	}
+	if in.Source == "github" && in.RawURL == "" && in.RepoURL != "" {
+		in.Source = "github_repo"
+	}
+	if in.Source == "" {
+		in.Source = inferSkillInstallSource(args)
+	}
+	if in.SkillMarketURL == "" {
+		if cfg, err := b.svc.getOrLoadUserConfig(p.TenantID, p.UserID); err == nil {
+			in.SkillMarketURL = cfg.AppConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
+		}
+	}
+	return b.svc.InstallSkill(ctx, p, in)
 }
 
 // RunSkill executes a skill by name. It finds the skill, validates it,
@@ -155,6 +195,124 @@ func (b *SkillToolBridge) SearchSkills(ctx context.Context, p Principal, query s
 	})
 }
 
+func firstNonEmptySkillArg(args map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(stringArg(args, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func skillBoolArg(args map[string]interface{}, key string) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
+	default:
+		return false
+	}
+}
+
+func inferSkillInstallSource(args map[string]interface{}) string {
+	hubURL := strings.ToLower(strings.TrimSpace(stringArg(args, "hub_url")))
+	switch {
+	case hubURL == "github" || strings.Contains(hubURL, "github.com"):
+		return "github"
+	case strings.Contains(hubURL, "clawhub"):
+		return "clawhub"
+	}
+	if strings.TrimSpace(stringArg(args, "zip_base64")) != "" {
+		return "zip"
+	}
+	if strings.TrimSpace(stringArg(args, "repo_url")) != "" {
+		return "github_repo"
+	}
+	if strings.TrimSpace(stringArg(args, "raw_url")) != "" || strings.TrimSpace(stringArg(args, "repo_full_name")) != "" {
+		return "github"
+	}
+	if strings.TrimSpace(stringArg(args, "skill_id")) != "" || strings.TrimSpace(stringArg(args, "id")) != "" {
+		if strings.TrimSpace(firstNonEmptySkillArg(args, "skill_market_url", "market_url")) != "" {
+			return "skillmarket"
+		}
+		return "skillhub"
+	}
+	return ""
+}
+
+func inferSkillInstallInputSource(in SkillInstallInput) string {
+	if strings.TrimSpace(in.ZipBase64) != "" {
+		return "zip"
+	}
+	if strings.TrimSpace(in.RawURL) != "" || strings.TrimSpace(in.RepoFullName) != "" {
+		return "github"
+	}
+	if strings.TrimSpace(in.RepoURL) != "" {
+		return "github_repo"
+	}
+	if strings.TrimSpace(in.SkillID) != "" {
+		if strings.TrimSpace(in.SkillMarketURL) != "" {
+			return "skillmarket"
+		}
+		return "skillhub"
+	}
+	return ""
+}
+
+func normalizeSkillInstallToolSource(source string) string {
+	source = strings.ToLower(strings.TrimSpace(source))
+	switch {
+	case source == "github" || strings.Contains(source, "github.com"):
+		return "github"
+	case strings.Contains(source, "clawhub"):
+		return "clawhub"
+	case source == "hubcenter" || source == "hub_center" || source == "market":
+		return "skillmarket"
+	default:
+		return source
+	}
+}
+
+func applySkillInstallRef(in *SkillInstallInput, installRef string) {
+	if in == nil {
+		return
+	}
+	installRef = strings.TrimSpace(installRef)
+	if installRef == "" {
+		return
+	}
+	var cand skill.GitHubSkillCandidate
+	if strings.HasPrefix(installRef, "{") && json.Unmarshal([]byte(installRef), &cand) == nil {
+		if in.RepoURL == "" {
+			in.RepoURL = cand.RepoURL
+		}
+		if in.RawURL == "" {
+			in.RawURL = cand.RawURL
+		}
+		if in.RepoFullName == "" {
+			in.RepoFullName = cand.RepoFullName
+		}
+		if in.FilePath == "" {
+			in.FilePath = cand.FilePath
+		}
+		if in.Branch == "" {
+			in.Branch = cand.Branch
+		}
+		if in.DefinitionType == "" {
+			in.DefinitionType = cand.DefinitionType
+		}
+		return
+	}
+	if in.RawURL == "" && (strings.Contains(installRef, "raw.githubusercontent.com") || strings.Contains(installRef, "/raw/")) {
+		in.RawURL = installRef
+		return
+	}
+	if in.RepoURL == "" {
+		in.RepoURL = installRef
+	}
+}
+
 // srvExecDeps implements skill.ExecDeps for MaClawSrv.
 type srvExecDeps struct{}
 
@@ -218,6 +376,8 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 		return c.skillList()
 	case "search":
 		return c.skillSearch(args)
+	case "install":
+		return c.skillInstall(args)
 	case "run":
 		return c.skillRun(args)
 	case "maintenance_plan":
@@ -230,6 +390,27 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 			Outcome: agent.ToolExecutionOutcomeError,
 		}
 	}
+}
+
+func (c *coreAgentCallbacks) skillInstall(args map[string]interface{}) agent.ToolExecutionResult {
+	entries, err := c.skillProvider.InstallSkill(c.ctx, c.principal, args)
+	if err != nil {
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: install failed: %v", err), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	if len(entries) == 0 {
+		return agent.ToolExecutionResult{Result: "No skill was installed.", Outcome: agent.ToolExecutionOutcomeOK}
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Installed skills (%d):\n", len(entries)))
+	for _, entry := range entries {
+		b.WriteString(fmt.Sprintf("  - %s", entry.Name))
+		if strings.TrimSpace(entry.Description) != "" {
+			b.WriteString(": ")
+			b.WriteString(entry.Description)
+		}
+		b.WriteByte('\n')
+	}
+	return agent.ToolExecutionResult{Result: b.String(), Outcome: agent.ToolExecutionOutcomeOK}
 }
 
 func (c *coreAgentCallbacks) skillList() agent.ToolExecutionResult {
@@ -344,6 +525,20 @@ func (c *coreAgentCallbacks) manageSkillToolDef() map[string]interface{} {
 			"properties": map[string]interface{}{
 				"action":                 map[string]interface{}{"type": "string", "description": "Action: " + skill.ManageSkillActionSlash()},
 				"query":                  map[string]interface{}{"type": "string", "description": "Search keyword (required for search)"},
+				"source":                 map[string]interface{}{"type": "string", "description": "Skill install source: skillmarket, skillhub, clawhub, github, github_repo, or zip"},
+				"skill_id":               map[string]interface{}{"type": "string", "description": "Skill ID from search results (for install)"},
+				"hub_url":                map[string]interface{}{"type": "string", "description": "SkillHub URL (for install/search when using skillhub)"},
+				"skill_hub_url":          map[string]interface{}{"type": "string", "description": "SkillHub URL (for install/search when using skillhub)"},
+				"skill_market_url":       map[string]interface{}{"type": "string", "description": "SkillMarket/HubCenter URL (for install/search when using skillmarket)"},
+				"repo_url":               map[string]interface{}{"type": "string", "description": "GitHub repository URL (for github_repo install)"},
+				"raw_url":                map[string]interface{}{"type": "string", "description": "Raw GitHub skill file URL (for github install)"},
+				"install_ref":            map[string]interface{}{"type": "string", "description": "Install reference from search results, such as a GitHub raw URL or repo URL"},
+				"repo_full_name":         map[string]interface{}{"type": "string", "description": "GitHub owner/repo from search results (for github install)"},
+				"file_path":              map[string]interface{}{"type": "string", "description": "Skill file path in repo (for github install)"},
+				"branch":                 map[string]interface{}{"type": "string", "description": "Git branch (for github install)"},
+				"definition_type":        map[string]interface{}{"type": "string", "description": "Skill definition type from search results (for github install)"},
+				"zip_base64":             map[string]interface{}{"type": "string", "description": "Base64-encoded skill zip archive (for zip install)"},
+				"overwrite":              map[string]interface{}{"type": "boolean", "description": "Overwrite an installed skill with the same name"},
 				"name":                   map[string]interface{}{"type": "string", "description": "Skill name (required for run)"},
 				"args":                   map[string]interface{}{"type": "object", "description": "Skill arguments (for run). Template variables like {{key}} in skill commands are replaced with values from this object."},
 				"input":                  map[string]interface{}{"type": "string", "description": "Input parameter (for run, shorthand for args.input)"},

@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -281,7 +282,7 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 			return profile.PromptSection()
 		},
 		KnowledgeAutoRecall: func(b *strings.Builder, userMsg string) {
-			if c.knowledgeStore != nil && userMsg != "" && isFirstTurn {
+			if c.knowledgeStore != nil && userMsg != "" {
 				c.appendKnowledgeAutoRecall(b, userMsg)
 			}
 		},
@@ -746,7 +747,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "web_search",
-			Description: "Search the internet for information. Returns a list of results with title, URL, and snippet. Useful for finding documentation, latest information, technical references.",
+			Description: "Search the internet for evidence. Returns a list of results with title, URL, and snippet. Use result URLs/snippets as citations, and call web_fetch when a factual answer needs page-level verification.",
 			Enabled:     true,
 			Parameters: map[string]interface{}{
 				"type": "object",
@@ -759,7 +760,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "web_fetch",
-			Description: "Fetch and extract text content from a URL. Supports automatic encoding detection (GBK/UTF-8), HTML body extraction. Long pages support continuation: when has_more=true, pass offset=next_offset to read more.",
+			Description: "Fetch and extract text content from a URL for source-backed factual verification. Supports automatic encoding detection (GBK/UTF-8), HTML body extraction. Cite the URL/title when using fetched content. Long pages support continuation: when has_more=true, pass offset=next_offset to read more.",
 			Enabled:     true,
 			Parameters: map[string]interface{}{
 				"type": "object",
@@ -829,6 +830,9 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 	if err := workflow.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return false, err.Error()
 	}
+	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
+		return false, reason
+	}
 	return true, ""
 }
 
@@ -852,6 +856,9 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	}
 	if err := workflow.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
+		return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}
 	}
 	switch strings.TrimSpace(name) {
 	case "bash":

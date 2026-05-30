@@ -2,6 +2,7 @@ package corelib
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -51,6 +52,19 @@ func TestAppConfig_UnmarshalIgnoresUnknownExtraToolKeys(t *testing.T) {
 	// Verify that standard fields still deserialise correctly alongside extra configs.
 	if cfg.Claude.CurrentModel != "sonnet" {
 		t.Errorf("Claude.CurrentModel = %q, want %q", cfg.Claude.CurrentModel, "sonnet")
+	}
+}
+
+func TestAppConfigMarshalKeepsUserMemoryZeroValues(t *testing.T) {
+	data, err := json.Marshal(AppConfig{})
+	if err != nil {
+		t.Fatalf("Marshal AppConfig: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{`"memory_auto_compress":false`, `"memory_max_backups":0`, `"knowledge_skill_token_budget":0`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("default AppConfig JSON missing %s: %s", want, text)
+		}
 	}
 }
 

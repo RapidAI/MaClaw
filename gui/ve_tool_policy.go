@@ -72,11 +72,9 @@ var veBlockedTools = map[string]bool{
 	"open":         true,
 
 	// --- Skill execution ---
-	// run_skill: allowed with MCP-only guard (see veSkillMCPOnlyGuard in ExecuteTool)
-	// manage_skill: allowed with read-only actions (see veBlockedToolActions)
-	// list_skills, search_skill_hub, get_skill_run: read-only, allowed
-	"install_skill_hub": true, // backward-compat alias; blocked same as manage_skill(action=install)
-	"craft_tool":        true, // generates and executes arbitrary scripts
+	// run_skill/manage_skill/install_skill_hub are allowed; source policy and
+	// skill-level safety checks still run in the normal execution path.
+	"craft_tool": true, // generates and executes arbitrary scripts
 
 	// --- Passthrough tasks (arbitrary script execution) ---
 	"passthrough_task": true,
@@ -111,16 +109,15 @@ var veBlockedToolActions = map[string]map[string]bool{
 		// "recall" is allowed
 	},
 	"manage_skill": {
-		// Read-only actions allowed for VE:
-		// "list", "search", "status" — safe, no side effects
-		// Write/execute actions blocked:
-		"install":   true,
-		"uninstall": true,
-		"run":       true,
-		"upload":    true,
-		"validate":  true,
-		"patch":     true,
-		"history":   true,
+		// list/search/status are read-only. install/run are allowed for
+		// maclawsrv digital employees; source and runtime policy still apply.
+		// Higher-risk lifecycle mutation actions stay blocked here.
+		"uninstall":                true,
+		"upload":                   true,
+		"validate":                 true,
+		"patch":                    true,
+		"history":                  true,
+		"execute_maintenance_plan": true,
 	},
 }
 
@@ -186,14 +183,16 @@ func isVEToolBlocked(toolName string) bool {
 // isVEToolActionBlocked checks if a specific action of a tool is blocked in VE mode.
 // Returns true if the tool+action combination should be denied.
 func isVEToolActionBlocked(toolName, action string) bool {
-	actions, ok := veBlockedToolActions[toolName]
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	act := strings.ToLower(strings.TrimSpace(action))
+	actions, ok := veBlockedToolActions[name]
 	if !ok {
 		return false
 	}
 	if actions["*"] {
 		return true
 	}
-	return actions[action]
+	return actions[act]
 }
 
 // isVERunSkillAllowed checks if a run_skill invocation is allowed in VE mode.
@@ -235,7 +234,7 @@ func filterToolsForVE(tools []map[string]interface{}) []map[string]interface{} {
 //
 // Note: list_directory and read_file are already not in veBlockedTools (they are
 // read-only tools), so they are naturally included. They are listed here for
-// documentation clarity — the execution layer (ExecuteTool) enforces directory
+// documentation clarity; the execution layer (ExecuteTool) enforces directory
 // scoping at runtime via ValidateVEFilePath / IsWithinAllowedDirs.
 var veConfigUnblockedTools = map[string]bool{
 	"send_file":      true,
@@ -269,7 +268,7 @@ func filterToolsForVEWithConfig(tools []map[string]interface{}, allowedDirs []st
 			// When directories are configured, conditionally unblock
 			// tools in veConfigUnblockedTools.
 			if hasDirs && veConfigUnblockedTools[name] {
-				// Allow this tool through — execution layer enforces scoping
+				// Allow this tool through; execution layer enforces scoping.
 				out = append(out, t)
 				continue
 			}

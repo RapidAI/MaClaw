@@ -1202,11 +1202,43 @@ var _ = json.Marshal
 
 // mockSkillSourcesProvider implements SkillSourcesResolver for testing.
 type mockSkillSourcesProvider struct {
-	result []string
+	result       []string
+	seenUserID   string
+	seenTenantID string
 }
 
-func (m *mockSkillSourcesProvider) ResolveForUser(_ context.Context, _, _ string) []string {
+func (m *mockSkillSourcesProvider) ResolveForUser(_ context.Context, userID, tenantID string) []string {
+	m.seenUserID = userID
+	m.seenTenantID = tenantID
 	return m.result
+}
+
+func TestServiceGetHeartbeatPolicy_SkillSourcesUsesRuntimeUserID(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := WithTenant(context.Background(), "tenant-a")
+	svc.users = &mockUserRepo{items: []*store.User{{TenantID: "tenant-a", ID: "runtime-user-1", Email: "employee@example.com"}}}
+	provider := &mockSkillSourcesProvider{result: []string{"local"}}
+	svc.SetSkillSourcesProvider(provider)
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "runtime-user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.seenUserID != "runtime-user-1" || provider.seenTenantID != "tenant-a" {
+		t.Fatalf("provider saw user=%q tenant=%q, want runtime-user-1 tenant-a", provider.seenUserID, provider.seenTenantID)
+	}
+	if !reflect.DeepEqual(payload.SkillSourcesAllowed, []string{"local"}) {
+		t.Fatalf("SkillSourcesAllowed = %#v, want local", payload.SkillSourcesAllowed)
+	}
+}
+
+func TestServiceUpdateGroupPolicyAcceptsLocalSkillSource(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	root, _ := svc.store.GetRootGroup(ctx)
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"skill_sources_allowed": []interface{}{"local"}}); err != nil {
+		t.Fatalf("local skill source should be valid: %v", err)
+	}
 }
 
 func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOff(t *testing.T) {
@@ -1245,6 +1277,23 @@ func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOff_NoRestriction(t *
 	}
 }
 
+func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOff_BlockAll(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: []string{}})
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.CentralizedSecurity {
+		t.Fatal("expected centralized_security=false")
+	}
+	if !payload.SkillSourcesRestricted || payload.SkillSourcesAllowed == nil || len(payload.SkillSourcesAllowed) != 0 {
+		t.Fatalf("expected restricted empty source policy, got restricted=%v allowed=%#v", payload.SkillSourcesRestricted, payload.SkillSourcesAllowed)
+	}
+}
+
 func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOn_Merge(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
@@ -1273,6 +1322,28 @@ func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOn_Merge(t *testing.T
 	// Intersection of [skillhub, clawhub] and [skillhub, github] = [skillhub].
 	if !reflect.DeepEqual(payload.Policy.SkillSourcesAllowed, []string{"skillhub"}) {
 		t.Fatalf("expected intersection [skillhub], got %v", payload.Policy.SkillSourcesAllowed)
+	}
+}
+
+func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOn_MergeBlocksAll(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	svc.UpdateSettings(ctx, &SecuritySettings{CentralizedSecurityEnabled: true}, "admin")
+	root, _ := svc.store.GetRootGroup(ctx)
+	svc.AssignUser(ctx, "user@test.com", root.ID)
+	svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"skill_sources_allowed": []interface{}{"github"}})
+	svc.InvalidateCache("user@test.com")
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: []string{}})
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !payload.CentralizedSecurity || payload.Policy == nil {
+		t.Fatalf("expected centralized policy, got %#v", payload)
+	}
+	if !payload.Policy.SkillSourcesRestricted || payload.Policy.SkillSourcesAllowed == nil || len(payload.Policy.SkillSourcesAllowed) != 0 {
+		t.Fatalf("expected restricted empty merged policy, got restricted=%v allowed=%#v", payload.Policy.SkillSourcesRestricted, payload.Policy.SkillSourcesAllowed)
 	}
 }
 

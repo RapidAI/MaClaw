@@ -14,7 +14,7 @@ func TestIsVEToolBlocked_BlockedTools(t *testing.T) {
 		"write_file", "edit_file", "edit_lines", "bash", "ssh", "browser",
 		"create_session", "send_and_observe", "send_input",
 		"control_session", "interrupt_session", "kill_session",
-		"parallel_execute", "craft_tool", "install_skill_hub",
+		"parallel_execute", "craft_tool",
 		"passthrough_task", "switch_llm_provider",
 		"knowledge_save_url", "knowledge_save_urls", "knowledge_save_text",
 		"knowledge_import_directory", "knowledge_import_files",
@@ -30,7 +30,7 @@ func TestIsVEToolBlocked_AllowedTools(t *testing.T) {
 	allowed := []string{
 		"read_file", "list_directory", "web_search", "web_fetch",
 		"memory", "call_mcp_tool", "list_mcp_tools",
-		"manage_skill", "run_skill", // now allowed with guards
+		"manage_skill", "run_skill", "install_skill_hub", // allowed with guards/policy
 	}
 	for _, name := range allowed {
 		if isVEToolBlocked(name) {
@@ -50,11 +50,25 @@ func TestIsVEToolActionBlocked_ManageSkillReadOnly(t *testing.T) {
 }
 
 func TestIsVEToolActionBlocked_ManageSkillWriteBlocked(t *testing.T) {
-	// Write/execute actions should be blocked
-	writeActions := []string{"install", "uninstall", "run", "upload", "validate", "patch", "history"}
+	// Higher-risk lifecycle actions should be blocked
+	writeActions := []string{"uninstall", "upload", "validate", "patch", "history", "execute_maintenance_plan"}
 	for _, action := range writeActions {
 		if !isVEToolActionBlocked("manage_skill", action) {
 			t.Errorf("manage_skill action %q should be blocked in VE mode", action)
+		}
+	}
+}
+
+func TestIsVEToolActionBlocked_NormalizesToolAndAction(t *testing.T) {
+	if !isVEToolActionBlocked(" manage_skill ", " Execute_Maintenance_Plan ") {
+		t.Error("manage_skill execute_maintenance_plan should be blocked after normalization")
+	}
+}
+
+func TestIsVEToolActionBlocked_ManageSkillInstallRunAllowed(t *testing.T) {
+	for _, action := range []string{"install", "run"} {
+		if isVEToolActionBlocked("manage_skill", action) {
+			t.Errorf("manage_skill action %q should be allowed in VE mode", action)
 		}
 	}
 }
