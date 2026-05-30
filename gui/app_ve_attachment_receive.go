@@ -12,7 +12,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
 
-const veAttachmentContextMaxBytes = 20 * 1024 * 1024
+const (
+	veAttachmentContextMaxBytes = 20 * 1024 * 1024
+	veAttachmentContextMaxCount = 20
+)
 
 // ProcessMessageAttachments extracts attachment content from a GroupDiscussionMessage
 // and returns formatted context to append to the AI agent input. Remote file_url
@@ -24,9 +27,14 @@ func (h *VEMessageHandler) ProcessMessageAttachments(msg a2a.GroupDiscussionMess
 
 func (h *VEMessageHandler) ProcessMessageAttachmentsForSession(sessionID string, msg a2a.GroupDiscussionMessage) string {
 	var contextParts []string
+	attempted := 0
 
 	// Process text attachments (inline base64)
 	for _, att := range msg.TextAttachments {
+		if attempted >= veAttachmentContextMaxCount {
+			break
+		}
+		attempted++
 		content, err := decodeTextAttachment(att)
 		if err != nil {
 			log.Printf("[ve-attachment] failed to decode text attachment %s: %v", att.Filename, err)
@@ -37,6 +45,10 @@ func (h *VEMessageHandler) ProcessMessageAttachmentsForSession(sessionID string,
 
 	// Process image attachments (prefer local_path for direct local dispatch)
 	for _, att := range msg.ImageAttachments {
+		if attempted >= veAttachmentContextMaxCount {
+			break
+		}
+		attempted++
 		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath, att.Filename)
 		if err != nil {
 			log.Printf("[ve-attachment] failed to read image %s: %v", att.Filename, err)
@@ -49,6 +61,10 @@ func (h *VEMessageHandler) ProcessMessageAttachmentsForSession(sessionID string,
 
 	// Process file/document attachments (prefer local_path for direct local dispatch)
 	for _, att := range msg.FileAttachments {
+		if attempted >= veAttachmentContextMaxCount {
+			break
+		}
+		attempted++
 		content, err := h.attachmentContent(sessionID, att.FileURL, att.LocalPath, att.Filename)
 		if err != nil {
 			log.Printf("[ve-attachment] failed to read file %s: %v", att.Filename, err)

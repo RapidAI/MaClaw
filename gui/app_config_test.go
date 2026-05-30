@@ -456,6 +456,49 @@ func TestPatchConfigSanitizesAgentTimeouts(t *testing.T) {
 	}
 }
 
+func TestSetAuthRequestSoundConfigPatchesGroupDiscussionOnly(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteEmail: "owner@example.com"}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.SetAuthRequestSoundConfig(" URGENT ", true); err != nil {
+		t.Fatalf("SetAuthRequestSoundConfig() error = %v", err)
+	}
+
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if reloaded.RemoteEmail != "owner@example.com" {
+		t.Fatalf("RemoteEmail = %q, want preserved owner@example.com", reloaded.RemoteEmail)
+	}
+	if reloaded.GroupDiscussion.AuthRequestSoundPreset != "urgent" {
+		t.Fatalf("AuthRequestSoundPreset = %q, want urgent", reloaded.GroupDiscussion.AuthRequestSoundPreset)
+	}
+	if !reloaded.GroupDiscussion.AuthRequestSoundMuted {
+		t.Fatal("AuthRequestSoundMuted = false, want true")
+	}
+
+	if err := app.SetAuthRequestSoundConfig("nope", false); err != nil {
+		t.Fatalf("SetAuthRequestSoundConfig(invalid) error = %v", err)
+	}
+	reloaded, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() second reload error = %v", err)
+	}
+	if reloaded.GroupDiscussion.AuthRequestSoundPreset != "classic" {
+		t.Fatalf("invalid preset normalized to %q, want classic", reloaded.GroupDiscussion.AuthRequestSoundPreset)
+	}
+	if reloaded.GroupDiscussion.AuthRequestSoundMuted {
+		t.Fatal("AuthRequestSoundMuted = true, want false")
+	}
+}
+
 func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

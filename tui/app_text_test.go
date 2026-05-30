@@ -273,6 +273,52 @@ func TestBuildLLMConfigUsesViewerTokenForSavedOfficialService(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigCanonicalizesMojibakeOfficialProvider(t *testing.T) {
+	mojibakeHubName := "MaClaw\u7039\u6a3b\u67df"
+	cfg := corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: mojibakeHubName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: mojibakeHubName, URL: "https://hub.example/v1", Key: "", Model: "auto", IsHubService: true, TimeoutSec: 33},
+		},
+	}
+
+	llm := buildLLMConfigFromAppConfig(cfg)
+	if llm.ProviderName != tuiHubServiceProviderName {
+		t.Fatalf("ProviderName = %q, want %q", llm.ProviderName, tuiHubServiceProviderName)
+	}
+	if llm.Key != "viewer-token" {
+		t.Fatalf("Key = %q, want viewer token fallback", llm.Key)
+	}
+	if llm.TimeoutSec != 33 {
+		t.Fatalf("TimeoutSec = %d, want provider-specific timeout", llm.TimeoutSec)
+	}
+}
+
+func TestBuildLLMConfigDoesNotUseViewerTokenForNonCurrentOfficialProvider(t *testing.T) {
+	cfg := corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: "Corp Gateway",
+		MaclawLLMUrl:             "https://llm.example/v1",
+		MaclawLLMModel:           "cloud-model",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: tuiHubServiceProviderName, IsHubService: true, Key: "viewer-token", Model: "auto"},
+			{Name: "Corp Gateway", URL: "https://llm.example/v1", Key: "", Model: "cloud-model", TimeoutSec: 44},
+		},
+	}
+
+	llm := buildLLMConfigFromAppConfig(cfg)
+	if llm.ProviderName != "Corp Gateway" {
+		t.Fatalf("ProviderName = %q, want Corp Gateway", llm.ProviderName)
+	}
+	if llm.Key != "" {
+		t.Fatalf("Key = %q, want empty because current provider is not official", llm.Key)
+	}
+	if llm.TimeoutSec != 44 {
+		t.Fatalf("TimeoutSec = %d, want current provider timeout", llm.TimeoutSec)
+	}
+}
+
 func TestBuildLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 	cfg := corelib.AppConfig{
 		MaclawLLMCurrentProvider: "Corp Gateway",

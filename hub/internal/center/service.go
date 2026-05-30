@@ -1342,7 +1342,6 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 		if users, err := s.users.ListUsers(ctx); err == nil {
 			seen := map[string]struct{}{}
 			tenantSeen := map[string]map[string]struct{}{}
-			tenantDomainSeen := map[string]map[string]struct{}{}
 			for _, user := range users {
 				if user == nil || strings.TrimSpace(user.Email) == "" {
 					continue
@@ -1360,13 +1359,6 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 					tenantSeen[tenantID] = map[string]struct{}{}
 				}
 				tenantSeen[tenantID][email] = struct{}{}
-				domain := extractEmailDomain(email)
-				if domain != "" {
-					if tenantDomainSeen[tenantID] == nil {
-						tenantDomainSeen[tenantID] = map[string]struct{}{}
-					}
-					tenantDomainSeen[tenantID][domain] = struct{}{}
-				}
 			}
 			emails := make([]string, 0, len(seen))
 			for email := range seen {
@@ -1375,7 +1367,6 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 			sort.Strings(emails)
 			tenantEmails := map[string][]string{}
 			tenantCounts := map[string]int{}
-			tenantDomains := map[string][]string{}
 			for tenantID, values := range tenantSeen {
 				items := make([]string, 0, len(values))
 				for email := range values {
@@ -1385,19 +1376,10 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 				tenantEmails[tenantID] = items
 				tenantCounts[tenantID] = len(items)
 			}
-			for tenantID, values := range tenantDomainSeen {
-				items := make([]string, 0, len(values))
-				for domain := range values {
-					items = append(items, domain)
-				}
-				sort.Strings(items)
-				tenantDomains[tenantID] = items
-			}
 			caps["user_count"] = len(seen)
 			caps["user_emails"] = emails
 			caps["tenant_user_counts"] = tenantCounts
 			caps["tenant_user_emails"] = tenantEmails
-			caps["tenant_domains"] = tenantDomains
 		}
 	}
 	if s != nil && s.tenants != nil {
@@ -1424,6 +1406,7 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 			}
 			if len(tenantDomains) > 0 {
 				caps["tenant_domains"] = tenantDomains
+				caps["tenant_domain_source"] = "configured"
 			}
 			if len(tenantNames) > 0 {
 				caps["tenant_names"] = tenantNames

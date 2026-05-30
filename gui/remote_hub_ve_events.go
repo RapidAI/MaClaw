@@ -139,9 +139,12 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 				runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
 				runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
 			}
-		} else if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) && shouldRouteVEDiscussionToLocalDispatcher(targetRole, *envelope.Message) {
+		}
+		dispatcher := c.groupChatDispatcher()
+		localDispatcherRegistered := dispatcher != nil && dispatcher.IsRegistered(sessionID)
+		if localDispatcherRegistered && shouldRouteVEDiscussionToLocalDispatcher(targetRole, *envelope.Message) {
 			dispatcher.HandleGroupMessage(sessionID, *envelope.Message, false)
-		} else if shouldDigitalEmployeeRespondToDiscussion(targetRole, envelope.Message.Kind) {
+		} else if shouldRouteVEDiscussionToDigitalEmployee(targetRole, *envelope.Message, localDispatcherRegistered) {
 			if handler := c.digitalEmployeeMessageHandler(); handler != nil {
 				handler.HandleGroupEnvelope(envelope)
 			}
@@ -162,12 +165,20 @@ func (c *RemoteHubClient) localizeVEDiscussionAttachmentPaths(sessionID string, 
 	if c == nil || c.app == nil || msg == nil || strings.TrimSpace(sessionID) == "" {
 		return
 	}
+	attempted := 0
 	for i := range msg.TextAttachments {
 		msg.TextAttachments[i].LocalPath = ""
+		if attempted < veAttachmentContextMaxCount {
+			attempted++
+		}
 	}
 	for i := range msg.ImageAttachments {
 		att := &msg.ImageAttachments[i]
 		att.LocalPath = ""
+		if attempted >= veAttachmentContextMaxCount {
+			continue
+		}
+		attempted++
 		if strings.TrimSpace(att.FileURL) == "" {
 			continue
 		}
@@ -181,6 +192,10 @@ func (c *RemoteHubClient) localizeVEDiscussionAttachmentPaths(sessionID string, 
 	for i := range msg.FileAttachments {
 		att := &msg.FileAttachments[i]
 		att.LocalPath = ""
+		if attempted >= veAttachmentContextMaxCount {
+			continue
+		}
+		attempted++
 		if strings.TrimSpace(att.FileURL) == "" {
 			continue
 		}
@@ -202,6 +217,13 @@ func shouldRouteVEDiscussionToLocalDispatcher(targetRole string, msg a2a.GroupDi
 	}
 	if strings.EqualFold(strings.TrimSpace(targetRole), "executor") {
 		return true
+	}
+	return shouldDigitalEmployeeRespondToDiscussion(targetRole, msg.Kind)
+}
+
+func shouldRouteVEDiscussionToDigitalEmployee(targetRole string, msg a2a.GroupDiscussionMessage, localDispatcherRegistered bool) bool {
+	if localDispatcherRegistered && shouldRouteVEDiscussionToLocalDispatcher(targetRole, msg) {
+		return false
 	}
 	return shouldDigitalEmployeeRespondToDiscussion(targetRole, msg.Kind)
 }

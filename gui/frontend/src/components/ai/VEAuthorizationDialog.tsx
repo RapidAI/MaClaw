@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 
@@ -26,6 +26,120 @@ export interface VEAuthorizationDialogProps {
 }
 
 type AuthDecision = "allow_once" | "allow_long" | "deny" | "block" | "allow";
+type AuthRequestSoundPreset = "classic" | "soft" | "bright" | "pulse" | "urgent";
+
+const AUTH_REQUEST_SOUND_DURATION_MS = 9000;
+const AUTH_HANDLED_LOCAL_EVENT = "ve:auth_handled:local";
+const authRequestSoundPresets: Record<AuthRequestSoundPreset, { freqs: number[]; toneMs: number; gapMs: number; pauseMs: number; gain: number; wave: OscillatorType }> = {
+    classic: { freqs: [440, 480], toneMs: 360, gapMs: 110, pauseMs: 920, gain: 0.055, wave: "sine" },
+    soft: { freqs: [330, 392], toneMs: 420, gapMs: 130, pauseMs: 1080, gain: 0.04, wave: "sine" },
+    bright: { freqs: [660, 740], toneMs: 260, gapMs: 90, pauseMs: 820, gain: 0.045, wave: "triangle" },
+    pulse: { freqs: [520, 520, 390], toneMs: 160, gapMs: 80, pauseMs: 720, gain: 0.05, wave: "square" },
+    urgent: { freqs: [780, 620, 780], toneMs: 140, gapMs: 70, pauseMs: 520, gain: 0.055, wave: "sawtooth" },
+};
+
+let activeAuthRequestSoundStop: (() => void) | null = null;
+let authRequestSoundGeneration = 0;
+
+function normalizeAuthRequestSoundPreset(value: unknown): AuthRequestSoundPreset {
+    const preset = String(value || "").trim().toLowerCase() as AuthRequestSoundPreset;
+    return authRequestSoundPresets[preset] ? preset : "classic";
+}
+
+async function loadAuthRequestSoundConfig(): Promise<{ muted: boolean; preset: AuthRequestSoundPreset }> {
+    try {
+        const mod = await import("../../../wailsjs/go/main/App");
+        if (typeof (mod as any).LoadConfig === "function") {
+            const cfg = await (mod as any).LoadConfig();
+            const gd = cfg?.group_discussion || cfg?.GroupDiscussion || {};
+            return {
+                muted: Boolean(gd.auth_request_sound_muted ?? gd.AuthRequestSoundMuted),
+                preset: normalizeAuthRequestSoundPreset(gd.auth_request_sound_preset ?? gd.AuthRequestSoundPreset),
+            };
+        }
+    } catch {
+        // Missing Wails binding or config read failure should not block auth UI.
+    }
+    return { muted: false, preset: "classic" };
+}
+
+function stopActiveAuthRequestSound() {
+    if (activeAuthRequestSoundStop) {
+        activeAuthRequestSoundStop();
+        activeAuthRequestSoundStop = null;
+    }
+}
+
+function stopAuthRequestSound() {
+    authRequestSoundGeneration += 1;
+    stopActiveAuthRequestSound();
+}
+
+function scheduleAuthTone(ctx: AudioContext, preset: typeof authRequestSoundPresets[AuthRequestSoundPreset], freq: number, delayMs: number) {
+    const start = ctx.currentTime + delayMs / 1000;
+    const stop = start + preset.toneMs / 1000;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = preset.wave;
+    osc.frequency.setValueAtTime(freq, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(preset.gain, start + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, stop);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(stop + 0.03);
+}
+
+async function playAuthRequestSound() {
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const generation = authRequestSoundGeneration + 1;
+    authRequestSoundGeneration = generation;
+    stopActiveAuthRequestSound();
+    const cfg = await loadAuthRequestSoundConfig();
+    if (generation !== authRequestSoundGeneration) return;
+    if (cfg.muted) return;
+    let ctx: AudioContext | null = null;
+    try {
+        const audioCtx = new AudioContextCtor() as AudioContext;
+        ctx = audioCtx;
+        if (audioCtx.state === "suspended") {
+            try { await audioCtx.resume(); } catch { /* browser may block autoplay */ }
+        }
+        if (generation !== authRequestSoundGeneration) {
+            try { void audioCtx.close(); } catch { /* noop */ }
+            return;
+        }
+        const preset = authRequestSoundPresets[cfg.preset];
+        let stopped = false;
+        const patternMs = preset.freqs.length * (preset.toneMs + preset.gapMs) + preset.pauseMs;
+        const playPattern = () => {
+            if (stopped) return;
+            preset.freqs.forEach((freq, index) => scheduleAuthTone(audioCtx, preset, freq, index * (preset.toneMs + preset.gapMs)));
+        };
+        playPattern();
+        const interval = window.setInterval(playPattern, patternMs);
+        const timeout = window.setTimeout(stopAuthRequestSound, AUTH_REQUEST_SOUND_DURATION_MS);
+        if (generation !== authRequestSoundGeneration) {
+            window.clearInterval(interval);
+            window.clearTimeout(timeout);
+            try { void audioCtx.close(); } catch { /* noop */ }
+            return;
+        }
+        activeAuthRequestSoundStop = () => {
+            stopped = true;
+            window.clearInterval(interval);
+            window.clearTimeout(timeout);
+            try { void audioCtx.close(); } catch { /* noop */ }
+        };
+    } catch {
+        if (ctx) {
+            try { void ctx.close(); } catch { /* noop */ }
+        }
+        // Sound is best-effort; never let audio device errors affect auth handling.
+    }
+}
 
 // --- Component ---
 
@@ -63,19 +177,12 @@ export function VEAuthorizationDialog({
 
         const handleAuthRequest = (data: any) => {
             if (!mountedRef.current) return;
-            const req: AuthorizationRequest = {
-                id: data?.id || data?.request_id || "",
-                requester_name: data?.requester_name || "",
-                requester_machine_id: data?.requester_machine_id || "",
-                target_ve_id: data?.target_ve_id || "",
-                target_ve_name: data?.target_ve_name || "",
-                created_at: data?.created_at || "",
-                expires_at: data?.expires_at || "",
-            };
+            const req = normalizeAuthEvent(data);
             if (req.id) {
                 setRequests((prev) => {
                     // Avoid duplicates
                     if (prev.some((r) => r.id === req.id)) return prev;
+                    void playAuthRequestSound();
                     return [...prev, req];
                 });
             }
@@ -85,10 +192,15 @@ export function VEAuthorizationDialog({
 
         return () => {
             mountedRef.current = false;
+            stopAuthRequestSound();
             if (typeof unsub === "function") unsub();
             else EventsOff("ve:auth_request");
         };
     }, []);
+
+    useEffect(() => {
+        if (requests.length === 0) stopAuthRequestSound();
+    }, [requests.length]);
 
     // Handle allow/deny
     const handleDecision = useCallback(
@@ -101,9 +213,8 @@ export function VEAuthorizationDialog({
                     const mod = await import("../../../wailsjs/go/main/App");
                     await (mod as any).RespondAuthRequest(requestId, decision);
                 }
-                if (mountedRef.current) {
-                    setRequests((prev) => prev.filter((r) => r.id !== requestId));
-                }
+                emitAuthHandled(requestId);
+                if (mountedRef.current) setRequests((prev) => prev.filter((r) => r.id !== requestId));
             } catch (err) {
                 // Keep the request in the list on error
                 console.error("Failed to respond to auth request:", err);
@@ -260,6 +371,18 @@ function pruneExpiredAuthRequests(requests: AuthorizationRequest[], nowMs: numbe
     });
 }
 
+function emitAuthHandled(requestId: string) {
+    try { EventsEmit("ve:auth_handled", { request_id: requestId }); } catch { /* frontend-only fallback */ }
+    try { window.dispatchEvent(new CustomEvent(AUTH_HANDLED_LOCAL_EVENT, { detail: { request_id: requestId } })); } catch { /* noop */ }
+}
+
+function emitRemovedAuthRequests(previous: AuthorizationRequest[], next: AuthorizationRequest[]) {
+    const activeIds = new Set(next.map((request) => request.id));
+    previous.forEach((request) => {
+        if (request.id && !activeIds.has(request.id)) emitAuthHandled(request.id);
+    });
+}
+
 function AuthBellIcon({ size = 14 }: { size?: number }) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block" }}>
@@ -288,18 +411,26 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
             if (!mountedRef.current) return;
             const req = normalizeAuthEvent(data);
             if (!req.id) return;
-            setRequests((prev) => prev.some((item) => item.id === req.id) ? prev : [...prev, req]);
+            setRequests((prev) => {
+                if (prev.some((item) => item.id === req.id)) return prev;
+                void playAuthRequestSound();
+                return [...prev, req];
+            });
         };
         const unsub = EventsOn("ve:auth_request", handleAuthRequest);
         return () => {
             mountedRef.current = false;
+            stopAuthRequestSound();
             if (typeof unsub === "function") unsub();
             else EventsOff("ve:auth_request");
         };
     }, []);
 
     useEffect(() => {
-        if (requests.length === 0) setOpen(false);
+        if (requests.length === 0) {
+            setOpen(false);
+            stopAuthRequestSound();
+        }
     }, [requests.length]);
 
     useEffect(() => {
@@ -307,6 +438,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
         const now = Date.now();
         const active = pruneExpiredAuthRequests(requests, now);
         if (active.length !== requests.length) {
+            emitRemovedAuthRequests(requests, active);
             setRequests(active);
             return undefined;
         }
@@ -316,7 +448,13 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
             .sort((a, b) => a - b)[0];
         if (!nextExpiry) return undefined;
         const timer = window.setTimeout(() => {
-            if (mountedRef.current) setRequests((prev) => pruneExpiredAuthRequests(prev));
+            if (mountedRef.current) {
+                setRequests((prev) => {
+                    const active = pruneExpiredAuthRequests(prev);
+                    emitRemovedAuthRequests(prev, active);
+                    return active;
+                });
+            }
         }, Math.max(0, nextExpiry - now));
         return () => window.clearTimeout(timer);
     }, [requests]);
@@ -333,6 +471,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                 const mod = await import("../../../wailsjs/go/main/App");
                 await (mod as any).RespondAuthRequest(requestId, decision);
             }
+            emitAuthHandled(requestId);
             if (mountedRef.current) setRequests((prev) => prev.filter((item) => item.id !== requestId));
         } catch (err) {
             console.error("Failed to respond to auth request:", err);
@@ -457,23 +596,43 @@ export function VEAuthBlinkingIndicator({ theme, lang }: VEAuthBlinkingIndicator
     const [pendingCount, setPendingCount] = useState(0);
     const [visible, setVisible] = useState(true);
     const blinkRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const pendingIdsRef = useRef<Set<string>>(new Set());
 
     const isZh = !lang || lang.startsWith("zh");
 
     useEffect(() => {
-        const handleAuthRequest = () => {
+        const requestIdFromEvent = (data: any): string => {
+            const detail = data instanceof CustomEvent ? data.detail : data;
+            return normalizeAuthEvent(detail).id;
+        };
+        const handleAuthRequest = (data: any) => {
+            const requestId = requestIdFromEvent(data);
+            if (requestId) {
+                if (pendingIdsRef.current.has(requestId)) return;
+                pendingIdsRef.current.add(requestId);
+            }
             setPendingCount((prev) => prev + 1);
         };
 
         // Listen for auth requests being handled (custom event from dialog)
-        const handleAuthHandled = () => {
+        const handleAuthHandled = (data: any) => {
+            const requestId = requestIdFromEvent(data);
+            if (requestId) {
+                if (!pendingIdsRef.current.delete(requestId)) return;
+            } else if (pendingIdsRef.current.size > 0) {
+                const firstId = pendingIdsRef.current.values().next().value;
+                if (firstId) pendingIdsRef.current.delete(firstId);
+            }
             setPendingCount((prev) => Math.max(0, prev - 1));
         };
 
         const unsub1 = EventsOn("ve:auth_request", handleAuthRequest);
         const unsub2 = EventsOn("ve:auth_handled", handleAuthHandled);
+        window.addEventListener(AUTH_HANDLED_LOCAL_EVENT, handleAuthHandled);
 
         return () => {
+            pendingIdsRef.current.clear();
+            window.removeEventListener(AUTH_HANDLED_LOCAL_EVENT, handleAuthHandled);
             if (typeof unsub1 === "function") unsub1();
             else EventsOff("ve:auth_request");
             if (typeof unsub2 === "function") unsub2();

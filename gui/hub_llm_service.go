@@ -320,10 +320,14 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		return false
 	}
 	changed := false
-	providers := append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+	originalProviders := append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+	providers := normalizeMaclawLLMProviders(originalProviders)
+	if !maclawLLMProvidersEqual(originalProviders, providers) {
+		changed = true
+	}
 	providerIndex := -1
 	for i := range providers {
-		if providers[i].Name == hubServiceProviderName {
+		if isHubServiceProviderName(providers[i].Name) {
 			providerIndex = i
 			break
 		}
@@ -333,7 +337,7 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		if providerIndex >= 0 {
 			providers = append(providers[:providerIndex], providers[providerIndex+1:]...)
 			changed = true
-			if cfg.MaclawLLMCurrentProvider == hubServiceProviderName {
+			if isHubServiceProviderName(cfg.MaclawLLMCurrentProvider) {
 				cfg.MaclawLLMCurrentProvider = ""
 				changed = true
 			}
@@ -368,6 +372,10 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		}
 	} else {
 		providers = append([]corelib.MaclawLLMProvider{provider}, providers...)
+		changed = true
+	}
+	if canonicalCurrent := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider); canonicalCurrent != cfg.MaclawLLMCurrentProvider {
+		cfg.MaclawLLMCurrentProvider = canonicalCurrent
 		changed = true
 	}
 	if cfg.MaclawLLMCurrentProvider == "" || cfg.MaclawLLMCurrentProvider == hubServiceProviderName || !a.isMaclawLLMConfiguredWithConfig(*cfg) {
@@ -460,8 +468,9 @@ func maxInt64(a, b int64) int64 {
 }
 
 func (a *App) isMaclawLLMConfiguredWithConfig(cfg corelib.AppConfig) bool {
+	current := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider)
 	for _, p := range cfg.MaclawLLMProviders {
-		if p.Name != cfg.MaclawLLMCurrentProvider {
+		if canonicalHubServiceProviderName(p.Name) != current {
 			continue
 		}
 		return strings.TrimSpace(p.URL) != "" && strings.TrimSpace(p.Model) != ""

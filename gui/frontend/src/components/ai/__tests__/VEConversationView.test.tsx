@@ -8,6 +8,7 @@ import {
     formatFileSize,
     fileNameFromPath,
     createSessionWithTimeout,
+    classifySessionInitError,
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
@@ -192,7 +193,7 @@ describe("VEConversationView", () => {
 
         it("formats session_timeout error", () => {
             const err: VEConversationError = { type: "session_timeout", message: "" };
-            expect(formatError(err, true)).toBe("会话创建超时（5秒）");
+            expect(formatError(err, true)).toBe("会话创建超时（15秒）");
         });
 
         it("formats send_failed error", () => {
@@ -210,6 +211,11 @@ describe("VEConversationView", () => {
             expect(formatError({ type: "auth_pending", message: "" }, false)).toBe("Waiting for access confirmation");
             expect(formatError({ type: "access_denied", message: "denied" }, false)).toBe("Access was not approved");
             expect(formatError({ type: "access_denied", message: "blocked" }, false)).toBe("This digital employee is unavailable");
+        });
+
+        it("classifies per-request confirmation as auth pending", () => {
+            expect(classifySessionInitError(new Error("pending_confirmation"))).toBe("auth_pending");
+            expect(classifySessionInitError(new Error("hub returned 202: waiting for digital employee owner confirmation"))).toBe("auth_pending");
         });
     });
 
@@ -440,14 +446,14 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-error-banner").textContent).toContain("访问未通过");
         });
 
-        it("shows timeout error when session creation exceeds 5s", async () => {
+        it("shows timeout error when session creation exceeds 15s", async () => {
             // Use a promise that never resolves to simulate timeout
             const initiate = vi.fn().mockImplementation(
                 () => new Promise(() => {}) // never resolves
             );
             renderConversation({ initiateConversation: initiate });
-            // Advance past the 5s timeout
-            await act(async () => { vi.advanceTimersByTime(5100); });
+            // Advance past the 15s timeout
+            await act(async () => { vi.advanceTimersByTime(15100); });
             expect(screen.getByTestId("ve-error-banner")).toBeTruthy();
             expect(screen.getByTestId("ve-error-banner").textContent).toContain("超时");
         });

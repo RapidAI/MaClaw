@@ -21,6 +21,7 @@ const SetVEAllowedDirectoriesMock = vi.fn();
 const GetVEApprovalConfigMock = vi.fn();
 const SaveVEApprovalConfigMock = vi.fn();
 const LoadConfigMock = vi.fn();
+const SetAuthRequestSoundConfigMock = vi.fn();
 const pngSignatureBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const avatarInvalidText = "\u8bf7\u4e0a\u4f20 PNG\u3001JPG/JPEG \u6216 WebP \u56fe\u7247\uff0c\u5927\u5c0f\u4e0d\u8d85\u8fc7 5 MB\u3002";
 
@@ -40,6 +41,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
   SetVEAllowedDirectories: (...args: unknown[]) =>
     SetVEAllowedDirectoriesMock(...args),
   LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
+  SetAuthRequestSoundConfig: (...args: unknown[]) => SetAuthRequestSoundConfigMock(...args),
   GetVEApprovalConfig: (...args: unknown[]) =>
     GetVEApprovalConfigMock(...args),
   SaveVEApprovalConfig: (...args: unknown[]) =>
@@ -76,7 +78,12 @@ beforeEach(() => {
     remote_hub_url: "http://hub.local",
     remote_machine_id: "machine-123",
     remote_machine_token: "token 123",
+    group_discussion: {
+      auth_request_sound_preset: "classic",
+      auth_request_sound_muted: false,
+    },
   });
+  SetAuthRequestSoundConfigMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -878,6 +885,65 @@ describe("VirtualEmployeeSettingsPanel", () => {
       "\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2",
     )) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("allow"));
+  });
+
+  it("loads and saves access request ringtone preset", async () => {
+    LoadConfigMock.mockResolvedValue({
+      remote_hub_url: "http://hub.local",
+      remote_machine_id: "machine-123",
+      remote_machine_token: "token 123",
+      group_discussion: {
+        auth_request_sound_preset: "soft",
+        auth_request_sound_muted: false,
+      },
+    });
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+
+    const select = (await screen.findByLabelText("访问请求铃声")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("soft"));
+
+    fireEvent.change(select, { target: { value: "urgent" } });
+
+    await waitFor(() => {
+      expect(SetAuthRequestSoundConfigMock).toHaveBeenCalledWith("urgent", false);
+    });
+  });
+
+  it("saves access request ringtone muted state", async () => {
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    const checkbox = (await screen.findByLabelText("收到访问请求时播放铃声")) as HTMLInputElement;
+    await waitFor(() => expect(checkbox.checked).toBe(true));
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => {
+      expect(SetAuthRequestSoundConfigMock).toHaveBeenCalledWith("classic", true);
+    });
+  });
+
+  it("does not roll back newer ringtone changes when an older save fails", async () => {
+    let rejectFirstSave: ((err: Error) => void) | undefined;
+    SetAuthRequestSoundConfigMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFirstSave = reject;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+
+    const select = document.querySelector("#ve-auth-sound-preset") as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("classic"));
+
+    fireEvent.change(select, { target: { value: "soft" } });
+    fireEvent.change(select, { target: { value: "urgent" } });
+    rejectFirstSave?.(new Error("stale save failed"));
+
+    await waitFor(() => expect(select.value).toBe("urgent"));
+    expect(SetAuthRequestSoundConfigMock).toHaveBeenNthCalledWith(1, "soft", false);
+    expect(SetAuthRequestSoundConfigMock).toHaveBeenNthCalledWith(2, "urgent", false);
   });
 });
 

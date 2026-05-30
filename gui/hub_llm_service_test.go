@@ -90,6 +90,58 @@ func TestApplyHubLLMServiceStatusToConfig_KeepsProviderWhenPeriodLimited(t *test
 	}
 }
 
+func TestApplyHubLLMServiceStatusToConfig_CanonicalizesDuplicateHubAliases(t *testing.T) {
+	app := &App{}
+	mojibakeHubName := "MaClaw\u7039\u6a3b\u67df"
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: mojibakeHubName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: mojibakeHubName, URL: "https://old.example.com/api/llm/v1", Key: "old-token", Model: hubServiceAutoModel, Protocol: "openai"},
+			{Name: hubServiceProviderName, URL: "https://hub.example.com/api/llm/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai", ContextLength: corelib.DefaultContextTokens, TimeoutSec: corelib.DefaultLLMTimeoutSec, IsHubService: true},
+			{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"},
+		},
+	}
+
+	changed := app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{
+		Active:        true,
+		HubLLMBaseURL: "https://hub.example.com/api/llm/v1/",
+	})
+	if !changed {
+		t.Fatal("applyHubLLMServiceStatusToConfig() changed = false, want true because duplicate alias is canonicalized")
+	}
+	if cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
+		t.Fatalf("MaclawLLMCurrentProvider = %q, want %q", cfg.MaclawLLMCurrentProvider, hubServiceProviderName)
+	}
+	hubCount := 0
+	for _, provider := range cfg.MaclawLLMProviders {
+		if provider.Name == mojibakeHubName {
+			t.Fatalf("providers still contain mojibake hub alias: %+v", cfg.MaclawLLMProviders)
+		}
+		if provider.Name == hubServiceProviderName {
+			hubCount++
+		}
+	}
+	if hubCount != 1 {
+		t.Fatalf("hub provider count = %d, want 1; providers=%+v", hubCount, cfg.MaclawLLMProviders)
+	}
+}
+
+func TestIsMaclawLLMConfiguredWithConfigMatchesHubAliases(t *testing.T) {
+	app := &App{}
+	mojibakeHubName := "MaClaw\u7039\u6a3b\u67df"
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: mojibakeHubName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: hubServiceProviderName, URL: "https://hub.example.com/api/llm/v1", Model: hubServiceAutoModel},
+		},
+	}
+
+	if !app.isMaclawLLMConfiguredWithConfig(cfg) {
+		t.Fatal("isMaclawLLMConfiguredWithConfig() = false, want true for alias current and canonical provider")
+	}
+}
+
 func TestApplyHubLLMServiceStatusToConfig_KeepsProviderWhenExpired(t *testing.T) {
 	app := &App{}
 	cfg := &corelib.AppConfig{

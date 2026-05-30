@@ -244,6 +244,12 @@ func TestAppConfig_GroupDiscussionDefaultsWhenAbsent(t *testing.T) {
 	if gd.ConcurrentLimit != 1 {
 		t.Errorf("ConcurrentLimit = %d, want 1", gd.ConcurrentLimit)
 	}
+	if gd.AuthRequestSoundPreset != "classic" {
+		t.Errorf("AuthRequestSoundPreset = %q, want classic", gd.AuthRequestSoundPreset)
+	}
+	if gd.AuthRequestSoundMuted {
+		t.Error("absent group_discussion should leave auth request sound enabled")
+	}
 }
 
 func TestAppConfig_GroupDiscussionSensitiveQueryPolicyNormalizesCaseAndSpaces(t *testing.T) {
@@ -253,6 +259,26 @@ func TestAppConfig_GroupDiscussionSensitiveQueryPolicyNormalizesCaseAndSpaces(t 
 	}
 	if cfg.GroupDiscussion.SensitiveQueryPolicy != "allow" {
 		t.Fatalf("SensitiveQueryPolicy = %q, want allow", cfg.GroupDiscussion.SensitiveQueryPolicy)
+	}
+}
+
+func TestAppConfig_GroupDiscussionAuthRequestSoundPresetNormalizesCaseAndSpaces(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{"group_discussion":{"auth_request_sound_preset":" URGENT "}}`), &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if cfg.GroupDiscussion.AuthRequestSoundPreset != "urgent" {
+		t.Fatalf("AuthRequestSoundPreset = %q, want urgent", cfg.GroupDiscussion.AuthRequestSoundPreset)
+	}
+}
+
+func TestAppConfig_GroupDiscussionAuthRequestSoundPresetDefaultsInvalidValue(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{"group_discussion":{"auth_request_sound_preset":"unknown"}}`), &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if cfg.GroupDiscussion.AuthRequestSoundPreset != "classic" {
+		t.Fatalf("AuthRequestSoundPreset = %q, want classic", cfg.GroupDiscussion.AuthRequestSoundPreset)
 	}
 }
 

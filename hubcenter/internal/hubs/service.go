@@ -392,11 +392,6 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err != nil {
 		return nil, err
 	}
-	capJSON, err := json.Marshal(req.Capabilities)
-	if err != nil {
-		return nil, err
-	}
-
 	installationID := strings.TrimSpace(req.InstallationID)
 	corporateEmailDomains := normalizeCorporateEmailDomains(req.CorporateEmailDomains)
 	corporateEmailDomain := normalizeCorporateEmailDomain(req.CorporateEmailDomain)
@@ -406,11 +401,16 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if len(corporateEmailDomains) > 0 {
 		corporateEmailDomain = corporateEmailDomains[0]
 	}
+	capabilities := capabilitiesWithCorporateEmailDomains(req.Capabilities, corporateEmailDomains, corporateEmailDomain)
+	capJSON, err := json.Marshal(capabilities)
+	if err != nil {
+		return nil, err
+	}
 	visibility := normalizeVisibility(req.Visibility)
 	acceptPublicSignup := explicitPublicSignupOrDefault(req.AcceptPublicSignup)
 
 	completeExistingRegistration := func(existing *store.HubInstance) (*RegisterHubResult, error) {
-		result, err := s.updateRegisteredHub(ctx, existing, req, ownerEmail, rawSecret, string(capJSON), corporateEmailDomains, corporateEmailDomain, visibility, acceptPublicSignup, now)
+		result, err := s.updateRegisteredHub(ctx, existing, req, ownerEmail, rawSecret, string(capJSON), capabilities, corporateEmailDomains, corporateEmailDomain, visibility, acceptPublicSignup, now)
 		if err != nil {
 			return nil, err
 		}
@@ -487,7 +487,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
 		return nil, err
 	}
-	if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, req.Capabilities, now); err != nil {
+	if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
 		return nil, err
 	}
 	if err := s.ensureDefaultHubRegistrationPolicy(ctx, hub.ID); err != nil {
@@ -528,7 +528,7 @@ func isUniqueConstraintError(err error) bool {
 	return strings.Contains(msg, "unique constraint failed")
 }
 
-func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubInstance, req RegisterHubRequest, ownerEmail, rawSecret, capabilitiesJSON string, corporateEmailDomains []string, corporateEmailDomain, visibility string, acceptPublicSignup bool, now time.Time) (*RegisterHubResult, error) {
+func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubInstance, req RegisterHubRequest, ownerEmail, rawSecret, capabilitiesJSON string, capabilities map[string]any, corporateEmailDomains []string, corporateEmailDomain, visibility string, acceptPublicSignup bool, now time.Time) (*RegisterHubResult, error) {
 	if existing.IsDisabled {
 		return nil, ErrHubDisabled
 	}
@@ -569,7 +569,7 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 	if err := s.syncDomainRoutes(ctx, existing, corporateEmailDomains, now); err != nil {
 		return nil, err
 	}
-	if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, existing.ID, req.Capabilities, now); err != nil {
+	if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, existing.ID, capabilities, now); err != nil {
 		return nil, err
 	}
 	if err := s.ensureDefaultHubRegistrationPolicy(ctx, existing.ID); err != nil {
@@ -581,6 +581,25 @@ func (s *Service) updateRegisteredHub(ctx context.Context, existing *store.HubIn
 		return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: false, Message: "Hub re-registered successfully, already confirmed"}, nil
 	}
 	return &RegisterHubResult{HubID: existing.ID, HubSecret: rawSecret, PendingConfirmation: true, Message: "Hub registration confirmation sent"}, nil
+}
+
+func capabilitiesWithCorporateEmailDomains(capabilities map[string]any, domains []string, single string) map[string]any {
+	domains = normalizeCorporateEmailDomains(domains)
+	single = normalizeCorporateEmailDomain(single)
+	if len(domains) == 0 && single != "" {
+		domains = []string{single}
+	}
+	if len(domains) == 0 {
+		return capabilities
+	}
+	out := make(map[string]any, len(capabilities)+2)
+	for key, value := range capabilities {
+		out[key] = value
+	}
+	out["corporate_email_domain"] = domains[0]
+	out["corporate_email_domains"] = domains
+	out["corporate_email_domain_source"] = "configured"
+	return out
 }
 
 func (s *Service) findHubByRegistrationEndpoint(ctx context.Context, req RegisterHubRequest) (*store.HubInstance, error) {
@@ -634,6 +653,7 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 
 	now := time.Now()
 	if update != nil {
+		var capabilities map[string]any
 		corporateEmailDomains := normalizeCorporateEmailDomains(update.CorporateEmailDomains)
 		corporateEmailDomain := normalizeCorporateEmailDomain(update.CorporateEmailDomain)
 		if len(corporateEmailDomains) == 0 && corporateEmailDomain != "" {
@@ -655,7 +675,8 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 		hub.CorporateEmailDomain = corporateEmailDomain
 		hub.AcceptPublicSignup = acceptPublicSignup
 		if update.Capabilities != nil {
-			capJSON, err := json.Marshal(update.Capabilities)
+			capabilities = capabilitiesWithCorporateEmailDomains(update.Capabilities, corporateEmailDomains, corporateEmailDomain)
+			capJSON, err := json.Marshal(capabilities)
 			if err != nil {
 				return err
 			}
@@ -676,7 +697,7 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 			return err
 		}
 		if update.Capabilities != nil {
-			if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, update.Capabilities, now); err != nil {
+			if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
 				return err
 			}
 		}
@@ -794,7 +815,7 @@ func (s *Service) ListEnterpriseMailDomains(ctx context.Context) ([]EnterpriseMa
 	if err != nil {
 		return nil, err
 	}
-	routeDomainsByScope, err := s.dashboardRouteDomains(ctx)
+	routeDomainsByScope, err := s.dashboardRouteDomains(ctx, hubItems)
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +832,8 @@ func (s *Service) ListEnterpriseMailDomains(ctx context.Context) ([]EnterpriseMa
 			continue
 		}
 		caps := hubCapabilities(hub)
-		globalDomains := append(hubCorporateDomains(hub), routeDomainsByScope[hubTenantScopeKey(hub.ID, "")]...)
+		globalDomains := append(hubCorporateDomains(hub), tenantDashboardDomains(caps, "")...)
+		globalDomains = append(globalDomains, routeDomainsByScope[hubTenantScopeKey(hub.ID, "")]...)
 		out = appendEnterpriseMailDomainItems(out, hub, "", "", globalDomains, guestDomainsByScope)
 		for _, tenantID := range dashboardTenantIDsWithRoutes(caps, nil, routeDomainsByScope, hub.ID) {
 			domains := append(tenantDashboardDomains(caps, tenantID), routeDomainsByScope[hubTenantScopeKey(hub.ID, tenantID)]...)
@@ -846,9 +868,19 @@ func appendEnterpriseMailDomainItems(out []EnterpriseMailDomainItem, hub *store.
 	return out
 }
 
-func (s *Service) dashboardRouteDomains(ctx context.Context) (map[string][]string, error) {
+func (s *Service) dashboardRouteDomains(ctx context.Context, hubs []*store.HubInstance) (map[string][]string, error) {
 	if s == nil || s.routes == nil {
 		return map[string][]string{}, nil
+	}
+	capsByHub := map[string]map[string]any{}
+	hubByID := map[string]*store.HubInstance{}
+	for _, hub := range hubs {
+		if hub == nil || strings.TrimSpace(hub.ID) == "" {
+			continue
+		}
+		hubID := strings.TrimSpace(hub.ID)
+		capsByHub[hubID] = hubCapabilities(hub)
+		hubByID[hubID] = hub
 	}
 	routes, err := s.routes.ListAll(ctx)
 	if err != nil {
@@ -863,7 +895,16 @@ func (s *Service) dashboardRouteDomains(ctx context.Context) (map[string][]strin
 		if domain == "" {
 			continue
 		}
-		key := hubTenantScopeKey(route.HubID, route.TenantID)
+		hubID := strings.TrimSpace(route.HubID)
+		tenantID := normalizeHubSyncTenantID(route.TenantID)
+		configuredDomains := append(hubCorporateDomains(hubByID[hubID]), tenantDashboardDomains(capsByHub[hubID], tenantID)...)
+		if tenantID == "" && isManagedHubDomainRouteID(route.ID, hubID) && !domainListContains(configuredDomains, domain) {
+			continue
+		}
+		if tenantID != "" && strings.HasPrefix(strings.TrimSpace(route.ID), "hdr_tenant_") && !domainListContains(tenantDomainCapabilityMap(capsByHub[hubID])[tenantID], domain) {
+			continue
+		}
+		key := hubTenantScopeKey(hubID, tenantID)
 		if seen[key] == nil {
 			seen[key] = map[string]struct{}{}
 		}
@@ -939,7 +980,7 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 			return nil, err
 		}
 	}
-	routeDomainsByScope, err := s.dashboardRouteDomains(ctx)
+	routeDomainsByScope, err := s.dashboardRouteDomains(ctx, hubItems)
 	if err != nil {
 		return nil, err
 	}
@@ -949,7 +990,8 @@ func (s *Service) ListUserDashboard(ctx context.Context) ([]HubUserDashboardItem
 			continue
 		}
 		caps := hubCapabilities(hub)
-		domains := normalizeCorporateEmailDomains(append(hubCorporateDomains(hub), routeDomainsByScope[hubTenantScopeKey(hub.ID, "")]...))
+		domains := append(hubCorporateDomains(hub), tenantDashboardDomains(caps, "")...)
+		domains = normalizeCorporateEmailDomains(append(domains, routeDomainsByScope[hubTenantScopeKey(hub.ID, "")]...))
 		signupMode := "restricted"
 		if len(domains) > 0 {
 			signupMode = "corporate_domain"
@@ -1122,6 +1164,28 @@ func domainsExcluding(domains, excluded []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func domainListContains(domains []string, domain string) bool {
+	domain = normalizeCorporateEmailDomain(domain)
+	if domain == "" {
+		return false
+	}
+	for _, item := range normalizeCorporateEmailDomains(domains) {
+		if item == domain {
+			return true
+		}
+	}
+	return false
+}
+
+func isManagedHubDomainRouteID(routeID, hubID string) bool {
+	routeID = strings.TrimSpace(routeID)
+	hubID = strings.TrimSpace(hubID)
+	if routeID == "" || hubID == "" {
+		return false
+	}
+	return strings.HasPrefix(routeID, fmt.Sprintf("hdr_%s_", hubID))
 }
 
 func (s *Service) dashboardUserCounts(ctx context.Context) (map[string]map[string]int, error) {
@@ -3287,7 +3351,24 @@ func tenantDomainCapabilityMap(caps map[string]any) map[string][]string {
 	if caps == nil {
 		return map[string][]string{}
 	}
+	if !tenantDomainCapabilitiesAreConfigured(caps) {
+		return map[string][]string{}
+	}
 	return tenantStringListCapabilityMap(caps["tenant_domains"], normalizeCorporateEmailDomains, true)
+}
+
+func tenantDomainCapabilitiesAreConfigured(caps map[string]any) bool {
+	if caps == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(caps["tenant_domain_source"])), "configured")
+}
+
+func corporateDomainCapabilitiesAreConfigured(caps map[string]any) bool {
+	if caps == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(caps["corporate_email_domain_source"])), "configured")
 }
 
 func tenantStringListCapabilityMap(value any, normalize func([]string) []string, includeEmptyTenant bool) map[string][]string {
@@ -3330,7 +3411,9 @@ func dashboardTenantIDs(caps map[string]any, fallback map[string]int) []string {
 	}
 	collectTenantIDsFromNumericMap(seen, caps["tenant_user_counts"])
 	collectTenantIDsFromNumericMap(seen, caps["tenant_machine_counts"])
-	collectTenantIDsFromMapKeys(seen, caps["tenant_domains"])
+	if tenantDomainCapabilitiesAreConfigured(caps) {
+		collectTenantIDsFromMapKeys(seen, caps["tenant_domains"])
+	}
 	collectTenantIDsFromMapKeys(seen, caps["tenant_names"])
 	for tenantID := range fallback {
 		if tenantID = strings.TrimSpace(tenantID); tenantID != "" {
@@ -3580,6 +3663,10 @@ func (s *Service) checkIPAllowed(ctx context.Context, ip string) error {
 }
 
 func newID(prefix string) string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err == nil {
+		return fmt.Sprintf("%s_%d_%s", prefix, time.Now().UnixNano(), hex.EncodeToString(buf))
+	}
 	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
 }
 
@@ -3729,35 +3816,15 @@ func hubCorporateDomains(hub *store.HubInstance) []string {
 	if hub == nil {
 		return nil
 	}
-	if strings.TrimSpace(hub.CorporateEmailDomain) == "" {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, 2)
-	add := func(value string) {
-		value = normalizeCorporateEmailDomain(value)
-		if value == "" {
-			return
-		}
-		if _, ok := seen[value]; ok {
-			return
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	add(hub.CorporateEmailDomain)
-	var caps map[string]any
-	if strings.TrimSpace(hub.CapabilitiesJSON) != "" && json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps) == nil {
-		if values, ok := caps["corporate_email_domains"].([]any); ok {
-			for _, value := range values {
-				add(fmt.Sprint(value))
-			}
-		}
-		if value, ok := caps["corporate_email_domain"]; ok {
-			add(fmt.Sprint(value))
+	values := []string{hub.CorporateEmailDomain}
+	caps := hubCapabilities(hub)
+	if corporateDomainCapabilitiesAreConfigured(caps) {
+		values = append(values, capabilityStringList(caps["corporate_email_domains"])...)
+		if single := strings.TrimSpace(fmt.Sprint(caps["corporate_email_domain"])); single != "" {
+			values = append(values, single)
 		}
 	}
-	return out
+	return normalizeCorporateEmailDomains(values)
 }
 
 func hubMachineCount(hub *store.HubInstance) int {

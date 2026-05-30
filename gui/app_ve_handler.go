@@ -214,8 +214,13 @@ func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.Group
 		return
 	}
 
+	hasAttachments := HasAttachments(msg)
+	if hasAttachments && strings.TrimSpace(msg.Content) == "" {
+		msg.Content = "Please inspect the attached file(s)."
+	}
+
 	// Process attachments and append context to message content
-	if HasAttachments(msg) {
+	if hasAttachments {
 		attachmentContext := h.ProcessMessageAttachmentsForSession(sessionID, msg)
 		if attachmentContext != "" {
 			msg.Content = msg.Content + attachmentContext

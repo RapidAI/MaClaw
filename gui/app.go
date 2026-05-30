@@ -5209,6 +5209,20 @@ func (a *App) SetDefaultLaunchMode(mode string) error {
 		}
 	})
 }
+
+func (a *App) SetAuthRequestSoundConfig(preset string, muted bool) error {
+	normalizedPreset := strings.ToLower(strings.TrimSpace(preset))
+	switch normalizedPreset {
+	case "classic", "soft", "bright", "pulse", "urgent":
+	default:
+		normalizedPreset = "classic"
+	}
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.GroupDiscussion.AuthRequestSoundPreset = normalizedPreset
+		cfg.GroupDiscussion.AuthRequestSoundMuted = muted
+	})
+}
+
 func (a *App) PatchConfig(patchFn func(cfg *corelib.AppConfig)) error {
 	return a.patchConfig(patchFn, false)
 }

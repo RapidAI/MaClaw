@@ -10,6 +10,7 @@ import {
   GetVEAllowedDirectories,
   SetVEAllowedDirectories,
   LoadConfig,
+  SetAuthRequestSoundConfig,
 } from "../../../wailsjs/go/main/App";
 import { avatarImageMaxBytes, avatarSourceImageMaxBytes, safeAvatarDataURL, safeAvatarSourceDataURL } from "../ai/virtualEmployeeAvatar";
 import { VEApprovalCapabilitySection } from "./VEApprovalCapabilitySection";
@@ -33,6 +34,7 @@ type VEStatusResponse = {
 export type AccessPolicy = "public" | "whitelist" | "blacklist" | "per_request";
 export type VEStatus = "pending" | "active" | "disabled" | "rejected";
 type SensitiveQueryPolicy = "confirm" | "deny" | "allow";
+type AuthRequestSoundPreset = "classic" | "soft" | "bright" | "pulse" | "urgent";
 
 type VEFormStateSetter = {
   setRegistered: (value: boolean) => void;
@@ -58,6 +60,18 @@ type VEFormStateSetter = {
 
 const avatarMaxFileSizeMB = avatarSourceImageMaxBytes / (1024 * 1024);
 const avatarSavedMaxSizeMB = avatarImageMaxBytes / (1024 * 1024);
+const authRequestSoundOptions = (lang?: string): { value: AuthRequestSoundPreset; label: string }[] => [
+  { value: "classic", label: textForLang(lang, "Classic phone", "经典电话铃", "經典電話鈴") },
+  { value: "soft", label: textForLang(lang, "Soft chime", "柔和铃音", "柔和鈴音") },
+  { value: "bright", label: textForLang(lang, "Bright desk phone", "清亮座机", "清亮座機") },
+  { value: "pulse", label: textForLang(lang, "Pulse alert", "脉冲提醒", "脈衝提醒") },
+  { value: "urgent", label: textForLang(lang, "Urgent ring", "急促铃声", "急促鈴聲") },
+];
+
+function normalizeAuthRequestSoundPreset(value: unknown): AuthRequestSoundPreset {
+  const preset = String(value || "").trim().toLowerCase() as AuthRequestSoundPreset;
+  return ["classic", "soft", "bright", "pulse", "urgent"].includes(preset) ? preset : "classic";
+}
 
 function resetVEFormState(setter: VEFormStateSetter) {
   setter.setRegistered(false);
@@ -460,6 +474,9 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const [approvalNotice, setApprovalNotice] = useState("");
   const [sensitiveQueryPolicy, setSensitiveQueryPolicy] =
     useState<SensitiveQueryPolicy>("confirm");
+  const [authRequestSoundPreset, setAuthRequestSoundPreset] = useState<AuthRequestSoundPreset>("classic");
+  const [authRequestSoundMuted, setAuthRequestSoundMuted] = useState(false);
+  const authRequestSoundSaveSeqRef = useRef(0);
   const [nameError, setNameError] = useState("");
   const [skillError, setSkillError] = useState("");
   const [policyError, setPolicyError] = useState("");
@@ -557,6 +574,26 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
       })
       .catch(() => {
         if (!cancelled) setSensitiveQueryPolicy("confirm");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    LoadConfig()
+      .then((cfg: any) => {
+        if (cancelled) return;
+        const gd = cfg?.group_discussion || cfg?.GroupDiscussion || {};
+        setAuthRequestSoundPreset(normalizeAuthRequestSoundPreset(gd.auth_request_sound_preset ?? gd.AuthRequestSoundPreset));
+        setAuthRequestSoundMuted(Boolean(gd.auth_request_sound_muted ?? gd.AuthRequestSoundMuted));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthRequestSoundPreset("classic");
+          setAuthRequestSoundMuted(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -743,6 +780,24 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
       top: `${dy}px`,
       transform: "none",
     };
+  }
+
+  async function saveAuthRequestSound(next: { preset?: AuthRequestSoundPreset; muted?: boolean }) {
+    const previousPreset = authRequestSoundPreset;
+    const previousMuted = authRequestSoundMuted;
+    const preset = next.preset ?? previousPreset;
+    const muted = next.muted ?? previousMuted;
+    const saveSeq = ++authRequestSoundSaveSeqRef.current;
+    setAuthRequestSoundPreset(preset);
+    setAuthRequestSoundMuted(muted);
+    try {
+      await SetAuthRequestSoundConfig(preset, muted);
+    } catch {
+      if (authRequestSoundSaveSeqRef.current === saveSeq) {
+        setAuthRequestSoundPreset(previousPreset);
+        setAuthRequestSoundMuted(previousMuted);
+      }
+    }
   }
 
   function validateName(value: string): string {
@@ -1114,6 +1169,49 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         </div>
 
         <p className="ve-form-hint ve-sensitive-hint">{c.sensitiveHint}</p>
+
+        <div data-testid="ve-auth-sound-section" className="ve-form-group">
+          <div className="ve-form-row-dual">
+            <div className="ve-form-row-dual-item">
+              <label className="ve-form-label" htmlFor="ve-auth-sound-preset">
+                {textForLang(lang, "Access request ringtone", "访问请求铃声", "存取請求鈴聲")}
+              </label>
+              <select
+                id="ve-auth-sound-preset"
+                className="ve-form-input ve-form-select"
+                value={authRequestSoundPreset}
+                disabled={authRequestSoundMuted}
+                onChange={(e) => saveAuthRequestSound({ preset: normalizeAuthRequestSoundPreset(e.target.value) })}
+              >
+                {authRequestSoundOptions(lang).map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="ve-form-row-dual-item">
+              <label className="ve-form-label" htmlFor="ve-auth-sound-muted">
+                {textForLang(lang, "Ringtone mode", "铃声模式", "鈴聲模式")}
+              </label>
+              <label className="ve-avatar-editor__switch" style={{ minHeight: 34, alignItems: "center" }}>
+                <input
+                  id="ve-auth-sound-muted"
+                  type="checkbox"
+                  checked={!authRequestSoundMuted}
+                  onChange={(e) => saveAuthRequestSound({ muted: !e.target.checked })}
+                />
+                <span>{textForLang(lang, "Play sound on access request", "收到访问请求时播放铃声", "收到存取請求時播放鈴聲")}</span>
+              </label>
+            </div>
+          </div>
+          <p className="ve-form-hint">
+            {textForLang(
+              lang,
+              "When another user requests access to this GUI digital employee, the top reminder will blink and play this ringtone for several seconds.",
+              "当别人请求访问这个 GUI 数字员工时，顶部提醒会闪烁，并播放这段铃声数秒。",
+              "當別人請求存取這個 GUI 數字員工時，頂部提醒會閃爍，並播放這段鈴聲數秒。",
+            )}
+          </p>
+        </div>
 
         {/* Allowed access directory section (Requirements 1.1-1.8, 2.2) */}
         <div data-testid="ve-allowed-dirs-section" className="ve-form-group">

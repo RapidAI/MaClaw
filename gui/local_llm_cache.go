@@ -150,7 +150,7 @@ func (a *App) cachedStreamHit(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	default:
 	}
 	cacheCfg, ok := a.effectiveLLMPromptCacheConfig()
-	if !ok || !cacheCfg.EffectiveStreamSynthesisEnabled() || strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName || cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+	if !ok || !cacheCfg.EffectiveStreamSynthesisEnabled() || isHubServiceProviderName(cfg.ProviderName) || cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
 		logLocalLLMCacheSkip(cfg, "stream", localLLMCacheStreamDisabledReason(cfg, ok, cacheCfg))
 		return nil, false
 	}
@@ -204,7 +204,7 @@ func (a *App) cachedStreamHit(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 }
 
 func (a *App) storeStreamResponse(cfg corelib.MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, resp *llm.Response) {
-	if resp == nil || responseHasToolCalls(resp) || strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName || cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
+	if resp == nil || responseHasToolCalls(resp) || isHubServiceProviderName(cfg.ProviderName) || cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
 		logLocalLLMCacheSkip(cfg, "stream", localLLMCacheStoreIneligibleReason(cfg, resp))
 		return
 	}
@@ -264,7 +264,7 @@ func localLLMCacheStreamDisabledReason(cfg corelib.MaclawLLMConfig, cfgLoaded bo
 		return "config_disabled_or_unavailable"
 	case !cacheCfg.EffectiveStreamSynthesisEnabled():
 		return "stream_synthesis_disabled"
-	case strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName:
+	case isHubServiceProviderName(cfg.ProviderName):
 		return "official_hub_bypass"
 	case cfg.IsResponsesAPI():
 		return "responses_api_unsupported"
@@ -281,7 +281,7 @@ func localLLMCacheStoreIneligibleReason(cfg corelib.MaclawLLMConfig, resp *llm.R
 		return "nil_response"
 	case responseHasToolCalls(resp):
 		return "tool_calls_not_cached"
-	case strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName:
+	case isHubServiceProviderName(cfg.ProviderName):
 		return "official_hub_bypass"
 	case cfg.IsResponsesAPI():
 		return "responses_api_unsupported"
@@ -325,7 +325,7 @@ func (a *App) recordLocalLLMCacheRequest(cfg corelib.MaclawLLMConfig, hit bool) 
 	if provider == "" {
 		provider = strings.TrimSpace(cfg.Model)
 	}
-	if provider == "" || provider == hubServiceProviderName {
+	if provider == "" || isHubServiceProviderName(provider) {
 		return
 	}
 	a.AccumulateLLMLocalCacheRequest(provider, hit)
@@ -376,7 +376,7 @@ func localLLMCacheSupportsOpenAIProtocol(cfg corelib.MaclawLLMConfig) bool {
 	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
 		return false
 	}
-	if strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName {
+	if isHubServiceProviderName(cfg.ProviderName) {
 		return false
 	}
 	return true
@@ -390,7 +390,7 @@ func localLLMCacheSupportsAnthropicProtocol(cfg corelib.MaclawLLMConfig) bool {
 	if !strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") || cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
 		return false
 	}
-	if strings.TrimSpace(cfg.ProviderName) == hubServiceProviderName {
+	if isHubServiceProviderName(cfg.ProviderName) {
 		return false
 	}
 	return true

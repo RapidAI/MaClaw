@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -12,6 +13,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +28,10 @@ const (
 	platformAvatarImageMaxBytes  = 1024 * 1024
 	platformAvatarDataURLMaxSize = len("data:image/jpeg;base64,") + ((platformAvatarImageMaxBytes+2)/3)*4
 	platformJSONBodyMaxBytes     = int64(platformAvatarDataURLMaxSize + 512*1024)
+	platformAttachmentMaxBytes   = int64(50 * 1024 * 1024)
+	platformAttachmentNameMaxLen = 160
+	platformAttachmentMaxCount   = 20
+	platformAttachmentTimeout    = 60 * time.Second
 )
 
 func (s *HTTPServer) withPlatformAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -328,10 +335,15 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 		return
 	}
 	content := strings.TrimSpace(in.Content)
-	if content == "" {
+	attachments := platformMessageAttachmentsFromPayload(in.Payload)
+	attachmentCount := platformMessageAttachmentCount(attachments)
+	if content == "" && attachmentCount == 0 {
 		log.Printf("[platform-runtime] discussion message empty content employee=%s request_id=%s hub_discussion=%s hub_message=%s duration=%s", logEmployeeID, in.RequestID, in.HubDiscussionID, in.HubMessageID, time.Since(started))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content is required"})
 		return
+	}
+	if content == "" && attachmentCount > 0 {
+		content = "Please inspect the attached file(s)."
 	}
 	if platformRuntimeRequestHubTenantID(r) == "" && strings.TrimSpace(in.TenantID) != "" {
 		r = cloneRequestWithHeader(r, "X-VE-Hub-Tenant-ID", strings.TrimSpace(in.TenantID))
@@ -357,6 +369,7 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 	if value := strings.TrimSpace(in.HubMessageID); value != "" {
 		metadata["ve_hub_message_id"] = value
 	}
+	content = s.enrichPlatformMessageContentWithAttachments(r, binding, in, content, attachments, metadata)
 	log.Printf("[platform-runtime] discussion send start employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s content_chars=%d", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, len([]rune(content)))
 	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata})
 	if err != nil {
@@ -439,6 +452,352 @@ func normalizePlatformVirtualEmployeeMessageRequest(in *platformVirtualEmployeeM
 		}
 	}
 	return nil
+}
+
+type platformTextAttachment struct {
+	Content   string `json:"content"`
+	Filename  string `json:"filename"`
+	MimeType  string `json:"mime_type"`
+	LocalPath string `json:"local_path"`
+}
+
+type platformFileAttachment struct {
+	FileURL   string `json:"file_url"`
+	Filename  string `json:"filename"`
+	MimeType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+	LocalPath string `json:"local_path"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+}
+
+type platformMessageAttachments struct {
+	Text  []platformTextAttachment `json:"text_attachments"`
+	Image []platformFileAttachment `json:"image_attachments"`
+	File  []platformFileAttachment `json:"file_attachments"`
+}
+
+func (s *HTTPServer) enrichPlatformMessageContentWithAttachments(r *http.Request, binding platformRuntimeBinding, in platformVirtualEmployeeMessageRequest, content string, attachments platformMessageAttachments, metadata map[string]string) string {
+	attachments = limitPlatformMessageAttachments(attachments)
+	count := platformMessageAttachmentCount(attachments)
+	if count == 0 {
+		return content
+	}
+	if metadata != nil {
+		metadata["ve_attachment_count"] = fmt.Sprint(count)
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(content))
+	b.WriteString("\n\n[Hub attachments received]\n")
+	for _, att := range attachments.Text {
+		name := safePlatformAttachmentFilename(att.Filename)
+		line := fmt.Sprintf("- text: %s", firstPlatformNonEmpty(name, "attachment.txt"))
+		if localPath, err := materializePlatformTextAttachment(binding.Instance.Workspace, in.HubDiscussionID, att); err == nil && localPath != "" {
+			line += fmt.Sprintf("; local_path=%s", localPath)
+		} else if err != nil {
+			line += fmt.Sprintf("; unavailable=%s", err.Error())
+		}
+		b.WriteString(line + "\n")
+	}
+	for _, att := range attachments.Image {
+		b.WriteString(s.platformFileAttachmentLine(r, binding, in.HubDiscussionID, "image", att) + "\n")
+	}
+	for _, att := range attachments.File {
+		b.WriteString(s.platformFileAttachmentLine(r, binding, in.HubDiscussionID, "file", att) + "\n")
+	}
+	b.WriteString("Use local_path when present to inspect the attachment.\n")
+	return b.String()
+}
+
+func platformMessageAttachmentCount(attachments platformMessageAttachments) int {
+	return len(attachments.Text) + len(attachments.Image) + len(attachments.File)
+}
+
+func limitPlatformMessageAttachments(attachments platformMessageAttachments) platformMessageAttachments {
+	remaining := platformAttachmentMaxCount
+	if len(attachments.Text) > remaining {
+		attachments.Text = attachments.Text[:remaining]
+	}
+	remaining -= len(attachments.Text)
+	if remaining < 0 {
+		remaining = 0
+	}
+	if len(attachments.Image) > remaining {
+		attachments.Image = attachments.Image[:remaining]
+	}
+	remaining -= len(attachments.Image)
+	if remaining < 0 {
+		remaining = 0
+	}
+	if len(attachments.File) > remaining {
+		attachments.File = attachments.File[:remaining]
+	}
+	return attachments
+}
+
+func platformMessageAttachmentsFromPayload(raw json.RawMessage) platformMessageAttachments {
+	if len(bytes.TrimSpace(raw)) == 0 || !json.Valid(raw) {
+		return platformMessageAttachments{}
+	}
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return platformMessageAttachments{}
+	}
+	var out platformMessageAttachments
+	for _, candidate := range platformAttachmentCandidates(payload) {
+		var got platformMessageAttachments
+		data, err := json.Marshal(candidate)
+		if err != nil || json.Unmarshal(data, &got) != nil {
+			continue
+		}
+		out.Text = append(out.Text, got.Text...)
+		out.Image = append(out.Image, got.Image...)
+		out.File = append(out.File, got.File...)
+	}
+	return out
+}
+
+func platformAttachmentCandidates(v any) []any {
+	candidates := []any{v}
+	if env := platformEnvelopeField(v, "envelope", "Envelope"); env != nil {
+		candidates = append(candidates, env)
+		if message := platformEnvelopeField(env, "message", "Message"); message != nil {
+			candidates = append(candidates, message)
+		}
+	}
+	if message := platformEnvelopeField(v, "message", "Message"); message != nil {
+		candidates = append(candidates, message)
+	}
+	return candidates
+}
+
+func materializePlatformTextAttachment(workspace, discussionID string, att platformTextAttachment) (string, error) {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" || strings.TrimSpace(att.Content) == "" {
+		return "", nil
+	}
+	name := safePlatformAttachmentFilename(att.Filename)
+	if name == "" {
+		name = "attachment.txt"
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(att.Content))
+	if err != nil {
+		return "", fmt.Errorf("invalid inline text attachment")
+	}
+	if int64(len(data)) > platformAttachmentMaxBytes {
+		return "", fmt.Errorf("attachment too large")
+	}
+	dir := filepath.Join(workspace, ".hub-attachments", safePlatformAttachmentFilename(discussionID))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := uniquePlatformAttachmentPath(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *HTTPServer) platformFileAttachmentLine(r *http.Request, binding platformRuntimeBinding, discussionID, kind string, att platformFileAttachment) string {
+	name := safePlatformAttachmentFilename(att.Filename)
+	if name == "" {
+		name = "attachment"
+	}
+	parts := []string{fmt.Sprintf("- %s: %s", kind, name)}
+	if att.MimeType != "" {
+		parts = append(parts, "mime_type="+strings.TrimSpace(att.MimeType))
+	}
+	if att.SizeBytes > 0 {
+		parts = append(parts, fmt.Sprintf("size_bytes=%d", att.SizeBytes))
+	}
+	if localPath, err := s.downloadPlatformFileAttachment(r, binding, discussionID, att); err == nil && localPath != "" {
+		parts = append(parts, "local_path="+localPath)
+	} else if strings.TrimSpace(att.FileURL) != "" {
+		parts = append(parts, "file_url="+strings.TrimSpace(att.FileURL))
+		if err != nil {
+			parts = append(parts, "download_unavailable="+err.Error())
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding platformRuntimeBinding, discussionID string, att platformFileAttachment) (string, error) {
+	if strings.TrimSpace(att.FileURL) == "" || strings.TrimSpace(binding.Instance.Workspace) == "" {
+		return "", nil
+	}
+	cfg, err := s.svc.GetUserConfig(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID})
+	if err != nil || cfg == nil {
+		return "", err
+	}
+	participantID := firstPlatformNonEmpty(cfg.AppConfig.RemoteMachineID, r.Header.Get("X-VE-Hub-Employee-ID"))
+	downloadURL, attachmentID, err := platformAttachmentDownloadURL(cfg.AppConfig.RemoteHubURL, att.FileURL, discussionID, participantID)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), platformAttachmentTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return "", err
+	}
+	if token := strings.TrimSpace(cfg.AppConfig.RemoteMachineToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if participantID != "" {
+		req.Header.Set("X-Machine-ID", participantID)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("download failed HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	name := safePlatformAttachmentFilename(att.Filename)
+	if name == "" {
+		name = "attachment"
+	}
+	if attachmentID != "" {
+		name = safePlatformAttachmentFilename(attachmentID + "-" + name)
+	}
+	dir := filepath.Join(binding.Instance.Workspace, ".hub-attachments", safePlatformAttachmentFilename(discussionID))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := uniquePlatformAttachmentPath(dir, name)
+	tmp, err := os.CreateTemp(dir, ".download-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	size, copyErr := io.Copy(tmp, io.LimitReader(resp.Body, platformAttachmentMaxBytes+1))
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if size > platformAttachmentMaxBytes {
+		return "", fmt.Errorf("attachment too large")
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func uniquePlatformAttachmentPath(dir, name string) string {
+	name = safePlatformAttachmentFilename(name)
+	if name == "" {
+		name = "attachment"
+	}
+	candidate := filepath.Join(dir, name)
+	if _, err := os.Stat(candidate); os.IsNotExist(err) {
+		return candidate
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	for i := 1; i < 1000; i++ {
+		candidate = filepath.Join(dir, fmt.Sprintf("%s-%d%s", base, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s-%d%s", base, time.Now().UnixNano(), ext))
+}
+
+func platformAttachmentDownloadURL(hubURL, rawURL, discussionID, participantID string) (string, string, error) {
+	base := strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	if base == "" {
+		return "", "", fmt.Errorf("remote_hub_url is empty")
+	}
+	if strings.HasPrefix(rawURL, "/") {
+		rawURL = base + rawURL
+	}
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return "", "", err
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", "", err
+	}
+	if !strings.EqualFold(baseURL.Scheme, u.Scheme) || !strings.EqualFold(baseURL.Host, u.Host) {
+		return "", "", fmt.Errorf("attachment file url must belong to configured Hub")
+	}
+	path := u.EscapedPath()
+	var escapedID string
+	switch {
+	case strings.HasPrefix(path, "/api/ve/files/download/"):
+		escapedID = strings.TrimPrefix(path, "/api/ve/files/download/")
+	case strings.HasPrefix(path, "/api/ve/files/"):
+		escapedID = strings.TrimPrefix(path, "/api/ve/files/")
+	default:
+		return "", "", fmt.Errorf("attachment file url must use Hub file relay")
+	}
+	if escapedID == "" || strings.Contains(escapedID, "/") {
+		return "", "", fmt.Errorf("attachment file url must identify one file")
+	}
+	id, err := url.PathUnescape(escapedID)
+	if err != nil {
+		return "", "", err
+	}
+	id = safePlatformAttachmentFilename(id)
+	u.Path = "/api/ve/files/download/" + url.PathEscape(id)
+	u.RawPath = ""
+	q := url.Values{}
+	q.Set("session_id", discussionID)
+	if strings.TrimSpace(participantID) != "" {
+		q.Set("participant_id", strings.TrimSpace(participantID))
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), id, nil
+}
+
+func safePlatformAttachmentFilename(value string) string {
+	value = strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	value = filepath.Base(value)
+	if value == "." || value == string(filepath.Separator) {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == ' ' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "." || out == ".." {
+		return "_" + out
+	}
+	return truncatePlatformAttachmentFilename(out)
+}
+
+func truncatePlatformAttachmentFilename(name string) string {
+	if len(name) <= platformAttachmentNameMaxLen {
+		return name
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	if len(ext) > 16 {
+		ext = ""
+		base = name
+	}
+	limit := platformAttachmentNameMaxLen - len(ext)
+	if limit < 1 {
+		limit = platformAttachmentNameMaxLen
+		ext = ""
+	}
+	if len(base) > limit {
+		base = base[:limit]
+	}
+	return strings.TrimSpace(base + ext)
 }
 
 func platformEnvelopeStringField(v any, names ...string) string {

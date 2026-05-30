@@ -113,6 +113,39 @@ func TestRemoteAttachmentIsSavedAndPathIncludedForAgent(t *testing.T) {
 	}
 }
 
+func TestProcessMessageAttachmentsCapsTotalContextItems(t *testing.T) {
+	msg := a2a.GroupDiscussionMessage{}
+	for i := 0; i < veAttachmentContextMaxCount+5; i++ {
+		msg.TextAttachments = append(msg.TextAttachments, a2a.TextAttachment{
+			Filename: "note-" + string(rune('a'+(i%26))) + ".txt",
+			Content:  base64.StdEncoding.EncodeToString([]byte("note")),
+		})
+	}
+	got := (&VEMessageHandler{}).ProcessMessageAttachmentsForSession("disc-1", msg)
+	if count := strings.Count(got, "File:"); count != veAttachmentContextMaxCount {
+		t.Fatalf("attachment context count = %d, want %d", count, veAttachmentContextMaxCount)
+	}
+}
+
+func TestProcessMessageAttachmentsCapsFailedAttempts(t *testing.T) {
+	msg := a2a.GroupDiscussionMessage{}
+	for i := 0; i < veAttachmentContextMaxCount; i++ {
+		msg.TextAttachments = append(msg.TextAttachments, a2a.TextAttachment{
+			Filename: "bad.txt",
+			Content:  "not-base64",
+		})
+	}
+	msg.TextAttachments = append(msg.TextAttachments, a2a.TextAttachment{
+		Filename: "after-limit.txt",
+		Content:  base64.StdEncoding.EncodeToString([]byte("should not be processed")),
+	})
+
+	got := (&VEMessageHandler{}).ProcessMessageAttachmentsForSession("disc-1", msg)
+	if strings.Contains(got, "after-limit.txt") {
+		t.Fatalf("processed attachment after attempt limit: %s", got)
+	}
+}
+
 func writeZeroFile(path string, size int64) error {
 	f, err := os.Create(path)
 	if err != nil {

@@ -73,6 +73,8 @@ func TestLocalLLMCacheBypassesUnsupportedProtocolsAndHub(t *testing.T) {
 		{name: "responses-ws", cfg: corelib.MaclawLLMConfig{Protocol: "openai", WireAPI: "responses-ws"}},
 		{name: "hub", cfg: corelib.MaclawLLMConfig{Protocol: "openai", ProviderName: hubServiceProviderName}},
 		{name: "hub_anthropic", cfg: corelib.MaclawLLMConfig{Protocol: "anthropic", ProviderName: hubServiceProviderName}},
+		{name: "hub_mojibake_alias", cfg: corelib.MaclawLLMConfig{Protocol: "openai", ProviderName: "MaClaw\u7039\u6a3b\u67df"}},
+		{name: "hub_english_alias", cfg: corelib.MaclawLLMConfig{Protocol: "openai", ProviderName: "MaClaw Official"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

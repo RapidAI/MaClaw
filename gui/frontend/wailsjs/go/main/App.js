@@ -555,6 +555,10 @@ export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
+export function SetAuthRequestSoundConfig(arg1, arg2) {
+  return window['go']['main']['App']['SetAuthRequestSoundConfig'](arg1, arg2);
+}
+
 export function SetDefaultLaunchMode(arg1) {
   return window['go']['main']['App']['SetDefaultLaunchMode'](arg1);
 }

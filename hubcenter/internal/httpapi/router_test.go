@@ -1285,6 +1285,9 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	if err := svc.store.HubUserLinks.Upsert(context.Background(), &store.HubUserLink{ID: "personal-guest", HubID: registerResult.HubID, Email: "user@external.example", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("seed guest link: %v", err)
 	}
+	if err := svc.store.HubDomainRoutes.Upsert(context.Background(), &store.HubDomainRoute{ID: "personal-route-extra", HubID: registerResult.HubID, Domain: "route-only.personal.example.com", Enabled: true, Priority: 10, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed route domain: %v", err)
+	}
 
 	resp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, token)
 	if resp.Code != http.StatusOK {
@@ -1304,7 +1307,7 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"guest_domains":["external.example"]`)) {
 		t.Fatalf("expected filtered guest_domains in response, body=%s", body)
 	}
-	if !bytes.Contains(resp.Body.Bytes(), []byte(`"corporate_email_domains":["personal.example.com","team.personal.example.com"]`)) {
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"corporate_email_domains":["personal.example.com","team.personal.example.com","route-only.personal.example.com"]`)) {
 		t.Fatalf("expected configured default tenant domains in response, body=%s", body)
 	}
 	if bytes.Contains(resp.Body.Bytes(), []byte(`"guest_domains":["example.com"`)) {
@@ -1339,7 +1342,7 @@ func TestListHubsHandlerUsesSnakeCaseFields(t *testing.T) {
 	if err := json.Unmarshal(domainResp.Body.Bytes(), &domainList); err != nil {
 		t.Fatalf("decode enterprise domains response: %v body=%s", err, domainBody)
 	}
-	if len(domainList.Items) != 1 || domainList.Items[0].TenantID != "tenant_default" || !reflect.DeepEqual(domainList.Items[0].EnterpriseDomains, []string{"personal.example.com", "team.personal.example.com"}) || !reflect.DeepEqual(domainList.Items[0].GuestDomains, []string{"external.example"}) {
+	if len(domainList.Items) != 1 || domainList.Items[0].TenantID != "tenant_default" || !reflect.DeepEqual(domainList.Items[0].EnterpriseDomains, []string{"personal.example.com", "team.personal.example.com", "route-only.personal.example.com"}) || !reflect.DeepEqual(domainList.Items[0].GuestDomains, []string{"external.example"}) {
 		t.Fatalf("enterprise domains should be grouped once per tenant, decoded=%+v body=%s", domainList, domainBody)
 	}
 
@@ -1553,8 +1556,9 @@ func TestAdminRouteQueryShowsTenantName(t *testing.T) {
 		"visibility":      "shared",
 		"enrollment_mode": "approval",
 		"capabilities": map[string]any{
-			"tenant_domains": map[string]any{"tenant_a": []any{"acme.example"}},
-			"tenant_names":   map[string]any{"tenant_a": "研发部"},
+			"tenant_domains":       map[string]any{"tenant_a": []any{"acme.example"}},
+			"tenant_domain_source": "configured",
+			"tenant_names":         map[string]any{"tenant_a": "研发部"},
 		},
 	})
 	missingNameHub := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
@@ -1564,8 +1568,9 @@ func TestAdminRouteQueryShowsTenantName(t *testing.T) {
 		"visibility":      "shared",
 		"enrollment_mode": "approval",
 		"capabilities": map[string]any{
-			"tenant_domains": map[string]any{"tenant_b": []any{"beta.example"}},
-			"tenant_names":   map[string]any{"tenant_a": "研发部"},
+			"tenant_domains":       map[string]any{"tenant_b": []any{"beta.example"}},
+			"tenant_domain_source": "configured",
+			"tenant_names":         map[string]any{"tenant_a": "研发部"},
 		},
 	})
 

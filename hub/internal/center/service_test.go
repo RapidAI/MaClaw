@@ -272,8 +272,11 @@ func TestRegistrationCapabilitiesIncludesTenantCounts(t *testing.T) {
 		t.Fatalf("tenant_machine_counts = %#v", caps["tenant_machine_counts"])
 	}
 	tenantDomains, ok := caps["tenant_domains"].(map[string][]string)
-	if !ok || !containsString(tenantDomains["tenant_a"], "acme.example") || !containsString(tenantDomains["tenant_a"], "configured.example") || !containsString(tenantDomains["tenant_a"], "team.configured.example") || tenantDomains["tenant_b"][0] != "beta.example" || containsString(tenantDomains["tenant_deleted"], "deleted.example") || containsString(tenantDomains["tenant_inactive"], "inactive.example") || containsString(tenantDomains["tenant_a"], "https://bad.example.com") || containsString(tenantDomains["tenant_a"], "bad..example.com") {
+	if !ok || containsString(tenantDomains["tenant_a"], "acme.example") || !containsString(tenantDomains["tenant_a"], "configured.example") || !containsString(tenantDomains["tenant_a"], "team.configured.example") || len(tenantDomains["tenant_b"]) != 0 || containsString(tenantDomains["tenant_deleted"], "deleted.example") || containsString(tenantDomains["tenant_inactive"], "inactive.example") || containsString(tenantDomains["tenant_a"], "https://bad.example.com") || containsString(tenantDomains["tenant_a"], "bad..example.com") {
 		t.Fatalf("tenant_domains = %#v", caps["tenant_domains"])
+	}
+	if caps["tenant_domain_source"] != "configured" {
+		t.Fatalf("tenant_domain_source = %#v", caps["tenant_domain_source"])
 	}
 	tenantNames, ok := caps["tenant_names"].(map[string]string)
 	if !ok || tenantNames["tenant_a"] != "开发部" || tenantNames["tenant_inactive"] != "" || tenantNames["tenant_deleted"] != "" {

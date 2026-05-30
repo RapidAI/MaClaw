@@ -25,6 +25,8 @@ import (
 
 const codegenProviderName = "CodeGen"
 
+const legacyHubServiceProviderName = "MaClaw\u6a21\u578b\u670d\u52a1"
+
 const legacyZhipuProviderName = "智谱"
 const zhipuLobsterProviderName = "智谱龙虾"
 const zhipuCodingProviderName = "智谱编程"
@@ -32,8 +34,63 @@ const zhipuCodingProviderName = "智谱编程"
 // obsoleteProviderNames lists provider names that have been permanently removed.
 // They are stripped from the persisted provider list on load.
 var obsoleteProviderNames = map[string]bool{
-	"免费":                             true,
-	"MaClaw\u6a21\u578b\u670d\u52a1": true, // "MaClaw模型服务" — renamed to "MaClaw官方"
+	"免费": true,
+}
+
+var hubServiceProviderNameAliases = map[string]bool{
+	hubServiceProviderName:       true,
+	"MaClaw Official":            true,
+	"MaClaw \u5b98\u65b9":        true,
+	"MaClaw\u7039\u6a3b\u67df":   true,
+	legacyHubServiceProviderName: true,
+}
+
+func isHubServiceProviderName(name string) bool {
+	return hubServiceProviderNameAliases[strings.TrimSpace(name)]
+}
+
+func canonicalHubServiceProviderName(name string) string {
+	if isHubServiceProviderName(name) {
+		return hubServiceProviderName
+	}
+	return name
+}
+
+func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []corelib.MaclawLLMProvider {
+	normalized := make([]corelib.MaclawLLMProvider, 0, len(providers))
+	seenHubService := false
+	hubIndex := -1
+	for _, provider := range providers {
+		originalName := strings.TrimSpace(provider.Name)
+		provider.Name = canonicalHubServiceProviderName(provider.Name)
+		if provider.Name == hubServiceProviderName {
+			provider.IsHubService = true
+			if seenHubService {
+				if originalName == hubServiceProviderName && hubIndex >= 0 {
+					normalized[hubIndex] = provider
+				}
+				continue
+			}
+			seenHubService = true
+		}
+		normalized = append(normalized, provider)
+		if provider.Name == hubServiceProviderName {
+			hubIndex = len(normalized) - 1
+		}
+	}
+	return normalized
+}
+
+func maclawLLMProvidersEqual(a, b []corelib.MaclawLLMProvider) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeLLMTimeoutSec(timeoutSec int) int {
@@ -51,6 +108,7 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 }
 
 func markHubServiceProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.Name = canonicalHubServiceProviderName(provider.Name)
 	provider.IsHubService = provider.Name == hubServiceProviderName
 	return provider
 }
@@ -82,7 +140,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 			Current   string                      `json:"current"`
 		}{Providers: defaults, Current: defaults[0].Name}
 	}
-	providers := a.syncedMaclawLLMProviders(cfg)
+	providers := normalizeMaclawLLMProviders(a.syncedMaclawLLMProviders(cfg))
 	if len(providers) == 0 {
 		providers = defaultMaclawLLMProviders()
 		// Migrate legacy single-config if present
@@ -126,6 +184,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 		}
 		providers = providers[:n]
 	}
+	current := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider)
 	for i := range providers {
 		if providers[i].Name == legacyZhipuProviderName {
 			providers[i].Name = zhipuLobsterProviderName
@@ -142,7 +201,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 			}
 		}
 		if providers[i].TimeoutSec <= 0 {
-			if providers[i].Name == cfg.MaclawLLMCurrentProvider && cfg.MaclawLLMTimeoutSec > 0 {
+			if providers[i].Name == current && cfg.MaclawLLMTimeoutSec > 0 {
 				providers[i].TimeoutSec = cfg.MaclawLLMTimeoutSec
 			} else if ts, ok := defaultTimeout[providers[i].Name]; ok {
 				providers[i].TimeoutSec = ts
@@ -197,14 +256,11 @@ func (a *App) GetMaclawLLMProviders() struct {
 		updated = append(updated, providers[insertAt:]...)
 		providers = updated
 	}
-	current := cfg.MaclawLLMCurrentProvider
 	if current == legacyZhipuProviderName {
 		current = zhipuLobsterProviderName
 	}
 	// Migrate renamed Hub service provider: "MaClaw模型服务" → "MaClaw官方"
-	if current == "MaClaw\u6a21\u578b\u670d\u52a1" {
-		current = hubServiceProviderName
-	}
+	current = canonicalHubServiceProviderName(current)
 	// Migrate: if current provider no longer exists in the list (e.g. "免费"
 	// was removed), fall back to the first available provider.
 	if current != "" {
@@ -275,6 +331,8 @@ func (a *App) GetMaclawLLMPanelState() struct {
 
 // SaveMaclawLLMProviders persists the provider list and current selection.
 func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current string) error {
+	current = canonicalHubServiceProviderName(current)
+	providers = normalizeMaclawLLMProviders(providers)
 	start := time.Now()
 	log.Printf("[LLM] SaveMaclawLLMProviders:start current=%s providers=%d", current, len(providers))
 	cfg, err := a.LoadConfig()

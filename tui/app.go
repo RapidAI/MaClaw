@@ -371,6 +371,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 // AppConfig. This reads the same config.json that the GUI writes, so if
 // the user has already configured maclaw via the GUI, the TUI works immediately.
 func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig {
+	currentProvider := tuiCanonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider)
 	llm := corelib.MaclawLLMConfig{
 		URL:           cfg.MaclawLLMUrl,
 		Key:           cfg.MaclawLLMKey,
@@ -378,11 +379,11 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 		Protocol:      cfg.MaclawLLMProtocol,
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
-		ProviderName:  cfg.MaclawLLMCurrentProvider,
+		ProviderName:  currentProvider,
 	}
 	// Resolve provider-specific fields from the current provider entry.
 	for _, p := range cfg.MaclawLLMProviders {
-		if p.Name == cfg.MaclawLLMCurrentProvider {
+		if tuiCanonicalHubServiceProviderName(p.Name) == currentProvider {
 			if strings.TrimSpace(llm.Key) == "" {
 				llm.Key = strings.TrimSpace(p.Key)
 			}
@@ -402,12 +403,12 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 }
 
 func tuiAppConfigUsesHubLLMService(cfg corelib.AppConfig) bool {
-	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
-	if current == tuiHubServiceProviderName || strings.EqualFold(current, "MaClaw Official") {
+	current := tuiCanonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider)
+	if tuiHubServiceProviderNameIsOfficial(current) {
 		return true
 	}
 	for _, provider := range cfg.MaclawLLMProviders {
-		if provider.IsHubService && strings.TrimSpace(provider.Name) == current {
+		if provider.IsHubService && tuiCanonicalHubServiceProviderName(provider.Name) == current {
 			return true
 		}
 	}
@@ -2204,9 +2205,25 @@ func (m *tuiModel) saveOnboardingLanguage(lang string) tea.Cmd {
 }
 
 const (
-	tuiHubServiceProviderName = "MaClaw瀹樻柟"
+	tuiHubServiceProviderName = "MaClaw\u5b98\u65b9"
 	tuiHubServiceAutoModel    = "auto"
 )
+
+func tuiHubServiceProviderNameIsOfficial(name string) bool {
+	switch strings.TrimSpace(name) {
+	case tuiHubServiceProviderName, "MaClaw Official", "MaClaw\u7039\u6a3b\u67df":
+		return true
+	default:
+		return false
+	}
+}
+
+func tuiCanonicalHubServiceProviderName(name string) string {
+	if tuiHubServiceProviderNameIsOfficial(name) {
+		return tuiHubServiceProviderName
+	}
+	return name
+}
 
 type tuiHubLLMServiceStatus struct {
 	Active             bool    `json:"active"`
@@ -2355,7 +2372,7 @@ func applyTUIHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status tuiHubLL
 	}
 	providers := make([]corelib.MaclawLLMProvider, 0, len(cfg.MaclawLLMProviders)+1)
 	for i := range cfg.MaclawLLMProviders {
-		if cfg.MaclawLLMProviders[i].Name != tuiHubServiceProviderName {
+		if !tuiHubServiceProviderNameIsOfficial(cfg.MaclawLLMProviders[i].Name) {
 			providers = append(providers, cfg.MaclawLLMProviders[i])
 		}
 	}

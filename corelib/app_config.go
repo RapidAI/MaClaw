@@ -646,6 +646,8 @@ type GroupDiscussionConfig struct {
 	ContributionScore                float64  `json:"contribution_score,omitempty"`
 	ContributionEvidence             int      `json:"contribution_evidence,omitempty"`
 	SensitiveQueryPolicy             string   `json:"sensitive_query_policy,omitempty"`
+	AuthRequestSoundPreset           string   `json:"auth_request_sound_preset,omitempty"`
+	AuthRequestSoundMuted            bool     `json:"auth_request_sound_muted,omitempty"`
 }
 
 func (gd GroupDiscussionConfig) CrossAgentExperienceEnabled() bool {
@@ -768,6 +770,12 @@ func applyGroupDiscussionFieldDefaults(gd *GroupDiscussionConfig) {
 		gd.SensitiveQueryPolicy = "confirm"
 	default:
 		gd.SensitiveQueryPolicy = "confirm"
+	}
+	switch strings.ToLower(strings.TrimSpace(gd.AuthRequestSoundPreset)) {
+	case "classic", "soft", "bright", "pulse", "urgent":
+		gd.AuthRequestSoundPreset = strings.ToLower(strings.TrimSpace(gd.AuthRequestSoundPreset))
+	default:
+		gd.AuthRequestSoundPreset = "classic"
 	}
 }
 

@@ -1292,6 +1292,7 @@ func TestListUserDashboardIncludesTenantVirtualHubRows(t *testing.T) {
 			"tenant_user_counts":    map[string]any{"tenant_a": 2, "tenant_b": 1},
 			"tenant_machine_counts": map[string]any{"tenant_a": 3, "tenant_b": 1},
 			"tenant_domains":        map[string]any{"tenant_a": []any{"acme.example"}, "tenant_b": []any{"beta.example"}},
+			"tenant_domain_source":  "configured",
 			"tenant_names":          map[string]any{"tenant_a": "开发部", "tenant_b": "市场部"},
 		}),
 	}
@@ -1374,6 +1375,7 @@ func TestListUserDashboardDoesNotExposeTenantDomainsOnOpenHubRow(t *testing.T) {
 		CapabilitiesJSON: mustJSON(map[string]any{
 			"corporate_email_domains": []any{"tenant-a.example", "tenant-b.example"},
 			"tenant_domains":          map[string]any{"tenant_a": []any{"tenant-a.example"}},
+			"tenant_domain_source":    "configured",
 		}),
 	}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
@@ -1429,7 +1431,8 @@ func TestListEnterpriseMailDomainsNormalizesDefaultTenant(t *testing.T) {
 		CreatedAt:  now,
 		UpdatedAt:  now,
 		CapabilitiesJSON: mustJSON(map[string]any{
-			"tenant_domains": map[string]any{"tenant_default": []any{"default.example"}, "tenant_a": []any{"tenant-a.example", "tenant-a-extra.example"}},
+			"tenant_domains":       map[string]any{"tenant_default": []any{"default.example"}, "tenant_a": []any{"tenant-a.example", "tenant-a-extra.example"}},
+			"tenant_domain_source": "configured",
 		}),
 	}
 	if err := st.Hubs.Create(ctx, hub); err != nil {
@@ -1455,12 +1458,100 @@ func TestListEnterpriseMailDomainsNormalizesDefaultTenant(t *testing.T) {
 	}
 }
 
+func TestListEnterpriseMailDomainsIgnoresUserDerivedCapabilityDomains(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	hub := &store.HubInstance{
+		ID:         "hub_guest_caps",
+		OwnerEmail: "owner@example.com",
+		Name:       "Guest Caps",
+		BaseURL:    "https://guest-caps.example.com",
+		Status:     "online",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		CapabilitiesJSON: mustJSON(map[string]any{
+			"corporate_email_domains": []any{"gmail.com", "qq.com", "163.com"},
+			"tenant_domains":          map[string]any{"tenant_default": []any{"gmail.com", "qq.com", "163.com"}},
+		}),
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("seed hub: %v", err)
+	}
+	items, err := svc.ListEnterpriseMailDomains(ctx)
+	if err != nil {
+		t.Fatalf("ListEnterpriseMailDomains: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("user-derived capability domains should not be enterprise domains, got %+v", items)
+	}
+	ids := dashboardTenantIDs(hubCapabilities(hub), nil)
+	if len(ids) != 0 {
+		t.Fatalf("user-derived capability domains should not create tenant rows, got %#v", ids)
+	}
+	dashboard, err := svc.ListUserDashboard(ctx)
+	if err != nil {
+		t.Fatalf("ListUserDashboard: %v", err)
+	}
+	if len(dashboard) != 1 || len(dashboard[0].CorporateEmailDomains) != 0 {
+		t.Fatalf("dashboard should ignore user-derived capability domains, got %+v", dashboard)
+	}
+}
+
+func TestListEnterpriseMailDomainsIgnoresStaleUserDerivedTenantRoutes(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	hub := &store.HubInstance{
+		ID:         "hub_stale_guest_routes",
+		OwnerEmail: "owner@example.com",
+		Name:       "Stale Guest Routes",
+		BaseURL:    "https://stale-guest-routes.example.com",
+		Status:     "online",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		CapabilitiesJSON: mustJSON(map[string]any{
+			"tenant_domains": map[string]any{"tenant_default": []any{"gmail.com"}, "tenant_a": []any{"qq.com"}},
+		}),
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("seed hub: %v", err)
+	}
+	for _, route := range []*store.HubDomainRoute{
+		{ID: tenantDomainRouteID(hub.ID, "tenant_a", 0), HubID: hub.ID, TenantID: "tenant_a", Domain: "qq.com", Enabled: true, Priority: 200, CreatedAt: now, UpdatedAt: now},
+		{ID: domainRouteID(hub.ID, 0), HubID: hub.ID, Domain: "gmail.com", Enabled: true, Priority: 100, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.HubDomainRoutes.Upsert(ctx, route); err != nil {
+			t.Fatalf("seed stale route: %v", err)
+		}
+	}
+	items, err := svc.ListEnterpriseMailDomains(ctx)
+	if err != nil {
+		t.Fatalf("ListEnterpriseMailDomains: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("stale user-derived routes should be ignored, got %+v", items)
+	}
+	dashboard, err := svc.ListUserDashboard(ctx)
+	if err != nil {
+		t.Fatalf("ListUserDashboard: %v", err)
+	}
+	if len(dashboard) != 1 || dashboard[0].TenantID != "" || len(dashboard[0].CorporateEmailDomains) != 0 {
+		t.Fatalf("stale user-derived routes should not create dashboard domains or tenant rows, got %+v", dashboard)
+	}
+}
+
 func TestDashboardTenantCapabilitiesAcceptTypedMaps(t *testing.T) {
 	caps := map[string]any{
 		"tenant_user_emails":    map[string][]any{"tenant_default": []any{"default@example.com"}, "tenant_a": []any{"alice@example.com", "bob@example.com"}},
 		"tenant_user_counts":    map[string]int64{"tenant_default": 1, "tenant_b": 3},
 		"tenant_machine_counts": map[string]float32{"tenant_c": 2},
 		"tenant_domains":        map[string][]any{"tenant_default": []any{"default.example"}, "tenant_d": []any{"dev.example", "qa.example"}},
+		"tenant_domain_source":  "configured",
 		"tenant_names":          map[string]string{"tenant_default": "Default", "tenant_e": "QA"},
 	}
 
@@ -2890,6 +2981,7 @@ func TestHeartbeatSyncsTenantDomainRoutes(t *testing.T) {
 				"tenant_a": []any{"Acme.Example"},
 				"tenant_b": []any{"Beta.Example"},
 			},
+			"tenant_domain_source": "configured",
 		},
 	}); err != nil {
 		t.Fatalf("HeartbeatHubWithSecret: %v", err)

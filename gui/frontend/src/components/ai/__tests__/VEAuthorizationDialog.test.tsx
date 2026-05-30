@@ -6,15 +6,23 @@ import {
     VEAuthBlinkingIndicator,
 } from "../VEAuthorizationDialog";
 import type { Theme } from "../aiAssistantPanelTheme";
+import { EventsEmit } from "../../../../wailsjs/runtime";
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
+const LoadConfigMock = vi.fn();
+
+vi.mock("../../../../wailsjs/go/main/App", () => ({
+    LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
+}));
+
 vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOn: vi.fn((eventName: string, handler: (...args: any[]) => void) => {
         eventHandlers.set(eventName, handler);
         return () => eventHandlers.delete(eventName);
     }),
     EventsOff: vi.fn((eventName: string) => eventHandlers.delete(eventName)),
+    EventsEmit: vi.fn(),
 }));
 
 const mockTheme: Theme = {
@@ -64,6 +72,7 @@ const mockTheme: Theme = {
 describe("VEAuthorizationDialog", () => {
     beforeEach(() => {
         eventHandlers.clear();
+        LoadConfigMock.mockResolvedValue({ group_discussion: { auth_request_sound_muted: true } });
         vi.useFakeTimers();
     });
 
@@ -309,6 +318,7 @@ describe("VEAuthorizationDialog", () => {
 describe("VEAuthBlinkingIndicator", () => {
     beforeEach(() => {
         eventHandlers.clear();
+        LoadConfigMock.mockResolvedValue({ group_discussion: { auth_request_sound_muted: true } });
         vi.useFakeTimers();
     });
 
@@ -340,6 +350,25 @@ describe("VEAuthBlinkingIndicator", () => {
         expect(screen.getByTestId("ve-auth-blink-indicator").textContent).toContain("2");
     });
 
+    it("deduplicates pending count by request id", () => {
+        render(<VEAuthBlinkingIndicator theme={mockTheme} lang="zh" />);
+
+        act(() => { eventHandlers.get("ve:auth_request")?.({ request_id: "blink-req-1" }); });
+        act(() => { eventHandlers.get("ve:auth_request")?.({ request_id: "blink-req-1" }); });
+
+        expect(screen.getByTestId("ve-auth-blink-indicator").textContent).toContain("1");
+    });
+
+    it("removes handled request by request id", () => {
+        render(<VEAuthBlinkingIndicator theme={mockTheme} lang="zh" />);
+
+        act(() => { eventHandlers.get("ve:auth_request")?.({ request_id: "blink-req-a" }); });
+        act(() => { eventHandlers.get("ve:auth_request")?.({ request_id: "blink-req-b" }); });
+        act(() => { eventHandlers.get("ve:auth_handled")?.({ request_id: "blink-req-a" }); });
+
+        expect(screen.getByTestId("ve-auth-blink-indicator").textContent).toContain("1");
+    });
+
     it("disappears when all requests are handled", () => {
         render(<VEAuthBlinkingIndicator theme={mockTheme} lang="zh" />);
 
@@ -347,6 +376,16 @@ describe("VEAuthBlinkingIndicator", () => {
         expect(screen.getByTestId("ve-auth-blink-indicator")).toBeTruthy();
 
         act(() => { eventHandlers.get("ve:auth_handled")?.(); });
+        expect(screen.queryByTestId("ve-auth-blink-indicator")).toBeNull();
+    });
+
+    it("disappears when local handled event is dispatched", () => {
+        render(<VEAuthBlinkingIndicator theme={mockTheme} lang="zh" />);
+
+        act(() => { eventHandlers.get("ve:auth_request")?.(); });
+        expect(screen.getByTestId("ve-auth-blink-indicator")).toBeTruthy();
+
+        act(() => { window.dispatchEvent(new CustomEvent("ve:auth_handled:local")); });
         expect(screen.queryByTestId("ve-auth-blink-indicator")).toBeNull();
     });
 
@@ -369,6 +408,7 @@ describe("VEAuthBlinkingIndicator", () => {
 describe("VEAuthorizationRequestCenter", () => {
     beforeEach(() => {
         eventHandlers.clear();
+        LoadConfigMock.mockResolvedValue({ group_discussion: { auth_request_sound_muted: true } });
         vi.useFakeTimers();
     });
 
@@ -406,6 +446,119 @@ describe("VEAuthorizationRequestCenter", () => {
         expect(screen.getByText("Analyst")).toBeTruthy();
     });
 
+    it("plays configured ringtone when request arrives", async () => {
+        LoadConfigMock.mockResolvedValue({
+            group_discussion: {
+                auth_request_sound_preset: "bright",
+                auth_request_sound_muted: false,
+            },
+        });
+        const originalAudioContext = window.AudioContext;
+        const oscillatorStart = vi.fn();
+        const oscillatorStop = vi.fn();
+        const createOscillator = vi.fn(() => ({
+            type: "sine",
+            frequency: { setValueAtTime: vi.fn() },
+            connect: vi.fn(),
+            start: oscillatorStart,
+            stop: oscillatorStop,
+        }));
+        const createGain = vi.fn(() => ({
+            gain: {
+                setValueAtTime: vi.fn(),
+                exponentialRampToValueAtTime: vi.fn(),
+            },
+            connect: vi.fn(),
+        }));
+        const close = vi.fn();
+        const AudioContextCtor = vi.fn(function () {
+            return {
+                currentTime: 0,
+                state: "running",
+                destination: {},
+                createOscillator,
+                createGain,
+                close,
+            };
+        });
+        Object.defineProperty(window, "AudioContext", { configurable: true, writable: true, value: AudioContextCtor });
+
+        try {
+            render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={vi.fn()} />);
+            act(() => {
+                eventHandlers.get("ve:auth_request")?.({
+                    payload: {
+                        request_id: "center-req-ring",
+                        requester_name: "Alice",
+                        requester_machine_id: "machine-a",
+                        target_ve_id: "ve-1",
+                        target_ve_name: "Analyst",
+                    },
+                });
+            });
+
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+
+            expect(AudioContextCtor).toHaveBeenCalledTimes(1);
+            expect(createOscillator).toHaveBeenCalled();
+            expect(oscillatorStart).toHaveBeenCalled();
+        } finally {
+            Object.defineProperty(window, "AudioContext", { configurable: true, writable: true, value: originalAudioContext });
+        }
+    });
+
+    it("does not start ringtone after request is handled during config load", async () => {
+        let resolveConfig: ((value: unknown) => void) | undefined;
+        LoadConfigMock.mockImplementation(() => new Promise((resolve) => { resolveConfig = resolve; }));
+        const originalAudioContext = window.AudioContext;
+        const AudioContextCtor = vi.fn(function () {
+            return {
+                currentTime: 0,
+                state: "running",
+                destination: {},
+                createOscillator: vi.fn(),
+                createGain: vi.fn(),
+                close: vi.fn(),
+            };
+        });
+        Object.defineProperty(window, "AudioContext", { configurable: true, writable: true, value: AudioContextCtor });
+
+        try {
+            const respond = vi.fn().mockResolvedValue(undefined);
+            render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={respond} />);
+            act(() => {
+                eventHandlers.get("ve:auth_request")?.({
+                    payload: {
+                        request_id: "center-req-fast-handle",
+                        requester_name: "Alice",
+                        requester_machine_id: "machine-a",
+                        target_ve_id: "ve-1",
+                        target_ve_name: "Analyst",
+                    },
+                });
+            });
+
+            fireEvent.click(screen.getByTestId("ve-auth-request-trigger"));
+            fireEvent.click(screen.getByTestId("ve-auth-allow-long-center-req-fast-handle"));
+            await act(async () => { await Promise.resolve(); });
+
+            resolveConfig?.({ group_discussion: { auth_request_sound_muted: false } });
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
+            });
+
+            expect(AudioContextCtor).not.toHaveBeenCalled();
+            expect(screen.queryByTestId("ve-auth-request-center")).toBeNull();
+        } finally {
+            Object.defineProperty(window, "AudioContext", { configurable: true, writable: true, value: originalAudioContext });
+        }
+    });
+
     it("sends selected decision and removes handled request", async () => {
         const respond = vi.fn().mockResolvedValue(undefined);
         render(<VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={respond} />);
@@ -427,6 +580,7 @@ describe("VEAuthorizationRequestCenter", () => {
         await act(async () => { await vi.runAllTimersAsync(); });
 
         expect(respond).toHaveBeenCalledWith("center-req-allow", "allow_long");
+        expect(EventsEmit).toHaveBeenCalledWith("ve:auth_handled", { request_id: "center-req-allow" });
         expect(screen.queryByTestId("ve-auth-request-center")).toBeNull();
     });
 

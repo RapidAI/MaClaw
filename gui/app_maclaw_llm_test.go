@@ -1116,6 +1116,79 @@ func TestSaveMaclawLLMProviders_PersistsHubServiceFlag(t *testing.T) {
 	}
 }
 
+func TestSaveMaclawLLMProviders_CanonicalizesDuplicateHubServiceAliases(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	mojibakeHubName := "MaClaw\u7039\u6a3b\u67df"
+	providers := []corelib.MaclawLLMProvider{
+		{Name: mojibakeHubName, URL: "https://old.example.com/api/llm/v1", Key: "old-token", Model: hubServiceAutoModel, Protocol: "openai"},
+		{Name: hubServiceProviderName, URL: "https://hub.example.com/api/llm/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai"},
+		{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test", IsCustom: true},
+	}
+	if err := app.SaveMaclawLLMProviders(providers, mojibakeHubName); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.MaclawLLMCurrentProvider != hubServiceProviderName {
+		t.Fatalf("current provider = %q, want %q", saved.MaclawLLMCurrentProvider, hubServiceProviderName)
+	}
+	hubCount := 0
+	for _, provider := range saved.MaclawLLMProviders {
+		if provider.Name == mojibakeHubName {
+			t.Fatalf("saved providers still contain mojibake hub alias: %+v", saved.MaclawLLMProviders)
+		}
+		if provider.Name == hubServiceProviderName {
+			hubCount++
+			if !provider.IsHubService {
+				t.Fatal("canonical hub provider IsHubService = false, want true")
+			}
+		}
+	}
+	if hubCount != 1 {
+		t.Fatalf("hub provider count = %d, want 1; providers=%+v", hubCount, saved.MaclawLLMProviders)
+	}
+}
+
+func TestGetMaclawLLMProviders_CanonicalizesLegacyHubCurrentAndBackfillsTimeout(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	mojibakeHubName := "MaClaw\u7039\u6a3b\u67df"
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: mojibakeHubName,
+		MaclawLLMTimeoutSec:      77,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: mojibakeHubName, URL: "https://hub.example.com/api/llm/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	if data.Current != hubServiceProviderName {
+		t.Fatalf("Current = %q, want %q", data.Current, hubServiceProviderName)
+	}
+	provider, ok := findProviderByName(data.Providers, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("providers missing canonical hub provider: %+v", data.Providers)
+	}
+	if provider.TimeoutSec != 77 {
+		t.Fatalf("TimeoutSec = %d, want legacy timeout backfill", provider.TimeoutSec)
+	}
+	if !provider.IsHubService {
+		t.Fatal("canonical hub provider IsHubService = false, want true")
+	}
+}
+
 func TestSaveMaclawLLMProviders_SyncsMissingHubProviderWhenSelected(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -142,48 +140,42 @@ func adminDefaultTenantItem(hub *store.HubInstance, item hubs.HubUserDashboardIt
 		item = hubs.HubUserDashboardItem{HubID: hub.ID, HubName: hub.Name, BaseURL: hub.BaseURL, Status: hub.Status, IsDisabled: hub.IsDisabled, CorporateEmailDomain: hub.CorporateEmailDomain, CorporateEmailDomains: adminHubMailDomains(hub), AcceptPublicSignup: hub.AcceptPublicSignup, SignupMode: hub.EnrollmentMode, LastSeenAt: hub.LastSeenAt}
 	}
 	if hub != nil {
-		domains := adminHubMailDomains(hub)
+		domains := adminMergeMailDomains(item.CorporateEmailDomains, adminHubMailDomains(hub))
 		if len(domains) > 0 {
 			item.CorporateEmailDomains = domains
-			item.CorporateEmailDomain = domains[0]
+			if strings.TrimSpace(item.CorporateEmailDomain) == "" {
+				item.CorporateEmailDomain = domains[0]
+			}
 		}
 	}
 	item.TenantID = adminDefaultTenantID
 	return item
 }
 
-func adminHubMailDomains(hub *store.HubInstance) []string {
-	if hub == nil {
-		return nil
-	}
+func adminMergeMailDomains(groups ...[]string) []string {
 	seen := map[string]struct{}{}
-	out := make([]string, 0, 2)
-	add := func(value string) {
-		value = strings.TrimSpace(strings.ToLower(value))
-		if value == "" {
-			return
-		}
-		if _, ok := seen[value]; ok {
-			return
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	add(hub.CorporateEmailDomain)
-	if strings.TrimSpace(hub.CapabilitiesJSON) != "" {
-		var caps map[string]any
-		if json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps) == nil {
-			if value, ok := caps["corporate_email_domain"]; ok {
-				add(fmt.Sprint(value))
+	out := []string{}
+	for _, group := range groups {
+		for _, value := range group {
+			value = strings.TrimSpace(strings.ToLower(value))
+			if value == "" {
+				continue
 			}
-			if values, ok := caps["corporate_email_domains"].([]any); ok {
-				for _, value := range values {
-					add(fmt.Sprint(value))
-				}
+			if _, ok := seen[value]; ok {
+				continue
 			}
+			seen[value] = struct{}{}
+			out = append(out, value)
 		}
 	}
 	return out
+}
+
+func adminHubMailDomains(hub *store.HubInstance) []string {
+	if hub == nil || strings.TrimSpace(hub.CorporateEmailDomain) == "" {
+		return nil
+	}
+	return adminMergeMailDomains([]string{hub.CorporateEmailDomain})
 }
 
 func adminExternalRegistrationPolicy(policy hubs.HubRegistrationPolicyConfig) hubs.HubRegistrationPolicyConfig {

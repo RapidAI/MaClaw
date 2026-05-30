@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -262,6 +263,163 @@ func TestRuntimeVirtualEmployeeDiscussionMessageAcceptsPayloadEnvelope(t *testin
 	}
 	if out.Session.Metadata["client_session_key"] != "discussion-1" {
 		t.Fatalf("runtime session not bound to envelope discussion: %#v", out.Session.Metadata)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageIncludesAttachmentContext(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/files/download/file-1" {
+			t.Fatalf("download path = %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("session_id"); got != "discussion-file-1" {
+			t.Fatalf("session_id = %q", got)
+		}
+		_, _ = w.Write([]byte("pdf bytes"))
+	}))
+	defer fileServer.Close()
+	tenant, user, _ := platformRuntimeForTest(t, svc, "emp-001")
+	if _, err := svc.UpdateUserConfig(t.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, corelib.AppConfig{RemoteHubURL: fileServer.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", MaclawLLMUrl: "http://127.0.0.1/unused", MaclawLLMKey: "unused", MaclawLLMModel: "unused"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	envelope := map[string]any{
+		"id":         "env-file-1",
+		"session_id": "discussion-file-1",
+		"message": map[string]any{
+			"id":      "message-file-1",
+			"content": "文件中有什么？",
+			"file_attachments": []map[string]any{{
+				"file_url":   fileServer.URL + "/api/ve/files/download/file-1",
+				"filename":   "2602.06052v3.pdf",
+				"mime_type":  "application/pdf",
+				"size_bytes": 4096,
+			}},
+		},
+	}
+	body, _ := json.Marshal(map[string]any{"payload": map[string]any{"envelope": envelope}})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/emp-001/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime attachment message status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Message struct {
+			Content  string            `json:"content"`
+			Metadata map[string]string `json:"metadata"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if !strings.Contains(out.Message.Content, "2602.06052v3.pdf") || !strings.Contains(out.Message.Content, "[Hub attachments received]") {
+		t.Fatalf("attachment context missing from runtime message: %s", out.Message.Content)
+	}
+	if !strings.Contains(out.Message.Content, "local_path=") || !strings.Contains(out.Message.Content, ".hub-attachments") {
+		t.Fatalf("downloaded local path missing from runtime message: %s", out.Message.Content)
+	}
+}
+
+func TestRuntimeVirtualEmployeeDiscussionMessageAllowsAttachmentOnlyMessage(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	provisionPlatformEmployeeForTest(t, server)
+	envelope := map[string]any{
+		"id":         "env-file-only",
+		"session_id": "discussion-file-only",
+		"message": map[string]any{
+			"id": "message-file-only",
+			"file_attachments": []map[string]any{{
+				"file_url":  "/api/ve/files/download/file-1",
+				"filename":  "brief.pdf",
+				"mime_type": "application/pdf",
+			}},
+		},
+	}
+	body, _ := json.Marshal(map[string]any{"payload": map[string]any{"envelope": envelope}})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/virtual-employees/emp-001/discussion-messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime attachment-only message status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode message response: %v", err)
+	}
+	if !strings.Contains(out.Message.Content, "Please inspect the attached file(s).") || !strings.Contains(out.Message.Content, "brief.pdf") {
+		t.Fatalf("attachment-only context missing: %s", out.Message.Content)
+	}
+}
+
+func TestLimitPlatformMessageAttachmentsCapsTotal(t *testing.T) {
+	attachments := platformMessageAttachments{}
+	for i := 0; i < platformAttachmentMaxCount+5; i++ {
+		attachments.File = append(attachments.File, platformFileAttachment{Filename: fmt.Sprintf("%d.pdf", i)})
+	}
+	limited := limitPlatformMessageAttachments(attachments)
+	if got := platformMessageAttachmentCount(limited); got != platformAttachmentMaxCount {
+		t.Fatalf("limited attachment count = %d, want %d", got, platformAttachmentMaxCount)
+	}
+}
+
+func TestPlatformAttachmentDownloadURLRejectsUnsafeOrigins(t *testing.T) {
+	if _, _, err := platformAttachmentDownloadURL("", "https://hub.example/api/ve/files/download/file-1", "discussion-1", "machine-1"); err == nil {
+		t.Fatal("expected empty remote_hub_url to be rejected")
+	}
+	if _, _, err := platformAttachmentDownloadURL("https://hub.example", "https://evil.example/api/ve/files/download/file-1", "discussion-1", "machine-1"); err == nil {
+		t.Fatal("expected cross-origin attachment URL to be rejected")
+	}
+	got, id, err := platformAttachmentDownloadURL("https://hub.example", "/api/ve/files/file-1", "discussion-1", "machine-1")
+	if err != nil {
+		t.Fatalf("platformAttachmentDownloadURL: %v", err)
+	}
+	if id != "file-1" || got != "https://hub.example/api/ve/files/download/file-1?participant_id=machine-1&session_id=discussion-1" {
+		t.Fatalf("download URL = %q id=%q", got, id)
+	}
+}
+
+func TestMaterializePlatformTextAttachmentUsesUniquePaths(t *testing.T) {
+	workspace := t.TempDir()
+	att := platformTextAttachment{Filename: "note.txt", Content: base64.StdEncoding.EncodeToString([]byte("first"))}
+	first, err := materializePlatformTextAttachment(workspace, "discussion-1", att)
+	if err != nil {
+		t.Fatalf("materialize first: %v", err)
+	}
+	att.Content = base64.StdEncoding.EncodeToString([]byte("second"))
+	second, err := materializePlatformTextAttachment(workspace, "discussion-1", att)
+	if err != nil {
+		t.Fatalf("materialize second: %v", err)
+	}
+	if first == second {
+		t.Fatalf("expected unique paths, got %q", first)
+	}
+}
+
+func TestSafePlatformAttachmentFilenameCapsLengthAndKeepsExtension(t *testing.T) {
+	name := strings.Repeat("a", 220) + ".pdf"
+	got := safePlatformAttachmentFilename(name)
+	if len(got) > platformAttachmentNameMaxLen {
+		t.Fatalf("filename length = %d, want <= %d", len(got), platformAttachmentNameMaxLen)
+	}
+	if !strings.HasSuffix(got, ".pdf") {
+		t.Fatalf("filename extension not preserved: %q", got)
 	}
 }
 

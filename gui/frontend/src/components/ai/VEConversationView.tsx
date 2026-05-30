@@ -2,13 +2,14 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { AssistantInputComposer } from "./AssistantInputComposer";
+import { AssistantInputStack } from "./AssistantInputStack";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { getParticipantColor } from "./VEGroupChat";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { useAssistantInputHistory } from "./useAssistantInputHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
+import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
@@ -56,7 +57,7 @@ type QueuedVEMessage = {
     content: string;
     message: VEMessage;
     filePaths?: string[];
-    attachmentNames?: string[];
+    attachments?: AttachmentInfo[];
 };
 
 type VEHistoryAttachment = {
@@ -186,7 +187,7 @@ export interface VEConversationHandle {
 
 // --- Constants ---
 
-const SESSION_TIMEOUT_MS = 5000;
+const SESSION_TIMEOUT_MS = 15000;
 const MIN_AGENT_TIMEOUT_SEC = 240;
 const DEFAULT_AGENT_TIMEOUT_SEC = 600;
 const MAX_AGENT_TIMEOUT_SEC = 600;
@@ -376,6 +377,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [awaitingReplyVisible, setAwaitingReplyVisible] = useState(false);
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const [visibleQueue, setVisibleQueue] = useState<QueuedVEMessage[]>([]);
+    const [queuedEditingEntryId, setQueuedEditingEntryId] = useState<string | null>(null);
     const [promptHistoryState, setPromptHistoryState] = useState(() => ({ veId, history: loadVEPromptHistory(veId) }));
     // Track VE online status; input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
@@ -481,12 +483,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         }, 0);
     }, []);
 
-    const resizeInput = useCallback(() => {
-        const input = inputRef.current;
-        if (!input) return;
-        input.style.height = "auto";
-        input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
-    }, []);
+    const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputText);
 
     const applyInputValue = useCallback((nextValue: string) => {
         setInputText(nextValue);
@@ -737,16 +734,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             } catch (err: any) {
                 if (sessionInitGenerationRef.current !== initGeneration) return false;
                 if (mountedRef.current) {
-                    const message = String(err?.message || "");
-                    const errorType = message.includes("pending_confirmation")
-                        ? "auth_pending"
-                        : message.includes("VE_ACCESS_DENIED") || message.includes("VE_AUTH_BLOCKED") || message.includes("forbidden")
-                        ? "access_denied"
-                        : message.includes("session_timeout")
-                        ? "session_timeout"
-                        : message.includes("offline")
-                        ? "ve_offline"
-                        : "hub_disconnected";
+                    const errorType = classifySessionInitError(err);
                     setState((prev) => ({
                         ...prev,
                         error: {
@@ -1181,7 +1169,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         // assistant turn to finish streaming, keep the draft in the visible
         // pre-input queue. It enters the transcript only when it is really sent.
         if (state.connectionState !== "connected" || !state.sessionId || state.streaming || awaitingReplyRef.current) {
-            const queued = { id: userMsg.id, content, message: userMsg, filePaths, attachmentNames: pendingAttachments.map((f) => f.fileName) };
+            const queued = { id: userMsg.id, content, message: userMsg, filePaths, attachments: pendingAttachments };
             queuedMessagesRef.current.push(queued);
             setVisibleQueue((prev) => [...prev, queued]);
             setInputText("");
@@ -1254,6 +1242,78 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         };
         input.click();
     }, [readOnly]);
+
+    const visibleInputQueue = useMemo(() => visibleQueue.map((item) => ({
+        id: item.id,
+        text: item.content,
+        attachments: item.attachments || [],
+        createdAt: item.message.timestamp,
+        autoDrain: true,
+    })), [visibleQueue]);
+
+    const updateQueuedMessage = useCallback((id: string, updater: (item: QueuedVEMessage) => QueuedVEMessage) => {
+        queuedMessagesRef.current = queuedMessagesRef.current.map((item) => item.id === id ? updater(item) : item);
+        setVisibleQueue((prev) => prev.map((item) => item.id === id ? updater(item) : item));
+    }, []);
+
+    const handleQueuedEdit = useCallback((id: string) => {
+        setQueuedEditingEntryId(id);
+    }, []);
+
+    const handleQueuedCancelEdit = useCallback(() => {
+        setQueuedEditingEntryId(null);
+    }, []);
+
+    const handleQueuedSaveEdit = useCallback((id: string, text: string, attachments: AttachmentInfo[]) => {
+        const filePaths = attachments.map((att) => att.filePath || "").filter(Boolean);
+        updateQueuedMessage(id, (item) => ({
+            ...item,
+            content: text,
+            filePaths: filePaths.length ? filePaths : undefined,
+            attachments,
+            message: {
+                ...item.message,
+                content: text,
+                attachments: attachments.map((att) => ({
+                    type: classifyAttachmentType(att.fileName),
+                    filename: att.fileName,
+                    localPath: att.filePath,
+                })),
+            },
+        }));
+        setQueuedEditingEntryId(null);
+    }, [updateQueuedMessage]);
+
+    const handleQueuedDelete = useCallback((id: string) => {
+        queuedMessagesRef.current = queuedMessagesRef.current.filter((item) => item.id !== id);
+        setVisibleQueue((prev) => prev.filter((item) => item.id !== id));
+        setQueuedEditingEntryId((current) => current === id ? null : current);
+    }, []);
+
+    const handleQueuedReorder = useCallback((fromIndex: number, toIndex: number) => {
+        const reorder = (items: QueuedVEMessage[]) => {
+            const next = [...items];
+            if (fromIndex < 0 || fromIndex >= next.length || toIndex < 0 || toIndex > next.length) return next;
+            const [moved] = next.splice(fromIndex, 1);
+            next.splice(Math.min(toIndex, next.length), 0, moved);
+            return next;
+        };
+        queuedMessagesRef.current = reorder(queuedMessagesRef.current);
+        setVisibleQueue(reorder);
+    }, []);
+
+    const handleQueuedFire = useCallback((id: string) => {
+        const promote = (items: QueuedVEMessage[]) => {
+            const index = items.findIndex((item) => item.id === id);
+            if (index <= 0) return items;
+            const next = [...items];
+            const [selected] = next.splice(index, 1);
+            return [selected, ...next];
+        };
+        queuedMessagesRef.current = promote(queuedMessagesRef.current);
+        setVisibleQueue(promote);
+        setQueueDrainSignal((value) => value + 1);
+    }, []);
 
     // --- Render ---
 
@@ -1360,20 +1420,21 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 <div ref={messagesEndRef} />
             </div>
 
-            {visibleQueue.length > 0 && (
-                <QueuedMessagePanel queue={visibleQueue} theme={theme} isZh={isZh} />
-            )}
-
-            <AssistantInputComposer
+            <AssistantInputStack
                 attachButtonTestId="ve-attach-button"
                 browseFile={handleAttachmentSelect}
                 canSend={canSend}
                 cancelPending={sending}
                 clearSelectedFile={() => setPendingAttachments([])}
+                editingEntryId={queuedEditingEntryId}
                 exitHistoryBrowsing={exitHistoryBrowsing}
                 finishVoicePointer={() => {}}
                 handleCancel={() => {}}
+                handleCancelEdit={handleQueuedCancelEdit}
+                handleEditEntry={handleQueuedEdit}
+                handleFireEntry={handleQueuedFire}
                 handlePaste={handlePaste}
+                handleSaveEdit={handleQueuedSaveEdit}
                 handleSend={handleSend}
                 handleTextareaClick={(e) => updateMentionState(inputText, e.currentTarget.selectionStart)}
                 handleTextareaKeyDownBefore={(e) => mentionKeyDown(e)}
@@ -1384,7 +1445,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 handleVoiceClick={() => {}}
                 handleVoicePointerDown={() => {}}
                 handleVoicePointerLeave={() => {}}
-                inputAreaHeight={null}
+                inputAreaHeight={inputAreaHeight}
                 inputBarTestId="ve-input-area"
                 inputLocked={!inputReady}
                 inputOverlay={mentionOpen ? (
@@ -1414,20 +1475,26 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     ? (isZh ? `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${assistantDisplayName} is offline`)
                     : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...` : `Message ${assistantDisplayName}...`)}
                 ready={inputReady}
+                queuePanelTestId="ve-queued-message-panel"
                 recallHistory={recallHistory}
                 rememberHistoryEdit={rememberHistoryEdit}
+                removeEntry={handleQueuedDelete}
                 resizeInput={resizeInput}
+                reorderEntry={handleQueuedReorder}
                 selectedFilePaths={[]}
                 sendButtonStyle={{ minWidth: 54, width: 54, flexShrink: 0 }}
                 sendButtonTestId="ve-send-button"
                 setPendingAttachments={setPendingAttachments}
                 showBusySpinner={sending}
                 showMemoryUsage={false}
+                showResizeHandle={true}
                 showVoiceInput={false}
+                startInputResize={startInputResize}
                 textareaTestId="ve-input-textarea"
                 theme={theme}
                 themeMode={inputThemeMode}
                 toolbarTestId="ve-input-toolbar"
+                queue={visibleInputQueue}
                 updateInputValue={(value) => {
                     setInputText(value);
                     updateMentionState(value, inputRef.current?.selectionStart ?? value.length);
@@ -1510,51 +1577,6 @@ function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) 
     );
 }
 
-interface QueuedMessagePanelProps {
-    queue: QueuedVEMessage[];
-    theme: Theme;
-    isZh: boolean;
-}
-
-function QueuedMessagePanel({ queue, theme, isZh }: QueuedMessagePanelProps) {
-    if (queue.length === 0) return null;
-    return (
-        <div
-            data-testid="ve-queued-message-panel"
-            style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 4,
-                padding: "6px 12px",
-                borderTop: `1px solid ${theme.divider}`,
-                background: theme.inputBarBg,
-                color: theme.textMuted,
-                fontSize: 11,
-            }}
-        >
-            <div data-testid="ve-queued-message-header" style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: theme.headingColor }}>
-                <span>{isZh ? `${queue.length} \u6761\u5f85\u53d1\u9001` : `${queue.length} queued`}</span>
-                <span style={{ fontWeight: 400, color: theme.textMuted }}>{isZh ? "\u56de\u590d\u7ed3\u675f\u540e\u81ea\u52a8\u53d1\u9001" : "Auto-sends after current reply"}</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 66, overflowY: "auto" }}>
-                {queue.map((item, index) => (
-                    <div key={item.id} data-testid={`ve-queued-message-${index}`} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                        <span style={{ color: theme.textMuted, flexShrink: 0 }}>#{index + 1}</span>
-                        <span style={{ color: theme.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {item.content || (isZh ? "\u4ec5\u9644\u4ef6" : "Attachments only")}
-                        </span>
-                        {!!item.attachmentNames?.length && (
-                            <span style={{ flexShrink: 0, color: theme.pathColor }}>
-                                {isZh ? `\u9644\u4ef6 ${item.attachmentNames.length}` : `${item.attachmentNames.length} files`}
-                            </span>
-                        )}
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-}
-
 interface MessageBubbleProps {
     message: VEMessage;
     sessionId: string;
@@ -1563,6 +1585,30 @@ interface MessageBubbleProps {
     assistantName: string;
     userName: string;
     assistantAvatarDataURL?: string;
+}
+
+function classifySessionInitError(err: unknown): VEConversationError["type"] {
+    const message = extractErrorMessage(err) || String((err as any)?.message || err || "");
+    const lower = message.toLowerCase();
+    if (
+        lower.includes("pending_confirmation") ||
+        lower.includes("waiting for digital employee owner confirmation") ||
+        lower.includes("waiting for access confirmation") ||
+        lower.includes("pending confirmation") ||
+        lower.includes("hub returned 202")
+    ) {
+        return "auth_pending";
+    }
+    if (lower.includes("ve_access_denied") || lower.includes("ve_auth_blocked") || lower.includes("forbidden")) {
+        return "access_denied";
+    }
+    if (lower.includes("session_timeout")) {
+        return "session_timeout";
+    }
+    if (lower.includes("offline")) {
+        return "ve_offline";
+    }
+    return "hub_disconnected";
 }
 
 function MessageBubble({ message, sessionId, theme, isZh, assistantName, userName, assistantAvatarDataURL }: MessageBubbleProps) {
@@ -1850,7 +1896,7 @@ function formatError(error: VEConversationError, isZh: boolean): string {
         case "send_failed":
             return error.message ? (isZh ? `\u6d88\u606f\u53d1\u9001\u5931\u8d25\uff1a${error.message}` : `Message send failed: ${error.message}`) : (isZh ? "\u6d88\u606f\u53d1\u9001\u5931\u8d25" : "Message send failed");
         case "session_timeout":
-            return isZh ? "\u4f1a\u8bdd\u521b\u5efa\u8d85\u65f6\uff085\u79d2\uff09" : "Session creation timed out (5s)";
+            return isZh ? "\u4f1a\u8bdd\u521b\u5efa\u8d85\u65f6\uff0815\u79d2\uff09" : "Session creation timed out (15s)";
         default:
             return (error as VEConversationError).message;
     }
@@ -2100,4 +2146,4 @@ function formatFileSize(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export { formatError, classifyAttachmentType, fileNameFromPath, formatFileSize, createSessionWithTimeout };
+export { formatError, classifyAttachmentType, fileNameFromPath, formatFileSize, createSessionWithTimeout, classifySessionInitError };

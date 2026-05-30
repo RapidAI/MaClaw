@@ -277,6 +277,8 @@ export function RunEnvironmentCheckCLI():Promise<void>;
 
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
+export function SetAuthRequestSoundConfig(arg1:string,arg2:boolean):Promise<void>;
+
 export function SetDefaultLaunchMode(arg1:string):Promise<void>;
 
 export function SelectProjectDir():Promise<string>;

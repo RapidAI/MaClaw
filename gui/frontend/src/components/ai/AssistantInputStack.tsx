@@ -2,8 +2,11 @@ import type React from "react";
 import { BufferQueuePanel } from "./BufferQueuePanel";
 import { AssistantInputComposer } from "./AssistantInputComposer";
 import type { Theme } from "./aiAssistantPanelTheme";
+import type { AttachmentInfo, BufferEntry } from "./useBufferQueue";
+import type { UseVoiceInputResult } from "./useVoiceInput";
 
 interface AssistantInputStackProps {
+    attachButtonTestId?: string;
     browseFile: () => void;
     canSend: boolean;
     cancelPending: boolean;
@@ -16,24 +19,32 @@ interface AssistantInputStackProps {
     handleEditEntry: (id: string) => void;
     handleCancelEdit: () => void;
     handlePaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
-    handleSaveEdit: (id: string, text: string, attachments: any[]) => void;
+    handleSaveEdit: (id: string, text: string, attachments: AttachmentInfo[]) => void;
     handleFireEntry: (id: string) => void;
+    handleTextareaClick?: (event: React.MouseEvent<HTMLTextAreaElement>) => void;
+    handleTextareaKeyDownBefore?: (event: React.KeyboardEvent<HTMLTextAreaElement>) => boolean;
+    handleTextareaKeyUp?: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
     isEntryInFlight?: (id: string) => boolean;
     handleSend: () => void;
     handleVoiceClick: () => void;
     handleVoicePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
     handleVoicePointerLeave: (event: React.PointerEvent<HTMLButtonElement>) => void;
     inputAreaHeight: number | null;
+    inputBarTestId?: string;
     inputLocked: boolean;
+    inputOverlay?: React.ReactNode;
     inputRef: React.Ref<HTMLTextAreaElement>;
+    inputRowTestId?: string;
     inputValue: string;
     inline: boolean;
     isBusy: boolean;
     isSelectionCollapsedAtBoundary: (direction: "up" | "down") => boolean;
     lang: string;
-    pendingAttachments: any[];
+    pendingAttachments: AttachmentInfo[];
+    pendingAttachmentsTestId?: string;
     placeholderText: string;
-    queue: any[];
+    queuePanelTestId?: string;
+    queue: BufferEntry[];
     ready: boolean;
     recallHistory: (direction: "up" | "down") => boolean;
     rememberHistoryEdit: (value: string) => void;
@@ -42,30 +53,55 @@ interface AssistantInputStackProps {
     reorderEntry: (fromIndex: number, toIndex: number) => void;
     resizeInput: () => void;
     selectedFilePaths: string[];
-    setPendingAttachments: React.Dispatch<React.SetStateAction<any>>;
+    setPendingAttachments: React.Dispatch<React.SetStateAction<AttachmentInfo[]>>;
     showBusySpinner: boolean;
+    showMemoryUsage?: boolean;
+    showResizeHandle?: boolean;
+    showVoiceInput?: boolean;
+    sendButtonStyle?: React.CSSProperties;
+    sendButtonTestId?: string;
     startInputResize: (event: React.MouseEvent<HTMLDivElement>) => void;
+    textareaTestId?: string;
     theme: Theme;
     themeMode: "light" | "dark";
+    toolbarTestId?: string;
     updateInputValue: (value: string) => void;
-    voiceInput: any;
+    voiceInput: UseVoiceInputResult;
 }
 
 export function AssistantInputStack(props: AssistantInputStackProps) {
     const {
-        browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, editingEntryId,
+        attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, editingEntryId,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handlePaste,
-        handleSaveEdit, handleFireEntry, handleSend, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight,
+        handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
+        handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
         isEntryInFlight,
-        inputLocked, inputRef, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments,
-        placeholderText, queue, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
-        resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, startInputResize, theme: t,
-        themeMode, updateInputValue, voiceInput,
+        inputLocked, inputOverlay, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments,
+        pendingAttachmentsTestId, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
+        resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
+        showVoiceInput, sendButtonStyle, sendButtonTestId, startInputResize, textareaTestId, theme: t,
+        themeMode, toolbarTestId, updateInputValue, voiceInput,
     } = props;
+
+    const queuePanel = queue.length > 0 ? (
+        <BufferQueuePanel
+            queue={queue}
+            lang={lang}
+            theme={{ bg: t.bg, text: t.text, textMuted: t.textMuted, headingColor: t.headingColor, inputBarBg: t.inputBarBg, inputBarBorder: t.inputBarBorder, codeBlockBg: t.codeBlockBg, codeBlockBorder: t.codeBlockBorder, divider: t.divider }}
+            editingEntryId={editingEntryId}
+            onEdit={handleEditEntry}
+            onCancelEdit={handleCancelEdit}
+            onSaveEdit={handleSaveEdit}
+            onDelete={removeEntry}
+            onReorder={reorderEntry}
+            onFireEntry={handleFireEntry}
+            isEntryInFlight={isEntryInFlight}
+        />
+    ) : null;
 
     return (
         <>
-            <div
+            {showResizeHandle && <div
                 data-testid="ai-input-resize-handle"
                 onMouseDown={startInputResize}
                 title={lang?.startsWith("zh") ? "拖动调整输入区高度" : "Drag to resize the input area"}
@@ -83,7 +119,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                 }}
             >
                 <span style={{ width: "42px", height: "2px", borderRadius: "999px", background: t.textMuted, opacity: 0.42, pointerEvents: "none" }} />
-            </div>
+            </div>}
             <div
                 data-testid="ai-input-stack"
                 style={{
@@ -99,20 +135,9 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     borderTop: `1px solid ${t.inputBarBorder}`,
                 }}
             >
-                <BufferQueuePanel
-                    queue={queue}
-                    lang={lang}
-                    theme={{ bg: t.bg, text: t.text, textMuted: t.textMuted, headingColor: t.headingColor, inputBarBg: t.inputBarBg, inputBarBorder: t.inputBarBorder, codeBlockBg: t.codeBlockBg, codeBlockBorder: t.codeBlockBorder, divider: t.divider }}
-                    editingEntryId={editingEntryId}
-                    onEdit={handleEditEntry}
-                    onCancelEdit={handleCancelEdit}
-                    onSaveEdit={handleSaveEdit}
-                    onDelete={removeEntry}
-                    onReorder={reorderEntry}
-                    onFireEntry={handleFireEntry}
-                    isEntryInFlight={isEntryInFlight}
-                />
+                {queuePanelTestId && queuePanel ? <div data-testid={queuePanelTestId}>{queuePanel}</div> : queuePanel}
                 <AssistantInputComposer
+                    attachButtonTestId={attachButtonTestId}
                     browseFile={browseFile}
                     canSend={canSend}
                     cancelPending={cancelPending}
@@ -123,18 +148,25 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     handleCancel={handleCancel}
                     handlePaste={handlePaste}
                     handleSend={handleSend}
+                    handleTextareaClick={handleTextareaClick}
+                    handleTextareaKeyDownBefore={handleTextareaKeyDownBefore}
+                    handleTextareaKeyUp={handleTextareaKeyUp}
                     handleVoiceClick={handleVoiceClick}
                     handleVoicePointerDown={handleVoicePointerDown}
                     handleVoicePointerLeave={handleVoicePointerLeave}
                     inputAreaHeight={inputAreaHeight}
+                    inputBarTestId={inputBarTestId}
                     inputLocked={inputLocked}
+                    inputOverlay={inputOverlay}
                     inputRef={inputRef}
+                    inputRowTestId={inputRowTestId}
                     inputValue={inputValue}
                     inline={inline}
                     isBusy={isBusy}
                     isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
                     lang={lang}
                     pendingAttachments={pendingAttachments}
+                    pendingAttachmentsTestId={pendingAttachmentsTestId}
                     placeholderText={placeholderText}
                     ready={ready}
                     recallHistory={recallHistory}
@@ -144,8 +176,14 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     selectedFilePaths={selectedFilePaths}
                     setPendingAttachments={setPendingAttachments}
                     showBusySpinner={showBusySpinner}
+                    showMemoryUsage={showMemoryUsage}
+                    showVoiceInput={showVoiceInput}
+                    sendButtonStyle={sendButtonStyle}
+                    sendButtonTestId={sendButtonTestId}
+                    textareaTestId={textareaTestId}
                     theme={t}
                     themeMode={themeMode}
+                    toolbarTestId={toolbarTestId}
                     updateInputValue={updateInputValue}
                     voiceInput={voiceInput}
                 />

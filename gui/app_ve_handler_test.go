@@ -243,6 +243,24 @@ func TestVEMessageHandler_EmptyContentIgnored(t *testing.T) {
 	}
 }
 
+func TestVEMessageHandler_AttachmentOnlyFallbackCreatesSession(t *testing.T) {
+	handler := NewVEMessageHandler(&App{})
+
+	handler.HandleIncomingMessage("session-attach", a2a.GroupDiscussionMessage{
+		FromID: "user-a",
+		Kind:   a2a.MessageStatement,
+		FileAttachments: []a2a.FileAttachment{{
+			Filename: "missing.pdf",
+			FileURL:  "https://hub.example/api/ve/files/file-1",
+		}},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if handler.ActiveSessionCount() != 1 {
+		t.Errorf("expected attachment-only message to create a session, got %d", handler.ActiveSessionCount())
+	}
+}
+
 func TestVEMessageHandler_IgnoresStreamAndSelfMessages(t *testing.T) {
 	app := &App{configCacheValid: true, configCache: corelib.AppConfig{RemoteMachineID: "machine-local"}}
 	handler := NewVEMessageHandler(app)

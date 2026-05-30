@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -167,8 +168,14 @@ func TestShouldEmitVEDiscussionAttachmentMessageToFrontend(t *testing.T) {
 	if !shouldEmitVEDiscussionMessageToFrontend("speak", msg) {
 		t.Fatal("attachment-bearing participant messages should be visible in the frontend")
 	}
+	if !shouldRouteVEDiscussionToDigitalEmployee("speak", msg, false) {
+		t.Fatal("attachment-bearing speak messages should still route to the digital employee")
+	}
 	if shouldEmitVEDiscussionMessageToFrontend("executor", msg) {
 		t.Fatal("executor-targeted attachment messages should still route to the local executor")
+	}
+	if shouldRouteVEDiscussionToDigitalEmployee("executor", msg, true) {
+		t.Fatal("executor-targeted attachment messages should stay with the local dispatcher")
 	}
 	if !shouldEmitVEDiscussionMessageToFrontend("initiator", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
 		t.Fatal("initiator messages should be visible in the frontend")
@@ -245,6 +252,37 @@ func TestLocalizeVEDiscussionAttachmentPathsDoesNotTrustRemoteLocalPath(t *testi
 	}
 	if got := msg.FileAttachments[0].LocalPath; got == "" || got == `C:\secret\remote.txt` {
 		t.Fatalf("file LocalPath = %q, want downloaded local cache path", got)
+	}
+}
+
+func TestLocalizeVEDiscussionAttachmentPathsCapsDownloads(t *testing.T) {
+	var downloads int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&downloads, 1)
+		_, _ = w.Write([]byte("remote attachment body"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.configCache = corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}
+	app.configCacheValid = true
+	client := &RemoteHubClient{app: app}
+	msg := &a2a.GroupDiscussionMessage{}
+	for i := 0; i < veAttachmentContextMaxCount+5; i++ {
+		msg.FileAttachments = append(msg.FileAttachments, a2a.FileAttachment{FileURL: fmt.Sprintf("/api/ve/files/file-%d", i), Filename: fmt.Sprintf("remote-%d.txt", i)})
+	}
+
+	client.localizeVEDiscussionAttachmentPaths("disc-1", msg)
+
+	if got := atomic.LoadInt32(&downloads); got != int32(veAttachmentContextMaxCount) {
+		t.Fatalf("download count = %d, want %d", got, veAttachmentContextMaxCount)
+	}
+	if got := msg.FileAttachments[veAttachmentContextMaxCount].LocalPath; got != "" {
+		t.Fatalf("attachment past cap LocalPath = %q, want empty", got)
 	}
 }
 
