@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
 type openAPIRoute struct {
@@ -183,6 +185,10 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodPut, Path: "/api/v1/config", Summary: "Update config", Tag: "config", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/config/validate", Summary: "Validate config", Tag: "config", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/config/test", Summary: "Test config", Tag: "config", Security: bearerSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/memory", Summary: "List memory", Description: "Lists current user's long-term memory entries with optional category, text search, limit, and offset pagination. Protected self-identity entries are read-only.", Tag: "memory", Security: bearerSecurity(), QueryParams: []string{"category", "q", "limit", "offset"}},
+	{Method: http.MethodPost, Path: "/api/v1/memory", Summary: "Create memory", Description: "Creates a manual long-term memory entry for current user. Protected self-identity memory cannot be created here.", Tag: "memory", Security: bearerSecurity()},
+	{Method: http.MethodPut, Path: "/api/v1/memory/{id}", Summary: "Update memory", Description: "Updates one current-user memory entry by id. Protected self-identity memory is read-only.", Tag: "memory", Security: bearerSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/memory/{id}", Summary: "Delete memory", Description: "Deletes one current-user memory entry by id. Protected self-identity memory is read-only.", Tag: "memory", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/knowledge/import/text", Summary: "Import knowledge text", Description: "Saves user-provided text into the current user's knowledge base.", Tag: "knowledge", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/knowledge/import/file", Summary: "Import knowledge files", Description: "Uploads one or more files and imports them into the current user's knowledge base as an async job.", Tag: "knowledge", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/knowledge/import/urls", Summary: "Import knowledge URLs", Description: "Imports one or more URLs, optionally crawling discovered links up to max_depth.", Tag: "knowledge", Security: bearerSecurity()},
@@ -414,6 +420,9 @@ func buildOpenAPISpec() map[string]any {
 		if body := openAPIFileImportRequestBody(route.Path); body != nil {
 			op["requestBody"] = body
 		}
+		if body := openAPIMemoryRequestBody(route.Method, route.Path); body != nil {
+			op["requestBody"] = body
+		}
 		if route.Path == "/api/v1/instances/{instanceId}/runs/{runId}/events" {
 			op["responses"] = map[string]any{
 				"200": map[string]any{
@@ -530,13 +539,22 @@ func openAPIQuerySchema(path, name string) map[string]any {
 		return map[string]any{"type": "string", "enum": []string{"user", "assistant", "system"}}
 	case "response_source":
 		return map[string]any{"type": "string", "enum": []string{"ask_user"}}
+	case "category":
+		if path == "/api/v1/memory" {
+			return map[string]any{"type": "string", "enum": []string{"self_identity", "user_fact", "preference", "project_knowledge", "instruction", "conversation_summary", "session_checkpoint", "task_artifact", "profile"}}
+		}
 	case "before", "since", "until":
 		if path != "/api/v1/skills" {
 			return map[string]any{"type": "string", "format": "date-time"}
 		}
 	case "q", "tag":
 		return map[string]any{"type": "string"}
+	case "offset":
+		return map[string]any{"type": "integer", "minimum": 0}
 	case "limit":
+		if path == "/api/v1/memory" {
+			return map[string]any{"type": "integer", "minimum": 1, "maximum": 200}
+		}
 		if path == "/api/v1/admin/insights" {
 			return map[string]any{"type": "integer", "minimum": 0, "maximum": 50}
 		}
@@ -577,6 +595,32 @@ func openAPIFileImportRequestBody(path string) map[string]any {
 					"type":       "object",
 					"required":   []string{"file"},
 					"properties": properties,
+				},
+			},
+		},
+	}
+}
+
+func openAPIMemoryRequestBody(method, path string) map[string]any {
+	if !((method == http.MethodPost && path == "/api/v1/memory") || (method == http.MethodPut && path == "/api/v1/memory/{id}")) {
+		return nil
+	}
+	return map[string]any{
+		"required": true,
+		"content": map[string]any{
+			"application/json": map[string]any{
+				"schema": map[string]any{
+					"type":     "object",
+					"required": []string{"content"},
+					"properties": map[string]any{
+						"content":  map[string]any{"type": "string", "minLength": 1, "maxLength": agentservice.UserMemoryMaxContentRunes},
+						"category": map[string]any{"type": "string", "enum": []string{"user_fact", "preference", "project_knowledge", "instruction", "conversation_summary", "session_checkpoint", "task_artifact", "profile"}},
+						"tags": map[string]any{
+							"type":     "array",
+							"maxItems": agentservice.UserMemoryMaxTags,
+							"items":    map[string]any{"type": "string", "maxLength": agentservice.UserMemoryMaxTagRunes},
+						},
+					},
 				},
 			},
 		},
@@ -629,7 +673,16 @@ func openAPIQueryDescription(path, name string) string {
 	case "tag":
 		return "Filters flexible structured records by tag."
 	case "q":
+		if path == "/api/v1/memory" {
+			return "Case-insensitive text search over current-user memory content and tags."
+		}
 		return "Case-insensitive text search over structured record title, tags, collection, and JSON data."
+	case "category":
+		if path == "/api/v1/memory" {
+			return "Filters long-term memory by canonical memory category."
+		}
+	case "offset":
+		return "Zero-based pagination offset."
 	}
 	return ""
 }

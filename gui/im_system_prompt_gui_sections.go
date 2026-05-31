@@ -243,18 +243,21 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 // appendGUIEpilogue injects final GUI-only sections:
 // steering (handled by deps), memory, knowledge auto-recall, knowledge skills,
 // skill repairs, bundle context.
-func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext) {
+func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string) {
 	epilogueStart := time.Now()
+	userID = strings.TrimSpace(userID)
 
 	// OpenHuman-inspired: inject situation report (active tasks, SSH sessions, etc.)
-	if report := h.buildSituationReport(h.lastUserID); report != "" {
+	if report := h.buildSituationReport(userID); report != "" {
 		b.WriteString("\n\n")
 		b.WriteString(report)
 		b.WriteString("\n")
 	}
 
 	// Memory section (frozen snapshot + proactive recall)
-	h.appendMemorySection(b, includeMemoryGuide, eventContext, msg)
+	if userID != "" {
+		h.appendMemorySection(b, includeMemoryGuide, userID, eventContext, msg)
+	}
 	memoryElapsed := time.Since(epilogueStart)
 
 	// Knowledge base auto-recall

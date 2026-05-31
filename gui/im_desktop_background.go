@@ -15,6 +15,11 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 			Error:    "empty task text",
 		}, nil
 	}
+	if h != nil && h.app != nil {
+		if err := h.app.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "background", "request": trimmedText, "project_path": strings.TrimSpace(projectPath)}); err != nil {
+			return nil, err
+		}
+	}
 	if h.manager == nil {
 		return nil, fmt.Errorf("remote session manager not initialized")
 	}

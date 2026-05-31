@@ -97,6 +97,7 @@ export interface SidebarHubServiceStatus {
 
 export interface SidebarHubCredits {
     authorized: boolean;
+    serviceActive?: boolean;
     total: number;
     used: number;
     remaining: number;
@@ -106,6 +107,14 @@ export interface SidebarHubCredits {
     status: string;
     retryAfterSeconds: number;
     retryAfterAt: string;
+}
+
+export interface SidebarCreditDisplayFormatters {
+    formatSidebarTokens: (value: number) => string;
+    formatSidebarHubExpiry: (credits: SidebarHubCredits | null) => string;
+    formatSidebarHubTotalCredits: (credits: SidebarHubCredits | null) => string;
+    formatSidebarHubUsedCredits: (credits: SidebarHubCredits | null) => string;
+    formatSidebarCredit: (value: number) => string;
 }
 
 export interface SidebarLLMProviderSummary {

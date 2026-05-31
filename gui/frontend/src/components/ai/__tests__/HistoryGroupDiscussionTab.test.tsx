@@ -93,7 +93,22 @@ describe("HistoryGroupDiscussionTab", () => {
         expect(screen.queryByTestId("group-add-participant-btn")).toBeNull();
     });
 
-    it("sends through the guarded history API for writable sessions", async () => {
+    it("sends unmentioned writable messages to the only remote participant", async () => {
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...");
+        fireEvent.change(input, { target: { value: "continue" } });
+        fireEvent.click(screen.getByText("Send"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({ content: "continue", kind: "statement", to_ids: ["ve-a"] }));
+    });
+
+    it("keeps unmentioned multi-remote history messages as broadcast", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a", "ve-b"] },
+            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "speak" }, { id: "ve-b", name: "Xiaoyan", role_code: "speak" }] },
+        }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
 
         const input = await screen.findByPlaceholderText("Continue discussion...");
@@ -102,6 +117,36 @@ describe("HistoryGroupDiscussionTab", () => {
 
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
         expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({ content: "continue", kind: "statement" }));
+        expect(sendHistoryMessageMock.mock.calls[0][1]).not.toHaveProperty("to_ids");
+    });
+
+    it("defaults unmentioned history messages to one remote despite generated aliases", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "machine-a", "ve-machine-a"] },
+            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "machine-a", name: "Contract Bot", role_code: "speak" }, { id: "ve-machine-a", name: "Contract Bot duplicate", role_code: "speak" }] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...");
+        fireEvent.change(input, { target: { value: "continue" } });
+        fireEvent.click(screen.getByText("Send"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({ content: "continue", to_ids: ["machine-a"] }));
+        expect(screen.getByTestId("group-participant-panel").textContent).toContain("Participants (1)");
+        expect(screen.getByTestId("group-participant-panel").textContent).not.toContain("duplicate");
+    });
+
+    it("does not retarget unresolved history @mentions to the default participant", async () => {
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Continue discussion...");
+        fireEvent.change(input, { target: { value: "@unknown continue" } });
+        fireEvent.click(screen.getByText("Send"));
+
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
+        expect(sendHistoryMessageMock).toHaveBeenCalledWith("disc-1", expect.objectContaining({ content: "@unknown continue" }));
+        expect(sendHistoryMessageMock.mock.calls[0][1]).not.toHaveProperty("to_ids");
     });
 
     it("sends history @mentions as targeted messages", async () => {
@@ -177,6 +222,25 @@ describe("HistoryGroupDiscussionTab", () => {
         expect(panel.textContent).toContain("Contract Bot");
         expect(panel.textContent).not.toContain("Alice");
         expect(screen.getByTestId("group-msg-label-m1").textContent).toBe("Me");
+    });
+
+    it("resolves history speaker names across generated VE aliases", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["human-a", "machine-a"] },
+            session: { participants: [
+                { id: "human-a", name: "Alice", role_code: "initiator" },
+                { id: "machine-a", name: "Contract Bot", role_code: "speak" },
+            ] },
+            messages: [
+                { id: "m-alias", from_id: "ve-machine-a", from_name: "ve-machine-a", content: "reviewed", created_at: "2026-01-01T00:00:00Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
+
+        await screen.findByText("reviewed");
+
+        expect(screen.getByTestId("group-msg-label-m-alias").textContent).toBe("Contract Bot");
+        expect((screen.getByTestId("group-msg-m-alias") as HTMLElement).style.alignItems).toBe("flex-start");
     });
 
     it("keeps the history composer from overlapping the send button", async () => {
@@ -529,6 +593,39 @@ describe("HistoryGroupDiscussionTab", () => {
         expect((input as HTMLTextAreaElement).value).toBe("");
     });
 
+    it("renders generated initiator aliases as local history messages", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { participant_ids: ["machine-local", "machine-a"] },
+            session: { participants: [{ id: "machine-local", name: "Me", role_code: "initiator" }, { id: "machine-a", name: "Agent A", role_code: "speak" }] },
+            messages: [
+                { id: "m1", from_id: "ve-machine-local", from_name: "machine-local", content: "local alias message", created_at: "2026-01-01T00:00:00Z" },
+                { id: "m2", from_id: "ve_machine-a", from_name: "machine-a", content: "agent alias message", created_at: "2026-01-01T00:00:01Z" },
+            ],
+        }));
+
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="History" readOnly={true} theme={theme} lang="en" />);
+
+        await waitFor(() => expect(screen.getByText("local alias message")).toBeTruthy());
+        expect(screen.getByText("Me")).toBeTruthy();
+        expect(screen.getByText("Agent A")).toBeTruthy();
+    });
+
+    it("merges history stream chunks across generated participant aliases", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { participant_ids: ["me", "machine-a"] },
+            session: { participants: [{ id: "machine-a", name: "Agent A", role_code: "speak" }] },
+            messages: [
+                { id: "m1", from_id: "ve-machine-a", from_name: "Agent A", kind: "stream_chunk", content: "alias ", created_at: "2026-01-01T00:00:00Z" },
+                { id: "m2", from_id: "machine-a", from_name: "Agent A", kind: "stream_chunk", content: "merged", created_at: "2026-01-01T00:00:01Z" },
+            ],
+        }));
+
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="History" readOnly={true} theme={theme} lang="en" />);
+
+        await waitFor(() => expect(screen.getByText("alias merged")).toBeTruthy());
+        expect(screen.queryByText("alias ")).toBeNull();
+    });
+
     it("does not wait for the post-send reload before clearing history input", async () => {
         let releaseReload: (() => void) | undefined;
         getDetailMock
@@ -604,17 +701,17 @@ describe("HistoryGroupDiscussionTab", () => {
     });
 
 
-    it("keeps initiator-role details read-only when local relation is missing", async () => {
+    it("treats initiator-role details as writable when local relation is missing", async () => {
         getDetailMock.mockResolvedValue(detail({
             discussion: { status: "open", role: "initiator", readonly: false, participant_ids: ["me", "ve-a"] },
         }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Missing relation" readOnly={false} theme={theme} lang="en" />);
 
-        const input = await screen.findByPlaceholderText("Read-only session");
-        expect((input as HTMLTextAreaElement).disabled).toBe(true);
-        fireEvent.change(input, { target: { value: "should not send" } });
+        const input = await screen.findByPlaceholderText("Continue discussion...");
+        expect((input as HTMLTextAreaElement).disabled).toBe(false);
+        fireEvent.change(input, { target: { value: "should send" } });
         fireEvent.click(screen.getByText("Send"));
-        expect(sendHistoryMessageMock).not.toHaveBeenCalled();
+        await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalled());
     });
 
     it("lets authoritative initiated detail override a stale read-only summary", async () => {

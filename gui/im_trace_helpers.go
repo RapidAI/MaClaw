@@ -13,6 +13,27 @@ func (h *IMMessageHandler) appendTraceEvent(ctx *LoopContext, kind, severity, ti
 	})
 }
 
+func (h *IMMessageHandler) runtimeTraceSummary(ctx *LoopContext, text string) string {
+	if ctx == nil || strings.TrimSpace(ctx.Runtime.RequestID) == "" {
+		return truncateTraceText(text, 180)
+	}
+	rt := ctx.Runtime
+	parts := []string{
+		"request_id=" + rt.RequestID,
+		"source=" + strings.TrimSpace(rt.Source.Channel) + "/" + strings.TrimSpace(rt.Source.Provider),
+		"actor=" + strings.TrimSpace(rt.Actor.ActorID),
+		"session_key=" + strings.TrimSpace(rt.Conversation.SessionKey),
+		"lock_key=" + strings.TrimSpace(rt.LockKey),
+	}
+	if policyOwner := strings.TrimSpace(rt.PolicyOwnerID); policyOwner != "" {
+		parts = append(parts, "policy_owner="+policyOwner)
+	}
+	if text = strings.TrimSpace(text); text != "" {
+		parts = append(parts, "text="+truncateTraceText(text, 120))
+	}
+	return truncateTraceText(strings.Join(parts, " "), 400)
+}
+
 func (h *IMMessageHandler) appendTraceEventWithToolOutcomes(ctx *LoopContext, event TraceEvent) {
 	if ctx == nil || h.traceService == nil || ctx.RunID == "" {
 		return
@@ -160,6 +181,7 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
+	attachRuntimeResponseFields(ctx, resp)
 	if ctx == nil || h.traceService == nil || ctx.RunID == "" {
 		return resp
 	}
@@ -191,6 +213,18 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 		resp.Fields = append(resp.Fields, IMResponseField{Label: "Browser", Value: browserRootCause})
 	}
 	return resp
+}
+
+func attachRuntimeResponseFields(ctx *LoopContext, resp *IMAgentResponse) {
+	if ctx == nil || resp == nil {
+		return
+	}
+	if resp.RequestID == "" {
+		resp.RequestID = ctx.Runtime.RequestID
+	}
+	if resp.SessionKey == "" {
+		resp.SessionKey = ctx.Runtime.Conversation.SessionKey
+	}
 }
 
 func extractBrowserRootCause(text string) string {

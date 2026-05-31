@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { isHistoryDiscussionReadOnly } from '../AIAssistantPanel';
 import { AITabBar } from '../AITabBar';
 
@@ -16,6 +16,8 @@ const theme = {
 describe('isHistoryDiscussionReadOnly', () => {
     it('keeps open sessions started by me writable', () => {
         expect(isHistoryDiscussionReadOnly({ status: 'open', local_relation: 'initiated_by_me', readonly: false })).toBe(false);
+        expect(isHistoryDiscussionReadOnly({ status: 'open', local_relation: 'initiated_by_me', readonly: true })).toBe(false);
+        expect(isHistoryDiscussionReadOnly({ status: 'open', role: 'initiator', readonly: true })).toBe(false);
     });
 
     it('marks invited and archived sessions as read-only', () => {
@@ -24,10 +26,6 @@ describe('isHistoryDiscussionReadOnly', () => {
         expect(isHistoryDiscussionReadOnly({ status: 'open', role: 'review', readonly: false })).toBe(true);
         expect(isHistoryDiscussionReadOnly({ status: 'closed', local_relation: 'initiated_by_me', readonly: false })).toBe(true);
         expect(isHistoryDiscussionReadOnly({ status: 'archived', local_relation: 'initiated_by_me', readonly: false })).toBe(true);
-    });
-
-    it('honors explicit read-only even when the initiator role is present', () => {
-        expect(isHistoryDiscussionReadOnly({ status: 'open', role: 'initiator', readonly: true })).toBe(true);
     });
 
     it('keeps unknown relation sessions read-only even when readonly is false', () => {
@@ -50,7 +48,7 @@ describe('isHistoryDiscussionReadOnly', () => {
         expect(screen.getByRole('tab', { name: 'Case review - Read-only' })).toBeTruthy();
     });
 
-    it('shows invite action only for VE tabs because group tabs use the unified participant panel', () => {
+    it('shows invite action for VE and live group tabs', () => {
         const onInvite = () => {};
         const { rerender } = render(createElement(AITabBar, {
             tabs: [
@@ -66,7 +64,7 @@ describe('isHistoryDiscussionReadOnly', () => {
         }));
 
         fireEvent.contextMenu(screen.getByRole('tab', { name: 'Existing group' }));
-        expect(screen.queryByTestId('tab-menu-invite-ve')).toBeNull();
+        expect(screen.getByTestId('tab-menu-invite-ve')).toBeTruthy();
 
         rerender(createElement(AITabBar, {
             tabs: [
@@ -104,6 +102,24 @@ describe('isHistoryDiscussionReadOnly', () => {
         expect(screen.getByTestId('tab-menu-close')).toBeTruthy();
     });
 
+    it('shows invite action for writable history group tabs with a discussion id', () => {
+        render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'history-1', type: 'group', title: 'Writable history', participants: ['me', 've-a'], closable: true, readOnly: false, discussionId: 'disc-1' },
+            ] as any,
+            activeTabId: 'history-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onInviteToTab: () => {},
+            lang: 'en',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: 'Writable history' }));
+        expect(screen.getByTestId('tab-menu-invite-ve')).toBeTruthy();
+    });
+
     it('shows add-local action for live VE group tabs', () => {
         render(createElement(AITabBar, {
             tabs: [
@@ -120,6 +136,46 @@ describe('isHistoryDiscussionReadOnly', () => {
 
         fireEvent.contextMenu(screen.getByRole('tab', { name: /Live helper/ }));
         expect(screen.getByTestId('tab-menu-add-local')).toBeTruthy();
+    });
+
+    it('shows rename action for writable group tabs and calls the handler', () => {
+        const onRename = vi.fn();
+        render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'group-1', type: 'group', title: 'Live helper', veId: 've-a', participants: ['ve-a'], closable: true, readOnly: false },
+            ] as any,
+            activeTabId: 'group-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onRenameGroupTab: onRename,
+            lang: 'zh-Hans',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: /Live helper/ }));
+        fireEvent.click(screen.getByTestId('tab-menu-rename-group'));
+
+        expect(onRename).toHaveBeenCalledWith(expect.objectContaining({ id: 'group-1' }));
+    });
+
+    it('hides add-local action for read-only VE group tabs', () => {
+        render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'group-1', type: 'group', title: 'Read-only helper', veId: 've-a', participants: ['ve-a'], closable: true, readOnly: true },
+            ] as any,
+            activeTabId: 'group-1',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            onAddLocalMaclawToTab: () => {},
+            lang: 'en',
+        }));
+
+        fireEvent.contextMenu(screen.getByRole('tab', { name: /Read-only helper/ }));
+        expect(screen.queryByTestId('tab-menu-add-local')).toBeNull();
+        expect(screen.queryByTestId('ai-tab-context-menu')).toBeNull();
     });
 
     it('hides add-local action when local AI participant id differs only by case', () => {
@@ -164,4 +220,3 @@ describe('isHistoryDiscussionReadOnly', () => {
         expect(screen.getByText('Read-only')).toBeTruthy();
     });
 });
-

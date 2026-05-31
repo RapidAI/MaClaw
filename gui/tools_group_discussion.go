@@ -1337,7 +1337,7 @@ func missingGroupDiscussionProposalReviewers(detail a2a.HubDiscussionDetail, pro
 	reviewed := map[string]struct{}{}
 	for _, reviewer := range proposal.ReviewSummary.ReviewedBy {
 		if reviewer = strings.TrimSpace(reviewer); reviewer != "" {
-			reviewed[reviewer] = struct{}{}
+			addGroupDiscussionIdentityKeys(reviewed, reviewer)
 		}
 	}
 	missing := make([]string, 0, len(participants))
@@ -1346,10 +1346,10 @@ func missingGroupDiscussionProposalReviewers(detail a2a.HubDiscussionDetail, pro
 		if participant == "" {
 			continue
 		}
-		if participant == strings.TrimSpace(proposal.AuthorID) && len(participants) > 1 {
+		if veGroupParticipantIdentityMatches(participant, proposal.AuthorID) && len(participants) > 1 {
 			continue
 		}
-		if _, ok := reviewed[participant]; ok {
+		if groupDiscussionIdentitySetContains(reviewed, participant) {
 			continue
 		}
 		missing = append(missing, participant)
@@ -1408,7 +1408,7 @@ func missingGroupDiscussionAnswerParticipants(detail a2a.HubDiscussionDetail) []
 			continue
 		}
 		if fromID := strings.TrimSpace(msg.FromID); fromID != "" {
-			answered[fromID] = struct{}{}
+			addGroupDiscussionIdentityKeys(answered, fromID)
 		}
 	}
 	missing := make([]string, 0, len(participants))
@@ -1416,7 +1416,7 @@ func missingGroupDiscussionAnswerParticipants(detail a2a.HubDiscussionDetail) []
 		if participant == "" {
 			continue
 		}
-		if _, ok := answered[participant]; ok {
+		if groupDiscussionIdentitySetContains(answered, participant) {
 			continue
 		}
 		missing = append(missing, participant)
@@ -1431,7 +1431,48 @@ func groupDiscussionParticipantIDs(detail a2a.HubDiscussionDetail) []string {
 			ids = append(ids, participant.ID)
 		}
 	}
-	return dedupeGroupDiscussionStrings(ids)
+	return dedupeGroupDiscussionParticipantIDs(ids)
+}
+
+func dedupeGroupDiscussionParticipantIDs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || groupDiscussionIdentitySetContains(seen, value) {
+			continue
+		}
+		addGroupDiscussionIdentityKeys(seen, value)
+		out = append(out, value)
+	}
+	return out
+}
+
+func addGroupDiscussionIdentityKeys(target map[string]struct{}, participantID string) {
+	aliases := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(aliases, participantID)
+	for key := range aliases {
+		if strings.TrimSpace(key) != "" {
+			target[key] = struct{}{}
+		}
+	}
+}
+
+func groupDiscussionIdentitySetContains(values map[string]struct{}, participantID string) bool {
+	if len(values) == 0 || strings.TrimSpace(participantID) == "" {
+		return false
+	}
+	aliases := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(aliases, participantID)
+	for key := range aliases {
+		if _, ok := values[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func firstDecidableGroupDiscussionProposal(state GroupDiscussionWorkflowState) *GroupDiscussionProposalWorkflowState {
@@ -1611,14 +1652,16 @@ func groupDiscussionReviewSummaryFor(detail a2a.HubDiscussionDetail, proposalID 
 	if detail.Session != nil {
 		return detail.Session.ReviewSummary(proposalID)
 	}
-	latest := map[string]a2a.ReviewPosition{}
+	latest := map[string]a2a.Review{}
 	for _, review := range detail.Reviews {
 		if strings.TrimSpace(review.ProposalID) == proposalID && strings.TrimSpace(review.ReviewerID) != "" {
-			latest[strings.TrimSpace(review.ReviewerID)] = review.Position
+			latest[groupDiscussionCanonicalIdentityKey(review.ReviewerID)] = review
 		}
 	}
 	summary := a2a.ReviewSummary{ReviewedBy: make([]string, 0, len(latest))}
-	for reviewer, position := range latest {
+	for _, review := range latest {
+		reviewer := strings.TrimSpace(review.ReviewerID)
+		position := review.Position
 		summary.ReviewedBy = append(summary.ReviewedBy, reviewer)
 		switch position {
 		case a2a.ReviewApprove:
@@ -1635,6 +1678,18 @@ func groupDiscussionReviewSummaryFor(detail a2a.HubDiscussionDetail, proposalID 
 	return summary
 }
 
+func groupDiscussionCanonicalIdentityKey(participantID string) string {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" {
+		return ""
+	}
+	cleaned := strings.NewReplacer("/", "_", "\\", "_", " ", "_", "-", "_").Replace(participantID)
+	if len(cleaned) > 3 && (strings.EqualFold(cleaned[:3], "ve_") || strings.EqualFold(cleaned[:3], "ve-")) {
+		cleaned = cleaned[3:]
+	}
+	return strings.ToLower(strings.TrimSpace(cleaned))
+}
+
 func groupDiscussionProposalPolicySatisfied(detail a2a.HubDiscussionDetail, proposalID string, summary a2a.ReviewSummary) bool {
 	if detail.Session != nil {
 		return detail.Session.PolicySatisfied(proposalID)
@@ -1642,7 +1697,7 @@ func groupDiscussionProposalPolicySatisfied(detail a2a.HubDiscussionDetail, prop
 	if summary.Rejections > 0 || summary.Concerns > 0 {
 		return false
 	}
-	participants := len(detail.Discussion.ParticipantIDs)
+	participants := len(groupDiscussionParticipantIDs(detail))
 	if participants <= 0 {
 		return false
 	}

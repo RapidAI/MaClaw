@@ -14,6 +14,8 @@ import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { ParticipantSelector, useGroupConfig, virtualEmployeeDisplayName, virtualEmployeeParticipantId } from "./VEGroupChat";
 import { localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { addParticipantIdentityKeys, participantIdentityKeys } from "./participantIdentity";
+import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { veStatusEventInfo } from "./veStatusEvent";
 
 export interface Participant {
@@ -21,11 +23,12 @@ export interface Participant {
     name: string;
     online: boolean;
     isLocal?: boolean;
+    avatarDataURL?: string;
 }
 
 
 function participantFallbackName(index: number, isZh: boolean): string {
-    return isZh ? "参与者 " + (index + 1) : "Participant " + (index + 1);
+    return isZh ? "\u53c2\u4e0e\u8005 " + (index + 1) : "Participant " + (index + 1);
 }
 
 function participantDisplayNameFor(p: Participant, index: number, isZh: boolean, lang?: string): string {
@@ -34,6 +37,17 @@ function participantDisplayNameFor(p: Participant, index: number, isZh: boolean,
     const id = String(p.id || "").trim();
     if (name && name !== id && !looksLikeRawParticipantId(name)) return name;
     return participantFallbackName(index, isZh);
+}
+
+function dedupeParticipants(participants: Participant[]): Participant[] {
+    const seen = new Set<string>();
+    const out: Participant[] = [];
+    for (const participant of participants) {
+        const before = seen.size;
+        addParticipantIdentityKeys(seen, participant.id);
+        if (seen.size !== before) out.push(participant);
+    }
+    return out;
 }
 
 function participantIconStyle(p: Participant, theme: Theme): CSSProperties {
@@ -56,9 +70,18 @@ function participantIconStyle(p: Participant, theme: Theme): CSSProperties {
 function ParticipantTypeIcon({ participant, theme }: { participant: Participant; theme: Theme }) {
     const stroke = "currentColor";
     const title = participant.isLocal ? "Local AI" : "Digital employee";
+    const avatarDataURL = !participant.isLocal ? safeAvatarDataURL(participant.avatarDataURL) : "";
     return (
         <span aria-label={title} title={title} style={participantIconStyle(participant, theme)}>
-            {participant.isLocal ? (
+            {avatarDataURL ? (
+                <img
+                    data-testid={`participant-avatar-${participant.id}`}
+                    src={avatarDataURL}
+                    alt=""
+                    aria-hidden="true"
+                    style={{ width: "100%", height: "100%", borderRadius: 5, objectFit: "cover", display: "block" }}
+                />
+            ) : participant.isLocal ? (
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
                     <rect x="3" y="4" width="10" height="8" rx="2" stroke={stroke} strokeWidth="1.4" />
                     <path d="M6 2.5v1.5M10 2.5v1.5M6 12v1.5M10 12v1.5" stroke={stroke} strokeWidth="1.3" strokeLinecap="round" />
@@ -102,6 +125,8 @@ export interface GroupParticipantPanelProps {
     onAddParticipant?: (veId: string, veName: string) => Promise<unknown> | unknown;
     /** Session ID for listening to status changes */
     sessionId?: string;
+    /** Whether this panel is currently visible. Hidden mounted tabs skip avatar refresh work. */
+    active?: boolean;
     /** Callback when user right-clicks "Talk to" on a participant */
     onTalkTo?: (participant: Participant) => void;
 }
@@ -115,15 +140,38 @@ export function GroupParticipantPanel({
     onInvite,
     onAddParticipant,
     sessionId,
+    active = true,
     onTalkTo,
 }: GroupParticipantPanelProps) {
     const isZh = !lang || lang.startsWith("zh");
     const { maxGroupParticipants } = useGroupConfig(maxParticipants);
-    const participantIdSet = useMemo(() => new Set(participants.map((p) => normalizeParticipantId(p.id))), [participants]);
+    const participantIdKey = useMemo(() => participants
+        .map((p) => normalizeParticipantId(p.id))
+        .filter(Boolean)
+        .sort()
+        .join("\0"), [participants]);
+    const participantAliasMap = useMemo(() => {
+        const aliases = new Map<string, string>();
+        for (const canonical of participantIdKey ? participantIdKey.split("\0") : []) {
+            if (!canonical) continue;
+            const keys = new Set<string>();
+            addParticipantIdentityKeys(keys, canonical);
+            for (const key of keys) aliases.set(key, canonical);
+        }
+        return aliases;
+    }, [participantIdKey]);
+    const participantIdSet = useMemo(() => new Set(participantAliasMap.keys()), [participantAliasMap]);
 
     // Online status overlay: tracks status changes from events without
     // duplicating the participants array in state. Key = participant ID, value = online.
     const [statusOverlay, setStatusOverlay] = useState<Record<string, boolean>>({});
+    const [participantAvatars, setParticipantAvatars] = useState<Record<string, string>>({});
+    const missingAvatarParticipantKey = useMemo(() => participants
+        .filter((p) => !p.isLocal && !safeAvatarDataURL(p.avatarDataURL))
+        .map((p) => normalizeParticipantId(p.id))
+        .filter(Boolean)
+        .sort()
+        .join("\0"), [participants]);
 
     // Context menu state
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; participant: Participant } | null>(null);
@@ -172,8 +220,9 @@ export function GroupParticipantPanel({
             if (!data) return;
             const { ids, status } = veStatusEventInfo(data);
             if (status !== "online" && status !== "offline") return;
-            const id = ids.find((candidate) => participantIdSet.has(candidate));
-            if (!id) return;
+            const matched = ids.find((candidate) => participantIdSet.has(candidate));
+            if (!matched) return;
+            const id = participantAliasMap.get(matched) || matched;
             const online = status === "online";
             setStatusOverlay(prev => {
                 if (prev[id] === online) return prev;
@@ -184,30 +233,69 @@ export function GroupParticipantPanel({
             if (typeof unsub === "function") unsub();
             else EventsOff("ve:status_change");
         };
-    }, [participantIdSet]);
+    }, [participantAliasMap, participantIdSet]);
 
     useEffect(() => {
         setStatusOverlay(prev => {
             let changed = false;
             const next: Record<string, boolean> = {};
             for (const [id, online] of Object.entries(prev)) {
-                if (participantIdSet.has(id)) next[id] = online;
+                if (participantAliasMap.has(id)) next[participantAliasMap.get(id) || id] = online;
                 else changed = true;
             }
             return changed ? next : prev;
         });
-    }, [participantIdSet]);
+    }, [participantAliasMap]);
 
-    // Merge prop data with status overlay
-    const resolvedParticipants = participants.map(p => {
+    useEffect(() => {
+        let cancelled = false;
+        if (!active) return () => { cancelled = true; };
+        if (!missingAvatarParticipantKey) {
+            setParticipantAvatars({});
+            return () => { cancelled = true; };
+        }
+        import("../../../wailsjs/go/main/App")
+            .then(async (mod) => {
+                const listFn = (mod as any).ListVirtualEmployees;
+                const employees = typeof listFn === "function" ? await listFn() : [];
+                if (cancelled) return;
+                const avatarsById: Record<string, string> = {};
+                for (const ve of employees || []) {
+                    const avatar = safeAvatarDataURL(ve?.avatar_data_url);
+                    if (!avatar) continue;
+                    const keys = new Set<string>();
+                    for (const id of [ve?.id, ve?.machine_id, virtualEmployeeParticipantId(ve)]) {
+                        addParticipantIdentityKeys(keys, id);
+                    }
+                    for (const key of keys) {
+                        avatarsById[key] = avatar;
+                    }
+                }
+                setParticipantAvatars(avatarsById);
+            })
+            .catch(() => {
+                if (!cancelled) setParticipantAvatars({});
+            });
+        return () => { cancelled = true; };
+    }, [active, missingAvatarParticipantKey]);
+
+    // Merge prop data with status/avatar overlays without mutating the participant shape.
+    const resolvedParticipants = useMemo(() => participants.map(p => {
         const normalizedId = normalizeParticipantId(p.id);
+        const aliases = participantIdentityKeys(p.id);
+        const avatarDataURL = safeAvatarDataURL(p.avatarDataURL) || aliases.map((id) => participantAvatars[id]).find(Boolean) || "";
+        const overlayKey = aliases.find((id) => statusOverlay[id] !== undefined) || normalizedId;
+        const participant = { ...p };
+        delete participant.avatarDataURL;
         return {
-            ...p,
-            online: statusOverlay[normalizedId] !== undefined ? statusOverlay[normalizedId] : p.online,
+            ...participant,
+            ...(avatarDataURL ? { avatarDataURL } : {}),
+            online: statusOverlay[overlayKey] !== undefined ? statusOverlay[overlayKey] : p.online,
         };
-    });
+    }), [participants, participantAvatars, statusOverlay]);
+    const visibleParticipants = useMemo(() => dedupeParticipants(resolvedParticipants), [resolvedParticipants]);
 
-    const limitReached = resolvedParticipants.length >= maxGroupParticipants;
+    const limitReached = visibleParticipants.length >= maxGroupParticipants;
 
 
     return (
@@ -236,11 +324,11 @@ export function GroupParticipantPanel({
                 borderBottom: `1px solid ${theme.divider}`,
             }}>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {isZh ? `参与者 (${resolvedParticipants.length})` : `Participants (${resolvedParticipants.length})`}
+                    {isZh ? `\u53c2\u4e0e\u8005 (${visibleParticipants.length})` : `Participants (${visibleParticipants.length})`}
                 </span>
                 {readOnly && (
                     <span style={{ flexShrink: 0, border: `1px solid ${theme.divider}`, borderRadius: 4, padding: "1px 4px", fontSize: 10, fontWeight: 500, color: theme.textMuted }}>
-                        {isZh ? "只读" : "Read-only"}
+                        {isZh ? "\u53ea\u8bfb" : "Read-only"}
                     </span>
                 )}
             </div>
@@ -251,7 +339,7 @@ export function GroupParticipantPanel({
                 overflowY: "auto",
                 padding: "4px 0",
             }}>
-                {resolvedParticipants.map((p, index) => {
+                {visibleParticipants.map((p, index) => {
                     const displayName = participantDisplayNameFor(p, index, isZh, lang);
                     return (
                     <div
@@ -282,14 +370,14 @@ export function GroupParticipantPanel({
                     );
                 })}
 
-                {resolvedParticipants.length === 0 && (
+                {visibleParticipants.length === 0 && (
                     <div style={{
                         padding: "12px 10px",
                         fontSize: 11,
                         color: theme.textMuted,
                         textAlign: "center",
                     }}>
-                        {isZh ? "暂无参与者" : "No participants"}
+                        {isZh ? "\u6682\u65e0\u53c2\u4e0e\u8005" : "No participants"}
                     </div>
                 )}
             </div>
@@ -303,7 +391,7 @@ export function GroupParticipantPanel({
                     {onAddParticipant ? (
                         <ParticipantSelector
                             sessionId={sessionId}
-                            currentParticipants={resolvedParticipants}
+                            currentParticipants={visibleParticipants}
                             maxGroupParticipants={maxGroupParticipants}
                             theme={theme}
                             lang={lang}
@@ -325,11 +413,11 @@ export function GroupParticipantPanel({
                             opacity: limitReached ? 0.5 : 1,
                         }}
                         title={limitReached
-                            ? (isZh ? `已达上限 (${maxGroupParticipants})` : `Limit reached (${maxGroupParticipants})`)
-                            : (isZh ? "邀请数字员工" : "Invite")
+                            ? (isZh ? `\u5df2\u8fbe\u4e0a\u9650 (${maxGroupParticipants})` : `Limit reached (${maxGroupParticipants})`)
+                            : (isZh ? "\u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "Invite")
                         }
                     >
-                        {isZh ? "+ 邀请" : "+ Invite"}
+                        {isZh ? "+ \u9080\u8bf7" : "+ Invite"}
                     </button>}
                 </div>
             )}
@@ -364,7 +452,7 @@ export function GroupParticipantPanel({
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = (theme.sendBtnBg || "#3b82f6") + "20"; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        {isZh ? "与它交谈" : "Talk to"}
+                        {isZh ? "\u4e0e\u5b83\u4ea4\u8c08" : "Talk to"}
                     </div>
                 </div>
             )}

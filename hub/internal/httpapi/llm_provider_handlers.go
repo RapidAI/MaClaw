@@ -88,9 +88,10 @@ var llmServiceCardDefaultCreditsByDuration = map[int]float64{
 }
 
 type llmServiceAccountResponse struct {
-	Email  string                    `json:"email"`
-	Status *llmservice.ServiceStatus `json:"status,omitempty"`
-	Usage  llmUsageCounters          `json:"usage"`
+	Email    string                    `json:"email"`
+	TenantID string                    `json:"tenant_id,omitempty"`
+	Status   *llmservice.ServiceStatus `json:"status,omitempty"`
+	Usage    llmUsageCounters          `json:"usage"`
 }
 
 type llmProviderTestKeyRequest struct {
@@ -945,7 +946,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusInternalServerError, "LLM_USAGE_REPORT_LOAD_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, llmServiceAccountResponse{Email: principal.Email, Status: status, Usage: usage})
+		writeJSON(w, http.StatusOK, llmServiceAccountResponse{Email: principal.Email, TenantID: principal.TenantID, Status: status, Usage: usage})
 	}
 }
 

@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const groupDiscussionHubTimeout = time.Duration(corelib.DefaultAgentTimeoutSec) * time.Second
+
+var groupDiscussionHistoryUnresolvedMentionPattern = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])@[^\s@]+`)
 
 func (a *App) groupDiscussionClient() (*a2a.HubClient, corelib.AppConfig, error) {
 	cfg, err := a.LoadConfig()
@@ -706,8 +710,17 @@ func (a *App) GroupDiscussionSendInvitation(consultationID string, inv a2a.Group
 	if err != nil {
 		return "", err
 	}
+	consultationID = strings.TrimSpace(consultationID)
 	if inv.FromID == "" {
 		inv.FromID = groupDiscussionAgentID(cfg)
+	}
+	fromID := strings.TrimSpace(inv.FromID)
+	inviteeID := strings.TrimSpace(inv.ToID)
+	inv.FromID = fromID
+	inv.ToID = inviteeID
+	if hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/"); hubURL != "" {
+		inviteeID = a.resolveVEInviteMachineID(hubURL, strings.TrimSpace(cfg.RemoteMachineToken), inviteeID)
+		inv.ToID = inviteeID
 	}
 	if inv.ContextPolicy == "" {
 		inv.ContextPolicy = cfg.GroupDiscussion.ContextPolicy
@@ -717,7 +730,30 @@ func (a *App) GroupDiscussionSendInvitation(consultationID string, inv a2a.Group
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	return client.SendInvitation(ctx, consultationID, inv)
+	inviteID, err := client.SendInvitation(ctx, consultationID, inv)
+	if err != nil {
+		return "", err
+	}
+	if shouldWaitForGroupDiscussionInviteJoin(inv) {
+		if err := a.waitForVEGroupParticipant(client, consultationID, fromID, inviteeID, inviteID, veGroupInviteJoinTimeout); err != nil {
+			return inviteID, err
+		}
+		a.cacheVESession(inviteeID, consultationID)
+		a.cacheVESession(virtualEmployeeIDForMachine(inviteeID), consultationID)
+	}
+	return inviteID, nil
+}
+
+func shouldWaitForGroupDiscussionInviteJoin(inv a2a.GroupInvitation) bool {
+	if !inv.Trusted || strings.TrimSpace(inv.ToID) == "" || strings.TrimSpace(inv.FromID) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(string(inv.Role))) {
+	case "", "speak", "speaker", "review", "participant", "executor", "observe", "observer":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) GroupDiscussionAcceptInvite(inviteID string, resp a2a.GroupInvitationResponse) error {
@@ -973,9 +1009,13 @@ func (a *App) groupDiscussionGenerateResultSummary(detail a2a.HubDiscussionDetai
 
 func groupDiscussionReadiness(detail a2a.HubDiscussionDetail) GroupDiscussionReadiness {
 	answerCount := countGroupDiscussionAnswersForDetail(detail)
-	participantCount := len(detail.Discussion.ParticipantIDs)
+	participantCount := len(dedupeGroupDiscussionParticipantIDs(detail.Discussion.ParticipantIDs))
 	if participantCount == 0 && detail.Session != nil {
-		participantCount = len(detail.Session.Participants)
+		ids := make([]string, 0, len(detail.Session.Participants))
+		for _, participant := range detail.Session.Participants {
+			ids = append(ids, participant.ID)
+		}
+		participantCount = len(dedupeGroupDiscussionParticipantIDs(ids))
 	}
 	expected := expectedGroupDiscussionAnswers(detail)
 	status := strings.TrimSpace(detail.Discussion.Status)
@@ -1166,7 +1206,7 @@ func groupDiscussionHasAnswerFromDetail(detail a2a.HubDiscussionDetail, particip
 		return false
 	}
 	for _, msg := range groupDiscussionAnswerMessagesForDetail(detail) {
-		if strings.TrimSpace(msg.FromID) == participant {
+		if veGroupParticipantIdentityMatches(msg.FromID, participant) {
 			return true
 		}
 	}
@@ -1181,7 +1221,7 @@ func groupDiscussionContributionQuality(detail a2a.HubDiscussionDetail, result G
 	answerCount := 0
 	kindBonus := 0.0
 	for _, msg := range groupDiscussionAnswerMessagesForDetail(detail) {
-		if strings.TrimSpace(msg.FromID) != participant {
+		if !veGroupParticipantIdentityMatches(msg.FromID, participant) {
 			continue
 		}
 		answerCount++
@@ -1200,7 +1240,7 @@ func groupDiscussionContributionQuality(detail a2a.HubDiscussionDetail, result G
 		score += result.Confidence * 0.25
 	}
 	if len(result.ParticipantContributions) > 0 {
-		if contribution := strings.TrimSpace(result.ParticipantContributions[participant]); contribution != "" {
+		if contribution := groupDiscussionContributionForParticipant(result.ParticipantContributions, participant); contribution != "" {
 			score += 0.15
 		}
 	}
@@ -1209,6 +1249,19 @@ func groupDiscussionContributionQuality(detail a2a.HubDiscussionDetail, result G
 	}
 	score += kindBonus
 	return clampGroupDiscussionFloat(score, 0.1, 1)
+}
+
+func groupDiscussionContributionForParticipant(contributions map[string]string, participant string) string {
+	participant = strings.TrimSpace(participant)
+	if participant == "" {
+		return ""
+	}
+	for key, contribution := range contributions {
+		if veGroupParticipantIdentityMatches(key, participant) {
+			return strings.TrimSpace(contribution)
+		}
+	}
+	return ""
 }
 
 func clampGroupDiscussionFloat(value, min, max float64) float64 {
@@ -1258,7 +1311,7 @@ func groupDiscussionAnswerMessagesWithRoles(messages []a2a.Message, roles map[st
 		if strings.HasPrefix(strings.ToLower(content), "invitation ") {
 			continue
 		}
-		if role, ok := roles[strings.TrimSpace(msg.FromID)]; ok && !groupDiscussionRoleContributesAnswer(role) {
+		if role, ok := groupDiscussionRoleForParticipantID(roles, msg.FromID); ok && !groupDiscussionRoleContributesAnswer(role) {
 			continue
 		}
 		if msg.Kind == a2a.MessageAnswer || msg.Kind == a2a.MessageStatement || msg.Kind == a2a.MessageEvidence || msg.Kind == a2a.MessageObjection {
@@ -1269,32 +1322,51 @@ func groupDiscussionAnswerMessagesWithRoles(messages []a2a.Message, roles map[st
 }
 
 func countGroupDiscussionAnswersForDetail(detail a2a.HubDiscussionDetail) int {
-	return len(groupDiscussionAnswerMessagesForDetail(detail))
+	return countDistinctGroupDiscussionAnswerParticipants(groupDiscussionAnswerMessagesForDetail(detail))
 }
 
 func countGroupDiscussionAnswers(messages []a2a.Message) int {
-	return len(groupDiscussionAnswerMessages(messages))
+	return countDistinctGroupDiscussionAnswerParticipants(groupDiscussionAnswerMessages(messages))
+}
+
+func countDistinctGroupDiscussionAnswerParticipants(messages []a2a.Message) int {
+	answered := map[string]struct{}{}
+	for _, msg := range messages {
+		key := groupDiscussionCanonicalIdentityKey(msg.FromID)
+		if key != "" {
+			answered[key] = struct{}{}
+		}
+	}
+	return len(answered)
 }
 
 func expectedGroupDiscussionAnswers(detail a2a.HubDiscussionDetail) int {
 	if detail.Session != nil && len(detail.Session.Participants) > 0 {
-		count := 0
+		answered := map[string]struct{}{}
 		hasRoles := false
 		for _, participant := range detail.Session.Participants {
 			if strings.TrimSpace(participant.RoleCode) != "" {
 				hasRoles = true
 			}
 			if groupDiscussionRoleContributesAnswer(participant.RoleCode) {
-				count++
+				key := groupDiscussionCanonicalIdentityKey(participant.ID)
+				if key != "" {
+					answered[key] = struct{}{}
+				}
 			}
 		}
+		count := len(answered)
 		if hasRoles && count > 0 {
 			return count
 		}
 	}
-	participantCount := len(detail.Discussion.ParticipantIDs)
+	participantCount := len(dedupeGroupDiscussionParticipantIDs(detail.Discussion.ParticipantIDs))
 	if participantCount == 0 && detail.Session != nil {
-		participantCount = len(detail.Session.Participants)
+		ids := make([]string, 0, len(detail.Session.Participants))
+		for _, participant := range detail.Session.Participants {
+			ids = append(ids, participant.ID)
+		}
+		participantCount = len(dedupeGroupDiscussionParticipantIDs(ids))
 	}
 	expected := participantCount - 1
 	if expected < 1 {
@@ -1311,10 +1383,29 @@ func groupDiscussionParticipantRoleMap(detail a2a.HubDiscussionDetail) map[strin
 	for _, participant := range detail.Session.Participants {
 		id := strings.TrimSpace(participant.ID)
 		if id != "" {
-			roles[id] = strings.ToLower(strings.TrimSpace(participant.RoleCode))
+			role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
+			aliases := map[string]string{}
+			addGroupDiscussionHistoryParticipantAliases(aliases, id)
+			for key := range aliases {
+				roles[key] = role
+			}
 		}
 	}
 	return roles
+}
+
+func groupDiscussionRoleForParticipantID(roles map[string]string, participantID string) (string, bool) {
+	if len(roles) == 0 {
+		return "", false
+	}
+	aliases := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(aliases, participantID)
+	for key := range aliases {
+		if role, ok := roles[key]; ok {
+			return role, true
+		}
+	}
+	return "", false
 }
 
 func groupDiscussionRoleContributesAnswer(role string) bool {
@@ -1765,18 +1856,26 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 		return fmt.Errorf("history discussion is read-only")
 	}
 	if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
-		msg.ToIDs = normalizeGroupDiscussionHistoryTargetIDs(msg.ToIDs, groupDiscussionAgentID(cfg))
+		localID := groupDiscussionAgentID(cfg)
+		msg.ToIDs = normalizeGroupDiscussionHistoryTargetIDs(msg.ToIDs, localID, detail)
+		if len(msg.ToIDs) == 0 && !groupDiscussionHistoryUnresolvedMentionPattern.MatchString(msg.Content) {
+			msg.ToIDs = groupDiscussionHistoryUnmentionedTargetIDs(detail, localID)
+		}
 	}
 	msg.FromID = ""
 	msg.SessionID = consultationID
 	return a.GroupDiscussionSendMessage(consultationID, msg)
 }
 
-func normalizeGroupDiscussionHistoryTargetIDs(toIDs []string, localID string) []string {
+func normalizeGroupDiscussionHistoryTargetIDs(toIDs []string, localID string, details ...a2a.HubDiscussionDetail) []string {
 	if len(toIDs) == 0 {
 		return nil
 	}
 	localID = strings.TrimSpace(localID)
+	participantIDs := map[string]string{}
+	if len(details) > 0 {
+		participantIDs = groupDiscussionHistoryParticipantIDs(details[0])
+	}
 	out := make([]string, 0, len(toIDs))
 	seen := map[string]struct{}{}
 	for _, rawID := range toIDs {
@@ -1787,11 +1886,12 @@ func normalizeGroupDiscussionHistoryTargetIDs(toIDs []string, localID string) []
 		if strings.EqualFold(id, "local-maclaw") && localID != "" {
 			id = localID
 		}
-		key := strings.ToLower(id)
-		if _, ok := seen[key]; ok {
+		if canonical := canonicalGroupDiscussionHistoryTargetID(id, participantIDs); canonical != "" {
+			id = canonical
+		}
+		if veGroupParticipantSeen(seen, id) {
 			continue
 		}
-		seen[key] = struct{}{}
 		out = append(out, id)
 	}
 	if len(out) == 0 {
@@ -1800,8 +1900,135 @@ func normalizeGroupDiscussionHistoryTargetIDs(toIDs []string, localID string) []
 	return out
 }
 
+func groupDiscussionHistoryParticipantIDs(detail a2a.HubDiscussionDetail) map[string]string {
+	ids := map[string]string{}
+	if detail.Session != nil {
+		for _, participant := range detail.Session.Participants {
+			id := strings.TrimSpace(participant.ID)
+			if id == "" {
+				continue
+			}
+			addGroupDiscussionHistoryParticipantAliases(ids, id)
+		}
+	}
+	for _, id := range detail.Discussion.ParticipantIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		addGroupDiscussionHistoryParticipantAliases(ids, id)
+	}
+	return ids
+}
+
+func addGroupDiscussionHistoryParticipantAliases(target map[string]string, participantID string) {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" || target == nil {
+		return
+	}
+	cleaned := strings.NewReplacer("/", "_", "\\", "_", " ", "_", "-", "_").Replace(participantID)
+	aliases := []string{participantID, cleaned}
+	withoutPrefix := cleaned
+	if len(cleaned) > 3 && strings.EqualFold(cleaned[:3], "ve_") {
+		withoutPrefix = cleaned[3:]
+	} else if len(cleaned) > 3 && strings.EqualFold(cleaned[:3], "ve-") {
+		withoutPrefix = cleaned[3:]
+	}
+	if withoutPrefix != "" {
+		aliases = append(aliases, withoutPrefix, "ve_"+withoutPrefix, "ve-"+withoutPrefix)
+	}
+	for _, alias := range aliases {
+		key := strings.ToLower(strings.TrimSpace(alias))
+		if key == "" {
+			continue
+		}
+		if _, exists := target[key]; !exists {
+			target[key] = participantID
+		}
+	}
+}
+
+func canonicalGroupDiscussionHistoryTargetID(id string, participantIDs map[string]string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || len(participantIDs) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(participantIDs[strings.ToLower(id)])
+}
+
+func groupDiscussionHistoryUnmentionedTargetIDs(detail a2a.HubDiscussionDetail, localID string) []string {
+	localID = strings.TrimSpace(localID)
+	participantIDs := groupDiscussionHistoryParticipantIDs(detail)
+	candidates := make([]string, 0)
+	if detail.Session != nil {
+		for _, participant := range detail.Session.Participants {
+			id := strings.TrimSpace(participant.ID)
+			if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanParticipant(participant) || isGroupDiscussionHistoryLocalAIID(id) {
+				continue
+			}
+			role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
+			switch role {
+			case "", "speak", "speaker", "participant", "review":
+				candidates = append(candidates, id)
+			}
+		}
+		return groupDiscussionHistoryTargetIDsForCandidates(candidates)
+	}
+	for _, rawID := range detail.Discussion.ParticipantIDs {
+		id := strings.TrimSpace(rawID)
+		if canonical := canonicalGroupDiscussionHistoryTargetID(id, participantIDs); canonical != "" {
+			id = canonical
+		}
+		if id == "" || isGroupDiscussionHistoryLocalID(id, localID) || isGroupDiscussionHistoryLocalHumanID(id) || isGroupDiscussionHistoryLocalAIID(id) {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	return groupDiscussionHistoryTargetIDsForCandidates(candidates)
+}
+
+func groupDiscussionHistoryDefaultResponderID(detail a2a.HubDiscussionDetail, localID string) string {
+	ids := groupDiscussionHistoryUnmentionedTargetIDs(detail, localID)
+	if len(ids) == 1 {
+		return ids[0]
+	}
+	return ""
+}
+
+func groupDiscussionHistoryTargetIDsForCandidates(candidates []string) []string {
+	candidates = dedupeVEGroupParticipantIDs(candidates)
+	if len(candidates) > 0 {
+		return candidates
+	}
+	return nil
+}
+
+func isGroupDiscussionHistoryLocalHumanParticipant(participant a2a.Participant) bool {
+	role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
+	return role == "initiator" || isGroupDiscussionHistoryLocalHumanID(participant.ID)
+}
+
+func isGroupDiscussionHistoryLocalAIID(id string) bool {
+	id = strings.TrimSpace(id)
+	return veGroupParticipantIdentityMatches(id, "local-maclaw")
+}
+
+func isGroupDiscussionHistoryLocalID(id, localID string) bool {
+	return veGroupParticipantIdentityMatches(id, localID)
+}
+
+func isGroupDiscussionHistoryLocalHumanID(id string) bool {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "me", "user", "local", "local-user", "operator", "desktop-user", "initiator":
+		return true
+	default:
+		return false
+	}
+}
+
 func isWritableHistoryDiscussionSummary(summary a2a.HubDiscussionSummary) bool {
-	if summary.Readonly || !normalizeGroupDiscussionSessionStatus(summary.Status).IsOpen() {
+	summary = normalizeHistorySummaryForCache(summary)
+	if summary.Readonly || normalizeGroupDiscussionSessionStatus(summary.Status).IsSetAndNotOpen() {
 		return false
 	}
 	relation := strings.ToLower(strings.TrimSpace(summary.LocalRelation))
@@ -1962,6 +2189,42 @@ func (a *App) GroupDiscussionSetState(consultationID, action string) error {
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	return client.SetConsultationState(ctx, consultationID, action)
+}
+
+func (a *App) GroupDiscussionRenameConsultation(consultationID, title string) (a2a.HubDiscussionSummary, error) {
+	client, cfg, err := a.groupDiscussionClient()
+	if err != nil {
+		return a2a.HubDiscussionSummary{}, err
+	}
+	fromID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if fromID == "" {
+		return a2a.HubDiscussionSummary{}, fmt.Errorf("remote machine id is required")
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	summary, err := client.RenameConsultationTopic(ctx, consultationID, fromID, title)
+	if err != nil {
+		return a2a.HubDiscussionSummary{}, err
+	}
+	if store, storeErr := a.openGroupDiscussionHistoryStore(); storeErr == nil {
+		_ = store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{summary}, a.groupDiscussionAttachmentRoot)
+		_ = store.Close()
+	}
+	if a.ctx != nil {
+		eventData := map[string]any{
+			"type": "ve:discussion_rename",
+			"payload": map[string]any{
+				"session_id":    strings.TrimSpace(consultationID),
+				"discussion_id": strings.TrimSpace(consultationID),
+				"topic":         summary.Topic,
+				"from_id":       fromID,
+			},
+		}
+		runtime.EventsEmit(a.ctx, "ve:discussion_rename", eventData)
+		runtime.EventsEmit(a.ctx, "ve-event", eventData)
+	}
+	go a.cacheVEA2ADetailAsync(client, strings.TrimSpace(consultationID), fromID)
+	return summary, nil
 }
 
 type GroupDiscussionStatus struct {

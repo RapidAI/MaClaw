@@ -216,6 +216,7 @@ type App struct {
 	// Ensures conversations with the same VE/group always reuse the same session unless archived.
 	veSessionCache       sync.Map // string -> string
 	groupSessionCache    sync.Map // string -> string
+	veDefaultResponder   sync.Map // sessionID -> participantID
 	veSessionActiveCache sync.Map // string -> time.Time
 	veDetailRefreshCache sync.Map // sessionID -> *veDetailRefreshState
 	veDiscoverableCache  sync.Map // hubURL/token/localID -> veDiscoverableCacheEntry
@@ -2532,6 +2533,13 @@ func (a *App) SetWorkflowWorkingDir(dir string) {
 	if a.workflowEngine == nil {
 		return
 	}
+	if trimmed := strings.TrimSpace(dir); trimmed != "" {
+		if err := os.MkdirAll(trimmed, 0o755); err != nil {
+			log.Printf("[WorkflowAdapter] failed to create workflow working directory %s: %v", trimmed, err)
+			return
+		}
+		dir = trimmed
+	}
 	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 		adapter.SetWorkingDir(desktopUserID, dir)
 	}
@@ -3652,6 +3660,10 @@ func getBaseUrl(selectedModel *corelib.ModelConfig) string {
 func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonProject bool, pythonEnv string, projectDir string, useProxy bool) {
 	a.log(fmt.Sprintf("LaunchTool called: %s, yolo=%v, admin=%v, py=%v, pyenv=%s, dir=%s, proxy=%v",
 		toolName, yoloMode, adminMode, pythonProject, pythonEnv, projectDir, useProxy))
+	if err := a.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir, "launch_source": "desktop"}); err != nil {
+		a.log(fmt.Sprintf("LaunchTool blocked by workflow policy: %v", err))
+		return
+	}
 	a.log(fmt.Sprintf("Launching %s...", toolName))
 
 	// Generate unique instance ID for this launch (timestamp-based)
@@ -6811,6 +6823,9 @@ func getToolConfigDirName(tool string) string {
 	return normalizeRemoteToolNameKind(tool).ConfigDirName()
 }
 func (a *App) AddSkill(name, description, skillType, value, toolName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "name": name, "type": skillType, "tool": toolName}); err != nil {
+		return err
+	}
 	skillKind := normalizeSkillTypeKind(skillType)
 	// Prevent address skills for gemini/codex
 	if normalizeRemoteToolNameKind(toolName).RequiresZipSkills() && skillKind.IsAddress() {
@@ -6907,6 +6922,9 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	return os.WriteFile(metadataPath, data, 0644)
 }
 func (a *App) InstallDefaultMarketplace() error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": "default_marketplace"}); err != nil {
+		return err
+	}
 	home, _ := os.UserHomeDir()
 	settingsFile := filepath.Join(home, ".claude", "settings.json")
 
@@ -7085,6 +7103,9 @@ func zipEntryHasColonPathComponent(name string) bool {
 }
 
 func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "name": name, "type": skillType, "location": location, "project_path": projectPath, "tool": toolName}); err != nil {
+		return err
+	}
 	skillKind := normalizeSkillTypeKind(skillType)
 	locationKind := normalizeSkillInstallLocationKind(location)
 	// 1. Validate
@@ -7227,6 +7248,9 @@ func snapshotSkillZipForInstall(src string) (string, func(), error) {
 }
 
 func (a *App) DeleteSkill(name, toolName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "uninstall", "name": name, "tool": toolName}); err != nil {
+		return err
+	}
 	// Prevent deletion of the hardcoded skill
 	if name == "Claude Official Documentation Skill Package" {
 		return fmt.Errorf("cannot delete system skill package")

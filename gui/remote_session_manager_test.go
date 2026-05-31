@@ -77,6 +77,36 @@ func TestActiveAIAssistantLoopUserIDIgnoresNonDesktopUsers(t *testing.T) {
 	}
 }
 
+func TestCancelAIAssistantSessionDoesNotCancelIMLoop(t *testing.T) {
+	weixinLoop := NewLoopContext("weixin", 3, nil)
+	h := &IMMessageHandler{lastUserID: "weixin:user", currentLoopCtx: weixinLoop}
+	h.setSessionLoopCtx("weixin:user", weixinLoop)
+
+	if _, err := cancelAIAssistantSessionForHandler(h, ""); err == nil {
+		t.Fatal("desktop AI cancel should fail when only an IM loop is active")
+	}
+	if weixinLoop.IsCancelled() {
+		t.Fatal("desktop AI cancel must not cancel IM loop selected by legacy lastUserID")
+	}
+}
+
+func TestCancelAIAssistantSessionTargetsDesktopLoop(t *testing.T) {
+	desktopLoop := NewLoopContext("desktop", 3, nil)
+	h := &IMMessageHandler{lastUserID: desktopUserID, currentLoopCtx: desktopLoop}
+	h.setSessionLoopCtx(desktopUserID, desktopLoop)
+	go func() {
+		<-desktopLoop.CancelC
+		desktopLoop.Done()
+	}()
+
+	if _, err := cancelAIAssistantSessionForHandler(h, ""); err != nil {
+		t.Fatalf("desktop AI cancel error = %v", err)
+	}
+	if !desktopLoop.IsCancelled() {
+		t.Fatal("desktop AI cancel should cancel active desktop loop")
+	}
+}
+
 func TestInjectGuideReferenceTargetsOnlyExplicitActiveSession(t *testing.T) {
 	h := &IMMessageHandler{}
 	projectUserID := desktopUserID + ":D:/work/project"

@@ -6,21 +6,22 @@ import (
 	"time"
 )
 
-func (h *IMMessageHandler) maybeStartAsyncCapabilityGapSearch(iteration int, visibleContent, msgContent string, truncatedToolCount int, userText, userID string) {
+func (h *IMMessageHandler) maybeStartAsyncCapabilityGapSearch(ctx *LoopContext, iteration int, visibleContent, msgContent string, truncatedToolCount int, userText, userID string) {
 	skipCapabilityGap := iteration >= 3 || len(visibleContent) > 500 || truncatedToolCount > 0
 	if skipCapabilityGap || h.capabilityGapDetector == nil || !h.capabilityGapDetector.Detect(msgContent) {
 		return
 	}
 	capturedUserText := userText
 	capturedUserID := userID
-	capturedPlatform := ""
-	if h.currentLoopCtx != nil {
-		capturedPlatform = h.currentLoopCtx.Platform
+	capturedPlatform := runtimePlatformFromLoopContext(ctx)
+	if capturedPlatform == "" && ctx == nil {
+		capturedPlatform = h.currentRuntimePlatform()
 	}
-	go h.runAsyncCapabilityGapSearch(capturedUserText, capturedPlatform, capturedUserID)
+	capturedPolicyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
+	go h.runAsyncCapabilityGapSearch(capturedUserText, capturedPlatform, capturedUserID, capturedPolicyOwnerID)
 }
 
-func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userID string) {
+func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userID, policyOwnerID string) {
 	// Use a generous timeout for the search + download + install pipeline.
 	// The confirmation wait inside confirmRiskSkillInstall has its own independent
 	// timeout (confirmTimeout = 120s) managed by a cleanup goroutine. We pass
@@ -41,7 +42,7 @@ func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userI
 	installCtx, installCancel := context.WithTimeout(context.Background(), confirmTimeout+30*time.Second)
 	defer installCancel()
 
-	installResult := h.installAndExecuteSkill(installCtx, best, userText, platform, userID, func(status string) {
+	installResult := h.installAndExecuteSkill(installCtx, best, userText, platform, userID, policyOwnerID, func(status string) {
 		log.Printf("[skill-auto-async] %s", status)
 	})
 	h.pendingCapabilityGap.Store(userID, &pendingCapabilityGapResult{

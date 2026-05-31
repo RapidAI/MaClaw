@@ -2,16 +2,17 @@ package main
 
 import "github.com/RapidAI/CodeClaw/corelib/workflow"
 
-type frontendWorkflowPhase struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Index           int    `json:"index"`
-	ExpectsDocument bool   `json:"expects_document"`
-}
-
+// frontendWorkflowState is the workflow state shape emitted to the frontend on
+// the workflow:phase_update event. It embeds the canonicalized engine state and
+// attaches the dashboard-ready phase metadata derived from the backend template.
+//
+// Phases carries workflow.PhaseMeta (the single serialized shape produced by the
+// one workflow.PhaseMetadata deriver). It is omitempty so that, when the registry
+// is unavailable, the field is absent and the dashboard degrades to its fallback
+// maps.
 type frontendWorkflowState struct {
 	*workflow.WorkflowState
-	Phases []frontendWorkflowPhase `json:"phases,omitempty"`
+	Phases []workflow.PhaseMeta `json:"phases,omitempty"`
 }
 
 func canonicalWorkflowPhaseID(phaseID string) string {
@@ -34,36 +35,18 @@ func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.WorkflowState
 	cp.PendingReviewPhaseID = canonicalWorkflowPhaseID(cp.PendingReviewPhaseID)
 	cp.PhaseOutputs = normalizeWorkflowPhaseOutputs(state.PhaseOutputs)
 	cp.GateResults = normalizeWorkflowGateResults(state.GateResults)
+
+	// Derive dashboard phase metadata through the single workflow.PhaseMetadata
+	// deriver. A nil registry leaves Phases nil so the omitempty field is dropped
+	// and the dashboard falls back to its hardcoded maps (degraded mode).
+	var phases []workflow.PhaseMeta
+	if registry != nil {
+		phases = workflow.PhaseMetadata(registry.Match(state.Type))
+	}
 	return &frontendWorkflowState{
 		WorkflowState: &cp,
-		Phases:        normalizeWorkflowPhasesForFrontend(state.Type, registry),
+		Phases:        phases,
 	}
-}
-
-func normalizeWorkflowPhasesForFrontend(workflowType workflow.WorkflowType, registry *workflow.WorkflowRegistry) []frontendWorkflowPhase {
-	if registry == nil {
-		return nil
-	}
-	tmpl := registry.Match(workflowType)
-	if tmpl == nil || len(tmpl.Phases) == 0 {
-		return nil
-	}
-	phases := make([]frontendWorkflowPhase, 0, len(tmpl.Phases))
-	seen := make(map[string]bool, len(tmpl.Phases))
-	for _, phase := range tmpl.Phases {
-		id := canonicalWorkflowPhaseID(phase.ID)
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		phases = append(phases, frontendWorkflowPhase{
-			ID:              id,
-			Name:            phase.Name,
-			Index:           len(phases),
-			ExpectsDocument: phase.ToolPolicy != workflow.ToolFilterFull && phase.ToolPolicy != workflow.ToolFilterOpsControlled,
-		})
-	}
-	return phases
 }
 
 func normalizeWorkflowPhaseOutputs(outputs map[string]string) map[string]string {

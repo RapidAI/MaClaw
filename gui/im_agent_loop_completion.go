@@ -88,6 +88,7 @@ func (h *IMMessageHandler) finishAgentLoopAfterMainIterations(opts agentLoopComp
 	}
 	if h.manager != nil && h.manager.HasActiveSessions() {
 		bonusResult := h.runActiveSessionBonusRound(agentLoopBonusRoundOptions{
+			Context:                opts.Context,
 			UserID:                 opts.UserID,
 			Config:                 opts.Config,
 			RequestContext:         opts.RequestContext,

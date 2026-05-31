@@ -29,12 +29,16 @@ func (h *IMMessageHandler) emitAgentLoopSteeringSuggestMaximize(userID string, d
 		return
 	}
 	detector.suggestMaximizeEmitted = true
+	ownerID := strings.TrimSpace(detector.userID)
+	if ownerID == "" {
+		ownerID = strings.TrimSpace(userID)
+	}
 	if h.getWorkflowEngine() == nil {
 		return
 	}
 	if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
-		adapter.EmitSuggestMaximize(userID, "coding")
-		log.Printf("[SteeringWorkflow] emitted suggest_maximize for user=%s (gate active, first tool call)", userID)
+		adapter.EmitSuggestMaximize(ownerID, "coding")
+		log.Printf("[SteeringWorkflow] emitted suggest_maximize for user=%s owner=%s (gate active, first tool call)", userID, ownerID)
 	}
 }
 
@@ -42,13 +46,17 @@ func (h *IMMessageHandler) emitAgentLoopSteeringDocUpdate(userID string, detecto
 	if detector == nil {
 		return
 	}
+	ownerID := strings.TrimSpace(detector.userID)
+	if ownerID == "" {
+		ownerID = strings.TrimSpace(userID)
+	}
 	detector.interceptToolCall(toolName, argsJSON, func(phaseID, content string) {
 		if h.getWorkflowEngine() == nil {
 			return
 		}
 		if adapter, ok := h.getWorkflowEngine().GetCallbacks().(*GUIWorkflowAdapter); ok {
-			_ = adapter.EmitDocUpdate(userID, phaseID, content)
-			log.Printf("[SteeringWorkflow] emitted doc_update for user=%s phase=%s len=%d", userID, phaseID, len(content))
+			_ = adapter.EmitDocUpdate(ownerID, phaseID, content)
+			log.Printf("[SteeringWorkflow] emitted doc_update for user=%s owner=%s phase=%s len=%d", userID, ownerID, phaseID, len(content))
 		}
 	})
 }

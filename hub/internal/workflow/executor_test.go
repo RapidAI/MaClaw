@@ -27,6 +27,9 @@ func (m *mockWorkflowStore) ListWorkflows(ctx context.Context, ownerID string) (
 func (m *mockWorkflowStore) CreateVersion(ctx context.Context, ver *WorkflowVersion) error {
 	return nil
 }
+func (m *mockWorkflowStore) UpdateVersion(ctx context.Context, ver *WorkflowVersion) error {
+	return nil
+}
 func (m *mockWorkflowStore) GetVersion(ctx context.Context, id string) (*WorkflowVersion, error) {
 	return nil, nil
 }

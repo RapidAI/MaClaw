@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 // ── Data Models ──
@@ -45,13 +45,12 @@ export function initialState(): CodePreviewUIState {
  * Updates the files map, auto-opens the panel if not userClosed,
  * and auto-selects the latest file.
  *
- * When `workflowPreviewActive` is true, regular file updates will NOT
- * auto-open. Backend-forced updates can still open the panel.
+ * Workflow and source preview coexist behind tabs, so workflow state does not
+ * suppress regular source preview updates.
  */
 export function applyFileUpdate(
     state: CodePreviewUIState,
     file: CodeFile,
-    workflowPreviewActive = false,
 ): CodePreviewUIState {
     // Validate required fields
     if (!file.filePath || file.content === undefined || file.content === null) {
@@ -64,9 +63,7 @@ export function applyFileUpdate(
     const nextFiles = new Map(state.files);
     nextFiles.set(file.filePath, file);
 
-    // Suppress regular auto-open when workflow preview is active; SubAgent
-    // completion events force-open so changed files are visible to the user.
-    const shouldAutoOpen = file.forceOpen || (!state.userClosed && !workflowPreviewActive);
+    const shouldAutoOpen = file.forceOpen || !state.userClosed;
 
     return {
         ...state,
@@ -79,15 +76,11 @@ export function applyFileUpdate(
 }
 
 /**
- * Apply a workflow:doc_update event — close code preview if it was active.
- * This implements mutual exclusion: workflow preview takes priority.
+ * Apply a workflow:doc_update event.
+ * Workflow and source preview now coexist behind tabs, so keep code state.
  */
 export function applyWorkflowDocUpdate(state: CodePreviewUIState): CodePreviewUIState {
-    if (!state.active) return state;
-    return {
-        ...state,
-        active: false,
-    };
+    return state;
 }
 
 /**
@@ -175,25 +168,11 @@ export function applyResetSession(): CodePreviewUIState {
  *   - code:file_update    — update files map, auto-open, auto-select
  *   - code:session_start  — reset files, activate session
  *   - code:session_end    — deactivate session
- *   - workflow:doc_update  — close code preview (mutual exclusion)
+ *   - workflow:doc_update  — preserve code preview for tabbed switching
  *
- * @param workflowPreviewActive — when true, code:file_update will NOT auto-open the panel
  */
-export function useCodePreviewState(workflowPreviewActive = false) {
+export function useCodePreviewState() {
     const [state, setState] = useState<CodePreviewUIState>(initialState);
-    // Keep a ref to userClosed so event callbacks always see the latest value
-    const userClosedRef = useRef(false);
-    // Keep a ref to workflowPreviewActive for use in event callbacks
-    const workflowActiveRef = useRef(workflowPreviewActive);
-
-    // Sync refs with state/props
-    useEffect(() => {
-        userClosedRef.current = state.userClosed;
-    }, [state.userClosed]);
-
-    useEffect(() => {
-        workflowActiveRef.current = workflowPreviewActive;
-    }, [workflowPreviewActive]);
 
     // Listen for code:file_update
     useEffect(() => {
@@ -212,7 +191,7 @@ export function useCodePreviewState(workflowPreviewActive = false) {
                 forceOpen: data.force_open === true,
             };
 
-            setState(prev => applyFileUpdate(prev, file, workflowActiveRef.current));
+            setState(prev => applyFileUpdate(prev, file));
         });
         return () => {
             if (typeof unsub === "function") unsub();
@@ -242,7 +221,7 @@ export function useCodePreviewState(workflowPreviewActive = false) {
         };
     }, []);
 
-    // Listen for workflow:doc_update — close code preview (mutual exclusion)
+    // Listen for workflow:doc_update — keep source preview available for tabs.
     useEffect(() => {
         const unsub = EventsOn("workflow:doc_update", () => {
             setState(prev => applyWorkflowDocUpdate(prev));

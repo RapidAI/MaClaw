@@ -15,8 +15,10 @@ export interface AITab {
     id: string;
     /** Tab type: local AI assistant, VE conversation, or group chat */
     type: AITabType;
-    /** Display title shown in the tab bar */
+    /** Primary conversation title. For VE/group tabs this remains the primary VE name or history topic. */
     title: string;
+    /** Explicit group topic/name, separate from participant names. */
+    groupTitle?: string;
     /** Digital Employee ID (only for type="ve") */
     veId?: string;
     /** Group chat participant IDs (only for type="group") */

@@ -262,6 +262,7 @@
         <button data-tab="usagestats" onclick="openTab('usagestats')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19V9"></path><path d="M12 19V5"></path><path d="M19 19v-7"></path><path d="M4 19h16"></path></svg></span><div class="nav-copy"><span id="navUsageStats" data-i18n="usageStatsTabTitle"></span><small id="navUsageStatsDesc" data-i18n="usageStatsNavDesc"></small></div></div></button>
         <button data-tab="modelservices" onclick="openTab('modelservices')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"></rect><path d="M8 10h8"></path><path d="M8 14h5"></path></svg></span><div class="nav-copy"><span id="navModelServices" data-i18n="modelServicesTabTitle"></span><small id="navModelServicesDesc" data-i18n="modelServicesTabSubtitle"></small></div></div></button>
         <button data-tab="servicecards" onclick="openTab('servicecards')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="10" rx="2"></rect><path d="M8 11h8"></path><path d="M8 14h4"></path></svg></span><div class="nav-copy"><span id="navServiceCards" data-i18n="serviceCardsTabTitle"></span><small id="navServiceCardsDesc" data-i18n="serviceCardsTabSubtitle"></small></div></div></button>
+        <button data-tab="cardstore" onclick="openTab('cardstore')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 7h12l1 13H5L6 7Z"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span id="navCardStore"></span><small id="navCardStoreDesc"></small></div></div></button>
         <button data-tab="system" onclick="openTab('system')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M4.9 4.9 7 7"></path><path d="m17 17 2.1 2.1"></path><path d="M2 12h3"></path><path d="M19 12h3"></path><path d="m4.9 19.1 2.1-2.1"></path><path d="M17 7l2.1-2.1"></path></svg></span><div class="nav-copy"><span data-i18n="navSystem"></span><small data-i18n="navSystemDesc"></small></div></div></button>
       </nav>
       <div class="side-note"><span data-i18n="defaultCenter"></span><br><span class="mono">https://hubs.maclaw.top</span><br><br><span data-i18n="deployHint"></span></div>
@@ -1243,6 +1244,73 @@
         <div class="head"><div><h3 id="serviceCardsTabTitle" data-i18n="serviceCardsTabTitle"></h3><div class="desc" id="serviceCardsTabSubtitle" data-i18n="serviceCardsTabSubtitle"></div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="serviceCardsReloadBtn" data-i18n="reload"></button></div>
       </section>
 
+      <!-- Tab: Card Store -->
+      <section id="tab-cardstore" class="panel card">
+        <div class="head"><div><h3 id="cardStoreTitle"></h3><div class="desc" id="cardStoreSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadCardStoreConfig()" id="cardStoreReloadBtn"></button></div>
+        <div class="subtab-bar">
+          <button class="subtab active" id="cardStoreManageSubtab" type="button" onclick="switchCardStoreSubtab('manage')"></button>
+          <button class="subtab" id="cardStorePaymentSubtab" type="button" onclick="switchCardStoreSubtab('payment')"></button>
+          <button class="subtab" id="cardStoreSalesSubtab" type="button" onclick="switchCardStoreSubtab('sales')"></button>
+        </div>
+        <div id="cardStoreManagePane" class="card-store-pane">
+        <div class="grid2" style="gap:12px">
+          <div class="item" style="padding:14px 16px">
+            <div class="item-title" id="cardStoreManageTitle"></div>
+            <div class="item-meta" id="cardStoreManageDesc" style="margin-top:4px"></div>
+            <div class="grid2" style="margin-top:10px">
+              <label style="display:flex;align-items:center;gap:8px;margin-top:24px"><input id="cardStoreEnabled" type="checkbox"><span id="cardStoreEnabledLabel"></span></label>
+              <div style="grid-column:1 / -1"><label id="cardStoreServiceGroupsLabel"></label><div id="cardStoreServiceGroups" style="display:grid;gap:6px;margin-top:6px"></div><div class="hint" id="cardStoreServiceGroupsHint" style="margin-top:6px"></div></div>
+            </div>
+            <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveCardStoreConfig()" id="cardStoreSaveBtn"></button><a class="btn-ghost" href="/card_store" target="_blank" rel="noopener" id="cardStoreOpenLink" style="height:34px;text-decoration:none"></a></div>
+          </div>
+          <div class="item" style="padding:14px 16px">
+            <div class="item-title" id="cardStoreProductsTitle"></div>
+            <div class="item-meta" id="cardStoreProductsDesc" style="margin-top:4px"></div>
+            <div id="cardStoreProductsEditor" style="display:grid;gap:8px;margin-top:10px"></div>
+          </div>
+        </div>
+        </div>
+        <div id="cardStorePaymentPane" class="card-store-pane hidden">
+          <div class="item" style="padding:14px 16px">
+            <div class="item-title" id="cardStorePaymentTitle"></div>
+            <div class="item-meta" id="cardStorePaymentDesc" style="margin-top:4px"></div>
+            <div class="grid2" style="margin-top:10px">
+                <div style="grid-column:1 / -1"><label for="cardStorePaymentMode" id="cardStorePaymentModeLabel"></label><select id="cardStorePaymentMode"><option value="payment_fm">Payment FM</option><option value="alipay_direct">Alipay direct</option><option value="personal_semimanual">Personal QR manual confirm</option></select></div>
+                <div><label for="cardStorePayType" id="cardStorePayTypeLabel"></label><input id="cardStorePayType" placeholder="aloop"></div>
+                <div><label for="cardStoreMerchantNum" id="cardStoreMerchantNumLabel"></label><input id="cardStoreMerchantNum"></div>
+                <div style="grid-column:1 / -1"><label for="cardStorePaymentAPIBaseURL" id="cardStorePaymentAPIBaseURLLabel"></label><input id="cardStorePaymentAPIBaseURL" placeholder="https://api-4z7jye7ftfr4.zhifu.fm.it88168.com/api"></div>
+                <div><label for="cardStoreAccessKey" id="cardStoreAccessKeyLabel"></label><input id="cardStoreAccessKey" type="password"></div>
+                <div style="grid-column:1 / -1"><label for="cardStoreNotifyURL" id="cardStoreNotifyURLLabel"></label><input id="cardStoreNotifyURL" placeholder="https://hub.example.com/api/zhifuxpay/notify"></div>
+                <div style="grid-column:1 / -1"><label for="cardStoreAlipayAppID" id="cardStoreAlipayAppIDLabel"></label><input id="cardStoreAlipayAppID" placeholder="2021000000000000"></div>
+                <div style="grid-column:1 / -1"><label for="cardStoreAlipayGateway" id="cardStoreAlipayGatewayLabel"></label><input id="cardStoreAlipayGateway" placeholder="https://openapi.alipay.com/gateway.do"></div>
+                <div style="grid-column:1 / -1"><label for="cardStoreAlipayPrivateKey" id="cardStoreAlipayPrivateKeyLabel"></label><textarea id="cardStoreAlipayPrivateKey" rows="4" placeholder="MIIEv..."></textarea></div>
+                <div style="grid-column:1 / -1"><label for="cardStoreAlipayPublicKey" id="cardStoreAlipayPublicKeyLabel"></label><textarea id="cardStoreAlipayPublicKey" rows="4" placeholder="MIIBI..."></textarea></div>
+                <div><label for="cardStoreAlipayPaymentMethod" id="cardStoreAlipayPaymentMethodLabel"></label><select id="cardStoreAlipayPaymentMethod"><option value="page">电脑网站支付</option></select></div>
+                <div><label for="cardStoreAlipaySubjectPrefix" id="cardStoreAlipaySubjectPrefixLabel"></label><input id="cardStoreAlipaySubjectPrefix" placeholder="MaClaw Hub"></div>
+                <div style="grid-column:1 / -1"><label for="cardStoreAlipayNotifyURL" id="cardStoreAlipayNotifyURLLabel"></label><input id="cardStoreAlipayNotifyURL" placeholder="https://hub.example.com/api/card-store/payment/notify"></div>
+                <div style="grid-column:1 / -1"><label for="cardStoreAlipayReturnURL" id="cardStoreAlipayReturnURLLabel"></label><input id="cardStoreAlipayReturnURL" placeholder="https://hub.example.com/card_store"></div>
+                <div style="grid-column:1 / -1"><label for="cardStorePersonalAdminEmails" id="cardStorePersonalAdminEmailsLabel"></label><input id="cardStorePersonalAdminEmails" placeholder="admin@example.com, finance@example.com"></div>
+              <div style="grid-column:1 / -1"><label for="cardStorePersonalInstruction" id="cardStorePersonalInstructionLabel"></label><textarea id="cardStorePersonalInstruction" rows="2"></textarea></div>
+              <div><label><input id="cardStoreAlipayEnabled" type="checkbox"> <span id="cardStoreAlipayEnabledLabel"></span></label><input id="cardStoreAlipayPayee" placeholder="Payee"><input id="cardStoreAlipayQR" placeholder="Alipay QR image URL"><input id="cardStoreAlipayUserID" placeholder="Alipay userId"></div>
+              <div><label><input id="cardStoreWechatEnabled" type="checkbox"> <span id="cardStoreWechatEnabledLabel"></span></label><input id="cardStoreWechatPayee" placeholder="Payee"><input id="cardStoreWechatQR" placeholder="WeChat QR image URL"></div>
+            </div>
+            <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveCardStoreConfig()" id="cardStorePaymentSaveBtn"></button></div>
+          </div>
+        </div>
+        <div id="cardStoreSalesPane" class="card-store-pane hidden">
+          <div class="item" style="padding:14px 16px">
+            <div class="item-head"><div><div class="item-title" id="cardStoreSalesTitle"></div><div class="item-meta" id="cardStoreSalesDesc"></div></div><div class="actions"><select id="cardStoreSalesPeriod" onchange="loadCardStoreSales()"><option value="day" id="cardStoreSalesPeriodDay"></option><option value="month" id="cardStoreSalesPeriodMonth"></option></select><button class="btn-ghost" type="button" onclick="loadCardStoreSales()" id="cardStoreSalesReloadBtn"></button></div></div>
+            <div class="metrics" style="grid-template-columns:repeat(3,minmax(0,1fr));margin:12px 0 0;max-width:none">
+              <div class="metric"><span id="cardStoreSalesOrdersLabel"></span><strong id="cardStoreSalesOrders">0</strong></div>
+              <div class="metric"><span id="cardStoreSalesRevenueLabel"></span><strong id="cardStoreSalesRevenue">0.00</strong></div>
+              <div class="metric"><span id="cardStoreSalesCardsLabel"></span><strong id="cardStoreSalesCards">0</strong></div>
+            </div>
+            <div id="cardStoreSalesRows" style="display:grid;gap:8px;margin-top:12px"></div>
+            <div id="cardStoreSoldCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-top:12px"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Tab: Usage Stats -->
       <section id="tab-usagestats" class="panel card">
         <div class="head"><div><h3 id="usageStatsTabTitle" data-i18n="usageStatsTabTitle"></h3><div class="desc" id="usageStatsTabSubtitle" data-i18n="usageStatsTabSubtitle"></div></div><button class="btn-ghost" onclick="loadUsageStats()" id="usageStatsReloadBtn" data-i18n="reload"></button></div>
@@ -1294,6 +1362,7 @@
 <script src="/admin/compute-tab.js"></script>
 <script src="/admin/llm-provider-tab.js"></script>
 <script src="/admin/llm-service-tabs.js"></script>
+<script src="/admin/card-store-tab.js"></script>
 <script src="/admin/usage-stats-tab.js"></script>
 <script src="/admin/failure-logs-tab.js"></script>
 <script src="/admin/admin-module-health.js"></script>

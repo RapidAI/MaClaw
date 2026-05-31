@@ -407,6 +407,20 @@ func (c *tuiWeixinCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.app.toolRegistry.Execute(name, args)
 }
 
+func (c *tuiWeixinCallbacks) IsToolAllowed(name string) bool {
+	if c == nil || c.app == nil {
+		return true
+	}
+	return c.app.isWorkflowToolAllowedTUI(name)
+}
+
+func (c *tuiWeixinCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c == nil || c.app == nil {
+		return true, ""
+	}
+	return c.app.isWorkflowToolCallAllowedTUI(name, argsJSON)
+}
+
 func (c *tuiWeixinCallbacks) OnToken(delta string) {
 	// No streaming to terminal for WeChat messages — response is sent
 	// as a complete message after the agent loop finishes.

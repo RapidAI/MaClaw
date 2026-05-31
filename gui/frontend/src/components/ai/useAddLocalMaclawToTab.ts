@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { AITab, AITabState } from "./AITabTypes";
-import { hasLocalAIParticipant, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, normalizeParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
+import { hasLocalAIParticipant, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
+import { participantIdentityMatches } from "./participantIdentity";
 
 
 
@@ -50,7 +51,7 @@ export function useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup }: Use
             const registered = await registerLocalExecutor(sessionId) as LocalGroupExecutorRegistration | undefined;
             const localParticipantId = localExecutorParticipantID(registered);
             if (!localParticipantId) return null;
-            if (currentParticipants.some((id) => normalizeParticipantId(id) === normalizeParticipantId(localParticipantId))) return null;
+            if (currentParticipants.some((id) => participantIdentityMatches(id, localParticipantId))) return null;
             const nextParticipants = [...currentParticipants, localParticipantId];
             const participantNames: Record<string, string> = {
                 ...participantNamesFromTab(tab),

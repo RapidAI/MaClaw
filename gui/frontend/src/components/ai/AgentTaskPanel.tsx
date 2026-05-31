@@ -206,7 +206,7 @@ function constValidationError(label: string, value: unknown, constValue: unknown
 }
 
 function isTextLikeType(type: AgentViewField["type"] | AgentViewTableColumn["type"]): boolean {
-    return !type || type === "text" || type === "textarea" || type === "file" || type === "user_ref" || type === "department_ref" || type === "business_ref";
+    return !type || type === "text" || type === "textarea" || type === "file" || type === "directory" || type === "user_ref" || type === "department_ref" || type === "business_ref";
 }
 
 function isSensitiveFormat(format?: string): boolean {
@@ -517,6 +517,63 @@ function renderField(
         fontSize: 12,
         lineHeight: 1.4,
     };
+    const renderDirectoryControl = (
+        currentValue: unknown,
+        onNext: (next: string) => void,
+        readOnly: boolean | undefined,
+        inputStyle: React.CSSProperties,
+        constraints: Pick<AgentViewField, "minLength" | "maxLength" | "pattern" | "placeholder"> = {},
+        inputId?: string,
+        browseLabel = s.browse,
+        inputLabel?: string,
+    ) => (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8 }}>
+            <input
+                id={inputId}
+                aria-label={inputId ? undefined : inputLabel}
+                type="text"
+                value={formatValue(currentValue)}
+                minLength={constraints.minLength}
+                maxLength={constraints.maxLength}
+                pattern={constraints.pattern}
+                readOnly={readOnly}
+                placeholder={constraints.placeholder}
+                onChange={(event) => {
+                    if (!readOnly) onNext(event.target.value);
+                }}
+                style={inputStyle}
+            />
+            <button
+                type="button"
+                disabled={readOnly}
+                aria-label={browseLabel}
+                title={browseLabel}
+                onClick={async () => {
+                    if (readOnly) return;
+                    try {
+                        const { SelectWorkingDir } = await import("../../../wailsjs/go/main/App");
+                        const dir = await SelectWorkingDir();
+                        if (dir) onNext(dir);
+                    } catch (error) {
+                        console.warn("Directory picker failed", error);
+                    }
+                }}
+                style={{
+                    border: `1px solid ${theme.btnBorder}`,
+                    background: "transparent",
+                    color: theme.btnColor,
+                    borderRadius: 6,
+                    padding: "0 12px",
+                    minHeight: 36,
+                    cursor: readOnly ? "not-allowed" : "pointer",
+                    opacity: readOnly ? 0.6 : 1,
+                    fontSize: 12,
+                }}
+            >
+                {s.browse}
+            </button>
+        </div>
+    );
 
     let control: React.ReactNode;
     if (field.type === "textarea") {
@@ -546,28 +603,41 @@ function renderField(
             <div style={{ display: "grid", gap: 8, border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: 10, background: theme.fieldBg }}>
                 {columns.map((column) => {
                     const nestedValue = objectValue[column.name];
+                    const nestedControlId = `${controlId}-${column.name.replace(/[^A-Za-z0-9_-]/g, "_")}`;
                     return (
-                        <label key={column.name} style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 8, alignItems: "center" }}>
-                            <span style={{ color: theme.fieldLabel, fontSize: 12 }}>
+                        <div key={column.name} style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 8, alignItems: "center" }}>
+                            <label htmlFor={nestedControlId} style={{ color: theme.fieldLabel, fontSize: 12 }}>
                                 {column.label || column.name}
                                 {column.required && <span style={{ color: theme.errorText }}> *</span>}
-                            </span>
+                            </label>
                             {column.type === "boolean" ? (
                                 <input
+                                    id={nestedControlId}
                                     type="checkbox"
                                     checked={Boolean(nestedValue)}
                                     disabled={field.readOnly || column.readOnly}
                                     onChange={(event) => updateObjectField(column, event.target.checked)}
                                 />
                             ) : column.type === "select" ? (
-                                <select value={formatValue(nestedValue)} disabled={field.readOnly || column.readOnly} onChange={(event) => updateObjectField(column, event.target.value)} style={{ ...commonInputStyle, ...(field.readOnly || column.readOnly ? { opacity: 0.72, cursor: "not-allowed" } : {}) }}>
+                                <select id={nestedControlId} value={formatValue(nestedValue)} disabled={field.readOnly || column.readOnly} onChange={(event) => updateObjectField(column, event.target.value)} style={{ ...commonInputStyle, ...(field.readOnly || column.readOnly ? { opacity: 0.72, cursor: "not-allowed" } : {}) }}>
                                     <option value="">{s.selectPlaceholder}</option>
                                     {(column.options || []).map((option) => (
                                         <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>
                                     ))}
                                 </select>
+                            ) : column.type === "directory" ? (
+                                renderDirectoryControl(
+                                    nestedValue,
+                                    (next) => updateObjectField(column, next),
+                                    field.readOnly || column.readOnly,
+                                    { ...commonInputStyle, ...(field.readOnly || column.readOnly ? { opacity: 0.72, cursor: "not-allowed" } : {}) },
+                                    column,
+                                    nestedControlId,
+                                    `${s.browse}: ${column.label || column.name}`,
+                                )
                             ) : (
                                 <input
+                                    id={nestedControlId}
                                     type={column.sensitive || isSensitiveFormat(column.format) ? "password" : column.type === "number" ? "number" : column.type === "date" ? "date" : "text"}
                                     value={formatValue(nestedValue)}
                                     min={column.min}
@@ -581,7 +651,7 @@ function renderField(
                                     style={{ ...commonInputStyle, ...(field.readOnly || column.readOnly ? { opacity: 0.72, cursor: "not-allowed" } : {}) }}
                                 />
                             )}
-                        </label>
+                        </div>
                     );
                 })}
             </div>
@@ -633,6 +703,8 @@ function renderField(
                                                             <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>
                                                         ))}
                                                     </select>
+                                                ) : column.type === "directory" ? (
+                                                    renderDirectoryControl(cellValue, (next) => updateCell(rowIndex, column, next), cellReadOnly, cellStyle, column, undefined, `${s.browse}: ${column.label || column.name}`, `${column.label || column.name} ${rowIndex + 1}`)
                                                 ) : (
                                                     <input
                                                         type={column.sensitive || isSensitiveFormat(column.format) ? "password" : column.type === "number" ? "number" : column.type === "date" ? "date" : "text"}
@@ -741,6 +813,10 @@ function renderField(
                 />
                 {s.enabled}
             </label>
+        );
+    } else if (field.type === "directory") {
+        control = (
+            renderDirectoryControl(value, (next) => setValue(field.name, next), field.readOnly, { ...commonInputStyle, ...readOnlyInputStyle }, field, controlId, `${s.browse}: ${label}`)
         );
     } else {
         const inputType = field.sensitive || isSensitiveFormat(field.format) ? "password" : field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : field.format === "email" ? "email" : field.format === "url" || field.format === "uri" ? "url" : field.type === "file" ? "text" : "text";
@@ -962,11 +1038,12 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 style={{ width: 6, cursor: "col-resize", position: "absolute", height: "100%" }}
             />
             <header
+                data-testid="agent-task-panel-header"
                 onMouseDown={handleHeaderMouseDown}
                 onDoubleClick={handleHeaderDoubleClick}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "no-drag" } as React.CSSProperties}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "drag" } as React.CSSProperties}
             >
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 0, "--wails-draggable": "drag" } as React.CSSProperties}>
                     <div style={{ color: theme.titleText, fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {view.title}
                     </div>

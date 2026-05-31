@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func TestSkillRunParameterContractSynthesizesAgentViewFields(t *testing.T) {
@@ -72,6 +73,7 @@ func TestSkillAgentViewFieldsInferRuntimeControls(t *testing.T) {
 		{Name: "include_summary", Description: "true/false", Default: "true"},
 		{Name: "format", Description: "one of: pdf, docx, markdown", Required: true},
 		{Name: "input_path", Description: "Input file path", Aliases: []string{"input", "file"}},
+		{Name: "working_dir", Description: "Working directory"},
 		{Name: "api_token", Description: "API token"},
 		{Name: "due_date", Description: "Due date"},
 	}
@@ -96,11 +98,32 @@ func TestSkillAgentViewFieldsInferRuntimeControls(t *testing.T) {
 	if byName["input_path"]["type"] != "file" || !strings.Contains(fmt.Sprint(byName["input_path"]["placeholder"]), "Aliases:") {
 		t.Fatalf("file field hints not inferred: %#v", byName["input_path"])
 	}
+	if byName["working_dir"]["type"] != "directory" || !strings.Contains(fmt.Sprint(byName["working_dir"]["placeholder"]), "folder path") {
+		t.Fatalf("directory field hints not inferred: %#v", byName["working_dir"])
+	}
 	if byName["api_token"]["sensitive"] != true || byName["api_token"]["format"] != "password" {
 		t.Fatalf("sensitive field hints not inferred: %#v", byName["api_token"])
 	}
 	if byName["due_date"]["type"] != "date" {
 		t.Fatalf("date field not inferred: %#v", byName["due_date"])
+	}
+}
+
+func TestSkillAgentViewFieldKindDoesNotTreatRedirectAsDirectory(t *testing.T) {
+	if got := skillAgentViewFieldType("redirect_url", "Callback redirect URL"); got != "text" {
+		t.Fatalf("redirect_url field type = %q, want text", got)
+	}
+	if got := skillAgentViewFieldType("pathology_note", "Clinical pathology note"); got != "text" {
+		t.Fatalf("pathology_note field type = %q, want text", got)
+	}
+}
+
+func TestSkillAgentViewFieldKindPrefersPathControlOverBroadTextHints(t *testing.T) {
+	if got := skillAgentViewFieldType("content_dir", "Folder containing markdown source content"); got != "directory" {
+		t.Fatalf("content_dir field type = %q, want directory", got)
+	}
+	if got := skillAgentViewFieldType("prompt_file", "Markdown prompt file path"); got != "file" {
+		t.Fatalf("prompt_file field type = %q, want file", got)
 	}
 }
 
@@ -267,6 +290,47 @@ func TestHandleSkillRunAgentViewSubmitRevalidatesMissingOperation(t *testing.T) 
 	}
 	if !strings.Contains(resp.Error, "operation") {
 		t.Fatalf("response should mention missing operation, got %#v", resp)
+	}
+}
+
+func TestHandleSkillRunAgentViewSubmitHonorsWorkflowPolicy(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "writer-skill",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo write"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	userID := desktopUserID
+	if _, err := app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	resp := app.handleSkillRunAgentViewSubmit("writer-skill", map[string]interface{}{
+		"_run_args": map[string]interface{}{},
+	})
+	if resp == nil || !strings.Contains(resp.Text, "not allowed by the current workflow tool policy") {
+		t.Fatalf("expected workflow policy rejection, got %#v", resp)
 	}
 }
 

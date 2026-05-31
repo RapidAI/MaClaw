@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -262,9 +263,6 @@ func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.Group
 	go h.processAndRespond(sessionCtx, sessionID, msg)
 }
 
-// processAndRespond runs the AI agent on the incoming message and streams the response back.
-// It implements the 60s first-response timeout: if no chunk is produced within 60s,
-// a timeout error message is sent back.
 func (h *VEMessageHandler) shouldIgnoreIncomingVEMessage(msg a2a.GroupDiscussionMessage) bool {
 	switch msg.Kind {
 	case a2a.MessageStreamChunk, a2a.MessageStreamEnd:
@@ -279,9 +277,10 @@ func (h *VEMessageHandler) shouldIgnoreIncomingVEMessage(msg a2a.GroupDiscussion
 		return false
 	}
 	localID := firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
-	return localID != "" && strings.EqualFold(fromID, localID)
+	return localID != "" && veGroupParticipantIdentityMatches(fromID, localID)
 }
 
+// processAndRespond runs the AI agent on the incoming message and sends the final response back.
 func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, sessionID string, msg a2a.GroupDiscussionMessage) {
 	// Derive a per-message context from the session context so that
 	// CloseSession() cancellation propagates to in-flight processing.
@@ -303,51 +302,53 @@ func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, session
 		err := h.runAgentWithStreaming(ctx, sessionID, userMessage, firstChunkSent)
 		resultCh <- result{err: err}
 	}()
-
-	// 60s first-response timeout
-	firstResponseTimer := time.NewTimer(60 * time.Second)
-	defer firstResponseTimer.Stop()
-
-	select {
-	case <-firstChunkSent:
-		// First chunk was sent within 60s, wait for completion
-		r := <-resultCh
-		if r.err != nil {
-			log.Printf("[ve-handler] error generating response for session %s: %v", sessionID, r.err)
+	handleResult := func(r result, notifyRequester bool) {
+		if r.err == nil {
+			return
 		}
-	case r := <-resultCh:
-		// Agent finished (possibly with error) before timeout
-		if r.err != nil {
-			log.Printf("[ve-handler] error generating response for session %s: %v", sessionID, r.err)
+		log.Printf("[ve-handler] error generating response for session %s: %v", sessionID, r.err)
+		if notifyRequester {
 			h.sendMessage(sessionID, a2a.GroupDiscussionMessage{
 				Kind:    a2a.MessageStatement,
 				Content: fmt.Sprintf("[error] Failed to process message: %v", r.err),
 			})
 		}
-	case <-firstResponseTimer.C:
-		// 60s timeout: no chunk produced
-		cancel() // cancel the agent processing
-		h.sendMessage(sessionID, a2a.GroupDiscussionMessage{
-			Kind:    a2a.MessageStatement,
-			Content: "[timeout] Digital employee response timed out after 60 seconds. Please try again later",
-		})
-		// Let the buffered result channel receive later; do not block after timeout.
+	}
+	sendTimeout := func() {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			h.sendMessage(sessionID, a2a.GroupDiscussionMessage{
+				Kind:    a2a.MessageStatement,
+				Content: "[timeout] Digital employee response timed out after 5 minutes. Please try again later",
+			})
+		}
+	}
+
+	select {
+	case <-firstChunkSent:
+		// A visible preflight notice was sent; keep waiting, but still honor the
+		// per-message timeout if the final agent loop stalls.
+		select {
+		case r := <-resultCh:
+			handleResult(r, true)
+		case <-ctx.Done():
+			sendTimeout()
+		}
+	case r := <-resultCh:
+		// Agent finished (possibly with error) before timeout
+		handleResult(r, true)
 	case <-ctx.Done():
+		sendTimeout()
 		// Let the buffered result channel receive later; do not block after cancellation.
 	}
 }
 
-// runAgentWithStreaming runs the AI agent and streams chunks back via Hub.
-// Each generated chunk is sent as a GroupDiscussionMessage with kind=stream_chunk.
-// When generation is complete, a kind=stream_end message is sent.
-// The firstChunkSent channel is closed after the first chunk is sent.
+// runAgentWithStreaming runs the AI agent and sends only user-visible output via Hub.
+// Raw LLM deltas are internal to the agent loop; the final response is sent as
+// one stream_chunk followed by stream_end.
 func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID, userMessage string, firstChunkSent chan<- struct{}) error {
-	firstSent := false
-
 	if query, ok := detectDigitalEmployeeSensitiveQuery(userMessage); ok {
 		if h.shouldAnnounceSensitivePermissionRequest() {
 			h.SendStreamChunk(sessionID, "\u6b63\u5728\u5bfb\u6c42\u4eba\u7c7b\u5458\u5de5\u8bb8\u53ef...")
-			firstSent = true
 			select {
 			case firstChunkSent <- struct{}{}:
 			default:
@@ -360,26 +361,10 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		}
 	}
 
-	// onToken callback: called for each generated token/chunk
-	onToken := func(chunk string) {
-		if ctx.Err() != nil {
-			return
-		}
-		if chunk == "" {
-			return
-		}
-		h.SendStreamChunk(sessionID, chunk)
-		if !firstSent {
-			firstSent = true
-			select {
-			case firstChunkSent <- struct{}{}:
-			default:
-			}
-		}
-	}
-
-	// Run the agent loop (reusing IMMessageHandler pattern)
-	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, onToken)
+	// Run the agent loop (reusing IMMessageHandler pattern). Do not stream raw
+	// LLM deltas here: intermediate assistant deltas can be tool-call planning
+	// content. Only publish the final loop result below.
+	fullResponse, err := h.runAgentForVE(ctx, sessionID, userMessage, nil)
 	if err != nil {
 		return err
 	}
@@ -388,14 +373,9 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		return ctx.Err()
 	}
 
-	// If no streaming was done (agent returned full response without streaming),
-	// send the complete response as a single stream_chunk + stream_end
-	if !firstSent && strings.TrimSpace(fullResponse) != "" {
+	// Send the final loop result as a single stream_chunk + stream_end.
+	if strings.TrimSpace(fullResponse) != "" {
 		h.SendStreamChunk(sessionID, fullResponse)
-		select {
-		case firstChunkSent <- struct{}{}:
-		default:
-		}
 	}
 
 	// Signal end of streaming
@@ -926,11 +906,15 @@ func buildVEConversationHistoryFromMessages(messages []a2a.Message, localID stri
 		fromID := strings.TrimSpace(msg.FromID)
 		switch msg.Kind {
 		case a2a.MessageStreamChunk:
-			if streamFrom != "" && !strings.EqualFold(streamFrom, fromID) {
+			chunk := msg.Content
+			if chunk == "" {
+				continue
+			}
+			if streamFrom != "" && !veGroupParticipantIdentityMatches(streamFrom, fromID) {
 				flushStream()
 			}
 			streamFrom = fromID
-			stream.WriteString(msg.Content)
+			stream.WriteString(chunk)
 			continue
 		case a2a.MessageStreamEnd:
 			flushStream()
@@ -959,13 +943,13 @@ func isCurrentVEHistoryMessage(msg a2a.Message, current a2a.GroupDiscussionMessa
 	if current.CreatedAt.IsZero() || !msg.CreatedAt.Equal(current.CreatedAt) {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(msg.FromID), strings.TrimSpace(current.FromID)) &&
+	return veGroupParticipantIdentityMatches(msg.FromID, current.FromID) &&
 		msg.Kind == current.Kind &&
 		strings.TrimSpace(msg.Content) == strings.TrimSpace(current.Content)
 }
 
 func veHistoryRoleForSender(fromID, localID string) string {
-	if localID != "" && strings.EqualFold(strings.TrimSpace(fromID), localID) {
+	if localID != "" && veGroupParticipantIdentityMatches(fromID, localID) {
 		return "assistant"
 	}
 	return "user"

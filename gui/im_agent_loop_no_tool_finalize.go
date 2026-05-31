@@ -225,7 +225,7 @@ func (h *IMMessageHandler) handleAgentLoopNoToolPath(opts agentLoopNoToolPathOpt
 
 func (h *IMMessageHandler) finalizeAgentLoopNoToolBranch(opts agentLoopNoToolFinalizeOptions) agentLoopNoToolFinalizeResult {
 	result := agentLoopNoToolFinalizeResult{}
-	h.maybeStartAsyncCapabilityGapSearch(opts.Iteration, opts.TrimmedVisibleContent, opts.MessageContent, opts.TruncatedToolCount, opts.UserText, opts.UserID)
+	h.maybeStartAsyncCapabilityGapSearch(opts.Context, opts.Iteration, opts.TrimmedVisibleContent, opts.MessageContent, opts.TruncatedToolCount, opts.UserText, opts.UserID)
 	phase := agentLoopPhase{}
 	if opts.Phase != nil {
 		opts.Phase.Stage = agentStageFinalize

@@ -237,6 +237,14 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	if loopCtx == nil {
 		loopCtx = NewLoopContext("chat", h.getMaclawAgentMaxIterations(), httpClient)
 	}
+	if strings.TrimSpace(loopCtx.Runtime.RequestID) == "" {
+		policyOwnerID := strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID)
+		loopCtx.Runtime = runtimeContextFromIMMessage(msg)
+		if policyOwnerID != "" {
+			loopCtx.Runtime.PolicyOwnerID = policyOwnerID
+			loopCtx.Runtime.WorkflowOwnerID = policyOwnerID
+		}
+	}
 	if loopCtx.HTTPClient == nil {
 		loopCtx.HTTPClient = httpClient
 	}
@@ -245,7 +253,7 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 		loopCtx.JobID = job.JobID
 		loopCtx.RunID = run.RunID
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI request accepted", truncateTraceText(msg.Text, 180), "", "")
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI request accepted", h.runtimeTraceSummary(loopCtx, msg.Text), "", "")
 	}
 	if h.bgManager != nil && loopCtx.StatusC == nil {
 		loopCtx.StatusC = h.bgManager.statusC
@@ -277,7 +285,7 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	ctx.UserID = userID
 	if h.traceService != nil && ctx.RunID != "" {
 		h.traceService.SetRunLoopID(ctx.RunID, ctx.ID)
-		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", truncateTraceText(userText, 180), "", "")
+		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", h.runtimeTraceSummary(ctx, userText), "", "")
 	}
 	return func() {
 		h.clearNonGuidePendingInjection(userID)

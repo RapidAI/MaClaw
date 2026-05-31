@@ -108,6 +108,17 @@ func (m *mockWorkflowStoreForAdmin) CreateVersion(_ context.Context, ver *Workfl
 	return nil
 }
 
+func (m *mockWorkflowStoreForAdmin) UpdateVersion(_ context.Context, ver *WorkflowVersion) error {
+	existing, ok := m.versions[ver.ID]
+	if !ok {
+		return nil
+	}
+	existing.Graph = ver.Graph
+	existing.VersionNumber = ver.VersionNumber
+	existing.UpdatedAt = ver.UpdatedAt
+	return nil
+}
+
 func (m *mockWorkflowStoreForAdmin) GetVersion(_ context.Context, id string) (*WorkflowVersion, error) {
 	v, ok := m.versions[id]
 	if !ok {

@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaClaw 服务卡商店</title>
+  <link rel="stylesheet" href="/card_store/professional.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/card_store" data-card-store-home-link aria-label="MaClaw Hub Card Store">
+        <span class="mark">MH</span>
+        <span><strong>MaClaw Hub</strong><small data-i18n="brandSubtitle">服务卡商店</small></span>
+      </a>
+      <nav class="top-actions" aria-label="Store links">
+        <div class="lang-switch" role="group" aria-label="Language">
+          <button id="langZh" type="button" data-lang="zh" aria-pressed="true">中</button>
+          <button id="langEn" type="button" data-lang="en" aria-pressed="false">EN</button>
+        </div>
+        <a class="ghost" href="/get-credits" data-credits-center-link data-i18n="creditsCenter">额度中心</a>
+        <button id="reloadBtn" type="button" data-i18n="reload">刷新</button>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow" data-i18n="eyebrowStore">Service Card Store</p>
+        <h1 data-i18n="heroTitle">购买服务兑换卡与纯点卡</h1>
+        <p class="lead" data-i18n="heroLead">选择日卡、周卡、月卡、季卡、年卡，或购买 1 万 / 5 万点纯点卡。填写注册邮箱后创建支付订单，支付完成后页面会显示服务兑换码并发送到邮箱。</p>
+      </div>
+      <div class="hero-card" aria-hidden="true">
+        <svg viewBox="0 0 360 220" role="img">
+          <defs>
+            <linearGradient id="heroCardGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#13315c"/><stop offset=".56" stop-color="#2563eb"/><stop offset="1" stop-color="#13a68b"/></linearGradient>
+            <pattern id="heroCircuit" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M0 16h12M20 16h12M16 0v12M16 20v12" stroke="rgba(255,255,255,.18)" stroke-width="1.4" fill="none"/><circle cx="16" cy="16" r="2" fill="rgba(255,255,255,.38)"/></pattern>
+          </defs>
+          <rect x="18" y="24" width="324" height="172" rx="18" fill="url(#heroCardGradient)"/>
+          <rect x="18" y="24" width="324" height="172" rx="18" fill="url(#heroCircuit)"/>
+          <path d="M48 66h88M48 92h154M48 148h68" stroke="#fff" stroke-width="10" stroke-linecap="round" opacity=".92"/>
+          <path d="M250 58a38 38 0 1 1-1 0M250 76v40M230 96h40" stroke="#fff" stroke-width="9" stroke-linecap="round" fill="none" opacity=".86"/>
+        </svg>
+      </div>
+    </section>
+
+    <section class="status-band">
+      <div><strong id="storeState" data-i18n="loading">加载中...</strong><span data-i18n="priceConfigured">所有价格由后台「在线商店」配置。</span></div>
+      <div><strong data-i18n="paymentTitle">支付后续</strong><span data-i18n="paymentDesc">支付通知验签成功后，系统自动生成服务兑换码。</span></div>
+      <div><strong data-i18n="recoveryTitleShort">邮箱找回</strong><span data-i18n="recoveryDescShort">忘记兑换码时可用购买邮箱重新发送。</span></div>
+    </section>
+
+    <section class="section-head">
+      <div><p class="eyebrow" data-i18n="catalogEyebrow">Catalog</p><h2 data-i18n="catalogTitle">可购买卡种</h2></div>
+      <p data-i18n="catalogDesc">服务卡覆盖固定周期，点卡用于补充 credits。</p>
+    </section>
+    <section id="products" class="products" aria-live="polite"></section>
+
+    <section class="recovery-panel">
+      <div><p class="eyebrow" data-i18n="recoveryEyebrow">Recovery</p><h2 data-i18n="recoveryTitle">找回服务兑换码</h2><p data-i18n="recoveryDesc">输入购买时使用的注册邮箱或第二邮箱，系统会把已支付订单的兑换码发送到该邮箱。</p></div>
+      <form id="recoverForm" class="recover-form">
+        <input id="recoverEmail" type="email" placeholder="name@example.com" autocomplete="email" required>
+        <button type="submit" data-i18n="recoverButton">发送找回邮件</button>
+      </form>
+      <div id="recoverMsg" class="msg" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script>
+    const I18N = {
+      zh: {
+        title: 'MaClaw 服务卡商店', brandSubtitle: '服务卡商店', creditsCenter: '额度中心', reload: '刷新',
+        eyebrowStore: 'Service Card Store', heroTitle: '购买服务兑换卡与纯点卡', heroLead: '选择日卡、周卡、月卡、季卡、年卡，或购买 1 万 / 5 万点纯点卡。填写注册邮箱后创建支付订单，支付完成后页面会显示服务兑换码并发送到邮箱。',
+        loading: '加载中...', storeEnabled: '商店已启用', storeDisabled: '商店未启用', loadFailed: '商品加载失败', priceConfigured: '所有价格由后台「在线商店」配置。',
+        paymentTitle: '支付后续', paymentDesc: '支付通知验签成功后，系统自动生成服务兑换码。', recoveryTitleShort: '邮箱找回', recoveryDescShort: '忘记兑换码时可用购买邮箱重新发送。',
+        catalogEyebrow: 'Catalog', catalogTitle: '可购买卡种', catalogDesc: '服务卡覆盖固定周期，点卡用于补充 credits。',
+        serviceCard: '服务兑换卡', creditsCard: '纯点卡', registeredEmail: '注册邮箱', secondaryEmail: '第二邮箱（可选）', buy: '购买', validForDays: '天有效', validForDay: '天有效',
+        recoveryEyebrow: 'Recovery', recoveryTitle: '找回服务兑换码', recoveryDesc: '输入购买时使用的注册邮箱或第二邮箱，系统会把已支付订单的兑换码发送到该邮箱。', recoverButton: '发送找回邮件',
+        enterEmail: '请填写注册邮箱', invalidSecondEmail: '请填写有效的第二邮箱，或留空', createOrder: '正在创建订单...', orderCreated: '订单已创建，支付完成后此处会显示兑换码', openPayment: '打开支付页面', paymentLinkHint: '支付链接', createFailed: '创建订单失败', waitingNotify: '等待支付通知中... 订单号 ', manualWaiting: '已提醒管理员，请等待核对到账。订单号 ', manualRejected: '订单已驳回', payCode: '付款备注', payAmount: '付款金额', payChannel: '付款方式', payee: '收款人', payQR: '付款码',
+        serviceCode: '服务兑换码', paidSent: '支付成功，兑换码已发送到邮箱', paidGenerated: '支付成功，兑换码已生成', autoRedeemed: '支付成功，已自动充值到注册邮箱账户', autoRedeemFailed: '支付成功，但自动充值未完成，请使用兑换码手动兑换。', issueFailed: '支付已确认，但服务码生成失败，请联系管理员处理。', notifyTimeout: '还没有收到支付通知，可稍后刷新或使用邮箱找回',
+        recoverSending: '正在发送找回邮件...', recoverSent: '已发送找回邮件，请查收邮箱', recoverNone: '没有找到已支付的兑换码', recoverFailed: '发送失败', emptyProducts: '暂无可售商品',
+        productNames: { service_day: '日卡', service_week: '周卡', service_month: '月卡', service_quarter: '季卡', service_year: '年卡', credits_10000: '纯点卡 1 万点', credits_50000: '纯点卡 5 万点', service_test_10: '测试商品 10 credits' },
+        productDescriptions: { service_test_10: '仅用于测试。生成 10 credits 服务兑换卡。' }
+      },
+      en: {
+        title: 'MaClaw Service Card Store', brandSubtitle: 'Service Card Store', creditsCenter: 'Credits Center', reload: 'Refresh',
+        eyebrowStore: 'Service Card Store', heroTitle: 'Buy service cards and credits cards', heroLead: 'Choose day, week, month, quarter, or year service cards, or buy 10k / 50k credits cards. Enter your registered email to create a payment order. After payment, the service code appears here and is sent by email.',
+        loading: 'Loading...', storeEnabled: 'Store enabled', storeDisabled: 'Store disabled', loadFailed: 'Products failed to load', priceConfigured: 'All prices are configured in Admin > Online Store.',
+        paymentTitle: 'After payment', paymentDesc: 'After a verified payment notification, the system creates a service exchange code automatically.', recoveryTitleShort: 'Email recovery', recoveryDescShort: 'Use the purchase email to resend forgotten service codes.',
+        catalogEyebrow: 'Catalog', catalogTitle: 'Available cards', catalogDesc: 'Service cards cover fixed periods. Credits cards add credits.',
+        serviceCard: 'Service card', creditsCard: 'Credits card', registeredEmail: 'Registered email', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid',
+        recoveryEyebrow: 'Recovery', recoveryTitle: 'Recover service code', recoveryDesc: 'Enter the registered email or second email used for purchase. Paid order codes will be resent to that inbox.', recoverButton: 'Send recovery email',
+        enterEmail: 'Enter registered email', invalidSecondEmail: 'Enter a valid second email, or leave it empty.', createOrder: 'Creating order...', orderCreated: 'Order created. The service code will appear here after payment.', openPayment: 'Open payment page', paymentLinkHint: 'Payment link', createFailed: 'Order creation failed', waitingNotify: 'Waiting for payment notification... Order ', manualWaiting: 'Admin has been notified. Waiting for payment confirmation. Order ', manualRejected: 'Order rejected', payCode: 'Payment remark', payAmount: 'Amount', payChannel: 'Payment method', payee: 'Payee', payQR: 'Payment QR',
+        serviceCode: 'Service code', paidSent: 'Payment successful. Code sent by email.', paidGenerated: 'Payment successful. Code generated.', autoRedeemed: 'Payment successful. Credits were added to the registered email account.', autoRedeemFailed: 'Payment successful, but auto credit did not complete. Redeem the code manually.', issueFailed: 'Payment confirmed, but service code issuance failed. Please contact an administrator.', notifyTimeout: 'Payment notification not received yet. Refresh later or recover by email.',
+        recoverSending: 'Sending recovery email...', recoverSent: 'Recovery email sent. Please check your inbox.', recoverNone: 'No paid service codes found.', recoverFailed: 'Send failed', emptyProducts: 'No products available',
+        productNames: { service_day: 'Day card', service_week: 'Week card', service_month: 'Month card', service_quarter: 'Quarter card', service_year: 'Year card', credits_10000: 'Credits card 10,000', credits_50000: 'Credits card 50,000', service_test_10: 'Test product 10 credits' },
+        productDescriptions: { service_test_10: 'For payment testing only. Issues a 10-credit service exchange card.' }
+      }
+    };
+    const state = document.getElementById('storeState');
+    const productsRoot = document.getElementById('products');
+    const urlParams = new URLSearchParams(location.search);
+    let lang = normalizeLang(urlParams.get('lang') || localStorage.getItem('card_store_lang') || navigator.language || 'zh');
+    let lastProductsData = null;
+    let tenantId = urlParams.get('tenant_id') || '';
+    let registeredEmail = localStorage.getItem('card_store_email') || '';
+    const productTone = { service_day: ['#1e3a5f', '#2563eb'], service_week: ['#184e4a', '#13a68b'], service_month: ['#3a2f69', '#7c3aed'], service_quarter: ['#663d12', '#d97706'], service_year: ['#1f2937', '#0f766e'], credits_10000: ['#0f3b5f', '#0ea5e9'], credits_50000: ['#312e81', '#db2777'], service_test_10: ['#2f3a4a', '#ef4444'] };
+    function normalizeLang(value) { return String(value || '').toLowerCase().indexOf('en') === 0 ? 'en' : 'zh'; }
+    function t(key) { return I18N[lang][key] || I18N.zh[key] || key; }
+    function money(v) { return '¥' + Number(v || 0).toFixed(2); }
+    function label(product) { return (I18N[lang].productNames || {})[product.id] || product.label || product.id; }
+    function productDescription(product) { return (I18N[lang].productDescriptions || {})[product.id] || product.description || ''; }
+    function isCredits(product) { return product.kind === 'credits' || String(product.id || '').indexOf('credits_') === 0; }
+    function esc(v) { return String(v == null ? '' : v).replace(/[&<>\"]/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[s])); }
+    function cardStoreURL() { return tenantId ? '/card_store?tenant_id=' + encodeURIComponent(tenantId) : '/card_store'; }
+    function creditsCenterURL() { return tenantId ? '/get-credits?tenant_id=' + encodeURIComponent(tenantId) : '/get-credits'; }
+    function updateTenantScopedLinks() { document.querySelectorAll('[data-card-store-home-link]').forEach(link => { link.setAttribute('href', cardStoreURL()); }); document.querySelectorAll('[data-credits-center-link]').forEach(link => { link.setAttribute('href', creditsCenterURL()); }); }
+    function setTenantId(value) { const next = String(value || '').trim(); if (!next) { tenantId = ''; localStorage.removeItem('card_store_tenant_id'); updateTenantScopedLinks(); return; } tenantId = next; localStorage.setItem('card_store_tenant_id', tenantId); updateTenantScopedLinks(); }
+    function cleanCardStoreURL() { const qs = new URLSearchParams(window.location.search || ''); const current = qs.get('tenant_id') || tenantId; qs.delete('token'); if (current) qs.set('tenant_id', current); const query = qs.toString(); return window.location.pathname + (query ? '?' + query : ''); }
+    function formatDuration(product) {
+      const days = Number(product.duration_days || 0);
+      if (!days) return Number(product.credits || 0).toLocaleString() + ' credits';
+      return Number(product.credits || 0).toLocaleString() + ' credits · ' + (lang === 'en' ? days + ' ' + (days === 1 ? t('validForDay') : t('validForDays')) : days + ' ' + t('validForDays'));
+    }
+    function applyI18n() {
+      document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+      document.title = t('title');
+      document.querySelectorAll('[data-i18n]').forEach(node => { node.textContent = t(node.dataset.i18n); });
+      document.querySelectorAll('[data-lang]').forEach(node => {
+        const active = node.dataset.lang === lang;
+        node.classList.toggle('active', active);
+        node.setAttribute('aria-pressed', String(active));
+      });
+      localStorage.setItem('card_store_lang', lang);
+      if (lastProductsData) render(lastProductsData);
+    }
+    function svgCard(product) {
+      const tones = productTone[product.id] || ['#1f2937', '#2563eb'];
+      const title = isCredits(product) ? 'CREDITS' : 'SERVICE';
+      const chip = isCredits(product) ? 'POINT' : String(product.duration_days || 0) + 'D';
+      return '<svg class="service-art" viewBox="0 0 320 190" role="img" aria-label="' + esc(label(product)) + ' card art"><defs><linearGradient id="g-' + esc(product.id) + '" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="' + tones[0] + '"/><stop offset="1" stop-color="' + tones[1] + '"/></linearGradient><pattern id="p-' + esc(product.id) + '" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M0 14h8M20 14h8M14 0v8M14 20v8" stroke="rgba(255,255,255,.18)" stroke-width="1.2"/><circle cx="14" cy="14" r="1.8" fill="rgba(255,255,255,.34)"/></pattern></defs><rect x="10" y="12" width="300" height="166" rx="18" fill="url(#g-' + esc(product.id) + ')"/><rect x="10" y="12" width="300" height="166" rx="18" fill="url(#p-' + esc(product.id) + ')"/><rect x="30" y="34" width="58" height="38" rx="9" fill="rgba(255,255,255,.18)" stroke="rgba(255,255,255,.42)"/><path d="M42 52h34M42 62h20" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity=".86"/><text x="30" y="106" fill="#fff" font-size="30" font-weight="800" font-family="Segoe UI,Arial">' + title + '</text><text x="30" y="136" fill="rgba(255,255,255,.76)" font-size="15" font-weight="700" font-family="Segoe UI,Arial">' + Number(product.credits || 0).toLocaleString() + ' credits</text><circle cx="250" cy="74" r="34" fill="rgba(255,255,255,.14)" stroke="rgba(255,255,255,.38)"/><text x="250" y="80" text-anchor="middle" fill="#fff" font-size="18" font-weight="800" font-family="Segoe UI,Arial">' + chip + '</text><path d="M222 142h58" stroke="#fff" stroke-width="8" stroke-linecap="round" opacity=".82"/></svg>';
+    }
+    function manualChannelSelect(channels) {
+      if (!channels || channels.length < 2) return '';
+      const options = channels.map(ch => '<option value="' + esc(ch.id) + '">' + esc(ch.label || ch.id) + '</option>').join('');
+      return '<label>' + t('payChannel') + '<select class="pay-channel">' + options + '</select></label>';
+    }
+    function render(data) {
+      lastProductsData = data;
+      productsRoot.innerHTML = '';
+      state.textContent = data.enabled ? t('storeEnabled') : t('storeDisabled');
+      if (data.tenant_id) setTenantId(data.tenant_id); else updateTenantScopedLinks();
+      (data.products || []).forEach(product => {
+        const card = document.createElement('article');
+        card.className = 'product';
+        const descText = productDescription(product);
+        const desc = descText ? '<p class="product-desc">' + esc(descText) + '</p>' : '';
+        const channelSelect = manualChannelSelect(data.payment_channels || []);
+        card.innerHTML = svgCard(product) + '<div class="product-body"><div><span class="pill">' + (isCredits(product) ? t('creditsCard') : t('serviceCard')) + '</span><h3>' + esc(label(product)) + '</h3><p>' + esc(formatDuration(product)) + '</p>' + desc + '</div><div class="mail-fields"><label>' + t('registeredEmail') + '<input type="email" class="buyer-email" value="' + esc(registeredEmail) + '" placeholder="name@example.com" autocomplete="email"></label><label>' + t('secondaryEmail') + '<input type="email" class="second-email" placeholder="backup@example.com" autocomplete="email"></label>' + channelSelect + '</div><div class="buy-row"><div class="price">' + money(product.price) + '</div><button type="button">' + t('buy') + '</button></div><div class="code-box" hidden></div><div class="msg" aria-live="polite"></div></div>';
+        const btn = card.querySelector('button');
+        const msg = card.querySelector('.msg');
+        const codeBox = card.querySelector('.code-box');
+        btn.disabled = !data.enabled || Number(product.price || 0) <= 0;
+        btn.addEventListener('click', async () => {
+          const email = card.querySelector('.buyer-email').value.trim().toLowerCase();
+          const secondaryInput = card.querySelector('.second-email');
+          const secondaryEmail = secondaryInput.value.trim().toLowerCase();
+          if (!email) { msg.textContent = t('enterEmail'); return; }
+          if (secondaryEmail && !secondaryInput.checkValidity()) { msg.textContent = t('invalidSecondEmail'); secondaryInput.focus(); return; }
+          const payWindow = window.open('', '_blank');
+          if (payWindow) payWindow.opener = null;
+          btn.disabled = true;
+          msg.textContent = t('createOrder');
+          try {
+            const payload = { product_id: product.id, email, secondary_email: secondaryEmail, tenant_id: tenantId };
+            const channel = card.querySelector('.pay-channel');
+            if (channel && channel.value) payload.pay_channel = channel.value;
+            const res = await fetch('/api/card-store/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.message || t('createFailed'));
+            registeredEmail = email;
+            localStorage.setItem('card_store_email', email);
+            if (body.tenant_id) setTenantId(body.tenant_id);
+            msg.textContent = t('orderCreated');
+            if (body.status === 'paid' && body.code) {
+              if (payWindow) payWindow.close();
+              showPaidOrder(body, msg, codeBox);
+              return;
+            }
+            if (body.payment_mode === 'personal_semimanual') {
+              if (payWindow) payWindow.close();
+              showManualPayment(body, msg, codeBox, email);
+              pollOrder(body.order_no, body.tenant_id || tenantId, email, msg, codeBox);
+              return;
+            }
+            if (body.pay_url) showPaymentLink(body.pay_url, codeBox);
+            if (body.pay_url && payWindow) payWindow.location.href = body.pay_url;
+            else if (body.pay_url) window.open(body.pay_url, '_blank', 'noopener');
+            else if (payWindow) payWindow.close();
+            pollOrder(body.order_no, body.tenant_id || tenantId, email, msg, codeBox);
+          } catch (err) {
+            if (payWindow) payWindow.close();
+            msg.textContent = err.message || t('createFailed');
+          } finally {
+            btn.disabled = false;
+          }
+        });
+        productsRoot.appendChild(card);
+      });
+      if (!productsRoot.children.length) productsRoot.innerHTML = '<div class="empty">' + t('emptyProducts') + '</div>';
+    }
+    function showPaidOrder(body, msg, codeBox) {
+      codeBox.hidden = false;
+      codeBox.innerHTML = '<span>' + t('serviceCode') + '</span><strong>' + esc(body.code) + '</strong>';
+      msg.textContent = body.auto_redeemed ? t('autoRedeemed') : (body.auto_redeem_error ? t('autoRedeemFailed') : (body.mail_status === 'sent' ? t('paidSent') : t('paidGenerated')));
+    }
+    function showPaymentLink(payURL, codeBox) {
+      codeBox.hidden = false;
+      codeBox.innerHTML = '<span>' + t('paymentLinkHint') + '</span><a class="payment-link" href="' + esc(payURL) + '" target="_blank" rel="noopener">' + t('openPayment') + '</a>';
+    }
+    function showManualPayment(body, msg, codeBox, email) {
+      codeBox.hidden = false;
+      const qr = body.pay_qr_url ? '<div><span>' + t('payQR') + '</span><img alt="' + esc(t('payQR')) + '" src="' + esc(body.pay_qr_url) + '" style="display:block;max-width:220px;width:100%;margin-top:8px;border-radius:8px;border:1px solid #d9e1ec"></div>' : '';
+      const open = body.pay_deep_link ? '<a class="payment-link" href="' + esc(body.pay_deep_link) + '" target="_blank" rel="noopener" data-manual-open>' + t('openPayment') + '</a>' : '';
+      codeBox.innerHTML = '<span>' + t('payChannel') + '</span><strong>' + esc(body.pay_channel_label || body.pay_channel || '-') + '</strong><span>' + t('payAmount') + '</span><strong>' + money(body.amount) + '</strong><span>' + t('payCode') + '</span><strong>' + esc(body.pay_code || '-') + '</strong>' + (body.payee ? '<span>' + t('payee') + '</span><strong>' + esc(body.payee) + '</strong>' : '') + qr + open;
+      const link = codeBox.querySelector('[data-manual-open]');
+      if (link) link.addEventListener('click', () => notifyPaymentOpened(body, email, msg));
+      else notifyPaymentOpened(body, email, msg);
+      msg.textContent = body.pay_instruction || t('orderCreated');
+    }
+    async function notifyPaymentOpened(body, email, msg) {
+      try {
+        const res = await fetch('/api/card-store/orders/' + encodeURIComponent(body.order_no) + '/payment-opened', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, tenant_id: body.tenant_id || tenantId }) });
+        const next = await res.json().catch(() => ({}));
+        if (res.ok) msg.textContent = t('manualWaiting') + body.order_no;
+        else msg.textContent = next.message || msg.textContent;
+      } catch (_) {}
+    }
+    async function pollOrder(orderNo, currentTenantId, email, msg, codeBox) {
+      for (let i = 0; i < 90; i++) {
+        await new Promise(resolve => setTimeout(resolve, i < 10 ? 3000 : 5000));
+        const qs = new URLSearchParams({ email });
+        if (currentTenantId) qs.set('tenant_id', currentTenantId);
+        const res = await fetch('/api/card-store/orders/' + encodeURIComponent(orderNo) + '?' + qs.toString());
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body.status === 'paid' && body.code) {
+          showPaidOrder(body, msg, codeBox);
+          return;
+        }
+        if (res.ok && body.status === 'issue_failed') {
+          msg.textContent = body.message ? t('issueFailed') + ' ' + body.message : t('issueFailed');
+          return;
+        }
+        if (res.ok && body.status === 'personal_rejected') {
+          msg.textContent = body.review_note ? t('manualRejected') + ': ' + body.review_note : t('manualRejected');
+          return;
+        }
+        if (res.ok && body.status === 'personal_opened') { msg.textContent = t('manualWaiting') + orderNo; continue; }
+        if (res.ok && body.status === 'personal_created') { msg.textContent = t('orderCreated'); continue; }
+        if (res.ok) msg.textContent = t('waitingNotify') + orderNo;
+      }
+      msg.textContent = t('notifyTimeout');
+    }
+    async function loadProducts() {
+      state.textContent = t('loading');
+      try {
+        const qs = tenantId ? '?tenant_id=' + encodeURIComponent(tenantId) : '';
+        const res = await fetch('/api/card-store/products' + qs);
+        render(await res.json());
+      } catch (_) {
+        state.textContent = t('loadFailed');
+      }
+    }
+    async function loadMe() {
+      const hash = (window.location.hash || '').replace(/^#/, '');
+      const hashToken = new URLSearchParams(hash).get('token') || '';
+      const queryToken = new URLSearchParams(window.location.search || '').get('token') || '';
+      const token = hashToken || queryToken || localStorage.getItem('maclaw-get-credits-token') || localStorage.getItem('viewer_token') || localStorage.getItem('maclaw_viewer_token') || '';
+      if (hashToken || queryToken) { localStorage.setItem('maclaw-get-credits-token', token); if (window.history && window.history.replaceState) window.history.replaceState(null, document.title, cleanCardStoreURL()); }
+      if (!token) return;
+      try {
+        const res = await fetch('/api/card-store/me', { headers: { Authorization: 'Bearer ' + token } });
+        const body = await res.json();
+        if (body.authenticated && body.email) {
+          registeredEmail = body.email;
+          localStorage.setItem('card_store_email', registeredEmail);
+          if (body.tenant_id) setTenantId(body.tenant_id);
+          if (window.history && window.history.replaceState) window.history.replaceState(null, document.title, cleanCardStoreURL());
+        }
+      } catch (_) {}
+    }
+    document.getElementById('recoverForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const msg = document.getElementById('recoverMsg');
+      const email = document.getElementById('recoverEmail').value.trim().toLowerCase();
+      msg.textContent = t('recoverSending');
+      try {
+        const res = await fetch('/api/card-store/recover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, tenant_id: tenantId }) });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.message || t('recoverFailed'));
+        msg.textContent = body.count ? t('recoverSent') : t('recoverNone');
+      } catch (err) { msg.textContent = err.message || t('recoverFailed'); }
+    });
+    document.querySelectorAll('[data-lang]').forEach(button => {
+      button.addEventListener('click', () => {
+        lang = normalizeLang(button.dataset.lang);
+        applyI18n();
+      });
+    });
+    document.getElementById('reloadBtn').addEventListener('click', loadProducts);
+    applyI18n();
+    updateTenantScopedLinks();
+    loadMe().finally(loadProducts);
+  </script>
+</body>
+</html>

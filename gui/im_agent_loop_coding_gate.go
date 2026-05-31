@@ -25,7 +25,8 @@ func (h *IMMessageHandler) prepareAgentLoopCodingGate(userID, userText string, c
 	if h.app != nil {
 		gic = h.getGateIntentClassifier()
 	}
-	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.getUnifiedClassifier(), h.lastUserID)
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
+	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.getUnifiedClassifier(), policyOwnerID)
 	workflowOff := h.app != nil && h.app.workflowDisabled.Load()
 	if workflowOff {
 		gateConfig.active = false
@@ -37,7 +38,7 @@ func (h *IMMessageHandler) prepareAgentLoopCodingGate(userID, userText string, c
 		if h.taskOrchestratorRegistry == nil {
 			return false
 		}
-		o := h.taskOrchestratorRegistry.Get(userID)
+		o := h.taskOrchestratorRegistry.Get(policyOwnerID)
 		return o != nil && o.IsActive()
 	}
 	return gateConfig, workflowOff, orchestratorActive
@@ -156,7 +157,7 @@ func (h *IMMessageHandler) applyAgentLoopCodingGateAfterAssistantTurn(
 			phase.Stage = agentStageFinalize
 		}
 		finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
-		h.emitCodingGateForceReturnDocUpdate(userID, platform, finalResp.Text, steeringDetector)
+		h.emitCodingGateForceReturnDocUpdate(h.workflowPolicyOwnerID(userID, ctx), platform, finalResp.Text, steeringDetector)
 		attachLLMTelemetry(finalResp)
 		attachPendingVisibleArtifacts(finalResp)
 		h.saveConversationHistoryTimed(userID, history, finalResp)
@@ -243,10 +244,11 @@ func (h *IMMessageHandler) shouldBypassCodingGateForWorkflowAgentLoop(userID str
 		return false
 	}
 	engine := h.getWorkflowEngine()
-	if engine == nil || engine.GetActiveWorkflow(userID) == nil {
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
+	if engine == nil || engine.GetActiveWorkflow(policyOwnerID) == nil {
 		return false
 	}
-	return engine.GetPhaseToolFilter(userID) != workflow.ToolFilterNone
+	return engine.GetPhaseToolFilter(policyOwnerID) != workflow.ToolFilterNone
 }
 
 func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTools []map[string]interface{}, phase agentLoopPhase, gateConfig codingToolGateConfig, skipCodingGate bool, orchestratorActive func() bool) ([]map[string]interface{}, int, bool) {
@@ -308,8 +310,9 @@ func (h *IMMessageHandler) activateSteeringWorkflowDetector(userID, userText, pl
 	if ctx.Kind == LoopKindBackground {
 		return nil
 	}
-	detector := NewSteeringWorkflowDetector(userID)
-	shouldActivate := gateConfig.active || h.conversationHasCodingContext()
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
+	detector := NewSteeringWorkflowDetector(policyOwnerID)
+	shouldActivate := gateConfig.active || h.conversationHasCodingContextForOwner(policyOwnerID)
 	if workflowOff {
 		shouldActivate = false
 	}
@@ -319,10 +322,10 @@ func (h *IMMessageHandler) activateSteeringWorkflowDetector(userID, userText, pl
 	}
 	hasEngineWorkflow := false
 	if h.getWorkflowEngine() != nil {
-		hasEngineWorkflow = h.getWorkflowEngine().HasActiveWorkflow(userID)
+		hasEngineWorkflow = h.getWorkflowEngine().HasActiveWorkflow(policyOwnerID)
 	}
 	if hasEngineWorkflow {
-		log.Printf("[SteeringWorkflow] detector NOT activated: engine has active workflow for user=%s gateActive=%v", userID, gateConfig.active)
+		log.Printf("[SteeringWorkflow] detector NOT activated: engine has active workflow for user=%s policy_owner=%s gateActive=%v", userID, policyOwnerID, gateConfig.active)
 		return nil
 	}
 	log.Printf("[SteeringWorkflow] detector activated for user=%s task=%q gateActive=%v", userID, truncateRunes(userText, 60), gateConfig.active)
@@ -331,12 +334,12 @@ func (h *IMMessageHandler) activateSteeringWorkflowDetector(userID, userText, pl
 			if adapter.GetWorkingDir() == "" {
 				projectPath := strings.TrimSpace(h.getCurrentProjectPath())
 				if projectPath != "" {
-					adapter.SetWorkingDir(userID, projectPath)
+					adapter.SetWorkingDir(policyOwnerID, projectPath)
 				}
 			}
-			adapter.EmitSuggestMaximize(userID, "coding")
+			adapter.EmitSuggestMaximize(policyOwnerID, "coding")
 			detector.suggestMaximizeEmitted = true
-			log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s (classifier confirmed new_project)", userID)
+			log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s policy_owner=%s (classifier confirmed new_project)", userID, policyOwnerID)
 		}
 	}
 	return detector

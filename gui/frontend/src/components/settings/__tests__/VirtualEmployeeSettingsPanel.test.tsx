@@ -518,16 +518,59 @@ describe("VirtualEmployeeSettingsPanel", () => {
     }
   });
 
+  it("resizes high-resolution source photos even when the file is already small", async () => {
+    const originalImage = globalThis.Image;
+    class MockImage {
+      width = 4096;
+      height = 2048;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        window.setTimeout(() => this.onload?.(), 0);
+      }
+    }
+    (globalThis as any).Image = MockImage;
+    const drawImage = vi.fn();
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ clearRect: vi.fn(), drawImage } as any);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:image/jpeg;base64,/9j/U01BTEw=");
+
+    try {
+      const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+      await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
+
+      fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
+        target: { files: [new File([pngSignatureBytes], "huge-dimensions.png", { type: "image/png" })] },
+      });
+
+      await waitFor(() => {
+        const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+        expect(preview?.src).toContain("data:image/jpeg;base64,/9j/U01BTEw=");
+      });
+      expect(toDataURLSpy).toHaveBeenCalledWith("image/jpeg", 0.9);
+      expect(drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0, 1024, 512);
+    } finally {
+      (globalThis as any).Image = originalImage;
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+    }
+  });
+
   it("ignores stale large-avatar resize after a newer upload", async () => {
     const originalImage = globalThis.Image;
     const images: Array<{ onload: (() => void) | null }> = [];
     class MockImage {
-      width = 4000;
-      height = 2000;
+      width: number;
+      height: number;
       onload: (() => void) | null = null;
       onerror: (() => void) | null = null;
       constructor() {
         images.push(this);
+        this.width = images.length === 1 ? 4000 : 640;
+        this.height = images.length === 1 ? 2000 : 320;
       }
       set src(_value: string) {}
     }
@@ -554,6 +597,8 @@ describe("VirtualEmployeeSettingsPanel", () => {
       fireEvent.change(input, {
         target: { files: [new File([pngSignatureBytes], "small.png", { type: "image/png" })] },
       });
+      await waitFor(() => expect(images.length).toBe(2));
+      images[1].onload?.();
       await waitFor(() => {
         const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
         expect(preview?.src).toContain("data:image/png;base64");
@@ -571,25 +616,148 @@ describe("VirtualEmployeeSettingsPanel", () => {
     }
   });
 
+  it("ignores stale large-avatar resize after status refresh", async () => {
+    const handlers = new Map<string, () => void>();
+    (EventsOn as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (event: string, handler: () => void) => {
+        handlers.set(event, handler);
+        return vi.fn();
+      },
+    );
+    const savedAvatar = "data:image/jpeg;base64,/9j/U0FWRUQ=";
+    GetVEStatusMock
+      .mockResolvedValueOnce({ registered: false })
+      .mockResolvedValueOnce({
+        registered: true,
+        employee: {
+          name: "Saved Name",
+          skill_description: "saved skill",
+          access_policy: "public",
+          avatar_data_url: savedAvatar,
+          status: "active",
+        },
+      });
+    const originalImage = globalThis.Image;
+    const images: Array<{ onload: (() => void) | null }> = [];
+    class MockImage {
+      width = 4000;
+      height = 2000;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        images.push(this);
+      }
+      set src(_value: string) {}
+    }
+    (globalThis as any).Image = MockImage;
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as any);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:image/jpeg;base64,/9j/T0xE");
+    const largeValidPng = new Uint8Array(1100 * 1024);
+    largeValidPng.set(pngSignatureBytes, 0);
+
+    try {
+      const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+      await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
+
+      fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
+        target: { files: [new File([largeValidPng], "large.png", { type: "image/png" })] },
+      });
+      await waitFor(() => expect(images.length).toBe(1));
+
+      handlers.get("ve:disabled")?.();
+      await waitFor(() => {
+        const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+        expect(preview?.src).toBe(savedAvatar);
+      });
+
+      images[0].onload?.();
+      await waitFor(() => expect(toDataURLSpy).toHaveBeenCalledWith("image/jpeg", 0.9));
+      const preview = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+      expect(preview?.src).toBe(savedAvatar);
+    } finally {
+      (globalThis as any).Image = originalImage;
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+    }
+  });
+
+  it("disables submit while a large avatar is being resized", async () => {
+    const originalImage = globalThis.Image;
+    const images: Array<{ onload: (() => void) | null }> = [];
+    class MockImage {
+      width = 4000;
+      height = 2000;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        images.push(this);
+      }
+      set src(_value: string) {}
+    }
+    (globalThis as any).Image = MockImage;
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as any);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:image/jpeg;base64,/9j/U01BTEw=");
+    const largeValidPng = new Uint8Array(1100 * 1024);
+    largeValidPng.set(pngSignatureBytes, 0);
+
+    try {
+      render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+      await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
+
+      fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
+        target: { files: [new File([largeValidPng], "large.png", { type: "image/png" })] },
+      });
+
+      const submit = screen.getByTestId("ve-submit-btn") as HTMLButtonElement;
+      await waitFor(() => expect(submit.disabled).toBe(true));
+      fireEvent.click(submit);
+      expect(RegisterVirtualEmployeeMock).not.toHaveBeenCalled();
+
+      await waitFor(() => expect(images.length).toBe(1));
+      images[0].onload?.();
+      await waitFor(() => expect(submit.disabled).toBe(false));
+    } finally {
+      (globalThis as any).Image = originalImage;
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+    }
+  });
+
   it("clears uploaded avatar preview when the browser cannot decode it", async () => {
+    const originalImage = globalThis.Image;
+    class MockImage {
+      width = 640;
+      height = 320;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        window.setTimeout(() => this.onerror?.(), 0);
+      }
+    }
+    (globalThis as any).Image = MockImage;
     const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
     await waitFor(() => expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy());
 
-    fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
-      target: { files: [new File([pngSignatureBytes], "broken.png", { type: "image/png" })] },
-    });
+    try {
+      fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
+        target: { files: [new File([pngSignatureBytes], "broken.png", { type: "image/png" })] },
+      });
 
-    const preview = await waitFor(() => {
-      const img = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
-      expect(img).toBeTruthy();
-      return img as HTMLImageElement;
-    });
-    fireEvent.error(preview);
-
-    await waitFor(() => {
-      expect(container.querySelector(".ve-avatar-editor__image")).toBeNull();
-    });
-    expect(screen.getByRole("alert").textContent).toBe(avatarInvalidText);
+      await waitFor(() => {
+        expect(container.querySelector(".ve-avatar-editor__image")).toBeNull();
+        expect(screen.getByRole("alert").textContent).toBe(avatarInvalidText);
+      });
+    } finally {
+      (globalThis as any).Image = originalImage;
+    }
   });
 
   it("drops unsafe avatar data URLs loaded from status", async () => {
@@ -649,6 +817,16 @@ describe("VirtualEmployeeSettingsPanel", () => {
   it("keeps existing saved avatar when a replacement image cannot decode", async () => {
     const savedAvatar = "data:image/png;base64,iVBORw0KGgo=";
     const replacementBytes = new Uint8Array([...pngSignatureBytes, 0x01]);
+    const originalImage = globalThis.Image;
+    class MockImage {
+      width = 640;
+      height = 320;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        window.setTimeout(() => this.onerror?.(), 0);
+      }
+    }
     GetVEStatusMock.mockResolvedValue({
       registered: true,
       employee: {
@@ -663,31 +841,30 @@ describe("VirtualEmployeeSettingsPanel", () => {
     const { container } = render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
 
     await waitFor(() => expect(container.querySelector(".ve-avatar-editor__image")).toBeTruthy());
-    fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
-      target: { files: [new File([replacementBytes], "replacement.png", { type: "image/png" })] },
-    });
+    (globalThis as any).Image = MockImage;
+    try {
+      fireEvent.change(screen.getByTestId("ve-avatar-file-input"), {
+        target: { files: [new File([replacementBytes], "replacement.png", { type: "image/png" })] },
+      });
 
-    const replacementPreview = await waitFor(() => {
-      const img = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
-      expect(img?.src).not.toContain(savedAvatar);
-      return img as HTMLImageElement;
-    });
-    fireEvent.error(replacementPreview);
-
-    await waitFor(() => {
-      const img = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
-      expect(img?.src).toContain(savedAvatar);
-    });
-    fireEvent.click(screen.getByTestId("ve-submit-btn"));
-    await waitFor(() => {
-      expect(UpdateVESettingsMock).toHaveBeenCalledWith(
-        "Existing Name",
-        "existing skill",
-        "public",
-        [],
-        savedAvatar,
-      );
-    });
+      await waitFor(() => {
+        const img = container.querySelector(".ve-avatar-editor__image") as HTMLImageElement | null;
+        expect(img?.src).toContain(savedAvatar);
+        expect(screen.getByRole("alert").textContent).toBe(avatarInvalidText);
+      });
+      fireEvent.click(screen.getByTestId("ve-submit-btn"));
+      await waitFor(() => {
+        expect(UpdateVESettingsMock).toHaveBeenCalledWith(
+          "Existing Name",
+          "existing skill",
+          "public",
+          [],
+          savedAvatar,
+        );
+      });
+    } finally {
+      (globalThis as any).Image = originalImage;
+    }
   });
 
   it("loads existing whitelist and preserves it when updating", async () => {

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestIsIMPlatformIncludesLocalGateways(t *testing.T) {
 	for _, platform := range []string{"weixin_local", "telegram_local", "qqbot_local", "lansenger_local"} {
@@ -84,5 +87,55 @@ func TestIsVoiceInputMessageUsesStructuralModality(t *testing.T) {
 	}
 	if isVoiceInputMessage(IMUserMessage{MessageType: "text", Text: "发我一段语音"}) {
 		t.Fatal("text content must not be treated as a voice modality signal")
+	}
+}
+
+func TestPrepareWeixinPlayableVoiceFileConvertsWAVToMP3(t *testing.T) {
+	original := weixinEncodeWAVToMP3
+	defer func() { weixinEncodeWAVToMP3 = original }()
+	weixinEncodeWAVToMP3 = func(ctx context.Context, wav []byte) ([]byte, error) {
+		if string(wav) != "RIFFxxxxWAVE" {
+			t.Fatalf("converter input = %q", wav)
+		}
+		return []byte("ID3mp3"), nil
+	}
+
+	got, err := prepareWeixinPlayableVoiceFile(context.Background(), "voice.wav", []byte("RIFFxxxxWAVE"))
+	if err != nil {
+		t.Fatalf("prepareWeixinPlayableVoiceFile: %v", err)
+	}
+	if string(got.data) != "ID3mp3" || got.name != "voice.mp3" || got.mime != "audio/mpeg" || !got.converted {
+		t.Fatalf("fallback = %#v, want converted mp3", got)
+	}
+}
+
+func TestPrepareWeixinPlayableVoiceFileKeepsMP3(t *testing.T) {
+	got, err := prepareWeixinPlayableVoiceFile(context.Background(), "already.mp3", []byte("ID3payload"))
+	if err != nil {
+		t.Fatalf("prepareWeixinPlayableVoiceFile(mp3): %v", err)
+	}
+	if string(got.data) != "ID3payload" || got.name != "voice.mp3" || got.mime != "audio/mpeg" || got.converted {
+		t.Fatalf("fallback = %#v, want passthrough mp3", got)
+	}
+}
+
+func TestWeixinNativeVoiceExperimentVariantsDisabledByDefault(t *testing.T) {
+	t.Setenv("MACLAW_WEIXIN_VOICE_EXPERIMENTS", "")
+	if got := weixinNativeVoiceExperimentVariants(); len(got) != 0 {
+		t.Fatalf("variants = %#v, want disabled", got)
+	}
+}
+
+func TestWeixinNativeVoiceExperimentVariantsParsesAllowList(t *testing.T) {
+	t.Setenv("MACLAW_WEIXIN_VOICE_EXPERIMENTS", "upload_param_encrypt0,raw_aes_encrypt0,bad,upload_param_encrypt0")
+	got := weixinNativeVoiceExperimentVariants()
+	want := []string{"upload_param_encrypt0", "raw_aes_encrypt0"}
+	if len(got) != len(want) {
+		t.Fatalf("variants = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("variants = %#v, want %#v", got, want)
+		}
 	}
 }

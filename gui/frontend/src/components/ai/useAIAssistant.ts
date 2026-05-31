@@ -320,15 +320,17 @@ const MAX_PERSISTED_PROMPTS = 100;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
 const MAX_LIVE_PROGRESS_MESSAGES = 30;
-const HIDDEN_PROGRESS_PATTERNS = [
-    /^__heartbeat__$/,
-];
+const HEARTBEAT_PROGRESS_TEXT = "__heartbeat__";
+
+function isHeartbeatProgressText(progressText: unknown): boolean {
+    return String(progressText || '').trim() === HEARTBEAT_PROGRESS_TEXT;
+}
 
 function shouldHideProgressText(progressText: string): boolean {
     const trimmed = progressText.trim();
     if (!trimmed) return true;
     if (trimmed.includes("命令仍在执行中")) return true;
-    return HIDDEN_PROGRESS_PATTERNS.some(pattern => pattern.test(trimmed));
+    return isHeartbeatProgressText(trimmed);
 }
 
 function removeMessageAtIndex(messages: ChatMessage[], index: number): ChatMessage[] {
@@ -1700,11 +1702,18 @@ function normalizeNewsCategory(category: unknown): NewsCategory {
 
 function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
     if (raw && typeof raw === 'object') {
-        const event = raw as AIAssistantStreamEvent;
+        const event = raw as Record<string, unknown>;
+        const stringField = (...keys: string[]) => {
+            for (const key of keys) {
+                const value = event[key];
+                if (typeof value === 'string') return value;
+            }
+            return '';
+        };
         return {
-            request_id: typeof event.request_id === 'string' ? event.request_id : '',
-            text: typeof event.text === 'string' ? event.text : '',
-            session_key: typeof event.session_key === 'string' ? event.session_key : '',
+            request_id: stringField('request_id', 'requestId', 'RequestID'),
+            text: stringField('text', 'Text'),
+            session_key: stringField('session_key', 'sessionKey', 'SessionKey'),
         };
     }
     if (typeof raw === 'string') {
@@ -1754,6 +1763,13 @@ function matchesActiveResponseRequest(round: ActiveRound, requestId: string): bo
 function matchesActiveProgressRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
     if (!round.requestId || round.generation === 0 || round.phase === 'idle') return false;
     return !!event.request_id && event.request_id === round.requestId;
+}
+
+function matchesActiveProgressActivity(round: ActiveRound, event: AIAssistantStreamEvent, activeSessionKey: string): boolean {
+    if (matchesActiveProgressRequest(round, event)) return true;
+    if (event.request_id) return false;
+    if (!isHeartbeatProgressText(event.text)) return false;
+    return isMatchingSessionEvent(event, activeSessionKey);
 }
 
 function isMatchingSessionOrActiveRequest(event: AIAssistantStreamEvent, round: ActiveRound, activeSessionKey: string): boolean {
@@ -3116,10 +3132,11 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const handler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
             const currentRound = activeRoundRef.current;
-            if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
+            const activeSessionKey = activeSessionKeyForEvents();
             const progressText = event.text || (typeof payload === 'string' ? payload : '');
             if (!progressText) return;
-            if (!matchesActiveProgressRequest(currentRound, event)) {
+            const progressEvent = event.text === progressText ? event : { ...event, text: progressText };
+            if (!matchesActiveProgressActivity(currentRound, progressEvent, activeSessionKey)) {
                 return;
             }
             // Reset the sliding-window activity timeout - backend is alive.

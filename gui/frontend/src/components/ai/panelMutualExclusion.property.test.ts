@@ -1,14 +1,14 @@
 /**
- * Property-based test for panel mutual exclusion (Property 10).
+ * Property-based test for tabbed preview coordination (Property 10).
  *
- * Models the mutual exclusion logic between WorkflowDocPreview and
- * CodePreviewPanel as a pure state machine, then tests it with fast-check.
+ * Models coordination between WorkflowDocPreview and CodePreviewPanel as a
+ * pure state machine, then tests it with fast-check.
  *
- * Property 10: Panel mutual exclusion with workflow preview
+ * Property 10: Tabbed workflow/source preview coordination
  *
  * For any interleaved sequence of workflow:doc_update and code:file_update
- * events, at most one of WorkflowDocPreview or CodePreviewPanel SHALL be
- * active at any given time.
+ * events, workflow progress and source preview can both remain available;
+ * the parent view selects one tab to display at a time.
  *
  * **Validates: Requirements 6.1, 6.3**
  */
@@ -43,7 +43,7 @@ function initialCombinedState(): CombinedPanelState {
 /**
  * Apply a workflow:doc_update event to the combined state.
  * - Activates workflow preview
- * - Closes code preview if it was active (mutual exclusion)
+ * - Preserves code preview if it was active so tabs can switch views
  */
 function applyWorkflowEvent(state: CombinedPanelState): CombinedPanelState {
     return {
@@ -60,18 +60,16 @@ function applyWorkflowEvent(state: CombinedPanelState): CombinedPanelState {
 function applyCodeFileEvent(state: CombinedPanelState, file: CodeFile): CombinedPanelState {
     return {
         ...state,
-        codePreview: applyFileUpdate(state.codePreview, file, state.workflowActive),
+        codePreview: applyFileUpdate(state.codePreview, file),
     };
 }
 
 /**
- * Check the mutual exclusion invariant:
- * At most one of workflow preview or code preview is active.
+ * Check the tabbed preview invariant: both panes may be available, while the
+ * parent render decision still exposes one selected mode.
  */
-function checkMutualExclusion(state: CombinedPanelState): boolean {
-    const workflowVisible = state.workflowActive && !state.codePreview.active;
-    const codeVisible = !workflowVisible && state.codePreview.active;
-    return !(workflowVisible && codeVisible);
+function checkTabbedPreviewInvariant(state: CombinedPanelState): boolean {
+    return ['workflow', 'code', 'none'].includes(renderedPanel(state));
 }
 
 function renderedPanel(state: CombinedPanelState): 'workflow' | 'code' | 'none' {
@@ -115,18 +113,18 @@ const arbPanelEvent: fc.Arbitrary<PanelEvent> = fc.oneof(
 
 // ── Property Tests ──
 
-describe('Panel Mutual Exclusion — Property Tests', () => {
+describe('Panel Preview Tabs - Property Tests', () => {
 
     /**
      * **Validates: Requirements 6.1, 6.3**
      *
-     * Property 10: Panel mutual exclusion with workflow preview
+     * Property 10: Tabbed workflow/source preview coordination
      *
      * For any interleaved sequence of workflow:doc_update and code:file_update
-     * events, at most one of WorkflowDocPreview or CodePreviewPanel SHALL be
-     * active at any given time.
+     * events, the parent render decision SHALL keep one selected view while
+     * allowing both panes to remain available as tabs.
      */
-    it('Property 10: Panel mutual exclusion with workflow preview', () => {
+    it('Property 10: tabbed preview coordination with workflow preview', () => {
         fc.assert(
             fc.property(
                 fc.array(arbPanelEvent, { minLength: 1, maxLength: 30 }),
@@ -140,8 +138,8 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
                             state = applyCodeFileEvent(state, event.file);
                         }
 
-                        // Invariant: mutual exclusion holds after every event
-                        expect(checkMutualExclusion(state)).toBe(true);
+                        // Invariant: parent render has one selected view.
+                        expect(checkTabbedPreviewInvariant(state)).toBe(true);
 
                         // Stronger check: the parent-level render decision
                         // never displays both panels at once.
@@ -156,12 +154,12 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
     });
 
     /**
-     * Additional property: workflow:doc_update always deactivates code preview.
+     * Additional property: workflow:doc_update preserves code preview.
      *
      * For any state where code preview is active, a workflow:doc_update event
-     * SHALL set code preview active to false.
+     * SHALL keep source preview available for tab switching.
      */
-    it('workflow:doc_update deactivates code preview', () => {
+    it('workflow:doc_update preserves code preview for tabs', () => {
         fc.assert(
             fc.property(
                 fc.array(arbCodeFile, { minLength: 1, maxLength: 10 }),
@@ -174,9 +172,10 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
                     }
                     expect(state.codePreview.active).toBe(true);
 
-                    // Workflow event arrives — code preview must close
+                    // Workflow event arrives: code preview remains available
+                    // behind the source tab.
                     state = applyWorkflowEvent(state);
-                    expect(state.codePreview.active).toBe(false);
+                    expect(state.codePreview.active).toBe(true);
                     expect(state.workflowActive).toBe(true);
                 },
             ),
@@ -197,7 +196,7 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
                     expect(state.workflowActive).toBe(true);
                     expect(state.codePreview.active).toBe(true);
                     expect(renderedPanel(state)).toBe('code');
-                    expect(checkMutualExclusion(state)).toBe(true);
+                    expect(checkTabbedPreviewInvariant(state)).toBe(true);
                 },
             ),
             { numRuns: 100 },
@@ -205,13 +204,13 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
     });
 
     /**
-     * Additional property: regular code:file_update while workflow active does
-     * NOT open code preview.
+     * Additional property: regular code:file_update while workflow active opens
+     * source preview as a tab.
      *
      * For any state where workflow preview is active, code:file_update events
-     * SHALL NOT activate the code preview panel unless forceOpen is true.
+     * SHALL activate code preview unless the user closed it.
      */
-    it('regular code:file_update suppressed while workflow active', () => {
+    it('regular code:file_update opens source tab while workflow active', () => {
         fc.assert(
             fc.property(
                 fc.array(arbCodeFile, { minLength: 1, maxLength: 10 }),
@@ -222,10 +221,11 @@ describe('Panel Mutual Exclusion — Property Tests', () => {
                     state = applyWorkflowEvent(state);
                     expect(state.workflowActive).toBe(true);
 
-                    // Regular code file events should NOT open code preview
+                    // Regular code file events should open source preview as
+                    // a tab while keeping workflow available.
                     for (const file of files) {
                         state = applyCodeFileEvent(state, { ...file, forceOpen: false });
-                        expect(state.codePreview.active).toBe(false);
+                        expect(state.codePreview.active).toBe(true);
                     }
 
                     // Files should still be tracked in the map

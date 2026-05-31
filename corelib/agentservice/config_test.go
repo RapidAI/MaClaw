@@ -122,6 +122,170 @@ func TestResolveLLMConfigRejectsManagedByHubProviderCredential(t *testing.T) {
 	}
 }
 
+func TestNormalizeLLMFlatConfigFillsSelectedProvider(t *testing.T) {
+	cfg := normalizeLLMFlatConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:  "other",
+			URL:   "https://other.example.test/v1",
+			Key:   "other-key",
+			Model: "other-model",
+		}, {
+			Name:  "hub",
+			URL:   "https://hub.example.test/api/llm/v1",
+			Key:   "hub-key",
+			Model: "auto",
+		}},
+	})
+	if cfg.MaclawLLMUrl != "https://hub.example.test/api/llm/v1" || cfg.MaclawLLMKey != "hub-key" || cfg.MaclawLLMModel != "auto" {
+		t.Fatalf("normalizeLLMFlatConfig did not project selected provider: %#v", cfg)
+	}
+
+	cfg = normalizeLLMFlatConfig(corelib.AppConfig{
+		MaclawLLMUrl:             "https://custom.example.test/v1",
+		MaclawLLMKey:             "custom-key",
+		MaclawLLMModel:           "custom-model",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+	})
+	if cfg.MaclawLLMUrl != "https://custom.example.test/v1" || cfg.MaclawLLMKey != "custom-key" || cfg.MaclawLLMModel != "custom-model" {
+		t.Fatalf("normalizeLLMFlatConfig should not overwrite explicit flat fields: %#v", cfg)
+	}
+
+	cfg = effectiveLLMFlatConfig(corelib.AppConfig{
+		MaclawLLMUrl:             "https://stale.example.test/v1",
+		MaclawLLMKey:             "stale-key",
+		MaclawLLMModel:           "stale-model",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+	})
+	if cfg.MaclawLLMUrl != "https://hub.example.test/api/llm/v1" || cfg.MaclawLLMKey != "hub-key" || cfg.MaclawLLMModel != "auto" {
+		t.Fatalf("effectiveLLMFlatConfig should expose selected provider as effective flat fields: %#v", cfg)
+	}
+}
+
+func TestMaskedSecretPlaceholderVariants(t *testing.T) {
+	for _, value := range []string{"******", "********", "__masked__", " __MASKED__ "} {
+		if !maskedSecretPlaceholder(value) || !IsMaskedSecretPlaceholder(value) {
+			t.Fatalf("%q should be treated as masked placeholder", value)
+		}
+	}
+	for _, value := range []string{"", "real-secret", "***", "masked"} {
+		if maskedSecretPlaceholder(value) || IsMaskedSecretPlaceholder(value) {
+			t.Fatalf("%q should not be treated as masked placeholder", value)
+		}
+	}
+}
+
+func TestNormalizeLLMConfigForSaveSyncsVisibleFlatEditsToProvider(t *testing.T) {
+	created := normalizeLLMConfigForSave(corelib.AppConfig{}, corelib.AppConfig{
+		MaclawLLMUrl:             "https://flat.example.test/v1",
+		MaclawLLMKey:             "flat-key",
+		MaclawLLMModel:           "flat-model",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+	})
+	if created.MaclawLLMProviders[0].URL != "https://hub.example.test/api/llm/v1" || created.MaclawLLMProviders[0].Key != "hub-key" || created.MaclawLLMProviders[0].Model != "auto" {
+		t.Fatalf("initial provider config should not be overwritten by legacy flat fields, got %#v", created)
+	}
+
+	current := normalizeLLMFlatConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+	})
+	next := normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMUrl:             "https://custom.example.test/v1",
+		MaclawLLMKey:             "custom-key",
+		MaclawLLMModel:           "custom-model",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+	})
+	if next.MaclawLLMProviders[0].URL != "https://custom.example.test/v1" || next.MaclawLLMProviders[0].Key != "custom-key" || next.MaclawLLMProviders[0].Model != "custom-model" {
+		t.Fatalf("visible flat LLM edits should update selected provider, got %#v", next)
+	}
+
+	next = normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMUrl:             "https://partial.example.test/v1",
+		MaclawLLMKey:             "******",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+	})
+	if next.MaclawLLMProviders[0].URL != "https://partial.example.test/v1" || next.MaclawLLMProviders[0].Key != "hub-key" || next.MaclawLLMProviders[0].Model != "auto" {
+		t.Fatalf("partial flat LLM edit should not blank provider fields, got %#v", next)
+	}
+	if next.MaclawLLMKey != "hub-key" || next.MaclawLLMModel != "auto" {
+		t.Fatalf("partial flat LLM edit should refresh flat key/model, got %#v", next)
+	}
+
+	next = mergeSecretPreserving(current, corelib.AppConfig{
+		MaclawLLMKey:             "__masked__",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "********", Model: "auto"}},
+	})
+	next = normalizeLLMConfigForSave(current, next)
+	if next.MaclawLLMProviders[0].Key != "hub-key" || next.MaclawLLMKey != "hub-key" {
+		t.Fatalf("alternate masked LLM placeholders should preserve provider key, got %#v", next)
+	}
+
+	next = normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://admin.example.test/v1", Key: "admin-key", Model: "admin-model"}},
+	})
+	if next.MaclawLLMUrl != "https://admin.example.test/v1" || next.MaclawLLMKey != "admin-key" || next.MaclawLLMModel != "admin-model" {
+		t.Fatalf("provider edits should refresh flat LLM fields, got %#v", next)
+	}
+
+	current = normalizeLLMFlatConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "primary",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{Name: "primary", URL: "https://primary.example.test/v1", Key: "primary-key", Model: "primary-model"}, {
+			Name: "backup", URL: "https://backup.example.test/v1", Key: "backup-key", Model: "backup-model",
+		}},
+	})
+	next = normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMUrl:             current.MaclawLLMUrl,
+		MaclawLLMKey:             current.MaclawLLMKey,
+		MaclawLLMModel:           current.MaclawLLMModel,
+		MaclawLLMCurrentProvider: "backup",
+		MaclawLLMProviders:       current.MaclawLLMProviders,
+	})
+	if next.MaclawLLMUrl != "https://backup.example.test/v1" || next.MaclawLLMKey != "backup-key" || next.MaclawLLMModel != "backup-model" {
+		t.Fatalf("provider switch should refresh stale flat LLM fields, got %#v", next)
+	}
+
+	staleCurrent := current
+	staleCurrent.MaclawLLMUrl = "https://stale-flat.example.test/v1"
+	staleCurrent.MaclawLLMKey = "stale-flat-key"
+	staleCurrent.MaclawLLMModel = "stale-flat-model"
+	next = normalizeLLMConfigForSave(staleCurrent, corelib.AppConfig{
+		MaclawLLMUrl:             staleCurrent.MaclawLLMUrl,
+		MaclawLLMKey:             staleCurrent.MaclawLLMKey,
+		MaclawLLMModel:           staleCurrent.MaclawLLMModel,
+		MaclawLLMCurrentProvider: "backup",
+		MaclawLLMProviders:       staleCurrent.MaclawLLMProviders,
+	})
+	if next.MaclawLLMProviders[1].URL != "https://backup.example.test/v1" || next.MaclawLLMProviders[1].Key != "backup-key" || next.MaclawLLMProviders[1].Model != "backup-model" {
+		t.Fatalf("provider switch should not copy stale flat fields into provider, got %#v", next)
+	}
+
+	current = corelib.AppConfig{
+		MaclawLLMUrl:             "https://custom.example.test/v1",
+		MaclawLLMKey:             "custom-key",
+		MaclawLLMModel:           "custom-model",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+	}
+	next = normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMUrl:             "https://custom.example.test/v1",
+		MaclawLLMKey:             "custom-key",
+		MaclawLLMModel:           "custom-model",
+		MaclawLLMCurrentProvider: "hub",
+		MaclawLLMProviders:       current.MaclawLLMProviders,
+	})
+	if next.MaclawLLMProviders[0].URL != "https://hub.example.test/api/llm/v1" || next.MaclawLLMProviders[0].Key != "hub-key" || next.MaclawLLMProviders[0].Model != "auto" {
+		t.Fatalf("unchanged stale flat fields should not overwrite selected provider, got %#v", next)
+	}
+}
+
 func TestValidateAppConfigReportsInvalidSSHHosts(t *testing.T) {
 	cfg := corelib.AppConfig{
 		MaclawLLMUrl:   "https://llm.example.test/v1",

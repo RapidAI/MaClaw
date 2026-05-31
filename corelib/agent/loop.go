@@ -289,10 +289,13 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 		// Execute tool calls.
 		totalToolCalls += len(choice.Message.ToolCalls)
 		for _, tc := range choice.Message.ToolCalls {
-			cb.OnToolCall(tc.Function.Name)
-			execResult := executeLoopTool(cb, tc.Function.Name, tc.Function.Arguments)
+			execResult, policyRejected := authorizeLoopTool(cb, tc.Function.Name, tc.Function.Arguments)
+			if !policyRejected {
+				cb.OnToolCall(tc.Function.Name)
+				execResult = executeAuthorizedLoopTool(cb, tc.Function.Name, tc.Function.Arguments)
+				cb.OnToolResult(tc.Function.Name)
+			}
 			result := execResult.Result
-			cb.OnToolResult(tc.Function.Name)
 
 			// Track last tool for empty-response recovery context.
 			lastToolName = tc.Function.Name
@@ -371,11 +374,18 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 }
 
 func executeLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResult {
+	if result, rejected := authorizeLoopTool(cb, name, argsJSON); rejected {
+		return result
+	}
+	return executeAuthorizedLoopTool(cb, name, argsJSON)
+}
+
+func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResult, bool) {
 	if authorizer, ok := cb.(ToolAuthorizer); ok && !authorizer.IsToolAllowed(name) {
 		return ToolExecutionResult{
 			Result:  fmt.Sprintf("Error: tool %q is not allowed by the current execution policy", name),
 			Outcome: ToolExecutionOutcomeError,
-		}
+		}, true
 	}
 	if authorizer, ok := cb.(ToolCallAuthorizer); ok {
 		if allowed, reason := authorizer.IsToolCallAllowed(name, argsJSON); !allowed {
@@ -385,9 +395,13 @@ func executeLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResul
 			return ToolExecutionResult{
 				Result:  "Error: " + reason,
 				Outcome: ToolExecutionOutcomeError,
-			}
+			}, true
 		}
 	}
+	return ToolExecutionResult{}, false
+}
+
+func executeAuthorizedLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResult {
 	if structured, ok := cb.(StructuredToolExecutor); ok {
 		result := structured.ExecuteToolStructured(name, argsJSON)
 		if result.Outcome == "" {

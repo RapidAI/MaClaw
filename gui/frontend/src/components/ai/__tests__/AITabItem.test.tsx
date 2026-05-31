@@ -49,6 +49,34 @@ describe("AITabItem", () => {
         expect(item.getAttribute("title")).toBe("Agent A, Contract Bot, Local AI");
     });
 
+    it("uses participant names and primary title across ve aliases", () => {
+        const tab = {
+            id: "group-alias",
+            type: "group" as const,
+            title: "Agent A",
+            veId: "ve-machine-a",
+            participants: ["machine-a", "machine-b"],
+            participantNames: { "ve-machine-b": "Contract Bot" },
+            closable: true,
+        };
+
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Contract Bot");
+    });
+
+    it("uses the custom group title without treating it as the primary VE name", () => {
+        const tab = {
+            id: "group-renamed",
+            type: "group" as const,
+            title: "Agent A",
+            groupTitle: "Review room",
+            veId: "ve-a",
+            participants: ["ve-a", "local-maclaw"],
+            closable: true,
+        };
+
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Review room");
+    });
+
     it("uses a friendly direct VE tab title when the title looks like a profile id", () => {
         const tab = {
             id: "ve-profile-tab",

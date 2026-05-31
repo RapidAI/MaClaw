@@ -8,11 +8,16 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
+const scheduledTaskExecutorOwnerID = "system:scheduler:background:scheduled-task-executor"
+
 // buildLocalScheduledTaskExecutor creates a TaskExecutor that runs scheduled
 // tasks through the local IMMessageHandler without requiring Hub connectivity.
 // This ensures scheduled tasks fire for desktop-only users.
 func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
+		if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(scheduledTaskExecutorOwnerID, "delegate_task", map[string]interface{}{"agent": "scheduled_task", "request": task.Action, "task_id": task.ID, "task_name": task.Name}); err != nil {
+			return "", err
+		}
 		// Show a quiet notification when the task starts executing.
 		if ShowNotification != nil {
 			ShowNotification(
@@ -89,6 +94,9 @@ func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 // This upgrades the local executor when Hub connectivity is available.
 func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) scheduler.TaskExecutor {
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
+		if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(scheduledTaskExecutorOwnerID, "delegate_task", map[string]interface{}{"agent": "scheduled_task", "request": task.Action, "task_id": task.ID, "task_name": task.Name}); err != nil {
+			return "", err
+		}
 		// Show a quiet notification when the task starts executing.
 		if ShowNotification != nil {
 			ShowNotification(

@@ -6,7 +6,8 @@ import { GroupParticipantPanel } from "./GroupParticipantPanel";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEGroupChat";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalHumanParticipantId, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { addParticipantIdentityKeys, participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 
 type HistoryDiscussionDetail = {
     discussion?: {
@@ -91,10 +92,40 @@ const readableHistorySpeakerName = (
     fallback: string,
 ): string => {
     const name = String(candidate || "").trim();
-    const participant = participants.find((p) => p.id === fromId);
+    const participant = participants.find((p) => participantIdentityMatches(p.id, fromId));
     if (name && name !== fromId && !looksLikeRawParticipantId(name)) return name;
     return participant ? mentionLabelFromParticipant(participant) : fallback;
 };
+
+const sameHistoryParticipant = (left: string | undefined, right: string | undefined): boolean => {
+    const a = String(left || "").trim();
+    const b = String(right || "").trim();
+    if (!a || !b) return a === b;
+    return participantIdentityMatches(a, b);
+};
+
+const participantIdentityMatchesAny = (keys: Set<string>, participantId: string | undefined): boolean => {
+    if (!keys.size) return false;
+    const aliases = new Set<string>();
+    addParticipantIdentityKeys(aliases, participantId);
+    for (const alias of aliases) {
+        if (keys.has(alias)) return true;
+    }
+    return false;
+};
+
+function dedupeByHistoryParticipantIdentity<T extends { id?: string }>(participants: T[]): T[] {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const participant of participants) {
+        const id = String(participant.id || "").trim();
+        if (!id) continue;
+        const before = seen.size;
+        addParticipantIdentityKeys(seen, id);
+        if (seen.size !== before) out.push(participant);
+    }
+    return out;
+}
 
 const MENTION_TRIGGER_PATTERN = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/;
 
@@ -131,6 +162,22 @@ const mentionedHistoryParticipantIds = (content: string, participants: MentionPa
     }
     return [...mentioned];
 };
+
+const hasUnresolvedHistoryMentionTrigger = (content: string): boolean => /(^|[^A-Za-z0-9_.-])@[^\s@]+/.test(content);
+
+const historyTargetParticipantIds = (content: string, participants: MentionParticipant[]): string[] => {
+    const mentioned = mentionedHistoryParticipantIds(content, participants);
+    if (mentioned.length > 0 || hasUnresolvedHistoryMentionTrigger(content)) return mentioned;
+    const defaultCandidates = dedupeByHistoryParticipantIdentity(participants.filter((participant) => {
+        const id = String(participant.id || "").trim();
+        if (!id || isLocalHumanParticipantId(id)) return false;
+        return !isLocalParticipantId(id) && !isLocalAIName(participant.name);
+    }));
+    if (defaultCandidates.length !== 1) return [];
+    const defaultParticipant = defaultCandidates[0]?.id?.trim();
+    return defaultParticipant ? [defaultParticipant] : [];
+};
+
 const participantFallbackName = (id: string, index: number, lang: string | undefined): string => {
     const normalized = normalizeHistoryParticipantId(id);
     if (normalized === "me" || normalized === "user") return textForLang(lang, "Me", "我", "我");
@@ -245,8 +292,9 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         setError("");
         const createdAt = new Date().toISOString();
         try {
-            const toIDs = mentionedHistoryParticipantIds(content, mentionParticipantsRef.current);
-            await GroupDiscussionSendHistoryMessage(discussionId, { kind: "statement", content, to_ids: toIDs.length ? toIDs : undefined, created_at: createdAt });
+            const toIDs = historyTargetParticipantIds(content, mentionParticipantsRef.current);
+            const outgoing = { kind: "statement", content, created_at: createdAt, ...(toIDs.length ? { to_ids: toIDs } : {}) };
+            await GroupDiscussionSendHistoryMessage(discussionId, outgoing);
             setInput("");
             setOptimisticMessages((prev) => [...prev, {
                 id: `local-${Date.now()}`,
@@ -306,24 +354,25 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                 messageNameMap.set(fromId, fromName);
             }
         }
+        const messageNames = Object.fromEntries(messageNameMap);
 
         const sessionParticipants = detail?.session?.participants || [];
         if (sessionParticipants.length > 0) {
-            return sessionParticipants
+            return dedupeByHistoryParticipantIdentity(sessionParticipants
                 .filter((p) => String(p.id || "").trim())
                 .map((p, index) => {
                     const id = String(p.id || "").trim();
-                    const resolvedName = readableParticipantName(p.name || messageNameMap.get(id), id, index, lang);
+                    const resolvedName = readableParticipantName(p.name || participantNameForIdentity(messageNames, id), id, index, lang);
                     const role = String(p.role_code || "").trim();
                     return { id, name: role ? `${resolvedName} (${role})` : resolvedName, online: true };
-                });
+                }));
         }
 
-        return (detail?.discussion?.participant_ids || []).map((id, index) => {
-            const resolved = messageNameMap.get(id);
+        return dedupeByHistoryParticipantIdentity((detail?.discussion?.participant_ids || []).map((id, index) => {
+            const resolved = participantNameForIdentity(messageNames, id);
             const displayName = resolved || participantFallbackName(id, index, lang);
             return { id, name: displayName, online: true };
-        });
+        }));
     }, [detail?.discussion?.participant_ids, detail?.messages, detail?.session?.participants, lang]);
 
     const localHistoryUserIds = useMemo(() => {
@@ -340,13 +389,14 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     }, [detail?.discussion?.local_relation, detail?.session?.participants]);
 
     const visibleParticipants = useMemo(() => {
-        const localIDs = new Set(localHistoryUserIds.map(normalizeHistoryParticipantId));
-        return participants
-            .filter((participant) => !localIDs.has(normalizeHistoryParticipantId(participant.id)))
+        const localIDs = new Set<string>();
+        localHistoryUserIds.forEach((id) => addParticipantIdentityKeys(localIDs, id));
+        return dedupeByHistoryParticipantIdentity(participants
+            .filter((participant) => !participantIdentityMatchesAny(localIDs, participant.id))
             .map((participant) => ({
                 ...participant,
                 isLocal: isLocalParticipantId(participant.id) || isLocalAIName(participant.name),
-            }));
+            })));
     }, [localHistoryUserIds, participants]);
 
     const closeMentionPopover = useCallback(() => {
@@ -458,10 +508,10 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
 
             const attachments = buildMessageAttachments(m);
             const fromId = m.from_id || "unknown";
-            const content = m.content || "";
+            const content = String(m.content || "");
             if (kind === "stream_chunk" && !content && attachments.length === 0) return;
 
-            if (kind === "stream_chunk" && lastStreamIndex >= 0 && lastStreamFrom === fromId) {
+            if (kind === "stream_chunk" && lastStreamIndex >= 0 && sameHistoryParticipant(lastStreamFrom, fromId)) {
                 const existing = merged[lastStreamIndex];
                 existing.content += content;
                 if (attachments.length > 0) {
@@ -470,7 +520,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                 return;
             }
 
-            const isLocalHistoryUser = localHistoryUserIds.some((id) => normalizeHistoryParticipantId(id) === normalizeHistoryParticipantId(fromId));
+            const isLocalHistoryUser = localHistoryUserIds.some((id) => participantIdentityMatches(id, fromId));
             const message: GroupMessage = {
                 id: m.id || `m-${idx}`,
                 fromId,

@@ -5,6 +5,7 @@ import { GroupParticipantPanel, type Participant } from "./GroupParticipantPanel
 import { HistoryGroupDiscussionTab } from "./HistoryGroupDiscussionTab";
 import { VEConversationView, type VEConversationHandle, type VEMessage } from "./VEConversationView";
 import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
+import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 
 type AssistantActiveTabContentProps = {
     activeTab: AITab;
@@ -114,6 +115,7 @@ function AssistantTabContentPane({ tab, active, lang, theme, getTabState, saveTa
                     getTabState={getTabState}
                     saveTabState={saveTabState}
                     onAddParticipantToTab={onAddParticipantToTab}
+                    active={active}
                 />
             );
         } else {
@@ -192,9 +194,10 @@ interface UnifiedVEGroupWrapperProps {
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
     onAddParticipantToTab?: (tab: AITab, veId: string, veName: string) => Promise<unknown> | unknown;
+    active?: boolean;
 }
 
-function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, onAddParticipantToTab }: UnifiedVEGroupWrapperProps) {
+function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, onAddParticipantToTab, active = true }: UnifiedVEGroupWrapperProps) {
     const veRef = useVEStatePersistence(tab.id, saveTabState);
 
     const savedState = getTabState?.(tab.id);
@@ -238,16 +241,18 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
     }, [lang]);
 
     // Memoize participant list for GroupParticipantPanel display
+    const primaryVEName = participantNameForIdentity(tab.participantNames, tab.veId || "") || tab.title;
     const panelParticipants: Participant[] = useMemo(() =>
         (tab.participants || []).map((pid, index) => ({
             id: pid,
             name: isLocalParticipant(tab, pid)
                 ? "" // GroupParticipantPanel uses isLocal flag for display name
-                : readableParticipantName(tab.participantNames?.[pid] || (pid === tab.veId ? tab.title : ""), pid, index, lang),
+                : readableParticipantName(participantNameForIdentity(tab.participantNames, pid) || (participantIdentityMatches(pid, tab.veId || "") ? primaryVEName : ""), pid, index, lang),
             online: true,
             isLocal: isLocalParticipant(tab, pid),
+            avatarDataURL: participantIdentityMatches(pid, tab.veId || "") ? tab.avatarDataURL : undefined,
         })),
-        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, lang]
+        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, tab.avatarDataURL, lang, primaryVEName]
     );
 
     // Participants for @mention popover: all participants are mentionable.
@@ -258,10 +263,10 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
             id: pid,
             name: isLocalParticipant(tab, pid)
                 ? localAINameForLang(lang)
-                : mentionLabelFromName(readableParticipantName(tab.participantNames?.[pid] || (pid === tab.veId ? tab.title : ""), pid, index, lang)),
+                : mentionLabelFromName(readableParticipantName(participantNameForIdentity(tab.participantNames, pid) || (participantIdentityMatches(pid, tab.veId || "") ? primaryVEName : ""), pid, index, lang)),
             online: true,
         })),
-        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, lang]
+        [tab.participants, tab.veId, tab.title, tab.participantNames, tab.localParticipantIds, lang, primaryVEName]
     );
 
     // CRITICAL: Always use the same DOM structure regardless of isGroupMode.
@@ -286,7 +291,7 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
                 <VEConversationView
                     ref={veRef}
                     veId={tab.veId!}
-                    veName={tab.title}
+                    veName={primaryVEName}
                     avatarDataURL={tab.avatarDataURL}
                     theme={theme}
                     lang={lang}
@@ -308,6 +313,7 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
                     theme={theme}
                     lang={lang}
                     sessionId={savedSessionId}
+                    active={active}
                     readOnly={!!tab.readOnly}
                     onAddParticipant={onAddParticipantToTab ? ((veId, veName) => onAddParticipantToTab(tab, veId, veName)) : undefined}
                     onTalkTo={handleTalkTo}

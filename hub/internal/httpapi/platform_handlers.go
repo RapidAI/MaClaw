@@ -868,9 +868,21 @@ type platformMachineLister interface {
 	ListByTenant(ctx context.Context, tenantID string) ([]*store.Machine, error)
 }
 
+func firstPlatformMachineLister(machineRepos ...platformMachineLister) platformMachineLister {
+	if len(machineRepos) == 0 {
+		return nil
+	}
+	return machineRepos[0]
+}
+
 type platformSourceUserSyncStats struct {
 	ExcludedDesktopEnrolled   int `json:"excluded_desktop_enrolled"`
 	ExcludedPlatformEmployees int `json:"excluded_platform_employees"`
+}
+
+type platformSourceUserSyncOptions struct {
+	IncludeDesktopEnrolled   bool
+	IncludePlatformEmployees bool
 }
 
 func PlatformSourceUsersSyncHandler(system store.SystemSettingsRepository, users store.UserRepository, tenants store.TenantRepository, machineRepos ...platformMachineLister) http.HandlerFunc {
@@ -880,8 +892,12 @@ func PlatformSourceUsersSyncHandler(system store.SystemSettingsRepository, users
 			return
 		}
 		var req struct {
-			TenantID    string `json:"tenant_id"`
-			HubTenantID string `json:"hub_tenant_id"`
+			TenantID                  string `json:"tenant_id"`
+			HubTenantID               string `json:"hub_tenant_id"`
+			IncludeDesktopEnrolled    bool   `json:"include_desktop_enrolled"`
+			IncludeDesktopEnrolledAlt bool   `json:"includeDesktopEnrolled"`
+			IncludePlatformEmployees  bool   `json:"include_platform_employees"`
+			IncludePlatformEmployees2 bool   `json:"includePlatformEmployees"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -903,7 +919,8 @@ func PlatformSourceUsersSyncHandler(system store.SystemSettingsRepository, users
 		if len(machineRepos) > 0 {
 			machines = machineRepos[0]
 		}
-		out, stats, err := platformSourceUsersForTenantWithStats(r.Context(), system, users, tenantID, machines)
+		options := platformSourceUserSyncOptions{IncludeDesktopEnrolled: req.IncludeDesktopEnrolled || req.IncludeDesktopEnrolledAlt, IncludePlatformEmployees: req.IncludePlatformEmployees || req.IncludePlatformEmployees2}
+		out, stats, err := platformSourceUsersForTenantWithStatsAndOptions(r.Context(), system, users, tenantID, options, machines)
 		if err != nil {
 			if errors.Is(err, errPlatformUserRepositoryUnavailable) {
 				writeError(w, http.StatusServiceUnavailable, "USER_REPOSITORY_UNAVAILABLE", "user repository is unavailable")
@@ -924,6 +941,10 @@ func platformSourceUsersForTenant(ctx context.Context, system store.SystemSettin
 }
 
 func platformSourceUsersForTenantWithStats(ctx context.Context, system store.SystemSettingsRepository, users store.UserRepository, tenantID string, machineRepos ...platformMachineLister) ([]map[string]any, platformSourceUserSyncStats, error) {
+	return platformSourceUsersForTenantWithStatsAndOptions(ctx, system, users, tenantID, platformSourceUserSyncOptions{}, firstPlatformMachineLister(machineRepos...))
+}
+
+func platformSourceUsersForTenantWithStatsAndOptions(ctx context.Context, system store.SystemSettingsRepository, users store.UserRepository, tenantID string, options platformSourceUserSyncOptions, machines platformMachineLister) ([]map[string]any, platformSourceUserSyncStats, error) {
 	stats := platformSourceUserSyncStats{}
 	if users == nil {
 		return nil, stats, errPlatformUserRepositoryUnavailable
@@ -937,15 +958,25 @@ func platformSourceUsersForTenantWithStats(ctx context.Context, system store.Sys
 	for id := range excludedIDs {
 		platformEmployeeUserIDs[id] = struct{}{}
 	}
+	platformEmployeeEmails := make(map[string]struct{}, len(excludedEmails))
+	for email := range excludedEmails {
+		platformEmployeeEmails[email] = struct{}{}
+	}
+	if options.IncludePlatformEmployees {
+		excludedIDs = map[string]struct{}{}
+		excludedEmails = map[string]struct{}{}
+	}
 	desktopUserIDs := map[string]struct{}{}
-	if len(machineRepos) > 0 && machineRepos[0] != nil {
-		machineUserIDs, err := platformMachineAccountExclusions(ctx, machineRepos[0], tenantID)
+	if machines != nil {
+		machineUserIDs, err := platformMachineAccountExclusions(ctx, machines, tenantID)
 		if err != nil {
 			return nil, stats, err
 		}
 		for id := range machineUserIDs {
 			desktopUserIDs[id] = struct{}{}
-			excludedIDs[id] = struct{}{}
+			if !options.IncludeDesktopEnrolled {
+				excludedIDs[id] = struct{}{}
+			}
 		}
 	}
 	out := make([]map[string]any, 0, len(items))
@@ -972,16 +1003,28 @@ func platformSourceUsersForTenantWithStats(ctx context.Context, system store.Sys
 			stats.ExcludedPlatformEmployees++
 			continue
 		}
+		_, platformEmployeeID := platformEmployeeUserIDs[userID]
+		_, platformEmployeeEmail := platformEmployeeEmails[userEmail]
+		isPlatformEmployee := platformEmployeeID || platformEmployeeEmail
+		accountType := "physical_employee"
+		provider := "hub"
+		if isPlatformEmployee {
+			accountType = "virtual_employee"
+			provider = "virtualemployee-platform"
+		}
 		out = append(out, map[string]any{
-			"id":           user.ID,
-			"tenant_id":    tenantID,
-			"external_id":  user.ID,
-			"email":        user.Email,
-			"display_name": user.Email,
-			"department":   "",
-			"title":        "",
-			"status":       user.Status,
-			"updated_at":   user.UpdatedAt.Format(time.RFC3339),
+			"id":                  user.ID,
+			"tenant_id":           tenantID,
+			"external_id":         user.ID,
+			"email":               user.Email,
+			"display_name":        user.Email,
+			"department":          "",
+			"title":               "",
+			"status":              user.Status,
+			"account_type":        accountType,
+			"provider":            provider,
+			"is_virtual_employee": isPlatformEmployee,
+			"updated_at":          user.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 	return out, stats, nil
@@ -991,7 +1034,12 @@ func platformHubUserActive(user *store.User) bool {
 	if user == nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(user.Status), "active")
+	switch strings.ToLower(strings.TrimSpace(user.Status)) {
+	case "active", "approved", "statusapproved", "status_approved", "enabled", "normal":
+		return true
+	default:
+		return false
+	}
 }
 
 func platformMachineAccountExclusions(ctx context.Context, machines platformMachineLister, tenantID string) (map[string]struct{}, error) {
@@ -1578,6 +1626,124 @@ func PlatformEmployeeStatusHandler(system store.SystemSettingsRepository, tenant
 	}
 }
 
+func PlatformEmployeeDeleteHandler(system store.SystemSettingsRepository, tenants store.TenantRepository, users store.UserRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		entry, body, ok := authenticatePlatformRequest(w, r, system)
+		if !ok {
+			return
+		}
+		var req struct {
+			EmployeeID         string `json:"employee_id"`
+			PlatformEmployeeID string `json:"platform_employee_id"`
+			VirtualEmail       string `json:"virtual_email"`
+			HubTenantID        string `json:"hub_tenant_id"`
+			HubEmployeeID      string `json:"hub_employee_id"`
+			HubAccountID       string `json:"hub_account_id"`
+		}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+				return
+			}
+		}
+		platformEmployeeID := firstNonEmpty(strings.TrimSpace(req.PlatformEmployeeID), strings.TrimSpace(req.EmployeeID), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(req.HubEmployeeID))
+		if platformEmployeeID == "" {
+			writeError(w, http.StatusBadRequest, "EMPLOYEE_ID_REQUIRED", "employee_id is required")
+			return
+		}
+		tenantID := strings.TrimSpace(req.HubTenantID)
+		if tenantID == "" {
+			writeError(w, http.StatusBadRequest, "TENANT_REQUIRED", "hub_tenant_id is required")
+			return
+		}
+		if !platformTenantIDAllowed(r.Context(), tenants, tenantID) {
+			writeError(w, http.StatusNotFound, "TENANT_NOT_FOUND", "Hub tenant not found")
+			return
+		}
+		employeeEntry, found := platformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID)
+		if !found {
+			writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
+			return
+		}
+		if strings.TrimSpace(req.HubEmployeeID) != "" && strings.TrimSpace(req.HubEmployeeID) != firstNonEmpty(employeeEntry.ID, employeeEntry.MachineID) {
+			writeError(w, http.StatusForbidden, "EMPLOYEE_IDENTITY_MISMATCH", "hub_employee_id does not match the registered platform employee")
+			return
+		}
+		if strings.TrimSpace(req.HubAccountID) != "" && strings.TrimSpace(employeeEntry.OwnerUserID) != "" && strings.TrimSpace(req.HubAccountID) != strings.TrimSpace(employeeEntry.OwnerUserID) {
+			writeError(w, http.StatusForbidden, "EMPLOYEE_IDENTITY_MISMATCH", "hub_account_id does not match the registered platform employee")
+			return
+		}
+		if users == nil {
+			writeError(w, http.StatusServiceUnavailable, "USER_REPOSITORY_UNAVAILABLE", "user repository is unavailable")
+			return
+		}
+		email, err := platformEmployeeDeleteEmail(r.Context(), users, tenantID, employeeEntry, req.VirtualEmail)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "USER_LOOKUP_FAILED", err.Error())
+			return
+		}
+		if email == "" && strings.TrimSpace(req.VirtualEmail) != "" {
+			writeError(w, http.StatusForbidden, "EMPLOYEE_IDENTITY_MISMATCH", "virtual_email does not match the registered platform employee")
+			return
+		}
+		userDeleted := false
+		if email != "" {
+			if err := users.DeleteByTenantEmail(r.Context(), tenantID, email); err != nil {
+				writeError(w, http.StatusInternalServerError, "USER_DELETE_FAILED", err.Error())
+				return
+			}
+			userDeleted = true
+		}
+		removed, err := deletePlatformEmployeeInTenant(r.Context(), system, tenantID, entry.PlatformID, platformEmployeeID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "EMPLOYEE_DELETE_FAILED", err.Error())
+			return
+		}
+		if !removed {
+			writeError(w, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "platform employee was not found in Hub registry")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee_id": platformEmployeeID, "hub_tenant_id": tenantID, "hub_employee_id": firstNonEmpty(employeeEntry.ID, employeeEntry.MachineID), "hub_account_id": employeeEntry.OwnerUserID, "user_deleted": userDeleted})
+	}
+}
+
+func platformEmployeeDeleteEmail(ctx context.Context, users store.UserRepository, tenantID string, employeeEntry digitalEmployeeEntry, requestEmail string) (string, error) {
+	registryEmail := strings.ToLower(strings.TrimSpace(employeeEntry.OwnerEmail))
+	requestEmail = strings.ToLower(strings.TrimSpace(requestEmail))
+	if registryEmail != "" {
+		if requestEmail != "" && requestEmail != registryEmail {
+			return "", nil
+		}
+		return registryEmail, nil
+	}
+	ownerUserID := strings.TrimSpace(employeeEntry.OwnerUserID)
+	if ownerUserID == "" {
+		if requestEmail == "" {
+			return "", nil
+		}
+		user, err := users.GetByTenantEmail(ctx, tenantID, requestEmail)
+		if err != nil {
+			return "", err
+		}
+		if user == nil || strings.TrimSpace(user.TenantID) != strings.TrimSpace(tenantID) || !strings.EqualFold(strings.TrimSpace(user.Email), requestEmail) {
+			return "", nil
+		}
+		return requestEmail, nil
+	}
+	user, err := users.GetByID(ctx, ownerUserID)
+	if err != nil {
+		return "", err
+	}
+	if user == nil || strings.TrimSpace(user.TenantID) != strings.TrimSpace(tenantID) {
+		return "", nil
+	}
+	lookupEmail := strings.ToLower(strings.TrimSpace(user.Email))
+	if requestEmail != "" && lookupEmail != "" && requestEmail != lookupEmail {
+		return "", nil
+	}
+	return lookupEmail, nil
+}
+
 func firstTenantRepo(tenants ...store.TenantRepository) store.TenantRepository {
 	if len(tenants) == 0 {
 		return nil
@@ -1730,6 +1896,32 @@ func updatePlatformEmployeeStatusInTenant(ctx context.Context, system store.Syst
 			emp.OnlineStatus = veOnlineStatusOnline
 		}
 		emp.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := saveVERegistry(ctx, tenantSystem, registry); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func deletePlatformEmployeeInTenant(ctx context.Context, system store.SystemSettingsRepository, tenantID, platformID, platformEmployeeID string) (bool, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	platformID = strings.TrimSpace(platformID)
+	platformEmployeeID = strings.TrimSpace(platformEmployeeID)
+	if tenantID == "" || platformEmployeeID == "" {
+		return false, nil
+	}
+	tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
+	registry := loadVERegistry(ctx, tenantSystem)
+	for i := range registry.Employees {
+		emp := registry.Employees[i]
+		if platformID != "" && !strings.EqualFold(strings.TrimSpace(emp.PlatformID), platformID) {
+			continue
+		}
+		if !platformEmployeeIDMatchesEntry(emp, platformEmployeeID) {
+			continue
+		}
+		registry.Employees = append(registry.Employees[:i], registry.Employees[i+1:]...)
 		if err := saveVERegistry(ctx, tenantSystem, registry); err != nil {
 			return false, err
 		}
@@ -2086,6 +2278,26 @@ func (s platformAwareMachineSender) SendToMachine(machineID string, msg any) err
 	return nil
 }
 
+func (s platformAwareMachineSender) DiscussionInviteAutoAccepts(tenantID, targetID string) (bool, error) {
+	targetID = strings.TrimSpace(targetID)
+	deliveryTarget, ok := s.findPlatformEmployee(context.Background(), targetID, tenantID)
+	if !ok {
+		return false, nil
+	}
+	switch deliveryTarget.kind {
+	case maclawSrvRuntimePlatformID:
+		if strings.TrimSpace(deliveryTarget.runtime.BaseURL) == "" {
+			return false, fmt.Errorf("MaClawSrv runtime is not configured for platform employee %s", targetID)
+		}
+		log.Printf("[ve-platform-delivery] auto-accept trusted discussion invite target=%s tenant=%s employee=%s", targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID)
+		return true, nil
+	case "platform_inactive":
+		return false, fmt.Errorf("platform employee %s is not active", targetID)
+	default:
+		return false, fmt.Errorf("MaClawSrv runtime is not configured for platform employee %s", targetID)
+	}
+}
+
 func (s platformAwareMachineSender) SendDiscussionMessage(session *corea2a.Session, msg corea2a.GroupDiscussionMessage, target corea2a.Participant) (bool, *corea2a.GroupDiscussionMessage, error) {
 	targetID := strings.TrimSpace(target.ID)
 	tenantID := ""
@@ -2106,14 +2318,7 @@ func (s platformAwareMachineSender) SendDiscussionMessage(session *corea2a.Sessi
 	}
 	log.Printf("[ve-platform-delivery] route discussion session=%s from=%s target=%s tenant=%s employee=%s kind=%s msg_id=%s msg_kind=%s", groupDiscussionSessionID(session), msg.FromID, targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, deliveryTarget.kind, msg.ID, msg.Kind)
 	if deliveryTarget.kind == maclawSrvRuntimePlatformID {
-		reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, map[string]any{
-			"type": "ve:discussion_message",
-			"ts":   time.Now().Unix(),
-			"payload": map[string]any{
-				"envelope":    macLawSrvDiscussionEnvelope(session, msg, targetID),
-				"target_role": strings.TrimSpace(target.RoleCode),
-			},
-		})
+		reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(session, msg, targetID, target.RoleCode))
 		if err != nil {
 			log.Printf("[ve-platform-delivery] runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s: %v", groupDiscussionSessionID(session), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), err)
 			return true, nil, err
@@ -2156,14 +2361,7 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 		targetCopy := target
 		go func() {
 			started := time.Now()
-			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, map[string]any{
-				"type": "ve:discussion_message",
-				"ts":   time.Now().Unix(),
-				"payload": map[string]any{
-					"envelope":    macLawSrvDiscussionEnvelope(sessionCopy, msgCopy, targetID),
-					"target_role": strings.TrimSpace(targetCopy.RoleCode),
-				},
-			})
+			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode))
 			if err != nil {
 				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), err)
 				return
@@ -2226,6 +2424,97 @@ func macLawSrvDiscussionEnvelope(session *corea2a.Session, msg corea2a.GroupDisc
 	envelope.ToIDs = []string{strings.TrimSpace(targetID)}
 	envelope.Message = &msg
 	return envelope
+}
+
+func macLawSrvDiscussionPayload(session *corea2a.Session, msg corea2a.GroupDiscussionMessage, targetID, targetRole string) map[string]any {
+	inner := map[string]any{
+		"envelope":    macLawSrvDiscussionEnvelope(session, msg, targetID),
+		"target_role": strings.TrimSpace(targetRole),
+	}
+	if context := macLawSrvDiscussionContext(session, msg, targetID); context != "" {
+		inner["discussion_context"] = context
+		inner["content"] = context
+	}
+	return map[string]any{"type": "ve:discussion_message", "ts": time.Now().Unix(), "payload": inner}
+}
+
+func macLawSrvDiscussionContext(session *corea2a.Session, msg corea2a.GroupDiscussionMessage, targetID string) string {
+	current := strings.TrimSpace(msg.Content)
+	if session == nil {
+		return current
+	}
+	var recent []string
+	for _, item := range session.Messages {
+		if strings.EqualFold(strings.TrimSpace(item.ID), strings.TrimSpace(msg.ID)) && strings.TrimSpace(msg.ID) != "" {
+			continue
+		}
+		if item.Kind == corea2a.MessageStreamEnd || item.Kind == corea2a.MessageHandoff {
+			continue
+		}
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		fromID := strings.TrimSpace(item.FromID)
+		if fromID == "" {
+			fromID = "unknown"
+		}
+		recent = append(recent, fmt.Sprintf("[%s] %s", fromID, content))
+	}
+	if len(recent) > 12 {
+		recent = recent[len(recent)-12:]
+	}
+	var b strings.Builder
+	b.WriteString("你正在参与一个多人 Hub 群聊。请基于共享群聊上下文回答，不要把当前消息当成孤立的 1v1 私聊。")
+	if topic := strings.TrimSpace(session.Topic); topic != "" {
+		b.WriteString("\n主题: " + topic)
+	}
+	if goal := strings.TrimSpace(session.Goal); goal != "" {
+		b.WriteString("\n目标: " + goal)
+	}
+	if strings.TrimSpace(targetID) != "" {
+		b.WriteString("\n当前被点名参与者: " + strings.TrimSpace(targetID))
+	}
+	if participants := macLawSrvDiscussionParticipantContext(session); participants != "" {
+		b.WriteString("\n\nParticipants:\n")
+		b.WriteString(participants)
+	}
+	if len(recent) > 0 {
+		b.WriteString("\n\n最近群聊上下文:\n")
+		b.WriteString(strings.Join(recent, "\n"))
+	}
+	if current != "" {
+		b.WriteString("\n\n当前消息来自 " + strings.TrimSpace(msg.FromID) + ": " + current)
+	}
+	return b.String()
+}
+
+func macLawSrvDiscussionParticipantContext(session *corea2a.Session) string {
+	if session == nil || len(session.Participants) == 0 {
+		return ""
+	}
+	items := make([]string, 0, len(session.Participants))
+	seen := map[string]struct{}{}
+	for _, participant := range session.Participants {
+		id := strings.TrimSpace(participant.ID)
+		if id == "" {
+			continue
+		}
+		key := groupDiscussionCanonicalParticipantIdentityKey(id)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		role := strings.TrimSpace(participant.RoleCode)
+		if role == "" {
+			role = "participant"
+		}
+		items = append(items, fmt.Sprintf("- %s (%s)", id, role))
+	}
+	return strings.Join(items, "\n")
 }
 
 func isMacLawSrvRuntimeProvider(provider platformProviderEntry, entry digitalEmployeeEntry) bool {
@@ -2451,6 +2740,9 @@ func platformA2APayload(msg any) map[string]any {
 		}
 		if inner, ok := outer["payload"].(map[string]any); ok {
 			payload["payload"] = inner
+			if content := envelopeStringField(inner, "content", "Content"); content != "" {
+				payload["content"] = content
+			}
 			if env, ok := inner["envelope"]; ok {
 				if typ := envelopeStringField(env, "Type", "type"); typ != "" {
 					payload["protocol_event_type"] = typ
@@ -2468,7 +2760,7 @@ func platformA2APayload(msg any) map[string]any {
 					if messageID := envelopeStringField(message, "ID", "id"); messageID != "" {
 						payload["hub_message_id"] = messageID
 					}
-					if content := envelopeStringField(message, "Content", "content"); content != "" {
+					if content := envelopeStringField(message, "Content", "content"); content != "" && payloadStringEmpty(payload, "content") {
 						payload["content"] = content
 					}
 				}
@@ -2476,6 +2768,14 @@ func platformA2APayload(msg any) map[string]any {
 		}
 	}
 	return payload
+}
+
+func payloadStringEmpty(payload map[string]any, key string) bool {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return true
+	}
+	return strings.TrimSpace(fmt.Sprint(value)) == ""
 }
 
 func platformA2AMessageType(msg any) any {

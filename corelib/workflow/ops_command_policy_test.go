@@ -214,10 +214,10 @@ func TestValidateToolCallByPolicyBlocksHighRiskSSHExec(t *testing.T) {
 	}
 }
 
-func TestValidateToolCallByPolicyAllowsSSHConnectWithoutInitialCommand(t *testing.T) {
+func TestValidateToolCallByPolicyBlocksDocOnlySSHConnectWithoutInitialCommand(t *testing.T) {
 	err := ValidateToolCallByPolicy(ToolFilterDocOnly, "ssh", map[string]interface{}{"action": "connect", "label": "prod"})
-	if err != nil {
-		t.Fatalf("doc-only connect without initial command should be allowed for read-only collection: %v", err)
+	if err == nil {
+		t.Fatal("expected doc-only ssh connect to be blocked")
 	}
 }
 
@@ -328,17 +328,83 @@ func TestValidateToolCallByPolicyBlocksMutatingWithoutManifest(t *testing.T) {
 	}
 }
 
-func TestValidateToolCallByPolicyBlocksDocOnlyMutatingBash(t *testing.T) {
+func TestValidateToolCallByPolicyBlocksDocOnlyBash(t *testing.T) {
 	err := ValidateToolCallByPolicy(ToolFilterDocOnly, "bash", map[string]interface{}{"command": "systemctl restart nginx"})
 	if err == nil {
-		t.Fatal("expected doc-only mutating bash command to be blocked")
+		t.Fatal("expected doc-only bash command to be blocked")
 	}
 }
 
-func TestValidateToolCallByPolicyAllowsDocOnlyReadOnlyBash(t *testing.T) {
+func TestValidateToolCallByPolicyBlocksDocOnlyReadOnlyBash(t *testing.T) {
 	err := ValidateToolCallByPolicy(ToolFilterDocOnly, "bash", map[string]interface{}{"command": "systemctl status nginx && journalctl -u nginx -n 50"})
-	if err != nil {
-		t.Fatalf("expected doc-only read-only bash command to pass: %v", err)
+	if err == nil {
+		t.Fatal("expected doc-only read-only bash command to be blocked by phase policy")
+	}
+}
+
+func TestValidateToolCallByPolicyBlocksDocOnlyFileWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "write_file", path: "src/main.cpp"},
+		{name: "edit_file", path: "CMakeLists.txt"},
+		{name: "edit_lines", path: "package.json"},
+		{name: "write_file", path: "docs/requirements.md"},
+		{name: "edit_file", path: "notes/task-breakdown.txt"},
+	} {
+		t.Run(tc.name+"/"+tc.path, func(t *testing.T) {
+			err := ValidateToolCallByPolicy(ToolFilterDocOnly, tc.name, map[string]interface{}{"path": tc.path})
+			if err == nil {
+				t.Fatalf("expected doc-only %s to block file mutation %q", tc.name, tc.path)
+			}
+		})
+	}
+}
+
+func TestValidateToolCallByPolicyRestrictsDocOnlyOfficeActions(t *testing.T) {
+	for _, action := range []string{"generate_pdf", "read_excel", "read_pptx"} {
+		if err := ValidateToolCallByPolicy(ToolFilterDocOnly, "office", map[string]interface{}{"action": action}); err != nil {
+			t.Fatalf("expected doc-only office action %s to pass: %v", action, err)
+		}
+	}
+	for _, action := range []string{"", "write_excel", "unknown"} {
+		if err := ValidateToolCallByPolicy(ToolFilterDocOnly, "office", map[string]interface{}{"action": action}); err == nil {
+			t.Fatalf("expected doc-only office action %q to be blocked", action)
+		}
+	}
+}
+
+func TestValidateToolCallByPolicyRestrictsDocOnlyMemoryActions(t *testing.T) {
+	for _, args := range []map[string]interface{}{
+		{"action": "recall", "query": "requirements"},
+		{"action": "themes"},
+		{"action": "themes", "plan": true},
+		{"action": "scenes"},
+		{"action": "trace"},
+		{"action": "candidates"},
+		{"action": "derived"},
+		{"action": "scene_index"},
+		{"action": "memory_candidates"},
+		{"action": "derived_audit"},
+	} {
+		if err := ValidateToolCallByPolicy(ToolFilterDocOnly, "memory", args); err != nil {
+			t.Fatalf("expected doc-only memory action to pass: %#v: %v", args, err)
+		}
+	}
+	for _, args := range []map[string]interface{}{
+		{"action": ""},
+		{"action": "save", "content": "remember this"},
+		{"action": "delete", "id": "mem-1"},
+		{"action": "list"},
+		{"action": "derived_surgery", "id": "derived-1"},
+		{"action": "supersede_derived", "id": "derived-1"},
+		{"action": "themes", "apply": true},
+		{"action": "candidates", "apply": true},
+	} {
+		if err := ValidateToolCallByPolicy(ToolFilterDocOnly, "memory", args); err == nil {
+			t.Fatalf("expected doc-only memory action to be blocked: %#v", args)
+		}
 	}
 }
 

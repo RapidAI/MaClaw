@@ -14,7 +14,7 @@ func (h *IMMessageHandler) emitMCPToolAgentView(serverRef, resolvedID, toolName 
 	if h == nil || h.app == nil || len(inputSchema) == 0 || strings.TrimSpace(toolName) == "" {
 		return false
 	}
-	view := buildMCPToolAgentView(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs)
+	view := buildMCPToolAgentViewWithPolicyOwner(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs, h.currentRuntimePolicyOwnerID())
 	if view == nil {
 		return false
 	}
@@ -53,6 +53,10 @@ func (h *IMMessageHandler) handleMCPToolAgentViewSubmit(data map[string]interfac
 		return &IMAgentResponse{Text: "MCP tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	callArgs["arguments"] = toolArgs
+	policyOwnerID := consumeRuntimePolicyOwnerIDFromToolArgs(callArgs)
+	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, "call_mcp_tool", callArgs); rejection != nil {
+		return rejection
+	}
 
 	result := h.toolCallMCPTool(callArgs)
 	if strings.TrimSpace(result) == mcpAgentViewCorrectionMessage {
@@ -81,6 +85,10 @@ func registeredToolValidationIssuesForMCP(issues []registeredToolValidationIssue
 }
 
 func buildMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema map[string]interface{}, toolArgs map[string]interface{}, validationErrs []mcputil.ValidationError) map[string]interface{} {
+	return buildMCPToolAgentViewWithPolicyOwner(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs, "")
+}
+
+func buildMCPToolAgentViewWithPolicyOwner(serverRef, resolvedID, toolName string, inputSchema map[string]interface{}, toolArgs map[string]interface{}, validationErrs []mcputil.ValidationError, policyOwnerID string) map[string]interface{} {
 	if len(inputSchema) == 0 || strings.TrimSpace(toolName) == "" {
 		return nil
 	}
@@ -109,6 +117,9 @@ func buildMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema m
 		"tool_name":   toolName,
 		"arguments":   cloneMISInterfaceMap(toolArgs),
 		"resolved_id": resolvedID,
+	}
+	if ownerID := strings.TrimSpace(policyOwnerID); ownerID != "" {
+		callContext[registeredToolPolicyOwnerIDField] = ownerID
 	}
 	if view := registeredToolSpecializedAgentView(tool, toolArgs, registeredToolSpecializedAgentViewOptions{
 		ViewID:      "mcp:call",

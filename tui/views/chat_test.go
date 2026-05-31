@@ -3,6 +3,7 @@ package views
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
@@ -47,6 +48,73 @@ func TestChatSetLangRelocalizesSystemMessages(t *testing.T) {
 	if strings.Contains(view, i18n.T(i18n.MsgTUIChatSystemReady, "zh")) {
 		t.Fatalf("chat system message should not keep Chinese after language switch:\n%s", view)
 	}
+}
+
+func TestChatSendUsesToggledSimpleMode(t *testing.T) {
+	m := NewChatModel("en")
+	m.FocusInput()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated
+	if m.agentMode {
+		t.Fatal("agentMode should be false after pressing a")
+	}
+	m.FocusInput()
+	m.input.SetValue("hello")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated
+	if cmd == nil {
+		t.Fatal("expected send command")
+	}
+
+	msg := waitForChatSendMsg(t, cmd)
+	if msg.AgentMode {
+		t.Fatal("ChatSendMsg.AgentMode should preserve simple mode")
+	}
+	if msg.Text != "hello" {
+		t.Fatalf("ChatSendMsg.Text = %q, want hello", msg.Text)
+	}
+}
+
+func waitForChatSendMsg(t *testing.T, cmd tea.Cmd) ChatSendMsg {
+	t.Helper()
+	msgs := make(chan tea.Msg, 16)
+	go func() {
+		runCmdForTest(cmd, msgs)
+		close(msgs)
+	}()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case msg, ok := <-msgs:
+			if !ok {
+				t.Fatal("send command completed without ChatSendMsg")
+			}
+			if send, ok := msg.(ChatSendMsg); ok {
+				return send
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for ChatSendMsg")
+		}
+	}
+}
+
+func runCmdForTest(cmd tea.Cmd, msgs chan<- tea.Msg) {
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if msg == nil {
+		return
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, nested := range batch {
+			runCmdForTest(nested, msgs)
+		}
+		return
+	}
+	msgs <- msg
 }
 
 func TestRenderMarkdownFitsSmallWidth(t *testing.T) {

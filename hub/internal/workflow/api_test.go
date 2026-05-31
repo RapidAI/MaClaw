@@ -47,6 +47,17 @@ func (s *memWorkflowStore) CreateVersion(_ context.Context, ver *WorkflowVersion
 	return nil
 }
 
+func (s *memWorkflowStore) UpdateVersion(_ context.Context, ver *WorkflowVersion) error {
+	existing, ok := s.versions[ver.ID]
+	if !ok {
+		return nil
+	}
+	existing.Graph = ver.Graph
+	existing.VersionNumber = ver.VersionNumber
+	existing.UpdatedAt = ver.UpdatedAt
+	return nil
+}
+
 func (s *memWorkflowStore) GetVersion(_ context.Context, id string) (*WorkflowVersion, error) {
 	return s.versions[id], nil
 }

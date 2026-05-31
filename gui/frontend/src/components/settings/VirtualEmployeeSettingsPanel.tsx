@@ -280,6 +280,7 @@ const copy = (lang?: string) => ({
   avatarUpload: textForLang(lang, "Upload photo", "\u4e0a\u4f20\u7167\u7247", "\u4e0a\u50b3\u7167\u7247"),
   avatarReplace: textForLang(lang, "Replace", "\u66ff\u6362", "\u66ff\u63db"),
   avatarClear: textForLang(lang, "Use default", "\u4f7f\u7528\u9ed8\u8ba4", "\u4f7f\u7528\u9810\u8a2d"),
+  avatarPreparing: textForLang(lang, "Processing image...", "\u5904\u7406\u56fe\u7247\u4e2d...", "\u8655\u7406\u5716\u7247\u4e2d..."),
   avatarZoom: textForLang(lang, "Zoom", "\u7f29\u653e", "\u7e2e\u653e"),
   avatarHorizontal: textForLang(lang, "Horizontal", "\u6c34\u5e73", "\u6c34\u5e73"),
   avatarVertical: textForLang(lang, "Vertical", "\u5782\u76f4", "\u5782\u76f4"),
@@ -409,13 +410,17 @@ function buildCroppedAvatarDataURL(sourceURL: string, scale: number, offsetX: nu
   });
 }
 
-function shrinkAvatarSourceDataURL(sourceURL: string): Promise<string> {
+function prepareAvatarSourceDataURL(sourceURL: string, sourceBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
       const width = img.width || avatarSourceMaxDimension;
       const height = img.height || avatarSourceMaxDimension;
       const ratio = Math.min(1, avatarSourceMaxDimension / Math.max(width, height));
+      if (ratio === 1 && sourceBytes <= avatarImageMaxBytes) {
+        resolve(sourceURL);
+        return;
+      }
       const targetW = Math.max(1, Math.round(width * ratio));
       const targetH = Math.max(1, Math.round(height * ratio));
       const canvas = document.createElement("canvas");
@@ -432,11 +437,6 @@ function shrinkAvatarSourceDataURL(sourceURL: string): Promise<string> {
     img.onerror = () => reject(new Error("image load failed"));
     img.src = sourceURL;
   });
-}
-
-async function prepareAvatarSourceDataURL(sourceURL: string, sourceBytes: number): Promise<string> {
-  if (sourceBytes <= avatarImageMaxBytes) return sourceURL;
-  return shrinkAvatarSourceDataURL(sourceURL);
 }
 
 const normalizeSensitivePolicy = (policy: string): SensitiveQueryPolicy => {
@@ -469,6 +469,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const [avatarCircle, setAvatarCircle] = useState(true);
   const [avatarImageSize, setAvatarImageSize] = useState<{ width: number; height: number } | null>(null);
   const [avatarError, setAvatarError] = useState("");
+  const [avatarPreparing, setAvatarPreparing] = useState(false);
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
   const avatarFileLoadSeqRef = useRef(0);
   const [approvalNotice, setApprovalNotice] = useState("");
@@ -491,6 +492,8 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
     try {
       const resp = (await GetVEStatus()) as VEStatusResponse;
       if (!mountedRef.current) return;
+      avatarFileLoadSeqRef.current += 1;
+      setAvatarPreparing(false);
       if (resp?.registered && resp.employee) {
         setRegistered(true);
         setName(resp.employee.name || "");
@@ -533,6 +536,8 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
       }
     } catch {
       if (!mountedRef.current) return;
+      avatarFileLoadSeqRef.current += 1;
+      setAvatarPreparing(false);
       resetVEFormState({
           setRegistered,
           setStatus,
@@ -605,16 +610,19 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
     if (!file) return;
     const loadSeq = ++avatarFileLoadSeqRef.current;
     if (!avatarAcceptedMimeTypes.has(file.type) || file.size > avatarMaxFileSize) {
+      setAvatarPreparing(false);
       setAvatarError(c.avatarInvalid);
       e.target.value = "";
       return;
     }
+    setAvatarPreparing(true);
     setAvatarError("");
     const reader = new FileReader();
     reader.onload = () => {
       if (!mountedRef.current || loadSeq !== avatarFileLoadSeqRef.current) return;
       const dataURL = String(reader.result || "");
       if (!safeAvatarSourceDataURL(dataURL)) {
+        setAvatarPreparing(false);
         setAvatarError(c.avatarInvalid);
         return;
       }
@@ -622,6 +630,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         .then((preparedURL) => {
           if (!mountedRef.current || loadSeq !== avatarFileLoadSeqRef.current) return;
           if (!safeAvatarSourceDataURL(preparedURL)) {
+            setAvatarPreparing(false);
             setAvatarError(c.avatarInvalid);
             return;
           }
@@ -632,13 +641,20 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
           setAvatarNeedsCrop(true);
           setAvatarImageSize(null);
           setAvatarError("");
+          setAvatarPreparing(false);
         })
         .catch(() => {
-          if (mountedRef.current && loadSeq === avatarFileLoadSeqRef.current) setAvatarError(c.avatarInvalid);
+          if (mountedRef.current && loadSeq === avatarFileLoadSeqRef.current) {
+            setAvatarPreparing(false);
+            setAvatarError(c.avatarInvalid);
+          }
         });
     };
     reader.onerror = () => {
-      if (mountedRef.current && loadSeq === avatarFileLoadSeqRef.current) setAvatarError(c.avatarInvalid);
+      if (mountedRef.current && loadSeq === avatarFileLoadSeqRef.current) {
+        setAvatarPreparing(false);
+        setAvatarError(c.avatarInvalid);
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = "";
@@ -646,6 +662,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
 
   function handleClearAvatar() {
     avatarFileLoadSeqRef.current += 1;
+    setAvatarPreparing(false);
     setAvatarSourceURL("");
     setAvatarDataURL("");
     setAvatarScale(1);
@@ -827,6 +844,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   }
 
   async function handleSubmit() {
+    if (avatarPreparing) return;
     if (!validate()) return;
     setSubmitting(true);
     let finalAvatarDataURL = avatarDataURL;
@@ -1310,10 +1328,10 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
             <button
               className="ve-btn ve-btn--primary"
               onClick={handleSubmit}
-              disabled={submitting}
+              disabled={submitting || avatarPreparing}
               data-testid="ve-submit-btn"
             >
-              {submitting ? "..." : isRejected ? c.reapply : registered ? c.update : c.register}
+              {avatarPreparing ? c.avatarPreparing : submitting ? "..." : isRejected ? c.reapply : registered ? c.update : c.register}
             </button>
           </div>
         )}

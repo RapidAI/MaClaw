@@ -96,6 +96,7 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
 	needsConfirmFromEngine := false
 	engine := h.getWorkflowEngine()
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
 	if engine != nil {
 		semanticBypass := false
 		if !gateConfig.active && gateConfig.intent == intentCoding {
@@ -104,11 +105,11 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 		if gateConfig.bugFix {
 			semanticBypass = true
 		}
-		if shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, gateConfig.active, engine.IsAwaitingReview(userID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(userID)) {
+		if shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, gateConfig.active, engine.IsAwaitingReview(policyOwnerID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(policyOwnerID), engine.GetActiveWorkflow(policyOwnerID) != nil) {
 			semanticBypass = true
 		}
 		if !semanticBypass {
-			needsConfirmFromEngine = engine.IsPhaseNeedsConfirm(userID)
+			needsConfirmFromEngine = engine.IsPhaseNeedsConfirm(policyOwnerID)
 		} else {
 			log.Printf("[workflow-gate] NeedsConfirm no-tool engine bypassed: semantic intent=%v active=%v bugFix=%v skipConfirmOther=%v",
 				gateConfig.intent, gateConfig.active, gateConfig.bugFix, skipNeedsConfirmGate)
@@ -117,10 +118,10 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 
 	needsConfirmFromSteering := false
 	if gateConfig.active && iteration > 0 {
-		if engine != nil && engine.GetActiveWorkflow(userID) != nil {
-			needsConfirmFromSteering = engine.IsPhaseNeedsConfirm(userID)
+		if engine != nil && engine.GetActiveWorkflow(policyOwnerID) != nil {
+			needsConfirmFromSteering = engine.IsPhaseNeedsConfirm(policyOwnerID)
 			if !needsConfirmFromSteering && normalizeIMMessagePlatformKind(platform).IsDesktop() {
-				log.Printf("[agent-loop] NeedsConfirm steering bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
+				log.Printf("[agent-loop] NeedsConfirm steering bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s policy_owner=%s)", iteration, userID, policyOwnerID)
 			}
 		} else {
 			needsConfirmFromSteering = true
@@ -156,6 +157,10 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 		log.Printf("[agent-loop] NeedsConfirm gate: skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedForGate)))
 		return result
 	}
+	if h.shouldRejectInvalidCodingTaskBreakdownOutput(engine, policyOwnerID, trimmedForGate) {
+		log.Printf("[agent-loop] NeedsConfirm gate: rejected invalid coding task breakdown (iteration=%d len=%d), allowing loop to continue", iteration, len(trimmedForGate))
+		return result
+	}
 
 	gateSource := needsConfirmGateSourceWorkflow
 	if needsConfirmFromSteering && !engineGateActive {
@@ -176,7 +181,7 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 
 	docPreviewText := strings.TrimSpace(stripThinkingTags(gateText))
 	if normalizeIMMessagePlatformKind(platform).IsDesktop() && engine != nil {
-		h.emitNeedsConfirmDocPreview(userID, docPreviewText, engineGateActive, steeringDetector)
+		h.emitNeedsConfirmDocPreview(policyOwnerID, docPreviewText, engineGateActive, steeringDetector)
 	} else if normalizeIMMessagePlatformKind(platform).IsDesktop() {
 		log.Printf("[agent-loop] NeedsConfirm gate: skipped doc preview emission (workflowEngine=%v)", engine != nil)
 	}
@@ -230,6 +235,7 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 	attachPendingVisibleArtifacts func(*IMAgentResponse),
 ) agentLoopToolBranchNeedsConfirmResult {
 	result := agentLoopToolBranchNeedsConfirmResult{MsgContent: msgContent}
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
 	needsConfirm := h.shouldNeedsConfirmToolBranch(ctx, userID, iteration, gateConfig)
 	if !needsConfirm {
 		return result
@@ -254,6 +260,10 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 		log.Printf("[workflow-gate] NeedsConfirm (tool branch): skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedAfterTools)))
 		return result
 	}
+	if h.shouldRejectInvalidCodingTaskBreakdownOutput(h.getWorkflowEngine(), policyOwnerID, trimmedAfterTools) {
+		log.Printf("[workflow-gate] NeedsConfirm (tool branch): rejected invalid coding task breakdown (iteration=%d len=%d), allowing loop to continue", iteration, len(trimmedAfterTools))
+		return result
+	}
 
 	log.Printf("[workflow-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
 	if phase != nil {
@@ -261,7 +271,7 @@ func (h *IMMessageHandler) applyAgentLoopToolBranchNeedsConfirmGate(
 	}
 	finalResp := &IMAgentResponse{Text: stripThinkingTags(lengthContinuationText + msgContent)}
 	if normalizeIMMessagePlatformKind(platform).IsDesktop() && h.getWorkflowEngine() != nil {
-		h.emitToolBranchNeedsConfirmDocPreview(userID, trimmedAfterTools, steeringDetector)
+		h.emitToolBranchNeedsConfirmDocPreview(policyOwnerID, trimmedAfterTools, steeringDetector)
 	}
 	attachLLMTelemetry(finalResp)
 	attachPendingVisibleArtifacts(finalResp)
@@ -276,11 +286,12 @@ func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID
 	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
 	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
 	engine := h.getWorkflowEngine()
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
 	if gateConfig.active && iteration > 0 {
-		if engine != nil && engine.GetActiveWorkflow(userID) != nil {
-			needsConfirm = engine.IsPhaseNeedsConfirm(userID)
+		if engine != nil && engine.GetActiveWorkflow(policyOwnerID) != nil {
+			needsConfirm = engine.IsPhaseNeedsConfirm(policyOwnerID)
 			if !needsConfirm {
-				log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
+				log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s policy_owner=%s)", iteration, userID, policyOwnerID)
 			}
 		} else {
 			needsConfirm = true
@@ -295,15 +306,16 @@ func (h *IMMessageHandler) shouldNeedsConfirmToolBranch(ctx *LoopContext, userID
 			semanticBypass = true
 		}
 		if !semanticBypass {
-			needsConfirm = engine.IsPhaseNeedsConfirm(userID)
+			needsConfirm = engine.IsPhaseNeedsConfirm(policyOwnerID)
 		} else {
 			log.Printf("[workflow-gate] NeedsConfirm tool-branch fallback bypassed: semantic intent=%v active=%v bugFix=%v reason=%q",
 				gateConfig.intent, gateConfig.active, gateConfig.bugFix, gateConfig.reason)
 		}
 	}
-	awaitingReview := engine != nil && engine.IsAwaitingReview(userID)
-	phaseBlocked := engine != nil && engine.IsPhaseExecutionBlocked(userID)
-	if needsConfirm && shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, gateConfig.active, awaitingReview, workflowAgentLoop, phaseBlocked) {
+	awaitingReview := engine != nil && engine.IsAwaitingReview(policyOwnerID)
+	phaseBlocked := engine != nil && engine.IsPhaseExecutionBlocked(policyOwnerID)
+	activeWorkflow := engine != nil && engine.GetActiveWorkflow(policyOwnerID) != nil
+	if needsConfirm && shouldBypassNeedsConfirmGate(skipNeedsConfirmGate, gateConfig.active, awaitingReview, workflowAgentLoop, phaseBlocked, activeWorkflow) {
 		log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: pending confirm classified as 'other' (iter=%d user=%s)", iteration, userID)
 		return false
 	}
@@ -381,15 +393,31 @@ func extractOriginalRequest(state *workflow.WorkflowState, currentText string) s
 }
 
 func (h *IMMessageHandler) workflowStartProjectPath() string {
-	if projectPath := h.traceProjectPath(); projectPath != "" {
-		return projectPath
-	}
 	if h != nil && h.app != nil {
 		if projectPath := strings.TrimSpace(h.app.GetCurrentProjectPath()); projectPath != "" {
 			return projectPath
 		}
 	}
+	if projectPath := h.traceProjectPath(); projectPath != "" {
+		return projectPath
+	}
 	return strings.TrimSpace(corelib.EffectiveWorkspaceDir())
+}
+
+func (h *IMMessageHandler) prepareWorkflowProjectPath() (string, error) {
+	projectPath := strings.TrimSpace(h.workflowStartProjectPath())
+	return h.ensureWorkflowProjectPath(projectPath)
+}
+
+func (h *IMMessageHandler) ensureWorkflowProjectPath(projectPath string) (string, error) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		return "", fmt.Errorf("create workflow project directory %q: %w", projectPath, err)
+	}
+	return projectPath, nil
 }
 
 func (h *IMMessageHandler) confirmWorkflowStart(userID, text string, intent workflow.StructuredIntent, startReply string) *IMAgentResponse {
@@ -590,7 +618,16 @@ func (h *IMMessageHandler) approvePendingWorkflowConfirmation(userID string, pen
 	if len(wfIntent.Goals) == 0 && strings.TrimSpace(pending.OriginalText) != "" {
 		wfIntent.Goals = []string{strings.TrimSpace(pending.OriginalText)}
 	}
-	state, err := engine.StartWorkflowWithOptions(userID, wfIntent, workflow.WorkflowStartOptions{ProjectPath: pending.LastProjectPath})
+	projectPath := strings.TrimSpace(pending.LastProjectPath)
+	if projectPath == "" {
+		projectPath = h.workflowStartProjectPath()
+	}
+	if preparedPath, err := h.ensureWorkflowProjectPath(projectPath); err != nil {
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: fmt.Sprintf("failed to prepare workflow project directory: %v", err)}}
+	} else {
+		projectPath = preparedPath
+	}
+	state, err := engine.StartWorkflowWithOptions(userID, wfIntent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
 	if err != nil {
 		log.Printf("[WorkflowInterception] confirmed StartWorkflow error for user %s: %v", userID, err)
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Error: fmt.Sprintf("failed to start workflow: %v", err)}}
@@ -1090,24 +1127,11 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 	// SubAgent. If not (e.g. PPT's slide_scripting output), fall through
 	// to the normal agent loop which handles execution via tools directly.
 	h.backfillExecutionOrchestratorActivation(engine, userID, resp)
-	if resp.ActivateOrchestrator {
-		taskOrch := h.getTaskOrchestrator(userID)
-		if taskOrch != nil && !taskOrch.IsActive() && resp.TaskBreakdownText != "" {
-			tasks := ParseTaskListFromText(resp.TaskBreakdownText)
-			if len(tasks) > 0 {
-				projectPath := h.traceProjectPath()
-				if projectPath == "" {
-					home, _ := os.UserHomeDir()
-					projectPath = home
-				}
-				taskOrch.Activate(tasks, resp.RequirementsContext, resp.DesignContext, projectPath, "")
-				log.Printf("[WorkflowInterception] orchestrator activated by engine: "+
-					"%d tasks for user=%s project=%s", len(tasks), userID, projectPath)
-			} else {
-				log.Printf("[WorkflowInterception] execution phase entered but "+
-					"preceding output is not a task list; using normal agent loop "+
-					"for user=%s", userID)
-			}
+	if activated, errResp := h.activateWorkflowTaskOrchestrator(engine, userID, resp); errResp != nil {
+		return errResp
+	} else if !activated {
+		if repairResp, repaired := h.repairInvalidCodingTaskBreakdownExecution(engine, userID, resp); repaired {
+			return repairResp
 		}
 	}
 
@@ -1278,6 +1302,16 @@ func (h *IMMessageHandler) handleWorkflowReview(engine *workflow.WorkflowEngine,
 		userMessage = fmt.Sprintf("[Context]\n%s\n\n[User reply]\n%s", phaseContext, text)
 	}
 
+	if detectWorkflowReviewBlockedExecutionIntent(text) {
+		log.Printf("[workflow-review] user=%s text=%q intent=%q source=execution-block", userID, truncateForLogGUI(text, 30), workflow.ReviewIntentOther)
+		return h.workflowReviewExecutionBlockedResponse(engine, userID)
+	}
+
+	if reviewIntent, ok := detectWorkflowReviewIntentFast(text); ok {
+		log.Printf("[workflow-review] user=%s text=%q intent=%q source=fast-path", userID, truncateForLogGUI(text, 30), reviewIntent)
+		return h.applyWorkflowReviewIntent(engine, userID, reviewIntent, text, platform)
+	}
+
 	classifyResult, err := h.LLMClassify(ctx, LLMClassifyRequest{
 		SystemPrompt: `You are a user intent classifier for a document review workflow.
 
@@ -1326,7 +1360,66 @@ func normalizeWorkflowReviewIntent(raw string) workflow.ReviewIntent {
 	return workflow.ParseReviewIntent(raw)
 }
 
+func (h *IMMessageHandler) workflowReviewPending(userID string, background bool) bool {
+	if h == nil || background {
+		return false
+	}
+	engine := h.getWorkflowEngine()
+	return engine != nil && engine.IsAwaitingReview(userID)
+}
+
+func detectWorkflowReviewIntentFast(text string) (workflow.ReviewIntent, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	trimmed = strings.Trim(trimmed, " \t\r\n.。!！?？,，;；:：")
+	if trimmed == "" {
+		return workflow.ReviewIntentOther, false
+	}
+	switch trimmed {
+	case "确认", "确认通过", "通过", "同意", "可以", "没问题", "没意见", "继续", "继续推进", "开工", "开始", "开始吧", "执行", "走起", "好", "好的", "ok", "okay", "yes", "y", "go", "go ahead", "start", "continue", "proceed", "approved", "approve", "confirmed", "confirm":
+		return workflow.ReviewIntentConfirm, true
+	case "跳过", "skip", "skip it":
+		return workflow.ReviewIntentSkip, true
+	case "取消", "停止", "终止", "放弃", "cancel", "stop", "abort", "quit":
+		return workflow.ReviewIntentCancel, true
+	}
+	return workflow.ReviewIntentOther, false
+}
+
+func detectWorkflowReviewBlockedExecutionIntent(text string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	if trimmed == "" {
+		return false
+	}
+	if _, ok := detectWorkflowReviewIntentFast(trimmed); ok {
+		return false
+	}
+	documentTargets := []string{"文档", "需求", "设计", "方案", "任务", "计划", "报告", "document", "doc", "requirements", "design", "plan"}
+	for _, marker := range []string{"写代码", "编写代码", "开始编码", "编码", "实现代码", "改代码", "跑代码", "build", "compile", "cmake", "npm", "git", "bash", "powershell", "命令", "脚本", "创建目录", "新建目录", "创建文件夹", "新建文件夹", "mkdir", "d:\\", "c:\\", "src/", "assets/"} {
+		if strings.Contains(trimmed, marker) {
+			return true
+		}
+	}
+	if (strings.Contains(trimmed, "创建") || strings.Contains(trimmed, "新建")) && !containsAnyWorkflowReviewMarker(trimmed, documentTargets) {
+		return true
+	}
+	return false
+}
+
+func containsAnyWorkflowReviewMarker(text string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *IMMessageHandler) applyWorkflowReviewIntent(engine *workflow.WorkflowEngine, userID string, intent workflow.ReviewIntent, feedback, platform string) *IMAgentResponse {
+	if intent == workflow.ReviewIntentConfirm && h.shouldRegenerateInvalidCodingTaskBreakdown(engine, userID) {
+		log.Printf("[workflow-review] blocking confirm for invalid coding task breakdown: user=%s", userID)
+		intent = workflow.ReviewIntentSupplement
+		feedback = invalidCodingTaskBreakdownFeedbackText()
+	}
 	resp, err := engine.ApplyReviewIntent(userID, intent, feedback)
 	if err != nil {
 		log.Printf("[workflow-review] ApplyReviewIntent error: user=%s intent=%s err=%v", userID, intent, err)
@@ -1387,6 +1480,13 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *workflow.Workflo
 		}
 		return &IMAgentResponse{Text: resp.Text}
 	}
+	if activated, errResp := h.activateWorkflowTaskOrchestrator(engine, userID, resp); errResp != nil {
+		return errResp
+	} else if !activated {
+		if repairResp, repaired := h.repairInvalidCodingTaskBreakdownExecution(engine, userID, resp); repaired {
+			return repairResp
+		}
+	}
 	if resp.PhasePrompt != "" {
 		h.stashedPhasePrompt.Store(userID, resp.PhasePrompt)
 	}
@@ -1405,16 +1505,36 @@ func (h *IMMessageHandler) handleWorkflowEngineResponse(engine *workflow.Workflo
 }
 
 func (h *IMMessageHandler) reviewBarrierResponse(engine *workflow.WorkflowEngine, userID string) *IMAgentResponse {
+	phaseName := h.workflowReviewPhaseName(engine, userID)
+	if phaseName == "" {
+		return nil
+	}
+	lang := h.getWorkflowLang()
+	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowAwaitingReview, lang, phaseName)}
+}
+
+func (h *IMMessageHandler) workflowReviewExecutionBlockedResponse(engine *workflow.WorkflowEngine, userID string) *IMAgentResponse {
+	phaseName := h.workflowReviewPhaseName(engine, userID)
+	if phaseName == "" {
+		return nil
+	}
+	text := fmt.Sprintf(avTr(
+		"Current workflow phase %q has not been confirmed yet. I cannot create directories, write code, or run commands before this review is confirmed. Please confirm to continue, or provide changes for the current document.",
+		"当前工作流阶段 %q 还未确认。确认前不能创建目录、写代码或运行命令。请先确认继续，或提出当前文档的修改意见。",
+	), phaseName)
+	return &IMAgentResponse{Text: text}
+}
+
+func (h *IMMessageHandler) workflowReviewPhaseName(engine *workflow.WorkflowEngine, userID string) string {
 	ws := engine.GetActiveWorkflow(userID)
 	if ws == nil {
-		return nil
+		return ""
 	}
 	phaseName := ws.CurrentPhase
 	if tmpl := engine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
 		phaseName = tmpl.Phases[ws.PhaseIndex].Name
 	}
-	lang := h.getWorkflowLang()
-	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowAwaitingReview, lang, phaseName)}
+	return phaseName
 }
 
 // handleActiveUnderstanding processes input for a user with an active
@@ -1454,7 +1574,12 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		if resp := h.confirmWorkflowStart(userID, text, *intent, reply); resp != nil {
 			return resp
 		}
-		state, err := engine.StartWorkflowWithOptions(userID, *intent, workflow.WorkflowStartOptions{ProjectPath: h.workflowStartProjectPath()})
+		projectPath, prepErr := h.prepareWorkflowProjectPath()
+		if prepErr != nil {
+			log.Printf("[WorkflowInterception] prepare workflow project directory failed for user %s: %v", userID, prepErr)
+			return &IMAgentResponse{Error: fmt.Sprintf("failed to prepare workflow project directory: %v", prepErr)}
+		}
+		state, err := engine.StartWorkflowWithOptions(userID, *intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
 		if err != nil {
 			log.Printf("[WorkflowInterception] StartWorkflow error for user %s: %v", userID, err)
 			return &IMAgentResponse{Error: fmt.Sprintf("failed to start workflow: %v", err)}
@@ -1570,7 +1695,12 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		if resp := h.confirmWorkflowStart(userID, text, *result.Intent, result.Reply); resp != nil {
 			return resp
 		}
-		state, err := engine.StartWorkflowWithOptions(userID, *result.Intent, workflow.WorkflowStartOptions{ProjectPath: h.workflowStartProjectPath()})
+		projectPath, prepErr := h.prepareWorkflowProjectPath()
+		if prepErr != nil {
+			log.Printf("[WorkflowInterception] prepare workflow project directory failed for user %s: %v", userID, prepErr)
+			return &IMAgentResponse{Error: fmt.Sprintf("failed to prepare workflow project directory: %v", prepErr)}
+		}
+		state, err := engine.StartWorkflowWithOptions(userID, *result.Intent, workflow.WorkflowStartOptions{ProjectPath: projectPath})
 		if err != nil {
 			log.Printf("[WorkflowInterception] IUM-driven StartWorkflow error for user %s: %v", userID, err)
 			return &IMAgentResponse{Error: fmt.Sprintf("failed to start workflow: %v", err)}

@@ -43,6 +43,17 @@ func (s *failingStatusStore) CreateVersion(_ context.Context, ver *WorkflowVersi
 	return nil
 }
 
+func (s *failingStatusStore) UpdateVersion(_ context.Context, ver *WorkflowVersion) error {
+	existing, ok := s.versions[ver.ID]
+	if !ok {
+		return nil
+	}
+	existing.Graph = ver.Graph
+	existing.VersionNumber = ver.VersionNumber
+	existing.UpdatedAt = ver.UpdatedAt
+	return nil
+}
+
 func (s *failingStatusStore) GetVersion(_ context.Context, id string) (*WorkflowVersion, error) {
 	return s.versions[id], nil
 }

@@ -43,7 +43,11 @@ func (a *GUIWorkflowAdapter) workflowProjectPath() string {
 	}
 	a.mu.RLock()
 	projectPath := a.workingDir
+	activeWorkflowID := a.activeWorkflowID
 	a.mu.RUnlock()
+	if projectPath == "" && activeWorkflowID != "" {
+		return ""
+	}
 	if projectPath == "" {
 		projectPath = strings.TrimSpace(a.app.GetCurrentProjectPath())
 	}
@@ -73,6 +77,27 @@ func (a *GUIWorkflowAdapter) workflowDocDir() string {
 	return filepath.Join(projectPath, ".maclaw", "workflow")
 }
 
+// activeTemplate resolves the template for the current active workflow type from
+// the engine's registry (the single source of truth for phase order). Returns nil
+// when the engine, registry, type, or matching template is unavailable, in which
+// case file naming falls back to the flat knownPhaseFileNames map.
+func (a *GUIWorkflowAdapter) activeTemplate() *workflow.WorkflowTemplate {
+	if a == nil || a.engine == nil {
+		return nil
+	}
+	a.mu.RLock()
+	wt := a.activeWorkflowType
+	a.mu.RUnlock()
+	if wt == "" {
+		return nil
+	}
+	reg := a.engine.GetRegistry()
+	if reg == nil {
+		return nil
+	}
+	return reg.Match(wt)
+}
+
 // readPersistedDoc reads the persisted markdown file for a phase.
 // Returns empty string if the file doesn't exist or can't be read.
 func (a *GUIWorkflowAdapter) readPersistedDoc(phaseID string) string {
@@ -80,7 +105,7 @@ func (a *GUIWorkflowAdapter) readPersistedDoc(phaseID string) string {
 	if dir == "" {
 		return ""
 	}
-	fileName := workflowPhaseFileName(phaseID)
+	fileName := workflowPhaseFileNameForTemplate(a.activeTemplate(), phaseID)
 	filePath := filepath.Join(dir, fileName)
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -119,7 +144,7 @@ func (a *GUIWorkflowAdapter) persistWorkflowDoc(phaseID, content string) {
 		log.Printf("[WorkflowAdapter] failed to create workflow dir %s: %v", dir, err)
 		return
 	}
-	fileName := workflowPhaseFileName(phaseID)
+	fileName := workflowPhaseFileNameForTemplate(a.activeTemplate(), phaseID)
 	filePath := filepath.Join(dir, fileName)
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		log.Printf("[WorkflowAdapter] failed to write workflow doc %s: %v", filePath, err)
@@ -143,7 +168,7 @@ func (a *GUIWorkflowAdapter) publishToProjectStorage(phaseID, content string) {
 		log.Printf("[WorkflowAdapter] publish: failed to create dir %s: %v", dir, err)
 		return // non-blocking
 	}
-	fileName := workflowPhaseFileName(phaseID)
+	fileName := workflowPhaseFileNameForTemplate(a.activeTemplate(), phaseID)
 	filePath := filepath.Join(dir, fileName)
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		log.Printf("[WorkflowAdapter] publish: failed to write %s: %v", filePath, err)
@@ -430,7 +455,7 @@ func (a *GUIWorkflowAdapter) buildManifestPhaseEntries(state *workflow.WorkflowS
 			if _, hasOutput := state.PhaseOutputs[phase.ID]; hasOutput {
 				entries = append(entries, ManifestPhaseEntry{
 					PhaseID:  phase.ID,
-					FileName: workflowPhaseFileName(phase.ID),
+					FileName: workflowPhaseFileNameForTemplate(tmpl, phase.ID),
 					Title:    phase.Name,
 				})
 			}

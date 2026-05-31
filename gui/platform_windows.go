@@ -724,6 +724,9 @@ func (a *App) installToolsInBackground() {
 
 // InstallToolOnDemand installs a specific tool when user clicks on it
 func (a *App) InstallToolOnDemand(toolName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "install tool " + strings.TrimSpace(toolName), "tool": strings.TrimSpace(toolName)}); err != nil {
+		return err
+	}
 	// Try to acquire lock for this tool
 	if !a.tryLockTool(toolName) {
 		a.log(a.tr("On-demand installation: %s is already being installed in background, waiting...", toolName))
@@ -1988,7 +1991,6 @@ func createNpmInstallCmd(npmPath string, args []string) *exec.Cmd {
 	}
 	return cmd
 }
-
 
 func createCondaEnvListCmd(condaCmd string) *exec.Cmd {
 	cmd := exec.Command("cmd", "/c", condaCmd, "env", "list")

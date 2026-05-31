@@ -323,7 +323,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
 		accessID := veRequesterAccessID(principal)
 		for _, entry := range registry.Employees {
-			if entry.Status != veStatusActive || strings.EqualFold(strings.TrimSpace(entry.MachineID), strings.TrimSpace(principal.MachineID)) {
+			if entry.Status != veStatusActive || groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
 				continue
 			}
 			if !veAccessAllowed(entry, accessID) {
@@ -374,7 +374,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			writeError(w, http.StatusConflict, "VE_NOT_ACTIVE", "digital employee is not active")
 			return
 		}
-		if strings.EqualFold(strings.TrimSpace(target.MachineID), strings.TrimSpace(principal.MachineID)) {
+		if groupDiscussionParticipantIdentityMatches(target.MachineID, principal.MachineID) {
 			writeError(w, http.StatusBadRequest, "VE_SELF_CHAT_REJECTED", "cannot start a digital employee conversation with the same machine")
 			return
 		}
@@ -429,7 +429,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 						"expires_at":           req.ExpiresAt,
 					}})
 				}
-				writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending_confirmation", "request_id": req.ID, "message": "waiting for digital employee owner confirmation"})
+				writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending_confirmation", "request_id": req.ID, "expires_at": req.ExpiresAt, "message": "waiting for digital employee owner confirmation"})
 				return
 			}
 		}
@@ -553,13 +553,16 @@ func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator v
 			return
 		}
 		req := requests.Requests[idx]
-		if !strings.EqualFold(strings.TrimSpace(req.TargetMachineID), strings.TrimSpace(principal.MachineID)) {
+		if !groupDiscussionParticipantIdentityMatches(req.TargetMachineID, principal.MachineID) {
 			writeError(w, http.StatusForbidden, "VE_AUTH_REQUEST_FORBIDDEN", "only the target digital employee owner can respond")
 			return
 		}
 		if req.Status != "pending" {
 			if expiredRequests {
 				_ = saveVEAccessRequests(r.Context(), system, requests)
+			}
+			if req.Status == "expired" {
+				emitVEAuthResult(firstVEMachineEventSender(senders...), req, "timeout", "expired")
 			}
 			writeError(w, http.StatusConflict, "VE_AUTH_REQUEST_ALREADY_HANDLED", "authorization request was already handled")
 			return
@@ -606,13 +609,18 @@ func VEAuthRespondHandler(system store.SystemSettingsRepository, authenticator v
 			return
 		}
 
-		if sender := firstVEMachineEventSender(senders...); sender != nil {
-			payload := map[string]any{"request_id": req.ID, "decision": decision, "status": req.Status, "target_ve_id": req.TargetVEID, "target_machine_id": req.TargetMachineID, "target_ve_name": req.TargetVEName}
-			_ = sender.SendToMachine(req.RequesterMachineID, map[string]any{"type": "ve:auth_result", "ts": time.Now().Unix(), "payload": payload})
-			_ = sender.SendToMachine(req.TargetMachineID, map[string]any{"type": "ve:list_update", "ts": time.Now().Unix(), "payload": payload})
-		}
+		emitVEAuthResult(firstVEMachineEventSender(senders...), req, decision, req.Status)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": req.Status, "decision": decision})
 	}
+}
+
+func emitVEAuthResult(sender veMachineEventSender, req digitalEmployeeAccessRequest, decision, status string) {
+	if sender == nil {
+		return
+	}
+	payload := map[string]any{"request_id": req.ID, "decision": decision, "status": status, "target_ve_id": req.TargetVEID, "target_machine_id": req.TargetMachineID, "target_ve_name": req.TargetVEName}
+	_ = sender.SendToMachine(req.RequesterMachineID, map[string]any{"type": "ve:auth_result", "ts": time.Now().Unix(), "payload": payload})
+	_ = sender.SendToMachine(req.TargetMachineID, map[string]any{"type": "ve:list_update", "ts": time.Now().Unix(), "payload": payload})
 }
 
 func isReusableVEDirectSession(session *coreliba2a.Session, initiatorID, targetID string) bool {
@@ -621,12 +629,27 @@ func isReusableVEDirectSession(session *coreliba2a.Session, initiatorID, targetI
 	}
 	initiatorID = strings.TrimSpace(initiatorID)
 	targetID = strings.TrimSpace(targetID)
-	if initiatorID == "" || targetID == "" || len(session.Participants) != 2 {
+	if initiatorID == "" || targetID == "" || reusableVEDirectSessionParticipantCount(session) != 2 {
 		return false
 	}
-	roles := participantRoleMap(session)
-	targetRole := strings.TrimSpace(roles[targetID])
-	return strings.EqualFold(strings.TrimSpace(roles[initiatorID]), "initiator") && targetRole != "" && groupDiscussionRoleContributesAnswer(targetRole)
+	initiatorRole := participantRole(session, initiatorID)
+	targetRole := participantRole(session, targetID)
+	return strings.EqualFold(strings.TrimSpace(initiatorRole), "initiator") && targetRole != "" && groupDiscussionRoleContributesAnswer(targetRole)
+}
+
+func reusableVEDirectSessionParticipantCount(session *coreliba2a.Session) int {
+	if session == nil {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	for _, participant := range session.Participants {
+		key := groupDiscussionCanonicalParticipantIdentityKey(participant.ID)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	return len(seen)
 }
 
 func VEAdminActionHandler(system store.SystemSettingsRepository, action string, senders ...veMachineEventSender) http.HandlerFunc {
@@ -1291,7 +1314,7 @@ func upsertVEAccessRequest(requests *digitalEmployeeAccessRequestStore, request 
 	}
 	for i := range requests.Requests {
 		item := requests.Requests[i]
-		if item.Status == "pending" && strings.EqualFold(item.RequesterMachineID, request.RequesterMachineID) && strings.EqualFold(item.TargetMachineID, request.TargetMachineID) {
+		if item.Status == "pending" && groupDiscussionParticipantIdentityMatches(item.RequesterMachineID, request.RequesterMachineID) && groupDiscussionParticipantIdentityMatches(item.TargetMachineID, request.TargetMachineID) {
 			request.ID = item.ID
 			request.CreatedAt = item.CreatedAt
 			requests.Requests[i] = request
@@ -1348,10 +1371,10 @@ func findConsumableVEAllowOnceRequestIndex(requests *digitalEmployeeAccessReques
 		if req.Status != "allowed" || req.Decision != "allow_once" {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(req.TargetMachineID), strings.TrimSpace(target.MachineID)) && !strings.EqualFold(strings.TrimSpace(req.TargetVEID), strings.TrimSpace(target.ID)) {
+		if !groupDiscussionParticipantIdentityMatches(req.TargetMachineID, target.MachineID) && !groupDiscussionParticipantIdentityMatches(req.TargetVEID, target.ID) {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(req.RequesterUserID), strings.TrimSpace(requesterUserID)) && !strings.EqualFold(strings.TrimSpace(req.RequesterMachineID), strings.TrimSpace(requesterMachineID)) {
+		if !strings.EqualFold(strings.TrimSpace(req.RequesterUserID), strings.TrimSpace(requesterUserID)) && !groupDiscussionParticipantIdentityMatches(req.RequesterMachineID, requesterMachineID) {
 			continue
 		}
 		if veAccessRequestExpired(req, now) {
@@ -1422,7 +1445,7 @@ func (r digitalEmployeeRegistry) findByMachineID(machineID string) int {
 		return -1
 	}
 	for i, entry := range r.Employees {
-		if strings.EqualFold(strings.TrimSpace(entry.MachineID), machineID) {
+		if groupDiscussionParticipantIdentityMatches(entry.MachineID, machineID) {
 			return i
 		}
 	}
@@ -1435,7 +1458,7 @@ func (r digitalEmployeeRegistry) findByID(id string) int {
 		return -1
 	}
 	for i, entry := range r.Employees {
-		if strings.EqualFold(strings.TrimSpace(entry.ID), id) {
+		if groupDiscussionParticipantIdentityMatches(entry.ID, id) {
 			return i
 		}
 	}
@@ -1448,7 +1471,7 @@ func (r digitalEmployeeRegistry) findByIDOrMachineID(id string) int {
 		return -1
 	}
 	for i, entry := range r.Employees {
-		if strings.EqualFold(strings.TrimSpace(entry.ID), id) || strings.EqualFold(strings.TrimSpace(entry.MachineID), id) {
+		if groupDiscussionParticipantIdentityMatches(entry.ID, id) || groupDiscussionParticipantIdentityMatches(entry.MachineID, id) {
 			return i
 		}
 	}
@@ -1474,7 +1497,7 @@ func (r digitalEmployeeRegistry) findByIDOrMachineIDOrPlatformEmployeeID(id stri
 		return -1
 	}
 	for i, entry := range r.Employees {
-		if strings.EqualFold(strings.TrimSpace(entry.ID), id) || strings.EqualFold(strings.TrimSpace(entry.MachineID), id) || strings.EqualFold(strings.TrimSpace(entry.PlatformEmployeeID), id) {
+		if groupDiscussionParticipantIdentityMatches(entry.ID, id) || groupDiscussionParticipantIdentityMatches(entry.MachineID, id) || strings.EqualFold(strings.TrimSpace(entry.PlatformEmployeeID), id) {
 			return i
 		}
 	}

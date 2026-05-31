@@ -148,6 +148,23 @@ func TestFileRelay_LoadMetadataSkipsMissingDiskFile(t *testing.T) {
 		t.Fatalf("expected missing disk file metadata to be ignored, got %+v", got)
 	}
 }
+
+func TestVEParticipantIdentityMatchesSeparatorVariants(t *testing.T) {
+	for _, tc := range []struct {
+		left  string
+		right string
+	}{
+		{left: "machine-a", right: "ve-machine-a"},
+		{left: "machine/a", right: "machine-a"},
+		{left: "machine a", right: "ve_machine-a"},
+		{left: "ve-machine/a", right: "machine_a"},
+	} {
+		if !veParticipantIdentityMatches(tc.left, tc.right) {
+			t.Fatalf("veParticipantIdentityMatches(%q, %q) = false", tc.left, tc.right)
+		}
+	}
+}
+
 func TestFileRelay_GetFile_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	fr := NewFileRelay(dir)
@@ -384,6 +401,41 @@ func TestFileRelay_HandleUpload_RequiresValidatedParticipantWhenValidatorIsSet(t
 		t.Fatalf("expected 200 for validated participant upload, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestFileRelay_HandleUpload_AllowsAuthenticatedParticipantAlias(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	fr.SetParticipantValidator(staticParticipantValidator{
+		"sess-1": {"machine-a": true},
+	})
+
+	buildRequest := func(formParticipantID string) *http.Request {
+		var buf bytes.Buffer
+		writer := multipart.NewWriter(&buf)
+		_ = writer.WriteField("session_id", "sess-1")
+		_ = writer.WriteField("participant_id", formParticipantID)
+		part, _ := writer.CreateFormFile("file", "hello.txt")
+		_, _ = part.Write([]byte("hello world"))
+		writer.Close()
+		req := httptest.NewRequest(http.MethodPost, "/api/ve/files/upload", &buf)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set("X-Participant-ID", "machine-a")
+		return req
+	}
+
+	rec := httptest.NewRecorder()
+	fr.HandleUpload(rec, buildRequest("ve-machine-a"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for authenticated participant alias, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	fr.HandleUpload(rec, buildRequest("ve-other-machine"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for mismatched authenticated participant, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestFileRelay_HandleDownload_ValidatorOverridesSessionMatch(t *testing.T) {
 	dir := t.TempDir()
 	fr := NewFileRelay(dir)
@@ -410,6 +462,47 @@ func TestFileRelay_HandleDownload_ValidatorOverridesSessionMatch(t *testing.T) {
 		t.Fatalf("expected 200 for validated participant, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestFileRelay_HandleDownload_ValidatorAcceptsParticipantAlias(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	fr.SetParticipantValidator(staticParticipantValidator{
+		"sess-owner": {"machine-a": true},
+	})
+
+	content := []byte("shared alias secret")
+	meta, _ := fr.Upload("secret.txt", "text/plain", "sess-owner", "machine-a", int64(len(content)), bytes.NewReader(content))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/files/"+meta.ID+"?session_id=sess-owner&participant_id=ve-machine-a", nil)
+	rec := httptest.NewRecorder()
+	fr.HandleDownload(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for validated participant alias, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFileRelay_HandleDownload_AllowsUploaderAlias(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+
+	content := []byte("owner secret")
+	meta, _ := fr.Upload("secret.txt", "text/plain", "sess-owner", "machine-a", int64(len(content)), bytes.NewReader(content))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/files/"+meta.ID+"?session_id=sess-other&participant_id=ve-machine-a", nil)
+	rec := httptest.NewRecorder()
+	fr.HandleDownload(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for uploader alias, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/ve/files/"+meta.ID+"?session_id=sess-other&participant_id=ve-other-machine", nil)
+	rec = httptest.NewRecorder()
+	fr.HandleDownload(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for different participant alias, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestFileRelay_HandleUpload_UnsupportedType(t *testing.T) {
 	dir := t.TempDir()
 	fr := NewFileRelay(dir)

@@ -49,7 +49,13 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		result.FreshTask = true
 	}
 
-	result.PendingUserReplyContext, result.HasPendingUserReply = h.bindPendingUserReplyAnswer(*msg, trimmed, &result.EntriesBeforeClear, &result.UnfinishedSlot)
+	workflowReviewPending := h.workflowReviewPending(msg.UserID, msg.IsBackground)
+	if !workflowReviewPending {
+		result.PendingUserReplyContext, result.HasPendingUserReply = h.bindPendingUserReplyAnswer(*msg, trimmed, &result.EntriesBeforeClear, &result.UnfinishedSlot)
+	} else {
+		h.pendingUserReply.Delete(msg.UserID)
+		h.pendingAskUser.Delete(msg.UserID)
+	}
 
 	workflowRoute := h.routeWorkflowIMMessage(*msg, trimmed, opts.ConfirmedWorkflowAgentLoop, result.HasPendingUserReply)
 	if workflowRoute.Response != nil {

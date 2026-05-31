@@ -1,6 +1,105 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
+)
+
+// TestWorkflowPhaseFileNamesUniquePerTemplate is the anti-drift guard for the
+// hand-maintained knownPhaseFileNames map. For every registered backend template
+// it asserts that the file names workflowPhaseFileName produces for that
+// template's phases are pairwise-unique. A collision means two distinct phases
+// persist to the same path under .maclaw/workflow/, so one phase's document
+// silently overwrites the other (the paper_writing methodology/results_presentation
+// bug this guard was added to prevent recurring).
+//
+// Because it iterates registry.All() (the single source of truth), adding or
+// renaming a template phase that introduces a collision fails this test rather
+// than shipping a data-loss bug.
+func TestWorkflowPhaseFileNamesUniquePerTemplate(t *testing.T) {
+	for _, tmpl := range workflow.NewWorkflowRegistry().All() {
+		if tmpl == nil {
+			continue
+		}
+		seen := make(map[string]string, len(tmpl.Phases))
+		for _, meta := range workflow.PhaseMetadata(tmpl) {
+			fileName := workflowPhaseFileName(meta.ID)
+			if prev, ok := seen[fileName]; ok {
+				t.Errorf("%s: phases %q and %q both map to file %q — one document would overwrite the other",
+					tmpl.Type, prev, meta.ID, fileName)
+				continue
+			}
+			seen[fileName] = meta.ID
+		}
+	}
+}
+
+// TestWorkflowPhaseFileNamesNonEmptyPerTemplate asserts every registered phase
+// produces a non-empty, .md-suffixed file name, so no phase's document is ever
+// written to a degenerate path.
+func TestWorkflowPhaseFileNamesNonEmptyPerTemplate(t *testing.T) {
+	for _, tmpl := range workflow.NewWorkflowRegistry().All() {
+		if tmpl == nil {
+			continue
+		}
+		for _, meta := range workflow.PhaseMetadata(tmpl) {
+			fileName := workflowPhaseFileName(meta.ID)
+			if fileName == "" || fileName == ".md" {
+				t.Errorf("%s: phase %q produced degenerate file name %q", tmpl.Type, meta.ID, fileName)
+			}
+		}
+	}
+}
+
+// TestWorkflowPhaseFileNameForTemplateOrdersByPosition is the anti-drift guard
+// for the position-aware namer. For every registered template it asserts the
+// file names workflowPhaseFileNameForTemplate produces are (a) pairwise-unique,
+// (b) prefixed with the phase's 1-based template position, and (c) strictly
+// increasing in backend phase order — so a directory listing always sorts in the
+// true workflow order, even for phase IDs that appear at different positions in
+// different templates (e.g. solution_design, strategy_recommendation) and for
+// phases absent from the flat knownPhaseFileNames map.
+func TestWorkflowPhaseFileNameForTemplateOrdersByPosition(t *testing.T) {
+	for _, tmpl := range workflow.NewWorkflowRegistry().All() {
+		if tmpl == nil {
+			continue
+		}
+		metas := workflow.PhaseMetadata(tmpl)
+		seen := make(map[string]string, len(metas))
+		lastPrefix := 0
+		for _, meta := range metas {
+			fileName := workflowPhaseFileNameForTemplate(tmpl, meta.ID)
+
+			// (a) unique within the template
+			if prev, ok := seen[fileName]; ok {
+				t.Errorf("%s: phases %q and %q both map to %q", tmpl.Type, prev, meta.ID, fileName)
+			}
+			seen[fileName] = meta.ID
+
+			// (b) prefixed with the 1-based template position
+			wantPrefix := meta.Index + 1
+			gotPrefix := -1
+			if i := strings.IndexByte(fileName, '-'); i > 0 {
+				if n, err := parsePositiveInt(fileName[:i]); err == nil {
+					gotPrefix = n
+				}
+			}
+			if gotPrefix != wantPrefix {
+				t.Errorf("%s/%s: file %q prefix = %d, want %d (1-based template position)",
+					tmpl.Type, meta.ID, fileName, gotPrefix, wantPrefix)
+			}
+
+			// (c) strictly increasing in phase order
+			if gotPrefix <= lastPrefix {
+				t.Errorf("%s/%s: prefix %d not strictly greater than previous %d",
+					tmpl.Type, meta.ID, gotPrefix, lastPrefix)
+			}
+			lastPrefix = gotPrefix
+		}
+	}
+}
 
 func TestWorkflowPhaseFileName(t *testing.T) {
 	tests := []struct {

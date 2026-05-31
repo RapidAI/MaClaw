@@ -18,6 +18,9 @@ var swarmInitOnce sync.Once
 
 // StartSwarmRun starts a new swarm run (exposed to frontend).
 func (a *App) StartSwarmRun(req swarm.SwarmRunRequest) (*swarm.SwarmRun, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "swarm", "request": req.Requirements}); err != nil {
+		return nil, err
+	}
 	a.ensureSwarmOrchestrator()
 	return a.swarmOrchestrator.StartSwarmRun(req)
 }

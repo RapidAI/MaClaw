@@ -58,7 +58,19 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 // platform and userID are passed explicitly for the same reason as
 // registerAndExecuteSkill 鈥?async callers must capture these before
 // the agent loop's defer clears currentLoopCtx.
-func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query, platform, userID string, sendStatus func(string)) skillInstallExecutionResult {
+func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query, platform, userID, policyOwnerID string, sendStatus func(string)) skillInstallExecutionResult {
+	if h != nil && h.app != nil && best != nil {
+		ownerID := strings.TrimSpace(policyOwnerID)
+		if ownerID == "" {
+			ownerID = strings.TrimSpace(userID)
+		}
+		if err := h.app.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, "manage_skill", map[string]interface{}{"action": "install", "name": best.Name, "source": best.SourceKind().String(), "query": query}); err != nil {
+			return skillInstallExecutionResult{Text: err.Error(), SilentFailure: true}
+		}
+		if err := h.app.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, "manage_skill", map[string]interface{}{"action": "run", "name": best.Name, "source": best.SourceKind().String(), "query": query}); err != nil {
+			return skillInstallExecutionResult{Text: err.Error(), SilentFailure: true}
+		}
+	}
 	// GitHub result 鈫?import via a stable install ref when available.
 	if best.SourceKind() == skillSearchSourceGitHub {
 		if h.app != nil {
@@ -86,7 +98,7 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			}
 		}
 		imported.Source = "auto_github"
-		return h.registerAndExecuteSkill(ctx, imported, best.Name, "auto_github", platform, userID, sendStatus)
+		return h.registerAndExecuteSkill(ctx, imported, best.Name, "auto_github", platform, userID, policyOwnerID, sendStatus)
 	}
 
 	// SkillMarket or ClawHub result 鈫?download and register locally.
@@ -104,7 +116,7 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but download failed: %v", best.Name, dlErr)}
 		}
 		skill.Source = "auto_clawhub"
-		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, sendStatus)
+		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, policyOwnerID, sendStatus)
 	}
 
 	// SkillMarket result: download through the HubCenter failover pool into
@@ -126,7 +138,7 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but download failed: %v", best.Name, dlErr)}
 	}
 	skill.Source = "auto_hub"
-	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", platform, userID, sendStatus)
+	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", platform, userID, policyOwnerID, sendStatus)
 }
 
 // downloadClawHubSkill fetches a skill from the ClawHub mirror and converts
@@ -307,9 +319,13 @@ func extractSkillFiles(skillName string, files map[string]string, targetDir stri
 // platform and userID are passed explicitly (not read from h.currentLoopCtx)
 // because this function may be called from async goroutines where
 // currentLoopCtx has already been cleared by the agent loop's defer.
-func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *corelib.NLSkillEntry, displayName, source string, platform, userID string, sendStatus func(string)) skillInstallExecutionResult {
+func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *corelib.NLSkillEntry, displayName, source string, platform, userID, policyOwnerID string, sendStatus func(string)) skillInstallExecutionResult {
 	if h.getSkillExecutor() == nil {
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but SkillExecutor is not initialized", displayName)}
+	}
+	ownerID := strings.TrimSpace(policyOwnerID)
+	if ownerID == "" {
+		ownerID = strings.TrimSpace(userID)
 	}
 	stagingDir := skillStagingDir(skill.SkillDir)
 
@@ -370,6 +386,13 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 					Result:       fmt.Sprintf("user approved %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
 				})
 			}
+		}
+	}
+
+	if h != nil && h.app != nil {
+		if err := h.app.ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, "manage_skill", map[string]interface{}{"action": "run", "name": skill.Name, "source": source}); err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: err.Error(), SilentFailure: true}
 		}
 	}
 

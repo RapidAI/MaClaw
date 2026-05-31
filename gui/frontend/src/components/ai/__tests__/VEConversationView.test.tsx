@@ -178,6 +178,59 @@ describe("VEConversationView", () => {
         expect(screen.getByText("多云")).toBeTruthy();
     });
 
+    it("keeps digital employee table narrative outside the grid", () => {
+        renderConversation({
+            existingSessionId: "test-session-1",
+            initialMessages: [{
+                id: "table-1",
+                role: "assistant",
+                content: "| \u597d\u7684\uff0c\u6211\u6765\u770b\u770b\u4f60\u7684\u76ee\u5f55\u91cc\u6709\u6ca1\u6709\u6559\u5b66\u697c\u7684\u56fe\u7247 | \u6587\u4ef6\u540d | \u5927\u5c0f |\n| --- | --- | --- |\n| \u7b2c1\u6559\u5b66\u697c.jpg | 57KB | |\n| \u7b2c2\u6559\u5b66\u697c3.jpg | 49KB | \u4f60\u60f3\u8981\u54ea\u4e00\u5f20\uff1f |",
+                timestamp: 1,
+            }],
+        });
+
+        expect(screen.getByTestId("markdown-table-prefix").textContent).toContain("\u6211\u6765\u770b\u770b");
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("thead th")).toHaveLength(2);
+        expect(table.querySelector("thead")?.textContent).toContain("\u6587\u4ef6\u540d");
+        expect(table.querySelector("thead")?.textContent).toContain("\u5927\u5c0f");
+        expect(table.querySelector("thead")?.textContent).not.toContain("\u6211\u6765\u770b\u770b");
+        expect(screen.getByTestId("markdown-table-note").textContent).toContain("\u4f60\u60f3\u8981\u54ea\u4e00\u5f20");
+    });
+
+    it("does not rewrite normal wide markdown tables", () => {
+        renderConversation({
+            existingSessionId: "test-session-1",
+            initialMessages: [{
+                id: "table-normal-1",
+                role: "assistant",
+                content: "| \u8d44\u6599\u6765\u6e90\u4e0e\u5904\u7406\u8bf4\u660e | \u6587\u4ef6\u540d | \u5927\u5c0f |\n| --- | --- | --- |\n| \u5b66\u6821\u76f8\u518c | \u7b2c1\u6559\u5b66\u697c.jpg | 57KB |",
+                timestamp: 1,
+            }],
+        });
+
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("thead th")).toHaveLength(3);
+        expect(table.querySelector("thead")?.textContent).toContain("\u8d44\u6599\u6765\u6e90");
+        expect(screen.queryByTestId("markdown-table-prefix")).toBeNull();
+    });
+
+    it("preserves escaped pipes when repairing digital employee tables", () => {
+        renderConversation({
+            existingSessionId: "test-session-1",
+            initialMessages: [{
+                id: "table-pipe-1",
+                role: "assistant",
+                content: "| \u597d\u7684\uff0c\u6211\u6765\u770b\u770b\u4f60\u7684\u76ee\u5f55\u91cc\u6709\u6ca1\u6709\u6559\u5b66\u697c\u7684\u56fe\u7247 | \u6587\u4ef6\u540d | \u5927\u5c0f |\n| --- | --- | --- |\n| \u6559\u5b66\u697c\\|\u5357.jpg | 57KB | |",
+                timestamp: 1,
+            }],
+        });
+
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("tbody tr:first-child td")).toHaveLength(2);
+        expect(table.querySelector("tbody tr:first-child")?.textContent).toContain("\u6559\u5b66\u697c|\u5357.jpg");
+    });
+
     // --- Utility function tests ---
 
     describe("formatError", () => {
@@ -209,6 +262,7 @@ describe("VEConversationView", () => {
 
         it("formats access confirmation states", () => {
             expect(formatError({ type: "auth_pending", message: "" }, false)).toBe("Waiting for access confirmation");
+            expect(formatError({ type: "auth_timeout", message: "expired" }, false)).toBe("Approval timed out. Try again later.");
             expect(formatError({ type: "access_denied", message: "denied" }, false)).toBe("Access was not approved");
             expect(formatError({ type: "access_denied", message: "blocked" }, false)).toBe("This digital employee is unavailable");
         });
@@ -324,6 +378,29 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-error-banner").textContent).toContain("等待对方确认");
         });
 
+        it("shows timeout when pending access expires before approval", async () => {
+            const expiresAt = new Date(Date.now() + 1000).toISOString();
+            const initiate = vi.fn().mockRejectedValue(new Error(`pending_confirmation request_id=req-timeout expires_at=${expiresAt}`));
+            renderConversation({ initiateConversation: initiate, lang: "en" });
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("Waiting for access confirmation");
+
+            await act(async () => { vi.advanceTimersByTime(1001); });
+
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("Approval timed out");
+        });
+
+        it("honors JSON retry_after_ms in pending access errors", async () => {
+            const initiate = vi.fn().mockRejectedValue(new Error('{"status":"pending_confirmation","retry_after_ms":1000}'));
+            renderConversation({ initiateConversation: initiate, lang: "en" });
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("Waiting for access confirmation");
+
+            await act(async () => { vi.advanceTimersByTime(1001); });
+
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("Approval timed out");
+        });
+
         it("retries session creation after access is allowed", async () => {
             const initiate = vi
                 .fn()
@@ -409,6 +486,23 @@ describe("VEConversationView", () => {
             expect(screen.queryByTestId("ve-error-banner")).toBeNull();
         });
 
+        it("matches machine id auth result when opened by ve dash alias", async () => {
+            const initiate = vi
+                .fn()
+                .mockRejectedValueOnce(new Error("pending_confirmation"))
+                .mockResolvedValueOnce({ session_id: "generated-session", ve_id: "ve-machine-a", ve_name: "Machine VE" });
+            renderConversation({ veId: "ve-machine-a", initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_machine_id: "machine-a", decision: "allow_once", status: "allowed" } });
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledTimes(2);
+            expect(screen.queryByTestId("ve-error-banner")).toBeNull();
+        });
+
         it("ignores access result events that do not target this digital employee", async () => {
             const initiate = vi.fn().mockRejectedValue(new Error("pending_confirmation"));
             renderConversation({ initiateConversation: initiate });
@@ -444,6 +538,18 @@ describe("VEConversationView", () => {
 
             expect(onSessionIdChange).not.toHaveBeenCalledWith("stale-session");
             expect(screen.getByTestId("ve-error-banner").textContent).toContain("访问未通过");
+        });
+
+        it("shows timeout when backend reports expired access request", async () => {
+            const initiate = vi.fn().mockRejectedValue(new Error("pending_confirmation"));
+            renderConversation({ initiateConversation: initiate });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:auth_result")?.({ payload: { target_ve_id: "ve-1", decision: "timeout", status: "expired" } });
+            });
+
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("对方未及时同意");
         });
 
         it("shows timeout error when session creation exceeds 15s", async () => {
@@ -535,7 +641,7 @@ describe("VEConversationView", () => {
             expect(send).toHaveBeenLastCalledWith("test-session-1", "Second turn");
         });
 
-        it("shows a thinking hint after sending until the first response chunk arrives", async () => {
+        it("shows a thinking hint after sending until a visible response arrives", async () => {
             const send = vi.fn().mockResolvedValue(undefined);
             renderConversation({ existingSessionId: "test-session-1", sendMessage: send });
 
@@ -792,9 +898,25 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("mention-popover")).toBeTruthy();
             expect(screen.getByTestId("mention-item-ve-a")).toBeTruthy();
             expect(screen.getByTestId("mention-item-local-maclaw")).toBeTruthy();
+            expect(screen.getByTestId("ai-input-stack").style.overflow).toBe("visible");
+            expect(screen.getByTestId("ve-input-area").style.overflow).toBe("visible");
+            expect(screen.getByTestId("ve-input-row").style.overflow).toBe("visible");
 
             fireEvent.click(screen.getByTestId("mention-item-local-maclaw"));
             expect(textarea.value).toBe("@Local AI ");
+        });
+
+        it("keeps input containers clipped when no mention popover is open", () => {
+            renderConversation({
+                existingSessionId: "test-session-1",
+                lang: "en",
+                participants: [{ id: "ve-a", name: "Agent A", online: true }],
+            });
+
+            expect(screen.queryByTestId("mention-popover")).toBeNull();
+            expect(screen.getByTestId("ai-input-stack").style.overflow).toBe("hidden");
+            expect(screen.getByTestId("ve-input-area").style.overflow).toBe("hidden");
+            expect(screen.getByTestId("ve-input-row").style.overflow).toBe("hidden");
         });
 
         it("filters participant suggestions by the current @ query", async () => {
@@ -920,6 +1042,87 @@ describe("VEConversationView", () => {
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "@Agent A please review", ["ve-a"]);
             expect(send).not.toHaveBeenCalled();
+        });
+
+        it("broadcasts unmentioned group messages when multiple remote digital employees are present", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                veId: "ve-a",
+                sendGroupMessage,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "please continue" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "please continue", []);
+        });
+
+        it("routes unmentioned group messages to the only remote digital employee", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                veId: "ve-a",
+                sendGroupMessage,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "please continue" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "please continue", ["ve-a"]);
+        });
+
+        it("routes unmentioned group messages to the original employee machine id", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                veId: "ve_m_anna",
+                sendGroupMessage,
+                participants: [
+                    { id: "m_anna", name: "Anna", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "继续" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "继续", ["m_anna"]);
+        });
+
+        it("routes unmentioned group messages when original employee id uses ve dash alias", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                veId: "ve-m_anna",
+                sendGroupMessage,
+                participants: [
+                    { id: "m_anna", name: "Anna", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "continue" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "continue", ["m_anna"]);
         });
 
         it("does not route raw participant ids as @mentions", async () => {
@@ -1732,6 +1935,26 @@ describe("VEConversationView", () => {
             expect(indicator.textContent).not.toContain("A says hi");
         });
 
+        it("keeps live stream output together across generated sender aliases", async () => {
+            renderConversation({
+                participants: [
+                    { id: "machine-a", name: "Agent A", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ from_id: "ve-machine-a", from_name: "Agent A", content: "alias " });
+            });
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ from_id: "machine-a", from_name: "Agent A", content: "merged" });
+            });
+
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            expect(indicator.textContent).toContain("alias merged");
+            expect(screen.queryByText("alias ")).toBeNull();
+        });
+
         it("uses participant names when stream sender names are raw ids", async () => {
             renderConversation({
                 participants: [
@@ -2040,6 +2263,69 @@ describe("VEConversationView", () => {
             expect(ref.current?.getState().messages.map((message) => message.role)).toEqual(["user", "assistant"]);
             expect(screen.getByText("local question")).toBeTruthy();
             expect(screen.getByText("assistant answer")).toBeTruthy();
+        });
+
+        it("treats generated initiator aliases as local in saved history", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1" },
+                session: { participants: [{ id: "machine-local", role_code: "initiator" }, { id: "machine-a", role_code: "speak" }] },
+                messages: [
+                    { id: "m-local", from_id: "ve-machine-local", from_name: "Me", kind: "statement", content: "local alias question", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "m-assistant", from_id: "ve_machine-a", from_name: "Test VE", kind: "statement", content: "assistant alias answer", created_at: "2026-05-01T00:00:01Z" },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="machine-a"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+            expect(screen.getByText("local alias question")).toBeTruthy();
+            expect(screen.getByText("assistant alias answer")).toBeTruthy();
+        });
+
+        it("merges saved stream chunks across generated VE aliases", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1" },
+                session: { participants: [{ id: "machine-a", role_code: "speak" }] },
+                messages: [
+                    { id: "m1", from_id: "ve-machine-a", from_name: "Test VE", kind: "stream_chunk", content: "alias ", created_at: "2026-05-01T00:00:00Z" },
+                    { id: "m2", from_id: "machine-a", from_name: "Test VE", kind: "stream_end", content: "merged", created_at: "2026-05-01T00:00:01Z" },
+                ],
+            });
+
+            const ref = createRef<VEConversationHandle>();
+            render(
+                <VEConversationView
+                    ref={ref}
+                    veId="machine-a"
+                    veName="Test VE"
+                    theme={mockTheme}
+                    lang="zh"
+                    existingSessionId="test-session-1"
+                    initiateConversation={vi.fn()}
+                    sendMessage={vi.fn()}
+                    sendMessageWithAttachments={vi.fn()}
+                    closeSession={vi.fn()}
+                />
+            );
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(ref.current?.getState().messages).toHaveLength(1);
+            expect(ref.current?.getState().messages[0]?.content).toBe("alias merged");
         });
 
         it("accepts camelCase fields in saved digital employee history", async () => {
@@ -2395,6 +2681,29 @@ describe("VEConversationView", () => {
             expect(close).toHaveBeenCalledWith("group-session-1");
             expect(initiateGroupConversation).toHaveBeenCalledWith(["ve-1", "ve-2"]);
             expect(registerLocalExecutorInGroup).toHaveBeenCalledWith("group-session-2");
+        });
+
+        it("does not duplicate primary participant across ve aliases when clearing group history", async () => {
+            const initiateGroupConversation = vi.fn().mockResolvedValue({ session_id: "group-session-2", ve_id: "ve-machine-1,machine-2", ve_name: "Group" });
+            const close = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                veId: "ve-machine-1",
+                existingSessionId: "group-session-1",
+                closeSession: close,
+                initiateGroupConversation,
+                participants: [
+                    { id: "machine-1", name: "Agent A", online: true },
+                    { id: "machine-2", name: "Agent B", online: true },
+                ],
+                initialMessages: [{ id: "old-msg", role: "assistant", content: "old answer", timestamp: 1 }],
+            });
+
+            const textarea = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
+            fireEvent.change(textarea, { target: { value: "/clear" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(initiateGroupConversation).toHaveBeenCalledWith(["ve-machine-1", "machine-2"]);
         });
 
         it("clears VE history when the tab manager sends a clear signal", async () => {

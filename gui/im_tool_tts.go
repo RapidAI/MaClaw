@@ -27,10 +27,7 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 		return "语音合成未启用。请在设置 → 语音合成中开启。"
 	}
 
-	platform := ""
-	if h.currentLoopCtx != nil {
-		platform = h.currentLoopCtx.Platform
-	}
+	platform := h.consumeRuntimePlatformFromToolArgsOrCurrent(args)
 
 	// Desktop panel: async synthesis — return immediately, push audio when ready.
 	if shouldEmitDesktopTTSPlayback(platform) {

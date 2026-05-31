@@ -196,6 +196,28 @@ func (s *PGWorkflowStore) CreateVersion(ctx context.Context, ver *WorkflowVersio
 	return err
 }
 
+// UpdateVersion updates an existing draft version in place: its version number
+// and graph, leaving the status unchanged. Used by SaveDraft's "update existing
+// draft" branch so re-saving a draft mutates the same row rather than creating
+// a new version row.
+func (s *PGWorkflowStore) UpdateVersion(ctx context.Context, ver *WorkflowVersion) error {
+	graphJSON, err := json.Marshal(ver.Graph)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE workflow_versions SET version_number = $1, graph_json = $2, updated_at = $3
+		 WHERE id = $4 AND EXISTS (SELECT 1 FROM workflow_definitions d WHERE d.id = workflow_versions.workflow_id AND d.tenant_id = $5)`,
+		ver.VersionNumber,
+		graphJSON,
+		now,
+		ver.ID,
+		store.TenantIDFromContext(ctx),
+	)
+	return err
+}
+
 func (s *PGWorkflowStore) GetVersion(ctx context.Context, id string) (*WorkflowVersion, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, workflow_id, version_number, status, graph_json, submitted_at, published_at, rejection_reason, created_at, updated_at

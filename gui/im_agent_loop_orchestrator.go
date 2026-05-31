@@ -17,9 +17,15 @@ func (h *IMMessageHandler) applyAgentLoopTaskOrchestratorStep(userID string, ctx
 	if h == nil || h.taskOrchestratorRegistry == nil {
 		return result
 	}
+	ownerID := h.workflowPolicyOwnerID(userID, ctx)
 
-	orchInst := h.taskOrchestratorRegistry.Get(userID)
+	orchInst := h.taskOrchestratorRegistry.Get(ownerID)
 	if orchInst == nil || !orchInst.IsActive() {
+		return result
+	}
+	if allowed, reason := h.workflowAllowsSubAgentExecutionForOwner(ownerID); !allowed {
+		log.Printf("[agent-loop] skipped task orchestrator injection by workflow policy user=%s owner=%s reason=%s", userID, ownerID, reason)
+		h.deactivateTaskOrchestratorForWorkflowPolicyBlock(ownerID, reason)
 		return result
 	}
 

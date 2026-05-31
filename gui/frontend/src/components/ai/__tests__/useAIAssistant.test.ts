@@ -162,6 +162,54 @@ async function expectStreamedPartialPreservedOnBackendError(errorText: string, p
     expect(result.current.messages.find(message => message.role === 'error')?.content).toBe(errorText);
 }
 
+type ProgressPayloadFactory = (req: { request_id: string; text: string }) => unknown;
+
+async function expectProgressPayloadTimeoutBehavior(
+    payloadOrFactory: unknown | ProgressPayloadFactory,
+    options: { activeSessionKey?: string; expectAlive: boolean; prompt?: string },
+) {
+    vi.useFakeTimers();
+    try {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook(options.activeSessionKey ? { activeSessionKey: options.activeSessionKey } : undefined);
+
+        await act(async () => {
+            void result.current.sendMessage(options.prompt || 'long active task');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const payload = typeof payloadOrFactory === 'function'
+            ? (payloadOrFactory as ProgressPayloadFactory)(req)
+            : payloadOrFactory;
+        const beforeEmitMs = options.expectAlive ? 599_000 : 300_000;
+        const afterEmitMs = options.expectAlive ? 599_000 : 300_001;
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(beforeEmitMs);
+            emitRuntimeEvent('ai-assistant-progress', payload);
+            await vi.advanceTimersByTimeAsync(afterEmitMs);
+        });
+
+        expect(result.current.progressMessages).toEqual([]);
+        if (options.expectAlive) {
+            expect(result.current.sending).toBe(true);
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('请求超时');
+            await act(async () => {
+                pending.resolve({ text: 'done', error: '', fields: null, actions: null });
+                await pending.promise;
+            });
+        } else {
+            expect(result.current.sending).toBe(false);
+            expect(messageContents(result.current.messages).join('\n')).toContain('请求超时');
+        }
+    } finally {
+        vi.useRealTimers();
+    }
+}
+
 function deferred<T>() {
     let resolve!: (value: T) => void;
     let reject!: (reason?: unknown) => void;
@@ -808,6 +856,55 @@ describe('useAIAssistant property tests', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('treats hidden backend heartbeats as activity even when they carry only session scope', async () => {
+        await expectProgressPayloadTimeoutBehavior(
+            { session_key: 'desktop-user', text: '__heartbeat__' },
+            { expectAlive: true, prompt: 'long coding task' },
+        );
+    });
+
+    it('normalizes legacy stream-event casing before applying timeout activity', async () => {
+        await expectProgressPayloadTimeoutBehavior(
+            (req: { request_id: string; text: string }) => ({ RequestID: req.request_id, SessionKey: 'desktop-user', Text: '__heartbeat__' }),
+            { expectAlive: true, prompt: 'long legacy event task' },
+        );
+    });
+
+    it('parses Wails JSON-string heartbeats before applying timeout activity', async () => {
+        await expectProgressPayloadTimeoutBehavior(
+            JSON.stringify({ session_key: 'desktop-user', text: '__heartbeat__' }),
+            { expectAlive: true, prompt: 'long Wails event task' },
+        );
+    });
+
+    it('does not let another session heartbeat reset the foreground timeout', async () => {
+        await expectProgressPayloadTimeoutBehavior(
+            { session_key: 'desktop-user:C:/other', text: '__heartbeat__' },
+            { activeSessionKey: 'desktop-user:C:/work', expectAlive: false, prompt: 'long project task' },
+        );
+    });
+
+    it('treats matching project-session heartbeats as foreground activity', async () => {
+        await expectProgressPayloadTimeoutBehavior(
+            { session_key: 'desktop-user:C:/work', text: '__heartbeat__' },
+            { activeSessionKey: 'desktop-user:C:/work', expectAlive: true, prompt: 'long matching project task' },
+        );
+    });
+
+    it('does not let a stale request heartbeat reset the active foreground timeout', async () => {
+        await expectProgressPayloadTimeoutBehavior(
+            { request_id: 'stale-request', session_key: 'desktop-user', text: '__heartbeat__' },
+            { expectAlive: false },
+        );
+    });
+
+    it('does not treat same-session progress without a request id as timeout activity', async () => {
+        await expectProgressPayloadTimeoutBehavior(
+            { session_key: 'desktop-user', text: 'running but unscoped' },
+            { expectAlive: false },
+        );
     });
 
     it('preserves streamed output when a foreground round times out', async () => {

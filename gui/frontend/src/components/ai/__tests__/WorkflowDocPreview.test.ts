@@ -23,6 +23,21 @@ const testTheme = {
 };
 
 describe('workflowProgressPhaseIDs', () => {
+    it('marks only the workflow preview header as a window drag region', () => {
+        render(React.createElement(WorkflowDocPreview, {
+            phaseDocuments: new Map([['requirements', '# Requirements']]),
+            currentPhaseID: 'requirements',
+            latestDocumentPhaseID: 'requirements',
+            workflowType: 'coding',
+            gateResults: new Map(),
+            onClose: () => undefined,
+            theme: testTheme,
+        }));
+
+        expect(screen.getByTestId('workflow-doc-preview-header').style.getPropertyValue('--wails-draggable')).toBe('drag');
+        expect(screen.getByTitle('关闭文档预览').style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+    });
+
     it('uses the coding workflow order and preserves generated document phases', () => {
         const docs = new Map<string, string>([
             ['requirements', '# Requirements'],
@@ -191,6 +206,32 @@ describe('workflowProgressPhaseIDs', () => {
         }).status).toBe('质检通过');
     });
 
+    it('shows current generated document phases as waiting for confirmation even when the quality gate needs review', () => {
+        expect(workflowProgressPhaseCardState({
+            expectsDocument: true,
+            gatePassed: false,
+            hasDoc: true,
+            isCurrent: true,
+            isPast: false,
+        })).toEqual({
+            status: '待确认',
+            tone: 'current',
+            emphasized: true,
+        });
+
+        expect(workflowProgressPhaseCardState({
+            expectsDocument: true,
+            gatePassed: false,
+            hasDoc: true,
+            isCurrent: false,
+            isPast: true,
+        })).toEqual({
+            status: '需调整',
+            tone: 'attention',
+            emphasized: true,
+        });
+    });
+
     it('does not count non-document execution phases as missing documents', () => {
         render(React.createElement(WorkflowDocPreview, {
             phaseDocuments: new Map([
@@ -274,9 +315,9 @@ describe('workflowProgressPhaseIDs', () => {
 
         expect(screen.getByText('Requirements')).toBeTruthy();
 
-        fireEvent.click(screen.getByTitle('设计 · 生成中'));
+        fireEvent.click(screen.getByTitle('技术设计 · 生成中'));
 
-        expect(screen.getByText('设计文档尚未生成')).toBeTruthy();
+        expect(screen.getByText('技术设计文档尚未生成')).toBeTruthy();
 
         rerender(React.createElement(WorkflowDocPreview, {
             phaseDocuments: new Map([
@@ -331,8 +372,8 @@ describe('workflowProgressPhaseIDs', () => {
             theme: testTheme,
         }));
 
-        fireEvent.click(screen.getByTitle('设计 · 生成中'));
-        expect(screen.getByText('设计文档尚未生成')).toBeTruthy();
+        fireEvent.click(screen.getByTitle('技术设计 · 生成中'));
+        expect(screen.getByText('技术设计文档尚未生成')).toBeTruthy();
 
         rerender(React.createElement(WorkflowDocPreview, {
             phaseDocuments: new Map(),

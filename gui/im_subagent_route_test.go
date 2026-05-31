@@ -7,6 +7,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreintent "github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func TestSubAgentRouteKeepsIncompleteRunsActiveForResume(t *testing.T) {
@@ -69,6 +70,98 @@ func TestDirectCodingSubAgentRouteAcceptsSemanticBugFixIntent(t *testing.T) {
 
 	if !h.shouldRouteBugFixToDirectCodingSubAgent(msg, &LoopContext{Kind: LoopKindChat}) {
 		t.Fatal("semantic bug-fix intent should route directly to CodingSubAgent")
+	}
+}
+
+func TestDirectCodingSubAgentRouteBlockedByActiveDocOnlyWorkflow(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.unifiedClassifier = uic
+	userID := "direct-route-doc-policy-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(IMUserMessage{UserID: userID, Text: "repair the startup bug"}, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("active doc-only workflow phase must block direct CodingSubAgent routing")
+	}
+}
+
+func TestDirectCodingSubAgentRouteDoesNotInheritSingleActiveWorkflowPolicy(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.unifiedClassifier = uic
+	userID := "direct-route-single-active-policy-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	if !h.shouldRouteBugFixToDirectCodingSubAgent(IMUserMessage{Text: "repair the startup bug"}, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("direct CodingSubAgent routing without explicit owner must not inherit single active doc-only workflow phase")
+	}
+}
+
+func TestDirectCodingSubAgentRouteBlockedByNonOrchestratorFullWorkflowPhase(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.unifiedClassifier = uic
+	workflowType := workflow.WorkflowType("full_non_orchestrator_route")
+	h.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type: workflowType,
+		Name: "full non orchestrator route",
+		Phases: []workflow.PhaseTemplate{{
+			ID:                  "generate_artifact",
+			Name:                "Generate artifact",
+			Prompt:              "generate artifact",
+			Deliverable:         "artifact",
+			ToolPolicy:          workflow.ToolFilterFull,
+			DisableOrchestrator: true,
+		}},
+	})
+	userID := "direct-route-full-disabled-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "generate"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	if h.shouldRouteBugFixToDirectCodingSubAgent(IMUserMessage{UserID: userID, Text: "repair the startup bug"}, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("full non-orchestrator workflow phase must block direct CodingSubAgent routing")
+	}
+}
+
+func TestDirectCodingSubAgentRouteAllowedInImplementationWorkflowPhase(t *testing.T) {
+	uic := coreintent.New(coreintent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"bug_fix","score":0.91,"reason":"existing code repair"}]}`, nil
+	}})
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.unifiedClassifier = uic
+	userID := "direct-route-implementation-user"
+	state, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := h.app.workflowEngine.GetRegistry().Match(workflow.WorkflowCoding)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == workflow.PhaseCodingImplementation {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	if !h.shouldRouteBugFixToDirectCodingSubAgent(IMUserMessage{UserID: userID, Text: "repair the startup bug"}, &LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("implementation workflow phase should allow direct CodingSubAgent routing")
 	}
 }
 
@@ -152,5 +245,93 @@ func TestRouteDirectCodingSubAgentExecutionRunsCodingSubAgent(t *testing.T) {
 	}
 	if gotTask == nil || gotTask.Description != "fix the startup bug" {
 		t.Fatalf("task = %#v, want original request", gotTask)
+	}
+}
+
+func TestRouteDirectCodingSubAgentExecutionBlockedByActiveDocOnlyWorkflow(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		t.Fatal("doc-only workflow phase must reject direct CodingSubAgent before it starts")
+		return nil
+	}
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.memory = agent.NewConversationMemory()
+	userID := "direct-exec-doc-policy-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	resp, history, handled := h.routeDirectCodingSubAgentExecution(IMUserMessage{UserID: userID, Text: "fix the startup bug"}, nil, &LoopContext{Kind: LoopKindChat}, nil, nil, nil)
+	if handled || resp != nil || len(history) != 0 {
+		t.Fatalf("direct route = handled=%v resp=%#v history=%#v, want blocked pass-through", handled, resp, history)
+	}
+}
+
+func TestRouteSubAgentExecutionBlockedByActiveDocOnlyWorkflow(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		t.Fatal("doc-only workflow phase must reject orchestrator SubAgent route before it starts")
+		return nil
+	}
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.memory = agent.NewConversationMemory()
+	h.taskOrchestratorRegistry = NewTaskOrchestratorRegistry()
+	userID := "orchestrator-doc-policy-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	orch := h.getTaskOrchestrator(userID)
+	orch.Activate([]*TaskItem{{Index: 1, Title: "T1", Description: "edit file"}}, "req", "design", ".", "")
+
+	resp, history, handled := h.routeSubAgentExecution(IMUserMessage{UserID: userID, Text: "continue"}, nil, &LoopContext{Kind: LoopKindChat}, nil, nil, nil)
+	if handled || resp != nil || len(history) != 0 {
+		t.Fatalf("subagent route = handled=%v resp=%#v history=%#v, want blocked pass-through", handled, resp, history)
+	}
+	if orch.IsActive() {
+		t.Fatal("stale task orchestrator must be deactivated when workflow phase blocks SubAgent")
+	}
+}
+
+func TestRouteSubAgentExecutionUsesRuntimePolicyOwner(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	var ranTaskTitle string
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		ranTaskTitle = task.Title
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: task.Title + " done"}
+	}
+
+	h := &IMMessageHandler{memory: agent.NewConversationMemory(), taskOrchestratorRegistry: NewTaskOrchestratorRegistry()}
+	desktopID := "desktop-subagent-doc-policy-owner"
+	remoteOwnerID := "remote:mobile-subagent-owner"
+	h.lastUserID = desktopID
+	desktopOrch := h.getTaskOrchestrator(desktopID)
+	desktopOrch.Activate([]*TaskItem{{Index: 0, Title: "Desktop task", Description: "desktop"}}, "req", "design", ".", "")
+	remoteOrch := h.getTaskOrchestrator(remoteOwnerID)
+	remoteOrch.Activate([]*TaskItem{{Index: 0, Title: "Remote task", Description: "remote"}}, "req", "design", ".", "")
+	ctx := &LoopContext{Kind: LoopKindChat, Runtime: RuntimeContext{RequestID: "req-subagent", PolicyOwnerID: remoteOwnerID}}
+
+	resp, history, handled := h.routeSubAgentExecution(IMUserMessage{UserID: desktopID, Text: "continue"}, nil, ctx, nil, nil, nil)
+	if !handled || resp == nil || len(history) != 1 {
+		t.Fatalf("runtime-owned subagent route = handled=%v resp=%#v history=%#v", handled, resp, history)
+	}
+	if ranTaskTitle != "Remote task" {
+		t.Fatalf("subagent should run runtime owner task, got %q", ranTaskTitle)
+	}
+	if !desktopOrch.IsActive() {
+		t.Fatal("desktop orchestrator must not be deactivated by remote route")
+	}
+	if remoteOrch.IsActive() {
+		t.Fatal("completed remote orchestrator should deactivate after run")
 	}
 }

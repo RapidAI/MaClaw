@@ -309,6 +309,20 @@ func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.app.toolRegistry.Execute(name, args)
 }
 
+func (c *pipeCallbacks) IsToolAllowed(name string) bool {
+	if c == nil || c.app == nil {
+		return true
+	}
+	return c.app.isWorkflowToolAllowedTUI(name)
+}
+
+func (c *pipeCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c == nil || c.app == nil {
+		return true, ""
+	}
+	return c.app.isWorkflowToolCallAllowedTUI(name, argsJSON)
+}
+
 func (c *pipeCallbacks) OnToken(delta string) {
 	// In pipe mode, tokens are NOT streamed to stdout — that would corrupt
 	// the final output for piping. The complete result is printed at the end.

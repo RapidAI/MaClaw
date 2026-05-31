@@ -22,6 +22,11 @@ if /I "%~1"=="hubcenter-only" (
   shift
   goto parse_args
 )
+if /I "%~1"=="hub-only" (
+  set "PS_ARGS=%PS_ARGS% -Scope hub-only"
+  shift
+  goto parse_args
+)
 if /I "%~1"=="full" (
   set "PS_ARGS=%PS_ARGS% -Scope full"
   shift
@@ -83,7 +88,7 @@ exit /b %EXIT_CODE%
 
 :usage
 echo Usage:
-echo   deploy_all.cmd [full^|hubcenter-only] [--no-check] [--clean-hubcenter-db] [--brand rapidai^|tigerclaw] [--skip-targets hc-3,hubs2.maclaw.top,hub2.maclaw.top]
+echo   deploy_all.cmd [full^|hubcenter-only^|hub-only] [--no-check] [--clean-hubcenter-db] [--brand rapidai^|tigerclaw] [--skip-targets hc-3,hubs2.maclaw.top,hub2.maclaw.top]
 echo.
 echo   --clean-hubcenter-db  Backup and rebuild remote HubCenter SQLite DB without ha_sync_ops/ha_applied_ops.
 exit /b 0

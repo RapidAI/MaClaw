@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func TestBuildRegisteredToolAgentViewIncludesHiddenArgs(t *testing.T) {
@@ -76,6 +77,115 @@ func TestRegisteredToolAgentViewReadsJSONSchemaRequired(t *testing.T) {
 	}
 }
 
+func TestRegisteredToolAgentViewInfersDirectoryField(t *testing.T) {
+	tool := RegisteredTool{
+		Name: "workspace_tool",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"working_dir": map[string]interface{}{"type": "string", "description": "Working directory for command execution"},
+			},
+		},
+	}
+	view := buildRegisteredToolAgentView(tool, map[string]interface{}{}, nil)
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok || len(fields) == 0 {
+		t.Fatalf("expected fields, got %#v", view["fields"])
+	}
+	if fields[0]["name"] != "working_dir" || fields[0]["type"] != "directory" {
+		t.Fatalf("expected directory field, got %#v", fields[0])
+	}
+}
+
+func TestRegisteredToolAgentViewDoesNotTreatRedirectAsDirectory(t *testing.T) {
+	tool := RegisteredTool{
+		Name: "oauth_tool",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"redirect_url": map[string]interface{}{"type": "string", "description": "Callback redirect URL"},
+			},
+		},
+	}
+	view := buildRegisteredToolAgentView(tool, map[string]interface{}{}, nil)
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok || len(fields) == 0 {
+		t.Fatalf("expected fields, got %#v", view["fields"])
+	}
+	if fields[0]["name"] != "redirect_url" || fields[0]["type"] != "text" {
+		t.Fatalf("expected text redirect field, got %#v", fields[0])
+	}
+}
+
+func TestRegisteredToolAgentViewDoesNotTreatPathologyAsFile(t *testing.T) {
+	tool := RegisteredTool{
+		Name: "medical_tool",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"pathology_note": map[string]interface{}{"type": "string", "description": "Clinical pathology note"},
+			},
+		},
+	}
+	view := buildRegisteredToolAgentView(tool, map[string]interface{}{}, nil)
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok || len(fields) == 0 {
+		t.Fatalf("expected fields, got %#v", view["fields"])
+	}
+	if fields[0]["name"] != "pathology_note" || fields[0]["type"] != "text" {
+		t.Fatalf("expected text pathology field, got %#v", fields[0])
+	}
+}
+
+func TestRegisteredToolAgentViewStillInfersPathTokenAsFile(t *testing.T) {
+	tool := RegisteredTool{
+		Name: "file_tool",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"input_path": map[string]interface{}{"type": "string", "description": "Input path"},
+			},
+		},
+	}
+	view := buildRegisteredToolAgentView(tool, map[string]interface{}{}, nil)
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok || len(fields) == 0 {
+		t.Fatalf("expected fields, got %#v", view["fields"])
+	}
+	if fields[0]["name"] != "input_path" || fields[0]["type"] != "file" {
+		t.Fatalf("expected file path field, got %#v", fields[0])
+	}
+}
+
+func TestRegisteredToolAgentViewInfersDirectoryObjectColumn(t *testing.T) {
+	tool := RegisteredTool{
+		Name: "workspace_tool",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"settings": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"working_dir": map[string]interface{}{"type": "string", "description": "Working directory for command execution"},
+					},
+				},
+			},
+		},
+	}
+	view := buildRegisteredToolAgentView(tool, map[string]interface{}{}, nil)
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok || len(fields) == 0 {
+		t.Fatalf("expected fields, got %#v", view["fields"])
+	}
+	columns, ok := fields[0]["columns"].([]map[string]interface{})
+	if fields[0]["type"] != "object_form" || !ok || len(columns) == 0 {
+		t.Fatalf("expected object_form with columns, got %#v", fields[0])
+	}
+	if columns[0]["name"] != "working_dir" || columns[0]["type"] != "directory" {
+		t.Fatalf("expected directory object column, got %#v", columns[0])
+	}
+}
+
 func TestRegisteredToolMissingRequiredRecognizesTypedEmptySlices(t *testing.T) {
 	tool := RegisteredTool{Name: "typed", Required: []string{"tags", "items"}}
 	missing := registeredToolMissingRequired(&tool, map[string]interface{}{
@@ -120,6 +230,192 @@ func TestHandleRegisteredToolAgentViewSubmitMergesAndRuns(t *testing.T) {
 	if !ok || body["amount"] != float64(86) {
 		t.Fatalf("expected object textarea to be parsed as JSON, got %#v", called["body"])
 	}
+}
+
+func TestHandleRegisteredToolAgentViewSubmitHonorsWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.registry = NewToolRegistry()
+	called := false
+	if err := h.registry.Register(RegisteredTool{
+		Name:     "write_file",
+		Required: []string{"path", "content"},
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "wrote"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	userID := "agent-view-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	resp := h.handleRegisteredToolAgentViewSubmit("write_file", map[string]interface{}{
+		registeredToolAgentViewArgsField: map[string]interface{}{registeredToolPolicyOwnerIDField: userID},
+		"path":                           "out.txt",
+		"content":                        "x",
+	})
+	if called {
+		t.Fatal("task panel submit must not run workflow-blocked registered tool")
+	}
+	if resp == nil || !strings.Contains(resp.Text, "not allowed by the current workflow tool policy") {
+		t.Fatalf("expected workflow policy rejection, got %#v", resp)
+	}
+}
+
+func TestHandleRegisteredToolAgentViewSubmitStripsRuntimePolicyOwner(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	var seenOwner bool
+	if err := h.registry.Register(RegisteredTool{
+		Name:     "capture_args",
+		Required: []string{"value"},
+		Handler: func(args map[string]interface{}) string {
+			_, seenOwner = args[registeredToolPolicyOwnerIDField]
+			return "captured"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.handleRegisteredToolAgentViewSubmit("capture_args", map[string]interface{}{
+		registeredToolAgentViewArgsField: map[string]interface{}{registeredToolPolicyOwnerIDField: "remote:mobile"},
+		"value":                          "x",
+	})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if seenOwner {
+		t.Fatal("registered tool handler must not receive hidden runtime policy owner")
+	}
+}
+
+func TestHandleRegisteredToolAgentViewSubmitWithoutOwnerDoesNotUseLegacyFallback(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.registry = NewToolRegistry()
+	called := false
+	if err := h.registry.Register(RegisteredTool{
+		Name:     "write_file",
+		Required: []string{"path", "content"},
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "wrote"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	userID := "agent-view-legacy-fallback-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	resp := h.handleRegisteredToolAgentViewSubmit("write_file", map[string]interface{}{
+		"path":    "out.txt",
+		"content": "x",
+	})
+	if !called {
+		t.Fatal("task panel submit without explicit owner should not inherit unrelated workflow policy")
+	}
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestHandleRegisteredToolAgentViewSubmitWithoutOwnerDoesNotUseLastUserID(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.registry = NewToolRegistry()
+	called := false
+	if err := h.registry.Register(RegisteredTool{
+		Name:     "write_file",
+		Required: []string{"path", "content"},
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "wrote"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	userID := "agent-view-last-user-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	h.lastUserID = userID
+
+	resp := h.handleRegisteredToolAgentViewSubmit("write_file", map[string]interface{}{
+		"path":    "out.txt",
+		"content": "x",
+	})
+	if !called {
+		t.Fatal("task panel submit without explicit owner should not inherit lastUserID workflow policy")
+	}
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestHandleRegisteredToolAgentViewSubmitWithoutOwnerDoesNotUseCurrentRuntime(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.registry = NewToolRegistry()
+	called := false
+	if err := h.registry.Register(RegisteredTool{
+		Name:     "write_file",
+		Required: []string{"path", "content"},
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "wrote"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	userID := "agent-view-current-runtime-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	h.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{RequestID: "req-current", PolicyOwnerID: userID}}
+
+	resp := h.handleRegisteredToolAgentViewSubmit("write_file", map[string]interface{}{
+		"path":    "out.txt",
+		"content": "x",
+	})
+	if !called {
+		t.Fatal("task panel submit without hidden owner should not inherit current runtime workflow policy")
+	}
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestRegisteredToolAgentViewCarriesRuntimePolicyOwner(t *testing.T) {
+	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-1", PolicyOwnerID: "owner-1"}}}
+	tool := RegisteredTool{Name: "write_file", Required: []string{"path"}}
+	view := buildRegisteredToolAgentView(tool, h.attachRegisteredToolPolicyOwner(map[string]interface{}{"content": "x"}), []string{"path"})
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("fields = %#v", view["fields"])
+	}
+	for _, field := range fields {
+		if field["name"] != registeredToolAgentViewArgsField {
+			continue
+		}
+		args, _ := field["value"].(map[string]interface{})
+		if args[registeredToolPolicyOwnerIDField] != "owner-1" {
+			t.Fatalf("hidden policy owner = %#v", args[registeredToolPolicyOwnerIDField])
+		}
+		return
+	}
+	t.Fatal("hidden args field missing")
 }
 
 func TestHandleRegisteredToolAgentViewSubmitRejectsSchemaConstraints(t *testing.T) {
@@ -210,7 +506,7 @@ func TestHandleRegisteredToolApprovalSubmitRunsApprovedTool(t *testing.T) {
 	approval := storeRegisteredToolPendingApproval("bash", map[string]interface{}{
 		"command":    "curl -X POST https://example.com",
 		"session_id": "sess-1",
-	}, "sess-1", firewall.analyzer.Assess("bash", map[string]interface{}{"command": "curl -X POST https://example.com"}, &SecurityCallContext{SessionID: "sess-1"}))
+	}, "sess-1", "", firewall.analyzer.Assess("bash", map[string]interface{}{"command": "curl -X POST https://example.com"}, &SecurityCallContext{SessionID: "sess-1"}))
 
 	resp := handler.handleRegisteredToolApprovalAgentViewSubmit(map[string]interface{}{
 		"approved": true,
@@ -230,6 +526,53 @@ func TestHandleRegisteredToolApprovalSubmitRunsApprovedTool(t *testing.T) {
 	}
 	if !firewall.isSessionApproved("sess-1", "bash") {
 		t.Fatal("expected session approval to be recorded")
+	}
+}
+
+func TestHandleRegisteredToolApprovalSubmitHonorsWorkflowPolicyBeforeApprovingSession(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.registry = NewToolRegistry()
+	called := false
+	if err := h.registry.Register(RegisteredTool{
+		Name: "bash",
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "ran"
+		},
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	firewall := NewSecurityFirewall(NewSecurityRiskAnalyzer(), NewPolicyEngine(), nil)
+	h.firewall = firewall
+	userID := "agent-view-approval-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	approval := storeRegisteredToolPendingApproval("bash", map[string]interface{}{
+		"command":    "echo hi",
+		"session_id": "sess-1",
+	}, "sess-1", userID, firewall.analyzer.Assess("bash", map[string]interface{}{"command": "echo hi"}, &SecurityCallContext{SessionID: "sess-1"}))
+
+	resp := h.handleRegisteredToolApprovalAgentViewSubmit(map[string]interface{}{
+		"approved": true,
+		"parameters": map[string]interface{}{
+			registeredToolApprovalIDField: approval.ID,
+		},
+	})
+	if called {
+		t.Fatal("approval submit must not run workflow-blocked registered tool")
+	}
+	if resp == nil || !strings.Contains(resp.Text, "not allowed by the current workflow tool policy") {
+		t.Fatalf("expected workflow policy rejection, got %#v", resp)
+	}
+	if firewall.isSessionApproved("sess-1", "bash") {
+		t.Fatal("workflow-blocked approval must not approve future session calls")
+	}
+	if _, ok := getRegisteredToolPendingApproval(approval.ID); ok {
+		t.Fatal("expected workflow-blocked approval to be removed after handling")
 	}
 }
 

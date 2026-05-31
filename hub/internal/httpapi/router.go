@@ -150,7 +150,7 @@ func NewRouter(
 				return
 			}
 			participantID := r.URL.Query().Get("participant_id")
-			if participantID != "" && !strings.EqualFold(participantID, principal.MachineID) {
+			if participantID != "" && !groupDiscussionParticipantIdentityMatches(participantID, principal.MachineID) {
 				writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
 				return
 			}
@@ -167,7 +167,7 @@ func NewRouter(
 				return
 			}
 			participantID := r.URL.Query().Get("participant_id")
-			if participantID != "" && !strings.EqualFold(participantID, principal.MachineID) {
+			if participantID != "" && !groupDiscussionParticipantIdentityMatches(participantID, principal.MachineID) {
 				writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
 				return
 			}
@@ -208,6 +208,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/platform/employees", PlatformEmployeeRegisterHandler(system, tenantRepo, platformUsers, identity))
 	mux.HandleFunc("POST /api/platform/employees/{id}/viewer-token", PlatformEmployeeViewerTokenHandler(system, tenantRepo, platformUsers, identity))
 	mux.HandleFunc("POST /api/platform/employees/{id}/status", PlatformEmployeeStatusHandler(system, tenantRepo))
+	mux.HandleFunc("DELETE /api/platform/employees/{id}", PlatformEmployeeDeleteHandler(system, tenantRepo, platformUsers))
 	mux.HandleFunc("POST /api/platform/migrations", PlatformMigrationSubmitHandler(system, tenantRepo))
 	mux.HandleFunc("POST /api/platform/migrations/{id}/cancel", PlatformMigrationCancelHandler(system, tenantRepo))
 	mux.HandleFunc("POST /api/platform/knowledge/imports", PlatformKnowledgeImportHandler(system, tenantRepo))
@@ -327,6 +328,11 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/llm/service-grants/{id}", requireTenantAdmin(DeleteLLMServiceGrantHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/usage-report", requireTenantAdmin(GetLLMUsageReportHandler(system, securitySvc)))
 	mux.HandleFunc("GET /api/admin/llm/access-logs", requireTenantAdmin(GetLLMEndpointAccessLogsHandler(system)))
+	mux.HandleFunc("GET /api/admin/card-store/config", requireTenantAdmin(GetCardStoreConfigHandler(system)))
+	mux.HandleFunc("PUT /api/admin/card-store/config", requireTenantAdmin(UpdateCardStoreConfigHandler(system, adminAudit)))
+	mux.HandleFunc("GET /api/admin/card-store/sales", requireTenantAdmin(GetCardStoreSalesStatsHandler(system)))
+	mux.HandleFunc("POST /api/admin/card-store/orders/{orderNo}/approve", requireTenantAdmin(AdminApproveCardStorePersonalOrderHandler(system, mailer, identity, adminAudit)))
+	mux.HandleFunc("POST /api/admin/card-store/orders/{orderNo}/reject", requireTenantAdmin(AdminRejectCardStorePersonalOrderHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/model_download/status", requireGlobalAdmin(GetAdminModelDownloadStatusHandler(configPath)))
 	mux.HandleFunc("POST /api/admin/model_download/trigger", requireGlobalAdmin(TriggerAdminModelDownloadHandler(configPath)))
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
@@ -334,6 +340,21 @@ func NewRouter(
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache))
+	mux.HandleFunc("GET /api/card-store/products", GetCardStoreProductsHandler(system, tenantRepo))
+	mux.HandleFunc("GET /api/card-store/me", GetCardStoreMeHandler(identity))
+	mux.HandleFunc("POST /api/card-store/orders", CreateCardStoreOrderHandler(identity, system, mailer, nil))
+	mux.HandleFunc("GET /api/card-store/orders/{orderNo}/alipay/pay", CardStoreAlipayPayPageHandler(system))
+	mux.HandleFunc("GET /api/card-store/orders/{orderNo}", GetCardStoreOrderHandler(system))
+	mux.HandleFunc("POST /api/card-store/orders/{orderNo}/payment-opened", CardStorePaymentOpenedHandler(system, mailer))
+	mux.HandleFunc("GET /card_store/admin/confirm", CardStorePersonalPaymentConfirmPageHandler(system, "approve"))
+	mux.HandleFunc("GET /card_store/admin/delete", CardStorePersonalPaymentConfirmPageHandler(system, "reject"))
+	mux.HandleFunc("POST /api/card-store/personal-payment/confirm", CardStorePersonalPaymentTokenActionHandler(system, mailer, identity, "approve"))
+	mux.HandleFunc("POST /api/card-store/personal-payment/reject", CardStorePersonalPaymentTokenActionHandler(system, mailer, identity, "reject"))
+	mux.HandleFunc("POST /api/card-store/recover", RecoverCardStoreCodesHandler(system, mailer))
+	mux.HandleFunc("GET /api/zhifuxpay/notify", CardStorePaymentNotifyHandler(system, mailer, identity))
+	mux.HandleFunc("POST /api/zhifuxpay/notify", CardStorePaymentNotifyHandler(system, mailer, identity))
+	mux.HandleFunc("GET /api/card-store/payment/notify", CardStorePaymentNotifyHandler(system, mailer, identity))
+	mux.HandleFunc("POST /api/card-store/payment/notify", CardStorePaymentNotifyHandler(system, mailer, identity))
 	// Content audit configuration
 	mux.HandleFunc("GET /api/admin/content_audit/config", requireTenantAdmin(GetContentAuditConfigHandler(system)))
 	mux.HandleFunc("PUT /api/admin/content_audit/config", requireTenantAdmin(UpdateContentAuditConfigHandler(system)))
@@ -513,7 +534,15 @@ func NewRouter(
 				return
 			}
 			r.Header.Set("X-Owner-ID", principal.MachineID)
-			r = r.WithContext(store.WithTenant(r.Context(), principal.TenantID))
+			// Establish the authenticated identity in BOTH conventions:
+			// header (read by InstanceAPI / DecisionAPI / WorkflowAPI) and
+			// context (read by RuntimeAPI's handleInitiateWorkflow / handleConfirm
+			// / directory views via getUserIDFromContext). Populating the context
+			// is purely additive and lets the RuntimeAPI routes — registered in the
+			// runtime wiring below — see the caller instead of returning 401.
+			ctx := workflow.WithUserID(r.Context(), principal.MachineID)
+			ctx = store.WithTenant(ctx, principal.TenantID)
+			r = r.WithContext(ctx)
 			h(w, r)
 		}
 	}
@@ -531,17 +560,98 @@ func NewRouter(
 		wfStore := workflow.NewPGWorkflowStore(hubDB)
 		instStore := workflow.NewPgInstanceStore(hubDB)
 		auditStore := workflow.NewPgAuditStore(hubDB)
-		dispatcher := &noopApprovalDispatcher{} // placeholder until A2A dispatch is wired
-		executor := workflow.NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+		confirmStore := workflow.NewPgConfirmationStore(hubDB)
+
+		// ConfirmationTracker: the post-completion confirmation subsystem
+		// (terminal-node StartTracking, reminder loop, orphan reconciliation).
+		// It is wired with the SAME confirmStore instance the RuntimeAPI
+		// directory/confirm routes use below, so the tracker and those routes
+		// share one store (Fix wiring item 5 / ordering note 3).
+		//
+		// The NotificationDispatcher is constructed exactly as the
+		// production-mirroring tests wire it (reconcile_orphaned_test.go:
+		// "Build the tracker as production wires it"): there is no production
+		// HubInAppNotifier / IMPushNotifier in router scope (no implementation
+		// of those interfaces exists in the hub), so reminder *delivery*
+		// degrades gracefully (Dispatch logs "hub notifier not configured")
+		// while StartTracking and ReconcileOrphanedInstances — which touch only
+		// confirmStore + auditStore — work fully. SetWorkflowStore injects the
+		// WorkflowStore so ReconcileOrphanedInstances can re-derive a completed
+		// instance's terminal-node TerminalNodeConfig from its published version
+		// graph. The NotificationDispatcher and ConfirmationTracker public APIs
+		// are unchanged.
+		notifDispatcher := workflow.NewNotificationDispatcher(nil, nil, auditStore, nil)
+		confirmTracker := workflow.NewConfirmationTracker(confirmStore, instStore, notifDispatcher, auditStore).
+			SetWorkflowStore(wfStore)
+
+		// Real ApprovalDispatcher backed by the Hub machine sender
+		// (device.Service.SendToMachine) — the same mechanism VE/group messaging
+		// uses. Replaces the noop dispatcher so approval requests are actually
+		// delivered to approver machines (Finding 1.2 → 2.2). The
+		// ApprovalDispatcher interface and the executor call sites are unchanged.
+		dispatcher := NewHubApprovalDispatcher(deviceSvc)
+		// Pass the tracker into the executor so a terminal node creates
+		// confirmation records at runtime (executeTerminalNode → StartTracking).
+		// Without WithConfirmationTracker the executor's tracker is nil and
+		// StartTracking is skipped, so no confirmation records are ever created
+		// in production (Finding 1.5 / design Fix Implementation item 5).
+		executor := workflow.NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, workflow.WithConfirmationTracker(confirmTracker))
 		instanceAPI := workflow.NewInstanceAPI(executor, instStore, auditStore)
 		instanceAPI.RegisterRoutes(mux, workflowUserAuth)
 
-		// Start background services for approval workflow
-		escalationMgr := workflow.NewEscalationManager(dispatcher, auditStore, &noopAvailabilityChecker{})
+		// Decision entry point: routes an approver's decision into
+		// WorkflowExecutor.ResumeInstance (registers POST
+		// /api/v1/instances/{id}/nodes/{nodeID}/decision). Without this an
+		// instance reaching an approval node has no caller for ResumeInstance
+		// and blocks forever.
+		decisionAPI := workflow.NewDecisionAPI(executor, instStore, wfStore)
+		decisionAPI.RegisterRoutes(mux, workflowUserAuth)
+
+		// Runtime API: validated initiation (/initiate), withdrawal, confirmation,
+		// and directory routes (Finding 1.3 → 2.3). The 5-arg RuntimeExecutor
+		// signature is bridged to the executor's 2-arg StartInstance via
+		// hubRuntimeExecutorAdapter, which marshals {form_data, initiator_id,
+		// channel, submission_timestamp} into trigger data. handleInitiateWorkflow
+		// already validates form_data against the published version's schema with
+		// FormValidator, so validator semantics are unchanged. The existing
+		// /trigger route + owner isolation registered by instanceAPI above remain
+		// unchanged (Preservation 3.5).
+		runtimeExec := newHubRuntimeExecutorAdapter(executor)
+		runtimeAPI := workflow.NewRuntimeAPI(runtimeExec, instStore, auditStore, &workflow.FormValidator{}, wfStore)
+		runtimeAPI.SetWithdrawalHandler(workflow.NewWithdrawalHandler(instStore, auditStore, nil, nil))
+		runtimeAPI.SetDirectoryService(workflow.NewDirectoryService(instStore, confirmStore, newHubNodeExecStoreAdapter(instStore)))
+		runtimeAPI.RegisterRoutes(mux, workflowUserAuth)
+
+		// Start background services for approval workflow.
+		// Real HumanApproverChecker backed by device.Service.IsMachineOnline so
+		// availability mirrors real approver presence and unavailable/queue-full/
+		// timeout conditions can route to fallback/escalation (Finding 1.4 → 2.4).
+		// EscalationManager and HandleUnavailable/HandleTimeout/HandleQueueFull are
+		// unchanged; only the availability source changes (Preservation 3.6).
+		escalationMgr := workflow.NewEscalationManager(dispatcher, auditStore, NewHubAvailabilityChecker(deviceSvc))
 		escalationMgr.Start()
 
 		timeoutTicker := workflow.NewTimeoutTicker(executor, instStore)
 		timeoutTicker.Start()
+
+		// Confirmation reconciliation + reminder loops. These complete the
+		// runtime-half wiring: RunReconcileLoop repairs orphaned completed
+		// instances (those marked completed before StartTracking ran — the
+		// crash window in executeTerminalNode), and RunReminderLoop drives
+		// pending-confirmation reminders/escalation. Both take a context and
+		// stop when it is cancelled.
+		//
+		// NewRouter threads no context.Context and no shutdown hook, and the
+		// established pattern for the other workflow background loops in this
+		// block (EscalationManager.Start, TimeoutTicker.Start) is a
+		// process-lifetime goroutine driven by context.Background() with no
+		// caller-side stop. We match that established pattern: each loop owns a
+		// context.Background() and runs for the process lifetime. (ConfirmationTracker
+		// also exposes Stop() and the loops honor ctx cancellation, so when a
+		// shutdown context is threaded through NewRouter in the future these can
+		// adopt it without touching the loop implementations.)
+		go confirmTracker.RunReconcileLoop(context.Background())
+		go confirmTracker.RunReminderLoop(context.Background())
 	}
 
 	// Workflow audit trail query API
@@ -615,6 +725,7 @@ func NewRouter(
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerBindStaticRoutes(mux, "./web/bind", "/bind")
 	registerGetCreditsStaticRoutes(mux, "./web/get-credits", "/get-credits")
+	registerCardStoreStaticRoutes(mux, "./web/card_store", "/card_store")
 	registerStaticRoutes(mux, "./web/connector", "/connector")
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	return mux

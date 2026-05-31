@@ -281,6 +281,14 @@ func TestAdminCanListAndCancelAsyncJobsAcrossTenants(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("job did not finish after unblock")
 	}
+	for i := 0; i < 50; i++ {
+		current, ok := server.jobs.getAnyJob(job.ID)
+		if ok && current.CompletedAt != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job did not reach terminal state")
 }
 
 func TestAdminSupportBundleIncludesRedactedServiceDiagnostics(t *testing.T) {

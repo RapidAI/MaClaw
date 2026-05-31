@@ -34,6 +34,7 @@ func (h *IMMessageHandler) extractSessionStartMemoryAsync(userID string, entries
 
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
 	startedAt := time.Now()
+	history = sanitizeVEGroupExecutorHistory(userID, history)
 
 	// Dynamic entry limit: scale MaxConversationTurns proportionally to the
 	// model's effective context window. A 128K model can hold more entries
@@ -56,7 +57,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 			}
 			// Token limit: match the entry limit's token equivalent.
 			// This ensures the entry-based and token-based triggers are
-			// consistent 鈥?no double-compression.
+			// consistent - no double-compression.
 			tokenEquiv := dynamicLimit * 1500
 			if tokenEquiv > dynamicTokenLimit {
 				dynamicTokenLimit = tokenEquiv
@@ -126,7 +127,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	beforeCount := len(history)
 	// Compaction: trim without LLM summarizer (fast, <1ms). Uses static
 	// placeholder for dropped entries. The LLM summary was previously done
-	// synchronously (6.5s blocking), but its value is marginal — the static
+	// synchronously (6.5s blocking), but its value is marginal - the static
 	// placeholder is functionally equivalent for the LLM's next turn.
 	// Removing the summarizer from the critical path saves 6.5s per compaction.
 	trimmed := trimHistoryWithSummary(history, nil, memorySink, dynamicLimit, dynamicTokenLimit)
@@ -140,7 +141,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	if willCompact && len(trimmed) < beforeCount {
 		elapsed := time.Since(startedAt)
 
-		// Improvement 9: Compaction analytics 鈥?log compaction stats for
+		// Improvement 9: Compaction analytics - log compaction stats for
 		// observability and future optimization.
 		log.Printf("[compaction] trigger=auto entries=%d->%d duration=%dms user=%s",
 			beforeCount, len(trimmed), elapsed.Milliseconds(), userID)
@@ -157,7 +158,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		// new conversation.
 		count := h.incrementCompactionCount(userID)
 		if count > 0 && count%2 == 0 {
-			log.Printf("[compaction] user=%s compaction_count=%d 鈥?quality warning threshold reached", userID, count)
+			log.Printf("[compaction] user=%s compaction_count=%d - quality warning threshold reached", userID, count)
 		}
 	}
 
@@ -187,7 +188,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		}()
 	}
 
-	// --- Task sedimentation: ensure meaningful conversations appear in "鏈€杩戜换鍔? ---
+	// --- Task sedimentation: ensure meaningful conversations appear in recent tasks. ---
 	// Many tasks (SSH ops, file processing, info queries) don't go through
 	// workflow_artifact_saver or memory(action=save), so they never appear
 	// in the task list. This mechanism creates a lightweight project_knowledge
@@ -196,7 +197,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	h.sedimentTaskEntry(userID, history)
 
 	// --- Online incremental extraction (Mem0-style) ---
-	// Uses the shared bgCtx — cancelled if user sends a new message.
+	// Uses the shared bgCtx - cancelled if user sends a new message.
 	h.triggerOnlineExtractionWithContext(bgCtx, userID, history)
 
 	// --- Deferred session-start extraction ---
@@ -213,6 +214,20 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	}
 }
 
+func sanitizeVEGroupExecutorHistory(userID string, history []agent.ConversationEntry) []agent.ConversationEntry {
+	if !strings.HasPrefix(strings.TrimSpace(userID), "ve-group-executor:") || len(history) == 0 {
+		return history
+	}
+	out := make([]agent.ConversationEntry, 0, len(history))
+	for _, entry := range history {
+		if strings.EqualFold(strings.TrimSpace(entry.Role), "assistant") {
+			entry.ReasoningContent = ""
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
 	if h == nil || strings.TrimSpace(userID) == "" || resp == nil {
 		return
@@ -227,7 +242,7 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	}
 	// Run the LLM classification in a background goroutine to avoid blocking
 	// the response return. The pending reply state is consumed on the NEXT
-	// user message, so there's no urgency — it just needs to be ready before
+	// user message, so there's no urgency - it just needs to be ready before
 	// the next message arrives (typically seconds to minutes later).
 	historyCopy := cloneConversationEntries(history)
 	go func() {

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -220,6 +221,7 @@ func (h *IMMessageHandler) checkToolResultInjection(toolName, result string) str
 // buildSituationReport generates the current situation context for system prompt injection.
 // No caching — the report is lightweight (<1ms) and must be per-user accurate.
 func (h *IMMessageHandler) buildSituationReport(userID string) string {
+	userID = strings.TrimSpace(userID)
 	ctx := agent.SituationContext{
 		CurrentTime: time.Now(),
 	}
@@ -258,11 +260,14 @@ func (h *IMMessageHandler) buildSituationReport(userID string) string {
 	}
 
 	// Recent artifacts from memory
-	if h.memoryStore != nil {
+	if h.memoryStore != nil && userID != "" {
 		recent := h.memoryStore.EntriesSince(time.Now().Add(-24 * time.Hour))
 		for _, e := range recent {
 			if len(ctx.RecentArtifacts) >= 3 {
 				break
+			}
+			if strings.TrimSpace(e.OwnerID) != "" && strings.TrimSpace(e.OwnerID) != userID {
+				continue
 			}
 			if string(e.Category) == "task_artifact" {
 				title := e.Title

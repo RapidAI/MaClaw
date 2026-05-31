@@ -138,21 +138,21 @@
     </div>
     <div class="sm-section sm-config-section">
       <div class="sm-config-card">
-        <div class="sm-section-kicker">SECURITY</div>
-        <h3 id="smUploadAuthTitle">Upload Authentication Mode</h3>
-        <div class="desc" id="smUploadAuthDesc">Controls how skill uploads are authenticated. Default: both (token preferred, email fallback).</div>
+        <div class="sm-section-kicker" id="smUploadAuthKicker"></div>
+        <h3 id="smUploadAuthTitle"></h3>
+        <div class="desc" id="smUploadAuthDesc"></div>
         <div class="sm-config-grid">
           <div class="sm-config-field sm-config-field-wide">
-            <label id="smUploadAuthModeLabel">Auth Mode</label>
-            <div class="hintline" id="smUploadAuthModeHint">both = token + email fallback, token = strict token only, email = legacy email only</div>
+            <label id="smUploadAuthModeLabel"></label>
+            <div class="hintline" id="smUploadAuthModeHint"></div>
             <select id="smUploadAuthMode">
-              <option value="both">Both (token preferred, email fallback)</option>
-              <option value="token">Token only (strict)</option>
-              <option value="email">Email only (legacy)</option>
+              <option value="both"></option>
+              <option value="token"></option>
+              <option value="email"></option>
             </select>
           </div>
           <div class="sm-config-field sm-config-action-field">
-            <button class="btn-primary sm-config-save" onclick="saveSmUploadAuthConfig()">Save</button>
+            <button class="btn-primary sm-config-save" id="smUploadAuthSaveBtn" onclick="saveSmUploadAuthConfig()"></button>
           </div>
         </div>
         <div id="smUploadAuthStatus" class="sm-status"></div>

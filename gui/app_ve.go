@@ -26,6 +26,11 @@ const (
 	veAvatarDataURLMaxLength     = len("data:image/jpeg;base64,") + ((veAvatarImageMaxBytes+2)/3)*4
 )
 
+var (
+	veGroupInviteJoinTimeout   = 8 * time.Second
+	veGroupInviteJoinPollDelay = 250 * time.Millisecond
+)
+
 type veDiscoverableCacheEntry struct {
 	expiresAt time.Time
 	employees []VirtualEmployeeEntry
@@ -235,16 +240,25 @@ func (a *App) InitiateVEConversation(veID string) (*VESessionInfo, error) {
 		var pending struct {
 			Status    string `json:"status"`
 			RequestID string `json:"request_id"`
+			ExpiresAt string `json:"expires_at"`
 		}
 		_ = json.Unmarshal(data, &pending)
 		if strings.TrimSpace(pending.Status) == "pending_confirmation" {
-			return nil, fmt.Errorf("pending_confirmation")
+			detail := "pending_confirmation"
+			if requestID := strings.TrimSpace(pending.RequestID); requestID != "" {
+				detail += " request_id=" + requestID
+			}
+			if expiresAt := strings.TrimSpace(pending.ExpiresAt); expiresAt != "" {
+				detail += " expires_at=" + expiresAt
+			}
+			return nil, fmt.Errorf("%s", detail)
 		}
 		return nil, fmt.Errorf("create session: missing session id")
 	}
 
 	// Cache the new session for future lookups.
 	a.cacheVESession(veID, info.SessionID)
+	a.cacheVEGroupDefaultResponder(info.SessionID, a.resolveVEInviteMachineID(hubURL, token, firstNonEmptyGroupString(info.VEID, veID)))
 
 	return &info, nil
 }
@@ -318,7 +332,7 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := a.sendVEGroupInvitation(client, sessionID, agentID, inviteeID); err != nil {
+			if _, err := a.sendVEGroupInvitation(client, sessionID, agentID, inviteeID); err != nil {
 				inviteErrs <- fmt.Errorf("invite digital employee %q: %w", veID, err)
 			}
 		}()
@@ -333,6 +347,9 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 
 	// Cache the group session.
 	a.cacheGroupSession(normalized, sessionID)
+	if len(normalized) > 0 {
+		a.cacheVEGroupDefaultResponder(sessionID, resolveVEInviteMachineID(employees, normalized[0]))
+	}
 
 	return &VESessionInfo{
 		SessionID: sessionID,
@@ -342,9 +359,9 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 }
 
 // SendVEMessage sends a message in a VE conversation.
-// When the local AI agent is enabled for this session, the message is dispatched
-// directly to the local agent (zero network latency) while syncing
-// targeted history to Hub. Otherwise, the message goes through Hub normally.
+// Unmentioned messages go through Hub with explicit remote targets so the
+// discussion owner/default VE keeps the floor and local AI stays quiet unless
+// mentioned.
 func (a *App) SendVEMessage(sessionID, content string) error {
 	// Delegate to SendVEGroupMessage with no explicit mentions (single-responder routing)
 	return a.SendVEGroupMessage(sessionID, content, nil)
@@ -352,10 +369,10 @@ func (a *App) SendVEMessage(sessionID, content string) error {
 
 // SendVEGroupMessage sends a message in a VE group conversation with @mention-based routing.
 // mentionedIds controls which participant handles the message:
-//   - nil or empty: prefer the local AI executor, then fall back to Hub
+//   - nil or empty: send to Hub so the discussion owner/default VE answers
 //   - contains the local AI participant or legacy alias: route to local AI only
 //   - contains remote VE id: route to remote VE via Hub only
-//   - contains both: use the same priority path as an unmentioned message
+//   - contains both: route to local AI and the mentioned remote VE participants
 func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []string) error {
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("message content is empty")
@@ -375,12 +392,25 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 		return err
 	}
 
-	// No explicit mentions, or mixed local+remote mentions, use the same
-	// single-responder path as a normal chat message.
-	if !targets.Explicit || (targets.Local && len(targets.RemoteToIDs) > 0) {
-		if a.tryLocalExecutorDispatch(sessionID, msg) {
-			return nil
+	// No explicit mentions preserve 1:1 default responder semantics. Once more
+	// than one remote speaking participant is present, it becomes a real group
+	// turn targeted to all writable digital employees while the local AI stays
+	// quiet unless explicitly targeted.
+	if !targets.Explicit {
+		msg.ToIDs = a.groupDiscussionUnmentionedTargetIDs(sessionID)
+		return a.sendVEA2AMessage(sessionID, msg)
+	}
+
+	if targets.Local && len(targets.RemoteToIDs) > 0 {
+		if !a.tryLocalExecutorDispatch(sessionID, msg) {
+			if _, err := a.RegisterLocalExecutorInGroup(sessionID); err != nil {
+				return fmt.Errorf("local AI is not ready in this group: %w", err)
+			}
+			if !a.tryLocalExecutorDispatch(sessionID, msg) {
+				return fmt.Errorf("local AI is not ready in this group; please add it again")
+			}
 		}
+		msg.ToIDs = targets.RemoteToIDs
 		return a.sendVEA2AMessage(sessionID, msg)
 	}
 
@@ -445,8 +475,13 @@ func (a *App) resolveVEGroupMentionTargets(sessionID, content string, mentionedI
 			participantIDs = a.groupDiscussionParticipantIDs(sessionID, localID)
 		}
 		if canonical := strings.TrimSpace(participantIDs[strings.ToLower(id)]); canonical != "" {
-			if _, ok := seenRemote[strings.ToLower(canonical)]; !ok {
-				seenRemote[strings.ToLower(canonical)] = struct{}{}
+			if !veGroupParticipantSeen(seenRemote, canonical) {
+				targets.RemoteToIDs = append(targets.RemoteToIDs, canonical)
+			}
+			continue
+		}
+		if canonical := canonicalParticipantMentionByGeneratedVEID(id, participantIDs); canonical != "" {
+			if !veGroupParticipantSeen(seenRemote, canonical) {
 				targets.RemoteToIDs = append(targets.RemoteToIDs, canonical)
 			}
 			continue
@@ -462,11 +497,9 @@ func (a *App) resolveVEGroupMentionTargets(sessionID, content string, mentionedI
 		if canonical == "" {
 			return veGroupMentionTargets{}, fmt.Errorf("mention target %s is not available in this discussion", id)
 		}
-		key := strings.ToLower(canonical)
-		if _, ok := seenRemote[key]; ok {
+		if veGroupParticipantSeen(seenRemote, canonical) {
 			continue
 		}
-		seenRemote[key] = struct{}{}
 		targets.RemoteToIDs = append(targets.RemoteToIDs, canonical)
 	}
 	if !targets.Explicit && contentMentionsLocalGroupAI(content, localID) {
@@ -474,6 +507,38 @@ func (a *App) resolveVEGroupMentionTargets(sessionID, content string, mentionedI
 		targets.Local = true
 	}
 	return targets, nil
+}
+
+func veGroupParticipantSeen(seen map[string]struct{}, participantID string) bool {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" {
+		return true
+	}
+	aliases := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(aliases, participantID)
+	for key := range aliases {
+		if _, ok := seen[key]; ok {
+			return true
+		}
+	}
+	for key := range aliases {
+		seen[key] = struct{}{}
+	}
+	return false
+}
+
+func canonicalParticipantMentionByGeneratedVEID(id string, participantIDs map[string]string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || len(participantIDs) == 0 {
+		return ""
+	}
+	for _, participantID := range participantIDs {
+		participantID = strings.TrimSpace(participantID)
+		if participantID != "" && isVEGroupDefaultResponderMatch(participantID, id) {
+			return participantID
+		}
+	}
+	return ""
 }
 
 func contentMentionsLocalGroupAI(content, localID string) bool {
@@ -533,10 +598,128 @@ func (a *App) groupDiscussionParticipantIDs(sessionID, localID string) map[strin
 	for _, participant := range detail.Session.Participants {
 		id := strings.TrimSpace(participant.ID)
 		if id != "" {
-			ids[strings.ToLower(id)] = id
+			addGroupDiscussionHistoryParticipantAliases(ids, id)
 		}
 	}
 	return ids
+}
+
+func (a *App) groupDiscussionUnmentionedTargetIDs(sessionID string) []string {
+	preferredID := a.cachedVEGroupDefaultResponderID(sessionID)
+	client, cfg, err := a.veA2AHubClient()
+	if err != nil {
+		return singleGroupDiscussionTarget(preferredID)
+	}
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if localID == "" {
+		return singleGroupDiscussionTarget(preferredID)
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	detail, err := client.GetConsultationDetailForAgent(ctx, strings.TrimSpace(sessionID), localID)
+	if err != nil || detail.Session == nil {
+		return singleGroupDiscussionTarget(preferredID)
+	}
+	candidates := make([]string, 0, len(detail.Session.Participants))
+	for _, participant := range detail.Session.Participants {
+		id := strings.TrimSpace(participant.ID)
+		if !isVEGroupDefaultResponderCandidate(id, participant.RoleCode, localID) {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	candidates = dedupeVEGroupParticipantIDs(candidates)
+	if len(candidates) > 0 {
+		if len(candidates) == 1 {
+			a.cacheVEGroupDefaultResponder(sessionID, candidates[0])
+		}
+		return candidates
+	}
+	return singleGroupDiscussionTarget(preferredID)
+}
+
+func dedupeVEGroupParticipantIDs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		id := strings.TrimSpace(value)
+		if id == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range out {
+			if veGroupParticipantIdentityMatches(existing, id) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+func singleGroupDiscussionTarget(id string) []string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	return []string{id}
+}
+
+func isVEGroupDefaultResponderCandidate(id, roleCode, localID string) bool {
+	id = strings.TrimSpace(id)
+	localID = strings.TrimSpace(localID)
+	if id == "" || isVEGroupDefaultResponderMatch(id, localID) || isVEGroupLocalHumanID(id) || isVEGroupLocalAIID(id) {
+		return false
+	}
+	role := strings.ToLower(strings.TrimSpace(roleCode))
+	switch role {
+	case "", "speak", "speaker", "participant", "review":
+		return true
+	default:
+		return false
+	}
+}
+
+func isVEGroupLocalAIID(id string) bool {
+	id = strings.TrimSpace(id)
+	return veGroupParticipantIdentityMatches(id, "local-maclaw")
+}
+
+func isVEGroupLocalHumanID(id string) bool {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "me", "user", "local", "local-user", "operator", "desktop-user", "initiator":
+		return true
+	default:
+		return false
+	}
+}
+
+func isVEGroupDefaultResponderMatch(participantID, preferredID string) bool {
+	return veGroupParticipantIdentityMatches(participantID, preferredID)
+}
+
+func veGroupParticipantIdentityMatches(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	aKeys := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(aKeys, a)
+	bKeys := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(bKeys, b)
+	for key := range bKeys {
+		if _, ok := aKeys[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) discoverableVEParticipantIDs() map[string]string {
@@ -558,10 +741,20 @@ func (a *App) discoverableVEParticipantIDs() map[string]string {
 		}
 		ids[strings.ToLower(canonical)] = canonical
 		if profileID != "" {
-			ids[strings.ToLower(profileID)] = canonical
+			addGroupDiscussionHistoryParticipantAliases(ids, profileID)
+			for key, value := range ids {
+				if veGroupParticipantIdentityMatches(value, profileID) {
+					ids[key] = canonical
+				}
+			}
 		}
 		if machineID != "" {
-			ids[strings.ToLower(machineID)] = canonical
+			addGroupDiscussionHistoryParticipantAliases(ids, machineID)
+			for key, value := range ids {
+				if veGroupParticipantIdentityMatches(value, machineID) {
+					ids[key] = canonical
+				}
+			}
 		}
 	}
 	return ids
@@ -591,7 +784,7 @@ func isLocalGroupMentionID(id, localID string) bool {
 	if id == "" {
 		return false
 	}
-	if localID != "" && strings.EqualFold(id, strings.TrimSpace(localID)) {
+	if localID != "" && veGroupParticipantIdentityMatches(id, localID) {
 		return true
 	}
 	switch strings.ToLower(id) {
@@ -772,6 +965,7 @@ func (a *App) CloseVESession(sessionID string) error {
 		}
 		return true
 	})
+	a.veDefaultResponder.Delete(sessionID)
 	a.groupSessionCache.Range(func(key, value any) bool {
 		if cachedSessionID, ok := value.(string); ok && cachedSessionID == sessionID {
 			a.groupSessionCache.Delete(key)
@@ -809,21 +1003,104 @@ func (a *App) AddVEToGroup(sessionID, veID string) error {
 		return err
 	}
 	inviteeID := a.resolveVEInviteMachineID(hubURL, token, veID)
-	return a.sendVEGroupInvitation(client, sessionID, strings.TrimSpace(groupDiscussionAgentID(cfg)), inviteeID)
+	fromID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if a.veGroupParticipantAvailable(client, sessionID, fromID, inviteeID) {
+		a.cacheVESession(veID, sessionID)
+		a.cacheVESession(inviteeID, sessionID)
+		a.cacheVESession(virtualEmployeeIDForMachine(inviteeID), sessionID)
+		return nil
+	}
+	inviteID, err := a.sendVEGroupInvitation(client, sessionID, fromID, inviteeID)
+	if err != nil {
+		return err
+	}
+	if err := a.waitForVEGroupParticipant(client, sessionID, fromID, inviteeID, inviteID, veGroupInviteJoinTimeout); err != nil {
+		return err
+	}
+	a.cacheVESession(veID, sessionID)
+	a.cacheVESession(inviteeID, sessionID)
+	a.cacheVESession(virtualEmployeeIDForMachine(inviteeID), sessionID)
+	return nil
 }
 
-func (a *App) sendVEGroupInvitation(client *a2a.HubClient, sessionID, fromID, inviteeID string) error {
+func (a *App) sendVEGroupInvitation(client *a2a.HubClient, sessionID, fromID, inviteeID string) (string, error) {
 	if client == nil {
-		return fmt.Errorf("Hub client is required")
+		return "", fmt.Errorf("Hub client is required")
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	_, err := client.SendInvitation(ctx, sessionID, a2a.GroupInvitation{
-		FromID: strings.TrimSpace(fromID),
-		ToID:   inviteeID,
-		Role:   a2a.GroupRoleSpeak,
+	inviteID, err := client.SendInvitation(ctx, sessionID, a2a.GroupInvitation{
+		FromID:  strings.TrimSpace(fromID),
+		ToID:    inviteeID,
+		Role:    a2a.GroupRoleSpeak,
+		Trusted: true,
 	})
-	return err
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(inviteID) == "" {
+		return "", fmt.Errorf("create invitation: missing invite id")
+	}
+	return inviteID, nil
+}
+
+func (a *App) waitForVEGroupParticipant(client *a2a.HubClient, sessionID, requesterID, participantID, inviteID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if a.veGroupParticipantAvailable(client, sessionID, requesterID, participantID) {
+			return nil
+		}
+		if status, reason := a.veGroupInvitationStatus(client, inviteID, requesterID); strings.EqualFold(status, "reject") {
+			if reason != "" {
+				return fmt.Errorf("invitation %s rejected: %s", inviteID, reason)
+			}
+			return fmt.Errorf("invitation %s rejected", inviteID)
+		}
+		if time.Now().Add(veGroupInviteJoinPollDelay).After(deadline) {
+			return fmt.Errorf("invitation sent but participant %s has not joined discussion %s yet", participantID, sessionID)
+		}
+		time.Sleep(veGroupInviteJoinPollDelay)
+	}
+}
+
+func (a *App) veGroupInvitationStatus(client *a2a.HubClient, inviteID, requesterID string) (string, string) {
+	if client == nil || strings.TrimSpace(inviteID) == "" || strings.TrimSpace(requesterID) == "" {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	invite, ok, err := client.GetSentInvite(ctx, requesterID, inviteID)
+	if err != nil {
+		return "", ""
+	}
+	if ok {
+		return strings.TrimSpace(invite.Status), strings.TrimSpace(invite.Reason)
+	}
+	return "", ""
+}
+
+func (a *App) veGroupParticipantAvailable(client *a2a.HubClient, sessionID, requesterID, participantID string) bool {
+	if client == nil {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	requesterID = strings.TrimSpace(requesterID)
+	participantID = strings.TrimSpace(participantID)
+	if sessionID == "" || requesterID == "" || participantID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	detail, err := client.GetConsultationDetailForAgent(ctx, sessionID, requesterID)
+	if err != nil || detail.Session == nil {
+		return false
+	}
+	for _, participant := range detail.Session.Participants {
+		if isVEGroupDefaultResponderMatch(participant.ID, participantID) {
+			return true
+		}
+	}
+	return false
 }
 
 // RegisterLocalExecutorInGroup adds the local machine to the Hub discussion
@@ -892,7 +1169,7 @@ func (a *App) localParticipantCanAnswerInHubDiscussion(sessionID, localID string
 		return false
 	}
 	for _, participant := range detail.Session.Participants {
-		if !strings.EqualFold(strings.TrimSpace(participant.ID), localID) {
+		if !veGroupParticipantIdentityMatches(participant.ID, localID) {
 			continue
 		}
 		role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
@@ -995,7 +1272,7 @@ func filterOwnVirtualEmployees(employees []VirtualEmployeeEntry, localMachineID 
 	for _, employee := range employees {
 		id := strings.TrimSpace(employee.ID)
 		machineID := strings.TrimSpace(employee.MachineID)
-		if strings.EqualFold(machineID, localMachineID) || strings.EqualFold(id, localMachineID) || strings.EqualFold(id, localVEID) {
+		if veGroupParticipantIdentityMatches(machineID, localMachineID) || veGroupParticipantIdentityMatches(id, localMachineID) || veGroupParticipantIdentityMatches(id, localVEID) {
 			continue
 		}
 		filtered = append(filtered, employee)
@@ -1017,7 +1294,7 @@ func resolveVEInviteMachineID(employees []VirtualEmployeeEntry, value string) st
 		return ""
 	}
 	for _, employee := range employees {
-		if strings.EqualFold(strings.TrimSpace(employee.ID), value) || strings.EqualFold(strings.TrimSpace(employee.MachineID), value) {
+		if veGroupParticipantIdentityMatches(employee.ID, value) || veGroupParticipantIdentityMatches(employee.MachineID, value) {
 			if machineID := strings.TrimSpace(employee.MachineID); machineID != "" {
 				return machineID
 			}
@@ -1272,6 +1549,36 @@ func (a *App) cacheGroupSession(veIDs []string, sessionID string) {
 	a.markVESessionActive(sessionID)
 }
 
+func (a *App) cacheVEGroupDefaultResponder(sessionID, responderID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	responderID = strings.TrimSpace(responderID)
+	if sessionID == "" || responderID == "" {
+		return
+	}
+	a.veDefaultResponder.Store(sessionID, responderID)
+}
+
+func (a *App) cachedVEGroupDefaultResponderID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	val, ok := a.veDefaultResponder.Load(sessionID)
+	if !ok {
+		return ""
+	}
+	responderID, _ := val.(string)
+	return strings.TrimSpace(responderID)
+}
+
+func (a *App) groupDiscussionDefaultResponderID(sessionID string) string {
+	targets := a.groupDiscussionUnmentionedTargetIDs(sessionID)
+	if len(targets) == 1 {
+		return strings.TrimSpace(targets[0])
+	}
+	return ""
+}
+
 // ArchiveVESession removes a session from the sticky cache, allowing a fresh
 // session to be created on next conversation initiation.
 func (a *App) ArchiveVESession(veID string) {
@@ -1389,7 +1696,8 @@ func (a *App) findCachedVEDirectSessionWithCandidates(summaries []a2a.HubDiscuss
 		a.cacheVESession(veID, summary.ID)
 		for _, participantID := range summary.ParticipantIDs {
 			participantID = strings.TrimSpace(participantID)
-			if participantID != "" && !strings.EqualFold(participantID, localID) {
+			if participantID != "" && isVEGroupDefaultResponderCandidate(participantID, "", localID) {
+				a.cacheVEGroupDefaultResponder(summary.ID, participantID)
 				a.cacheVESession(participantID, summary.ID)
 				a.cacheVESession(virtualEmployeeIDForMachine(participantID), summary.ID)
 			}
@@ -1400,7 +1708,9 @@ func (a *App) findCachedVEDirectSessionWithCandidates(summaries []a2a.HubDiscuss
 }
 
 func baseVEDirectSessionCandidateIDs(veID string) map[string]struct{} {
-	return lowerStringSet([]string{veID, virtualEmployeeIDForMachine(veID)})
+	candidates := map[string]struct{}{}
+	addVEGroupParticipantIdentityKeys(candidates, veID)
+	return candidates
 }
 
 func (a *App) addDiscoverableVEDirectSessionCandidateIDs(cfg corelib.AppConfig, veID string, candidates map[string]struct{}) bool {
@@ -1408,12 +1718,9 @@ func (a *App) addDiscoverableVEDirectSessionCandidateIDs(cfg corelib.AppConfig, 
 	if hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/"); hubURL != "" {
 		if employees, err := a.loadDiscoverableVEEntries(hubURL, strings.TrimSpace(cfg.RemoteMachineToken)); err == nil {
 			for _, employee := range employees {
-				if strings.EqualFold(strings.TrimSpace(employee.ID), veID) || strings.EqualFold(strings.TrimSpace(employee.MachineID), veID) {
+				if veGroupParticipantIdentityMatches(employee.ID, veID) || veGroupParticipantIdentityMatches(employee.MachineID, veID) {
 					for _, id := range []string{employee.ID, employee.MachineID, virtualEmployeeIDForMachine(employee.MachineID)} {
-						id = strings.ToLower(strings.TrimSpace(id))
-						if id != "" {
-							candidates[id] = struct{}{}
-						}
+						addVEGroupParticipantIdentityKeys(candidates, id)
 					}
 				}
 			}
@@ -1429,26 +1736,39 @@ func isCachedVEDirectSessionMatch(summary a2a.HubDiscussionSummary, localID stri
 	if !strings.EqualFold(strings.TrimSpace(summary.LocalRelation), "initiated_by_me") && strings.TrimSpace(summary.LocalRelation) != "" {
 		return false
 	}
-	if len(summary.ParticipantIDs) != 2 {
-		return false
-	}
 	hasLocal := false
 	hasTarget := false
-	for _, participantID := range summary.ParticipantIDs {
+	participants := dedupeVEGroupParticipantIDs(summary.ParticipantIDs)
+	for _, participantID := range participants {
 		participantID = strings.TrimSpace(participantID)
-		if strings.EqualFold(participantID, localID) {
+		if veGroupParticipantIdentityMatches(participantID, localID) {
 			hasLocal = true
 			continue
 		}
-		if _, ok := targetIDs[strings.ToLower(participantID)]; ok {
-			hasTarget = true
-			continue
-		}
-		if _, ok := targetIDs[strings.ToLower(virtualEmployeeIDForMachine(participantID))]; ok {
+		if veGroupParticipantIDInSet(participantID, targetIDs) {
 			hasTarget = true
 		}
 	}
-	return hasLocal && hasTarget
+	return len(participants) == 2 && hasLocal && hasTarget
+}
+
+func addVEGroupParticipantIdentityKeys(target map[string]struct{}, id string) {
+	aliases := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(aliases, id)
+	for key := range aliases {
+		target[key] = struct{}{}
+	}
+}
+
+func veGroupParticipantIDInSet(id string, candidates map[string]struct{}) bool {
+	aliases := map[string]string{}
+	addGroupDiscussionHistoryParticipantAliases(aliases, id)
+	for key := range aliases {
+		if _, ok := candidates[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // findActiveGroupSession checks the local cache for a group session.

@@ -33,3 +33,17 @@ func TestShouldReturnScreenshotBase64ForCurrentPlatformNilHandler(t *testing.T) 
 		t.Fatal("nil handler should default to desktop playback behavior")
 	}
 }
+
+func TestConsumeRuntimePlatformFromToolArgsOverridesCurrentLoopPlatform(t *testing.T) {
+	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Platform: "desktop"}}
+	args := map[string]interface{}{registeredToolRuntimePlatformField: "weixin"}
+	if got := h.consumeRuntimePlatformFromToolArgsOrCurrent(args); got != "weixin" {
+		t.Fatalf("runtime platform = %q, want weixin", got)
+	}
+	if _, ok := args[registeredToolRuntimePlatformField]; ok {
+		t.Fatal("runtime platform hidden field should be consumed")
+	}
+	if got := shouldReturnScreenshotBase64ForPlatform("weixin"); !got {
+		t.Fatal("weixin screenshot should return inline base64")
+	}
+}

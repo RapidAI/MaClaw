@@ -162,6 +162,85 @@ func TestHubClientGetConsultationDetailForAgentAddsParticipantQuery(t *testing.T
 		t.Fatalf("detail = %+v", detail)
 	}
 }
+
+func TestHubClientListInvitesByStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/invites/mine" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("to_id"); got != "maclaw-b" {
+			t.Fatalf("to_id = %q raw=%q", got, r.URL.RawQuery)
+		}
+		if got := r.URL.Query().Get("status"); got != "all" {
+			t.Fatalf("status = %q raw=%q", got, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(InviteListResponse{Invites: []GroupInviteSummary{{ID: "invite-1", Status: "reject", Reason: "offline"}}})
+	}))
+	defer server.Close()
+
+	client, _ := NewHubClient(server.URL)
+	invites, err := client.ListInvitesByStatus(context.Background(), "maclaw-b", "all")
+	if err != nil {
+		t.Fatalf("ListInvitesByStatus: %v", err)
+	}
+	if len(invites) != 1 || invites[0].Status != "reject" || invites[0].Reason != "offline" {
+		t.Fatalf("invites = %+v", invites)
+	}
+}
+
+func TestHubClientListSentInvitesByStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/invites/mine" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("from_id"); got != "maclaw-a" {
+			t.Fatalf("from_id = %q raw=%q", got, r.URL.RawQuery)
+		}
+		if got := r.URL.Query().Get("status"); got != "all" {
+			t.Fatalf("status = %q raw=%q", got, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(InviteListResponse{Invites: []GroupInviteSummary{{ID: "invite-1", Status: "reject", Reason: "offline"}}})
+	}))
+	defer server.Close()
+
+	client, _ := NewHubClient(server.URL)
+	invites, err := client.ListSentInvitesByStatus(context.Background(), "maclaw-a", "all")
+	if err != nil {
+		t.Fatalf("ListSentInvitesByStatus: %v", err)
+	}
+	if len(invites) != 1 || invites[0].Status != "reject" || invites[0].Reason != "offline" {
+		t.Fatalf("invites = %+v", invites)
+	}
+}
+
+func TestHubClientGetSentInviteFiltersByInviteID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/invites/mine" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("from_id"); got != "maclaw-a" {
+			t.Fatalf("from_id = %q raw=%q", got, r.URL.RawQuery)
+		}
+		if got := r.URL.Query().Get("invite_id"); got != "invite-2" {
+			t.Fatalf("invite_id = %q raw=%q", got, r.URL.RawQuery)
+		}
+		if got := r.URL.Query().Get("status"); got != "all" {
+			t.Fatalf("status = %q raw=%q", got, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(InviteListResponse{Invites: []GroupInviteSummary{{ID: "invite-2", Status: "reject", Reason: "offline"}}})
+	}))
+	defer server.Close()
+
+	client, _ := NewHubClient(server.URL)
+	invite, ok, err := client.GetSentInvite(context.Background(), "maclaw-a", "invite-2")
+	if err != nil {
+		t.Fatalf("GetSentInvite: %v", err)
+	}
+	if !ok || invite.ID != "invite-2" || invite.Status != "reject" || invite.Reason != "offline" {
+		t.Fatalf("invite = %+v ok=%v", invite, ok)
+	}
+}
+
 func TestHubClientInviteAndResultEndpoints(t *testing.T) {
 	paths := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

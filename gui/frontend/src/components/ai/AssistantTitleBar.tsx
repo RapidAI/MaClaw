@@ -5,6 +5,7 @@ import { getWindowControlButtonStyle } from "./aiAssistantControls";
 import { codingAgentCompactText, codingAgentDisplayText, codingAgentStatusClassName, codingAgentStatusDataAttrs, codingAgentStatusTone, normalizeCodingAgentProgress, type CodingAgentProgress } from "./CodingAgentProgressStatus";
 import { TTSLevelBars } from "./TTSLevelBars";
 import { VEAuthorizationRequestCenter } from "./VEAuthorizationDialog";
+import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from "../layout/WindowControlIcons";
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "drag" | "no-drag" };
 
@@ -39,11 +40,6 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     handler();
 };
 
-function WindowsMaximizeRestoreIcon({ maximized, activeBg }: { maximized: boolean; activeBg: string }) {
-    const box = (left: number, top: number, background = "transparent", zIndex = 1) => <span style={{ position: "absolute", left, top, width: 9, height: 9, border: "2px solid currentColor", borderRadius: 1, background, boxSizing: "border-box", zIndex }} />;
-    return <span style={{ position: "relative", width: 15, height: 15, display: "inline-block" }}>{box(maximized ? 4 : 2, maximized ? 5 : 2, maximized ? activeBg : "transparent", 2)}{maximized && box(2, 2)}</span>;
-}
-
 export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, lang, maximized, onClose, onHideWindow, onOpenKnowledge, onOpenTutorial, onToggleMaximize, projectSearchOpen, refreshNews, setThemeMode, setTtsEnabled, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, ttsEnabled, ttsPlaying, toggleProjectSearch }: AssistantTitleBarProps) {
     const toggleTts = () => setTtsEnabled(!ttsEnabled);
     const toggleTheme = () => setThemeMode(themeMode === "dark" ? "light" : "dark");
@@ -70,9 +66,9 @@ export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, l
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: clearHistory } : { onClick: clearHistory })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Clear history" : "\u6e05\u7a7a\u5386\u53f2"}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{"\u{1F5D1}"}</span></button>
                 </div>
                 <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", flexShrink: 0, boxSizing: "border-box", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
-                    {inline && onHideWindow && <button className="ai-window-control" onMouseDown={stopMouse(onHideWindow)} data-testid="ai-hide-toggle" aria-label={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"} style={getWindowControlButtonStyle(t, "hide")} title={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"}><span style={{ width: "10px", borderTop: "1.5px solid currentColor", transform: "translateY(4px)" }} /></button>}
-                    {showMaximizeToggle && <button className="ai-window-control" onMouseDown={stopMouse(() => onToggleMaximize?.())} data-testid="ai-maximize-toggle" aria-label={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")} style={getWindowControlButtonStyle(t, "fullscreen", maximized)} title={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")}><WindowsMaximizeRestoreIcon maximized={maximized} activeBg={t.divider} /></button>}
-                    {!inline && <button className="ai-window-control" onClick={onClose} style={{ ...getWindowControlButtonStyle(t, "hide"), color: t.closeBtnColor, fontSize: "14px" }} title={lang === "en" ? "Close" : "\u5173\u95ed"}>{"x"}</button>}
+                    {inline && onHideWindow && <button className="ai-window-control" onMouseDown={stopMouse(onHideWindow)} data-testid="ai-hide-toggle" aria-label={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"} style={getWindowControlButtonStyle(t, "hide")} title={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"}><WindowCloseIcon /></button>}
+                    {showMaximizeToggle && <button className="ai-window-control" onMouseDown={stopMouse(() => onToggleMaximize?.())} data-testid="ai-maximize-toggle" aria-label={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")} style={getWindowControlButtonStyle(t, "fullscreen", maximized)} title={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")}>{maximized ? <WindowRestoreIcon /> : <WindowMaximizeIcon />}</button>}
+                    {!inline && <button className="ai-window-control" onClick={onClose} style={{ ...getWindowControlButtonStyle(t, "hide"), color: t.closeBtnColor }} title={lang === "en" ? "Close" : "\u5173\u95ed"}><WindowCloseIcon /></button>}
                 </div>
             </div>
         </div>

@@ -6,7 +6,8 @@
  */
 
 import { useCallback, useRef, useState } from "react";
-import { isLocalParticipantId, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, normalizeParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
+import { isLocalParticipantId, localExecutorDisplayName, localExecutorParticipantID, looksLikeRawParticipantId, type LocalGroupExecutorRegistration } from "./localAIIdentity";
+import { addParticipantIdentityKeys } from "./participantIdentity";
 
 export type ActionFeedbackLevel = "info" | "success" | "error";
 
@@ -65,8 +66,31 @@ function t(lang: string | undefined, zh: string, en: string): string {
 }
 
 function hasParticipant(participants: string[], participantId: string): boolean {
-    const normalized = normalizeParticipantId(participantId);
-    return !!normalized && participants.some((id) => normalizeParticipantId(id) === normalized);
+    const current = new Set<string>();
+    participants.forEach((id) => addParticipantIdentityKeys(current, id));
+    const candidate = new Set<string>();
+    addParticipantIdentityKeys(candidate, participantId);
+    for (const key of candidate) {
+        if (current.has(key)) return true;
+    }
+    return false;
+}
+
+function participantIdentitySet(values: unknown[]): Set<string> {
+    const keys = new Set<string>();
+    values.forEach((value) => addParticipantIdentityKeys(keys, value));
+    return keys;
+}
+
+function distinctParticipantCount(values: unknown[]): number {
+    const seen = new Set<string>();
+    let count = 0;
+    for (const value of values) {
+        const before = seen.size;
+        addParticipantIdentityKeys(seen, value);
+        if (seen.size !== before) count++;
+    }
+    return count;
 }
 
 function hasLocalParticipant(ctx: GroupSessionContext): boolean {
@@ -125,7 +149,7 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
     }, [loadAppModule, emit]);
 
     const requireCapacity = useCallback((ctx: GroupSessionContext): boolean => {
-        if (ctx.participants.length >= ctx.maxParticipants) {
+        if (distinctParticipantCount(ctx.participants) >= ctx.maxParticipants) {
             emit(t(optRef.current.lang, "群聊人数已满（最大 " + ctx.maxParticipants + " 人）", "Group is full (max " + ctx.maxParticipants + ")"), "error");
             return false;
         }
@@ -145,12 +169,11 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
         }
         try {
             const employees = await listFn();
-            const currentIds = new Set(ctx.participants.map(normalizeParticipantId));
+            const currentIds = participantIdentitySet(ctx.participants);
             const available: AvailableVE[] = (employees || [])
                 .filter((ve: any) => {
-                    const profileId = normalizeParticipantId(ve.id);
-                    const machineId = normalizeParticipantId(ve.machine_id || ve.id);
-                    return !currentIds.has(profileId) && !currentIds.has(machineId) && ve.online_status === "online";
+                    const candidateIds = participantIdentitySet([ve.id, ve.machine_id || ve.id]);
+                    return ![...candidateIds].some((id) => currentIds.has(id)) && ve.online_status === "online";
                 })
                 .map((ve: any, index: number) => ({
                     id: ve.id,

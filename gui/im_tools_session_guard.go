@@ -20,7 +20,7 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 
 	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
 		if gic := h.getGateIntentClassifier(); gic != nil {
-			gResult := gic.Classify(h.lastUserText, h.lastUserID)
+			gResult := gic.Classify(h.lastUserText, h.currentRuntimePolicyOwnerID())
 			switch gResult.Intent {
 			case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance:
 				return ""
@@ -86,18 +86,29 @@ When semantic intent is unavailable or ambiguous, do not open coding tools autom
 // contains evidence of a coding task.
 func (h *IMMessageHandler) conversationHasCodingContext() bool {
 	if uic := h.getUnifiedClassifier(); uic != nil {
-		return h.conversationHasCodingContextUIC(uic)
+		return h.conversationHasCodingContextForOwnerUIC(uic, h.currentRuntimePolicyOwnerID())
 	}
 	return false
 }
 
 func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIntentClassifier) bool {
+	return h.conversationHasCodingContextForOwnerUIC(uic, h.currentRuntimePolicyOwnerID())
+}
+
+func (h *IMMessageHandler) conversationHasCodingContextForOwner(ownerID string) bool {
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		return h.conversationHasCodingContextForOwnerUIC(uic, ownerID)
+	}
+	return false
+}
+
+func (h *IMMessageHandler) conversationHasCodingContextForOwnerUIC(uic *intent.UnifiedIntentClassifier, ownerID string) bool {
 	if h.memory == nil {
 		return false
 	}
-	userID := h.lastUserID
+	userID := strings.TrimSpace(ownerID)
 	if userID == "" {
-		userID = desktopUserID
+		return false
 	}
 	entries := h.memory.Load(userID)
 	if len(entries) == 0 {

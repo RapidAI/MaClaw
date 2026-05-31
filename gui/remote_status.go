@@ -334,6 +334,49 @@ func (a *App) emitRemoteStateChanged() {
 	a.emitEvent("remote-state-changed")
 }
 
+func (a *App) ensureWorkflowAllowsRemoteToolCall(toolName string, args map[string]interface{}) error {
+	return a.ensureWorkflowAllowsRemoteToolCallForOwner(a.defaultManualPolicyOwnerID(), toolName, args)
+}
+
+func (a *App) ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, toolName string, args map[string]interface{}) error {
+	if a == nil {
+		return nil
+	}
+	h := &IMMessageHandler{app: a}
+	policyUserID := strings.TrimSpace(ownerID)
+	if policyUserID == "" {
+		return nil
+	}
+	if !h.isWorkflowToolAllowedForOwner(policyUserID, toolName) {
+		return errors.New(workflowPolicyToolRejectedText(toolName))
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	if allowed, reason := h.isWorkflowToolCallAllowedForOwner(policyUserID, toolName, string(data)); !allowed {
+		return fmt.Errorf("[system rejected] %s", reason)
+	}
+	return nil
+}
+
+func (a *App) defaultManualPolicyOwnerID() string {
+	if a == nil {
+		return ""
+	}
+	return desktopUserID
+}
+
+func (a *App) remoteSessionPolicyOwnerID(sessionID string) string {
+	if a == nil || a.remoteSessions == nil {
+		return a.defaultManualPolicyOwnerID()
+	}
+	if session, ok := a.remoteSessions.Get(strings.TrimSpace(sessionID)); ok && session != nil {
+		return remoteLaunchPolicyOwnerID(session.LaunchSource)
+	}
+	return a.defaultManualPolicyOwnerID()
+}
+
 func (a *App) GetRemoteClaudeReadiness(projectDir string, useProxy bool) RemoteToolReadiness {
 	return a.CheckRemoteClaudeReadiness(projectDir, useProxy)
 }
@@ -399,6 +442,9 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 		UseProxy:    useProxy,
 		Connection:  a.GetRemoteConnectionStatus(),
 		Readiness:   a.GetRemoteToolReadiness(toolName, projectDir, useProxy),
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(RemoteLaunchSourceDesktop), "create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir}); err != nil {
+		return report, err
 	}
 
 	cfg, err := a.LoadConfig()
@@ -493,6 +539,9 @@ func (a *App) StartRemoteClaudeSession(projectDir string, useProxy bool) (Remote
 }
 
 func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), "create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+		return RemoteSessionView{}, err
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
@@ -536,6 +585,9 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 }
 
 func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(launchSource), "create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+		return RemoteSessionView{}, err
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
@@ -590,6 +642,9 @@ func (a *App) ReconnectRemoteHub() error {
 }
 
 func (a *App) SendRemoteSessionInput(sessionID, text string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "send_input", map[string]interface{}{"session_id": sessionID, "text": text}); err != nil {
+		return err
+	}
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}
@@ -614,6 +669,9 @@ func (a *App) SendRemoteSessionInput(sessionID, text string) error {
 // or control sequences to TUI applications like Claude Code.
 // For SDK sessions, raw input is not supported — use SendRemoteSessionInput instead.
 func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "send_input", map[string]interface{}{"session_id": sessionID, "text": text, "raw": true}); err != nil {
+		return err
+	}
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}
@@ -645,6 +703,9 @@ func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
 }
 
 func (a *App) InterruptRemoteSession(sessionID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "interrupt_session", map[string]interface{}{"session_id": sessionID}); err != nil {
+		return err
+	}
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}
@@ -654,6 +715,9 @@ func (a *App) InterruptRemoteSession(sessionID string) error {
 // SendRemoteSessionImage sends an image to a Claude Code SDK session.
 // The image is injected as a multi-part user message so Claude can see it.
 func (a *App) SendRemoteSessionImage(sessionID, mediaType, base64Data string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "send_input", map[string]interface{}{"session_id": sessionID, "media_type": mediaType, "image": true}); err != nil {
+		return err
+	}
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}
@@ -669,6 +733,9 @@ func (a *App) SendRemoteSessionImage(sessionID, mediaType, base64Data string) er
 // CaptureRemoteScreenshot captures a full-screen screenshot and sends it
 // to the PWA via the image transfer pipeline.
 func (a *App) CaptureRemoteScreenshot(sessionID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "screenshot", map[string]interface{}{"session_id": sessionID}); err != nil {
+		return err
+	}
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}
@@ -678,6 +745,9 @@ func (a *App) CaptureRemoteScreenshot(sessionID string) error {
 // CaptureRemoteWindowScreenshot captures a screenshot of a specific window
 // (matched by title substring) and sends it to the PWA.
 func (a *App) CaptureRemoteWindowScreenshot(sessionID, windowTitle string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "screenshot", map[string]interface{}{"session_id": sessionID, "window_title": windowTitle}); err != nil {
+		return err
+	}
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}
@@ -695,6 +765,9 @@ func (a *App) GetBrowserSessionTrace(runID string) (*AIAssistantTraceView, error
 }
 
 func (a *App) StartBrowserSession(args map[string]interface{}) (RemoteSessionView, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("browser", args); err != nil {
+		return RemoteSessionView{}, err
+	}
 	if a.browserSessions == nil {
 		a.ensureRemoteInfra()
 	}
@@ -728,6 +801,9 @@ func (a *App) StartBrowserSession(args map[string]interface{}) (RemoteSessionVie
 }
 
 func (a *App) StopBrowserSession(sessionID string, closeBrowser bool) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "kill_session", map[string]interface{}{"session_id": sessionID, "browser": true, "close_browser": closeBrowser}); err != nil {
+		return err
+	}
 	if a.browserSessions == nil {
 		a.ensureRemoteInfra()
 	}
@@ -769,6 +845,10 @@ func (a *App) GetBrowserSessionSnapshot(sessionID string) (map[string]interface{
 }
 
 func (a *App) InvokeBrowserTool(toolName string, args map[string]interface{}) (string, error) {
+	policyOwnerID := a.defaultManualPolicyOwnerID()
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, toolName, args); err != nil {
+		return "", err
+	}
 	if a.remoteSessions == nil {
 		a.ensureRemoteInfra()
 	}
@@ -778,10 +858,13 @@ func (a *App) InvokeBrowserTool(toolName string, args map[string]interface{}) (s
 	if err != nil {
 		return "", err
 	}
-	return handler.executeTool(toolName, string(payload), nil), nil
+	return handler.executeToolDetailedWithPolicyUserText(policyOwnerID, toolName, string(payload), "", nil).Text, nil
 }
 
 func (a *App) KillRemoteSession(sessionID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "kill_session", map[string]interface{}{"session_id": sessionID}); err != nil {
+		return err
+	}
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}

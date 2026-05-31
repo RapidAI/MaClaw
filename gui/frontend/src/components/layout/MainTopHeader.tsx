@@ -1,6 +1,7 @@
 import type { Dispatch, MouseEvent as ReactMouseEvent, SetStateAction } from 'react';
 import { getHeaderTitle } from './mainTopHeaderTitle';
 import { MainTopHeaderActions } from './MainTopHeaderActions';
+import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from './WindowControlIcons';
 
 interface MainTopHeaderProps {
     navTab: string;
@@ -90,9 +91,7 @@ export const MainTopHeader = ({
                     title={lang === 'en' ? 'Hide window' : zhHans.hideWindow}
                     style={windowControlBtnStyle}
                 >
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-                        <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" />
-                    </svg>
+                    <WindowCloseIcon />
                 </button>
                 <button
                     onMouseDown={handleWindowMaximizeToggle}
@@ -100,16 +99,7 @@ export const MainTopHeader = ({
                     title={windowMaximized ? (lang === 'en' ? 'Restore window' : zhHans.restoreWindow) : (lang === 'en' ? 'Maximize window' : zhHans.maximizeWindow)}
                     style={windowControlBtnStyle}
                 >
-                    {windowMaximized ? (
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
-                            <rect x="0.6" y="2.6" width="6.8" height="6.8" rx="0.5" />
-                            <path d="M2.6 2.6V1.1a0.5 0.5 0 0 1 0.5-0.5h6.3a0.5 0.5 0 0 1 0.5 0.5v6.3a0.5 0.5 0 0 1-0.5 0.5H8.4" />
-                        </svg>
-                    ) : (
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
-                            <rect x="0.6" y="0.6" width="8.8" height="8.8" rx="0.5" />
-                        </svg>
-                    )}
+                    {windowMaximized ? <WindowRestoreIcon /> : <WindowMaximizeIcon />}
                 </button>
             </div>
         </div>

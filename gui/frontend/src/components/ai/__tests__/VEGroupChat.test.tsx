@@ -91,6 +91,15 @@ describe("buildGroupTabTitle", () => {
         expect(buildGroupTabTitle(participants)).toBe("Alice, Bob");
     });
 
+    it("deduplicates generated VE aliases in titles", () => {
+        const participants = [
+            { id: "machine-a", name: "Agent A", online: true },
+            { id: "ve-machine-a", name: "Agent A duplicate", online: true },
+            { id: "machine-b", name: "Agent B", online: true },
+        ];
+        expect(buildGroupTabTitle(participants)).toBe("Agent A, Agent B");
+    });
+
     it("truncates with ... when exceeding max length", () => {
         const participants = [
             { id: "1", name: "VeryLongNameAlice", online: true },
@@ -230,6 +239,29 @@ describe("ParticipantSelector", () => {
         });
     });
 
+    it("filters existing participants across hub ve_ machine aliases", async () => {
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={[{ id: "ve-machine-3", name: "Machine Bot", online: true }]}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                onAdd={vi.fn()}
+                listVirtualEmployees={() => Promise.resolve([
+                    { id: "profile-3", machine_id: "machine-3", name: "Machine Bot", skill_description: "Review", access_policy: "public", status: "active", online_status: "online" },
+                    { id: "profile-4", machine_id: "machine-4", name: "Risk Bot", skill_description: "Review", access_policy: "public", status: "active", online_status: "online" },
+                ])}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        await waitFor(() => {
+            expect(screen.queryByTestId("group-picker-item-profile-3")).toBeNull();
+            expect(screen.getByTestId("group-picker-item-profile-4")).toBeTruthy();
+        });
+    });
+
     it("shows limit error when max participants reached", () => {
         const fullParticipants: GroupParticipant[] = [
             { id: "ve-1", name: "A", online: true },
@@ -254,6 +286,30 @@ describe("ParticipantSelector", () => {
 
         expect(screen.getByTestId("group-limit-error")).toBeTruthy();
         expect(screen.getByTestId("group-limit-error").textContent).toContain("群聊人数已满（最多");
+    });
+
+    it("does not count duplicate participant aliases as full", async () => {
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={[
+                    { id: "machine-3", name: "Machine Bot", online: true },
+                    { id: "ve-machine-3", name: "Machine Bot", online: true },
+                ]}
+                maxGroupParticipants={2}
+                theme={testTheme}
+                lang="en"
+                onAdd={vi.fn()}
+                listVirtualEmployees={() => Promise.resolve([
+                    { id: "profile-4", machine_id: "machine-4", name: "Risk Bot", skill_description: "Review", access_policy: "public", status: "active", online_status: "online" },
+                ])}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+
+        await waitFor(() => expect(screen.getByTestId("group-participant-picker")).toBeTruthy());
+        expect(screen.queryByText("Group is full (max 2)")).toBeNull();
     });
 
     it("does not expose raw ids for unnamed available VEs", async () => {
@@ -407,6 +463,28 @@ describe("ParticipantSelector", () => {
         fireEvent.click(screen.getByTestId("group-picker-item-ve-3"));
 
         await waitFor(() => expect(screen.getByTestId("group-limit-error").textContent).toContain("Failed to add"));
+        expect(screen.getByTestId("group-participant-picker")).toBeTruthy();
+    });
+
+    it("keeps backend add error details visible in the picker", async () => {
+        const onAdd = vi.fn().mockRejectedValue(new Error("invite target is offline"));
+        render(
+            <ParticipantSelector
+                sessionId="session-1"
+                currentParticipants={mockParticipants}
+                maxGroupParticipants={5}
+                theme={testTheme}
+                lang="en"
+                onAdd={onAdd}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId("group-add-participant-btn"));
+        await waitFor(() => expect(screen.getByTestId("group-picker-item-ve-3")).toBeTruthy());
+        fireEvent.click(screen.getByTestId("group-picker-item-ve-3"));
+
+        await waitFor(() => expect(screen.getByTestId("group-limit-error").textContent).toContain("invite target is offline"));
         expect(screen.getByTestId("group-participant-picker")).toBeTruthy();
     });
 
@@ -685,6 +763,28 @@ describe("VEGroupChatView", () => {
         expect(screen.getByTestId("group-chat-header").textContent).toContain("2");
     });
 
+    it("deduplicates generated VE aliases in header count and title updates", () => {
+        const onTitleChange = vi.fn();
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={[
+                    { id: "machine-a", name: "Agent A", online: true },
+                    { id: "ve-machine-a", name: "Agent A duplicate", online: true },
+                    { id: "machine-b", name: "Agent B", online: true },
+                ]}
+                messages={[]}
+                theme={testTheme}
+                lang="en"
+                onTitleChange={onTitleChange}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        expect(screen.getByTestId("group-chat-header").textContent).toContain("2 participants");
+        expect(onTitleChange).toHaveBeenCalledWith("Agent A, Agent B");
+    });
+
     it("renders all messages with participant labels", () => {
         render(
             <VEGroupChatView
@@ -778,6 +878,26 @@ describe("VEGroupChatView", () => {
         expect(screen.getByTestId("group-msg-label-bot-case").textContent).toBe("Contract Bot");
     });
 
+    it("matches participant and local-user ids across generated VE aliases", () => {
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={[{ id: "machine-a", name: "Contract Bot", online: true }]}
+                messages={[
+                    { id: "mine-alias", fromId: "ve-local-user", fromName: "Alice", content: "from initiator", timestamp: 1000 },
+                    { id: "bot-alias", fromId: "ve-machine-a", fromName: "ve-machine-a", content: "from participant", timestamp: 1001 },
+                ]}
+                theme={testTheme}
+                localUserIds={["local-user"]}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        expect((screen.getByTestId("group-msg-mine-alias") as HTMLElement).style.alignItems).toBe("flex-end");
+        expect((screen.getByTestId("group-msg-bot-alias") as HTMLElement).style.alignItems).toBe("flex-start");
+        expect(screen.getByTestId("group-msg-label-bot-alias").textContent).toBe("Contract Bot");
+    });
+
     it("keeps unknown senders right-aligned in live group chats without explicit local ids", () => {
         render(
             <VEGroupChatView
@@ -841,6 +961,32 @@ describe("VEGroupChatView", () => {
 
         await waitFor(() => {
             expect(screen.getByTestId("group-offline-notice-数字员工A")).toBeTruthy();
+        });
+    });
+
+    it("shows offline notice when status event uses a generated VE alias", async () => {
+        let statusChangeHandler: ((data: any) => void) | null = null;
+        mockEventsOn.mockImplementation((event: string, handler: any) => {
+            if (event === "ve:status_change") statusChangeHandler = handler;
+            return vi.fn();
+        });
+
+        render(
+            <VEGroupChatView
+                sessionId="session-1"
+                participants={[{ id: "machine-a", name: "Contract Bot", online: true }]}
+                messages={[]}
+                theme={testTheme}
+                listVirtualEmployees={() => Promise.resolve(mockAvailableVEs)}
+            />
+        );
+
+        act(() => {
+            if (statusChangeHandler) statusChangeHandler({ ve_id: "ve-machine-a", online_status: "offline" });
+        });
+
+        await waitFor(() => {
+            expect(screen.getByTestId("group-offline-notice-Contract Bot")).toBeTruthy();
         });
     });
 });
@@ -932,9 +1078,3 @@ describe("useGroupConfig", () => {
         expect(screen.getByTestId("config-value").textContent).toBe("5");
     });
 });
-
-
-
-
-
-

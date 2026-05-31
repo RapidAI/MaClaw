@@ -15,6 +15,7 @@ import (
 )
 
 type agentLoopBonusRoundOptions struct {
+	Context                *LoopContext
 	UserID                 string
 	Config                 corelib.MaclawLLMConfig
 	RequestContext         context.Context
@@ -122,16 +123,24 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 
 	var toolExecElapsed time.Duration
 	for _, tc := range choice.Message.ToolCalls {
-		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
-		if opts.Debug && opts.SendProgress != nil {
-			opts.SendProgress(userFacingToolProgressText(tc.Function.Name))
-		}
+		workflowAllowed, workflowReject := h.workflowAllowsBonusRoundToolCall(opts.UserID, opts.Context, tc)
 		toolOnProgress := filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug)
 		toolExecStartedAt := time.Now()
-		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
-		execResult := h.executeBonusRoundTool(tc, toolOnProgress, opts.Phase, opts.HTTPClient, opts.UserID)
+		if workflowAllowed {
+			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
+			if opts.Debug && opts.SendProgress != nil {
+				opts.SendProgress(userFacingToolProgressText(tc.Function.Name))
+			}
+			opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+		}
+		execResult := workflowReject
+		if workflowAllowed {
+			execResult = h.executeBonusRoundTool(tc, toolOnProgress, opts.Phase, opts.HTTPClient, opts.UserID, opts.Context)
+		}
 		toolResult := execResult.Text
-		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
+		if workflowAllowed {
+			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
+		}
 		if IsAskUserResult(toolResult) {
 			toolResult = "ask_user is unavailable in background tasks; choose the next action directly."
 		}
@@ -154,7 +163,24 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 	return conversation, history, toolExecElapsed
 }
 
-func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress tool.ProgressCallback, phase *agentLoopPhase, httpClient *http.Client, userID string) toolExecutionResult {
+func (h *IMMessageHandler) workflowAllowsBonusRoundToolCall(userID string, ctx *LoopContext, tc llm.ToolCall) (bool, toolExecutionResult) {
+	policyUserID := h.workflowPolicyOwnerID(userID, ctx)
+	if !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
+		result := workflowPolicyToolRejectedText(tc.Function.Name)
+		return false, toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if allowed, reason := h.isWorkflowToolCallAllowedForOwner(policyUserID, tc.Function.Name, tc.Function.Arguments); !allowed {
+		result := fmt.Sprintf("[system rejected] %s", reason)
+		return false, toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	return true, toolExecutionResult{}
+}
+
+func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress tool.ProgressCallback, phase *agentLoopPhase, httpClient *http.Client, userID string, ctx *LoopContext) toolExecutionResult {
+	policyUserID := h.workflowPolicyOwnerID(userID, ctx)
+	if allowed, result := h.workflowAllowsBonusRoundToolCall(userID, ctx, tc); !allowed {
+		return result
+	}
 	if phase != nil && phase.TruncationBlockedTools[tc.Function.Name] {
 		result := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
 		return toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailureTruncationBlocked}
@@ -164,8 +190,8 @@ func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress too
 		return toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
 	if tc.Function.Name == "delegate_task" {
-		loopCtx := (*LoopContext)(nil)
-		if httpClient != nil {
+		loopCtx := ctx
+		if loopCtx == nil && httpClient != nil {
 			loopCtx = &LoopContext{HTTPClient: httpClient}
 		}
 		if result, handled := h.executeCodingWorkflowDelegateTask(agentLoopToolExecutionOptions{
@@ -182,5 +208,5 @@ func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress too
 	if errResult := h.preCheckToolArgsForAgentLoop(tc.Function.Name, tc.Function.Arguments, -1); errResult != nil {
 		return *errResult
 	}
-	return h.executeToolDetailed(tc.Function.Name, tc.Function.Arguments, onProgress)
+	return h.executeToolDetailedWithRuntimeState(policyUserID, loopContextHasExplicitRuntimeOwner(ctx), runtimePlatformFromLoopContext(ctx), tc.Function.Name, tc.Function.Arguments, "", onProgress)
 }

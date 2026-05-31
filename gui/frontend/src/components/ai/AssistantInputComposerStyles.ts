@@ -3,13 +3,14 @@ import type { Theme } from "./aiAssistantPanelTheme";
 
 interface ComposerStyleOptions {
     cancelPending: boolean;
+    hasInputOverlay: boolean;
     inline: boolean;
     isExpandedInput: boolean;
     ready: boolean;
     theme: Theme;
 }
 
-export function getAssistantInputComposerStyles({ cancelPending, inline, isExpandedInput, ready, theme: t }: ComposerStyleOptions): {
+export function getAssistantInputComposerStyles({ cancelPending, hasInputOverlay, inline, isExpandedInput, ready, theme: t }: ComposerStyleOptions): {
     inputBarStyle: CSSProperties;
     inputRowStyle: CSSProperties;
     textareaStyle: CSSProperties;
@@ -31,7 +32,8 @@ export function getAssistantInputComposerStyles({ cancelPending, inline, isExpan
             minWidth: 0,
             minHeight: "56px",
             boxSizing: "border-box",
-            overflow: "hidden",
+            overflow: hasInputOverlay ? "visible" : "hidden",
+            ["--wails-draggable" as any]: "no-drag",
             ...(inline ? {} : {
                 margin: "0 10px 10px 10px",
                 borderRadius: "12px",
@@ -47,7 +49,8 @@ export function getAssistantInputComposerStyles({ cancelPending, inline, isExpan
             gap: "0px",
             flex: isExpandedInput ? 1 : undefined,
             minHeight: 0,
-            overflow: "hidden",
+            overflow: hasInputOverlay ? "visible" : "hidden",
+            ["--wails-draggable" as any]: "no-drag",
         },
         textareaStyle: {
             flex: 1,
@@ -69,6 +72,7 @@ export function getAssistantInputComposerStyles({ cancelPending, inline, isExpan
             lineHeight: 1.5,
             opacity: (!ready || cancelPending) ? 0.5 : 1,
             cursor: cancelPending ? "default" : "text",
+            ["--wails-draggable" as any]: "no-drag",
         },
         toolbarStyle: {
             display: "flex",

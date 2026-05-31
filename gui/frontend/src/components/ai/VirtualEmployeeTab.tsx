@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
+import { participantIdentityMatches } from "./participantIdentity";
 export { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
@@ -62,6 +63,17 @@ export function policyIcon(policy: string): string {
     }
 }
 
+export function policyLabel(policy: string, lang?: string): string {
+    const isZh = !lang || lang.startsWith("zh");
+    switch (policy) {
+        case "public": return isZh ? "公开访问" : "Public access";
+        case "whitelist": return isZh ? "白名单" : "Allowlist";
+        case "blacklist": return isZh ? "黑名单" : "Blocklist";
+        case "per_request": return isZh ? "首次访问需同意" : "Approval required";
+        default: return isZh ? "未知策略" : "Unknown policy";
+    }
+}
+
 function EmployeeAvatar({ ve, displayName }: { ve: VirtualEmployeeEntry; displayName: string }) {
     const avatarDataURL = safeAvatarDataURL(ve.avatar_data_url);
     if (avatarDataURL) {
@@ -99,7 +111,7 @@ function isFavoriteEmployee(ve: Pick<VirtualEmployeeEntry, "id" | "machine_id">,
     if (!favoriteEmployeeIds?.length) return false;
     const id = String(ve.id || "").trim();
     const machineId = String(ve.machine_id || "").trim();
-    return favoriteEmployeeIds.some((favoriteId) => favoriteId === id || favoriteId === machineId);
+    return favoriteEmployeeIds.some((favoriteId) => participantIdentityMatches(favoriteId, id) || participantIdentityMatches(favoriteId, machineId));
 }
 
 // --- Component ---
@@ -311,14 +323,15 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
                     {/* Name + skill description */}
                     <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <span style={{ color: theme.text, fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+                            <span style={{ color: theme.text, fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
                                 {truncateText(displayName, 20)}
                             </span>
-                            <span style={{ fontSize: 12 }} title={ve.access_policy}>{policyIcon(ve.access_policy)}</span>
+                            <span style={{ fontSize: 12, flexShrink: 0 }} title={policyLabel(ve.access_policy, lang)}>{policyIcon(ve.access_policy)}</span>
                             {ve.access_policy === "per_request" && (
                                 <span
                                     data-testid={`ve-badge-${ve.id}`}
+                                    title={policyLabel(ve.access_policy, lang)}
                                     style={{
                                         fontSize: 10,
                                         padding: "1px 4px",
@@ -327,9 +340,10 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                         color: theme.errorText || "#dc2626",
                                         border: `1px solid ${theme.errorBorder || "#fecaca"}`,
                                         whiteSpace: "nowrap",
+                                        flexShrink: 0,
                                     }}
                                 >
-                                    {isZh ? "待确认" : "Confirm"}
+                                    {isZh ? "需同意" : "Needs approval"}
                                 </span>
                             )}
                         </div>

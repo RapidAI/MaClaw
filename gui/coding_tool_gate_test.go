@@ -251,6 +251,49 @@ func TestCodingGate_WorkflowAgentLoopBypassesGate(t *testing.T) {
 	}
 }
 
+func TestCodingGateWorkflowAgentLoopUsesRuntimePolicyOwner(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	desktopID := "desktop-coding-gate-workflow-owner"
+	remoteOwnerID := "remote:mobile-coding-gate-owner"
+	engine := handler.app.workflowEngine
+	_, err := engine.StartWorkflowWithOptions(desktopID, workflow.StructuredIntent{
+		Category:   workflow.WorkflowCoding,
+		Summary:    "build desktop project",
+		Goals:      []string{"build desktop project"},
+		Confidence: 0.95,
+		Ready:      true,
+	}, workflow.WorkflowStartOptions{ProjectPath: "/desktop"})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions desktop failed: %v", err)
+	}
+	if err := engine.SkipPhaseForm(desktopID); err != nil {
+		t.Fatalf("SkipPhaseForm desktop failed: %v", err)
+	}
+	handler.lastUserID = desktopID
+	ctx := &LoopContext{WorkflowAgentLoop: true, Runtime: RuntimeContext{RequestID: "req-coding-gate", PolicyOwnerID: remoteOwnerID}}
+
+	if handler.shouldBypassCodingGateForWorkflowAgentLoop(desktopID, ctx) {
+		t.Fatal("workflow coding gate must not bypass from desktop workflow when runtime owner has no workflow")
+	}
+
+	_, err = engine.StartWorkflowWithOptions(remoteOwnerID, workflow.StructuredIntent{
+		Category:   workflow.WorkflowCoding,
+		Summary:    "build remote project",
+		Goals:      []string{"build remote project"},
+		Confidence: 0.95,
+		Ready:      true,
+	}, workflow.WorkflowStartOptions{ProjectPath: "/remote"})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions remote failed: %v", err)
+	}
+	if err := engine.SkipPhaseForm(remoteOwnerID); err != nil {
+		t.Fatalf("SkipPhaseForm remote failed: %v", err)
+	}
+	if !handler.shouldBypassCodingGateForWorkflowAgentLoop(desktopID, ctx) {
+		t.Fatal("workflow coding gate should follow runtime owner workflow")
+	}
+}
+
 func substantialWorkflowDoc(label string) string {
 	return "# " + label + "\n\n" +
 		"This phase deliverable contains enough structure to pass the minimum workflow quality gate.\n" +

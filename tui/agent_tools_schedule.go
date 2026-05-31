@@ -242,6 +242,20 @@ func (c *tuiSchedulerCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.app.toolRegistry.Execute(name, args)
 }
 
+func (c *tuiSchedulerCallbacks) IsToolAllowed(name string) bool {
+	if c == nil || c.app == nil {
+		return true
+	}
+	return c.app.isWorkflowToolAllowedTUI(name)
+}
+
+func (c *tuiSchedulerCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c == nil || c.app == nil {
+		return true, ""
+	}
+	return c.app.isWorkflowToolCallAllowedTUI(name, argsJSON)
+}
+
 func (c *tuiSchedulerCallbacks) OnToken(delta string) {
 	// No UI streaming for background tasks.
 }

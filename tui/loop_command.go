@@ -298,6 +298,20 @@ func (c *tuiLoopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.parent.app.toolRegistry.Execute(name, args)
 }
 
+func (c *tuiLoopCycleCallbacks) IsToolAllowed(name string) bool {
+	if c == nil || c.parent == nil || c.parent.app == nil {
+		return true
+	}
+	return c.parent.app.isWorkflowToolAllowedTUI(name)
+}
+
+func (c *tuiLoopCycleCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c == nil || c.parent == nil || c.parent.app == nil {
+		return true, ""
+	}
+	return c.parent.app.isWorkflowToolCallAllowedTUI(name, argsJSON)
+}
+
 func (c *tuiLoopCycleCallbacks) OnToken(delta string) {
 	if c.parent.prog != nil {
 		c.parent.prog.Send(views.ChatStreamMsg{Type: "text_delta", Content: delta})

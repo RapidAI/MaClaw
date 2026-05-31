@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -662,6 +663,95 @@ func TestParseTaskListUnicodeHeadersAndCriteria(t *testing.T) {
 	if len(tasks[2].AcceptanceCriteria) != 1 || tasks[2].AcceptanceCriteria[0] != "npm test" {
 		t.Fatalf("expected english acceptance criteria, got %#v", tasks[2].AcceptanceCriteria)
 	}
+}
+
+func TestParseTaskListExtractsExplicitDependencies(t *testing.T) {
+	input := "1. Scaffold project\nCreate build files.\n\n2. Implement game\nDepends on: 0\n\n3. Verify build\n- dependency: 0, 1"
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %#v", tasks)
+	}
+	if got := strings.Join(intSliceStrings(tasks[1].DependsOn), ","); got != "0" {
+		t.Fatalf("task 1 deps = %q, want 0", got)
+	}
+	if got := strings.Join(intSliceStrings(tasks[2].DependsOn), ","); got != "0,1" {
+		t.Fatalf("task 2 deps = %q, want 0,1", got)
+	}
+}
+
+func TestParseTaskListTDependencyLabelsAreOneBased(t *testing.T) {
+	input := "### T1: Scaffold project\nCreate build files.\n\n### T2: Implement game\nDepends on: T1\n\n### T3: Verify build\n- dependency: T1, T2"
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %#v", tasks)
+	}
+	if got := strings.Join(intSliceStrings(tasks[1].DependsOn), ","); got != "0" {
+		t.Fatalf("task 1 deps = %q, want internal index 0", got)
+	}
+	if got := strings.Join(intSliceStrings(tasks[2].DependsOn), ","); got != "0,1" {
+		t.Fatalf("task 2 deps = %q, want internal indexes 0,1", got)
+	}
+}
+
+func TestParseTaskListNormalizesOneBasedDependencyLabels(t *testing.T) {
+	input := "1. Scaffold project\nCreate build files.\n\n2. Implement game\nDepends on: 1\n\n3. Verify build\n- dependency: 1, 2"
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %#v", tasks)
+	}
+	if got := strings.Join(intSliceStrings(tasks[1].DependsOn), ","); got != "0" {
+		t.Fatalf("task 1 deps = %q, want internal index 0", got)
+	}
+	if got := strings.Join(intSliceStrings(tasks[2].DependsOn), ","); got != "0,1" {
+		t.Fatalf("task 2 deps = %q, want internal indexes 0,1", got)
+	}
+}
+
+func TestParseTaskListAddsImplicitBootstrapDependency(t *testing.T) {
+	input := "1. Create CMake project scaffold\nCreate CMakeLists.txt and src directory.\n\n2. Implement Snake\nAdd snake movement.\n\n3. Implement Food\nAdd food spawning."
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %#v", tasks)
+	}
+	if got := strings.Join(intSliceStrings(tasks[1].DependsOn), ","); got != "0" {
+		t.Fatalf("task 1 deps = %q, want 0", got)
+	}
+	if got := strings.Join(intSliceStrings(tasks[2].DependsOn), ","); got != "0" {
+		t.Fatalf("task 2 deps = %q, want 0", got)
+	}
+}
+
+func TestParseTaskListAddsImplicitIntegrationDependencies(t *testing.T) {
+	input := "1. Implement model\n\n2. Implement renderer\n\n3. Build and test integration\nCompile and verify all parts."
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %#v", tasks)
+	}
+	if got := strings.Join(intSliceStrings(tasks[2].DependsOn), ","); got != "0,1" {
+		t.Fatalf("integration deps = %q, want 0,1", got)
+	}
+}
+
+func TestParseTaskListPreservesExplicitDepsAndAddsImplicitForUnspecifiedTasks(t *testing.T) {
+	input := "1. Create CMake project scaffold\nCreate CMakeLists.txt.\n\n2. Implement Snake\nDepends on: T0\n\n3. Build and test integration\nCompile and verify all parts."
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %#v", tasks)
+	}
+	if got := strings.Join(intSliceStrings(tasks[1].DependsOn), ","); got != "0" {
+		t.Fatalf("explicit deps should be preserved, got %q", got)
+	}
+	if got := strings.Join(intSliceStrings(tasks[2].DependsOn), ","); got != "0,1" {
+		t.Fatalf("implicit integration deps = %q, want 0,1", got)
+	}
+}
+
+func intSliceStrings(values []int) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, fmt.Sprintf("%d", value))
+	}
+	return out
 }
 
 func TestIsTaskHeaderUnicodePunctuation(t *testing.T) {

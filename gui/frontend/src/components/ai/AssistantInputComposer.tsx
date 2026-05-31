@@ -6,11 +6,12 @@ import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
 
 export function AssistantInputComposer(props: AssistantInputComposerProps) {
-    const { attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, exitHistoryBrowsing, finishVoicePointer, handleCancel, handlePaste, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked, inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, pendingAttachmentsTestId, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner, showMemoryUsage = true, showVoiceInput = true, textareaTestId = "ai-input", theme: t, themeMode, toolbarTestId = "ai-input-toolbar", updateInputValue, voiceInput } = props;
+    const { attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, exitHistoryBrowsing, finishVoicePointer, handleCancel, handlePaste, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked, inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, pendingAttachmentsTestId, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner, showMemoryUsage = true, showVoiceInput = true, textareaAriaLabel, textareaTestId = "ai-input", theme: t, themeMode, toolbarTestId = "ai-input-toolbar", updateInputValue, voiceInput } = props;
     const textComposition = useTextCompositionGuard();
     const isExpandedInput = inputAreaHeight !== null;
     const { inputBarStyle, inputRowStyle, textareaStyle, toolbarStyle, toolbarLeftStyle, toolbarRightStyle } = getAssistantInputComposerStyles({
         cancelPending,
+        hasInputOverlay: !!inputOverlay,
         inline,
         isExpandedInput,
         ready,
@@ -25,7 +26,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                 {inputOverlay}
                 {/* Main AI composer guard: data-testid="ai-input" */}
                 {/* data-testid="ai-input" is provided by textareaTestId default. */}
-                <textarea ref={inputRef} data-testid={textareaTestId} disabled={!ready || cancelPending} readOnly={cancelPending} aria-readonly={cancelPending} style={{ ...textareaStyle, boxSizing: "border-box" }} rows={1} value={inputValue} onChange={(e) => { rememberHistoryEdit(e.target.value); updateInputValue(e.target.value); resizeInput(); }} onPaste={handlePaste} onClick={handleTextareaClick} onKeyUp={handleTextareaKeyUp} onCompositionStart={textComposition.onCompositionStart} onCompositionEnd={textComposition.onCompositionEnd} onKeyDown={(e) => {
+                <textarea ref={inputRef} data-testid={textareaTestId} disabled={!ready || cancelPending} readOnly={cancelPending} aria-label={textareaAriaLabel || placeholderText} aria-readonly={cancelPending} style={{ ...textareaStyle, boxSizing: "border-box" }} rows={1} value={inputValue} onChange={(e) => { rememberHistoryEdit(e.target.value); updateInputValue(e.target.value); resizeInput(); }} onPaste={handlePaste} onClick={handleTextareaClick} onKeyUp={handleTextareaKeyUp} onCompositionStart={textComposition.onCompositionStart} onCompositionEnd={textComposition.onCompositionEnd} onKeyDown={(e) => {
                     if (textComposition.shouldIgnoreKeyDown(e)) return;
                     if (handleTextareaKeyDownBefore?.(e)) return;
                     if (e.key === "ArrowUp" && isSelectionCollapsedAtBoundary("up")) {

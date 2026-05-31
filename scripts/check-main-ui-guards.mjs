@@ -11,6 +11,10 @@ const requireFile = (rel) => {
   if (!exists(rel)) failures.push(`missing required file: ${rel}`);
 };
 const requireIncludes = (rel, needle, label = needle) => {
+  if (!exists(rel)) {
+    failures.push(`missing required file: ${rel} (cannot check ${label})`);
+    return;
+  }
   const text = read(rel);
   if (!text.includes(needle)) failures.push(`${rel} is missing ${label}`);
 };
@@ -136,6 +140,7 @@ requireFile('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantTitleBar.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantInputComposer.tsx');
+requireFile('gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx');
 requireFile('gui/frontend/src/components/ai/useAssistantPreviewResize.ts');
 requireFile('gui/frontend/src/components/ai/aiAssistantStatusLabels.ts');
 
@@ -193,6 +198,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 110],
   ['gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   ['gui/frontend/src/components/ai/AssistantInputComposer.tsx', 100],
+  ['gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx', 110],
   ['gui/frontend/src/components/ai/useAssistantPreviewResize.ts', 50],
   ['gui/frontend/src/components/ai/aiAssistantStatusLabels.ts', 40],
 ];
@@ -337,6 +343,9 @@ requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-tes
 requireExcludes('gui/frontend/src/components/ai/AssistantInputStack.tsx', 'AssistantWorkflowDocsBar', 'old left-side workflow docs bar wiring');
 requireIncludes('gui/frontend/src/components/ai/WorkflowDocPreview.tsx', 'WorkflowProgressBoard', 'right-side workflow progress board');
 requireIncludes('gui/frontend/src/components/ai/WorkflowDocPreview.tsx', 'workflowPhaseOrders', 'workflow phase order map');
+requireFile('gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts');
+requireFile('gui/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts');
+requireIncludes('gui/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts', 'workflowPhaseMeta.generated', 'contract test imports the generated artifact');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'className="pinned-news-card"', 'inline pinned news cards; use components/ai/AssistantPinnedNewsCards.tsx');
 requireIncludes('gui/frontend/src/components/ai/AssistantConversationBody.tsx', 'from "./AssistantPinnedNewsCards"', 'AI pinned news cards import');
 requireIncludes('gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 'className="pinned-news-card"', 'pinned news card rendering');
@@ -444,8 +453,13 @@ requireIncludes('gui/frontend/src/components/settings/UISettingsPanel.tsx', 'exp
 requireIncludes('gui/frontend/src/components/settings/UISettingsPanel.tsx', 'SetUIZoomFactor', 'UI zoom persistence wiring');
 requireIncludes('gui/frontend/src/components/settings/UISettingsPanel.tsx', 'SetChatFontSize', 'AI assistant font size persistence wiring');
 requireIncludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'export const ProgrammingToolsSettingsPanel', 'programming tools settings export');
-requireIncludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'default_tool_provider', 'default programming provider wiring');
-requireIncludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'remoteToolMetadata.map', 'default coding tool options');
+requireExcludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'default_tool_provider', 'removed default programming provider setting');
+requireExcludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'remoteToolMetadata.map', 'removed default coding tool options');
+requireExcludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'Default Coding Tool', 'removed default coding tool card');
+requireExcludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'Default Provider', 'removed default programming provider card');
+requireExcludes('gui/frontend/src/App.tsx', 'ListToolProviders', 'removed default programming provider list wiring');
+requireExcludes('gui/frontend/wailsjs/go/main/App.d.ts', 'ListToolProviders', 'removed default programming provider binding');
+requireExcludes('gui/frontend/wailsjs/go/main/App.js', 'ListToolProviders', 'removed default programming provider binding');
 requireIncludes('gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'export const GeneralAdvancedSettingsPanel', 'advanced general settings export');
 requireIncludes('gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'show_ai_trace_entry', 'AI trace entry toggle');
 requireIncludes('gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'SetEnvCheckInterval', 'environment check interval wiring');
@@ -511,6 +525,7 @@ for (const rel of [
   'gui/frontend/src/components/modals/RemoteActivationDialog.tsx',
   'gui/frontend/src/components/modals/ProviderSelectorDialog.tsx',
   'gui/frontend/src/components/modals/ConfirmDialog.tsx',
+  'gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx',
   'gui/frontend/src/components/remote/HubServiceRedeemPanel.tsx',
 ]) {
   requireNoMojibake(rel);

@@ -217,7 +217,7 @@ export function useWorkflowState() {
             if (isActive && !userClosedRef.current) {
                 setWorkflowSplitMode(prev => {
                     if (!currentPhase) return false;
-                    if (workflowPhaseExpectsDocument(currentPhase, incomingPhases)) return true;
+                    if (workflowPhaseExpectsDocument(currentPhase, incomingPhases, incomingWorkflowType)) return true;
                     // Keep the workflow board visible while moving into coding/execution
                     // phases, but do not auto-open the pane if it was closed or never opened.
                     return prev;

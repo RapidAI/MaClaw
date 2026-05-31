@@ -74,6 +74,10 @@ type RuntimeStatus struct {
 // Add new data sources (e.g. Docker containers) here — all consumers
 // (toolAgentStatus, pendingBackgroundTaskHint) automatically see them.
 func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
+	return h.collectRuntimeStatusForOwner("")
+}
+
+func (h *IMMessageHandler) collectRuntimeStatusForOwner(ownerID string) RuntimeStatus {
 	var rs RuntimeStatus
 
 	// Main agent loop state.
@@ -82,11 +86,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 	// /cancel command). The worst case is a stale nil/non-nil read, which
 	// produces a slightly outdated "running"/"idle" report — acceptable for
 	// a status query.
-	if ctx := h.currentLoopCtx; ctx != nil {
-		rs.MainAgentRunning = true
-		rs.MainAgentTask = h.lastUserText
-		rs.MainAgentElapsed = time.Since(ctx.StartedAt).Round(time.Second)
-	}
+	h.collectMainAgentRuntimeStatusForOwner(&rs, ownerID)
 
 	// Local background tasks.
 	if h.localBgTaskMgr != nil {
@@ -149,6 +149,40 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 	return rs
 }
 
+func (h *IMMessageHandler) collectMainAgentRuntimeStatusForOwner(rs *RuntimeStatus, ownerID string) {
+	if h == nil || rs == nil {
+		return
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID != "" {
+		if v, ok := h.sessionLoops.Load(ownerID); ok {
+			state := v.(*sessionLoopState)
+			state.stateMu.RLock()
+			ctx := state.loopCtx
+			userText := state.userText
+			state.stateMu.RUnlock()
+			if ctx != nil && !ctx.IsCancelled() {
+				rs.MainAgentRunning = true
+				rs.MainAgentTask = userText
+				rs.MainAgentElapsed = time.Since(ctx.StartedAt).Round(time.Second)
+			}
+		}
+		return
+	}
+
+	// Legacy fallback for callers that do not yet have an owner. New runtime
+	// paths should pass ownerID so concurrent channels cannot see each other.
+	h.globalLoopMu.RLock()
+	ctx := h.currentLoopCtx
+	userText := h.lastUserText
+	h.globalLoopMu.RUnlock()
+	if ctx != nil && !ctx.IsCancelled() {
+		rs.MainAgentRunning = true
+		rs.MainAgentTask = userText
+		rs.MainAgentElapsed = time.Since(ctx.StartedAt).Round(time.Second)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // agent_status tool — consumed by /btw SubAgent
 // ---------------------------------------------------------------------------
@@ -159,13 +193,14 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 	category, _ := args["category"].(string)
 	categoryKind := normalizeAgentStatusCategory(category)
 	taskID, _ := args["task_id"].(string)
+	ownerID := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrent(args)
 
 	// If a specific task_id is provided, do a targeted lookup with log tail.
 	if taskID != "" {
 		return h.agentStatusByTaskID(taskID)
 	}
 
-	rs := h.collectRuntimeStatus()
+	rs := h.collectRuntimeStatusForOwner(ownerID)
 	var sections []string
 
 	// Main agent loop status — always included for "all" category.

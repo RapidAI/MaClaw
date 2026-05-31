@@ -197,6 +197,27 @@ func TestBuildCodingToolDefinitions_OnlyCodingTools(t *testing.T) {
 	}
 }
 
+func TestCanonicalCodingSubAgentToolNameAcceptsModelCasing(t *testing.T) {
+	if got := canonicalCodingSubAgentToolName("glob"); got != "Glob" {
+		t.Fatalf("canonical glob = %q, want Glob", got)
+	}
+	if got := canonicalCodingSubAgentToolName(" read_file "); got != "read_file" {
+		t.Fatalf("canonical read_file = %q, want read_file", got)
+	}
+}
+
+func TestBuildCodingSubAgentSystemPromptIncludesWindowsShellContract(t *testing.T) {
+	if normalizedRemotePlatform() != "windows" {
+		t.Skip("Windows shell contract is platform-specific")
+	}
+	prompt := buildCodingSubAgentSystemPrompt(&TaskItem{Index: 0, Title: "Task"}, "D:\\workprj\\snake", "", "", nil)
+	for _, want := range []string{"Windows shell contract", "mkdir -p", "&&", "working_dir", "CMake generators"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
 func TestBuildCodingToolDefinitions_TokenEstimate(t *testing.T) {
 	tools := buildCodingToolDefinitionsFallback()
 
@@ -1280,6 +1301,16 @@ func TestClassifyCodingGuardrail(t *testing.T) {
 		if got := classifyCodingGuardrailCategory(tc.tool, tc.path, tc.command, tc.result).String(); got != tc.category {
 			t.Fatalf("%s category = %q, want %q", tc.name, got, tc.category)
 		}
+	}
+}
+
+func TestRejectDisallowedCodingBashCommandRejectsWindowsAndAnd(t *testing.T) {
+	if normalizedRemotePlatform() != "windows" {
+		t.Skip("PowerShell command separator guardrail is Windows-specific")
+	}
+	msg := rejectDisallowedCodingBashCommand("mkdir -p build && cmake -S . -B build")
+	if !strings.Contains(msg, "PowerShell") || !strings.Contains(msg, "&&") || !strings.Contains(msg, "working_dir") {
+		t.Fatalf("expected Windows shell compatibility rejection, got %q", msg)
 	}
 }
 

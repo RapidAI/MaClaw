@@ -1670,7 +1670,7 @@ func (s *HTTPServer) updatePlatformUserMaclawSrvConfig(r *http.Request, p agents
 	}
 	app := cfg.AppConfig
 	applyString := func(dst *string, src *string) {
-		if src == nil || maskedPlatformSecret(*src) {
+		if src == nil || agentservice.IsMaskedSecretPlaceholder(*src) {
 			return
 		}
 		*dst = strings.TrimSpace(*src)
@@ -1722,11 +1722,6 @@ func (s *HTTPServer) updatePlatformUserMaclawSrvConfig(r *http.Request, p agents
 	applyBoolPtr(&app.ThirdPartyGatewayLocalMode, in.ThirdPartyGatewayLocalMode)
 	_, err = s.svc.UpdateUserConfig(r.Context(), p, app)
 	return err
-}
-
-func maskedPlatformSecret(value string) bool {
-	value = strings.TrimSpace(value)
-	return value == "********" || strings.EqualFold(value, "__masked__")
 }
 
 func normalizePlatformSSHHosts(hosts []corelib.SSHHostEntry) []corelib.SSHHostEntry {

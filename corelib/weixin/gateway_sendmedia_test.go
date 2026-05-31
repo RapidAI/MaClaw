@@ -78,7 +78,7 @@ func TestSendMediaVoiceSendsWechatCompatibleSilkItem(t *testing.T) {
 				return
 			}
 			voice := req.Msg.ItemList[0].VoiceItem
-			if voice.EncodeType != 6 || voice.SampleRate != weixinVoiceSampleRate || voice.Playtime != 1000 {
+			if voice.EncodeType != 4 || voice.SampleRate != weixinVoiceSampleRate || voice.Playtime != 1000 {
 				failHTTP(w, "voice metadata encode=%d sample_rate=%d playtime=%d", voice.EncodeType, voice.SampleRate, voice.Playtime)
 				return
 			}
@@ -86,12 +86,12 @@ func TestSendMediaVoiceSendsWechatCompatibleSilkItem(t *testing.T) {
 				failHTTP(w, "voice bits_per_sample = %d, want omitted/zero for SILK", voice.BitsPerSample)
 				return
 			}
-			if voice.Media == nil || voice.Media.EncryptQueryParam != "download-param" || voice.Media.AESKey == "" || voice.Media.EncryptType != 1 {
+			if voice.Media == nil || voice.Media.EncryptQueryParam != "download-param" || voice.Media.AESKey == "" || voice.Media.EncryptType != 0 {
 				failHTTP(w, "voice media = %+v", voice.Media)
 				return
 			}
-			if voice.Len == "" || voice.VoiceMD5 == "" {
-				failHTTP(w, "missing voice integrity fields len=%q md5=%q", voice.Len, voice.VoiceMD5)
+			if voice.Len != "" || voice.Size != "" || voice.VoiceMD5 != "" || voice.MD5 != "" || voice.Format != "" || voice.MimeType != "" {
+				failHTTP(w, "unexpected outbound-only voice fields len=%q size=%q voice_md5=%q md5=%q format=%q mime=%q", voice.Len, voice.Size, voice.VoiceMD5, voice.MD5, voice.Format, voice.MimeType)
 				return
 			}
 			sendSeen.Store(true)

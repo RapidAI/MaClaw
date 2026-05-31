@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -30,6 +31,14 @@ type WorkflowInstance struct {
 	TriggerData   string                 `json:"trigger_data"`
 	CreatedAt     time.Time              `json:"created_at"`
 	CompletedAt   *time.Time             `json:"completed_at,omitempty"`
+
+	// RowVersion is an optimistic-locking guard on the instance row, used to
+	// serialize concurrent approval-state writes in ResumeInstance so that
+	// near-simultaneous decisions on the same node (countersign / any-N-of-M)
+	// cannot lose a vote across processes (Requirement 2.6). It is loaded by
+	// Get and bumped by UpdateInstanceDataCAS. This is an internal persistence
+	// detail, not part of the API contract, hence json:"-".
+	RowVersion int64 `json:"-"`
 }
 
 // NodeStatus represents the execution status of a single node within an instance.
@@ -79,3 +88,36 @@ type InstanceStore interface {
 	QueryPendingMyConfirmation(ctx context.Context, userID string, filter DirectoryFilter) ([]DirectoryItem, int, error)
 	QueryCompleted(ctx context.Context, userID string, filter DirectoryFilter) ([]DirectoryItem, int, error)
 }
+
+// OptimisticInstanceDataUpdater is an OPTIONAL capability an InstanceStore may
+// implement to persist instance_data under an optimistic-locking guard, so that
+// near-simultaneous approval decisions on the same node cannot clobber each
+// other's persisted vote across processes (Finding 1.6 / Requirement 2.6).
+//
+// The plain InstanceStore.UpdateInstanceData does a full unconditional
+// overwrite: two concurrent read-modify-write cycles each read the old data,
+// merge their own decision, and write back — the second writer's overwrite
+// silently discards the first writer's vote. A per-process mutex closes that
+// window within one process, but a multi-process Hub sharing one database still
+// races. UpdateInstanceDataCAS guards the write with the row version observed at
+// read time (conditional UPDATE ... WHERE row_version = expectedVersion); on a
+// version mismatch it reports a conflict so the caller can re-read and re-apply.
+//
+// This is a wiring-level mechanism: it changes only HOW approvalNodeState is
+// persisted. The per-mode decision logic and the conditional UpdateStatus
+// contract are unchanged. Both production stores (PgInstanceStore and the
+// sqlite instanceStore) satisfy it; ResumeInstance type-asserts for it at
+// runtime and falls back to UpdateInstanceData when it is absent.
+type OptimisticInstanceDataUpdater interface {
+	// UpdateInstanceDataCAS persists data only if the instance row's version
+	// still equals expectedVersion. On success it returns the new (bumped)
+	// version. On a version mismatch it returns (0, ErrInstanceVersionConflict)
+	// without writing, so the caller can re-read and retry.
+	UpdateInstanceDataCAS(ctx context.Context, id string, expectedVersion int64, data map[string]interface{}) (int64, error)
+}
+
+// ErrInstanceVersionConflict is returned by UpdateInstanceDataCAS when the
+// instance row's version no longer matches the version observed at read time —
+// i.e. another writer applied a decision concurrently. The caller re-reads the
+// instance and re-applies its decision against the fresh state.
+var ErrInstanceVersionConflict = errors.New("workflow instance version conflict")

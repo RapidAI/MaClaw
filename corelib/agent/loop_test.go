@@ -28,6 +28,7 @@ type mockCallbacks struct {
 	callReason  string
 	tokens      []string
 	toolCalls   []string
+	toolEvents  []string
 	stopped     bool
 }
 
@@ -64,7 +65,7 @@ func (m *mockCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) 
 }
 func (m *mockCallbacks) OnToken(delta string)     { m.tokens = append(m.tokens, delta) }
 func (m *mockCallbacks) OnProgress(text string)   {}
-func (m *mockCallbacks) OnToolCall(name string)   {}
+func (m *mockCallbacks) OnToolCall(name string)   { m.toolEvents = append(m.toolEvents, name) }
 func (m *mockCallbacks) OnToolResult(name string) {}
 func (m *mockCallbacks) ShouldStop() bool         { return m.stopped }
 
@@ -256,6 +257,9 @@ func TestRunLoop_ToolAuthorizerBlocksExecution(t *testing.T) {
 	}
 	if len(cb.toolCalls) != 0 {
 		t.Fatalf("blocked tool should not reach ExecuteTool, got calls: %v", cb.toolCalls)
+	}
+	if len(cb.toolEvents) != 0 {
+		t.Fatalf("blocked tool should not emit OnToolCall, got events: %v", cb.toolEvents)
 	}
 	if result.ToolCalls != 1 {
 		t.Fatalf("expected blocked tool call to be counted, got %d", result.ToolCalls)

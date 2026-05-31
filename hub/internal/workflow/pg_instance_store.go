@@ -35,14 +35,14 @@ func (s *PgInstanceStore) Create(ctx context.Context, inst *WorkflowInstance) er
 
 func (s *PgInstanceStore) Get(ctx context.Context, id string) (*WorkflowInstance, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
+		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at, row_version
 		 FROM workflow_instances WHERE id = $1 AND tenant_id = $2`, id, store.TenantIDFromContext(ctx))
 
 	var inst WorkflowInstance
 	var dataJSON []byte
 	var completedAt sql.NullTime
 	err := row.Scan(&inst.ID, &inst.TenantID, &inst.WorkflowID, &inst.VersionID, &inst.Status,
-		&inst.CurrentNodeID, &dataJSON, &inst.TriggerData, &inst.CreatedAt, &completedAt)
+		&inst.CurrentNodeID, &dataJSON, &inst.TriggerData, &inst.CreatedAt, &completedAt, &inst.RowVersion)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -86,6 +86,35 @@ func (s *PgInstanceStore) UpdateInstanceData(ctx context.Context, id string, dat
 		`UPDATE workflow_instances SET instance_data = $1 WHERE id = $2 AND tenant_id = $3`,
 		dataJSON, id, store.TenantIDFromContext(ctx))
 	return err
+}
+
+// UpdateInstanceDataCAS persists instance_data only if the row's row_version
+// still equals expectedVersion, bumping it on success. This is the
+// optimistic-locking guard that serializes concurrent approval-state writes on
+// the same node so no vote is lost across processes (Requirement 2.6). On a
+// version mismatch it returns ErrInstanceVersionConflict without writing, so
+// the caller re-reads and re-applies its decision. Implements
+// OptimisticInstanceDataUpdater.
+func (s *PgInstanceStore) UpdateInstanceDataCAS(ctx context.Context, id string, expectedVersion int64, data map[string]interface{}) (int64, error) {
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_instances SET instance_data = $1, row_version = row_version + 1
+		 WHERE id = $2 AND tenant_id = $3 AND row_version = $4`,
+		dataJSON, id, store.TenantIDFromContext(ctx), expectedVersion)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected == 0 {
+		return 0, ErrInstanceVersionConflict
+	}
+	return expectedVersion + 1, nil
 }
 
 func (s *PgInstanceStore) CreateNodeExecution(ctx context.Context, exec *NodeExecution) error {
@@ -143,6 +172,49 @@ func (s *PgInstanceStore) GetPendingApprovals(ctx context.Context, approverID st
 		execs = append(execs, exec)
 	}
 	return execs, rows.Err()
+}
+
+// FindCompletedWithoutConfirmations returns completed instances whose
+// completed_at is within the given retention window and that have no rows in
+// the confirmations table — i.e. instances orphaned by a crash between marking
+// the instance completed and creating confirmation records (the window
+// documented in executeTerminalNode). Used by
+// ConfirmationTracker.ReconcileOrphanedInstances. Implements OrphanedInstanceFinder.
+func (s *PgInstanceStore) FindCompletedWithoutConfirmations(ctx context.Context, within time.Duration) ([]WorkflowInstance, error) {
+	cutoff := time.Now().UTC().Add(-within).Format(time.RFC3339Nano)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
+		 FROM workflow_instances wi
+		 WHERE wi.tenant_id = $1
+		   AND wi.status = $2
+		   AND wi.completed_at IS NOT NULL
+		   AND wi.completed_at >= $3
+		   AND NOT EXISTS (SELECT 1 FROM confirmations c WHERE c.instance_id = wi.id)
+		 ORDER BY wi.completed_at ASC`,
+		store.TenantIDFromContext(ctx), string(InstanceCompleted), cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []WorkflowInstance
+	for rows.Next() {
+		var inst WorkflowInstance
+		var dataJSON []byte
+		var completedAt sql.NullTime
+		if err := rows.Scan(&inst.ID, &inst.TenantID, &inst.WorkflowID, &inst.VersionID, &inst.Status,
+			&inst.CurrentNodeID, &dataJSON, &inst.TriggerData, &inst.CreatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			inst.CompletedAt = &completedAt.Time
+		}
+		if len(dataJSON) > 0 {
+			_ = json.Unmarshal(dataJSON, &inst.InstanceData)
+		}
+		results = append(results, inst)
+	}
+	return results, rows.Err()
 }
 
 // --- Directory Query Methods ---

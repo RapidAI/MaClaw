@@ -286,7 +286,7 @@ func TestInstanceAPI_GetInstance_Success(t *testing.T) {
 		VersionID:     "ver1",
 		Status:        InstanceRunning,
 		CurrentNodeID: "node2",
-		InstanceData:  map[string]interface{}{"key": "value"},
+		InstanceData:  map[string]interface{}{"key": "value", "requester_id": "test-user"},
 		TriggerData:   `{"requester_id":"user1"}`,
 		CreatedAt:     now,
 	}
@@ -340,7 +340,7 @@ func TestInstanceAPI_GetInstanceAudit_Success(t *testing.T) {
 	// Seed the instance so authorization check passes.
 	instStore.instances["inst1"] = &WorkflowInstance{
 		ID: "inst1", Status: InstanceRunning,
-		InstanceData: map[string]interface{}{},
+		InstanceData: map[string]interface{}{"requester_id": "test-user"},
 	}
 
 	// Seed audit entries for instance "inst1".
@@ -399,7 +399,7 @@ func TestInstanceAPI_GetInstanceAudit_Pagination(t *testing.T) {
 	// Seed the instance so authorization check passes.
 	instStore.instances["inst1"] = &WorkflowInstance{
 		ID: "inst1", Status: InstanceRunning,
-		InstanceData: map[string]interface{}{},
+		InstanceData: map[string]interface{}{"requester_id": "test-user"},
 	}
 
 	// Seed 150 audit entries (more than one page).
@@ -452,7 +452,7 @@ func TestInstanceAPI_GetInstanceAudit_PageSizeCapped(t *testing.T) {
 	// Seed the instance so authorization check passes.
 	instStore.instances["inst1"] = &WorkflowInstance{
 		ID: "inst1", Status: InstanceRunning,
-		InstanceData: map[string]interface{}{},
+		InstanceData: map[string]interface{}{"requester_id": "test-user"},
 	}
 
 	// Seed 200 audit entries.
@@ -508,5 +508,173 @@ func TestInstanceAPI_GetInstanceAudit_EmptyResult(t *testing.T) {
 	// Instance not found returns 404 due to authorization check.
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Task 3.11: deny access on unestablished ownership (Requirement 2.11) ---
+
+// makeAccessAPI builds an InstanceAPI whose routes authenticate the caller as
+// the given callerID via the auth middleware (mirroring workflowUserAuth's
+// X-Owner-ID injection).
+func makeAccessAPI(t *testing.T, callerID string) (*InstanceAPI, *memInstanceStoreForAPI, *http.ServeMux) {
+	t.Helper()
+	api, _, instStore, _ := setupInstanceAPITest(t)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Set("X-Owner-ID", callerID)
+			h(w, r)
+		}
+	})
+	return api, instStore, mux
+}
+
+// TestInstanceAPI_GetInstance_EmptyRequesterID_Denied verifies the bug-condition
+// input (isBugCondition where X.kind = InstanceAccess AND X.requesterID = ""):
+// an instance whose ownership was never established (empty requester_id) is
+// denied to an arbitrary caller rather than leaked (the empty-requester_id
+// IDOR, Requirement 2.11).
+func TestInstanceAPI_GetInstance_EmptyRequesterID_Denied(t *testing.T) {
+	_, instStore, mux := makeAccessAPI(t, "arbitrary-caller")
+	instStore.instances["inst1"] = &WorkflowInstance{
+		ID:           "inst1",
+		Status:       InstanceRunning,
+		InstanceData: map[string]interface{}{"requester_id": ""}, // unestablished ownership
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/instances/inst1", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("empty requester_id must be denied (404), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestInstanceAPI_GetInstance_MissingRequesterID_Denied verifies that an
+// instance with no requester_id key at all (also unestablished ownership) is
+// denied to an arbitrary caller (Requirement 2.11).
+func TestInstanceAPI_GetInstance_MissingRequesterID_Denied(t *testing.T) {
+	_, instStore, mux := makeAccessAPI(t, "arbitrary-caller")
+	instStore.instances["inst1"] = &WorkflowInstance{
+		ID:           "inst1",
+		Status:       InstanceRunning,
+		InstanceData: map[string]interface{}{}, // no requester_id at all
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/instances/inst1", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing requester_id must be denied (404), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestInstanceAPI_GetInstance_LegitimateOwner_Granted verifies the preservation
+// requirement (3.11): a legitimate owner (requester_id == caller) is still
+// granted access after the guard inversion.
+func TestInstanceAPI_GetInstance_LegitimateOwner_Granted(t *testing.T) {
+	_, instStore, mux := makeAccessAPI(t, "owner-1")
+	instStore.instances["inst1"] = &WorkflowInstance{
+		ID:           "inst1",
+		Status:       InstanceRunning,
+		InstanceData: map[string]interface{}{"requester_id": "owner-1"},
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/instances/inst1", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("legitimate owner must be granted (200), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestInstanceAPI_GetInstanceAudit_EmptyRequesterID_Denied verifies the audit
+// trail handler applies the same guard: an instance with empty requester_id is
+// denied to an arbitrary caller (Requirement 2.11).
+func TestInstanceAPI_GetInstanceAudit_EmptyRequesterID_Denied(t *testing.T) {
+	api, instStore, mux := makeAccessAPI(t, "arbitrary-caller")
+	instStore.instances["inst1"] = &WorkflowInstance{
+		ID:           "inst1",
+		Status:       InstanceRunning,
+		InstanceData: map[string]interface{}{"requester_id": ""},
+	}
+	// Seed an audit entry that must NOT be leaked.
+	_ = api.auditStore.Append(context.Background(), &AuditEntry{
+		ID:         generateID("audit"),
+		InstanceID: "inst1",
+		EventType:  "node_completed",
+		Timestamp:  time.Now().UTC().Truncate(time.Millisecond),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/instances/inst1/audit", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("empty requester_id audit must be denied (404), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestInstanceAPI_GetInstanceAudit_LegitimateOwner_Granted verifies the audit
+// trail is still served to the legitimate owner (preservation, 3.11).
+func TestInstanceAPI_GetInstanceAudit_LegitimateOwner_Granted(t *testing.T) {
+	api, instStore, mux := makeAccessAPI(t, "owner-1")
+	instStore.instances["inst1"] = &WorkflowInstance{
+		ID:           "inst1",
+		Status:       InstanceRunning,
+		InstanceData: map[string]interface{}{"requester_id": "owner-1"},
+	}
+	_ = api.auditStore.Append(context.Background(), &AuditEntry{
+		ID:         generateID("audit"),
+		InstanceID: "inst1",
+		EventType:  "node_completed",
+		Timestamp:  time.Now().UTC().Truncate(time.Millisecond),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/instances/inst1/audit", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("legitimate owner audit must be granted (200), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestInstanceAccessAllowed_GuardMatrix exercises the access helper directly
+// across the establishment/ownership matrix: access is granted iff
+// requester_id is non-empty AND equals the caller; empty requester_id and
+// mismatched ownership are both denied (Requirements 2.11, 3.11).
+func TestInstanceAccessAllowed_GuardMatrix(t *testing.T) {
+	cases := []struct {
+		name        string
+		requesterID string
+		userID      string
+		want        bool
+	}{
+		{"owner match granted", "owner-1", "owner-1", true},
+		{"empty requester denied to arbitrary caller", "", "arbitrary", false},
+		{"empty requester denied to empty caller", "", "", false},
+		{"non-owner denied", "owner-1", "intruder", false},
+		{"empty caller denied", "owner-1", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := &WorkflowInstance{
+				ID:           "inst1",
+				InstanceData: map[string]interface{}{"requester_id": tc.requesterID},
+			}
+			if got := instanceAccessAllowed(inst, tc.userID); got != tc.want {
+				t.Fatalf("instanceAccessAllowed(requester=%q, user=%q) = %v, want %v",
+					tc.requesterID, tc.userID, got, tc.want)
+			}
+		})
+	}
+
+	// Nil instance is always denied.
+	if instanceAccessAllowed(nil, "anyone") {
+		t.Fatal("nil instance must be denied")
 	}
 }

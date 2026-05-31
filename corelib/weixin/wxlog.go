@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -27,16 +26,12 @@ type WxLog struct {
 var (
 	globalWxLog     *WxLog
 	globalWxLogOnce sync.Once
-	logDetailEnabled atomic.Bool
 )
 
-func init() {
-	logDetailEnabled.Store(false)
-}
-
-// SetLogDetailEnabled updates the detailed WeChat log gate.
-func SetLogDetailEnabled(enabled bool) {
-	logDetailEnabled.Store(enabled)
+// SetLogDetailEnabled is kept for the app-wide detailed-log switch, but WeChat
+// channel diagnostics are always written to im_wx.log. Voice delivery failures
+// need an independent trace even when general detailed logging is disabled.
+func SetLogDetailEnabled(_ bool) {
 }
 
 // GetWxLog returns the singleton WxLog instance, creating the log file on
@@ -72,9 +67,6 @@ func GetWxLog() *WxLog {
 
 // Log writes a structured line: timestamp | stage | direction | uid | message
 func (w *WxLog) Log(stage, direction, uid, format string, args ...any) {
-	if !logDetailEnabled.Load() {
-		return
-	}
 	if w == nil || w.file == nil {
 		return
 	}

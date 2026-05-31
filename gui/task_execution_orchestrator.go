@@ -97,6 +97,7 @@ const (
 // TaskItem represents a single task extracted from the confirmed task list.
 type TaskItem struct {
 	Index              int
+	DisplayNumber      int // stable one-based T number shown to users/logs
 	Title              string
 	Description        string
 	Files              []string // expected files to create/modify
@@ -175,11 +176,17 @@ func (o *TaskExecutionOrchestrator) Activate(tasks []*TaskItem, requirementsCtx,
 	o.Active = true
 	o.RunID++
 	o.Tasks = tasks
+	for i, t := range o.Tasks {
+		if t != nil {
+			t.DisplayNumber = i + 1
+		}
+	}
 	o.CurrentIndex = 0
 	o.RequirementsContext = requirementsCtx
 	o.DesignContext = designCtx
 	o.ProjectPath = projectPath
 	o.Tool = tool
+	normalizeTaskDependencies(o.Tasks)
 
 	for _, t := range o.Tasks {
 		resetTaskExecutionState(t)
@@ -358,7 +365,7 @@ func (o *TaskExecutionOrchestrator) taskDependencyBlockReasonLocked(task *TaskIt
 		case TaskExecPassed:
 			continue
 		case TaskExecFailed, TaskExecSkipped:
-			return fmt.Sprintf("blocked because dependency T%d is %s", dep.Index, dep.Status)
+			return fmt.Sprintf("blocked because dependency T%d is %s", taskDisplayNumber(dep), dep.Status)
 		}
 	}
 	return ""
@@ -671,7 +678,7 @@ func (o *TaskExecutionOrchestrator) buildTaskPromptLocked(task *TaskItem) string
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## \u4efb\u52a1 %d/%d: %s\n\n", task.Index+1, len(o.Tasks), compactSubAgentTaskTitle(task.Title)))
+	b.WriteString(fmt.Sprintf("## \u4efb\u52a1 %d/%d: %s\n\n", taskDisplayNumber(task), len(o.Tasks), compactSubAgentTaskTitle(task.Title)))
 	b.WriteString(compactSubAgentTaskDescription(task.Description))
 	b.WriteString("\n")
 
@@ -715,7 +722,7 @@ func (o *TaskExecutionOrchestrator) buildTaskPromptLocked(task *TaskItem) string
 			if depIdx >= 0 && depIdx < len(o.Tasks) {
 				dep := o.Tasks[depIdx]
 				shownDeps++
-				b.WriteString(fmt.Sprintf("- Task %d %q: %s\n", dep.Index+1, compactSubAgentTaskTitle(dep.Title), dep.Status))
+				b.WriteString(fmt.Sprintf("- Task %d %q: %s\n", taskDisplayNumber(dep), compactSubAgentTaskTitle(dep.Title), dep.Status))
 				if files := taskIntegrationFiles(dep); len(files) > 0 {
 					b.WriteString(fmt.Sprintf("  files: %s\n", compactSubAgentFileList(files, codingSubAgentTaskFilesMax)))
 				}
@@ -768,7 +775,7 @@ func (o *TaskExecutionOrchestrator) buildTDDPromptLocked(task *TaskItem) string 
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Task %d %q is implemented.\n\n", task.Index+1, compactSubAgentTaskTitle(task.Title)))
+	b.WriteString(fmt.Sprintf("Task %d %q is implemented.\n\n", taskDisplayNumber(task), compactSubAgentTaskTitle(task.Title)))
 	b.WriteString("Run the acceptance checks below to verify the implementation:\n\n")
 
 	if len(task.AcceptanceCriteria) > 0 {
@@ -821,7 +828,7 @@ func (o *TaskExecutionOrchestrator) buildFixPromptLocked(task *TaskItem, testOut
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Task %d %q failed tests (retry %d/%d).\n\n",
-		task.Index+1, compactSubAgentTaskTitle(task.Title), task.RetryCount, o.MaxRetries))
+		taskDisplayNumber(task), compactSubAgentTaskTitle(task.Title), task.RetryCount, o.MaxRetries))
 	b.WriteString("Test output:\n")
 	b.WriteString(truncateRunes(testOutput, 1000))
 	appendTaskActualArtifactPrompt(&b, task)
@@ -865,11 +872,11 @@ func (o *TaskExecutionOrchestrator) BuildIntegrationPrompt() string {
 		icon := "\u2713"
 		if t.Status == TaskExecFailed {
 			icon = "\u274c"
-			failedNames = append(failedNames, fmt.Sprintf("Task %d %q", t.Index+1, compactSubAgentTaskTitle(t.Title)))
+			failedNames = append(failedNames, fmt.Sprintf("Task %d %q", taskDisplayNumber(t), compactSubAgentTaskTitle(t.Title)))
 		} else if t.Status == TaskExecSkipped {
 			icon = "SKIPPED"
 		}
-		b.WriteString(fmt.Sprintf("%s task %d: %s\n", icon, t.Index+1, compactSubAgentTaskTitle(t.Title)))
+		b.WriteString(fmt.Sprintf("%s task %d: %s\n", icon, taskDisplayNumber(t), compactSubAgentTaskTitle(t.Title)))
 		if files := taskIntegrationFiles(t); len(files) > 0 {
 			b.WriteString(fmt.Sprintf("   files: %s\n", compactSubAgentFileList(files, codingSubAgentTaskFilesMax)))
 		}
@@ -1311,7 +1318,7 @@ func ParseTaskListFromText(text string) []*TaskItem {
 			if current != nil {
 				tasks = append(tasks, current)
 			}
-			current = &TaskItem{Index: len(tasks), Title: extractTaskTitle(trimmed), Status: TaskExecPending}
+			current = &TaskItem{Index: len(tasks), DisplayNumber: len(tasks) + 1, Title: extractTaskTitle(trimmed), Status: TaskExecPending}
 			inCriteria = false
 			continue
 		}
@@ -1340,6 +1347,10 @@ func ParseTaskListFromText(text string) []*TaskItem {
 			}
 			continue
 		}
+		if deps, ok := parseTaskDependencyLine(trimmed); ok {
+			current.DependsOn = mergeTaskDependencyIndexes(current.DependsOn, deps)
+			continue
+		}
 		if current.Description != "" {
 			current.Description += "\n"
 		}
@@ -1349,7 +1360,196 @@ func ParseTaskListFromText(text string) []*TaskItem {
 	if current != nil {
 		tasks = append(tasks, current)
 	}
+	normalizeExplicitTaskDependencyIndexes(tasks)
+	normalizeTaskDependencies(tasks)
 	return tasks
+}
+
+func parseTaskDependencyLine(line string) ([]int, bool) {
+	trimmed := strings.TrimSpace(strings.TrimLeft(line, "-* "))
+	lower := strings.ToLower(trimmed)
+	markers := []string{"depends on", "dependency", "dependencies", "depends", "依赖", "前置任务", "前置"}
+	markerPos := -1
+	for _, marker := range markers {
+		if idx := strings.Index(lower, marker); idx >= 0 && (markerPos < 0 || idx < markerPos) {
+			markerPos = idx
+		}
+	}
+	if markerPos < 0 {
+		return nil, false
+	}
+	segment := trimmed[markerPos:]
+	if idx := strings.IndexAny(segment, ":：-"); idx >= 0 {
+		segment = segment[idx+1:]
+	}
+	if deps, ok := extractTTaskDependencyIndexes(segment); ok {
+		return deps, true
+	}
+	deps := extractTaskDependencyIndexes(segment)
+	return deps, true
+}
+
+func extractTTaskDependencyIndexes(text string) ([]int, bool) {
+	lower := strings.ToLower(text)
+	var deps []int
+	found := false
+	for i := 0; i < len(lower); i++ {
+		if lower[i] != 't' || i+1 >= len(lower) || lower[i+1] < '0' || lower[i+1] > '9' {
+			continue
+		}
+		j := i + 1
+		label := 0
+		for j < len(lower) && lower[j] >= '0' && lower[j] <= '9' {
+			label = label*10 + int(lower[j]-'0')
+			j++
+		}
+		found = true
+		if label > 0 {
+			deps = append(deps, label-1)
+		}
+		i = j - 1
+	}
+	return deps, found
+}
+
+func extractTaskDependencyIndexes(text string) []int {
+	var deps []int
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		return !(r >= '0' && r <= '9')
+	})
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+		idx := 0
+		for _, r := range field {
+			idx = idx*10 + int(r-'0')
+		}
+		deps = append(deps, idx)
+	}
+	return deps
+}
+
+func mergeTaskDependencyIndexes(existing, incoming []int) []int {
+	seen := make(map[int]bool, len(existing)+len(incoming))
+	merged := make([]int, 0, len(existing)+len(incoming))
+	for _, idx := range existing {
+		if idx >= 0 && !seen[idx] {
+			seen[idx] = true
+			merged = append(merged, idx)
+		}
+	}
+	for _, idx := range incoming {
+		if idx >= 0 && !seen[idx] {
+			seen[idx] = true
+			merged = append(merged, idx)
+		}
+	}
+	return merged
+}
+
+func taskDisplayNumber(task *TaskItem) int {
+	if task == nil {
+		return 0
+	}
+	if task.DisplayNumber > 0 {
+		return task.DisplayNumber
+	}
+	if task.Index <= 0 {
+		return 1
+	}
+	return task.Index
+}
+
+func normalizeExplicitTaskDependencyIndexes(tasks []*TaskItem) {
+	if !taskDependenciesLookOneBased(tasks) {
+		return
+	}
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		for i, dep := range task.DependsOn {
+			if dep > 0 {
+				task.DependsOn[i] = dep - 1
+			}
+		}
+	}
+}
+
+func taskDependenciesLookOneBased(tasks []*TaskItem) bool {
+	if len(tasks) == 0 {
+		return false
+	}
+	found := false
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		for _, dep := range task.DependsOn {
+			found = true
+			if dep == 0 || dep > len(tasks) {
+				return false
+			}
+		}
+	}
+	return found
+}
+
+func normalizeTaskDependencies(tasks []*TaskItem) {
+	if len(tasks) < 2 {
+		return
+	}
+	bootstrap := looksLikeBootstrapTask(tasks[0])
+	for i, task := range tasks[1:] {
+		if task == nil {
+			continue
+		}
+		if len(task.DependsOn) > 0 {
+			continue
+		}
+		idx := i + 1
+		var deps []int
+		if bootstrap {
+			deps = append(deps, 0)
+		}
+		if looksLikeIntegrationOrVerificationTask(task) {
+			for dep := 0; dep < idx; dep++ {
+				deps = append(deps, dep)
+			}
+		}
+		if len(deps) > 0 {
+			task.DependsOn = mergeTaskDependencyIndexes(task.DependsOn, deps)
+		}
+	}
+}
+
+func looksLikeBootstrapTask(task *TaskItem) bool {
+	if task == nil {
+		return false
+	}
+	text := strings.ToLower(task.Title + "\n" + task.Description + "\n" + strings.Join(task.Files, "\n"))
+	bootstrapSignals := []string{"cmake", "project", "scaffold", "bootstrap", "setup", "directory", "目录", "项目", "构建", "创建"}
+	for _, signal := range bootstrapSignals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeIntegrationOrVerificationTask(task *TaskItem) bool {
+	if task == nil {
+		return false
+	}
+	text := strings.ToLower(task.Title + "\n" + task.Description)
+	signals := []string{"integration", "integrate", "main", "compile", "build", "test", "debug", "verify", "验收", "测试", "编译", "调试", "整合", "集成", "主循环"}
+	for _, signal := range signals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTaskFileListItem(trimmed string, inCriteria bool, lowerTrimmed string) bool {

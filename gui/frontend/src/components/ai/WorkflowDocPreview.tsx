@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { PhaseInfo, QualityGateResult } from "./useWorkflowState";
+import { normalizeWorkflowPhaseID, FALLBACK_NON_DOCUMENT_PHASE_IDS } from "./workflowPhase";
 import { localizeText } from "./aiAssistantI18n";
+import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
 
 // ── Mermaid (local npm package, no network required) ──
 
@@ -184,17 +186,24 @@ interface WorkflowDocPreviewProps {
     onToggleMaximize?: () => void;
 }
 
-const phaseLabels: Record<string, string> = {
+// phaseLabels mirrors the backend templates (the single source of truth) verbatim:
+// every overlapping entry is character-for-character equal to the generated
+// `name` in workflowPhaseMeta.generated.ts. The anti-drift contract test
+// (workflowPhaseMeta.contract.test.ts, Property 4) enforces this. These labels
+// are only read in degraded mode (when emitted Phase_Meta is absent); when
+// metadata is present the dashboard renders from the emitted names instead.
+// To change a label, edit corelib/workflow/templates.go and regenerate.
+export const phaseLabels: Record<string, string> = {
     // Coding workflow
-    requirements: "需求",
-    tech_design: "设计",
-    task_breakdown: "任务",
-    implementation: "实现",
-    review: "审查",
+    requirements: "需求分析",
+    tech_design: "技术设计",
+    task_breakdown: "任务拆分",
+    implementation: "编码实现",
+    review: "代码审查",
     // Product design workflow
     problem_discovery: "问题发现",
     solution_design: "方案设计",
-    prd: "PRD",
+    prd: "产品需求文档",
     prototype: "原型设计",
     // Innovation workflow
     opportunity: "机会识别",
@@ -203,136 +212,147 @@ const phaseLabels: Record<string, string> = {
     roadmap: "路线图",
     action_plan: "行动计划",
     // Business plan workflow
-    bp_requirement: "需求定位",
-    bp_content: "内容撰写",
-    bp_structure: "结构优化",
-    bp_visual_design: "PPT设计",
+    bp_requirement: "需求梳理与定位",
+    bp_content: "核心内容撰写",
+    bp_structure: "结构优化与数据校验",
+    bp_visual_design: "PPT 脚本与视觉设计",
     bp_doc_generation: "文档生成",
     // Testing workflow
     test_strategy: "测试策略",
-    test_design: "用例设计",
-    test_environment: "环境规划",
+    test_design: "测试用例设计",
+    test_environment: "测试环境规划",
     test_execution: "测试执行",
-    defect_report: "缺陷报告",
+    defect_report: "缺陷跟踪与报告",
     // Literature review workflow
-    topic_definition: "选题定义",
-    literature_search: "文献检索",
-    screening_classification: "筛选分类",
-    content_extraction: "内容提取",
+    topic_definition: "选题与范围界定",
+    literature_search: "文献检索与收集",
+    screening_classification: "文献筛选与分类",
+    content_extraction: "核心内容提取与分析",
     review_writing: "综述撰写",
     // Research report workflow
-    requirement_scoping: "需求定义",
+    requirement_scoping: "需求定义与范围",
     source_mapping: "信息源梳理",
-    report_collection: "研报收集",
-    insight_extraction: "观点提炼",
-    synthesis_report: "整合报告",
+    report_collection: "研报收集与摘要",
+    insight_extraction: "核心观点提炼与对比",
+    synthesis_report: "整合报告撰写",
     // Experiment design workflow
-    hypothesis_formulation: "假设提出",
-    experiment_design: "实验设计",
-    variable_control: "变量控制",
-    data_collection: "数据采集",
-    analysis_plan: "分析计划",
+    hypothesis_formulation: "假设提出与研究问题",
+    experiment_design: "实验设计与方法选择",
+    variable_control: "变量控制与样本规划",
+    data_collection: "数据采集方案",
+    analysis_plan: "数据分析计划",
     // Grant proposal workflow
     topic_justification: "选题论证",
-    research_status: "研究现状",
-    research_plan: "研究方案",
-    expected_outcomes: "预期成果",
-    budget_plan: "经费预算",
+    research_status: "研究现状与文献基础",
+    research_plan: "研究方案与技术路线",
+    expected_outcomes: "预期成果与创新点",
+    budget_plan: "经费预算与进度安排",
     // Paper writing workflow
-    outline_design: "大纲构思",
-    methodology: "方法论",
+    outline_design: "大纲构思与结构设计",
+    methodology: "方法论撰写",
     results_presentation: "结果呈现",
-    discussion_analysis: "讨论分析",
+    discussion_analysis: "讨论与分析",
     submission_prep: "投稿准备",
     // Project proposal workflow
-    background_analysis: "背景分析",
-    goal_definition: "目标定义",
+    background_analysis: "背景分析与问题定义",
+    goal_definition: "目标定义与范围界定",
     // solution_design already mapped above
-    resource_assessment: "资源评估",
+    resource_assessment: "资源评估与排期",
     risk_contingency: "风险预案",
     // Event planning workflow
-    requirement_confirm: "需求确认",
+    requirement_confirm: "需求确认与目标设定",
     scheme_planning: "方案策划",
-    process_design: "流程设计",
-    material_checklist: "物料清单",
+    process_design: "流程设计与时间线",
+    material_checklist: "物料清单与供应商",
     execution_manual: "执行手册",
     // Competitive analysis workflow
-    target_definition: "分析目标",
-    competitor_identification: "竞品识别",
-    dimension_comparison: "多维对比",
-    gap_analysis: "差异分析",
+    target_definition: "分析目标与维度定义",
+    competitor_identification: "竞品识别与信息收集",
+    dimension_comparison: "多维度对比分析",
+    gap_analysis: "差异分析与洞察提炼",
     strategy_recommendation: "策略建议",
     // Presentation design workflow
-    audience_goal: "受众目标",
-    content_outline: "内容大纲",
-    style_specification: "风格规范",
+    audience_goal: "受众与目标定义",
+    content_outline: "内容大纲与逻辑线",
+    style_specification: "风格与视觉规范",
     slide_scripting: "逐页脚本",
-    ppt_generation: "PPT生成",
+    ppt_generation: "PPT 生成",
     // Bid response workflow
-    tender_analysis: "招标解析",
-    qualification_response: "资质响应",
-    technical_proposal: "技术方案",
-    commercial_proposal: "商务报价",
-    bid_document_assembly: "文件组装",
+    tender_analysis: "招标文件解析",
+    qualification_response: "资质与业绩响应",
+    technical_proposal: "技术方案编写",
+    commercial_proposal: "商务报价编制",
+    bid_document_assembly: "投标文件组装与检查",
     // Contract review workflow
-    contract_parsing: "合同解析",
-    clause_risk_analysis: "条款风险",
-    compliance_check: "合规审查",
+    contract_parsing: "合同解析与概览",
+    clause_risk_analysis: "条款风险分析",
+    compliance_check: "合规性审查",
     modification_suggestions: "修改建议",
-    review_summary: "审查意见",
+    review_summary: "审查意见书",
     // Due diligence workflow
-    target_profiling: "公司画像",
+    target_profiling: "目标公司画像",
     business_dd: "商业尽调",
     financial_dd: "财务尽调",
     legal_dd: "法律尽调",
-    dd_conclusion: "尽调结论",
+    dd_conclusion: "尽调结论与建议",
     // Compliance audit workflow
-    audit_scope: "审计范围",
-    compliance_assessment: "合规评估",
-    risk_rating: "风险评级",
-    remediation_plan: "整改计划",
+    audit_scope: "审计范围与对象确认",
+    compliance_assessment: "合规性评估",
+    risk_rating: "风险评级与优先级",
+    remediation_plan: "整改建议与行动计划",
     audit_report: "审计报告",
     // Patent analysis workflow
-    tech_disclosure: "技术解析",
-    prior_art_search: "现有技术",
-    infringement_assessment: "侵权评估",
+    tech_disclosure: "技术方案/专利文献解析",
+    prior_art_search: "现有技术检索",
+    infringement_assessment: "侵权风险/新颖性评估",
     // strategy_recommendation already defined in competitive analysis (same label)
-    patent_report: "分析报告",
+    patent_report: "专利分析报告",
     // Changjiang Scholar application workflow
-    cj_personal_profile: "个人资质",
-    cj_academic_achievements: "学术成就",
-    cj_research_plan: "研究计划",
-    cj_talent_cultivation: "人才培养",
-    cj_recommendation_summary: "推荐整合",
+    cj_personal_profile: "个人资质与申报条件梳理",
+    cj_academic_achievements: "学术成就与代表性成果",
+    cj_research_plan: "聘期研究计划",
+    cj_talent_cultivation: "人才培养与团队建设",
+    cj_recommendation_summary: "推荐意见与申报书整合",
     // Changjiang Scholar review workflow
-    cj_completeness_check: "完整性检测",
-    cj_achievement_evaluation: "成果评估",
-    cj_plan_feasibility: "计划评估",
-    cj_narrative_quality: "撰写质量",
-    cj_improvement_report: "修改建议",
-    // Legacy aliases
-    design: "设计",
-    tasks: "任务",
+    cj_completeness_check: "基本信息完整性检测",
+    cj_achievement_evaluation: "学术成果质量评估",
+    cj_plan_feasibility: "研究计划可行性评估",
+    cj_narrative_quality: "材料撰写质量评估",
+    cj_improvement_report: "综合评估与修改建议报告",
+    // Legacy aliases (canonical ids -> generated names, kept consistent with the above)
+    design: "技术设计",
+    tasks: "任务拆分",
+};
+
+// CORE_PHASE_ENGLISH_LABELS holds the English display labels for the three
+// coding-workflow core phases — the only phases the dashboard translates to
+// English. Every phase's Chinese label comes from the single source
+// (`phaseLabels`, contract-tested against the backend templates via
+// workflowPhaseMeta.generated.ts), so degraded-mode rendering can never drift
+// from the backend. This map only layers the English variant on top for the
+// three phases that have one.
+const CORE_PHASE_ENGLISH_LABELS: Record<string, string> = {
+    requirements: "Requirements",
+    design: "Design",
+    tasks: "Tasks",
 };
 
 function workflowPhaseLabel(lang: string | undefined, phaseID: string, phaseLabelMap: Map<string, string>): string {
     const metadataLabel = phaseLabelMap.get(phaseID);
     if (metadataLabel) return metadataLabel;
-    switch (phaseID) {
-        case "requirements":
-            return localizeText(lang || "zh-Hans", "Requirements", "需求", "需求");
-        case "tech_design":
-        case "design":
-            return localizeText(lang || "zh-Hans", "Design", "设计", "設計");
-        case "task_breakdown":
-        case "tasks":
-            return localizeText(lang || "zh-Hans", "Tasks", "任务", "任務");
-        default:
-            return phaseLabels[phaseID] || phaseID;
-    }
+    // Degraded mode (no emitted metadata): resolve the Chinese label from the
+    // single source (phaseLabels), applying canonical aliasing so legacy ids
+    // (tech_design/task_breakdown) resolve too. The English variant, where one
+    // exists, is layered on top — it is the only label not sourced from the
+    // backend templates, so it cannot reintroduce label drift.
+    const canonical = normalizeWorkflowPhaseID(phaseID) || phaseID;
+    const chinese = phaseLabels[phaseID] || phaseLabels[canonical] || phaseID;
+    const english = CORE_PHASE_ENGLISH_LABELS[canonical];
+    if (english) return localizeText(lang || "zh-Hans", english, chinese, chinese);
+    return chinese;
 }
 
-const workflowPhaseOrders: Record<string, string[]> = {
+export const workflowPhaseOrders: Record<string, string[]> = {
     coding: ["requirements", "design", "tasks", "implementation", "review"],
     product_design: ["problem_discovery", "solution_design", "prd", "prototype"],
     innovation: ["opportunity", "ideation", "validation", "roadmap", "action_plan"],
@@ -354,35 +374,120 @@ const workflowPhaseOrders: Record<string, string[]> = {
     patent_analysis: ["tech_disclosure", "prior_art_search", "infringement_assessment", "strategy_recommendation", "patent_report"],
 };
 
-const fallbackNonDocumentPhaseIDs = new Set([
-    "implementation",
-    "test_execution",
-    "ppt_generation",
-    "bp_doc_generation",
-]);
+// fallbackNonDocumentPhaseIDs is re-exported from workflowPhase.ts (the single
+// frontend owner) so the degraded-mode set has exactly one definition. The
+// anti-drift contract test imports this name from WorkflowDocPreview and
+// thereby validates the one true set against the generated artifact.
+export const fallbackNonDocumentPhaseIDs = FALLBACK_NON_DOCUMENT_PHASE_IDS;
 
-function phaseIDsFromMetadata(phases: PhaseInfo[] | undefined): string[] {
-    if (!phases || phases.length === 0) return [];
+/** One rendered phase row: id, resolved (language-neutral) label, single doc-expectation value. */
+export interface ProgressPhase {
+    id: string;
+    label: string;
+    expectsDocument: boolean;
+}
+
+/** Per-id label fallback used only in degraded mode: the hardcoded map, then the id itself. */
+function fallbackPhaseLabel(phaseID: string): string {
+    return phaseLabels[phaseID] || phaseID;
+}
+
+/** Per-id document-expectation fallback used only in degraded mode. */
+function fallbackPhaseExpectsDocument(phaseID: string): boolean {
+    return !fallbackNonDocumentPhaseIDs.has(phaseID);
+}
+
+/**
+ * Resolve a single phase that appears only as an emitted document or as the current
+ * phase (not in the template's metadata list). Label resolution order is
+ * metadata name → fallback map → id-derived; doc-expectation is metadata → fallback.
+ */
+function deriveSingleProgressPhase(phaseID: string, phases: PhaseInfo[] | undefined): ProgressPhase {
+    const meta = phases?.find(p => p.id === phaseID);
+    const label = meta?.name && meta.name.trim() ? meta.name : fallbackPhaseLabel(phaseID);
+    const expectsDocument = meta && typeof meta.expectsDocument === "boolean"
+        ? meta.expectsDocument
+        : fallbackPhaseExpectsDocument(phaseID);
+    return { id: phaseID, label, expectsDocument };
+}
+
+/**
+ * deriveProgressPhases is the single frontend reducer for the progress board.
+ *
+ * When emitted metadata (`phases`) is present and non-empty, order, labels, and the
+ * document-expectation are derived from the metadata only — the hardcoded fallback maps
+ * are never read for those fields (each field falls back per-id only when the metadata
+ * itself omits it).
+ *
+ * When emitted metadata is absent/empty, it degrades in two tiers:
+ *   1. The code-generated artifact `WORKFLOW_PHASE_META[workflowType]` — the byte-stable
+ *      projection of the backend templates (the single source of truth). This covers
+ *      EVERY registered backend template, carries authoritative labels and doc-flags,
+ *      and is regenerated by `go generate`, so it can never drift. It is treated exactly
+ *      like emitted metadata.
+ *   2. Only when the generated artifact has no entry for the type (a truly unknown type)
+ *      does it fall to the hand-maintained `workflowPhaseOrders`/`phaseLabels`/
+ *      `fallbackNonDocumentPhaseIDs` maps as a last resort.
+ *
+ * Phase ids seen only in `phaseDocuments` or as `currentPhaseID` are appended to the end,
+ * with labels resolved metadata → fallback map → id-derived. The result is duplicate-free.
+ */
+export function deriveProgressPhases(
+    workflowType: string | undefined,
+    phases: PhaseInfo[] | undefined,
+    phaseDocuments: Map<string, string>,
+    currentPhaseID: string,
+): ProgressPhase[] {
+    const base: ProgressPhase[] = [];
     const seen = new Set<string>();
-    const phaseIDs: string[] = [];
-    for (const phase of [...phases].sort((a, b) => a.index - b.index)) {
-        if (!phase.id || seen.has(phase.id)) continue;
+    const append = (phase: ProgressPhase) => {
+        if (!phase.id || seen.has(phase.id)) return;
         seen.add(phase.id);
-        phaseIDs.push(phase.id);
+        base.push(phase);
+    };
+
+    // Tier 0: emitted metadata. Tier 1: the generated artifact (backend truth, all
+    // registered types). Both share the PhaseInfo shape, so they take the same path —
+    // order/labels/doc-flags come from the metadata only.
+    const generatedMeta = workflowType ? WORKFLOW_PHASE_META[workflowType] : undefined;
+    const metadata: PhaseInfo[] | undefined =
+        phases && phases.length > 0
+            ? phases
+            : generatedMeta && generatedMeta.length > 0
+                ? generatedMeta
+                : undefined;
+
+    if (metadata) {
+        for (const p of [...metadata].sort((a, b) => a.index - b.index)) {
+            if (!p.id || seen.has(p.id)) continue;
+            const label = p.name && p.name.trim() ? p.name : fallbackPhaseLabel(p.id);
+            const expectsDocument = typeof p.expectsDocument === "boolean"
+                ? p.expectsDocument
+                : fallbackPhaseExpectsDocument(p.id);
+            append({ id: p.id, label, expectsDocument });
+        }
+    } else {
+        // Last resort: the hand-maintained maps, only for a type the generated artifact
+        // does not cover (an unknown/legacy type).
+        const order = workflowType ? workflowPhaseOrders[workflowType] || [] : [];
+        for (const id of order) {
+            append({ id, label: fallbackPhaseLabel(id), expectsDocument: fallbackPhaseExpectsDocument(id) });
+        }
     }
-    return phaseIDs;
+
+    // Robustness: surface phases seen only as emitted documents or as the active phase.
+    for (const pid of phaseDocuments.keys()) {
+        if (!seen.has(pid)) append(deriveSingleProgressPhase(pid, phases));
+    }
+    if (currentPhaseID && !seen.has(currentPhaseID)) {
+        append(deriveSingleProgressPhase(currentPhaseID, phases));
+    }
+
+    return base;
 }
 
 export function workflowProgressPhaseIDs(workflowType: string | undefined, phaseDocuments: Map<string, string>, currentPhaseID: string, phases?: PhaseInfo[]): string[] {
-    const metadataPhaseIDs = phaseIDsFromMetadata(phases);
-    const base = metadataPhaseIDs.length > 0
-        ? metadataPhaseIDs
-        : workflowType ? [...(workflowPhaseOrders[workflowType] || [])] : [];
-    for (const pid of phaseDocuments.keys()) {
-        if (!base.includes(pid)) base.push(pid);
-    }
-    if (currentPhaseID && !base.includes(currentPhaseID)) base.push(currentPhaseID);
-    return base;
+    return deriveProgressPhases(workflowType, phases, phaseDocuments, currentPhaseID).map(p => p.id);
 }
 
 function workflowPhaseExpectsDocument(phaseID: string, phaseDocumentExpectationMap: Map<string, boolean>): boolean {
@@ -412,6 +517,9 @@ export function workflowProgressPhaseCardState({
         }
         return { status: "待开始", tone: "pending", emphasized: false };
     }
+    if (expectsDocument && hasDoc && isCurrent) {
+        return { status: "待确认", tone: "current", emphasized: true };
+    }
     if (typeof gatePassed === "boolean") {
         return {
             status: gatePassed ? "质检通过" : "需调整",
@@ -432,9 +540,6 @@ export function workflowProgressPhaseCardState({
         return { status: "待执行", tone: "pending", emphasized: false };
     }
     if (hasDoc) {
-        if (isCurrent) {
-            return { status: "待确认", tone: "current", emphasized: true };
-        }
         return { status: "已完成", tone: "done", emphasized: true };
     }
     return { status: "待开始", tone: "pending", emphasized: false };
@@ -492,14 +597,25 @@ function WorkflowProgressBoard({
 }) {
     if (phaseIDs.length === 0) return null;
 
-    const currentIndex = currentPhaseID ? phaseIDs.indexOf(currentPhaseID) : -1;
+    // Requirement 4.1: mark exactly one active node — the node whose canonical phase id
+    // (aliases applied) equals the supplied current phase id (also canonicalized). Aliasing
+    // is applied on BOTH sides so a non-canonical alias (e.g. tech_design/task_breakdown) or
+    // a not-yet-canonicalized caller still resolves to exactly one node within the resolved
+    // phase-id list. indexOf returns the first match, guaranteeing at most one active node.
+    const canonicalCurrentPhaseID = currentPhaseID ? normalizeWorkflowPhaseID(currentPhaseID) : "";
+    const currentIndex = canonicalCurrentPhaseID
+        ? phaseIDs.findIndex(pid => normalizeWorkflowPhaseID(pid) === canonicalCurrentPhaseID)
+        : -1;
     const documentPhaseIDs = phaseIDs.filter(pid => workflowPhaseExpectsDocument(pid, phaseDocumentExpectationMap));
     const collectedCount = documentPhaseIDs.filter(pid => phaseDocuments.has(pid)).length;
     const documentSummaryText = documentPhaseIDs.length > 0
         ? localizeText(lang || "zh-Hans", `${collectedCount}/${documentPhaseIDs.length} docs`, `${collectedCount}/${documentPhaseIDs.length} 个文档`, `${collectedCount}/${documentPhaseIDs.length} 個文檔`)
         : localizeText(lang || "zh-Hans", "Execution phase", "执行阶段", "執行階段");
-    const latestCollectedIndex = phaseIDs.reduce((latest, pid, index) => phaseDocuments.has(pid) ? index : latest, -1);
-    const progressIndex = Math.max(currentIndex, latestCollectedIndex, 0);
+    // Requirement 4.2: progress is a monotonic function of the active node's zero-based index
+    // within the resolved phase-id list, attaining its maximum (100%) only at the final phase.
+    // Driving it from the active node's index (rather than max(currentIndex, latestCollectedIndex))
+    // ensures a later-collected document cannot push progress to 100% before the final phase.
+    const progressIndex = currentIndex >= 0 ? currentIndex : 0;
     const progressPercent = phaseIDs.length > 1 ? Math.min(100, Math.max(0, (progressIndex / (phaseIDs.length - 1)) * 100)) : 0;
     const cardPaddingX = 10;
     const cardPaddingY = 8;
@@ -582,7 +698,9 @@ function WorkflowProgressBoard({
                     const hasDoc = phaseDocuments.has(pid);
                     const expectsDocument = workflowPhaseExpectsDocument(pid, phaseDocumentExpectationMap);
                     const gate = gateResults.get(pid);
-                    const isCurrent = pid === currentPhaseID;
+                    // Exactly one active node: the one at currentIndex (alias-resolved above),
+                    // so a non-canonical current phase id still highlights its canonical node.
+                    const isCurrent = currentIndex >= 0 && index === currentIndex;
                     const isViewing = pid === activePhaseID;
                     const isPast = currentIndex >= 0 && index < currentIndex;
                     const cardState = workflowProgressPhaseCardState({
@@ -1081,10 +1199,11 @@ export function WorkflowDocPreview({
     const userSelectedPhaseRef = useRef("");
     const lastLatestDocumentPhaseRef = useRef(latestDocumentPhaseID || "");
     const suppressNextHeaderDoubleClickRef = useRef(false);
-    const phaseIDs = useMemo(
-        () => workflowProgressPhaseIDs(workflowType, phaseDocuments, currentPhaseID, phases),
-        [workflowType, phaseDocuments, currentPhaseID, phases],
+    const progress = useMemo(
+        () => deriveProgressPhases(workflowType, phases, phaseDocuments, currentPhaseID),
+        [workflowType, phases, phaseDocuments, currentPhaseID],
     );
+    const phaseIDs = useMemo(() => progress.map(p => p.id), [progress]);
     const phaseLabelMap = useMemo(() => {
         const labels = new Map<string, string>();
         for (const phase of phases || []) {
@@ -1093,14 +1212,15 @@ export function WorkflowDocPreview({
         return labels;
     }, [phases]);
     const phaseDocumentExpectationMap = useMemo(() => {
+        // Single derived document-expectation value per phase, so every status
+        // indicator (board card, summary, placeholder) reads the same value and the
+        // generation/execution indicators can never disagree (Finding 3).
         const expectations = new Map<string, boolean>();
-        for (const phase of phases || []) {
-            if (phase.id && typeof phase.expectsDocument === "boolean") {
-                expectations.set(phase.id, phase.expectsDocument);
-            }
+        for (const phase of progress) {
+            expectations.set(phase.id, phase.expectsDocument);
         }
         return expectations;
-    }, [phases]);
+    }, [progress]);
     const fallbackPhaseID = useMemo(
         () => latestAvailablePhaseID(phaseIDs, phaseDocuments),
         [phaseIDs, phaseDocuments],
@@ -1188,6 +1308,7 @@ export function WorkflowDocPreview({
             }}>
                 {/* Header: title + close button — double-click to toggle maximize */}
                 <div
+                    data-testid="workflow-doc-preview-header"
                     onMouseDown={handleHeaderMouseDown}
                     onDoubleClick={handleHeaderDoubleClick}
                     style={{
@@ -1199,7 +1320,7 @@ export function WorkflowDocPreview({
                     gap: "4px",
                     flexWrap: "wrap",
                     flexShrink: 0,
-                    '--wails-draggable': 'no-drag',
+                    '--wails-draggable': 'drag',
                 } as any}>
                     <div style={{ fontSize: "13px", fontWeight: 700, color: theme.text }}>
                         文档预览

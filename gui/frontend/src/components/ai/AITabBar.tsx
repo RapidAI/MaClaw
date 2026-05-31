@@ -14,6 +14,8 @@ export interface AITabBarProps {
     onInviteToTab?: (tab: AITab) => void;
     /** Called when user wants to add local AI to a tab's session */
     onAddLocalMaclawToTab?: (tab: AITab) => void;
+    /** Called when user wants to rename a group tab */
+    onRenameGroupTab?: (tab: AITab) => void;
     lang?: string;
     /** Returns the lastActiveAt timestamp for a tab (used for overflow sorting). */
     getLastActiveAt?: (tabId: string) => number;
@@ -30,7 +32,7 @@ const OVERFLOW_BUTTON_WIDTH = 50;
  * Shows as many tabs as fit in the available width; overflow tabs are
  * accessible via a more-tabs dropdown.
  */
-export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, lang, getLastActiveAt }: AITabBarProps) {
+export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, lang, getLastActiveAt }: AITabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [visibleCount, setVisibleCount] = useState(tabs.length);
     const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -239,7 +241,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                         padding: "4px 0",
                     }}
                 >
-                    {onInviteToTab && tabContextMenu.tab.type === "ve" && (
+                    {onInviteToTab && !tabContextMenu.tab.readOnly && (tabContextMenu.tab.type === "ve" || (tabContextMenu.tab.type === "group" && (!!tabContextMenu.tab.veId || !!tabContextMenu.tab.discussionId))) && (
                         <div
                             data-testid="tab-menu-invite-ve"
                             role="menuitem"
@@ -251,7 +253,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             {isZh ? "\u2795 \u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "\u2795 Invite digital employee"}
                         </div>
                     )}
-                    {onAddLocalMaclawToTab && !!tabContextMenu.tab.veId && !hasLocalAIParticipant(tabContextMenu.tab) && (
+                    {onAddLocalMaclawToTab && !tabContextMenu.tab.readOnly && !!tabContextMenu.tab.veId && !hasLocalAIParticipant(tabContextMenu.tab) && (
                         <div
                             data-testid="tab-menu-add-local"
                             role="menuitem"
@@ -261,6 +263,18 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
                             {isZh ? "\u{1F4BB} \u6dfb\u52a0\u672c\u673a AI \u52a9\u624b" : "\u{1F4BB} Add local AI assistant"}
+                        </div>
+                    )}
+                    {onRenameGroupTab && !tabContextMenu.tab.readOnly && tabContextMenu.tab.type === "group" && (
+                        <div
+                            data-testid="tab-menu-rename-group"
+                            role="menuitem"
+                            onClick={() => { onRenameGroupTab(tabContextMenu.tab); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u270E \u4fee\u6539\u7fa4\u540d" : "\u270E Rename group"}
                         </div>
                     )}
                     {tabContextMenu.tab.closable && (

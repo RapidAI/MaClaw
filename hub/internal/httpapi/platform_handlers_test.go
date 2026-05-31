@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -460,6 +461,118 @@ func TestPlatformAwareMachineSenderDoesNotExecuteMacLawSrvInviteOrCancel(t *test
 	}
 }
 
+func TestTrustedInviteAutoAcceptsMacLawSrvPlatformEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"ok"}}`))
+	}))
+	defer runtime.Close()
+
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	fallback := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{fallback: fallback, system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/invites", `{"from_id":"maclaw-gui","to_id":"runtime-machine-1","role":"speak","trusted":true}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("invite status=%d body=%s", w.Code, w.Body.String())
+	}
+	detail, err := groupSvc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	if role := participantRole(detail.Session, "runtime-machine-1"); role != "speak" {
+		t.Fatalf("platform invite should auto-join as speak, got role %q participants=%#v", role, detail.Session.Participants)
+	}
+	if messages := fallback.snapshotMessages(); len(messages) != 0 {
+		t.Fatalf("auto-accepted platform invite should not use GUI fallback, got %#v", messages)
+	}
+}
+
+func TestTrustedInviteRejectsPlatformEmployeeWithoutRuntime(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/invites", `{"from_id":"maclaw-gui","to_id":"runtime-machine-1","role":"speak","trusted":true}`))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "runtime is not configured") {
+		t.Fatalf("invite status=%d body=%s", w.Code, w.Body.String())
+	}
+	if invites := groupSvc.ListInvitations("tenant-a", "runtime-machine-1", "pending"); len(invites) != 0 {
+		t.Fatalf("missing runtime invite should not remain pending, got %#v", invites)
+	}
+}
+
+func TestUntrustedInviteRejectsMacLawSrvPlatformEmployee(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: maclawSrvRuntimePlatformID, RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Direct", Goal: "hello", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/invites", `{"from_id":"maclaw-gui","to_id":"runtime-machine-1","role":"speak"}`))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "trusted invitation is required") {
+		t.Fatalf("invite status=%d body=%s", w.Code, w.Body.String())
+	}
+	if invites := groupSvc.ListInvitations("tenant-a", "runtime-machine-1", "pending"); len(invites) != 0 {
+		t.Fatalf("untrusted platform invite should not remain pending, got %#v", invites)
+	}
+	invites := groupSvc.ListInvitations("tenant-a", "runtime-machine-1", "reject")
+	if len(invites) != 1 {
+		t.Fatalf("untrusted platform invite should be marked rejected, got %#v", invites)
+	}
+}
+
 func TestGroupDiscussionMessageRoutesPlatformEmployeeToMacLawSrvRuntime(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	seen := make(chan map[string]any, 1)
@@ -503,7 +616,8 @@ func TestGroupDiscussionMessageRoutesPlatformEmployeeToMacLawSrvRuntime(t *testi
 	}
 	select {
 	case body := <-seen:
-		if body["content"] != "hello platform employee" || body["hub_message_id"] != "hub-msg-platform-reply" {
+		content := fmt.Sprint(body["content"])
+		if !strings.Contains(content, "当前消息来自 maclaw-gui: hello platform employee") || body["hub_message_id"] != "hub-msg-platform-reply" {
 			t.Fatalf("unexpected runtime payload: %#v", body)
 		}
 	case <-time.After(2 * time.Second):
@@ -520,6 +634,60 @@ func TestGroupDiscussionMessageRoutesPlatformEmployeeToMacLawSrvRuntime(t *testi
 	})
 	if len(fallbackMessages) != 1 || fallbackMessages[0].machineID != "maclaw-gui" {
 		t.Fatalf("runtime reply should notify GUI through fallback only, got %#v", fallbackMessages)
+	}
+}
+
+func TestGroupDiscussionMessageIncludesSharedContextForPlatformRuntime(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	seen := make(chan map[string]any, 1)
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode runtime body: %v", err)
+		}
+		seen <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"content":"context-aware reply"}}`))
+	}))
+	defer runtime.Close()
+	provider := platformProviderEntry{PlatformID: "platform-1", RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	if err := saveMacLawSrvRuntimeRegistry(context.Background(), settings, macLawSrvRuntimeRegistry{Runtimes: []macLawSrvRuntimeEntry{{RuntimeID: maclawSrvRuntimePlatformID, BaseURL: runtime.URL, AdminSecret: "runtime-secret", TenantIDs: []string{"tenant-a"}}}}); err != nil {
+		t.Fatalf("save runtime registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "runtime-machine-1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", RuntimeProviderID: maclawSrvRuntimePlatformID, OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	groupSvc := NewGroupDiscussionService()
+	session, err := groupSvc.CreateSession("tenant-a", CreateSessionRequest{Topic: "US travel", Goal: "Discuss options", Participants: []corea2a.Participant{{ID: "maclaw-gui", RoleCode: "initiator"}, {ID: "anna-machine", RoleCode: "speak"}, {ID: "ve_employee_1", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := groupSvc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{FromID: "anna-machine", Kind: corea2a.MessageAnswer, Content: "先搞定签证，再考虑机票。"}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	handler := NewGroupDiscussionHandler(groupSvc, platformAwareMachineSender{system: settings, tenants: fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}})
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+session.ID+"/messages", `{"id":"hub-msg-context","from_id":"maclaw-gui","to_ids":["ve_employee_1"],"content":"@小妍 你有啥看法？"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("group message status=%d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case body := <-seen:
+		content := fmt.Sprint(body["content"])
+		if !strings.Contains(content, "多人 Hub 群聊") || !strings.Contains(content, "先搞定签证") || !strings.Contains(content, "当前消息来自 maclaw-gui") {
+			t.Fatalf("runtime content missing shared context: %s", content)
+		}
+		if !strings.Contains(content, "Participants:") || !strings.Contains(content, "- anna-machine (speak)") || !strings.Contains(content, "- ve_employee_1 (speak)") {
+			t.Fatalf("runtime content missing participant roster: %s", content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for MaClawSrv runtime")
 	}
 }
 
@@ -738,7 +906,8 @@ func TestGroupDiscussionMessageRoutesMacLawSrvEmployeeDirectly(t *testing.T) {
 	}
 	select {
 	case body := <-runtimePayloads:
-		if body["hub_discussion_id"] != session.ID || body["content"] != "hello srv" || body["hub_message_id"] == "" {
+		content := fmt.Sprint(body["content"])
+		if body["hub_discussion_id"] != session.ID || !strings.Contains(content, "hello srv") || body["hub_message_id"] == "" {
 			t.Fatalf("unexpected runtime body: %#v", body)
 		}
 	case <-time.After(2 * time.Second):
@@ -1253,6 +1422,19 @@ func (f fakePlatformUserRepo) DeleteByTenantEmail(ctx context.Context, tenantID,
 	return nil
 }
 
+type captureDeletePlatformUserRepo struct {
+	fakePlatformUserRepo
+	deletedTenantID string
+	deletedEmail    string
+}
+
+func (f *captureDeletePlatformUserRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) error {
+	_ = ctx
+	f.deletedTenantID = tenantID
+	f.deletedEmail = email
+	return nil
+}
+
 func (f fakePlatformUserRepo) UpdateSmartRoute(ctx context.Context, userID string, enabled bool) error {
 	_ = ctx
 	_ = userID
@@ -1321,6 +1503,23 @@ func TestPlatformSourceUsersForTenantExcludesPlatformEmployees(t *testing.T) {
 	if stats.ExcludedPlatformEmployees != 1 || stats.ExcludedDesktopEnrolled != 0 {
 		t.Fatalf("unexpected source user sync stats: %#v", stats)
 	}
+
+	included, includedStats, err := platformSourceUsersForTenantWithStatsAndOptions(context.Background(), settings, users, "tenant-a", platformSourceUserSyncOptions{IncludePlatformEmployees: true}, nil)
+	if err != nil {
+		t.Fatalf("source users with platform employees: %v", err)
+	}
+	if len(included) != 2 || includedStats.ExcludedPlatformEmployees != 0 {
+		t.Fatalf("expected platform employees to be included on request, got items=%#v stats=%#v", included, includedStats)
+	}
+	var flagged bool
+	for _, item := range included {
+		if item["id"] == "ve-account-1" && item["is_virtual_employee"] == true && item["account_type"] == "virtual_employee" {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Fatalf("included platform employee should be flagged as virtual, got %#v", included)
+	}
 }
 
 func TestPlatformSourceUsersForTenantExcludesDesktopEnrolledUsers(t *testing.T) {
@@ -1346,6 +1545,23 @@ func TestPlatformSourceUsersForTenantExcludesDesktopEnrolledUsers(t *testing.T) 
 	}
 	if stats.ExcludedDesktopEnrolled != 1 || stats.ExcludedPlatformEmployees != 0 {
 		t.Fatalf("unexpected source user sync stats: %#v", stats)
+	}
+}
+
+func TestPlatformSourceUsersForTenantIncludesApprovedUsers(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	now := time.Now().UTC()
+	users := fakePlatformUserRepo{items: []*store.User{
+		{ID: "approved-user", TenantID: "tenant-a", Email: "approved@example.com", Status: "STATUSAPPROVED", UpdatedAt: now},
+		{ID: "inactive-user", TenantID: "tenant-a", Email: "inactive@example.com", Status: "inactive", UpdatedAt: now},
+	}}
+
+	items, stats, err := platformSourceUsersForTenantWithStats(context.Background(), settings, users, "tenant-a")
+	if err != nil {
+		t.Fatalf("source users: %v", err)
+	}
+	if len(items) != 1 || items[0]["id"] != "approved-user" || stats.ExcludedDesktopEnrolled != 0 || stats.ExcludedPlatformEmployees != 0 {
+		t.Fatalf("expected approved Hub user to be synced as source user, items=%#v stats=%#v", items, stats)
 	}
 }
 
@@ -1420,6 +1636,30 @@ func TestPlatformSourceUsersSyncHandlerExcludesDesktopEnrolledUsers(t *testing.T
 	}
 	if resp.SyncSummary.ExcludedDesktopEnrolled != 1 {
 		t.Fatalf("expected desktop exclusion count, got %#v", resp.SyncSummary)
+	}
+
+	includeReq := newSignedPlatformJSONRequest(t, http.MethodPost, "/api/platform/source-users/sync", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "include_desktop_enrolled": true})
+	includeRec := httptest.NewRecorder()
+	PlatformSourceUsersSyncHandler(settings, users, tenants, machines).ServeHTTP(includeRec, includeReq)
+	if includeRec.Code != http.StatusOK {
+		t.Fatalf("include desktop sync status=%d body=%s", includeRec.Code, includeRec.Body.String())
+	}
+	resp = struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Users []struct {
+			ID string `json:"id"`
+		} `json:"users"`
+		SyncSummary struct {
+			ExcludedDesktopEnrolled int `json:"excluded_desktop_enrolled"`
+		} `json:"sync_summary"`
+	}{}
+	if err := json.Unmarshal(includeRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode include desktop response: %v", err)
+	}
+	if len(resp.Items) != 2 || resp.SyncSummary.ExcludedDesktopEnrolled != 0 {
+		t.Fatalf("expected include_desktop_enrolled to return both users without exclusion, got items=%#v summary=%#v", resp.Items, resp.SyncSummary)
 	}
 }
 
@@ -2255,6 +2495,114 @@ func TestNormalizePlatformEmployeeDeletedStatusDisablesEmployee(t *testing.T) {
 		if got := normalizePlatformEmployeeStatus(status); got != veStatusDisabled {
 			t.Fatalf("normalize %q = %q, want %q", status, got, veStatusDisabled)
 		}
+	}
+}
+
+func TestPlatformEmployeeDeleteRemovesRegistryEntry(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", OwnerEmail: "worker@tenant.test", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodDelete, "/api/platform/employees/platform-employee-1", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "hub_employee_id": "ve_employee_1", "hub_account_id": "hub-account-1", "virtual_email": "worker@tenant.test"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeDeleteHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(updated.Employees) != 0 {
+		t.Fatalf("employee registry entry was not removed: %#v", updated.Employees)
+	}
+}
+
+func TestPlatformEmployeeDeleteResolvesOwnerEmailByUserID(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	users := &captureDeletePlatformUserRepo{fakePlatformUserRepo: fakePlatformUserRepo{items: []*store.User{{ID: "hub-account-1", TenantID: "tenant-a", Email: "worker@tenant.test", Status: "active"}}}}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodDelete, "/api/platform/employees/platform-employee-1", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "hub_account_id": "hub-account-1"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeDeleteHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.deletedTenantID != "tenant-a" || users.deletedEmail != "worker@tenant.test" {
+		t.Fatalf("expected delete by resolved owner email, tenant=%q email=%q", users.deletedTenantID, users.deletedEmail)
+	}
+}
+
+func TestPlatformEmployeeDeleteFallsBackToRequestedVirtualEmail(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+	users := &captureDeletePlatformUserRepo{fakePlatformUserRepo: fakePlatformUserRepo{items: []*store.User{{ID: "hub-account-1", TenantID: "tenant-a", Email: "worker@tenant.test", Status: "active"}}}}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodDelete, "/api/platform/employees/platform-employee-1", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "worker@tenant.test"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeDeleteHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, users).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if users.deletedTenantID != "tenant-a" || users.deletedEmail != "worker@tenant.test" {
+		t.Fatalf("expected delete by requested virtual email fallback, tenant=%q email=%q", users.deletedTenantID, users.deletedEmail)
+	}
+}
+
+func TestPlatformEmployeeDeleteRejectsMismatchedVirtualEmail(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	provider := platformProviderEntry{PlatformID: "platform-1", PublicKeyPEM: testPlatformPublicKeyPEM(t, privateKey), RegistrationStatus: "active", TenantDomains: []platformTenantDomain{{HubTenantID: "tenant-a"}}}
+	if err := savePlatformProviderRegistry(context.Background(), settings, platformProviderRegistry{Providers: []platformProviderEntry{provider}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_employee_1", MachineID: "ve_employee_1", PlatformID: "platform-1", PlatformEmployeeID: "platform-employee-1", OwnerUserID: "hub-account-1", OwnerEmail: "worker@tenant.test", Status: veStatusActive, OnlineStatus: veOnlineStatusOnline}}}
+	if err := saveVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings), registry); err != nil {
+		t.Fatalf("save ve registry: %v", err)
+	}
+
+	req := newSignedPlatformJSONRequest(t, http.MethodDelete, "/api/platform/employees/platform-employee-1", "platform-1", privateKey, map[string]any{"hub_tenant_id": "tenant-a", "platform_employee_id": "platform-employee-1", "virtual_email": "other@tenant.test"})
+	rec := httptest.NewRecorder()
+	PlatformEmployeeDeleteHandler(settings, fakePlatformTenantRepo{items: []*store.Tenant{{ID: "tenant-a", Slug: "tenant-a", Name: "Tenant A", Status: "active"}}}, fakePlatformUserRepo{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("mismatched email delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated := loadVERegistry(context.Background(), scopedSystemSettingsForTenant("tenant-a", settings))
+	if len(updated.Employees) != 1 {
+		t.Fatalf("mismatched email should not remove registry entry: %#v", updated.Employees)
 	}
 }
 

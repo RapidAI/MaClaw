@@ -67,8 +67,9 @@ const (
 	tpmReturncmd = 0x0100
 
 	menuIdSoundOff = 1000
-	menuIdHide     = 1001
-	menuIdQuit     = 1002
+	menuIdSettings = 1001
+	menuIdHide     = 1002
+	menuIdQuit     = 1003
 
 	// Timer ID for halo animation
 	timerIdHalo = 1
@@ -1208,8 +1209,10 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		// Separator
 		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
 
+		settingsText, _ := syscall.UTF16PtrFromString("\u8bbe\u7f6e")
 		hideText, _ := syscall.UTF16PtrFromString("\u9690\u85cf")
 		quitText, _ := syscall.UTF16PtrFromString("\u9000\u51fa")
+		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdSettings), uintptr(unsafe.Pointer(settingsText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdHide), uintptr(unsafe.Pointer(hideText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdQuit), uintptr(unsafe.Pointer(quitText)))
 		procSetForegroundWindow.Call(hwnd)
@@ -1231,6 +1234,12 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				// SaveConfig triggers floatingSoundChanged → UpdateSoundConfig,
 				// which updates w.petMotionSound without rebuilding the window.
 				_ = w.app.SaveConfig(cfg)
+			}()
+		case menuIdSettings:
+			go func() {
+				if w.app != nil {
+					w.app.OpenPetSettingsFromMenu()
+				}
 			}()
 		case menuIdHide:
 			go func() {

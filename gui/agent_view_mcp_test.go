@@ -1,9 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func TestBuildMCPToolAgentViewShowsValidationErrors(t *testing.T) {
@@ -204,4 +206,76 @@ func TestRegisteredToolValidationIssuesForMCPKeepsParam(t *testing.T) {
 	if errs[0].Param != "items" || errs[1].Param != "email" {
 		t.Fatalf("expected top-level params, got %#v", errs)
 	}
+}
+
+func TestHandleMCPToolAgentViewSubmitHonorsWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "mcp-agent-view-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	resp := h.handleMCPToolAgentViewSubmit(map[string]interface{}{
+		mcpAgentViewCallArgsField: map[string]interface{}{
+			"server_id":                      "fs",
+			"tool_name":                      "write_file",
+			"arguments":                      map[string]interface{}{"path": "out.txt", "content": "x"},
+			registeredToolPolicyOwnerIDField: userID,
+		},
+	})
+	if resp == nil || !strings.Contains(resp.Text, "not allowed by the current workflow tool policy") {
+		t.Fatalf("expected workflow policy rejection, got %#v", resp)
+	}
+}
+
+func TestHandleMCPToolAgentViewSubmitWithoutOwnerDoesNotUseCurrentRuntime(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "mcp-agent-view-current-runtime-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	h.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{RequestID: "req-current", PolicyOwnerID: userID}}
+
+	resp := h.handleMCPToolAgentViewSubmit(map[string]interface{}{
+		mcpAgentViewCallArgsField: map[string]interface{}{
+			"server_id": "fs",
+			"tool_name": "write_file",
+			"arguments": map[string]interface{}{"path": "out.txt", "content": "x"},
+		},
+	})
+	if resp == nil {
+		t.Fatal("expected MCP submit response")
+	}
+	if strings.Contains(resp.Text, "not allowed by the current workflow tool policy") || strings.Contains(resp.Error, "not allowed by the current workflow tool policy") {
+		t.Fatalf("MCP task panel submit without hidden owner should not inherit current runtime policy, got %#v", resp)
+	}
+}
+
+func TestBuildMCPToolAgentViewCarriesRuntimePolicyOwner(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"required":   []interface{}{"path"},
+		"properties": map[string]interface{}{"path": map[string]interface{}{"type": "string"}},
+	}
+	view := buildMCPToolAgentViewWithPolicyOwner("srv", "srv", "read", schema, map[string]interface{}{}, []mcputil.ValidationError{{
+		Param: "path", Code: "missing_required", Message: "missing path",
+	}}, "remote:mobile")
+	fields := view["fields"].([]map[string]interface{})
+	for _, field := range fields {
+		if field["name"] != mcpAgentViewCallArgsField {
+			continue
+		}
+		callArgs, _ := field["value"].(map[string]interface{})
+		if callArgs[registeredToolPolicyOwnerIDField] != "remote:mobile" {
+			t.Fatalf("hidden MCP call owner = %#v", callArgs[registeredToolPolicyOwnerIDField])
+		}
+		return
+	}
+	t.Fatal("missing MCP call hidden field")
 }

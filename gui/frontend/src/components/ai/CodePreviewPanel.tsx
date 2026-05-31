@@ -362,6 +362,7 @@ export function CodePreviewPanel({
                 }}>
                     {/* Header */}
                     <div
+                        data-testid="code-preview-header"
                         onMouseDown={handleHeaderMouseDown}
                         onDoubleClick={handleHeaderDoubleClick}
                         style={{
@@ -372,7 +373,7 @@ export function CodePreviewPanel({
                             borderBottom: `1px solid ${theme.border}`,
                             background: theme.tabBg,
                             flexShrink: 0,
-                            '--wails-draggable': 'no-drag',
+                            '--wails-draggable': 'drag',
                         } as any}
                     >
                         <button
@@ -439,6 +440,7 @@ export function CodePreviewPanel({
             }}>
             {/* Header with close button — double-click to toggle maximize */}
             <div
+                data-testid="code-preview-header"
                 onMouseDown={handleHeaderMouseDown}
                 onDoubleClick={handleHeaderDoubleClick}
                 style={{
@@ -448,7 +450,7 @@ export function CodePreviewPanel({
                     borderBottom: `1px solid ${theme.border}`,
                     background: theme.tabBg,
                     flexShrink: 0,
-                    '--wails-draggable': 'no-drag',
+                    '--wails-draggable': 'drag',
                 } as any}
             >
                 <div data-preview-no-maximize="true" style={{ flex: 1, minWidth: 0, '--wails-draggable': 'no-drag' } as any}>

@@ -158,8 +158,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             const retrySeconds = hubGrantRetrySeconds(limited);
             const retryText = retrySeconds > 0 ? formatHubRetryDuration(retrySeconds) : "";
             return retryText
-                ? t(`服务兑换码已生效，但 MaClaw 官方当前周期限流，约 ${retryText} 后恢复。LLM 配置步骤暂不跳过。`, `Service code redeemed, but MaClaw Official is period limited and recovers in about ${retryText}. LLM setup is not skipped yet.`)
-                : t("服务兑换码已生效，但 MaClaw 官方当前周期限流。LLM 配置步骤暂不跳过。", "Service code redeemed, but MaClaw Official is period limited. LLM setup is not skipped yet.");
+                ? t(`服务兑换码已生效，但 MaClaw 官方当前周期限额，约 ${retryText} 后恢复。LLM 配置步骤暂不跳过。`, `Service code redeemed, but MaClaw Official is period limited and recovers in about ${retryText}. LLM setup is not skipped yet.`)
+                : t("服务兑换码已生效，但 MaClaw 官方当前周期限额。LLM 配置步骤暂不跳过。", "Service code redeemed, but MaClaw Official is period limited. LLM setup is not skipped yet.");
         }
         const queued = findGrant("queued");
         if (queued) {

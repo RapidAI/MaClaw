@@ -43,6 +43,7 @@ type LoopContext struct {
 	UserID     string       // owning user/session ID (e.g. "desktop-user", "desktop-user:{path}")
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
+	Runtime    RuntimeContext
 
 	// SkipNeedsConfirmGate is set only for non-review continuations that have
 	// their own interaction state, such as attachment bypasses or ask_user

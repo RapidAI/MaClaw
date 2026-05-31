@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 )
 
 // Sentinel errors for version management.
@@ -28,6 +30,12 @@ var (
 type VersionManager struct {
 	store      WorkflowStore
 	auditStore AuditStore
+	// capabilitySvc, when set, makes Approve converge on the single
+	// authoritative publish path (AdminReviewService.ApproveSubmission):
+	// publish + supersede + capability-market registration with rollback on
+	// failure. When nil (the default for callers that do not opt in), Approve
+	// retains its original publish-and-supersede-only behavior.
+	capabilitySvc *capability.Service
 }
 
 // NewVersionManager creates a new VersionManager with the given store.
@@ -37,6 +45,20 @@ func NewVersionManager(store WorkflowStore, auditStore ...AuditStore) *VersionMa
 	if len(auditStore) > 0 && auditStore[0] != nil {
 		vm.auditStore = auditStore[0]
 	}
+	return vm
+}
+
+// WithCapabilityService wires a capability.Service into the VersionManager so
+// that Approve converges on the single authoritative publish path
+// (AdminReviewService.ApproveSubmission): it registers the published workflow
+// in the capability market with rollback on failure as part of the same
+// publish operation. It returns the receiver for fluent construction.
+//
+// When no capability service is configured, Approve keeps its original
+// behavior (status transition + supersede only), preserving every existing
+// caller and test that constructs a VersionManager without a market.
+func (vm *VersionManager) WithCapabilityService(capabilitySvc *capability.Service) *VersionManager {
+	vm.capabilitySvc = capabilitySvc
 	return vm
 }
 
@@ -97,27 +119,18 @@ func (vm *VersionManager) SaveDraft(ctx context.Context, workflowID string, grap
 	now := time.Now().UTC()
 
 	if existingDraft != nil {
-		// Update the existing draft version's graph and version number
+		// Update the existing draft version in place: bump its version number
+		// (patch) and replace its graph, keeping the status as draft. This
+		// mirrors the "update existing draft" semantics — re-saving a draft
+		// updates the same version row rather than accumulating new rows.
 		existingDraft.Graph = graph
 		existingDraft.VersionNumber = nextVersion
+		existingDraft.Status = VersionDraft
 		existingDraft.UpdatedAt = now
-		// Use UpdateVersionStatus to persist changes (status stays draft)
-		// Note: We need to update the graph too, so we create a new version instead
-		// Actually, the store interface doesn't have an UpdateVersion method,
-		// so we create a new version each time (the old draft remains but with older timestamp)
-		ver := &WorkflowVersion{
-			ID:            generateID("ver"),
-			WorkflowID:    workflowID,
-			VersionNumber: nextVersion,
-			Status:        VersionDraft,
-			Graph:         graph,
-			CreatedAt:     now,
-			UpdatedAt:     now,
+		if err := vm.store.UpdateVersion(ctx, existingDraft); err != nil {
+			return nil, fmt.Errorf("update version: %w", err)
 		}
-		if err := vm.store.CreateVersion(ctx, ver); err != nil {
-			return nil, fmt.Errorf("create version: %w", err)
-		}
-		return ver, nil
+		return existingDraft, nil
 	}
 
 	ver := &WorkflowVersion{
@@ -165,7 +178,23 @@ func (vm *VersionManager) SubmitForReview(ctx context.Context, versionID string)
 // Approve transitions a pending_review version to published status.
 // If there is an existing published version for the same workflow, it is
 // marked as superseded.
+//
+// When a capability market is configured (via WithCapabilityService), Approve
+// converges on the single authoritative publish path by delegating to
+// AdminReviewService.ApproveSubmission, which performs publish + supersede +
+// capability-market registration with rollback on failure as one operation.
+// This guarantees the two publish paths cannot drift: a workflow published
+// through either path always appears in the market. AdminReviewService.
+// ApproveSubmission itself remains the unchanged reference path.
+//
+// When no capability market is configured, Approve retains its original
+// behavior (status transition + supersede only), preserving every existing
+// caller and test.
 func (vm *VersionManager) Approve(ctx context.Context, versionID string) error {
+	if vm.capabilitySvc != nil {
+		return NewAdminReviewService(vm.store, vm.capabilitySvc).ApproveSubmission(ctx, versionID)
+	}
+
 	ver, err := vm.store.GetVersion(ctx, versionID)
 	if err != nil {
 		return fmt.Errorf("get version: %w", err)

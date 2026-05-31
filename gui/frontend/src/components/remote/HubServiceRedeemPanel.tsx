@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL, EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
-import { buildHubCreditsURL } from "../../utils/hubCredits";
+import { buildHubCardStoreURL, buildHubCreditsURL } from "../../utils/hubCredits";
 
 interface HubLLMAuthorizedModel {
     name: string;
@@ -51,6 +51,34 @@ interface HubLLMServiceStatus {
 interface Props {
     lang?: string;
     onStatusChange?: (status: HubLLMServiceStatus) => void;
+}
+
+function callBackend<T>(call: () => T | Promise<T>): Promise<T> {
+    return Promise.resolve().then(call);
+}
+
+function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {
+    try {
+        return EventsOn(eventName, callback);
+    } catch {
+        return undefined;
+    }
+}
+
+function safeEventsOff(eventName: string) {
+    try {
+        EventsOff(eventName);
+    } catch {
+        // Runtime events are unavailable in a plain browser dev session.
+    }
+}
+
+function safeBrowserOpenURL(url: string) {
+    try {
+        BrowserOpenURL(url);
+    } catch {
+        window.open(url, "_blank", "noopener,noreferrer");
+    }
 }
 
 // Guard compatibility: authorizedModelsTableStyle, authorizedGroupTagStyle.
@@ -182,7 +210,7 @@ function serviceStatusSummary(
         const zh = lang === "zh-Hans" || lang === "zh-Hant";
         return {
             kind: "limited" as const,
-            label: t("Period limited", "周期限流"),
+            label: t("Period limited", "周期限额"),
             detail: retryText
                 ? (zh
                     ? `当前周期额度已用尽，约 ${retryText} 后恢复。若官方还有其它可用通道会自动切换；不会静默切到你的私有服务商。`
@@ -263,7 +291,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         else setLoading(true);
         setLoadError(null);
         try {
-            const next = await GetHubLLMServiceStatus() as HubLLMServiceStatus;
+            const next = await callBackend(() => GetHubLLMServiceStatus()) as HubLLMServiceStatus;
             setStatus(next);
             onStatusChangeRef.current?.(next);
         } catch (error) {
@@ -292,12 +320,14 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             void loadStatus(true);
             scheduleReload(2500);
         };
-        EventsOn("llm-token-usage-changed", handler);
-        EventsOn("hub-llm-service-changed", handler);
+        const offTokenUsageChanged = safeEventsOn("llm-token-usage-changed", handler);
+        const offHubLLMServiceChanged = safeEventsOn("hub-llm-service-changed", handler);
         return () => {
             timers.forEach((timer) => window.clearTimeout(timer));
-            EventsOff("llm-token-usage-changed");
-            EventsOff("hub-llm-service-changed");
+            if (typeof offTokenUsageChanged === "function") offTokenUsageChanged();
+            else safeEventsOff("llm-token-usage-changed");
+            if (typeof offHubLLMServiceChanged === "function") offHubLLMServiceChanged();
+            else safeEventsOff("hub-llm-service-changed");
         };
     }, [loadStatus]);
 
@@ -318,17 +348,31 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     }, [status]);
     const statusSummary = useMemo(() => serviceStatusSummary(status, lang, t), [status, lang, t]);
 
-    const openHubCreditsPage = useCallback(async () => {
+    const openHubCardStorePage = useCallback(async () => {
         try {
-            const cfg = await LoadConfig() as { remote_hub_url?: string; remote_viewer_token?: string } | null;
-            const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token);
+            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_tenant_id?: string } | null;
+            const url = buildHubCardStoreURL(cfg?.remote_hub_url, cfg?.remote_tenant_id);
             if (!url) {
-                await showAlert(t("Credits page is unavailable because Hub login information is missing.", "Hub 登录信息缺失，暂时无法打开 Credits 页面。"));
+                await showAlert(t("Card store is unavailable because Hub URL is missing.", "Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u3002"));
                 return;
             }
-            BrowserOpenURL(url);
+            safeBrowserOpenURL(url);
         } catch (error) {
-            await showAlert(String(error || t("Failed to open Credits page", "打开 Credits 页面失败")));
+            await showAlert(String(error || t("Failed to open card store", "\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u5931\u8d25")));
+        }
+    }, [showAlert, t]);
+
+    const openHubCreditsPage = useCallback(async () => {
+        try {
+            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_viewer_token?: string; remote_tenant_id?: string } | null;
+            const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token, cfg?.remote_tenant_id);
+            if (!url) {
+                await showAlert(t("Credits page is unavailable because Hub URL is missing.", "Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002"));
+                return;
+            }
+            safeBrowserOpenURL(url);
+        } catch (error) {
+            await showAlert(String(error || t("Failed to open Credits page", "\u6253\u5f00 Credits \u9875\u9762\u5931\u8d25")));
         }
     }, [showAlert, t]);
 
@@ -341,7 +385,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         setRedeeming(true);
         setRedeemResult(null);
         try {
-            const next = await RedeemHubLLMService(code) as HubLLMServiceStatus;
+            const next = await callBackend(() => RedeemHubLLMService(code)) as HubLLMServiceStatus;
             setStatus(next);
             setRedeemCode("");
             setLoadError(null);
@@ -360,16 +404,47 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     return (
         <div className="hub-service-redeem">
-            {/* Card 1: Redeem code input - primary action, always visible first */}
-            <div className="hub-service-redeem__card">
-                <div className="hub-service-redeem__field">
-                    <label className="hub-service-redeem__label">{t("Redeem Code", "兑换码")}</label>
+            <div className="hub-service-redeem__card hub-service-redeem__summary-card">
+                <div className="hub-service-redeem__card-header">
+                    <div className="hub-service-redeem__title-group">
+                        <h3 className="hub-service-redeem__title">{t("Service Redemption", "服务兑换")}</h3>
+                    </div>
+                    <div className="hub-service-redeem__actions">
+                        <button
+                            type="button"
+                            onClick={() => void openHubCardStorePage()}
+                            className="hub-service-redeem__button hub-service-redeem__button--buy"
+                            title={t("Open card store to buy Credits", "\u524d\u5f80\u670d\u52a1\u5361\u5546\u5e97\u8d2d\u4e70 Credits", "\u524d\u5f80\u670d\u52d9\u5361\u5546\u5e97\u8cfc\u8cb7 Credits")}
+                        >
+                            <span className="hub-service-redeem__buy-icon" aria-hidden="true" />
+                            <span>{t("Buy Credits", "\u8d2d\u4e70 Credits", "\u8cfc\u8cb7 Credits")}</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => void openHubCreditsPage()}
+                            className="hub-service-redeem__button hub-service-redeem__button--secondary"
+                            title={t("Open Credits page to view balance", "\u524d\u5f80 Credits \u9875\u9762\u67e5\u770b\u4f59\u989d", "\u524d\u5f80 Credits \u9801\u9762\u67e5\u770b\u9918\u984d")}
+                        >
+                            {t("View Credits", "\u67e5\u770b Credits", "\u67e5\u770b Credits")}
+                        </button>
+                        <button type="button" onClick={() => loadStatus(true)} disabled={refreshing} className="hub-service-redeem__button hub-service-redeem__button--secondary">
+                            {refreshing ? t("Refreshing...", "刷新中...") : t("Refresh", "刷新")}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="hub-service-redeem__redeem-panel">
+                    <label className="hub-service-redeem__label" htmlFor="hub-service-redeem-code">{t("Redeem Code", "兑换码")}</label>
                     <div className="hub-service-redeem__redeem-row">
                         <input
+                            id="hub-service-redeem-code"
+                            type="text"
                             value={redeemCode}
                             onChange={(e) => setRedeemCode(e.target.value)}
                             onKeyDown={(e) => { if (e.key === "Enter" && !redeeming) handleRedeem(); }}
                             placeholder={t("Enter service card code", "请输入服务卡兑换码")}
+                            autoComplete="off"
+                            spellCheck={false}
                             disabled={redeeming}
                             className="hub-service-redeem__input"
                         />
@@ -377,26 +452,11 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             {redeeming ? t("Redeeming...", "兑换中...") : t("Redeem Now", "立即兑换")}
                         </button>
                     </div>
-                </div>
-                {redeemResult && (
-                    <div className="hub-service-redeem__message" data-kind={redeemResult.ok ? "success" : "danger"}>
-                        {redeemResult.msg}
-                    </div>
-                )}
-            </div>
-
-            {/* Card 2: Service status overview */}
-            <div className="hub-service-redeem__card">
-                <div className="hub-service-redeem__card-header">
-                    <h3 className="hub-service-redeem__title">{t("Service Status", "服务状态")}</h3>
-                    <div className="hub-service-redeem__actions">
-                        <button type="button" onClick={() => void openHubCreditsPage()} className="hub-service-redeem__button hub-service-redeem__button--secondary">
-                            {t("View Credits", "查看 Credits 或购买兑换码")}
-                        </button>
-                        <button type="button" onClick={() => loadStatus(true)} disabled={refreshing} className="hub-service-redeem__button hub-service-redeem__button--secondary">
-                            {refreshing ? t("Refreshing...", "刷新中...") : t("Refresh", "刷新")}
-                        </button>
-                    </div>
+                    {redeemResult && (
+                        <div className="hub-service-redeem__message hub-service-redeem__message--top" data-kind={redeemResult.ok ? "success" : "danger"}>
+                            {redeemResult.msg}
+                        </div>
+                    )}
                 </div>
 
                 {/* loadError: show inline in the status card, not above the redeem input */}
@@ -427,6 +487,21 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     </div>
                 </div>
 
+                <div className="hub-service-redeem__credit-grid">
+                    <div className="hub-service-redeem__credit-card">
+                        <div className="hub-service-redeem__label">{t("Total credits", "总 credits")}</div>
+                        <div className="hub-service-redeem__value hub-service-redeem__value--primary">{formatCredits(totals.total)}</div>
+                    </div>
+                    <div className="hub-service-redeem__credit-card">
+                        <div className="hub-service-redeem__label">{t("Used credits", "已用 credits")}</div>
+                        <div className="hub-service-redeem__value hub-service-redeem__value--warning">{formatCredits(totals.used)}</div>
+                    </div>
+                    <div className="hub-service-redeem__credit-card">
+                        <div className="hub-service-redeem__label">{t("Remaining credits", "剩余 credits")}</div>
+                        <div className="hub-service-redeem__value hub-service-redeem__value--success">{formatCredits(totals.remaining)}</div>
+                    </div>
+                </div>
+
                 {statusSummary.kind !== "active" && statusSummary.detail ? (
                     <div className="hub-service-redeem__message hub-service-redeem__message--top" data-kind="warning">
                         {statusSummary.detail}
@@ -443,56 +518,32 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                 ) : null}
             </div>
 
-            {/* Card 3: Authorization details - table layout */}
             <div className="hub-service-redeem__card">
-                <h3 className="hub-service-redeem__title hub-service-redeem__title--spaced">{t("Current Authorization Details", "当前授权详情")}</h3>
-                <table className="hub-service-redeem__detail-table">
-                    <tbody>
-                        <tr>
-                            <td className="hub-service-redeem__detail-label">{t("Available Models", "可用模型列表")}</td>
-                            <td className="hub-service-redeem__detail-value">{availableModels.length ? availableModels.join(", ") : "auto"}</td>
-                        </tr>
-                        <tr>
-                            <td className="hub-service-redeem__detail-label">{t("Valid Until", "有效期至")}</td>
-                            <td className="hub-service-redeem__detail-value">{formatTime(serviceExpiry(status), lang)}</td>
-                        </tr>
-                        <tr>
-                            <td className="hub-service-redeem__detail-label">{t("Current Grant Expiry", "当前授权到期")}</td>
-                            <td className="hub-service-redeem__detail-value">{formatTime(status?.nearest_expires_at || serviceExpiry(status), lang)}</td>
-                        </tr>
-                    </tbody>
-                </table>
-
-                <div className="hub-service-redeem__credit-grid">
-                    <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Total credits", "总 credits")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--primary">{formatCredits(totals.total)}</div>
+                <div className="hub-service-redeem__card-header hub-service-redeem__card-header--compact">
+                    <div className="hub-service-redeem__title-group">
+                        <h3 className="hub-service-redeem__title">{t("Authorization Breakdown", "授权明细")}</h3>
                     </div>
-                    <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Used credits", "已用 credits")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--warning">{formatCredits(totals.used)}</div>
-                    </div>
-                    <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Remaining credits", "剩余 credits")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--success">{formatCredits(totals.remaining)}</div>
+                    <div className="hub-service-redeem__model-summary">
+                        <span className="hub-service-redeem__label">{t("Available Models", "可用模型")}</span>
+                        <span className="hub-service-redeem__value">{availableModels.length ? availableModels.join(", ") : "auto"}</span>
                     </div>
                 </div>
 
-                {/* Grant details include active, queued, period-limited, exhausted, and expired grants. */}
+                {/* Grant details include active, queued, period-limited, and exhausted grants. */}
                 <div className="hub-service-redeem__section">
                     <div className="hub-service-redeem__label">{t("Grant credit details", "授权额度明细", "授權額度明細")}</div>
                     {grantsForDetails.length ? (
                         <table className="hub-service-redeem__detail-table">
                             <thead>
                                 <tr>
-                                    <th>{t("Service Group", "服务组")}</th>
-                                    <th>{t("Source", "来源")}</th>
-                                    <th>{t("Starts At", "开始时间")}</th>
-                                    <th>{t("Expires At", "到期时间")}</th>
-                                    <th>{t("Total", "总额")}</th>
-                                    <th>{t("Used", "已用")}</th>
-                                    <th>{t("Remaining", "剩余")}</th>
-                                    <th>{t("Status", "状态")}</th>
+                                    <th scope="col">{t("Service Group", "服务组")}</th>
+                                    <th scope="col">{t("Source", "来源")}</th>
+                                    <th scope="col">{t("Starts At", "开始时间")}</th>
+                                    <th scope="col">{t("Expires At", "到期时间")}</th>
+                                    <th scope="col">{t("Total", "总额")}</th>
+                                    <th scope="col">{t("Used", "已用")}</th>
+                                    <th scope="col">{t("Remaining", "剩余")}</th>
+                                    <th scope="col">{t("Status", "状态")}</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -527,8 +578,8 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                 </colgroup>
                                 <thead>
                                     <tr>
-                                        <th>{t("Model", "模型")}</th>
-                                        <th>{t("Service Groups", "服务组")}</th>
+                                        <th scope="col">{t("Model", "模型")}</th>
+                                        <th scope="col">{t("Service Groups", "服务组")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>

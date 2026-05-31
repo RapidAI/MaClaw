@@ -13,15 +13,31 @@ export type LocalGroupExecutorRegistration = {
 };
 
 export function normalizeParticipantId(value: string | null | undefined): string {
-    return String(value || "").trim().toLowerCase();
+    return String(value || "").trim().replace(/[\\/\s-]+/g, "_").toLowerCase();
 }
 
-const LOCAL_HUMAN_PARTICIPANT_IDS = new Set(["me", "user", "local", "local-user", "operator", "desktop-user", "initiator"]);
+function participantIdentityKeys(value: string | null | undefined): string[] {
+    const normalized = normalizeParticipantId(value);
+    if (!normalized) return [];
+    const keys = new Set<string>([normalized]);
+    const withoutVEPrefix = /^ve[_-](.+)$/.exec(normalized)?.[1] || normalized;
+    keys.add(withoutVEPrefix);
+    keys.add(`ve_${withoutVEPrefix}`);
+    keys.add(`ve-${withoutVEPrefix}`);
+    return [...keys];
+}
+
+function participantIdentityMatches(left: string | null | undefined, right: string | null | undefined): boolean {
+    const rightKeys = new Set(participantIdentityKeys(right));
+    if (rightKeys.size === 0) return false;
+    return participantIdentityKeys(left).some((key) => rightKeys.has(key));
+}
+
+const LOCAL_HUMAN_PARTICIPANT_IDS = new Set(["me", "user", "local", "local-user", "local_user", "operator", "desktop-user", "desktop_user", "initiator"]);
 const LOCAL_AI_NAME_ALIASES = new Set(["localai", "local-ai", "本机ai", "本機ai", "本地ai", "本地"]);
 
 export function isLocalHumanParticipantId(value: string | null | undefined): boolean {
-    const normalized = normalizeParticipantId(value);
-    return !!normalized && LOCAL_HUMAN_PARTICIPANT_IDS.has(normalized);
+    return participantIdentityKeys(value).some((key) => LOCAL_HUMAN_PARTICIPANT_IDS.has(key));
 }
 
 function compactLocalAIName(value: string): string {
@@ -39,10 +55,8 @@ export function isLocalAIName(value: string | null | undefined): boolean {
 }
 
 export function isLocalParticipantId(value: string | null | undefined, localParticipantIds?: string[]): boolean {
-    const normalized = normalizeParticipantId(value);
-    if (!normalized) return false;
-    if (normalized === LEGACY_LOCAL_AI_PARTICIPANT_ID) return true;
-    return (localParticipantIds || []).some((id) => normalizeParticipantId(id) === normalized);
+    if (participantIdentityMatches(value, LEGACY_LOCAL_AI_PARTICIPANT_ID)) return true;
+    return (localParticipantIds || []).some((id) => participantIdentityMatches(id, value));
 }
 
 export function isLocalParticipant(tab: Pick<AITab, "localParticipantIds" | "participantNames">, participantId: string): boolean {
@@ -69,9 +83,8 @@ export function localExecutorDisplayName(value: LocalGroupExecutorRegistration |
 
 export function participantNameForId(names: Record<string, string> | undefined | null, id: string): string | undefined {
     if (!names) return undefined;
-    const normalized = normalizeParticipantId(id);
     for (const [key, value] of Object.entries(names)) {
-        if (normalizeParticipantId(key) === normalized) return value;
+        if (participantIdentityMatches(key, id)) return value;
     }
     return undefined;
 }

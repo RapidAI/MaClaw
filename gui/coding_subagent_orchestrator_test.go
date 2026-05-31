@@ -225,7 +225,7 @@ func TestPreviousTaskFileOutputsCompactsLongEntries(t *testing.T) {
 }
 
 func TestCompactSubAgentTaskTitle(t *testing.T) {
-	if got := compactSubAgentTaskTitle("  "); got != "未命名任务" {
+	if got := compactSubAgentTaskTitle("  "); got != "Untitled task" {
 		t.Fatalf("empty title = %q", got)
 	}
 	if got := compactSubAgentTaskTitle("  Level loader  "); got != "Level loader" {
@@ -278,7 +278,7 @@ func TestAppendSubAgentRunReportsCapsLongLists(t *testing.T) {
 	if strings.Contains(out, fmt.Sprintf("T%d report", codingSubAgentRunReportMaxItems+1)) {
 		t.Fatalf("expected reports to be capped, got %q", out)
 	}
-	if !strings.Contains(out, "还有 2 条任务报告未展开") {
+	if !strings.Contains(out, "and 2 more task reports omitted") {
 		t.Fatalf("expected remaining report count, got %q", out)
 	}
 }
@@ -297,13 +297,13 @@ func TestAppendSubAgentExecutionStats(t *testing.T) {
 	if !strings.Contains(out, "1 failed") || !strings.Contains(out, "1 skipped") {
 		t.Fatalf("expected task status counts, got %q", out)
 	}
-	if !strings.Contains(out, "实际修改文件: 3") || !strings.Contains(out, "src/a.go") || !strings.Contains(out, "src/failed.go") {
+	if !strings.Contains(out, "Modified files: 3") || !strings.Contains(out, "src/a.go") || !strings.Contains(out, "src/failed.go") {
 		t.Fatalf("expected actual modified file stats, got %q", out)
 	}
-	if !strings.Contains(out, "新建文件: 1") || !strings.Contains(out, "src/a.go") {
+	if !strings.Contains(out, "Created files: 1") || !strings.Contains(out, "src/a.go") {
 		t.Fatalf("expected created file stats, got %q", out)
 	}
-	if !strings.Contains(out, "未追踪实际修改: 1") {
+	if !strings.Contains(out, "without tracked file changes: 1") {
 		t.Fatalf("expected planned-only count, got %q", out)
 	}
 }
@@ -616,6 +616,61 @@ func TestRunAllTasksPausesOnRateLimitWithoutRetryStorm(t *testing.T) {
 	}
 }
 
+func TestRunAllTasksPausesOnTransientProviderErrorWithoutRetryStorm(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 3
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B"},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+	calls := 0
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: `LLM call failed: HTTP 503: service unavailable`}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if calls != 1 {
+		t.Fatalf("transient provider error should stop after one subagent call, got %d", calls)
+	}
+	if !strings.Contains(report, "paused to avoid retry storms") {
+		t.Fatalf("expected paused report, got %q", report)
+	}
+	if got := orch.Tasks[0]; got.RetryCount != 0 || got.Status != TaskExecInProgress {
+		t.Fatalf("current task should remain retryable/in progress, got %#v", got)
+	}
+	if got := orch.Tasks[1]; got.Status != TaskExecPending || got.RetryCount != 0 {
+		t.Fatalf("next task should not start after transient provider error, got %#v", got)
+	}
+}
+
+func TestIsSubAgentTransientProviderErrorRequiresProviderContextForGenericTimeouts(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "http 503", text: `LLM call failed: HTTP 503: service unavailable`, want: true},
+		{name: "provider deadline", text: `LLM call failed: Post "https://example.test/api/anthropic/v1/messages": context deadline exceeded`, want: true},
+		{name: "provider connection reset", text: `provider request failed: connection reset by peer`, want: true},
+		{name: "local command deadline", text: `bash command failed: context deadline exceeded`, want: false},
+		{name: "local http deadline", text: `integration test failed: Post "http://127.0.0.1:3000/health": context deadline exceeded`, want: false},
+		{name: "local connection reset", text: `integration test failed: connection reset by peer`, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSubAgentTransientProviderError(tc.text); got != tc.want {
+				t.Fatalf("isSubAgentTransientProviderError(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunAllTasksPausesFutureBatchesAfterConcurrentRateLimit(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -722,7 +777,7 @@ func TestRunAllTasksSkipsTasksBlockedByFailedDependencies(t *testing.T) {
 	if got := orch.Tasks[0]; got.Status != TaskExecFailed {
 		t.Fatalf("dependency task should fail, got %#v", got)
 	}
-	if got := orch.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T0") {
+	if got := orch.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T1") {
 		t.Fatalf("dependent task should be skipped, got %#v", got)
 	}
 }
@@ -751,7 +806,7 @@ func TestRunAllTasksSequentialSkipsTasksBlockedByFailedDependencies(t *testing.T
 	if !strings.Contains(report, "blocked by failed dependencies") {
 		t.Fatalf("expected blocked dependency report, got %q", report)
 	}
-	if got := orch.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T0") {
+	if got := orch.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T1") {
 		t.Fatalf("dependent task should be skipped, got %#v", got)
 	}
 }

@@ -1,13 +1,13 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 )
 
@@ -23,6 +23,9 @@ const codegenProxyAddr = ":5001"
 // for CodeGen. This allows Claude Code to communicate with CodeGen's OpenAI API
 // via the Anthropic Messages protocol.
 func (a *App) StartCodeGenProxy(upstreamURL, apiKey string) (string, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "start codegen proxy", "upstream_url": upstreamURL}); err != nil {
+		return "", err
+	}
 	codegenProxyMu.Lock()
 	defer codegenProxyMu.Unlock()
 

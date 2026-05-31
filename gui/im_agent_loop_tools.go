@@ -42,12 +42,13 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	workflowFilterSkipped := false
 	skipNeedsConfirmGate := ctx != nil && ctx.SkipNeedsConfirmGate
 	workflowAgentLoop := ctx != nil && ctx.WorkflowAgentLoop
-	if engine := h.getWorkflowEngine(); engine != nil && shouldApplyWorkflowFilter(skipNeedsConfirmGate, engine.IsAwaitingReview(userID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(userID)) {
-		policy := engine.GetActivePhaseToolFilter(userID)
+	policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
+	if engine := h.getWorkflowEngine(); engine != nil && shouldApplyWorkflowFilter(skipNeedsConfirmGate, engine.IsAwaitingReview(policyOwnerID), workflowAgentLoop, engine.IsPhaseExecutionBlocked(policyOwnerID), engine.GetActiveWorkflow(policyOwnerID) != nil) {
+		policy := engine.GetActivePhaseToolFilter(policyOwnerID)
 		if policy != "" {
 			workflowFilterPolicy = workflowToolFilterDecision(policy)
 		}
-		tools = h.applyWorkflowToolFilterWithCatalog(userID, tools, allTools)
+		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, allTools)
 	} else if skipNeedsConfirmGate {
 		workflowFilterPolicy = workflowToolFilterSkippedConfirmBypass
 		workflowFilterSkipped = true

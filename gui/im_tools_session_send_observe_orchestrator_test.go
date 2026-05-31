@@ -32,7 +32,7 @@ func TestEnrichSendAndObserveTextForTaskPendingTask(t *testing.T) {
 		Status:      TaskExecPending,
 	}}, "requirements", "design", "/proj", "codex")
 	h := &IMMessageHandler{
-		lastUserID:               "u1",
+		currentLoopCtx:           &LoopContext{Runtime: RuntimeContext{PolicyOwnerID: "u1"}},
 		taskOrchestratorRegistry: registry,
 	}
 
@@ -61,7 +61,7 @@ func TestEnrichSendAndObserveTextForTaskUsesNextReadyTask(t *testing.T) {
 		{Index: 1, Title: "Ready task", Description: "run first"},
 	}, "requirements", "design", "/proj", "codex")
 	h := &IMMessageHandler{
-		lastUserID:               "u1",
+		currentLoopCtx:           &LoopContext{Runtime: RuntimeContext{PolicyOwnerID: "u1"}},
 		taskOrchestratorRegistry: registry,
 	}
 
@@ -83,7 +83,7 @@ func TestEnrichSendAndObserveTextForTaskNonPendingTaskOnlyBindsSession(t *testin
 	orch.Activate([]*TaskItem{{Index: 0, Title: "Task", Status: TaskExecPending}}, "", "", "/proj", "codex")
 	orch.MarkCurrentStatus(TaskExecInProgress, "")
 	h := &IMMessageHandler{
-		lastUserID:               "u1",
+		currentLoopCtx:           &LoopContext{Runtime: RuntimeContext{PolicyOwnerID: "u1"}},
 		taskOrchestratorRegistry: registry,
 	}
 
@@ -97,5 +97,47 @@ func TestEnrichSendAndObserveTextForTaskNonPendingTaskOnlyBindsSession(t *testin
 	}
 	if task.Status != TaskExecInProgress {
 		t.Fatalf("Status = %q, want still in progress", task.Status)
+	}
+}
+
+func TestEnrichSendAndObserveTextForTaskWithoutRuntimeOwnerDoesNotInheritLastUserID(t *testing.T) {
+	registry := NewTaskOrchestratorRegistry()
+	orch := registry.GetOrCreate("u1")
+	orch.Activate([]*TaskItem{{Index: 0, Title: "Leaked task", Status: TaskExecPending}}, "", "", "/proj", "codex")
+	h := &IMMessageHandler{
+		lastUserID:               "u1",
+		taskOrchestratorRegistry: registry,
+	}
+
+	got := h.enrichSendAndObserveTextForTask("s-leak", "original")
+	if got != "original" {
+		t.Fatalf("send_and_observe without runtime owner must not inherit lastUserID task orchestration, got:\n%s", got)
+	}
+	if orch.CurrentTask().SessionID != "" {
+		t.Fatalf("orchestrator should not be touched without runtime owner: %#v", orch.CurrentTask())
+	}
+}
+
+func TestEnrichSendAndObserveTextForTaskUsesRuntimeOwner(t *testing.T) {
+	registry := NewTaskOrchestratorRegistry()
+	desktopOrch := registry.GetOrCreate(desktopUserID)
+	desktopOrch.Activate([]*TaskItem{{Index: 0, Title: "Desktop task", Status: TaskExecPending}}, "", "", "/proj", "codex")
+	remoteOrch := registry.GetOrCreate("remote:mobile")
+	remoteOrch.Activate([]*TaskItem{{Index: 0, Title: "Mobile task", Status: TaskExecPending}}, "", "", "/proj", "codex")
+	h := &IMMessageHandler{
+		lastUserID:               desktopUserID,
+		currentLoopCtx:           &LoopContext{Runtime: RuntimeContext{RequestID: "req-mobile", PolicyOwnerID: "remote:mobile"}},
+		taskOrchestratorRegistry: registry,
+	}
+
+	got := h.enrichSendAndObserveTextForTask("s-mobile", "extra context")
+	if !strings.Contains(got, "Mobile task") || strings.Contains(got, "Desktop task") {
+		t.Fatalf("enriched text should use runtime owner task only:\n%s", got)
+	}
+	if desktopOrch.CurrentTask().SessionID != "" {
+		t.Fatalf("desktop orchestrator should not be touched: %#v", desktopOrch.CurrentTask())
+	}
+	if remoteOrch.CurrentTask().SessionID != "s-mobile" {
+		t.Fatalf("remote orchestrator session = %#v", remoteOrch.CurrentTask())
 	}
 }

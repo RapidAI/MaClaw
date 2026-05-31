@@ -47,6 +47,16 @@ func (a *App) DisablePetFromMenu() {
 	}
 }
 
+func (a *App) OpenPetSettingsFromMenu() {
+	if a == nil || a.ctx == nil {
+		return
+	}
+	runtime.WindowShow(a.ctx)
+	runtime.WindowSetAlwaysOnTop(a.ctx, true)
+	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	runtime.EventsEmit(a.ctx, "open-pet-settings", map[string]any{"source": "pet"})
+}
+
 func (a *App) QuitApp() {
 	if fa := a.ensureFloatingAssistant(); fa != nil {
 		fa.QuitApp()

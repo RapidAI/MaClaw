@@ -18,7 +18,9 @@ const (
 	veEventRejected          = "ve:rejected"
 	veEventDisabled          = "ve:disabled"
 	veEventGroupConfig       = "ve:group_config"
+	veEventDiscussionInvite  = "ve:discussion_invite"
 	veEventDiscussionMessage = "ve:discussion_message"
+	veEventDiscussionRename  = "ve:discussion_rename"
 )
 
 // isVEEvent returns true if the message type is a VE-related event.
@@ -30,7 +32,16 @@ func isVEEvent(msgType string) bool {
 // and forwards them to the frontend via Wails EventsEmit.
 // This is called from the readLoop when a VE event is received.
 func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
-	if c == nil || c.app == nil || c.app.ctx == nil {
+	if c == nil || c.app == nil {
+		return
+	}
+	if strings.TrimSpace(msg.Type) == veEventDiscussionInvite {
+		c.handleVEDiscussionInvite(msg)
+	}
+	if strings.TrimSpace(msg.Type) == veEventDiscussionRename {
+		c.cachePushedVEDiscussionRename(decodeVEEventPayloadMap(msg))
+	}
+	if c.app.ctx == nil {
 		return
 	}
 	if strings.TrimSpace(msg.Type) == veEventDiscussionMessage {
@@ -38,16 +49,7 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 		return
 	}
 
-	// Parse the payload for forwarding to frontend
-	var payload map[string]any
-	if len(msg.Payload) > 0 {
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			log.Printf("[hub-client] handleVEEvent: failed to parse payload for %s: %v", msg.Type, err)
-			payload = map[string]any{}
-		}
-	} else {
-		payload = map[string]any{}
-	}
+	payload := decodeVEEventPayloadMap(msg)
 
 	// Construct the event data to emit to frontend
 	eventData := map[string]any{
@@ -64,6 +66,101 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 	runtime.EventsEmit(c.app.ctx, "ve-event", eventData)
 
 	log.Printf("[hub-client] handleVEEvent: forwarded %s to frontend", msg.Type)
+}
+
+func decodeVEEventPayloadMap(msg inboundHubEnvelope) map[string]any {
+	if len(msg.Payload) == 0 {
+		return map[string]any{}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[hub-client] handleVEEvent: failed to parse payload for %s: %v", msg.Type, err)
+		return map[string]any{}
+	}
+	return payload
+}
+
+func (c *RemoteHubClient) cachePushedVEDiscussionRename(payload map[string]any) {
+	if c == nil || c.app == nil || len(payload) == 0 {
+		return
+	}
+	payload = discussionRenamePayloadMap(payload)
+	field := func(keys ...string) string {
+		for _, key := range keys {
+			if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+		return ""
+	}
+	discussionID := field("discussion_id", "discussionId", "session_id", "sessionId")
+	topic := field("topic", "title")
+	if discussionID == "" || topic == "" {
+		return
+	}
+	if store, err := c.app.openGroupDiscussionHistoryStore(); err == nil {
+		ctx, cancel := groupDiscussionContext()
+		_ = store.RenameCachedDiscussion(ctx, discussionID, topic)
+		cancel()
+		_ = store.Close()
+	}
+}
+
+func discussionRenamePayloadMap(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return payload
+	}
+	for _, key := range []string{"payload", "Payload"} {
+		if nested, ok := payload[key].(map[string]any); ok && len(nested) > 0 {
+			return discussionRenamePayloadMap(nested)
+		}
+	}
+	return payload
+}
+
+func (c *RemoteHubClient) handleVEDiscussionInvite(msg inboundHubEnvelope) {
+	var payload struct {
+		Envelope *a2a.GroupEnvelope `json:"envelope"`
+		InviteID string             `json:"invite_id"`
+	}
+	if len(msg.Payload) == 0 {
+		return
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil || payload.Envelope == nil || payload.Envelope.Invitation == nil {
+		return
+	}
+	inviteID := strings.TrimSpace(payload.InviteID)
+	if inviteID == "" {
+		return
+	}
+	client, cfg, err := c.app.veA2AHubClient()
+	if err != nil {
+		log.Printf("[hub-client] handleVEDiscussionInvite: VE A2A client unavailable: %v", err)
+		return
+	}
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if localID == "" || !isVEGroupDefaultResponderMatch(payload.Envelope.Invitation.ToID, localID) {
+		return
+	}
+	if !payload.Envelope.Invitation.Trusted {
+		log.Printf("[hub-client] handleVEDiscussionInvite: ignored untrusted invite %s", inviteID)
+		return
+	}
+	if !groupDiscussionRoleAllowed(cfg, payload.Envelope.Invitation.Role) {
+		log.Printf("[hub-client] handleVEDiscussionInvite: role %q not allowed", payload.Envelope.Invitation.Role)
+		return
+	}
+	if cfg.GroupDiscussion.RejectWhenDND && strings.EqualFold(strings.TrimSpace(cfg.GroupDiscussion.Availability), "dnd") {
+		log.Printf("[hub-client] handleVEDiscussionInvite: ignored invite %s while DND", inviteID)
+		return
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := client.AcceptInvite(ctx, inviteID, a2a.GroupInvitationResponse{FromID: localID, Reason: "digital employee auto accepted"}); err != nil {
+		log.Printf("[hub-client] handleVEDiscussionInvite: accept %s failed: %v", inviteID, err)
+		return
+	}
+	log.Printf("[hub-client] handleVEDiscussionInvite: accepted %s for %s", inviteID, localID)
 }
 
 func (c *RemoteHubClient) digitalEmployeeMessageHandler() *VEMessageHandler {
@@ -115,14 +212,14 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) {
 		// Check if this message originated from our own local agent
 		localMachineID := dispatcher.getLocalMachineID()
-		if localMachineID != "" && strings.EqualFold(strings.TrimSpace(envelope.Message.FromID), localMachineID) {
+		if localMachineID != "" && veGroupParticipantIdentityMatches(envelope.Message.FromID, localMachineID) {
 			isOwnMessage = true
 		}
 	}
 
 	switch envelope.Message.Kind {
 	case a2a.MessageStreamChunk:
-		if !isOwnMessage {
+		if !isOwnMessage && (content != "" || HasAttachments(*envelope.Message)) {
 			runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
 		}
 	case a2a.MessageStreamEnd:
@@ -142,9 +239,13 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 		}
 		dispatcher := c.groupChatDispatcher()
 		localDispatcherRegistered := dispatcher != nil && dispatcher.IsRegistered(sessionID)
-		if localDispatcherRegistered && shouldRouteVEDiscussionToLocalDispatcher(targetRole, *envelope.Message) {
+		localMachineID := ""
+		if dispatcher != nil {
+			localMachineID = dispatcher.getLocalMachineID()
+		}
+		if localDispatcherRegistered && shouldRouteVEDiscussionToLocalDispatcher(targetRole, *envelope.Message, localMachineID) {
 			dispatcher.HandleGroupMessage(sessionID, *envelope.Message, false)
-		} else if shouldRouteVEDiscussionToDigitalEmployee(targetRole, *envelope.Message, localDispatcherRegistered) {
+		} else if shouldRouteVEDiscussionToDigitalEmployee(targetRole, *envelope.Message, localDispatcherRegistered, localMachineID) {
 			if handler := c.digitalEmployeeMessageHandler(); handler != nil {
 				handler.HandleGroupEnvelope(envelope)
 			}
@@ -211,21 +312,45 @@ func (c *RemoteHubClient) localizeVEDiscussionAttachmentPaths(sessionID string, 
 	}
 }
 
-func shouldRouteVEDiscussionToLocalDispatcher(targetRole string, msg a2a.GroupDiscussionMessage) bool {
+func shouldRouteVEDiscussionToLocalDispatcher(targetRole string, msg a2a.GroupDiscussionMessage, localMachineID string) bool {
 	if !shouldExecutorRespond(msg) {
 		return false
+	}
+	if len(msg.ToIDs) > 0 {
+		return groupDiscussionMessageTargetsLocal(msg, localMachineID)
 	}
 	if strings.EqualFold(strings.TrimSpace(targetRole), "executor") {
 		return true
 	}
+	return false
+}
+
+func shouldRouteVEDiscussionToDigitalEmployee(targetRole string, msg a2a.GroupDiscussionMessage, localDispatcherRegistered bool, localMachineID string) bool {
+	if len(msg.ToIDs) > 0 && !groupDiscussionMessageTargetsLocal(msg, localMachineID) {
+		return false
+	}
+	if localDispatcherRegistered {
+		if len(msg.ToIDs) == 0 {
+			return false
+		}
+		if shouldRouteVEDiscussionToLocalDispatcher(targetRole, msg, localMachineID) {
+			return false
+		}
+	}
 	return shouldDigitalEmployeeRespondToDiscussion(targetRole, msg.Kind)
 }
 
-func shouldRouteVEDiscussionToDigitalEmployee(targetRole string, msg a2a.GroupDiscussionMessage, localDispatcherRegistered bool) bool {
-	if localDispatcherRegistered && shouldRouteVEDiscussionToLocalDispatcher(targetRole, msg) {
+func groupDiscussionMessageTargetsLocal(msg a2a.GroupDiscussionMessage, localMachineID string) bool {
+	localMachineID = strings.TrimSpace(localMachineID)
+	if localMachineID == "" {
 		return false
 	}
-	return shouldDigitalEmployeeRespondToDiscussion(targetRole, msg.Kind)
+	for _, toID := range msg.ToIDs {
+		if isVEGroupDefaultResponderMatch(strings.TrimSpace(toID), localMachineID) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildVEDiscussionStreamEventPayload(envelope a2a.GroupEnvelope, sessionID string, content string) map[string]any {

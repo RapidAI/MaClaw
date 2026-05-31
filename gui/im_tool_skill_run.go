@@ -338,7 +338,11 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 		onProgress(fmt.Sprintf("🚀 正在启动 Skill「%s」...", name))
 	}
 	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
-	runID, err := runner.StartRun(name, buildRunSkillArgs(args))
+	ownerID, explicitRuntime := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
+	if ownerID == "" && explicitRuntime {
+		return "Skill 启动失败: runtime owner is missing; isolated runtime will not fall back to desktop owner"
+	}
+	runID, err := runner.StartRunForOwner(ownerID, name, buildRunSkillArgs(args))
 	if err != nil {
 		return fmt.Sprintf("Skill 启动失败: %s", err.Error())
 	}

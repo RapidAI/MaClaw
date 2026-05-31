@@ -456,6 +456,7 @@ func (s *Service) requireUserConfigForMCP(p Principal) (UserConfig, error) {
 }
 
 func (s *Service) saveRawUserConfig(p Principal, appCfg corelib.AppConfig) error {
+	appCfg = effectiveLLMFlatConfig(appCfg)
 	cfg := UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: appCfg, UpdatedAt: s.now()}
 	if err := s.store.SaveUserConfig(cfg); err != nil {
 		return err

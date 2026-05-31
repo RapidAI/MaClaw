@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
@@ -168,6 +168,7 @@ export function VEAuthorizationDialog({
     const [requests, setRequests] = useState<AuthorizationRequest[]>([]);
     const [responding, setResponding] = useState<string | null>(null);
     const mountedRef = useRef(true);
+    const requestIdsRef = useRef<Set<string>>(new Set());
 
     const isZh = !lang || lang.startsWith("zh");
 
@@ -179,12 +180,10 @@ export function VEAuthorizationDialog({
             if (!mountedRef.current) return;
             const req = normalizeAuthEvent(data);
             if (req.id) {
-                setRequests((prev) => {
-                    // Avoid duplicates
-                    if (prev.some((r) => r.id === req.id)) return prev;
-                    void playAuthRequestSound();
-                    return [...prev, req];
-                });
+                if (requestIdsRef.current.has(req.id)) return;
+                requestIdsRef.current.add(req.id);
+                void playAuthRequestSound();
+                setRequests((prev) => prev.some((r) => r.id === req.id) ? prev : [...prev, req]);
             }
         };
 
@@ -192,6 +191,7 @@ export function VEAuthorizationDialog({
 
         return () => {
             mountedRef.current = false;
+            requestIdsRef.current.clear();
             stopAuthRequestSound();
             if (typeof unsub === "function") unsub();
             else EventsOff("ve:auth_request");
@@ -214,6 +214,7 @@ export function VEAuthorizationDialog({
                     await (mod as any).RespondAuthRequest(requestId, decision);
                 }
                 emitAuthHandled(requestId);
+                requestIdsRef.current.delete(requestId);
                 if (mountedRef.current) setRequests((prev) => prev.filter((r) => r.id !== requestId));
             } catch (err) {
                 // Keep the request in the list on error
@@ -383,6 +384,17 @@ function emitRemovedAuthRequests(previous: AuthorizationRequest[], next: Authori
     });
 }
 
+function removeTrackedAuthRequestIds(
+    trackedIds: MutableRefObject<Set<string>>,
+    previous: AuthorizationRequest[],
+    next: AuthorizationRequest[],
+) {
+    const activeIds = new Set(next.map((request) => request.id));
+    previous.forEach((request) => {
+        if (request.id && !activeIds.has(request.id)) trackedIds.current.delete(request.id);
+    });
+}
+
 function AuthBellIcon({ size = 14 }: { size?: number }) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block" }}>
@@ -401,9 +413,34 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
     const [open, setOpen] = useState(false);
     const [responding, setResponding] = useState<string | null>(null);
     const [respondError, setRespondError] = useState<string | null>(null);
+    const [popoverFrame, setPopoverFrame] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
     const mountedRef = useRef(true);
     const respondingRef = useRef<string | null>(null);
+    const requestIdsRef = useRef<Set<string>>(new Set());
+    const triggerRef = useRef<HTMLButtonElement | null>(null);
     const isZh = !lang || lang.startsWith("zh");
+
+    const updatePopoverFrame = useCallback(() => {
+        const trigger = triggerRef.current;
+        if (!trigger) return;
+        const rect = trigger.getBoundingClientRect();
+        const titleBar = trigger.closest('[data-testid="ai-title-bar"]') as HTMLElement | null;
+        const titleBarRect = titleBar?.getBoundingClientRect();
+        const margin = 14;
+        const minLeft = Math.max(margin, (titleBarRect?.left ?? 0) + 12);
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        const availableWidth = Math.max(280, viewportWidth - minLeft - margin);
+        const width = Math.min(390, availableWidth);
+        const maxLeft = Math.max(minLeft, viewportWidth - margin - width);
+        const left = Math.min(Math.max(rect.right - width, minLeft), maxLeft);
+        const minPopoverHeight = 160;
+        const preferredTop = rect.bottom + 8;
+        const maxTop = Math.max(margin, viewportHeight - margin - minPopoverHeight);
+        const top = Math.min(Math.max(margin, preferredTop), maxTop);
+        const maxHeight = Math.max(minPopoverHeight, viewportHeight - top - margin);
+        setPopoverFrame({ left, top, width, maxHeight });
+    }, []);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -411,15 +448,15 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
             if (!mountedRef.current) return;
             const req = normalizeAuthEvent(data);
             if (!req.id) return;
-            setRequests((prev) => {
-                if (prev.some((item) => item.id === req.id)) return prev;
-                void playAuthRequestSound();
-                return [...prev, req];
-            });
+            if (requestIdsRef.current.has(req.id)) return;
+            requestIdsRef.current.add(req.id);
+            void playAuthRequestSound();
+            setRequests((prev) => prev.some((item) => item.id === req.id) ? prev : [...prev, req]);
         };
         const unsub = EventsOn("ve:auth_request", handleAuthRequest);
         return () => {
             mountedRef.current = false;
+            requestIdsRef.current.clear();
             stopAuthRequestSound();
             if (typeof unsub === "function") unsub();
             else EventsOff("ve:auth_request");
@@ -434,11 +471,23 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
     }, [requests.length]);
 
     useEffect(() => {
+        if (!open) return undefined;
+        updatePopoverFrame();
+        window.addEventListener("resize", updatePopoverFrame);
+        window.addEventListener("scroll", updatePopoverFrame, true);
+        return () => {
+            window.removeEventListener("resize", updatePopoverFrame);
+            window.removeEventListener("scroll", updatePopoverFrame, true);
+        };
+    }, [open, requests.length, updatePopoverFrame]);
+
+    useEffect(() => {
         if (requests.length === 0) return undefined;
         const now = Date.now();
         const active = pruneExpiredAuthRequests(requests, now);
         if (active.length !== requests.length) {
             emitRemovedAuthRequests(requests, active);
+            removeTrackedAuthRequestIds(requestIdsRef, requests, active);
             setRequests(active);
             return undefined;
         }
@@ -452,6 +501,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                 setRequests((prev) => {
                     const active = pruneExpiredAuthRequests(prev);
                     emitRemovedAuthRequests(prev, active);
+                    removeTrackedAuthRequestIds(requestIdsRef, prev, active);
                     return active;
                 });
             }
@@ -472,6 +522,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                 await (mod as any).RespondAuthRequest(requestId, decision);
             }
             emitAuthHandled(requestId);
+            requestIdsRef.current.delete(requestId);
             if (mountedRef.current) setRequests((prev) => prev.filter((item) => item.id !== requestId));
         } catch (err) {
             console.error("Failed to respond to auth request:", err);
@@ -493,12 +544,13 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
     return (
         <div className="ve-auth-request-center" data-testid="ve-auth-request-center" style={{ position: "relative", display: "inline-flex", ...(inline ? { WebkitAppRegion: "no-drag" } as any : {}) }}>
             <button
+                ref={triggerRef}
                 type="button"
                 className="ai-titlebar-tool ve-auth-request-trigger ve-auth-request-trigger--blink"
                 data-testid="ve-auth-request-trigger"
                 aria-label={isZh ? `${requests.length} 个访问请求待确认` : `${requests.length} pending access request(s)`}
-                onMouseDown={(e) => { if (inline) { e.preventDefault(); e.stopPropagation(); setOpen((value) => !value); } }}
-                onClick={(e) => { if (!inline) { e.preventDefault(); e.stopPropagation(); setOpen((value) => !value); } }}
+                onMouseDown={(e) => { if (inline) { e.preventDefault(); e.stopPropagation(); updatePopoverFrame(); setOpen((value) => !value); } }}
+                onClick={(e) => { if (!inline) { e.preventDefault(); e.stopPropagation(); updatePopoverFrame(); setOpen((value) => !value); } }}
                 style={{
                     minWidth: 30,
                     height: 28,
@@ -526,12 +578,12 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                     role="dialog"
                     aria-label={title}
                     style={{
-                        position: "absolute",
-                        right: 0,
-                        top: "calc(100% + 8px)",
-                        width: 390,
+                        position: "fixed",
+                        left: popoverFrame ? popoverFrame.left : 14,
+                        top: popoverFrame ? popoverFrame.top : 52,
+                        width: popoverFrame ? popoverFrame.width : 390,
                         maxWidth: "calc(100vw - 28px)",
-                        maxHeight: "min(460px, calc(100vh - 80px))",
+                        maxHeight: popoverFrame ? Math.min(460, popoverFrame.maxHeight) : "min(460px, calc(100vh - 80px))",
                         overflow: "auto",
                         padding: 12,
                         borderRadius: 8,

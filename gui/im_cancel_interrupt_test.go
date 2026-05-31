@@ -246,3 +246,28 @@ func TestHubCancelSessionTargetsPayloadUser(t *testing.T) {
 		t.Fatal("hub cancel should mark a cancel boundary for the payload user")
 	}
 }
+
+func TestHubCancelSessionWithoutPayloadDoesNotCancelGlobalLoop(t *testing.T) {
+	otherLoop := NewLoopContext("chat", 3, nil)
+	h := &IMMessageHandler{}
+	h.setSessionLoopCtx("weixin:user", otherLoop)
+	h.globalLoopMu.Lock()
+	h.currentLoopCtx = otherLoop
+	h.lastUserID = "weixin:user"
+	h.lastUserText = "im task"
+	h.globalLoopMu.Unlock()
+	go func() {
+		<-otherLoop.CancelC
+		otherLoop.Done()
+	}()
+	client := &RemoteHubClient{imHandler: h}
+
+	client.handleIMCancelSession(inboundHubEnvelope{})
+
+	if otherLoop.IsCancelled() {
+		t.Fatal("hub cancel without user_id must not cancel legacy global loop")
+	}
+	if h.hasCancelledTaskBoundary("weixin:user") {
+		t.Fatal("hub cancel without user_id must not mark a cancel boundary")
+	}
+}

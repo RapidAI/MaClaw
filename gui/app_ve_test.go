@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,9 @@ func TestResolveVEInviteMachineIDPrefersMachineID(t *testing.T) {
 	}
 	if got := resolveVEInviteMachineID(employees, "machine-a"); got != "machine-a" {
 		t.Fatalf("resolved machine id = %q, want machine-a", got)
+	}
+	if got := resolveVEInviteMachineID(employees, "ve-machine-a"); got != "machine-a" {
+		t.Fatalf("resolved dash alias id = %q, want machine-a", got)
 	}
 	if got := resolveVEInviteMachineID(employees, "ve_machine-b"); got != "ve_machine-b" {
 		t.Fatalf("fallback id = %q, want ve_machine-b", got)
@@ -157,6 +161,7 @@ func TestFilterOwnVirtualEmployeesRemovesLocalMachineCaseInsensitive(t *testing.
 		{ID: "ve-local", MachineID: "Machine-Local", Name: "Local"},
 		{ID: "machine-local", Name: "Legacy Local"},
 		{ID: "ve_machine-local", Name: "Generated ID Local"},
+		{ID: "ve-machine-local", Name: "Generated Dash ID Local"},
 		{ID: "ve-remote", MachineID: "machine-remote", Name: "Remote"},
 	}
 	got := filterOwnVirtualEmployees(employees, "machine-local")
@@ -328,7 +333,7 @@ func TestInitiateVEConversationReturnsPendingConfirmation(t *testing.T) {
 				t.Fatalf("X-Machine-ID = %q, want machine-1", r.Header.Get("X-Machine-ID"))
 			}
 			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "pending_confirmation", "request_id": "req-1"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "pending_confirmation", "request_id": "req-1", "expires_at": "2026-05-30T10:00:00Z"})
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -346,8 +351,8 @@ func TestInitiateVEConversationReturnsPendingConfirmation(t *testing.T) {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	if _, err := app.InitiateVEConversation("ve-a"); err == nil || err.Error() != "pending_confirmation" {
-		t.Fatalf("InitiateVEConversation error = %v, want pending_confirmation", err)
+	if _, err := app.InitiateVEConversation("ve-a"); err == nil || !strings.Contains(err.Error(), "pending_confirmation") || !strings.Contains(err.Error(), "request_id=req-1") || !strings.Contains(err.Error(), "expires_at=2026-05-30T10:00:00Z") {
+		t.Fatalf("InitiateVEConversation error = %v, want pending_confirmation with request metadata", err)
 	}
 }
 
@@ -452,6 +457,51 @@ func TestInitiateVEConversationReusesCachedDirectSession(t *testing.T) {
 	}
 	if _, ok := app.veSessionCache.Load("ve-machine-2"); !ok {
 		t.Fatalf("participant id was not cached for future reuse")
+	}
+	if got := atomic.LoadInt32(&hubCalls); got != 0 {
+		t.Fatalf("Hub calls = %d, want cached direct lookup only", got)
+	}
+}
+
+func TestInitiateVEConversationReusesCachedDirectSessionWithDuplicateAliases(t *testing.T) {
+	hubCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hubCalls, 1)
+		if r.URL.Path == "/api/ve/discoverable" {
+			http.Error(w, "offline", http.StatusServiceUnavailable)
+			return
+		}
+		t.Errorf("unexpected Hub request: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "session-cached-alias", LocalRelation: "initiated_by_me", Status: "open", Topic: "VE session", ParticipantIDs: []string{"machine-1", "machine-2", "ve-machine-2"}, UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+
+	info, err := app.InitiateVEConversation("ve-machine-2")
+	if err != nil {
+		t.Fatalf("InitiateVEConversation: %v", err)
+	}
+	if info.SessionID != "session-cached-alias" {
+		t.Fatalf("session id = %q, want session-cached-alias", info.SessionID)
 	}
 	if got := atomic.LoadInt32(&hubCalls); got != 0 {
 		t.Fatalf("Hub calls = %d, want cached direct lookup only", got)
@@ -776,14 +826,18 @@ func TestSendVEGroupMessageWorksWhenGroupDiscussionDisabled(t *testing.T) {
 	gotMessage := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}, "session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "anna-machine", "role_code": "speak"},
+				{"id": "other-machine", "role_code": "speak"},
+			}}})
 		case "/api/a2a/consultations/session-1/messages":
 			if got := r.Header.Get("X-Machine-ID"); got != "machine-1" {
 				t.Errorf("X-Machine-ID = %q, want machine-1", got)
 			}
 			gotMessage <- struct{}{}
 			_, _ = w.Write([]byte(`{"ok":true}`))
-		case "/api/a2a/consultations/session-1/detail":
-			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}})
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -807,6 +861,57 @@ func TestSendVEGroupMessageWorksWhenGroupDiscussionDisabled(t *testing.T) {
 
 	select {
 	case <-gotMessage:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub send")
+	}
+}
+
+func TestSendVEGroupMessageDefaultsWithDuplicateRemoteAliases(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}, "session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "anna-machine", "role_code": "speak"},
+				{"id": "ve-anna-machine", "role_code": "speak"},
+			}}})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SendVEGroupMessage("session-1", "hello", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		if len(got) != 1 || got[0] != "anna-machine" {
+			t.Fatalf("to_ids = %v, want [anna-machine]", got)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Hub send")
 	}
@@ -996,6 +1101,8 @@ func TestSendVEGroupMessageLocalMentionTextFallbackDoesNotBroadcast(t *testing.T
 	gotToIDs := make(chan []string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}})
 		case "/api/a2a/consultations/session-1/messages":
 			var body struct {
 				ToIDs []string `json:"to_ids"`
@@ -1006,8 +1113,6 @@ func TestSendVEGroupMessageLocalMentionTextFallbackDoesNotBroadcast(t *testing.T
 			}
 			gotToIDs <- append([]string(nil), body.ToIDs...)
 			_, _ = w.Write([]byte(`{"ok":true}`))
-		case "/api/a2a/consultations/session-1/detail":
-			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}})
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -1040,6 +1145,373 @@ func TestSendVEGroupMessageLocalMentionTextFallbackDoesNotBroadcast(t *testing.T
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for local-targeted Hub sync")
+	}
+}
+
+func TestSendVEGroupMessageWithoutMentionTargetsMultiVEGroup(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "anna-machine", "role_code": "speak"},
+				{"id": "other-machine", "role_code": "speak"},
+			}}})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.remoteSessions = NewRemoteSessionManager(app)
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	app.remoteSessions.SetHubClient(client)
+	client.groupChatDispatcher().RegisterSession("session-1")
+
+	if err := app.SendVEGroupMessage("session-1", "北京天气", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		want := []string{"anna-machine", "other-machine"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("to_ids = %v, want %v", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub message")
+	}
+}
+
+func TestSendVEGroupMessageWithoutMentionTargetsRemoteVEsAndSkipsLocalAI(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "anna-machine", "role_code": "speak"},
+				{"id": "xiaoyan-machine", "role_code": "speak"},
+				{"id": "local-maclaw", "role_code": "speak"},
+			}}})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SendVEGroupMessage("session-1", "continue", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		want := []string{"anna-machine", "xiaoyan-machine"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("to_ids = %v, want %v", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub message")
+	}
+}
+
+func TestSendVEGroupMessageWithoutMentionKeepsSingleVEDefaultResponder(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "anna-machine", "role_code": "speak"},
+				{"id": "local-maclaw", "role_code": "speak"},
+			}}})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.remoteSessions = NewRemoteSessionManager(app)
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	app.remoteSessions.SetHubClient(client)
+	client.groupChatDispatcher().RegisterSession("session-1")
+
+	if err := app.SendVEGroupMessage("session-1", "continue", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		if len(got) != 1 || got[0] != "anna-machine" {
+			t.Fatalf("to_ids = %v, want [anna-machine]", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub message")
+	}
+}
+
+func TestSendVEGroupMessageWithoutMentionIgnoresCachedDefaultInMultiVEGroup(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "other-machine", "role_code": "speak"},
+				{"id": "anna-machine", "role_code": "speak"},
+			}}})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.cacheVEGroupDefaultResponder("session-1", "ve_anna-machine")
+
+	if err := app.SendVEGroupMessage("session-1", "继续", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		want := []string{"other-machine", "anna-machine"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("to_ids = %v, want %v", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub message")
+	}
+}
+
+func TestSendVEGroupMessageWithoutMentionFallsBackToCachedDefaultResponder(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			http.Error(w, "temporary detail failure", http.StatusBadGateway)
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.cacheVEGroupDefaultResponder("session-1", "anna-machine")
+
+	if err := app.SendVEGroupMessage("session-1", "继续", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		if len(got) != 1 || got[0] != "anna-machine" {
+			t.Fatalf("to_ids = %v, want [anna-machine]", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub message")
+	}
+}
+
+func TestSendVEGroupMessageWithoutMentionSkipsLegacyLocalAIResponder(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "local-maclaw", "role_code": "speak"},
+				{"id": "anna-machine", "role_code": "speak"},
+			}}})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SendVEGroupMessage("session-1", "continue", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		if len(got) != 1 || got[0] != "anna-machine" {
+			t.Fatalf("to_ids = %v, want [anna-machine]", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub message")
+	}
+}
+
+func TestSendVEGroupMessageWithoutMentionSkipsGeneratedLocalResponders(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"participants": []map[string]string{
+				{"id": "ve_machine-1", "role_code": "speak"},
+				{"id": "ve_local-maclaw", "role_code": "speak"},
+				{"id": "anna-machine", "role_code": "speak"},
+			}}})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SendVEGroupMessage("session-1", "continue", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		if len(got) != 1 || got[0] != "anna-machine" {
+			t.Fatalf("to_ids = %v, want [anna-machine]", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub message")
 	}
 }
 
@@ -1091,6 +1563,68 @@ func TestSendVEGroupMessageLocalMentionSyncsInputAsLocalTarget(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for local-targeted Hub sync")
+	}
+}
+
+func TestSendVEGroupMessageMixedMentionsTargetsLocalAndRemote(t *testing.T) {
+	gotToIDs := make(chan []string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-1"}, "session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "remote-ve", "role_code": "speak"},
+			}}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.remoteSessions = NewRemoteSessionManager(app)
+	client := NewRemoteHubClient(app, app.remoteSessions)
+	app.remoteSessions.SetHubClient(client)
+	client.groupChatDispatcher().RegisterSession("session-1")
+
+	if err := app.SendVEGroupMessage("session-1", "@local-maclaw @remote-ve hello", []string{"local-maclaw", "remote-ve"}); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	seen := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case got := <-gotToIDs:
+			if len(got) != 1 {
+				t.Fatalf("to_ids = %v, want one target per delivery", got)
+			}
+			seen[got[0]] = true
+		case <-deadline:
+			t.Fatalf("timed out waiting for local and remote sends, saw %v", seen)
+		}
+	}
+	if !seen["machine-1"] || !seen["remote-ve"] {
+		t.Fatalf("targets = %v, want machine-1 and remote-ve", seen)
 	}
 }
 
@@ -1257,6 +1791,48 @@ func TestResolveVEGroupMentionTargetsRawParticipantAvoidsDiscoverableLookup(t *t
 	}
 	if len(targets.RemoteToIDs) != 1 || targets.RemoteToIDs[0] != "MACHINE-VE" {
 		t.Fatalf("remote targets = %v, want [MACHINE-VE]", targets.RemoteToIDs)
+	}
+	if got := atomic.LoadInt32(&discoverCalls); got != 0 {
+		t.Fatalf("discover calls = %d, want 0", got)
+	}
+}
+
+func TestResolveVEGroupMentionTargetsGeneratedVEIDAvoidsDiscoverableLookup(t *testing.T) {
+	discoverCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"participants": []map[string]string{
+				{"id": "machine-1", "role_code": "initiator"},
+				{"id": "m_anna", "role_code": "speak"},
+			}}})
+		case "/api/ve/discoverable":
+			atomic.AddInt32(&discoverCalls, 1)
+			t.Errorf("unexpected discoverable lookup for generated VE participant mention")
+			http.NotFound(w, r)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	targets, err := app.resolveVEGroupMentionTargets("session-1", "", []string{"ve_m_anna"})
+	if err != nil {
+		t.Fatalf("resolveVEGroupMentionTargets: %v", err)
+	}
+	if len(targets.RemoteToIDs) != 1 || targets.RemoteToIDs[0] != "m_anna" {
+		t.Fatalf("remote targets = %v, want [m_anna]", targets.RemoteToIDs)
 	}
 	if got := atomic.LoadInt32(&discoverCalls); got != 0 {
 		t.Fatalf("discover calls = %d, want 0", got)
@@ -1446,5 +2022,205 @@ func TestRegisterLocalExecutorInGroupRejectsMissingInviteID(t *testing.T) {
 	}
 	if dispatcher := client.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered("session-1") {
 		t.Fatal("dispatcher should not register when Hub invite id is missing")
+	}
+}
+
+func TestAddVEToGroupWaitsUntilInvitedVEIsParticipant(t *testing.T) {
+	detailCalls := int32(0)
+	inviteCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{{"id": "ve_emp_xiaoyan", "machine_id": "xiaoyan-machine", "name": "程序员鼓励师小妍"}}})
+		case "/api/a2a/consultations/session-1/detail":
+			call := atomic.AddInt32(&detailCalls, 1)
+			participants := []map[string]string{{"id": "machine-1", "role_code": "initiator"}, {"id": "anna-machine", "role_code": "speak"}}
+			if call >= 2 {
+				participants = append(participants, map[string]string{"id": "xiaoyan-machine", "role_code": "speak"})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": "session-1", "participants": participants}})
+		case "/api/a2a/consultations/session-1/invites":
+			atomic.AddInt32(&inviteCalls, 1)
+			var body struct {
+				FromID  string `json:"from_id"`
+				ToID    string `json:"to_id"`
+				Role    string `json:"role"`
+				Trusted bool   `json:"trusted"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode invite: %v", err)
+				return
+			}
+			if body.FromID != "machine-1" || body.ToID != "xiaoyan-machine" || body.Role != "speak" || !body.Trusted {
+				t.Errorf("invite body = %+v, want trusted machine-1 -> xiaoyan-machine speak", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"invite_id": "invite-1"})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldTimeout := veGroupInviteJoinTimeout
+	oldDelay := veGroupInviteJoinPollDelay
+	veGroupInviteJoinTimeout = time.Second
+	veGroupInviteJoinPollDelay = time.Millisecond
+	defer func() {
+		veGroupInviteJoinTimeout = oldTimeout
+		veGroupInviteJoinPollDelay = oldDelay
+	}()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.AddVEToGroup("session-1", "ve_emp_xiaoyan"); err != nil {
+		t.Fatalf("AddVEToGroup: %v", err)
+	}
+	if got := atomic.LoadInt32(&inviteCalls); got != 1 {
+		t.Fatalf("invite calls = %d, want 1", got)
+	}
+	if got, ok := app.veSessionCache.Load("ve_emp_xiaoyan"); !ok || got != "session-1" {
+		t.Fatalf("cached VE session = %#v ok=%v, want session-1", got, ok)
+	}
+}
+
+func TestAddVEToGroupFailsWhenInviteeDoesNotJoin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{{"id": "ve_emp_xiaoyan", "machine_id": "xiaoyan-machine"}}})
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": "session-1", "participants": []map[string]string{{"id": "machine-1", "role_code": "initiator"}, {"id": "anna-machine", "role_code": "speak"}}}})
+		case "/api/a2a/consultations/session-1/invites":
+			_ = json.NewEncoder(w).Encode(map[string]string{"invite_id": "invite-1"})
+		case "/api/a2a/invites/mine":
+			if r.URL.Query().Get("from_id") != "machine-1" || r.URL.Query().Get("invite_id") != "invite-1" || r.URL.Query().Get("status") != "all" {
+				t.Errorf("invite status query = %s, want from_id machine-1 invite_id invite-1 status all", r.URL.RawQuery)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"invites": []map[string]string{{"id": "invite-1", "to_id": "xiaoyan-machine", "status": "pending"}}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldTimeout := veGroupInviteJoinTimeout
+	oldDelay := veGroupInviteJoinPollDelay
+	veGroupInviteJoinTimeout = 20 * time.Millisecond
+	veGroupInviteJoinPollDelay = time.Millisecond
+	defer func() {
+		veGroupInviteJoinTimeout = oldTimeout
+		veGroupInviteJoinPollDelay = oldDelay
+	}()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	err := app.AddVEToGroup("session-1", "ve_emp_xiaoyan")
+	if err == nil || !strings.Contains(err.Error(), "has not joined discussion") {
+		t.Fatalf("AddVEToGroup error = %v, want not joined", err)
+	}
+	if got, ok := app.veSessionCache.Load("ve_emp_xiaoyan"); ok {
+		t.Fatalf("cached VE session = %#v, want empty", got)
+	}
+}
+
+func TestAddVEToGroupFailsWhenInviteRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{{"id": "ve_emp_xiaoyan", "machine_id": "xiaoyan-machine"}}})
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": "session-1", "participants": []map[string]string{{"id": "machine-1", "role_code": "initiator"}, {"id": "anna-machine", "role_code": "speak"}}}})
+		case "/api/a2a/consultations/session-1/invites":
+			_ = json.NewEncoder(w).Encode(map[string]string{"invite_id": "invite-1"})
+		case "/api/a2a/invites/mine":
+			if r.URL.Query().Get("from_id") != "machine-1" || r.URL.Query().Get("invite_id") != "invite-1" || r.URL.Query().Get("status") != "all" {
+				t.Errorf("invite status query = %s, want from_id machine-1 invite_id invite-1 status all", r.URL.RawQuery)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"invites": []map[string]string{{"id": "invite-1", "to_id": "xiaoyan-machine", "status": "reject", "reason": "platform employee xiaoyan-machine is not active"}}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldTimeout := veGroupInviteJoinTimeout
+	oldDelay := veGroupInviteJoinPollDelay
+	veGroupInviteJoinTimeout = time.Second
+	veGroupInviteJoinPollDelay = time.Millisecond
+	defer func() {
+		veGroupInviteJoinTimeout = oldTimeout
+		veGroupInviteJoinPollDelay = oldDelay
+	}()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	err := app.AddVEToGroup("session-1", "ve_emp_xiaoyan")
+	if err == nil || !strings.Contains(err.Error(), "invitation invite-1 rejected: platform employee xiaoyan-machine is not active") {
+		t.Fatalf("AddVEToGroup error = %v, want rejection reason", err)
+	}
+	if got, ok := app.veSessionCache.Load("ve_emp_xiaoyan"); ok {
+		t.Fatalf("cached VE session = %#v, want empty", got)
+	}
+}
+
+func TestAddVEToGroupRejectsMissingInviteID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []map[string]string{{"id": "ve_emp_xiaoyan", "machine_id": "xiaoyan-machine"}}})
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": "session-1", "participants": []map[string]string{{"id": "machine-1", "role_code": "initiator"}, {"id": "anna-machine", "role_code": "speak"}}}})
+		case "/api/a2a/consultations/session-1/invites":
+			_ = json.NewEncoder(w).Encode(map[string]string{})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	err := app.AddVEToGroup("session-1", "ve_emp_xiaoyan")
+	if err == nil || !strings.Contains(err.Error(), "missing invite id") {
+		t.Fatalf("AddVEToGroup error = %v, want missing invite id", err)
+	}
+	if got, ok := app.veSessionCache.Load("ve_emp_xiaoyan"); ok {
+		t.Fatalf("cached VE session = %#v, want empty", got)
 	}
 }

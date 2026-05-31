@@ -263,6 +263,10 @@ export function GroupDiscussionSetState(arg1, arg2) {
   return window['go']['main']['App']['GroupDiscussionSetState'](arg1, arg2);
 }
 
+export function GroupDiscussionRenameConsultation(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionRenameConsultation'](arg1, arg2);
+}
+
 export function GroupDiscussionCleanupStale(arg1) {
   return window['go']['main']['App']['GroupDiscussionCleanupStale'](arg1);
 }
@@ -481,10 +485,6 @@ export function ListRemoteSessions() {
 
 export function ListRemoteToolMetadata() {
   return window['go']['main']['App']['ListRemoteToolMetadata']();
-}
-
-export function ListToolProviders(arg1) {
-  return window['go']['main']['App']['ListToolProviders'](arg1);
 }
 
 export function ListSkills(arg1) {
@@ -1483,6 +1483,10 @@ export function OnFloatingButtonDragged(arg1, arg2) {
 
 export function HideFloatingButton() {
   return window['go']['main']['App']['HideFloatingButton']();
+}
+
+export function OpenPetSettingsFromMenu() {
+  return window['go']['main']['App']['OpenPetSettingsFromMenu']();
 }
 
 export function QuitApp() {

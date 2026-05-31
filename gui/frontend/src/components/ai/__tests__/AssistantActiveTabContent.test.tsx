@@ -114,6 +114,43 @@ describe("AssistantActiveTabContent", () => {
         expect(screen.queryByText("ve-b")).toBeNull();
     });
 
+    it("passes primary digital employee avatar across ve aliases", () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        const groupTab: AITab = { id: "group-live", type: "group", title: "Agent A", veId: "ve-machine-a", avatarDataURL: avatar, participants: ["machine-a", "local-maclaw"], closable: true };
+
+        render(
+            <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="en" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
+        );
+
+        expect((screen.getByTestId("participant-avatar-machine-a") as HTMLImageElement).getAttribute("src")).toBe(avatar);
+    });
+
+    it("uses participant names across ve aliases in panel and mentions", () => {
+        const groupTab: AITab = { id: "group-live", type: "group", title: "Agent A", veId: "ve-machine-a", participants: ["machine-a", "machine-b"], participantNames: { "ve-machine-b": "Contract Bot" }, closable: true };
+
+        render(
+            <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="en" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
+        );
+
+        expect(screen.getByText("Agent A")).toBeTruthy();
+        expect(screen.getByText("Contract Bot")).toBeTruthy();
+        const textarea = screen.getByTestId("ve-input-textarea");
+        fireEvent.change(textarea, { target: { value: "@" } });
+        expect(screen.getByTestId("mention-popover").textContent).toContain("Contract Bot");
+    });
+
+    it("does not use a custom group title as a participant name", () => {
+        const groupTab: AITab = { id: "group-renamed", type: "group", title: "Agent A", groupTitle: "Review room", veId: "ve-a", participants: ["ve-a", "local-maclaw"], closable: true };
+
+        render(
+            <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="en" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
+        );
+
+        const panel = screen.getByTestId("group-participant-panel");
+        expect(panel.textContent).not.toContain("Review room");
+        expect(panel.textContent).toContain("Agent A");
+    });
+
     it("does not show a no-op participant picker when add callback is unavailable", () => {
         const groupTab: AITab = { id: "group-no-add", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a"], closable: true };
 

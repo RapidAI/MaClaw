@@ -21,12 +21,17 @@ function renderStartupError(error: unknown) {
     const container = document.getElementById('root')
     if (!container) return
     const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-    container.innerHTML = `
-        <div style="font-family: Arial, sans-serif; padding: 24px; color: var(--theme-text-primary, #111827); background: var(--theme-surface, #ffffff); min-height: 100vh; box-sizing: border-box;">
-            <h2 style="margin: 0 0 12px; color: var(--theme-danger, #dc2626);">${localizeStartupText('Startup error', '启动错误', '啟動錯誤')}</h2>
-            <pre style="white-space: pre-wrap; word-break: break-word; background: var(--theme-surface-muted, #f9fafb); border: 1px solid var(--theme-border, #e5e7eb); border-radius: 8px; padding: 12px;">${message}</pre>
+    const errorView = (
+        <div style={{ fontFamily: 'Arial, sans-serif', padding: 24, color: 'var(--theme-text-primary, #111827)', background: 'var(--theme-surface, #ffffff)', minHeight: '100vh', boxSizing: 'border-box' }}>
+            <h2 style={{ margin: '0 0 12px', color: 'var(--theme-danger, #dc2626)' }}>{localizeStartupText('Startup error', '启动错误', '啟動錯誤')}</h2>
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--theme-surface-muted, #f9fafb)', border: '1px solid var(--theme-border, #e5e7eb)', borderRadius: 8, padding: 12 }}>{message}</pre>
         </div>
-    `
+    )
+    if (appRoot) {
+        appRoot.render(errorView)
+        return
+    }
+    container.textContent = message
 }
 
 const container = document.getElementById('root')
@@ -35,10 +40,10 @@ if (!container) {
     throw new Error('Missing #root container')
 }
 
-const root = createRoot(container)
+let appRoot: ReturnType<typeof createRoot> | null = createRoot(container)
 
 try {
-    root.render(
+    appRoot.render(
         <React.StrictMode>
             <ToastProvider>
                 <DialogProvider>

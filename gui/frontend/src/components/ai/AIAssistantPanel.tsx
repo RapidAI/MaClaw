@@ -26,9 +26,10 @@ import { AssistantInputStack } from "./AssistantInputStack";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { AssistantPreviewPane } from "./AssistantPreviewPane";
-import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
+import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
 import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
 import { AITabBar } from "./AITabBar";
+import { getAITabDisplayTitle } from "./AITabItem";
 import { useAITabManager } from "./useAITabManager";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
@@ -38,69 +39,21 @@ import { AssistantActiveTabContent } from "./AssistantActiveTabContent";
 import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
+import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgressMessages";
+import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
+import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
+import { GroupDiscussionRenameConsultation } from "../../../wailsjs/go/main/App";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-function compactCodingAgentProgressMessages(messages: ChatMessage[]): ChatMessage[] {
-    let latestCodingIndex = -1;
-    const isCodingProgress = messages.map(message => !!parseCodingAgentProgress(message.content || ""));
-    for (let i = messages.length - 1; i >= 0; i--) {
-        if (isCodingProgress[i]) {
-            latestCodingIndex = i;
-            break;
-        }
-    }
-    if (latestCodingIndex < 0) return messages;
-    return messages.filter((_message, index) => index === latestCodingIndex || !isCodingProgress[index]);
-}
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
-    const {
-        messages,
-        progressMessages = [],
-        sending,
-        streaming,
-        visualBusy,
-        ready,
-        initStatus,
-        selectedFilePath: selectedFilePathFromState = "",
-        submittedPrompts = [],
-        draftInputValue = "",
-        trialReflectEnabled = false,
-        scrollToTopSeq,
-        onboardingIncomplete,
-        showTraceEntry = false,
-        agentView = null,
-    } = state;
-    const {
-        browseFile,
-        clearSelectedFile,
-        removeSelectedFile,
-        sendMessage,
-        sendBtwMessage,
-        injectSupplementary,
-        guideLaunchReference,
-        clearHistory,
-        recordSubmittedPrompt,
-        setDraftInputValue,
-        executeAction,
-        refreshNews,
-        onOpenOnboarding,
-        cancelSession,
-        onOpenTutorial,
-        onTaskPrefsChanged,
-        submitAgentView,
-        dismissAgentView,
-    } = actions;
+    const { messages, progressMessages = [], sending, streaming, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, agentView = null } = state;
+    const { browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
-    const {
-        inline,
-        maximized = false,
-        onToggleMaximize,
-        onHideWindow,
-    } = panelWindow || {};
+    const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
     const [localDraftInputValue, setLocalDraftInputValue] = useState(draftInputValue);
     const [cancelPending, setCancelPending] = useState(false);
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
@@ -118,24 +71,47 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
-    const {
-        tabState,
-        activeTab,
-        activateTab,
-        createVETab,
-        createGroupTab,
-        createProjectTab,
-        closeTab,
-        clearTabConversation,
-        saveTabState,
-        getTabState,
-        getLastActiveAt,
-        getTabs,
-        hasProjectTab,
-        upgradeVETabToGroup,
-        tabLimitError,
-        clearTabLimitError,
-    } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    const [renameGroupTargetTabId, setRenameGroupTargetTabId] = useState<string | null>(null);
+    const [renameGroupValue, setRenameGroupValue] = useState("");
+    const [renameGroupError, setRenameGroupError] = useState("");
+    const [renameGroupSaving, setRenameGroupSaving] = useState(false);
+    const renameGroupTargetTab = renameGroupTargetTabId ? tabState.tabs.find(tab => tab.id === renameGroupTargetTabId && tab.type === "group" && !tab.readOnly) : undefined;
+    const openRenameGroupDialog = useCallback((tab: typeof tabState.tabs[number]) => {
+        if (tab.type !== "group" || tab.readOnly) return;
+        setRenameGroupTargetTabId(tab.id);
+        setRenameGroupValue(getAITabDisplayTitle(tab, lang));
+        setRenameGroupError("");
+    }, [lang]);
+    const closeRenameGroupDialog = useCallback(() => {
+        setRenameGroupTargetTabId(null);
+        setRenameGroupValue("");
+        setRenameGroupError("");
+        setRenameGroupSaving(false);
+    }, []);
+    const submitRenameGroupDialog = useCallback(async () => {
+        if (!renameGroupTargetTab || renameGroupSaving) return;
+        const title = renameGroupValue.trim();
+        if (!title) {
+            setRenameGroupError(localizeText(lang, "Group name cannot be empty", "群名不能为空", "群名不能為空"));
+            return;
+        }
+        if (title.length > 60) {
+            setRenameGroupError(localizeText(lang, "Group name must be 60 characters or fewer", "群名不能超过 60 个字符", "群名不能超過 60 個字元"));
+            return;
+        }
+        setRenameGroupSaving(true);
+        try {
+            if (renameGroupTargetTab.discussionId) {
+                await GroupDiscussionRenameConsultation(renameGroupTargetTab.discussionId, title);
+            }
+            renameGroupTab(renameGroupTargetTab.id, title);
+            closeRenameGroupDialog();
+        } catch (error) {
+            setRenameGroupSaving(false);
+            setRenameGroupError(error instanceof Error ? error.message : String(error || localizeText(lang, "Failed to rename group", "修改群名失败", "修改群名失敗")));
+        }
+    }, [closeRenameGroupDialog, lang, renameGroupSaving, renameGroupTab, renameGroupTargetTab, renameGroupValue]);
     const clearActiveHistory = useCallback(async () => {
         if (activeTab.type === "ve" || (activeTab.type === "group" && !!activeTab.veId)) {
             clearTabConversation(activeTab.id);
@@ -365,6 +341,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [sendMessage, activeTab]);
     const addParticipantToTab = useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup });
     const addLocalMaclawToTab = useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup });
+    const [participantInviteTargetTabId, setParticipantInviteTargetTabId] = useState<string | null>(null);
+    const participantInviteTargetTab = participantInviteTargetTabId ? tabState.tabs.find(t => t.id === participantInviteTargetTabId) || null : null;
     usePendingAssistantTabOpen({
         lang,
         createVETab,
@@ -389,10 +367,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => clearTimeout(timer);
     }, [tabLimitError, clearTabLimitError]);
     const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
-    const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
+    const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState();
     const showAgentView = !!agentView;
-    const showWorkflowPreview = !showAgentView && workflowState.splitMode && !codePreviewState.active;
-    const showCodePreview = !showAgentView && !showWorkflowPreview && codePreviewState.active;
+    const showWorkflowPreview = !showAgentView && workflowState.splitMode;
+    const showCodePreview = !showAgentView && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
@@ -778,8 +756,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     const participantNames = veId && title && title !== veId && !titleLooksRaw ? { [veId]: title } : undefined;
                     upgradeVETabToGroup(tab.id, currentParticipants, sessionId, participantNames);
                 }
+                setParticipantInviteTargetTabId(tab.id);
                 activateTab(tab.id);
-            }} onAddLocalMaclawToTab={addLocalMaclawToTab} lang={lang} getLastActiveAt={getLastActiveAt} />
+            }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} getLastActiveAt={getLastActiveAt} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
@@ -791,6 +770,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={!!inline} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />
             </>}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
+            {renameGroupTargetTab && (
+                <AIAssistantRenameGroupDialog
+                    error={renameGroupError}
+                    lang={lang}
+                    onClose={closeRenameGroupDialog}
+                    onSubmit={submitRenameGroupDialog}
+                    onValueChange={value => { setRenameGroupValue(value); if (renameGroupError) setRenameGroupError(""); }}
+                    saving={renameGroupSaving}
+                    theme={t}
+                    value={renameGroupValue}
+                />
+            )}
+            {participantInviteTargetTab && <TabParticipantInviteDialog key={participantInviteTargetTab.id} tab={participantInviteTargetTab} lang={lang} theme={t} onClose={() => setParticipantInviteTargetTabId(null)} onAddParticipantToTab={addParticipantToTab} />}
             </div>
             <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} inline={!!inline} lang={lang} onToggleMaximize={onToggleMaximize} selectCodeFile={selectCodeFile} submitAgentView={submitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
         </div>

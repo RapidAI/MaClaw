@@ -515,16 +515,14 @@ func (h *IMMessageHandler) SetCapabilityGapDetector(detector *CapabilityGapDetec
 	if detector != nil {
 		detector.SetConfirmCallback(func(skillName, riskDetails string) bool {
 			// Determine the platform from the active loop context.
-			platform := ""
-			if h.currentLoopCtx != nil {
-				platform = h.currentLoopCtx.Platform
-			}
+			platform := h.currentRuntimePlatform()
+			userID := h.currentRuntimePolicyOwnerID()
 			// Extract factors from riskDetails for the shared confirmation function.
 			// The riskDetails string is pre-formatted by the detector; pass it as a
 			// single-element factors slice so buildCriticalRiskPrompt includes it.
 			factors := []string{riskDetails}
 			return h.confirmRiskSkillInstall(
-				context.Background(), skillName, "capability_gap_auto", security.RiskHigh, factors, platform, h.lastUserID,
+				context.Background(), skillName, "capability_gap_auto", security.RiskHigh, factors, platform, userID,
 			)
 		})
 	}

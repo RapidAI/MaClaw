@@ -152,6 +152,108 @@ func TestEngine_SavePhaseOutputAndMaybeAdvanceAdvancesNonConfirmPhase(t *testing
 	}
 }
 
+func TestEngine_SavePhaseOutputAndMaybeAdvanceEmitsPendingReviewPhaseUpdate(t *testing.T) {
+	engine, cb := newTestEngine()
+	_, err := engine.StartWorkflow("u_pending_review_update", StructuredIntent{
+		Category: WorkflowCoding,
+		Summary:  "build a desktop app",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	// Move to task_breakdown, a NeedsConfirm phase. Saving its document must
+	// publish the updated pending-review state even though current phase does not advance.
+	for i := 0; i < 2; i++ {
+		if _, err := engine.AdvancePhase("u_pending_review_update"); err != nil {
+			t.Fatalf("AdvancePhase %d failed: %v", i, err)
+		}
+	}
+
+	phaseID, resp, err := engine.SavePhaseOutputAndMaybeAdvance("u_pending_review_update", reviewStateValidContent)
+	if err != nil {
+		t.Fatalf("SavePhaseOutputAndMaybeAdvance failed: %v", err)
+	}
+	if phaseID != PhaseCodingTaskBreakdown {
+		t.Fatalf("saved phase=%q, want %q", phaseID, PhaseCodingTaskBreakdown)
+	}
+	if resp != nil {
+		t.Fatalf("NeedsConfirm phase should not auto-advance, got %#v", resp)
+	}
+	if len(cb.PhaseStates) == 0 {
+		t.Fatal("expected phase update after saving NeedsConfirm output")
+	}
+	last := cb.PhaseStates[len(cb.PhaseStates)-1]
+	if last.CurrentPhase != PhaseCodingTaskBreakdown || last.PendingReviewPhaseID != PhaseCodingTaskBreakdown {
+		t.Fatalf("last phase update = current %q pending %q, want %q", last.CurrentPhase, last.PendingReviewPhaseID, PhaseCodingTaskBreakdown)
+	}
+	if last.PhaseOutputs[PhaseCodingTaskBreakdown] == "" {
+		t.Fatal("phase update should include saved task breakdown output")
+	}
+}
+
+func TestEngine_ReopenPhaseForRevisionRewindsAndClearsLaterOutputs(t *testing.T) {
+	engine, cb := newTestEngine()
+	userID := "u_reopen_task_breakdown"
+	_, err := engine.StartWorkflow(userID, StructuredIntent{Category: WorkflowCoding, Summary: "build app"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	engine.mu.Lock()
+	ws := engine.workflows[userID]
+	ws.PhaseIndex = 3
+	ws.CurrentPhase = PhaseCodingImplementation
+	ws.PendingReviewPhaseID = ""
+	ws.PendingReviewRevisionRequested = false
+	ws.PhaseOutputs[PhaseCodingTaskBreakdown] = "invalid completion report"
+	ws.PhaseOutputs[PhaseCodingImplementation] = "implementation output"
+	ws.GateResults[PhaseCodingImplementation] = &QualityGateResult{PhaseID: PhaseCodingImplementation}
+	engine.mu.Unlock()
+
+	resp, err := engine.ReopenPhaseForRevision(userID, PhaseCodingTaskBreakdown, "regenerate tasks")
+	if err != nil {
+		t.Fatalf("ReopenPhaseForRevision failed: %v", err)
+	}
+	if resp == nil || !resp.RunAgentLoop || resp.PhasePrompt == "" {
+		t.Fatalf("expected regeneration response, got %#v", resp)
+	}
+	ws = engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != PhaseCodingTaskBreakdown || ws.PhaseIndex != 2 {
+		t.Fatalf("workflow not rewound to task breakdown: %#v", ws)
+	}
+	if ws.PendingReviewPhaseID != PhaseCodingTaskBreakdown || !ws.PendingReviewRevisionRequested {
+		t.Fatalf("review regeneration not requested: pending=%q requested=%v", ws.PendingReviewPhaseID, ws.PendingReviewRevisionRequested)
+	}
+	if ws.PhaseOutputs[PhaseCodingImplementation] != "" || ws.GateResults[PhaseCodingImplementation] != nil {
+		t.Fatalf("later phase artifacts should be cleared, outputs=%#v gates=%#v", ws.PhaseOutputs, ws.GateResults)
+	}
+	if len(cb.PhaseStates) == 0 {
+		t.Fatal("expected phase update after reopening phase")
+	}
+	last := cb.PhaseStates[len(cb.PhaseStates)-1]
+	if last.CurrentPhase != PhaseCodingTaskBreakdown || last.PendingReviewPhaseID != PhaseCodingTaskBreakdown || !last.PendingReviewRevisionRequested {
+		t.Fatalf("phase update did not publish reopened state: %#v", last)
+	}
+}
+
+func TestEngine_ReopenPhaseForRevisionRejectsFuturePhase(t *testing.T) {
+	engine, _ := newTestEngine()
+	userID := "u_reopen_future_phase"
+	if _, err := engine.StartWorkflow(userID, StructuredIntent{Category: WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp, err := engine.ReopenPhaseForRevision(userID, PhaseCodingTaskBreakdown, "regenerate tasks")
+	if err == nil {
+		t.Fatalf("expected future phase reopen to fail, got resp %#v", resp)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != PhaseCodingRequirements || ws.PhaseIndex != 0 || ws.PendingReviewPhaseID != "" || ws.PendingReviewRevisionRequested {
+		t.Fatalf("future reopen must not mutate workflow state, got %#v", ws)
+	}
+}
+
 func TestEngine_AdvancePhaseRespectsNextPhaseFormGate(t *testing.T) {
 	engine, _ := newTestEngine()
 	workflowType := WorkflowType("advance_form_gate_test")

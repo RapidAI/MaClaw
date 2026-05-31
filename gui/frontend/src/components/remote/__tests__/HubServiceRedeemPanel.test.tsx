@@ -39,7 +39,7 @@ describe('HubServiceRedeemPanel', () => {
             available_models: ['auto'],
             hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
         });
-        LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token' });
+        LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token', remote_tenant_id: 'tenant acme' });
         RedeemHubLLMServiceMock.mockResolvedValue({ active: true, skip_llm_config: true });
     });
 
@@ -230,21 +230,74 @@ describe('HubServiceRedeemPanel', () => {
 
         expect((await screen.findAllByText('Expired')).length).toBeGreaterThan(0);
         expect(screen.getByText(/Official authorization has expired/i)).toBeTruthy();
-        expect(screen.getAllByText(/05\/05\/2026/).length).toBeGreaterThan(1);
+        expect(screen.getAllByText(/05\/05\/2026/).length).toBeGreaterThan(0);
         expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('0');
     });
 
-    it('opens credits page from service status actions before refresh', async () => {
+    it('keeps redemption layout compact and the code field accessible', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['LLM'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            authorized_models: [{ name: 'auto', service_group_ids: ['LLM'] }],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'coding-basic',
+                source: 'card',
+                expires_at: '2026-05-06T00:00:00Z',
+                active: true,
+                status: 'active',
+            }],
+        });
+
         render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
 
-        const viewCredits = await screen.findByRole('button', { name: 'View Credits' });
+        const codeInput = await screen.findByLabelText('Redeem Code');
+        expect(codeInput.getAttribute('id')).toBe('hub-service-redeem-code');
+        expect(codeInput.getAttribute('autocomplete')).toBe('off');
+        expect(codeInput.getAttribute('spellcheck')).toBe('false');
+        expect(screen.getByText('Authorization Breakdown')).toBeTruthy();
+        expect(screen.getAllByRole('columnheader').every((header) => header.getAttribute('scope') === 'col')).toBe(true);
+        expect(screen.queryByText('Current Authorization Details')).toBeNull();
+        expect(screen.queryByText('Service Status')).toBeNull();
+    });
+
+    it('opens card store and credits page from service status actions before refresh', async () => {
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const buyCredits = await screen.findByRole('button', { name: 'Buy Credits' });
+        const viewCredits = screen.getByRole('button', { name: 'View Credits' });
         const refresh = screen.getByRole('button', { name: 'Refresh' });
+        expect(buyCredits.getAttribute('title')).toContain('Open card store');
+        expect(viewCredits.getAttribute('title')).toContain('view balance');
+        expect(buyCredits.querySelector('.hub-service-redeem__buy-icon')).toBeTruthy();
+        expect(buyCredits.compareDocumentPosition(viewCredits) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(viewCredits.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
+        fireEvent.click(buyCredits);
+        await waitFor(() => {
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme');
+        });
+
+        BrowserOpenURLMock.mockClear();
         fireEvent.click(viewCredits);
 
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/get-credits#token=viewer%20token');
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/get-credits?tenant_id=tenant%20acme#token=viewer%20token');
+        });
+    });
+
+    it('opens the credits center even when viewer token is unavailable', async () => {
+        LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_tenant_id: 'tenant acme' });
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const viewCredits = await screen.findByRole('button', { name: 'View Credits' });
+        fireEvent.click(viewCredits);
+
+        await waitFor(() => {
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/get-credits?tenant_id=tenant%20acme');
         });
     });
 });

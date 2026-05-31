@@ -41,7 +41,11 @@ func (h *IMMessageHandler) toolDelegateTask(args map[string]interface{}) string 
 		return fmt.Sprintf("Error: missing request parameter for %s.", agentName)
 	}
 
-	if result, handled := h.executeCodingWorkflowDelegateArgs(args, agentLoopToolExecutionOptions{}); handled {
+	ownerID, explicitRuntime := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
+	if ownerID == "" && explicitRuntime && strings.EqualFold(agentName, "coding_workflow") {
+		return "Error: runtime owner is missing; isolated runtime will not fall back to desktop workflow owner."
+	}
+	if result, handled := h.executeCodingWorkflowDelegateArgs(args, agentLoopToolExecutionOptions{UserID: ownerID}); handled {
 		return result.Text
 	}
 

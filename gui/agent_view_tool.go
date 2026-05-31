@@ -17,14 +17,17 @@ import (
 
 const registeredToolAgentViewArgsField = "_tool_args"
 const registeredToolApprovalIDField = "_tool_approval_id"
+const registeredToolPolicyOwnerIDField = "_runtime_policy_owner_id"
+const registeredToolRuntimePlatformField = "_runtime_platform"
 
 type registeredToolPendingApproval struct {
-	ID        string
-	ToolName  string
-	Args      map[string]interface{}
-	SessionID string
-	Risk      security.RiskAssessment
-	CreatedAt time.Time
+	ID            string
+	ToolName      string
+	Args          map[string]interface{}
+	SessionID     string
+	PolicyOwnerID string
+	Risk          security.RiskAssessment
+	CreatedAt     time.Time
 }
 
 var registeredToolApprovalStore = struct {
@@ -45,7 +48,7 @@ type registeredToolSchemaVariant struct {
 	Schema      map[string]interface{}
 }
 
-func (h *IMMessageHandler) emitRegisteredToolAgentViewIfNeeded(name string, args map[string]interface{}) bool {
+func (h *IMMessageHandler) emitRegisteredToolAgentViewIfNeeded(name string, args map[string]interface{}, policyOwnerID string) bool {
 	if h == nil || h.app == nil || h.registry == nil {
 		return false
 	}
@@ -57,14 +60,14 @@ func (h *IMMessageHandler) emitRegisteredToolAgentViewIfNeeded(name string, args
 	if len(missing) == 0 {
 		return false
 	}
-	view := buildRegisteredToolAgentView(*tool, args, missing)
+	view := buildRegisteredToolAgentView(*tool, h.attachRegisteredToolPolicyOwnerForOwner(args, policyOwnerID), missing)
 	if view == nil {
 		return false
 	}
 	return h.app.emitAgentView(view)
 }
 
-func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name string, args map[string]interface{}, ctx *SecurityCallContext) bool {
+func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name string, args map[string]interface{}, ctx *SecurityCallContext, policyOwnerID string) bool {
 	if h == nil || h.app == nil || h.firewall == nil || h.firewall.analyzer == nil {
 		return false
 	}
@@ -86,7 +89,7 @@ func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name stri
 	if action != security.PolicyAsk {
 		return false
 	}
-	approval := storeRegisteredToolPendingApproval(name, args, sessionID, risk)
+	approval := storeRegisteredToolPendingApproval(name, args, sessionID, policyOwnerID, risk)
 	h.firewall.recordAudit(name, args, risk, security.PolicyAsk, "agent_view_approval_pending", sessionID)
 	return h.app.emitAgentView(buildRegisteredToolApprovalAgentView(approval))
 }
@@ -132,6 +135,10 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 		}
 		return &IMAgentResponse{Text: "Tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
+	policyOwnerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
+	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, toolName, args); rejection != nil {
+		return rejection
+	}
 
 	var result string
 	if tool.HandlerProg != nil {
@@ -167,19 +174,98 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 		}
 		return &IMAgentResponse{Text: "Tool execution was rejected.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
+	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(approval.PolicyOwnerID, approval.ToolName, approval.Args); rejection != nil {
+		deleteRegisteredToolPendingApproval(approvalID)
+		return rejection
+	}
 	if h != nil && h.firewall != nil && approval.SessionID != "" {
 		h.firewall.ApproveForSession(approval.SessionID, approval.ToolName)
 		h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyUserOverride, "agent_view_approval_approved", approval.SessionID)
 	}
 	deleteRegisteredToolPendingApproval(approvalID)
 	dataBytes, _ := json.Marshal(approval.Args)
-	result := h.executeTool(approval.ToolName, string(dataBytes), nil)
+	result := h.executeToolDetailedWithPolicyUserText(approval.PolicyOwnerID, approval.ToolName, string(dataBytes), "", nil).Text
 	if h != nil && h.app != nil && h.registry != nil {
 		if tool, ok := h.registry.Get(approval.ToolName); ok && tool != nil {
 			h.app.emitAgentView(buildRegisteredToolResultAgentView(*tool, result))
 		}
 	}
 	return &IMAgentResponse{Text: "Approved tool execution completed.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+}
+
+func (h *IMMessageHandler) registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, toolName string, args map[string]interface{}) *IMAgentResponse {
+	if h == nil {
+		return nil
+	}
+	policyOwnerID = strings.TrimSpace(policyOwnerID)
+	if policyOwnerID == "" {
+		return nil
+	}
+	if !h.isWorkflowToolAllowedForOwner(policyOwnerID, toolName) {
+		text := workflowPolicyToolRejectedText(toolName)
+		return &IMAgentResponse{Text: text, Error: text, ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		return &IMAgentResponse{Text: "Tool parameters could not be checked against workflow policy.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
+	if allowed, reason := h.isWorkflowToolCallAllowedForOwner(policyOwnerID, toolName, string(data)); !allowed {
+		text := "[system rejected] " + reason
+		return &IMAgentResponse{Text: text, Error: text, ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
+	return nil
+}
+
+func (h *IMMessageHandler) attachRegisteredToolPolicyOwner(args map[string]interface{}) map[string]interface{} {
+	return h.attachRegisteredToolPolicyOwnerForOwner(args, h.currentRuntimePolicyOwnerID())
+}
+
+func (h *IMMessageHandler) attachRegisteredToolPolicyOwnerForOwner(args map[string]interface{}, policyOwnerID string) map[string]interface{} {
+	out := cloneMISInterfaceMap(args)
+	if out == nil {
+		out = map[string]interface{}{}
+	}
+	if ownerID := strings.TrimSpace(policyOwnerID); ownerID != "" {
+		out[registeredToolPolicyOwnerIDField] = ownerID
+	}
+	return out
+}
+
+func (h *IMMessageHandler) currentRuntimePolicyOwnerID() string {
+	ownerID, _ := h.currentRuntimePolicyOwnerState()
+	return ownerID
+}
+
+func (h *IMMessageHandler) currentRuntimeOrLegacyPolicyOwnerID() string {
+	if h == nil {
+		return ""
+	}
+	if ownerID, explicit := h.currentRuntimePolicyOwnerState(); explicit {
+		return ownerID
+	}
+	h.globalLoopMu.RLock()
+	lastUserID := strings.TrimSpace(h.lastUserID)
+	h.globalLoopMu.RUnlock()
+	return lastUserID
+}
+
+func (h *IMMessageHandler) currentRuntimePolicyOwnerState() (string, bool) {
+	if h == nil {
+		return "", false
+	}
+	h.globalLoopMu.RLock()
+	ctx := h.currentLoopCtx
+	h.globalLoopMu.RUnlock()
+	if ctx == nil {
+		return "", false
+	}
+	if strings.TrimSpace(ctx.Runtime.RequestID) != "" {
+		return strings.TrimSpace(ctx.Runtime.PolicyOwnerID), true
+	}
+	if ownerID := strings.TrimSpace(ctx.Runtime.PolicyOwnerID); ownerID != "" {
+		return ownerID, true
+	}
+	return "", false
 }
 
 func registeredToolValidateArgs(tool RegisteredTool, args map[string]interface{}) []string {
@@ -934,7 +1020,7 @@ func registeredToolAgentViewFieldsForSchema(schema map[string]interface{}, requi
 		field := map[string]interface{}{
 			"name":        name,
 			"label":       registeredToolFieldLabel(name, prop),
-			"type":        registeredToolAgentViewFieldType(prop),
+			"type":        registeredToolAgentViewFieldTypeForName(name, prop),
 			"required":    required[name],
 			"description": registeredToolFieldDescription(prop),
 		}
@@ -1036,19 +1122,20 @@ func buildRegisteredToolResultAgentView(tool RegisteredTool, result string) map[
 	}
 }
 
-func storeRegisteredToolPendingApproval(toolName string, args map[string]interface{}, sessionID string, risk security.RiskAssessment) registeredToolPendingApproval {
+func storeRegisteredToolPendingApproval(toolName string, args map[string]interface{}, sessionID, policyOwnerID string, risk security.RiskAssessment) registeredToolPendingApproval {
 	registeredToolApprovalStore.Lock()
 	defer registeredToolApprovalStore.Unlock()
 	pruneRegisteredToolPendingApprovals(30 * time.Minute)
 	registeredToolApprovalStore.next++
 	id := fmt.Sprintf("tool-approval-%d", registeredToolApprovalStore.next)
 	item := registeredToolPendingApproval{
-		ID:        id,
-		ToolName:  strings.TrimSpace(toolName),
-		Args:      cloneMISInterfaceMap(args),
-		SessionID: strings.TrimSpace(sessionID),
-		Risk:      risk,
-		CreatedAt: time.Now(),
+		ID:            id,
+		ToolName:      strings.TrimSpace(toolName),
+		Args:          cloneMISInterfaceMap(args),
+		SessionID:     strings.TrimSpace(sessionID),
+		PolicyOwnerID: strings.TrimSpace(policyOwnerID),
+		Risk:          risk,
+		CreatedAt:     time.Now(),
 	}
 	registeredToolApprovalStore.items[id] = item
 	return item
@@ -1221,6 +1308,10 @@ func registeredToolValueMissing(value interface{}) bool {
 }
 
 func registeredToolAgentViewFieldType(prop map[string]interface{}) string {
+	return registeredToolAgentViewFieldTypeForName("", prop)
+}
+
+func registeredToolAgentViewFieldTypeForName(name string, prop map[string]interface{}) string {
 	switch normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"])) {
 	case registeredToolJSONSchemaNumber, registeredToolJSONSchemaInteger:
 		return agentViewFieldTypeNumber.String()
@@ -1240,8 +1331,30 @@ func registeredToolAgentViewFieldType(prop map[string]interface{}) string {
 		}
 		return agentViewFieldTypeTextarea.String()
 	default:
+		if registeredToolStringFieldIsDirectory(name, prop) {
+			return agentViewFieldTypeDirectory.String()
+		}
+		if registeredToolStringFieldIsPathLike(name, prop) {
+			return agentViewFieldTypeFile.String()
+		}
 		return agentViewFieldTypeText.String()
 	}
+}
+
+func registeredToolStringFieldIsDirectory(name string, prop map[string]interface{}) bool {
+	for _, key := range []string{"x-agent-view", "x_agent_view", "ui:widget", "ui_widget", "format"} {
+		value := strings.ToLower(strings.TrimSpace(fmt.Sprint(prop[key])))
+		if value == "directory" || value == "folder" || value == "dir" {
+			return true
+		}
+	}
+	text := strings.ToLower(strings.Join([]string{name, registeredToolFieldLabel(name, prop), registeredToolFieldDescription(prop)}, " "))
+	return strings.Contains(text, "working directory") || strings.Contains(text, "working dir") || strings.Contains(text, "workdir") || agentViewTextHasWord(text, "directory") || agentViewTextHasWord(text, "folder") || agentViewTextHasWord(text, "cwd") || agentViewTextHasWord(text, "dir")
+}
+
+func registeredToolStringFieldIsPathLike(name string, prop map[string]interface{}) bool {
+	text := strings.ToLower(strings.Join([]string{name, registeredToolFieldLabel(name, prop), registeredToolFieldDescription(prop), nonEmptyStringFromAny(prop["format"])}, " "))
+	return strings.Contains(text, "filepath") || strings.Contains(text, "file path") || agentViewTextHasWord(text, "file") || agentViewTextHasWord(text, "path")
 }
 
 func registeredToolFieldLabel(name string, prop map[string]interface{}) string {
@@ -1376,7 +1489,7 @@ func registeredToolMapperTargetFields(prop map[string]interface{}) []map[string]
 		field := map[string]interface{}{
 			"name":     name,
 			"label":    registeredToolFieldLabel(name, fieldProp),
-			"type":     registeredToolAgentViewFieldType(fieldProp),
+			"type":     registeredToolAgentViewFieldTypeForName(name, fieldProp),
 			"required": required[name],
 		}
 		if description := registeredToolFieldDescription(fieldProp); description != "" {
@@ -1446,7 +1559,7 @@ func registeredToolColumnsFromProperties(props map[string]map[string]interface{}
 		column := map[string]interface{}{
 			"name":     name,
 			"label":    registeredToolFieldLabel(name, itemProp),
-			"type":     registeredToolTableColumnType(itemProp),
+			"type":     registeredToolTableColumnTypeForName(name, itemProp),
 			"required": required[name],
 		}
 		if options := registeredToolFieldOptions(itemProp); len(options) > 0 {
@@ -1718,6 +1831,10 @@ func registeredToolFormatValidationError(label, text, format string) string {
 }
 
 func registeredToolTableColumnType(prop map[string]interface{}) string {
+	return registeredToolTableColumnTypeForName("", prop)
+}
+
+func registeredToolTableColumnTypeForName(name string, prop map[string]interface{}) string {
 	switch normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"])) {
 	case registeredToolJSONSchemaNumber, registeredToolJSONSchemaInteger:
 		return agentViewFieldTypeNumber.String()
@@ -1726,6 +1843,9 @@ func registeredToolTableColumnType(prop map[string]interface{}) string {
 	case registeredToolJSONSchemaDate:
 		return agentViewFieldTypeDate.String()
 	default:
+		if registeredToolStringFieldIsDirectory(name, prop) {
+			return agentViewFieldTypeDirectory.String()
+		}
 		return agentViewFieldTypeText.String()
 	}
 }

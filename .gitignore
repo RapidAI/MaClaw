@@ -79,6 +79,10 @@ build/deploy-single-hub/
 deploy/rendered-configs-temp/
 deploy/*.generated.*
 
+# MaClawSrv deploy artifacts (tarball + compiled binary)
+build/maclawsrv_deploy/*.tar.gz
+build/maclawsrv_deploy/stage/
+
 # Binary and resource files — covers hub.exe, hub/hub.exe, *.syso, etc.
 hub.exe
 *.syso
@@ -150,4 +154,7 @@ iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.css
 build/deploy-ha/debug-*
 build/deploy-ha/agentnet.patch
 build/deploy-ha/manual-test/
+
+# Unrelated third-party reference project
+xpay-code/
 

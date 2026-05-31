@@ -4,7 +4,7 @@ import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
-import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, parseMarkdownTableCells } from "./aiAssistantMarkdownTable";
+import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
 import { localizeText } from "./aiAssistantI18n";
 
 export interface Theme {
@@ -59,9 +59,33 @@ const baseInputBtnStyle: React.CSSProperties = {
     transition: "transform 120ms ease, box-shadow 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease",
 };
 /* Themed inline markdown rendering */
+const pathQuoteCharsPattern = /[`'"\u2018\u2019\u201c\u201d]/;
+const pathLeadingWrappingPattern = /^[`'"\u2018\u2019\u201c\u201d]+/;
+const pathTrailingPunctuationPattern = /[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
+const pathTrailingWrappingPattern = /[`'"\u2018\u2019\u201c\u201d]+$/;
+const pathTrailingWrapperPunctuationPattern = /([`'"\u2018\u2019\u201c\u201d])[\s.,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
+
+function stripPathWrapping(s: string): string {
+    let value = s.trim();
+    let previous = "";
+    while (value !== previous) {
+        previous = value;
+        value = value.replace(pathLeadingWrappingPattern, "");
+        value = value.replace(pathTrailingWrapperPunctuationPattern, "$1");
+        value = value.replace(pathTrailingPunctuationPattern, "");
+        value = value.replace(pathTrailingWrappingPattern, "");
+    }
+    return value;
+}
+
+function isPathQuoteChar(value: string): boolean {
+    return value.length === 1 && pathQuoteCharsPattern.test(value);
+}
+
 function looksLikeFilePath(s: string): boolean {
-    if (/^[A-Za-z]:\\/.test(s)) return true;
-    if (/^(~|\/(?:Users|home|tmp|var|opt|etc|usr))[/\\]/.test(s)) return true;
+    const value = stripPathWrapping(s);
+    if (/^[A-Za-z]:\\/.test(value)) return true;
+    if (/^(~|\/(?:Users|home|tmp|var|opt|etc|usr))[/\\]/.test(value)) return true;
     return false;
 }
 /**
@@ -69,14 +93,12 @@ function looksLikeFilePath(s: string): boolean {
  * Uses the same patterns as the inline regex path groups to find the path substring.
  */
 function extractPathFromContent(s: string): string | null {
-    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/);
+    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/);
     return m ? m[0] : null;
 }
 
-function renderPathLink(filePath: string, key: number, t: Theme, trimTrailing = false): React.ReactNode {
-    const display = trimTrailing
-        ? filePath.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "")
-        : filePath;
+function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNode {
+    const display = stripPathWrapping(filePath);
     return (
         <a key={key}
            href="#"
@@ -86,21 +108,31 @@ function renderPathLink(filePath: string, key: number, t: Theme, trimTrailing = 
         >{"\uD83D\uDCC2 "}{display}</a>
     );
 }
-const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|]+\.\w+)/g;
+const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|]+\.\w+)/g;
 function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
-    const display = filePath.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
+    const display = stripPathWrapping(filePath);
     return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={display}>{display}</a>;
 }
 function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let idx = 0;
+    const removeTrailingQuoteFromPreviousText = () => {
+        const last = parts[parts.length - 1];
+        if (typeof last !== "string") return;
+        parts[parts.length - 1] = last.replace(pathTrailingWrappingPattern, "");
+    };
     codeBlockPathPattern.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = codeBlockPathPattern.exec(text)) !== null) {
         if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
         const raw = match[0];
-        const display = raw.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
+        const nextChar = text[codeBlockPathPattern.lastIndex] || "";
+        if (isPathQuoteChar(text[match.index - 1] || "") && isPathQuoteChar(nextChar)) {
+            removeTrailingQuoteFromPreviousText();
+            codeBlockPathPattern.lastIndex += 1;
+        }
+        const display = stripPathWrapping(raw);
         if (display.length !== raw.length) codeBlockPathPattern.lastIndex -= raw.length - display.length;
         parts.push(renderCodePathLink(display, "code-path-" + idx++, t));
         lastIndex = codeBlockPathPattern.lastIndex;
@@ -120,9 +152,14 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
     // Mechanism: Instead of matching all backtick content with one group then guessing if it's a path,
     // we match "backtick containing a path" as a SEPARATE higher-priority group. The regex engine
     // guarantees alternation order = priority. This eliminates the need for post-match heuristics.
-    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
+    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let idx = 0;
+    const removeTrailingQuoteFromPreviousText = () => {
+        const last = parts[parts.length - 1];
+        if (typeof last !== "string") return;
+        parts[parts.length - 1] = last.replace(pathTrailingWrappingPattern, "");
+    };
     while (true) {
         const match = re.exec(text);
         if (!match) break;
@@ -131,14 +168,14 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
         if (match[1] || match[2]) {
             // Backtick-wrapped content that contains a file path pattern.
             // Distinguish "content IS a path" from "content CONTAINS a path as a substring".
-            // If the extracted path covers ≥70% of the inner content, the content's primary
+            // If the extracted path covers at least 70% of the inner content, the content's primary
             // purpose is to denote a file path. Otherwise it's code that happens to mention a path.
             const inner = m.slice(1, -1);
             const path = extractPathFromContent(inner);
             if (path && path.length >= inner.trimStart().length * 0.7) {
                 parts.push(renderPathLink(path, idx++, t));
             } else {
-                // Path is a minor substring — render as inline code
+                // Path is a minor substring; render as inline code.
                 parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
             }
         } else if (match[3]) {
@@ -162,7 +199,8 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
                 if (/^https?:\/\//i.test(href)) {
                     parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer" }}>{lm[1]}</a>);
                 } else if (looksLikeFilePath(href)) {
-                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, href)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={href}>{"\uD83D\uDCC2 "}{lm[1]}</a>);
+                    const filePath = stripPathWrapping(href);
+                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={filePath}>{"\uD83D\uDCC2 "}{lm[1]}</a>);
                 } else {
                     parts.push(<span key={idx++} style={{ color: t.linkColor }}>{lm[1]}</span>);
                 }
@@ -170,7 +208,12 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
                 parts.push(m);
             }
         } else if (match[7] || match[8] || match[9] || match[11]) {
-            const filePath = m.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
+            const nextChar = text[re.lastIndex] || "";
+            if (isPathQuoteChar(text[match.index - 1] || "") && isPathQuoteChar(nextChar)) {
+                removeTrailingQuoteFromPreviousText();
+                re.lastIndex += 1;
+            }
+            const filePath = stripPathWrapping(m);
             if (filePath.length !== m.length) re.lastIndex -= (m.length - filePath.length);
             parts.push(renderPathLink(filePath, idx++, t));
         }
@@ -183,89 +226,15 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
 export function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
     return renderInlineMarkdownRestored(text, t);
 }
-function renderInlineMarkdownLegacyUnused(text: string, t: Theme): React.ReactNode[] {
-    if (!text) return ["\u00A0"];
-    const parts: React.ReactNode[] = [];
-    // Same mechanism as renderInlineMarkdownRestored: backtick-wrapped paths have higher priority
-    // than generic inline code, resolved at the regex alternation level.
-    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-    let idx = 0;
-    while ((match = re.exec(text)) !== null) {
-        if (match.index > lastIndex) {
-            parts.push(text.slice(lastIndex, match.index));
-        }
-        const m = match[0];
-        if (match[1] || match[2]) {
-            // Backtick-wrapped content containing a file path pattern.
-            // Same ratio check as renderInlineMarkdownRestored — path must be the primary content.
-            const inner = m.slice(1, -1);
-            const path = extractPathFromContent(inner);
-            if (path && path.length >= inner.trimStart().length * 0.7) {
-                parts.push(renderPathLink(path, idx++, t));
-            } else {
-                parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
-            }
-        } else if (match[3]) {
-            // Generic inline code (no path inside)
-            const inner = m.slice(1, -1);
-            parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
-        } else if (match[4]) {
-            const inner = m.slice(2, -2);
-            if (looksLikeFilePath(inner)) {
-                parts.push(renderPathLink(inner, idx++, t));
-            } else {
-                parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700 }}>{inner}</strong>);
-            }
-        } else if (match[5]) {
-            parts.push(<em key={idx++} style={{ color: t.italicColor }}>{m.slice(1, -1)}</em>);
-        } else if (match[6]) {
-            const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-            if (lm) {
-                const href = lm[2];
-                if (/^https?:\/\//i.test(href)) {
-                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer" }}>{lm[1]}</a>);
-                } else if (looksLikeFilePath(href)) {
-                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, href)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={href}>{"\uD83D\uDCC2 "}{lm[1]}</a>);
-                } else {
-                    parts.push(<span key={idx++} style={{ color: t.linkColor }}>{lm[1]}</span>);
-                }
-            } else {
-                parts.push(m);
-            }
-        } else if (match[7] || match[8] || match[9] || match[11]) {
-            // Trim trailing punctuation/whitespace that isn't part of the path
-            const filePath = m.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
-            if (filePath.length !== m.length) {
-                // Rewind regex lastIndex so trimmed chars are re-processed
-                re.lastIndex -= (m.length - filePath.length);
-            }
-            parts.push(
-                <a key={idx++}
-                   href="#"
-                   onClick={(event) => openFileInFolder(event, filePath)}
-                   style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }}
-                   title={filePath}
-                >{"\u{1F4C4}"} {filePath}</a>
-            );
-        }
-        lastIndex = re.lastIndex;
-    }
-    if (lastIndex < text.length) {
-        parts.push(text.slice(lastIndex));
-    }
-    return parts.length > 0 ? parts : ["\u00A0"];
-}
 
 function renderMarkdownLine(text: string, key: string | number, t: Theme): React.ReactNode {
     const trimmed = text.trimStart();
-    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
         const level = headingMatch[1].length;
-        const sizes: Record<number, string> = { 1: "1.25em", 2: "1.12em", 3: "1.0em", 4: "0.92em" };
-        const weights: Record<number, number> = { 1: 700, 2: 700, 3: 600, 4: 600 };
-        const margins: Record<number, string> = { 1: "0.6em 0 0.3em", 2: "0.5em 0 0.25em", 3: "0.4em 0 0.2em", 4: "0.3em 0 0.15em" };
+        const sizes: Record<number, string> = { 1: "1.25em", 2: "1.12em", 3: "1.0em", 4: "0.92em", 5: "0.9em", 6: "0.88em" };
+        const weights: Record<number, number> = { 1: 700, 2: 700, 3: 600, 4: 600, 5: 600, 6: 600 };
+        const margins: Record<number, string> = { 1: "0.6em 0 0.3em", 2: "0.5em 0 0.25em", 3: "0.4em 0 0.2em", 4: "0.3em 0 0.15em", 5: "0.25em 0 0.12em", 6: "0.2em 0 0.1em" };
         return (
             <div key={key} style={{
                 fontSize: sizes[level] || "1em",
@@ -337,14 +306,17 @@ function isSeparatorRow(line: string): boolean {
 function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNode {
     const model = buildMarkdownTableModel(tableLines);
     if (!model) return null;
-    const { headerCells, bodyRows, columnAlignments, minTableWidth } = model;
-    const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, boxSizing: "border-box", overflowWrap: "anywhere", padding: "5px 10px", textAlign: "left", verticalAlign: "top", wordBreak: "break-word", fontSize: "0.9em", lineHeight: 1.5 };
+    const repaired = repairMixedNarrativeTable(model);
+    const { headerCells, bodyRows, columnAlignments, minTableWidth, prefix, notes } = repaired;
+    const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, boxSizing: "border-box", overflowWrap: "anywhere", padding: "6px 10px", textAlign: "left", verticalAlign: "top", wordBreak: "break-word", fontSize: "0.9em", lineHeight: 1.5 };
     return (
-        <div key={key} style={{ overflowX: "auto", margin: "6px 0" }}>
-            <table style={{ borderCollapse: "collapse", minWidth: minTableWidth, tableLayout: "fixed", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
+        <div key={key} data-testid="markdown-table-block" style={{ maxWidth: "100%", overflowX: "auto", margin: "6px 0", whiteSpace: "normal" }}>
+            {prefix && <div data-testid="markdown-table-prefix" style={{ marginBottom: 6 }}>{renderInlineMarkdown(prefix, t)}</div>}
+            <table data-testid="markdown-table" style={{ borderCollapse: "collapse", minWidth: minTableWidth, tableLayout: "fixed", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
                 <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], fontWeight: 600, background: t.fieldBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em" }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
                 {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseMarkdownTableCells(row); return <tr key={ri} style={{ background: ri % 2 === 1 ? t.fieldBg : undefined }}>{headerCells.map((_, ci) => <td key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci] }}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
             </table>
+            {notes.map((note, index) => <div key={`note-${index}`} data-testid="markdown-table-note" style={{ marginTop: 6 }}>{renderInlineMarkdown(note, t)}</div>)}
         </div>
     );
 }

@@ -110,7 +110,7 @@ export function hubOfficialStatus(status: HubLLMServiceStatus | null, lang: stri
         const retryText = retry > 0 ? formatHubRetryDuration(retry, lang) : "";
         return {
             kind: "limited" as const,
-            label: t("Period limited", "\u5468\u671f\u9650\u6d41"),
+            label: t("Period limited", "\u5468\u671f\u9650\u989d"),
             detail: retryText
                 ? (zh ? "\u5f53\u524d\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d\uff0c\u7ea6 " + retryText + " \u540e\u6062\u590d\u3002\u82e5\u5b98\u65b9\u8fd8\u6709\u5176\u5b83\u53ef\u7528\u901a\u9053\u4f1a\u81ea\u52a8\u5207\u6362\uff1b\u4e0d\u4f1a\u9759\u9ed8\u5207\u5230\u4f60\u7684\u79c1\u6709\u670d\u52a1\u5546\u3002" : "Current period quota is exhausted; recovers in about " + retryText + ". Routing switches automatically only to another available official route; it will not silently switch to your private provider.")
                 : t("Current period quota is exhausted. Routing switches automatically only to another available official route; it will not silently switch to your private provider.", "\u5f53\u524d\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d\u3002\u82e5\u5b98\u65b9\u8fd8\u6709\u5176\u5b83\u53ef\u7528\u901a\u9053\u4f1a\u81ea\u52a8\u5207\u6362\uff1b\u4e0d\u4f1a\u9759\u9ed8\u5207\u5230\u4f60\u7684\u79c1\u6709\u670d\u52a1\u5546\u3002", "\u76ee\u524d\u9031\u671f\u984d\u5ea6\u5df2\u7528\u76e1\u3002\u82e5\u5b98\u65b9\u9084\u6709\u5176\u4ed6\u53ef\u7528\u901a\u9053\u6703\u81ea\u52d5\u5207\u63db\uff1b\u4e0d\u6703\u975c\u9ed8\u5207\u5230\u4f60\u7684\u79c1\u6709\u670d\u52d9\u5546\u3002"),

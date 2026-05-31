@@ -215,6 +215,43 @@ func TestMCPReadinessManager_EnsureReady_NoServers_FastPath(t *testing.T) {
 	}
 }
 
+func TestMCPReadinessManager_EnsureReady_ReturnsEffectiveLLMFlatConfig(t *testing.T) {
+	store := NewMemoryStore()
+	svc, err := NewService(Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789abcdef",
+	}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	_ = store.SaveTenant(Tenant{ID: "t1", Name: "test"})
+	_ = store.SaveUser(User{TenantID: "t1", ID: "u1", Name: "user1"})
+
+	if err := store.SaveUserConfig(UserConfig{
+		TenantID: "t1",
+		UserID:   "u1",
+		AppConfig: corelib.AppConfig{
+			MaclawLLMUrl:             "https://stale.example.test/v1",
+			MaclawLLMKey:             "stale-key",
+			MaclawLLMModel:           "stale-model",
+			MaclawLLMCurrentProvider: "hub",
+			MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "hub", URL: "https://hub.example.test/api/llm/v1", Key: "hub-key", Model: "auto"}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	mgr := NewMCPReadinessManager(svc)
+	app, ok := mgr.EnsureReady(context.Background(), Principal{TenantID: "t1", UserID: "u1"})
+	if !ok {
+		t.Fatal("EnsureReady returned not ok")
+	}
+	if app.MaclawLLMUrl != "https://hub.example.test/api/llm/v1" || app.MaclawLLMKey != "hub-key" || app.MaclawLLMModel != "auto" {
+		t.Fatalf("EnsureReady should return effective LLM flat config, got %#v", app)
+	}
+}
+
 func TestMCPReadinessManager_Reset(t *testing.T) {
 	svc, _ := NewService(Config{
 		DataRoot:    t.TempDir(),

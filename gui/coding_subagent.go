@@ -186,7 +186,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	}
 
 	taskTitle := compactSubAgentTaskTitle(task.Title)
-	log.Printf("[coding-subagent] starting task T%d: %s (project=%s)", task.Index, taskTitle, s.projectPath)
+	log.Printf("[coding-subagent] starting task T%d: %s (project=%s)", taskDisplayNumber(task), taskTitle, s.projectPath)
 
 	if s.onProgress != nil {
 		emitCodingAgentEvent(s.onProgress, newCodingAgentTaskEvent(codingAgentEventPhaseRunning, task, taskTitle, ""))
@@ -207,7 +207,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	if result.Error != "" {
 		status = TaskExecFailed
 		errMsg = compactSubAgentErrorSummary(result.Error)
-		log.Printf("[coding-subagent] task T%d agent loop failed: %s", task.Index, errMsg)
+		log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
 	}
 	if result.HardExit {
 		status = TaskExecFailed
@@ -216,7 +216,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	summary := compactSubAgentModelSummary(result.Text)
 	if summary == "" {
-		summary = fmt.Sprintf("任务 T%d 执行完成，%d 轮迭代，%d 次工具调用", task.Index, result.Iterations, result.ToolCalls)
+		summary = fmt.Sprintf("任务 T%d 执行完成，%d 轮迭代，%d 次工具调用", taskDisplayNumber(task), result.Iterations, result.ToolCalls)
 	}
 
 	filesModified := limitSubAgentStringSlice(cb.getFilesModified(), codingSubAgentResultFilesMax)
@@ -255,7 +255,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	cb.emitDiffSummaryEvent(filesModified, filesCreated, diffSummary)
 
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
-		task.Index, status, result.Iterations, result.ToolCalls, errMsg)
+		taskDisplayNumber(task), status, result.Iterations, result.ToolCalls, errMsg)
 	if s.onProgress != nil {
 		event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, task, taskTitle, "")
 		event.Detail = string(status)
@@ -355,6 +355,7 @@ func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) a
 }
 
 func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {
+	name = canonicalCodingSubAgentToolName(name)
 	if c.ShouldStop() {
 		toolResult = codingToolExecutionResult{Text: "coding subagent cancelled before tool execution", Outcome: codingToolOutcomeFailed}
 		logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, 0)
@@ -739,6 +740,9 @@ func rejectDisallowedCodingBashCommand(command string) string {
 	if normalized == "" {
 		return ""
 	}
+	if normalizedRemotePlatform() == "windows" && strings.Contains(normalized, "&&") {
+		return fmt.Sprintf("拒绝执行与当前 shell 不兼容的命令：%s。coding SubAgent 的 bash 工具在 Windows 上通过 PowerShell 执行；请使用 working_dir 指定目录，并用 PowerShell 语法或分号分隔命令。", command)
+	}
 	disallowed := false
 	switch {
 	case hasDisallowedGitCommand(normalized):
@@ -1062,6 +1066,20 @@ func codingSubAgentToolNameList() []string {
 		names = append(names, n)
 	}
 	return names
+}
+
+func canonicalCodingSubAgentToolName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if codingSubAgentToolNames[trimmed] {
+		return trimmed
+	}
+	lower := strings.ToLower(trimmed)
+	for _, candidate := range codingSubAgentToolOrder {
+		if strings.ToLower(candidate) == lower {
+			return candidate
+		}
+	}
+	return trimmed
 }
 
 func (c *codingSubAgentCallbacks) trackFile(path string) {
@@ -2591,7 +2609,7 @@ func (c *codingSubAgentCallbacks) ShouldStop() bool {
 
 func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("请执行以下编码任务：\n\n## T%d: %s\n\n", c.task.Index, compactSubAgentTaskTitle(c.task.Title)))
+	b.WriteString(fmt.Sprintf("请执行以下编码任务：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
 	if c.task.Description != "" {
 		b.WriteString(compactSubAgentTaskDescription(c.task.Description))
 		b.WriteString("\n\n")
@@ -2680,6 +2698,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
 	if normalizedRemotePlatform() == "windows" {
 		b.WriteString("注意: bash 工具通过 PowerShell 执行。使用 PowerShell 语法（如 `;` 分隔命令，`Remove-Item` 删除文件）。\n")
+		b.WriteString("Windows shell contract: do not use bash-only syntax such as `mkdir -p` or `&&`; use `working_dir` for command location and PowerShell syntax for commands. Do not switch CMake generators inside an existing build directory; reuse the existing generator or use a separate build directory.\n")
 	}
 
 	if reqCtx != "" {

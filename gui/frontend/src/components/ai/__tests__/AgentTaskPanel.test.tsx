@@ -1,10 +1,35 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AgentTaskPanel } from "../AgentTaskPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
 import type { AgentView } from "../agentViewTypes";
 
+const SelectWorkingDirMock = vi.fn();
+
+vi.mock("../../../../wailsjs/go/main/App", () => ({
+    SelectWorkingDir: (...args: unknown[]) => SelectWorkingDirMock(...args),
+}));
+
 describe("AgentTaskPanel", () => {
+    beforeEach(() => {
+        SelectWorkingDirMock.mockReset();
+    });
+
+    it("keeps the task panel header draggable while close stays clickable", () => {
+        const onDismiss = vi.fn();
+        const view: AgentView = {
+            type: "form",
+            id: "drag-header-test",
+            title: "Task details",
+            fields: [{ name: "goal", label: "Goal", type: "text", value: "ship" }],
+        };
+
+        render(<AgentTaskPanel view={view} onDismiss={onDismiss} theme={lightTheme} />);
+
+        expect(screen.getByTestId("agent-task-panel-header").style.getPropertyValue("--wails-draggable")).toBe("drag");
+        expect(screen.getByRole("button", { name: "Close" }).style.getPropertyValue("--wails-draggable")).toBe("no-drag");
+    });
+
     it("blocks invalid formatted values before submit", () => {
         const onSubmit = vi.fn();
         const view: AgentView = {
@@ -85,6 +110,81 @@ describe("AgentTaskPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
         expect(onSubmit).toHaveBeenCalledWith("format-test", { email: "ops@example.com" });
+    });
+
+    it("lets directory fields use the native directory picker", async () => {
+        const onSubmit = vi.fn();
+        SelectWorkingDirMock.mockResolvedValue("D:\\workprj\\demo");
+        const view: AgentView = {
+            type: "form",
+            id: "directory-test",
+            title: "Workspace",
+            fields: [{ name: "workdir", label: "Working directory", type: "directory", value: "" }],
+            submitLabel: "Run",
+        };
+
+        render(<AgentTaskPanel view={view} onSubmit={onSubmit} theme={lightTheme} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /Browse: Working directory/ }));
+        await waitFor(() => expect((screen.getByRole("textbox", { name: /Working directory/ }) as HTMLInputElement).value).toBe("D:\\workprj\\demo"));
+        fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+        expect(SelectWorkingDirMock).toHaveBeenCalledTimes(1);
+        expect(onSubmit).toHaveBeenCalledWith("directory-test", { workdir: "D:\\workprj\\demo" });
+    });
+
+    it("lets object form directory columns use the native directory picker", async () => {
+        const onSubmit = vi.fn();
+        SelectWorkingDirMock.mockResolvedValue("D:\\workprj\\nested");
+        const view: AgentView = {
+            type: "form",
+            id: "object-directory-test",
+            title: "Workspace",
+            fields: [{
+                name: "settings",
+                label: "Settings",
+                type: "object_form",
+                value: { workdir: "" },
+                columns: [{ name: "workdir", label: "Working directory", type: "directory" }],
+            }],
+            submitLabel: "Run",
+        };
+
+        render(<AgentTaskPanel view={view} onSubmit={onSubmit} theme={lightTheme} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /Browse: Working directory/ }));
+        await waitFor(() => expect((screen.getByRole("textbox", { name: /Working directory/ }) as HTMLInputElement).value).toBe("D:\\workprj\\nested"));
+        fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+        expect(SelectWorkingDirMock).toHaveBeenCalledTimes(1);
+        expect(onSubmit).toHaveBeenCalledWith("object-directory-test", { settings: { workdir: "D:\\workprj\\nested" } });
+    });
+
+    it("lets array table directory columns use the native directory picker", async () => {
+        const onSubmit = vi.fn();
+        SelectWorkingDirMock.mockResolvedValue("D:\\workprj\\row");
+        const view: AgentView = {
+            type: "form",
+            id: "table-directory-test",
+            title: "Workspace",
+            fields: [{
+                name: "jobs",
+                label: "Jobs",
+                type: "array_table",
+                value: [{ workdir: "" }],
+                columns: [{ name: "workdir", label: "Working directory", type: "directory" }],
+            }],
+            submitLabel: "Run",
+        };
+
+        render(<AgentTaskPanel view={view} onSubmit={onSubmit} theme={lightTheme} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /Browse: Working directory/ }));
+        await waitFor(() => expect((screen.getByRole("textbox", { name: /Working directory 1/ }) as HTMLInputElement).value).toBe("D:\\workprj\\row"));
+        fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+        expect(SelectWorkingDirMock).toHaveBeenCalledTimes(1);
+        expect(onSubmit).toHaveBeenCalledWith("table-directory-test", { jobs: [{ workdir: "D:\\workprj\\row" }] });
     });
 
     it("passes hidden form routing data when dismissed", () => {

@@ -50,7 +50,7 @@ func (s *instanceStore) Create(ctx context.Context, inst *workflow.WorkflowInsta
 
 func (s *instanceStore) Get(ctx context.Context, id string) (*workflow.WorkflowInstance, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
+		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at, row_version
 		 FROM workflow_instances
 		 WHERE id = ? AND tenant_id = ?`,
 		id,
@@ -97,6 +97,39 @@ func (s *instanceStore) UpdateInstanceData(ctx context.Context, id string, data 
 		store.TenantIDFromContext(ctx),
 	)
 	return err
+}
+
+// UpdateInstanceDataCAS persists instance_data only if the row's row_version
+// still equals expectedVersion, bumping it on success. This is the
+// optimistic-locking guard that serializes concurrent approval-state writes on
+// the same node so no vote is lost across processes (Requirement 2.6). On a
+// version mismatch it returns workflow.ErrInstanceVersionConflict without
+// writing, so the caller re-reads and re-applies its decision. Implements
+// workflow.OptimisticInstanceDataUpdater.
+func (s *instanceStore) UpdateInstanceDataCAS(ctx context.Context, id string, expectedVersion int64, data map[string]interface{}) (int64, error) {
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_instances SET instance_data = ?, row_version = row_version + 1
+		 WHERE id = ? AND tenant_id = ? AND row_version = ?`,
+		string(dataJSON),
+		id,
+		store.TenantIDFromContext(ctx),
+		expectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected == 0 {
+		return 0, workflow.ErrInstanceVersionConflict
+	}
+	return expectedVersion + 1, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +207,65 @@ func (s *instanceStore) GetPendingApprovals(ctx context.Context, approverID stri
 			return nil, err
 		}
 		results = append(results, *exec)
+	}
+	return results, rows.Err()
+}
+
+// FindCompletedWithoutConfirmations returns completed instances whose
+// completed_at is within the given retention window and that have no rows in
+// the confirmations table — i.e. instances orphaned by a crash between marking
+// the instance completed and creating confirmation records (the window
+// documented in executeTerminalNode). Used by
+// ConfirmationTracker.ReconcileOrphanedInstances. Implements
+// workflow.OrphanedInstanceFinder.
+func (s *instanceStore) FindCompletedWithoutConfirmations(ctx context.Context, within time.Duration) ([]workflow.WorkflowInstance, error) {
+	cutoff := time.Now().UTC().Add(-within).Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, tenant_id, workflow_id, version_id, status, current_node_id, instance_data, trigger_data, created_at, completed_at
+		 FROM workflow_instances wi
+		 WHERE wi.tenant_id = ?
+		   AND wi.status = ?
+		   AND wi.completed_at IS NOT NULL
+		   AND wi.completed_at >= ?
+		   AND NOT EXISTS (SELECT 1 FROM confirmations c WHERE c.instance_id = wi.id)
+		 ORDER BY wi.completed_at ASC`,
+		store.TenantIDFromContext(ctx), string(workflow.InstanceCompleted), cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []workflow.WorkflowInstance
+	for rows.Next() {
+		var (
+			inst             workflow.WorkflowInstance
+			status           string
+			instanceDataJSON string
+			createdAt        string
+			completedAt      sql.NullString
+		)
+		if err := rows.Scan(
+			&inst.ID, &inst.TenantID, &inst.WorkflowID, &inst.VersionID, &status,
+			&inst.CurrentNodeID, &instanceDataJSON, &inst.TriggerData, &createdAt, &completedAt,
+		); err != nil {
+			return nil, err
+		}
+		inst.Status = workflow.InstanceStatus(status)
+		inst.CreatedAt = mustParseTime(createdAt)
+		if completedAt.Valid && completedAt.String != "" {
+			t := mustParseTime(completedAt.String)
+			inst.CompletedAt = &t
+		}
+		if instanceDataJSON != "" && instanceDataJSON != "{}" {
+			if err := json.Unmarshal([]byte(instanceDataJSON), &inst.InstanceData); err != nil {
+				return nil, err
+			}
+		}
+		if inst.InstanceData == nil {
+			inst.InstanceData = make(map[string]interface{})
+		}
+		results = append(results, inst)
 	}
 	return results, rows.Err()
 }
@@ -395,6 +487,7 @@ func scanWorkflowInstance(row *sql.Row) (*workflow.WorkflowInstance, error) {
 		instanceDataJSON string
 		createdAt        string
 		completedAt      sql.NullString
+		rowVersion       int64
 	)
 
 	if err := row.Scan(
@@ -408,6 +501,7 @@ func scanWorkflowInstance(row *sql.Row) (*workflow.WorkflowInstance, error) {
 		&inst.TriggerData,
 		&createdAt,
 		&completedAt,
+		&rowVersion,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -416,6 +510,7 @@ func scanWorkflowInstance(row *sql.Row) (*workflow.WorkflowInstance, error) {
 	}
 
 	inst.Status = workflow.InstanceStatus(status)
+	inst.RowVersion = rowVersion
 	inst.CreatedAt = mustParseTime(createdAt)
 	if completedAt.Valid && completedAt.String != "" {
 		t := mustParseTime(completedAt.String)

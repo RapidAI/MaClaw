@@ -52,12 +52,12 @@ describe('SidebarHistorySessions', () => {
         expect(await screen.findByText('Contract review')).toBeTruthy();
         expect(screen.getByText('Vendor audit')).toBeTruthy();
         expect(screen.getByText('Archived research')).toBeTruthy();
-        expect(screen.getAllByText('\u2197')).toHaveLength(2);
-        expect(screen.getAllByText('Started by me')).toHaveLength(2);
+        expect(screen.getAllByText('\u2197')).toHaveLength(3);
+        expect(screen.getAllByText('Started by me')).toHaveLength(3);
         expect(screen.getAllByText('\u2199')).toHaveLength(2);
         expect(screen.getAllByText('My digital employee invited')).toHaveLength(2);
-        expect(screen.getAllByText('Read-only')).toHaveLength(4);
-        expect(screen.getByText('History session')).toBeTruthy();
+        expect(screen.getAllByText('Read-only')).toHaveLength(3);
+        expect(screen.getByText('History sessions')).toBeTruthy();
 
         fireEvent.click(screen.getByText('Vendor audit'));
         expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'disc-2', local_relation: 'owned_ve_invited' }));
@@ -79,6 +79,40 @@ describe('SidebarHistorySessions', () => {
             eventHandlers.get('ve-event')?.({ payload: { session_id: 'disc-2' } });
         });
         await waitFor(() => expect(listMine).toHaveBeenCalledTimes(3));
+    });
+
+    it('updates renamed group titles in the history list immediately', async () => {
+        listMine
+            .mockResolvedValueOnce(visibleSessions as any)
+            .mockResolvedValue([{ ...visibleSessions[0], topic: 'Renamed group' }, ...visibleSessions.slice(1)] as any);
+        render(<SidebarHistorySessions lang="en" />);
+
+        expect(await screen.findByText('Contract review')).toBeTruthy();
+
+        await act(async () => {
+            eventHandlers.get('ve:discussion_rename')?.({ type: 've:discussion_rename', payload: { discussion_id: 'disc-1', topic: 'Renamed group' } });
+        });
+
+        expect(screen.getByText('Renamed group')).toBeTruthy();
+        expect(screen.queryByText('Contract review')).toBeNull();
+        await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
+    });
+
+    it('updates renamed group titles from wrapped event payloads', async () => {
+        listMine
+            .mockResolvedValueOnce(visibleSessions as any)
+            .mockResolvedValue([{ ...visibleSessions[0], topic: 'Wrapped group' }, ...visibleSessions.slice(1)] as any);
+        render(<SidebarHistorySessions lang="en" />);
+
+        expect(await screen.findByText('Contract review')).toBeTruthy();
+
+        await act(async () => {
+            eventHandlers.get('ve:discussion_rename')?.({ type: 've:discussion_rename', payload: { type: 've:discussion_rename', payload: { discussionId: 'disc-1', title: 'Wrapped group' } } });
+        });
+
+        expect(screen.getByText('Wrapped group')).toBeTruthy();
+        expect(screen.queryByText('Contract review')).toBeNull();
+        await waitFor(() => expect(listMine).toHaveBeenCalledTimes(2));
     });
 
     it('coalesces bursty digital employee refresh events', async () => {

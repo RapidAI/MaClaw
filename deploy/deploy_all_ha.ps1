@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('full', 'hubcenter-only')]
+    [ValidateSet('full', 'hubcenter-only', 'hub-only')]
     [string]$Scope = 'full',
 
     [ValidateSet('rapidai', 'tigerclaw')]
@@ -359,7 +359,8 @@ function Build-LocalBinaries {
         [string]$HubBinaryName,
         [string]$HubCenterBinaryName,
         [string]$BrandBuildTag,
-        [bool]$BuildHub
+        [bool]$BuildHub,
+        [bool]$BuildHubCenter
     )
 
     $goExe = Require-Tool 'go.exe'
@@ -416,8 +417,10 @@ function Build-LocalBinaries {
     }
 
     Write-Host ("  - target: {0}/{1}, CGO_ENABLED={2}" -f $goos, $goarch, $cgo)
-    Write-Host '  - building hubcenter locally...'
-    Invoke-GoBuildCmd -OutputPath (Join-Path $binDirForGo $HubCenterBinaryName) -PackagePath './hubcenter/cmd/hubcenter' -Label 'hubcenter'
+    if ($BuildHubCenter) {
+        Write-Host '  - building hubcenter locally...'
+        Invoke-GoBuildCmd -OutputPath (Join-Path $binDirForGo $HubCenterBinaryName) -PackagePath './hubcenter/cmd/hubcenter' -Label 'hubcenter'
+    }
 
     if ($BuildHub) {
         Write-Host '  - building hub locally...'
@@ -521,6 +524,7 @@ function Write-RemoteScript {
         ': "${REMOTE_TMP_DIR:=/tmp/aicoder_deploy}"',
         ': "${REMOTE_HUB_DIR:=/data/soft/hub}"',
         ': "${REMOTE_HUBCENTER_DIR:=/data/soft/hubcenter}"',
+        ': "${DEPLOY_HUBCENTER:=1}"',
         ': "${DEPLOY_HUB:=0}"',
         ': "${ENSURE_HUB_MODELS:=0}"',
         ': "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"',
@@ -852,9 +856,11 @@ function Write-RemoteScript {
         '  fi',
         '}',
         '',
-        'echo "[remote] Deploying hubcenter files..."',
-        'deploy_hubcenter',
-        'clean_hubcenter_db_if_requested',
+        'if [ "$DEPLOY_HUBCENTER" = "1" ]; then',
+        '  echo "[remote] Deploying hubcenter files..."',
+        '  deploy_hubcenter',
+        '  clean_hubcenter_db_if_requested',
+        'fi',
         '',
         'if [ "$DEPLOY_HUB" = "1" ]; then',
         '  echo "[remote] Deploying hub files..."',
@@ -864,10 +870,12 @@ function Write-RemoteScript {
         '  fi',
         'fi',
         '',
-        'echo "[remote] Restarting hubcenter..."',
-        'if [ -x "$REMOTE_HUBCENTER_DIR/start.sh" ]; then',
-        '  cd "$REMOTE_HUBCENTER_DIR"',
-        '  ./start.sh',
+        'if [ "$DEPLOY_HUBCENTER" = "1" ]; then',
+        '  echo "[remote] Restarting hubcenter..."',
+        '  if [ -x "$REMOTE_HUBCENTER_DIR/start.sh" ]; then',
+        '    cd "$REMOTE_HUBCENTER_DIR"',
+        '    ./start.sh',
+        '  fi',
         'fi',
         '',
         'if [ "$DEPLOY_HUB" = "1" ]; then',
@@ -1004,11 +1012,12 @@ function Invoke-PostDeploySmokeCheck {
 
     $failures = @()
     foreach ($target in $Targets) {
-        $checks = @(
-            [pscustomobject]@{ Label = 'hubcenter healthz'; Url = ("https://{0}/healthz" -f $target.Host); Want = 200 },
-            [pscustomobject]@{ Label = 'hubcenter admin'; Url = ("https://{0}/admin" -f $target.Host); Want = 200 },
-            [pscustomobject]@{ Label = 'hubcenter hub action route'; Url = ("https://{0}/api/admin/hubs/registration-policy" -f $target.Host); Method = 'Post'; Body = '{"hub_id":"smoke"}'; Want = 401 }
-        )
+        $checks = @()
+        if ($target.DeployHubCenter) {
+            $checks += [pscustomobject]@{ Label = 'hubcenter healthz'; Url = ("https://{0}/healthz" -f $target.Host); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hubcenter admin'; Url = ("https://{0}/admin" -f $target.Host); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hubcenter hub action route'; Url = ("https://{0}/api/admin/hubs/registration-policy" -f $target.Host); Method = 'Post'; Body = '{"hub_id":"smoke"}'; Want = 401 }
+        }
         if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
             $checks += [pscustomobject]@{ Label = 'hub healthz'; Url = ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub admin'; Url = ("{0}/admin" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
@@ -1043,14 +1052,25 @@ function Invoke-RemotePrecheck {
         [pscustomobject]$Target
     )
 
+    $mkdirDirs = @($Target.RemoteTmpDir)
+    if ($Target.DeployHub) {
+        $mkdirDirs += $Target.RemoteHubDir
+    }
+    if ($Target.DeployHubCenter) {
+        $mkdirDirs += $Target.RemoteHubCenterDir
+    }
+    $mkdirArgs = ($mkdirDirs | ForEach-Object { '"{0}"' -f $_ }) -join ' '
+
     $checks = @(
         'PATH="$PATH:/usr/local/go/bin:/root/go/bin"; export PATH',
         '[ -n "$(command -v sh 2>/dev/null)" ] || { echo "missing:sh"; exit 1; }',
         '[ -n "$(command -v tar 2>/dev/null)" ] || { echo "missing:tar"; exit 1; }',
-        ('mkdir -p "{0}" "{1}" "{2}" >/dev/null 2>&1 || {{ echo "mkdir-failed"; exit 1; }}' -f $Target.RemoteTmpDir, $Target.RemoteHubDir, $Target.RemoteHubCenterDir),
-        ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteTmpDir),
-        ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteHubCenterDir)
+        ('mkdir -p {0} >/dev/null 2>&1 || {{ echo "mkdir-failed"; exit 1; }}' -f $mkdirArgs),
+        ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteTmpDir)
     )
+    if ($Target.DeployHubCenter) {
+        $checks += ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteHubCenterDir)
+    }
     if ($Target.DeployHub) {
         $checks += ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteHubDir)
         $checks += '(command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1) || { echo "missing:curl-or-wget"; exit 1; }'
@@ -1102,6 +1122,7 @@ $targets = @(
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-1' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-1' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-1' '/data/soft/hubcenter'
+        DeployHubCenter = $true
         HubCenterConfig = 'hubcenter-hc-1.yaml'
         DeployHub = $true
         HubConfig = 'hub-mypapers.yaml'
@@ -1114,6 +1135,7 @@ $targets = @(
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-2' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-2' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-2' '/data/soft/hubcenter'
+        DeployHubCenter = $true
         HubCenterConfig = 'hubcenter-hc-2.yaml'
         DeployHub = $true
         HubConfig = 'hub-maclaw.yaml'
@@ -1126,6 +1148,7 @@ $targets = @(
         RemoteTmpDir = Get-TargetSetting 'REMOTE_TMP_DIR' 'hc-3' '/tmp/aicoder_deploy'
         RemoteHubDir = Get-TargetSetting 'REMOTE_HUB_DIR' 'hc-3' '/data/soft/hub'
         RemoteHubCenterDir = Get-TargetSetting 'REMOTE_HUBCENTER_DIR' 'hc-3' '/data/soft/hubcenter'
+        DeployHubCenter = $true
         HubCenterConfig = 'hubcenter-hc-3.yaml'
         DeployHub = $true
         HubConfig = 'hub2-maclaw.yaml'
@@ -1159,6 +1182,15 @@ if ($Scope -eq 'hubcenter-only') {
         $target.HubPublicUrl = ''
     }
 }
+elseif ($Scope -eq 'hub-only') {
+    foreach ($target in $targets) {
+        $target.DeployHubCenter = $false
+        $target.HubCenterConfig = ''
+    }
+    if ($CleanHubCenterDB) {
+        throw '--clean-hubcenter-db cannot be used with hub-only.'
+    }
+}
 
 $passwordFile = Join-Path $env:TEMP ("deploy_all_password_{0}_{1}.txt" -f (Get-Random), (Get-Random))
 $buildBaseRoot = Join-Path $rootDir 'build\deploy-ha'
@@ -1190,11 +1222,14 @@ try {
     Write-Host ''
     Write-Host '[1/9] Deployment topology' -ForegroundColor Cyan
     foreach ($target in $targets) {
-        if ($target.DeployHub) {
+        if ($target.DeployHubCenter -and $target.DeployHub) {
             Write-Host ("  - {0}: hubcenter[{1}] + hub[{2}]" -f $target.Host, $target.RemoteHubCenterDir, $target.RemoteHubDir)
         }
-        else {
+        elseif ($target.DeployHubCenter) {
             Write-Host ("  - {0}: hubcenter[{1}] only" -f $target.Host, $target.RemoteHubCenterDir)
+        }
+        else {
+            Write-Host ("  - {0}: hub[{1}] only" -f $target.Host, $target.RemoteHubDir)
         }
     }
     Write-Host ("  Shared cluster secret: {0}" -f $secretSource)
@@ -1221,7 +1256,8 @@ try {
 
     Write-Host '[5/9] Building local Linux binaries and staging deploy assets...' -ForegroundColor Cyan
     $shouldBuildHub = @($targets | Where-Object { $_.DeployHub }).Count -gt 0
-    Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub
+    $shouldBuildHubCenter = @($targets | Where-Object { $_.DeployHubCenter }).Count -gt 0
+    Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub -BuildHubCenter $shouldBuildHubCenter
     Stage-DeployAssets -SourceRoot $rootDir -StageRoot $stageRoot
 
     Write-Host '[6/9] Creating deploy archive...' -ForegroundColor Cyan
@@ -1237,11 +1273,13 @@ try {
     foreach ($target in $targets) {
         $targetIndex++
         $connectionArgs = Get-ConnectionArgs -UserName $sshUser -HostName $target.Host -Port $sshPort -Password $password -HostKey $target.HostKey
-        $hubCenterConfigPath = Join-Path $renderedDir $target.HubCenterConfig
+        $hubCenterConfigPath = if ($target.DeployHubCenter) { Join-Path $renderedDir $target.HubCenterConfig } else { '' }
         $hubConfigPath = if ($target.DeployHub) { Join-Path $renderedDir $target.HubConfig } else { '' }
         $ensureHubModels = '0'
 
-        Assert-DeployFileExists -Path $hubCenterConfigPath -Label ("hubcenter config for {0}" -f $target.Name)
+        if ($target.DeployHubCenter) {
+            Assert-DeployFileExists -Path $hubCenterConfigPath -Label ("hubcenter config for {0}" -f $target.Name)
+        }
         if ($target.DeployHub) {
             Assert-DeployFileExists -Path $hubConfigPath -Label ("hub config for {0}" -f $target.Name)
         }
@@ -1251,7 +1289,9 @@ try {
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText "mkdir -p $($target.RemoteTmpDir)"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $archivePath -RemotePath "$($target.RemoteTmpDir)/maclaw-deploy.tar.gz"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $remoteScriptPath -RemotePath "$($target.RemoteTmpDir)/remote_deploy.sh"
-        Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $hubCenterConfigPath -RemotePath "$($target.RemoteTmpDir)/$($target.HubCenterConfig)"
+        if ($target.DeployHubCenter) {
+            Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $hubCenterConfigPath -RemotePath "$($target.RemoteTmpDir)/$($target.HubCenterConfig)"
+        }
         if ($target.DeployHub) {
             Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $hubConfigPath -RemotePath "$($target.RemoteTmpDir)/$($target.HubConfig)"
             $remoteModelSentinel = "$($target.RemoteHubDir)/data/models/.models-initialized"
@@ -1273,21 +1313,25 @@ try {
         }
 
         $deployHubFlag = if ($target.DeployHub) { '1' } else { '0' }
+        $deployHubCenterFlag = if ($target.DeployHubCenter) { '1' } else { '0' }
         $cleanHubCenterDBFlag = if ($CleanHubCenterDB) { '1' } else { '0' }
         $envParts = @(
             ("export REMOTE_TMP_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteTmpDir)),
             ("export REMOTE_HUB_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubDir)),
             ("export REMOTE_HUBCENTER_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubCenterDir)),
+            ("export DEPLOY_HUBCENTER={0}" -f (Quote-ShellEnvValue $deployHubCenterFlag)),
             ("export DEPLOY_HUB={0}" -f (Quote-ShellEnvValue $deployHubFlag)),
             ("export CLEAN_HUBCENTER_DB={0}" -f (Quote-ShellEnvValue $cleanHubCenterDBFlag)),
             ("export HUBCENTER_DB_PATH={0}" -f (Quote-ShellEnvValue $target.DatabaseDSN)),
             ("export ENSURE_HUB_MODELS={0}" -f (Quote-ShellEnvValue $ensureHubModels)),
             ("export HUB_MODEL_BASE_URL={0}" -f (Quote-ShellEnvValue $hubModelBaseUrl)),
             ("export HUB_MODEL_FILES={0}" -f (Quote-ShellEnvValue $hubModelFiles)),
-            ("export HUBCENTER_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubCenterConfig)),
             ("export HUB_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubBinaryName)),
             ("export HUBCENTER_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubCenterBinaryName))
         )
+        if ($target.DeployHubCenter) {
+            $envParts += ("export HUBCENTER_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubCenterConfig))
+        }
         if ($target.DeployHub) {
             $envParts += ("export HUB_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubConfig))
         }
@@ -1312,11 +1356,14 @@ try {
     Write-Host ("Rendered configs: {0}" -f $renderedDir)
     Write-Host 'Services deployed:'
     foreach ($target in $targets) {
-        if ($target.DeployHub) {
+        if ($target.DeployHubCenter -and $target.DeployHub) {
             Write-Host ("  - {0}: hubcenter + {1}" -f $target.Host, $target.HubPublicUrl)
         }
-        else {
+        elseif ($target.DeployHubCenter) {
             Write-Host ("  - {0}: hubcenter" -f $target.Host)
+        }
+        else {
+            Write-Host ("  - {0}: {1}" -f $target.Host, $target.HubPublicUrl)
         }
     }
     if ($modelStatuses.Count -gt 0) {

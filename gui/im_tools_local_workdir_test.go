@@ -74,6 +74,33 @@ func TestProjectTabWorkDir_ValidDirectory(t *testing.T) {
 	}
 }
 
+func TestProjectTabWorkDir_UsesRuntimeOwner(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &IMMessageHandler{
+		lastUserID:     desktopUserID,
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-project", PolicyOwnerID: desktopUserID + ":" + tmpDir}},
+	}
+
+	if got := h.projectTabWorkDir(); got != tmpDir {
+		t.Fatalf("projectTabWorkDir() = %q, want runtime owner project %q", got, tmpDir)
+	}
+}
+
+func TestProjectTabWorkDir_EmptyRuntimeOwnerDoesNotFallbackToLastUser(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &IMMessageHandler{
+		lastUserID:     desktopUserID + ":" + tmpDir,
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-no-owner"}},
+	}
+
+	if got := h.projectTabWorkDir(); got != "" {
+		t.Fatalf("projectTabWorkDir() = %q, want no fallback to lastUserID project", got)
+	}
+	if got := h.resolveToolWorkDir(""); got == tmpDir {
+		t.Fatalf("resolveToolWorkDir() inherited lastUserID project %q without runtime owner", got)
+	}
+}
+
 func TestProjectTabWorkDir_InvalidDirectory_FallsBackToHome(t *testing.T) {
 	// Use a non-existent path as projectPath.
 	nonExistent := filepath.Join(t.TempDir(), "does_not_exist_xyz")
@@ -128,6 +155,20 @@ func TestResolveToolWorkDir_EmptyWorkDir_ProjectTab(t *testing.T) {
 	got := h.resolveToolWorkDir("")
 	if got != tmpDir {
 		t.Errorf("resolveToolWorkDir(\"\") in Project Tab = %q, want %q", got, tmpDir)
+	}
+}
+
+func TestResolveToolWorkDir_ExplicitOwnerOverridesGlobalLoop(t *testing.T) {
+	desktopDir := t.TempDir()
+	mobileDir := t.TempDir()
+	h := &IMMessageHandler{
+		lastUserID:     desktopUserID + ":" + desktopDir,
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-desktop", PolicyOwnerID: desktopUserID + ":" + desktopDir}},
+	}
+
+	got := h.resolveToolWorkDirForOwner("", desktopUserID+":"+mobileDir)
+	if got != mobileDir {
+		t.Fatalf("resolveToolWorkDirForOwner() = %q, want explicit owner project %q", got, mobileDir)
 	}
 }
 

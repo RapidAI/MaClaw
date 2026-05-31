@@ -11,23 +11,33 @@ import (
 // maybeAttachVoiceSummary generates a voice summary of the agent response
 // and attaches it to resp for IM channels.
 func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platform string, voiceReply bool) {
-	if resp == nil || resp.Error != "" || resp.Text == "" || resp.VoiceData != "" {
+	if resp == nil {
+		log.Printf("[tts-auto] skip reason=nil_response platform=%s voice_reply=%v", platform, voiceReply)
+		return
+	}
+	if resp.Error != "" || resp.Text == "" || resp.VoiceData != "" {
+		log.Printf("[tts-auto] skip reason=response_not_eligible platform=%s voice_reply=%v err=%v text_len=%d has_voice=%v", platform, voiceReply, resp.Error != "", utf8.RuneCountInString(resp.Text), resp.VoiceData != "")
 		return
 	}
 	if !isIMPlatform(platform) {
+		log.Printf("[tts-auto] skip reason=not_im platform=%s voice_reply=%v", platform, voiceReply)
 		return
 	}
 	if h.app == nil || h.app.ttsManager == nil {
+		log.Printf("[tts-auto] skip reason=tts_manager_nil platform=%s voice_reply=%v", platform, voiceReply)
 		return
 	}
 	cfg, err := h.app.LoadConfig()
 	if err != nil || !cfg.TTSEnabled {
+		log.Printf("[tts-auto] skip reason=tts_disabled_or_config_error platform=%s voice_reply=%v config_err=%v", platform, voiceReply, err)
 		return
 	}
 	if !voiceReply && !cfg.TTSAutoVoiceSummary {
+		log.Printf("[tts-auto] skip reason=auto_summary_disabled platform=%s voice_reply=%v", platform, voiceReply)
 		return
 	}
 	if !voiceReply && utf8.RuneCountInString(resp.Text) < 20 {
+		log.Printf("[tts-auto] skip reason=text_too_short platform=%s voice_reply=%v text_len=%d", platform, voiceReply, utf8.RuneCountInString(resp.Text))
 		return
 	}
 

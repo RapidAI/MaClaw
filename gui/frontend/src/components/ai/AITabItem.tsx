@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
+import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
 const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
@@ -11,10 +12,10 @@ const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zh
 
 function participantTitleName(tab: AITab, participantId: string, index: number, lang?: string): string {
     if (isLocalParticipant(tab, participantId)) return localAINameForLang(lang);
-    const mapped = String(tab.participantNames?.[participantId] || "").trim();
+    const mapped = String(participantNameForIdentity(tab.participantNames, participantId) || "").trim();
     if (mapped && mapped !== participantId && !looksLikeRawParticipantId(mapped)) return mapped.replace(/\s+\([^()]+\)$/, "").trim();
     const tabTitle = String(tab.title || "").trim();
-    if (participantId === tab.veId && tabTitle && tabTitle !== participantId && !looksLikeRawParticipantId(tabTitle)) return tabTitle;
+    if (participantIdentityMatches(participantId, tab.veId) && tabTitle && tabTitle !== participantId && !looksLikeRawParticipantId(tabTitle)) return tabTitle;
     return textForTabLang(lang, `Participant ${index + 1}`, `参与者 ${index + 1}`, `參與者 ${index + 1}`);
 }
 
@@ -27,6 +28,7 @@ function directVETitleName(tab: AITab, lang?: string): string {
 
 export function getAITabDisplayTitle(tab: AITab, lang?: string): string {
     if (tab.type === "ve") return directVETitleName(tab, lang);
+    if (tab.type === "group" && String(tab.groupTitle || "").trim()) return String(tab.groupTitle || "").trim();
     if (tab.type !== "group" || !tab.veId || !tab.participants?.length) return tab.title;
     const names = tab.participants.map((id, index) => participantTitleName(tab, id, index, lang));
     return names.join(", ");

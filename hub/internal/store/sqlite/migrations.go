@@ -353,6 +353,7 @@ func RunMigrations(db *sql.DB) error {
 			PRIMARY KEY (tenant_id, invite_id)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_a2a_group_invites_to_status ON a2a_group_invites(tenant_id, to_id, status, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_a2a_group_invites_from_status ON a2a_group_invites(tenant_id, from_id, status, created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_a2a_group_invites_session ON a2a_group_invites(tenant_id, session_id);`,
 
 		`CREATE TABLE IF NOT EXISTS capabilities (
@@ -612,6 +613,7 @@ func RunMigrations(db *sql.DB) error {
 			current_node_id TEXT NOT NULL DEFAULT '',
 			instance_data TEXT NOT NULL DEFAULT '{}',
 			trigger_data TEXT NOT NULL DEFAULT '',
+			row_version INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			completed_at TEXT
 		);`,
@@ -748,6 +750,7 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN vip INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE node_executions ADD COLUMN node_type TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE workflow_instances ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
+	alterStmts = append(alterStmts, `ALTER TABLE workflow_instances ADD COLUMN row_version INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE approval_audit_trail ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
 	alterStmts = append(alterStmts, `ALTER TABLE confirmations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_wf_inst_tenant_status ON workflow_instances(tenant_id, status)`)

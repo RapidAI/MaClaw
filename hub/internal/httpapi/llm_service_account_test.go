@@ -47,7 +47,7 @@ func TestGetLLMServiceAccountHandlerReturnsStatusAndUsage(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Email != "account@example.com" || resp.Status == nil || resp.Status.CreditsAvailable != 95 {
+	if resp.Email != "account@example.com" || resp.TenantID == "" || resp.Status == nil || resp.Status.CreditsAvailable != 95 {
 		t.Fatalf("unexpected account response: %+v", resp)
 	}
 	if resp.Usage.TotalTokens != 30 || resp.Usage.TotalCostRMB != 0.42 {

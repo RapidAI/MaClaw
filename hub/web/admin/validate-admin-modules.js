@@ -28,6 +28,7 @@ const expectedScripts = [
   'compute-tab.js',
   'llm-provider-tab.js',
   'llm-service-tabs.js',
+  'card-store-tab.js',
   'usage-stats-tab.js',
   'failure-logs-tab.js',
   'admin-module-health.js',
@@ -403,7 +404,8 @@ function assertAdminApiRoutesRegistered() {
   const allowedDynamicPrefixes = [
     '/api/admin/capability-market/groups/',
     '/api/admin/capability-market/users/',
-    '/api/admin/security/users/'
+    '/api/admin/security/users/',
+    '/api/admin/card-store/orders/'
   ];
   function routeCouldMatch(url) {
     if (routeSet.has(url)) return true;

@@ -25,13 +25,16 @@ func (h *IMMessageHandler) shouldSkipWorkflowToolExecutionGate(userID string, ct
 	if ctx == nil {
 		return false
 	}
+	policyUserID := h.workflowPolicyOwnerID(userID, ctx)
 	awaitingReview := false
 	phaseBlocked := false
+	activeWorkflow := false
 	if engine := h.getWorkflowEngine(); engine != nil {
-		awaitingReview = engine.IsAwaitingReview(userID)
-		phaseBlocked = engine.IsPhaseExecutionBlocked(userID)
+		awaitingReview = engine.IsAwaitingReview(policyUserID)
+		phaseBlocked = engine.IsPhaseExecutionBlocked(policyUserID)
+		activeWorkflow = strings.TrimSpace(policyUserID) != "" && engine.GetActiveWorkflow(policyUserID) != nil
 	}
-	return shouldSkipWorkflowToolExecutionGate(ctx.SkipNeedsConfirmGate, awaitingReview, ctx.WorkflowAgentLoop, phaseBlocked)
+	return shouldSkipWorkflowToolExecutionGate(ctx.SkipNeedsConfirmGate, awaitingReview, ctx.WorkflowAgentLoop, phaseBlocked, activeWorkflow)
 }
 
 type agentLoopToolExecutionOptions struct {
@@ -53,18 +56,29 @@ type agentLoopToolExecutionOptions struct {
 
 func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionOptions) toolExecutionResult {
 	tc := opts.ToolCall
+	policyUserID := h.workflowPolicyOwnerID(opts.UserID, opts.Context)
+	skipWorkflowGate := opts.SkipWorkflowGate
+	if skipWorkflowGate {
+		if engine := h.getWorkflowEngine(); engine != nil {
+			if strings.TrimSpace(policyUserID) != "" && engine.GetActiveWorkflow(policyUserID) != nil {
+				skipWorkflowGate = false
+			}
+		}
+	}
 
 	var result toolExecutionResult
-	if !opts.SkipWorkflowGate && !h.isWorkflowToolAllowed(opts.UserID, tc.Function.Name) {
+	if !skipWorkflowGate && !h.isWorkflowToolAllowedForOwner(policyUserID, tc.Function.Name) {
 		text := workflowPolicyToolRejectedText(tc.Function.Name)
 		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		h.appendToolPolicyTrace(opts.Context, policyUserID, tc.Function.Name, "workflow.tool", text)
 		log.Printf("[agent-loop] rejected execution of workflow-blocked tool %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
 	}
-	if result.Text == "" && !opts.SkipWorkflowGate {
-		allowed, reason := h.isWorkflowToolCallAllowed(opts.UserID, tc.Function.Name, tc.Function.Arguments)
+	if result.Text == "" && !skipWorkflowGate {
+		allowed, reason := h.isWorkflowToolCallAllowedForOwner(policyUserID, tc.Function.Name, tc.Function.Arguments)
 		if !allowed {
 			text := fmt.Sprintf("[system rejected] %s", reason)
 			result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			h.appendToolPolicyTrace(opts.Context, policyUserID, tc.Function.Name, "workflow.call", reason)
 			log.Printf("[agent-loop] rejected execution of workflow-blocked tool call %q (iter=%d user=%s reason=%s)", tc.Function.Name, opts.Iteration, opts.UserID, reason)
 		}
 	}
@@ -116,7 +130,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		}
 	}
 	if result.Text == "" {
-		result = h.executeToolDetailedWithUserText(tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
+		result = h.executeToolDetailedWithRuntimeState(policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
 	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)
 
@@ -124,6 +138,19 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
 	}
 	return result
+}
+
+func (h *IMMessageHandler) appendToolPolicyTrace(ctx *LoopContext, userID, toolName, layer, reason string) {
+	if ctx == nil || h == nil || h.traceService == nil || ctx.RunID == "" {
+		return
+	}
+	policyOwner := strings.TrimSpace(userID)
+	if policyOwner == "" && ctx.Runtime.PolicyOwnerID != "" {
+		policyOwner = ctx.Runtime.PolicyOwnerID
+	}
+	summary := fmt.Sprintf("layer=%s tool=%s policy_owner=%s request_id=%s session_key=%s reason=%s",
+		strings.TrimSpace(layer), strings.TrimSpace(toolName), strings.TrimSpace(policyOwner), strings.TrimSpace(ctx.Runtime.RequestID), strings.TrimSpace(ctx.Runtime.Conversation.SessionKey), strings.TrimSpace(reason))
+	h.appendTraceEvent(ctx, "tool.policy_denied", "warn", "Tool policy denied", summary, "", "")
 }
 
 func (h *IMMessageHandler) executeCodingWorkflowDelegateTask(opts agentLoopToolExecutionOptions) (toolExecutionResult, bool) {
@@ -142,6 +169,13 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	agentName, _ := args["agent"].(string)
 	if strings.TrimSpace(strings.ToLower(agentName)) != "coding_workflow" {
 		return toolExecutionResult{}, false
+	}
+	policyUserID := h.workflowPolicyOwnerID(opts.UserID, opts.Context)
+	if allowed, reason := h.workflowAllowsSubAgentExecutionForOwner(policyUserID); !allowed {
+		return toolExecutionResult{Text: "[system rejected] delegate_task(coding_workflow) is not allowed by the current workflow phase. " + reason + ".", ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}, true
+	}
+	if policyUserID != "" {
+		opts.UserID = policyUserID
 	}
 	request, _ := args["request"].(string)
 	request = strings.TrimSpace(request)
@@ -178,9 +212,10 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 
 	log.Printf("[delegate-task] executing coding_workflow via CodingSubAgent user=%s project=%s request=%q", opts.UserID, projectPath, truncateRunes(request, 120))
 	task := &TaskItem{
-		Index:       1,
-		Title:       "Delegated coding task",
-		Description: request,
+		Index:         0,
+		DisplayNumber: 1,
+		Title:         "Delegated coding task",
+		Description:   request,
 		AcceptanceCriteria: []string{
 			"Requested files are created or modified in the target project path.",
 			"The implementation is checked before reporting completion.",
@@ -310,22 +345,32 @@ func isRolePrefixRiskToolName(name string) bool {
 }
 
 func (h *IMMessageHandler) isWorkflowToolAllowed(userID, name string) bool {
-	engine := h.getWorkflowEngine()
-	if engine == nil || strings.TrimSpace(userID) == "" {
-		return true
-	}
-	if engine.IsPhaseExecutionBlocked(userID) {
-		return false
-	}
-	return workflow.IsToolAllowedByPolicy(engine.GetActivePhaseToolFilter(userID), name)
+	return h.isWorkflowToolAllowedForOwner(h.workflowPolicyUserID(userID), name)
 }
 
 func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON string) (bool, string) {
+	return h.isWorkflowToolCallAllowedForOwner(h.workflowPolicyUserID(userID), name, argsJSON)
+}
+
+func (h *IMMessageHandler) isWorkflowToolAllowedForOwner(policyUserID, name string) bool {
 	engine := h.getWorkflowEngine()
-	if engine == nil || strings.TrimSpace(userID) == "" {
+	policyUserID = strings.TrimSpace(policyUserID)
+	if engine == nil || policyUserID == "" {
+		return true
+	}
+	if engine.IsPhaseExecutionBlocked(policyUserID) {
+		return false
+	}
+	return workflow.IsToolAllowedByPolicy(engine.GetActivePhaseToolFilter(policyUserID), name)
+}
+
+func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name, argsJSON string) (bool, string) {
+	engine := h.getWorkflowEngine()
+	policyUserID = strings.TrimSpace(policyUserID)
+	if engine == nil || policyUserID == "" {
 		return true, ""
 	}
-	if engine.IsPhaseExecutionBlocked(userID) {
+	if engine.IsPhaseExecutionBlocked(policyUserID) {
 		return false, "current workflow phase is waiting for required input or review; tool execution is paused"
 	}
 	var args map[string]interface{}
@@ -335,7 +380,7 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON stri
 			return false, fmt.Sprintf("invalid tool arguments: %v", err)
 		}
 	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(engine.GetActivePhaseToolFilter(userID), strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(userID)); err != nil {
+	if err := workflow.ValidateToolCallByPolicyWithApproval(engine.GetActivePhaseToolFilter(policyUserID), strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(policyUserID)); err != nil {
 		return false, err.Error()
 	}
 	return true, ""
@@ -350,6 +395,18 @@ func (h *IMMessageHandler) executeToolDetailed(name, argsJSON string, onProgress
 }
 
 func (h *IMMessageHandler) executeToolDetailedWithUserText(name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	return h.executeToolDetailedWithPolicyUserText("", name, argsJSON, userText, onProgress)
+}
+
+func (h *IMMessageHandler) executeToolDetailedWithPolicyUserText(policyUserID, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	return h.executeToolDetailedWithRuntimeState(policyUserID, strings.TrimSpace(policyUserID) != "", "", name, argsJSON, userText, onProgress)
+}
+
+func (h *IMMessageHandler) executeToolDetailedWithRuntime(policyUserID, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	return h.executeToolDetailedWithRuntimeState(policyUserID, strings.TrimSpace(policyUserID) != "", runtimePlatform, name, argsJSON, userText, onProgress)
+}
+
+func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID string, hasRuntimeOwner bool, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
 	name = strings.TrimSpace(name)
 	kind := classifyAgentToolKind(name)
 	defer func() {
@@ -385,6 +442,22 @@ func (h *IMMessageHandler) executeToolDetailedWithUserText(name, argsJSON, userT
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+	policyUserID = strings.TrimSpace(policyUserID)
+	if policyUserID != "" {
+		if !h.isWorkflowToolAllowedForOwner(policyUserID, name) {
+			return toolExecutionResult{Text: workflowPolicyToolRejectedText(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		}
+		argsForPolicy, reason := h.isWorkflowToolCallAllowedForOwner(policyUserID, name, argsJSON)
+		if !argsForPolicy {
+			return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		}
+	}
+	if hasRuntimeOwner && toolAcceptsRuntimePolicyOwnerArg(name) {
+		args[registeredToolPolicyOwnerIDField] = policyUserID
+	}
+	if platform := strings.TrimSpace(runtimePlatform); platform != "" && toolAcceptsRuntimePlatformArg(name) {
+		args[registeredToolRuntimePlatformField] = platform
+	}
 	if name == "set_nickname" && strings.TrimSpace(userText) != "" {
 		args["_user_text"] = userText
 	}
@@ -411,12 +484,12 @@ func (h *IMMessageHandler) executeToolDetailedWithUserText(name, argsJSON, userT
 
 	if h.registry != nil {
 		if tool, ok := h.registry.Get(name); ok {
-			if h.emitRegisteredToolAgentViewIfNeeded(name, args) {
+			if h.emitRegisteredToolAgentViewIfNeeded(name, args, policyUserID) {
 				return toolExecutionResult{Text: "Tool parameters are incomplete. A task panel form has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureMissingParameters}
 			}
 			if validationIssues := registeredToolValidateArgIssues(*tool, args); len(validationIssues) > 0 {
 				if h.app != nil {
-					if view := buildRegisteredToolAgentView(*tool, args, nil); view != nil {
+					if view := buildRegisteredToolAgentView(*tool, h.attachRegisteredToolPolicyOwnerForOwner(args, policyUserID), nil); view != nil {
 						applyRegisteredToolFieldIssues(view, validationIssues)
 						h.app.emitAgentView(view)
 					}
@@ -424,7 +497,7 @@ func (h *IMMessageHandler) executeToolDetailedWithUserText(name, argsJSON, userT
 				return toolExecutionResult{Text: "Tool parameters need correction. A task panel form has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureValidation}
 			}
 			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
-			if h.emitRegisteredToolApprovalAgentViewIfNeeded(name, args, securityCtx) {
+			if h.emitRegisteredToolApprovalAgentViewIfNeeded(name, args, securityCtx, policyUserID) {
 				return toolExecutionResult{Text: "Tool execution needs approval. An approval panel has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureApprovalRequired}
 			}
 			if h.firewall != nil {
@@ -445,6 +518,159 @@ func (h *IMMessageHandler) executeToolDetailedWithUserText(name, argsJSON, userT
 	}
 
 	return toolExecutionResult{Text: fmt.Sprintf("Unknown tool: %s", name), Outcome: toolOutcomeFailed, FailureKind: toolFailureUnknownTool}
+}
+
+func runtimePolicyOwnerIDFromToolArgs(args map[string]interface{}) string {
+	if args == nil {
+		return ""
+	}
+	return strings.TrimSpace(nonEmptyStringFromAny(args[registeredToolPolicyOwnerIDField]))
+}
+
+func runtimePolicyOwnerIDFromToolArgsWithPresence(args map[string]interface{}) (string, bool) {
+	if args == nil {
+		return "", false
+	}
+	value, ok := args[registeredToolPolicyOwnerIDField]
+	return strings.TrimSpace(nonEmptyStringFromAny(value)), ok
+}
+
+func consumeRuntimePolicyOwnerIDFromToolArgs(args map[string]interface{}) string {
+	ownerID, _ := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	return ownerID
+}
+
+func consumeRuntimePlatformFromToolArgs(args map[string]interface{}) string {
+	if args == nil {
+		return ""
+	}
+	value := strings.TrimSpace(nonEmptyStringFromAny(args[registeredToolRuntimePlatformField]))
+	delete(args, registeredToolRuntimePlatformField)
+	return value
+}
+
+func consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args map[string]interface{}) (string, bool) {
+	ownerID, ok := runtimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if args != nil {
+		delete(args, registeredToolPolicyOwnerIDField)
+	}
+	return ownerID, ok
+}
+
+func (h *IMMessageHandler) consumeRuntimePolicyOwnerIDFromToolArgsOrCurrent(args map[string]interface{}) string {
+	ownerID, ok := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if ok {
+		return ownerID
+	}
+	ownerID, _ = h.currentRuntimePolicyOwnerState()
+	return ownerID
+}
+
+func (h *IMMessageHandler) consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args map[string]interface{}) (string, bool) {
+	ownerID, ok := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if ok {
+		return ownerID, true
+	}
+	return h.currentRuntimePolicyOwnerState()
+}
+
+func (h *IMMessageHandler) toolArgsOrCurrentRuntimePolicyOwnerState(args map[string]interface{}) (string, bool) {
+	ownerID, ok := runtimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if ok {
+		return ownerID, true
+	}
+	return h.currentRuntimePolicyOwnerState()
+}
+
+func (h *IMMessageHandler) currentRuntimePlatform() string {
+	if h == nil {
+		return ""
+	}
+	h.globalLoopMu.RLock()
+	ctx := h.currentLoopCtx
+	h.globalLoopMu.RUnlock()
+	if ctx == nil {
+		return ""
+	}
+	return strings.TrimSpace(ctx.Platform)
+}
+
+func (h *IMMessageHandler) consumeRuntimePlatformFromToolArgsOrCurrent(args map[string]interface{}) string {
+	if platform := consumeRuntimePlatformFromToolArgs(args); platform != "" {
+		return platform
+	}
+	return h.currentRuntimePlatform()
+}
+
+func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "bash", "run_skill", "install_skill_hub", "search_and_install_skill", "memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolAcceptsRuntimePlatformArg(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "install_skill_hub", "search_and_install_skill", "screenshot", "tts":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimePlatformFromLoopContext(ctx *LoopContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return strings.TrimSpace(ctx.Platform)
+}
+
+func loopContextHasExplicitRuntimeOwner(ctx *LoopContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if strings.TrimSpace(ctx.Runtime.RequestID) != "" {
+		return true
+	}
+	return strings.TrimSpace(ctx.Runtime.PolicyOwnerID) != ""
+}
+
+func (h *IMMessageHandler) workflowPolicyOwnerID(userID string, ctx *LoopContext) string {
+	if ctx != nil {
+		if strings.TrimSpace(ctx.Runtime.RequestID) != "" {
+			return strings.TrimSpace(ctx.Runtime.PolicyOwnerID)
+		}
+		if ownerID := strings.TrimSpace(ctx.Runtime.PolicyOwnerID); ownerID != "" {
+			return ownerID
+		}
+	}
+	return h.workflowPolicyUserID(userID)
+}
+
+func (h *IMMessageHandler) workflowPolicyUserID(userID string) string {
+	userID = strings.TrimSpace(userID)
+	if h == nil {
+		return userID
+	}
+	engine := h.getWorkflowEngine()
+	if engine == nil {
+		return userID
+	}
+	if userID != "" {
+		return userID
+	}
+	h.globalLoopMu.RLock()
+	lastUserID := strings.TrimSpace(h.lastUserID)
+	h.globalLoopMu.RUnlock()
+	if lastUserID != "" && engine.GetActiveWorkflow(lastUserID) != nil {
+		return lastUserID
+	}
+	if engine.GetActiveWorkflow(desktopUserID) != nil {
+		return desktopUserID
+	}
+	return ""
 }
 
 func registeredToolExecutionResult(text string) toolExecutionResult {

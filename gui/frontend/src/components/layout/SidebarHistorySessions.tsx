@@ -29,10 +29,34 @@ type ContextMenuState = {
 const textForLang = (lang: string, en: string, zh: string, zht: string) => lang === 'en' ? en : lang === 'zh-Hant' ? zht : zh;
 const HISTORY_REFRESH_DELAY_MS = 150;
 
+function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {
+    try {
+        return EventsOn(eventName, callback);
+    } catch {
+        return undefined;
+    }
+}
+
+function safeEventsOff(eventName: string) {
+    try {
+        EventsOff(eventName);
+    } catch {
+        // Runtime events are unavailable in a plain browser dev session.
+    }
+}
+
 const eventDiscussionKind = (event: any): string => {
     const payload = event?.payload || event || {};
     const message = payload?.message || payload?.Message || {};
     return String(message?.kind || message?.Kind || payload?.kind || payload?.Kind || event?.kind || event?.Kind || '').trim().toLowerCase();
+};
+
+const discussionRenameEventInfo = (event: any): { discussionId: string; topic: string } => {
+    const outer = event?.payload || event?.Payload || event || {};
+    const payload = outer?.payload || outer?.Payload || outer;
+    const discussionId = String(payload?.discussion_id || payload?.discussionId || payload?.session_id || payload?.sessionId || event?.discussion_id || event?.session_id || '').trim();
+    const topic = String(payload?.topic || payload?.title || payload?.Topic || payload?.Title || event?.topic || event?.title || '').trim();
+    return { discussionId, topic };
 };
 
 
@@ -97,17 +121,28 @@ export const SidebarHistorySessions = ({ lang, enabled = true, onOpenDiscussion 
             if (kind === 'stream_chunk' || kind === 'stream_end') return;
             scheduleLoadItems();
         };
-        const offDiscussion = EventsOn('ve-event', refreshNonStream);
-        const offStreamEnd = EventsOn('ve:stream_end', scheduleLoadItems);
+        const applyRename = (event: any) => {
+            const eventType = String(event?.type || event?.Type || '').trim();
+            if (eventType && eventType !== 've:discussion_rename') return;
+            const { discussionId, topic } = discussionRenameEventInfo(event);
+            if (!discussionId || !topic) return;
+            setItems(prev => prev.map(item => String(item.id || '').trim() === discussionId ? { ...item, topic } : item));
+            scheduleLoadItems();
+        };
+        const offDiscussion = safeEventsOn('ve-event', refreshNonStream);
+        const offRename = safeEventsOn('ve:discussion_rename', applyRename);
+        const offStreamEnd = safeEventsOn('ve:stream_end', scheduleLoadItems);
         return () => {
             if (refreshTimerRef.current) {
                 clearTimeout(refreshTimerRef.current);
                 refreshTimerRef.current = null;
             }
             if (typeof offDiscussion === 'function') offDiscussion();
-            else EventsOff('ve-event');
+            else safeEventsOff('ve-event');
+            if (typeof offRename === 'function') offRename();
+            else safeEventsOff('ve:discussion_rename');
             if (typeof offStreamEnd === 'function') offStreamEnd();
-            else EventsOff('ve:stream_end');
+            else safeEventsOff('ve:stream_end');
         };
     }, [enabled, scheduleLoadItems]);
 

@@ -281,13 +281,19 @@ func (s *AdminReviewService) registerInCapabilityMarket(ctx context.Context, ver
 	}
 
 	// Build metadata for market listing.
+	//
+	// No thumbnail_url is advertised: the Hub serves no /api/v1/workflow/{id}/thumbnail
+	// route and there is no thumbnail image data to generate. Advertising a dead URL
+	// would make the advertised state diverge from the served state (the workflow
+	// market would publish a preview link that 404s). The single authoritative publish
+	// path therefore omits the thumbnail entirely so the advertised state and the served
+	// state always agree (no advertised URL ⇔ no served route).
 	metadata := map[string]interface{}{
 		"category":       "approval_workflow",
 		"workflow_id":    ver.WorkflowID,
 		"version_id":     ver.ID,
 		"node_count":     len(ver.Graph.Nodes),
 		"approval_modes": extractApprovalModes(ver.Graph),
-		"thumbnail_url":  "/api/v1/workflow/" + ver.WorkflowID + "/thumbnail",
 		"version_number": ver.VersionNumber,
 		"published_at":   publishedAt.Format(time.RFC3339),
 	}

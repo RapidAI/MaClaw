@@ -154,6 +154,29 @@ func registerGetCreditsStaticRoutes(mux *http.ServeMux, staticDir string, routeP
 	})
 }
 
+func registerCardStoreStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
+	staticDir = resolveStaticDir(staticDir)
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir == "" {
+		return
+	}
+	if routePrefix == "" {
+		routePrefix = "/card_store"
+	}
+	if !strings.HasPrefix(routePrefix, "/") {
+		routePrefix = "/" + routePrefix
+	}
+	routePrefix = strings.TrimRight(routePrefix, "/")
+	indexPath := filepath.Join(staticDir, "index.html")
+
+	mux.HandleFunc("GET "+routePrefix, func(w http.ResponseWriter, r *http.Request) {
+		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
+	})
+	mux.HandleFunc("GET "+routePrefix+"/{rest...}", func(w http.ResponseWriter, r *http.Request) {
+		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
+	})
+}
+
 func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
 	staticDir = resolveStaticDir(staticDir)
 	staticDir = strings.TrimSpace(staticDir)

@@ -8,8 +8,15 @@ import type { AITab } from '../AITabTypes';
 
 type PendingHistoryDiscussion = PendingHistoryDiscussionOpen | null;
 
+const runtimeEvents = vi.hoisted(() => ({
+    handlers: new Map<string, (data: any) => void>(),
+}));
+
 vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn(() => () => {}),
+    EventsOn: vi.fn((event: string, handler: (data: any) => void) => {
+        runtimeEvents.handlers.set(event, handler);
+        return () => runtimeEvents.handlers.delete(event);
+    }),
     EventsOff: vi.fn(),
 }));
 
@@ -117,6 +124,78 @@ describe('useAITabManager', () => {
             expect(tab!.participants).toEqual(["ve-1", "ve-2"]);
             expect(result.current.tabState.tabs).toHaveLength(2);
         });
+
+        it('does not treat computed participant titles as explicit group names', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("group-1", "Agent A, Agent B", ["ve-a", "ve-b"], { discussionId: "disc-1" });
+            });
+
+            expect(result.current.activeTab.groupTitle).toBeUndefined();
+        });
+
+        it('renames writable group tabs and preserves the custom name on metadata refresh', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("group-1", "Agent A", ["ve-a"], { discussionId: "disc-1", participantNames: { "ve-a": "Agent A" } });
+            });
+            act(() => {
+                result.current.renameGroupTab("group-1", "My group");
+            });
+            act(() => {
+                result.current.createGroupTab("group-1", "Agent A, Agent B", ["ve-a", "ve-b"], { discussionId: "disc-1", participantNames: { "ve-b": "Agent B" } });
+            });
+
+            expect(result.current.activeTab.title).toBe("Agent A, Agent B");
+            expect(result.current.activeTab.groupTitle).toBe("My group");
+            expect(result.current.activeTab.participants).toEqual(["ve-a", "ve-b"]);
+            expect(result.current.activeTab.participantNames).toEqual({ "ve-a": "Agent A", "ve-b": "Agent B" });
+        });
+
+        it('updates group names from pushed discussion rename events', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("group-1", "Agent A", ["ve-a"], { discussionId: "disc-1", participantNames: { "ve-a": "Agent A" } });
+            });
+            act(() => {
+                runtimeEvents.handlers.get("ve:discussion_rename")?.({ type: "ve:discussion_rename", payload: { discussion_id: "disc-1", topic: "Remote group" } });
+            });
+
+            expect(result.current.activeTab.title).toBe("Agent A");
+            expect(result.current.activeTab.groupTitle).toBe("Remote group");
+        });
+
+        it('updates group names from wrapped rename event payloads', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("group-1", "Agent A", ["ve-a"], { discussionId: "disc-1" });
+            });
+            act(() => {
+                runtimeEvents.handlers.get("ve-event")?.({ type: "ve:discussion_rename", payload: { type: "ve:discussion_rename", payload: { discussionId: "disc-1", title: "Wrapped group" } } });
+            });
+
+            expect(result.current.activeTab.groupTitle).toBe("Wrapped group");
+        });
+
+        it('does not rename read-only group tabs', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("history-1", "History", ["ve-a"], { readOnly: true });
+            });
+            let renamed: AITab | null = null;
+            act(() => {
+                renamed = result.current.renameGroupTab("history-1", "New name");
+            });
+
+            expect(renamed).toBeNull();
+            expect(result.current.activeTab.title).toBe("History");
+            expect(result.current.activeTab.groupTitle).toBeUndefined();
+        });
     });
 
     describe('duplicate tab detection', () => {
@@ -151,6 +230,23 @@ describe('useAITabManager', () => {
             expect(tab1!.id).toBe(tab2!.id);
             expect(result.current.tabState.tabs).toHaveLength(2);
             expect(result.current.activeTab.id).toBe(tab1!.id);
+            expect(result.current.getTabState(tab1!.id)?.sessionId).toBe("session-a");
+        });
+
+        it('deduplicates VE tabs across generated participant aliases', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tab1: AITab | null = null;
+            let tab2: AITab | null = null;
+            act(() => {
+                tab1 = result.current.createVETab("machine-a", "Agent A");
+            });
+            act(() => {
+                tab2 = result.current.createVETab("ve-machine-a", "Agent A", "session-a");
+            });
+
+            expect(tab1!.id).toBe(tab2!.id);
+            expect(result.current.tabState.tabs).toHaveLength(2);
             expect(result.current.getTabState(tab1!.id)?.sessionId).toBe("session-a");
         });
 
@@ -254,6 +350,44 @@ describe('useAITabManager', () => {
 
             expect(reopened!.id).toBe("ve-ve-a");
             expect(result.current.getTabState("ve-ve-a")?.history).toEqual([{ role: "assistant", content: "saved" }]);
+        });
+
+        it('promotes an existing single-participant history tab across generated aliases', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("history-disc-alias", "Agent A history", ["me", "machine-a"], { discussionId: "disc-alias", readOnly: true });
+                result.current.activateTab("local");
+            });
+
+            let reopened: AITab | null = null;
+            act(() => {
+                reopened = result.current.createVETab("ve-machine-a", "Agent A", "disc-alias");
+            });
+
+            expect(reopened!.type).toBe("group");
+            expect(reopened!.veId).toBe("ve-machine-a");
+            expect(result.current.tabState.tabs.some(t => t.id === "history-disc-alias")).toBe(false);
+            expect(result.current.tabState.tabs).toHaveLength(2);
+        });
+
+        it('promotes single-participant history tabs with duplicate participant aliases', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("history-disc-alias-dup", "Agent A history", ["me", "machine-a", "ve-machine-a"], { discussionId: "disc-alias-dup", readOnly: true });
+                result.current.activateTab("local");
+            });
+
+            let reopened: AITab | null = null;
+            act(() => {
+                reopened = result.current.createVETab("ve-machine-a", "Agent A", "disc-alias-dup");
+            });
+
+            expect(reopened!.type).toBe("group");
+            expect(reopened!.veId).toBe("ve-machine-a");
+            expect(result.current.tabState.tabs.some(t => t.id === "history-disc-alias-dup")).toBe(false);
+            expect(result.current.tabState.tabs).toHaveLength(2);
         });
 
         it('collapses stale duplicate VE/history identity tabs when reopening the VE', () => {
@@ -397,6 +531,50 @@ describe('useAITabManager', () => {
             expect(result.current.tabState.tabs).toHaveLength(2);
             expect(result.current.getTabState(veTab!.id)?.sessionId).toBe("disc-early");
             expect(result.current.getTabState(veTab!.id)?.discussionId).toBe("disc-early");
+        });
+
+        it('activates an existing direct VE tab by generated participant alias', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabState: manager.getTabState,
+                        saveTabState: manager.saveTabState,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            let veTab: AITab | null = null;
+            act(() => {
+                veTab = result.current.createVETab("machine-a", "Agent A");
+                result.current.activateTab("local");
+            });
+
+            rerender({
+                pending: {
+                    id: "disc-alias-early",
+                    topic: "Vendor audit",
+                    local_relation: "owned_ve_invited",
+                    readonly: true,
+                    status: "open",
+                    participant_ids: ["me", "machine-a", "ve-machine-a"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.id).toBe(veTab!.id);
+            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-alias-early")).toHaveLength(0);
+            expect(result.current.getTabState(veTab!.id)?.sessionId).toBe("disc-alias-early");
         });
 
         it('activates an existing VE session tab when opening the same history discussion', async () => {

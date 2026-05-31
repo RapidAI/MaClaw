@@ -149,4 +149,21 @@ describe("useAddLocalMaclawToTab", () => {
         expect(registerLocalExecutorMock).not.toHaveBeenCalled();
         expect(upgradeVETabToGroup).not.toHaveBeenCalled();
     });
+
+    it("does not add a duplicate local AI participant across ve aliases after registration", async () => {
+        registerLocalExecutorMock.mockResolvedValueOnce({ participant_id: "machine-local", display_name: "Local AI" });
+        const upgradeVETabToGroup = vi.fn();
+        const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-a", participants: ["ve-a", "ve-machine-local"], closable: true };
+        const { result } = renderHook(() => useAddLocalMaclawToTab({
+            getTabState: () => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 }),
+            upgradeVETabToGroup,
+        }));
+
+        await act(async () => {
+            await result.current(tab);
+        });
+
+        expect(registerLocalExecutorMock).toHaveBeenCalledWith("session-1");
+        expect(upgradeVETabToGroup).not.toHaveBeenCalled();
+    });
 });

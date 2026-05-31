@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,16 +49,20 @@ func newWeixinGatewayManager(app *App) *weixinGatewayManager {
 
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
 func (m *weixinGatewayManager) SyncFromConfig() {
+	wl := weixin.GetWxLog()
 	m.app.logMemorySnapshot("weixinGateway:sync-start")
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
+		wl.Log("mgr.sync", "---", "-", "ERR LoadConfig: %v", err)
 		return
 	}
+	wl.Log("mgr.sync", "---", "-", "config enabled=%v token_len=%d local=%v base_url=%s cdn_url_set=%v", cfg.WeixinEnabled, len(cfg.WeixinToken), cfg.IsWeixinLocalMode(), cfg.WeixinBaseURL, cfg.WeixinCDNURL != "")
 
 	m.mu.Lock()
 	if !cfg.WeixinEnabled || cfg.WeixinToken == "" {
 		gw := m.gateway
 		if gw != nil {
+			wl.Log("mgr.sync", "---", "-", "stopping gateway because enabled=%v token_len=%d", cfg.WeixinEnabled, len(cfg.WeixinToken))
 			m.gateway = nil
 			m.status = gatewayConnectionStatusDisconnected
 			m.mu.Unlock()
@@ -77,16 +83,19 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 	}
 
 	if m.gateway != nil && m.lastToken == cfg.WeixinToken {
+		wl.Log("mgr.sync", "---", "-", "gateway already running token_len=%d", len(cfg.WeixinToken))
 		m.mu.Unlock()
 		return
 	}
 
 	oldGw := m.gateway
+	tokenChanged := m.lastToken != "" && m.lastToken != cfg.WeixinToken
 	// Keep old gateway in place until new one is ready ->avoids a nil window
 	// where HandleGatewayReply would silently drop messages.
 	m.mu.Unlock()
 
 	if oldGw != nil {
+		wl.Log("mgr.sync", "---", "-", "stopping old gateway before restart token_changed=%v", tokenChanged)
 		_ = oldGw.Stop()
 	}
 
@@ -113,6 +122,7 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 	m.mu.Unlock()
 
 	if err := gw.Start(context.Background()); err != nil {
+		wl.Log("mgr.sync", "---", "-", "ERR start failed: %v", err)
 		log.Printf("[weixin-mgr] start failed: %v", err)
 		m.mu.Lock()
 		m.status = gatewayConnectionStatusError
@@ -120,10 +130,13 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 		m.emitStatusEvent()
 		return
 	}
+	wl.Log("mgr.sync", "---", "-", "gateway start requested token_len=%d base_url=%s cdn_url=%s", len(cfg.WeixinToken), baseURL, cdnURL)
 }
 
 // Stop shuts down the gateway.
 func (m *weixinGatewayManager) Stop() {
+	wl := weixin.GetWxLog()
+	wl.Log("mgr.stop", "---", "-", "begin")
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
@@ -138,6 +151,7 @@ func (m *weixinGatewayManager) Stop() {
 	if gw != nil {
 		_ = gw.Stop()
 	}
+	wl.Log("mgr.stop", "---", "-", "done had_gateway=%v had_local_handler=%v", gw != nil, lh != nil)
 }
 
 // Status returns the current connection status.
@@ -595,22 +609,26 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 
 	voiceSent := false
 	if resp.VoiceData != "" {
-		voiceSent = m.sendVoiceResponse(ctx, gw, toUserID, contextToken, resp)
+		nativeVoiceAccepted := m.sendVoiceResponse(ctx, gw, toUserID, contextToken, resp)
+		playableFileSent := m.sendVoiceFileFallback(ctx, gw, toUserID, contextToken, resp)
+		voiceSent = playableFileSent
+		weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "voice_delivery_summary native_api_accepted=%v playable_file_sent=%v user_visible_voice=%v", nativeVoiceAccepted, playableFileSent, playableFileSent)
 	}
 
-	// WeChat voice replies must not let a status text consume the reply slot before
-	// the native voice item. When voice exists, it is the primary response.
-	if !voiceSent && resp.Text != "" {
+	if resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
+		if voiceSent {
+			text = "\u97f3\u9891\u6587\u4ef6\u5df2\u53d1\u9001\uff1b\u5fae\u4fe1\u539f\u751f\u8bed\u97f3\u6c14\u6ce1\u4ecd\u5728\u8bca\u65ad\uff0c\u6587\u5b57\u7248\u5982\u4e0b\uff1a\n\n" + textutil.StripMarkdown(resp.Text)
+		}
 		if err := gw.SendText(ctx, weixin.OutgoingText{
 			ToUserID:     toUserID,
 			Text:         text,
 			ContextToken: contextToken,
 		}); err != nil {
-			log.Printf("[weixin-mgr] local SendText error (to=%s): %v", toUserID, err)
+			log.Printf("[weixin-mgr] local SendText error (to=%s voice_sent=%v): %v", toUserID, voiceSent, err)
+		} else if voiceSent {
+			log.Printf("[weixin-mgr] sent text fallback after voice (to=%s text_len=%d)", toUserID, len([]rune(resp.Text)))
 		}
-	} else if voiceSent && resp.Text != "" {
-		log.Printf("[weixin-mgr] skipped text because voice is primary (to=%s text_len=%d)", toUserID, len([]rune(resp.Text)))
 	}
 
 	// Send error as text if no text or voice was sent
@@ -712,7 +730,168 @@ func (m *weixinGatewayManager) sendVoiceResponse(ctx context.Context, gw *weixin
 		return false
 	}
 	log.Printf("[weixin-mgr] SendMedia voice OK (to=%s size=%d name=%s)", toUserID, len(voiceBytes), voiceFileName)
+	weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "OK SendMedia(voice-native) variant=inbound_shape name=%s size=%d", voiceFileName, len(voiceBytes))
+	variants := weixinNativeVoiceExperimentVariants()
+	if len(variants) == 0 {
+		weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "SKIP voice-native-experiments reason=disabled env=MACLAW_WEIXIN_VOICE_EXPERIMENTS")
+	}
+	for _, variant := range variants {
+		if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
+			ToUserID:     toUserID,
+			ContextToken: contextToken,
+			FileData:     voiceBytes,
+			FileName:     voiceFileName,
+			MediaType:    "voice",
+			VoiceVariant: variant,
+		}); err != nil {
+			log.Printf("[weixin-mgr] SendMedia voice experiment failed (to=%s size=%d variant=%s): %v", toUserID, len(voiceBytes), variant, err)
+			weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "ERR SendMedia(voice-native-experiment) variant=%s name=%s size=%d err=%v", variant, voiceFileName, len(voiceBytes), err)
+		} else {
+			log.Printf("[weixin-mgr] SendMedia voice experiment OK (to=%s size=%d name=%s variant=%s)", toUserID, len(voiceBytes), voiceFileName, variant)
+			weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "OK SendMedia(voice-native-experiment) variant=%s name=%s size=%d", variant, voiceFileName, len(voiceBytes))
+		}
+	}
 	return true
+}
+
+func weixinNativeVoiceExperimentVariants() []string {
+	raw := strings.TrimSpace(os.Getenv("MACLAW_WEIXIN_VOICE_EXPERIMENTS"))
+	if raw == "" || raw == "0" || strings.EqualFold(raw, "false") || strings.EqualFold(raw, "off") {
+		return nil
+	}
+	all := []string{"integrity_encrypt1", "upload_param_encrypt0", "raw_aes_encrypt0", "silk_encode6_raw_aes_encrypt0"}
+	if raw == "1" || strings.EqualFold(raw, "true") || strings.EqualFold(raw, "all") {
+		return all
+	}
+	allowed := make(map[string]bool, len(all))
+	for _, variant := range all {
+		allowed[variant] = true
+	}
+	variants := make([]string, 0, len(all))
+	seen := make(map[string]bool, len(all))
+	for _, part := range strings.Split(raw, ",") {
+		variant := strings.TrimSpace(part)
+		if !allowed[variant] || seen[variant] {
+			continue
+		}
+		seen[variant] = true
+		variants = append(variants, variant)
+	}
+	return variants
+}
+
+func (m *weixinGatewayManager) sendVoiceFileFallback(ctx context.Context, gw *weixin.Gateway, toUserID, contextToken string, resp *IMAgentResponse) bool {
+	voiceFileName := resp.VoiceFileName
+	if voiceFileName == "" {
+		voiceFileName = "voice.wav"
+	}
+	voiceBytes, err := base64.StdEncoding.DecodeString(resp.VoiceData)
+	if err != nil || len(voiceBytes) == 0 {
+		log.Printf("[weixin-mgr] decode voice fallback data failed (to=%s): %v", toUserID, err)
+		return false
+	}
+	fallback, err := prepareWeixinPlayableVoiceFile(ctx, voiceFileName, voiceBytes)
+	if err != nil {
+		log.Printf("[weixin-mgr] prepare voice playable fallback failed (to=%s name=%s size=%d): %v", toUserID, voiceFileName, len(voiceBytes), err)
+		weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "ERR voice playable fallback prepare name=%s size=%d err=%v", voiceFileName, len(voiceBytes), err)
+		return false
+	}
+	m.saveWeixinVoicePlayableDebug(fallback)
+	if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
+		ToUserID:     toUserID,
+		ContextToken: contextToken,
+		FileData:     fallback.data,
+		FileName:     fallback.name,
+		MediaType:    "file",
+	}); err != nil {
+		log.Printf("[weixin-mgr] SendMedia voice file fallback failed (to=%s size=%d name=%s source=%s): %v", toUserID, len(fallback.data), fallback.name, voiceFileName, err)
+		weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "ERR SendMedia(voice-file-fallback) name=%s size=%d mime=%s source=%s source_size=%d err=%v", fallback.name, len(fallback.data), fallback.mime, voiceFileName, len(voiceBytes), err)
+		return false
+	}
+	log.Printf("[weixin-mgr] SendMedia voice file fallback OK (to=%s size=%d name=%s mime=%s source=%s source_size=%d converted=%v)", toUserID, len(fallback.data), fallback.name, fallback.mime, voiceFileName, len(voiceBytes), fallback.converted)
+	weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "OK SendMedia(voice-file-fallback) name=%s size=%d mime=%s source=%s source_size=%d converted=%v", fallback.name, len(fallback.data), fallback.mime, voiceFileName, len(voiceBytes), fallback.converted)
+	return true
+}
+
+type weixinPlayableVoiceFile struct {
+	data      []byte
+	name      string
+	mime      string
+	converted bool
+}
+
+var weixinEncodeWAVToMP3 = encodeWAVToMP3WithFFmpeg
+
+func prepareWeixinPlayableVoiceFile(ctx context.Context, voiceFileName string, voiceBytes []byte) (weixinPlayableVoiceFile, error) {
+	if len(voiceBytes) == 0 {
+		return weixinPlayableVoiceFile{}, fmt.Errorf("empty voice data")
+	}
+	ext := strings.ToLower(filepath.Ext(voiceFileName))
+	if ext == ".mp3" || bytes.HasPrefix(voiceBytes, []byte("ID3")) || hasMP3FrameHeader(voiceBytes) {
+		return weixinPlayableVoiceFile{data: voiceBytes, name: "voice.mp3", mime: "audio/mpeg"}, nil
+	}
+	if ext != ".wav" && !bytes.HasPrefix(voiceBytes, []byte("RIFF")) {
+		return weixinPlayableVoiceFile{}, fmt.Errorf("unsupported playable fallback source %q", voiceFileName)
+	}
+	mp3, err := weixinEncodeWAVToMP3(ctx, voiceBytes)
+	if err != nil {
+		return weixinPlayableVoiceFile{}, err
+	}
+	if len(mp3) == 0 {
+		return weixinPlayableVoiceFile{}, fmt.Errorf("mp3 encoder returned empty data")
+	}
+	return weixinPlayableVoiceFile{data: mp3, name: "voice.mp3", mime: "audio/mpeg", converted: true}, nil
+}
+
+func hasMP3FrameHeader(data []byte) bool {
+	return len(data) >= 2 && data[0] == 0xff && data[1]&0xe0 == 0xe0
+}
+
+func encodeWAVToMP3WithFFmpeg(ctx context.Context, wav []byte) ([]byte, error) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg not found for wav->mp3 conversion: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp("", "maclaw-wx-voice-mp3-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	inPath := filepath.Join(tmpDir, "voice.wav")
+	outPath := filepath.Join(tmpDir, "voice.mp3")
+	if err := os.WriteFile(inPath, wav, 0o600); err != nil {
+		return nil, err
+	}
+	encCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(encCtx, ffmpegPath, "-hide_banner", "-loglevel", "error", "-y", "-i", inPath, "-vn", "-codec:a", "libmp3lame", "-b:a", "64k", outPath)
+	out, err := cmd.CombinedOutput()
+	if encCtx.Err() != nil {
+		return nil, encCtx.Err()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg wav->mp3 failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return os.ReadFile(outPath)
+}
+
+func (m *weixinGatewayManager) saveWeixinVoicePlayableDebug(file weixinPlayableVoiceFile) {
+	if len(file.data) == 0 || m == nil || m.app == nil {
+		return
+	}
+	dir := filepath.Join(m.app.GetTempDir(), "weixin_voice_debug")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[weixin-mgr] save playable voice debug mkdir failed: %v", err)
+		return
+	}
+	path := filepath.Join(dir, fmt.Sprintf("playable_%d_%s", time.Now().UnixMilli(), file.name))
+	if err := os.WriteFile(path, file.data, 0o600); err != nil {
+		log.Printf("[weixin-mgr] save playable voice debug failed (path=%s): %v", path, err)
+		return
+	}
+	log.Printf("[weixin-mgr] saved playable voice debug file path=%s size=%d mime=%s converted=%v", path, len(file.data), file.mime, file.converted)
+	weixin.GetWxLog().Log("mgr.local", "OUT", "-", "saved playable voice debug file path=%s size=%d mime=%s converted=%v", path, len(file.data), file.mime, file.converted)
 }
 
 // imageDownloadClient is a dedicated HTTP client for downloading markdown

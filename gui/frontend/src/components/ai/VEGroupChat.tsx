@@ -15,7 +15,9 @@ import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { looksLikeRawParticipantId } from "./localAIIdentity";
+import { participantAddErrorText } from "./participantAddError";
+import { addParticipantIdentityKeys, participantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 
 // --- Types ---
@@ -86,8 +88,9 @@ const TAB_TITLE_MAX_LENGTH = 30;
 
 /** Build a group tab title from participant names, truncated if too long. */
 export function buildGroupTabTitle(participants: GroupParticipant[]): string {
-    if (participants.length === 0) return "\u7fa4\u804a";
-    const names = participants.map((p) => p.name);
+    const distinctParticipants = dedupeGroupParticipants(participants);
+    if (distinctParticipants.length === 0) return "\u7fa4\u804a";
+    const names = distinctParticipants.map((p) => p.name);
     const joined = names.join(", ");
     if (joined.length <= TAB_TITLE_MAX_LENGTH) return joined;
     // Truncate: include names until we exceed the limit
@@ -140,6 +143,35 @@ export function virtualEmployeeDisplayName(
 
 function normalizeParticipantLookupId(value: string): string {
     return String(value || "").trim().toLowerCase();
+}
+
+function participantIdentityKeySet(values: unknown[]): Set<string> {
+    const out = new Set<string>();
+    values.forEach((value) => addParticipantIdentityKeys(out, value));
+    return out;
+}
+
+function dedupeGroupParticipants(participants: GroupParticipant[]): GroupParticipant[] {
+    const seen = new Set<string>();
+    const out: GroupParticipant[] = [];
+    for (const participant of participants) {
+        const before = seen.size;
+        addParticipantIdentityKeys(seen, participant.id);
+        if (seen.size !== before) out.push(participant);
+    }
+    return out;
+}
+
+function distinctGroupParticipantCount(participants: GroupParticipant[]): number {
+    return dedupeGroupParticipants(participants).length;
+}
+
+function participantIndexForIdentity(indexMap: Map<string, number>, id: unknown): number | undefined {
+    for (const key of participantIdentityKeys(id)) {
+        const value = indexMap.get(key);
+        if (value !== undefined) return value;
+    }
+    return undefined;
 }
 
 function readableGroupSpeakerName(
@@ -227,7 +259,8 @@ export function ParticipantSelector({
     }, []);
 
     // Check if limit is reached
-    const limitReached = currentParticipants.length >= maxGroupParticipants;
+    const currentParticipantCount = distinctGroupParticipantCount(currentParticipants);
+    const limitReached = currentParticipantCount >= maxGroupParticipants;
 
     const fetchAvailable = useCallback(async () => {
         setLoading(true);
@@ -239,12 +272,12 @@ export function ParticipantSelector({
                 fn = (mod as any).ListVirtualEmployees;
             }
             const all = await fn!();
-            // Filter out digital employees already in the group
-            const currentIds = new Set(currentParticipants.map((p) => normalizeParticipantLookupId(p.id)));
+            // Filter out digital employees already in the group, including hub-generated ve_<machine> aliases.
+            const currentIds = new Set<string>();
+            currentParticipants.forEach((p) => addParticipantIdentityKeys(currentIds, p.id));
             const filtered = (all || []).filter((ve) => {
-                const profileId = normalizeParticipantLookupId(ve.id);
-                const participantId = normalizeParticipantLookupId(virtualEmployeeParticipantId(ve));
-                return !currentIds.has(profileId) && !currentIds.has(participantId) && ve.online_status === "online";
+                const keys = participantIdentityKeys(ve.id, ve.machine_id, virtualEmployeeParticipantId(ve));
+                return !keys.some((key) => currentIds.has(key)) && ve.online_status === "online";
             });
             if (!mountedRef.current) return;
             setAvailable(filtered);
@@ -392,8 +425,8 @@ export function ParticipantSelector({
                                             throw new Error("participant_add_failed");
                                         }
                                         if (mountedRef.current) setOpen(false);
-                                    } catch {
-                                        if (mountedRef.current) setError(isZh ? "添加失败" : "Failed to add");
+                                    } catch (err) {
+                                        if (mountedRef.current) setError(participantAddErrorText(err, lang));
                                     } finally {
                                         addingIdRef.current = "";
                                         if (mountedRef.current) setAddingId("");
@@ -573,8 +606,9 @@ export function VEGroupChatView({
 
     // Update tab title when participants change
     useEffect(() => {
-        if (onTitleChange && participants.length > 0) {
-            onTitleChange(buildGroupTabTitle(participants));
+        const distinctParticipants = dedupeGroupParticipants(participants);
+        if (onTitleChange && distinctParticipants.length > 0) {
+            onTitleChange(buildGroupTabTitle(distinctParticipants));
         }
     }, [participants, onTitleChange]);
 
@@ -583,7 +617,7 @@ export function VEGroupChatView({
         const handler = (data: any) => {
             const { ids, status } = veStatusEventInfo(data);
             if (status === "offline") {
-                const participant = participants.find((p) => ids.includes(normalizeParticipantId(p.id)));
+                const participant = participants.find((p) => ids.some((id) => participantIdentityMatches(p.id, id)));
                 if (participant) {
                     setOfflineNotices((prev) => [...prev, participant.name]);
                 }
@@ -601,7 +635,7 @@ export function VEGroupChatView({
     const handleAdd = useCallback(
         async (ve: VirtualEmployeeEntry) => {
             // Check limit before adding
-            if (participants.length >= maxGroupParticipants) {
+            if (distinctGroupParticipantCount(participants) >= maxGroupParticipants) {
                 return false; // ParticipantSelector already shows the error
             }
             try {
@@ -617,20 +651,21 @@ export function VEGroupChatView({
                     return true;
                 }
             } catch (err: any) {
-                // Error handling is done by the caller
                 console.error("Failed to add participant:", err);
-                return false;
+                throw err;
             }
         },
-        [sessionId, participants.length, maxGroupParticipants, addVEToGroup, onAddParticipant]
+        [sessionId, participants, maxGroupParticipants, addVEToGroup, onAddParticipant]
     );
+
+    const participantCount = distinctGroupParticipantCount(participants);
 
     // Build participant index map for coloring. Normalize ids because Hub history
     // can preserve canonical casing while frontend state may use a local alias.
     const participantIndexMap = new Map<string, number>();
-    participants.forEach((p, i) => participantIndexMap.set(normalizeParticipantLookupId(p.id), i));
+    participants.forEach((p, i) => participantIdentityKeys(p.id).forEach((key) => participantIndexMap.set(key, i)));
     const hasExplicitLocalUserIds = Array.isArray(localUserIds);
-    const localUserIdSet = new Set((localUserIds || []).map(normalizeParticipantLookupId));
+    const localUserIdSet = participantIdentityKeySet(localUserIds || []);
 
     return (
         <div
@@ -650,7 +685,7 @@ export function VEGroupChatView({
                     }}
                 >
                     <div style={{ fontSize: 12, color: theme.textMuted }}>
-                        {isZh ? `${participants.length} \u4f4d\u53c2\u4e0e\u8005` : `${participants.length} participants`}
+                        {isZh ? `${participantCount} \u4f4d\u53c2\u4e0e\u8005` : `${participantCount} participants`}
                     </div>
                     {allowParticipantAdd && (
                         <ParticipantSelector
@@ -673,9 +708,9 @@ export function VEGroupChatView({
             >
                 {messages.map((msg) => {
                     const normalizedFromId = normalizeParticipantLookupId(msg.fromId);
-                    const participant = participants.find((p) => normalizeParticipantLookupId(p.id) === normalizedFromId);
-                    const pIdx = participantIndexMap.get(normalizedFromId) ?? 0;
-                    const isUser = hasExplicitLocalUserIds ? localUserIdSet.has(normalizedFromId) : !participant;
+                    const participant = participants.find((p) => participantIdentityMatches(p.id, msg.fromId));
+                    const pIdx = participantIndexForIdentity(participantIndexMap, msg.fromId) ?? 0;
+                    const isUser = hasExplicitLocalUserIds ? participantIdentityKeys(msg.fromId).some((key) => localUserIdSet.has(key)) : !participant;
                     const displayName = readableGroupSpeakerName(msg.fromName, msg.fromId, participant?.name, isUser, lang);
                     return (
                         <GroupMessageBubble

@@ -4,6 +4,7 @@ import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
 import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
@@ -39,6 +40,7 @@ export interface CreateGroupTabOptions {
     readOnly?: boolean;
     role?: string;
     participantNames?: Record<string, string>;
+    groupTitle?: string;
 }
 
 /** Tab index entry shape returned by the backend LoadProjectTabIndex binding. */
@@ -56,17 +58,59 @@ function normalizeTabParticipantId(value: string | undefined): string {
 }
 
 function canonicalVETabId(veId: string): string {
-    return `ve-${normalizeTabParticipantId(veId)}`;
+    return `ve-${normalizeTabParticipantId(veId).replace(/_+/g, "-")}`;
 }
 
 function sameTabParticipantId(a: string | undefined, b: string | undefined): boolean {
-    const left = normalizeTabParticipantId(a);
-    const right = normalizeTabParticipantId(b);
-    return !!left && left === right;
+    return participantIdentityMatches(a, b);
+}
+
+function stringsOrUndefined(value: string | undefined): string | undefined {
+    const text = String(value || "").trim();
+    return text || undefined;
+}
+
+function discussionRenameEventInfo(data: any): { discussionId: string; topic: string } {
+    const outer = data?.payload || data?.Payload || data || {};
+    const payload = outer?.payload || outer?.Payload || outer;
+    const envelope = payload?.envelope || payload?.Envelope || {};
+    const discussionId = String(
+        payload?.discussion_id ||
+        payload?.discussionId ||
+        payload?.session_id ||
+        payload?.sessionId ||
+        payload?.DiscussionID ||
+        payload?.SessionID ||
+        envelope?.session_id ||
+        envelope?.SessionID ||
+        data?.discussion_id ||
+        data?.session_id ||
+        ""
+    ).trim();
+    const topic = String(payload?.topic || payload?.title || payload?.Topic || payload?.Title || data?.topic || data?.title || "").trim();
+    return { discussionId, topic };
 }
 
 function nonLocalHumanParticipantIds(ids: string[] | undefined): string[] {
-    return (ids || []).map(normalizeTabParticipantId).filter(id => id && !isLocalHumanParticipantId(id));
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const rawId of ids || []) {
+        const id = String(rawId || "").trim();
+        if (!id || isLocalHumanParticipantId(id)) continue;
+        const aliases = new Set<string>();
+        addParticipantIdentityKeys(aliases, id);
+        let duplicate = false;
+        for (const key of aliases) {
+            if (seen.has(key)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+        aliases.forEach((key) => seen.add(key));
+        out.push(id);
+    }
+    return out;
 }
 
 function isSingleParticipantGroupForVE(tab: AITab, veId: string): boolean {
@@ -142,6 +186,8 @@ export interface UseAITabManagerResult {
     getTabs: () => AITab[];
     /** Upgrade a VE tab to a group tab when participants are added */
     upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string, participantNames?: Record<string, string>, localParticipantIds?: string[]) => AITab | null;
+    /** Rename a writable group tab locally. */
+    renameGroupTab: (tabId: string, title: string) => AITab | null;
     /** Error message when max tabs exceeded (cleared after reading) */
     tabLimitError: string | null;
     /** Clear the tab limit error */
@@ -335,6 +381,34 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         };
     }, [updateTabState]);
 
+    useEffect(() => {
+        const handleRename = (data: any) => {
+            const eventType = String(data?.type || data?.Type || "").trim();
+            if (eventType && eventType !== "ve:discussion_rename") return;
+            const { discussionId, topic } = discussionRenameEventInfo(data);
+            if (!discussionId || !topic) return;
+            updateTabState(prev => {
+                let changed = false;
+                const tabs = prev.tabs.map(tab => {
+                    if (tab.type !== "group") return tab;
+                    const tabDiscussionId = String(tab.discussionId || tab.id.replace(/^history-/, "")).trim();
+                    if (tabDiscussionId !== discussionId || tab.groupTitle === topic) return tab;
+                    changed = true;
+                    return { ...tab, groupTitle: topic };
+                });
+                return changed ? { ...prev, tabs } : prev;
+            });
+        };
+        const offRename = EventsOn("ve:discussion_rename", handleRename);
+        const offAny = EventsOn("ve-event", handleRename);
+        return () => {
+            if (typeof offRename === "function") offRename();
+            else EventsOff("ve:discussion_rename");
+            if (typeof offAny === "function") offAny();
+            else EventsOff("ve-event");
+        };
+    }, [updateTabState]);
+
     // Store tab states (history, scroll, input) keyed by tab ID
     const tabStatesRef = useRef<Map<string, AITabState>>(new Map());
 
@@ -452,9 +526,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Check for duplicate and refresh authoritative metadata.
         const existing = prev.tabs.find(t => t.id === id);
         if (existing) {
+            const requestedGroupTitle = stringsOrUndefined(options.groupTitle);
             const updated: AITab = {
                 ...existing,
                 title,
+                groupTitle: requestedGroupTitle || existing.groupTitle,
                 participants,
                 discussionId: options.discussionId ?? existing.discussionId,
                 readOnly: options.readOnly ?? existing.readOnly,
@@ -475,6 +551,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             id,
             type: "group",
             title,
+            groupTitle: stringsOrUndefined(options.groupTitle),
             participants,
             discussionId: options.discussionId,
             readOnly: options.readOnly,
@@ -656,6 +733,20 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return upgraded;
     }, [updateTabState]);
 
+    const renameGroupTab = useCallback((tabId: string, title: string): AITab | null => {
+        const nextTitle = String(title || "").trim();
+        if (!nextTitle) return null;
+        const prev = tabStateRef.current;
+        const tab = prev.tabs.find(t => t.id === tabId);
+        if (!tab || tab.type !== "group" || tab.readOnly) return null;
+        const renamed: AITab = { ...tab, groupTitle: nextTitle };
+        updateTabState(() => ({
+            ...prev,
+            tabs: prev.tabs.map(t => t.id === tabId ? renamed : t),
+        }));
+        return renamed;
+    }, [updateTabState]);
+
     const clearTabLimitError = useCallback(() => {
         setTabLimitError(null);
     }, []);
@@ -675,6 +766,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         getTabs,
         hasProjectTab,
         upgradeVETabToGroup,
+        renameGroupTab,
         tabLimitError,
         clearTabLimitError,
     };

@@ -90,6 +90,21 @@ func TestPlatformVirtualEmployeeConfigUpdatesIMSettingsAndClearsAutoMode(t *test
 	if cfg.AppConfig.TelegramBotToken != maskedToken || cfg.AppConfig.TelegramLocalMode != nil {
 		t.Fatalf("expected masked token preserved and local mode cleared to auto, got %#v", cfg.AppConfig)
 	}
+
+	postPlatformJSONForTest(t, server, "/api/platform/virtual-employees/emp-001/config", map[string]any{
+		"tenant_id":     "hub-tenant-001",
+		"virtual_email": "contract_reviewer@example.test",
+		"maclawsrv_config": map[string]any{
+			"telegram_bot_token": "******",
+		},
+	}, http.StatusOK)
+	cfg, err = svc.GetUserConfig(t.Context(), principal)
+	if err != nil {
+		t.Fatalf("GetUserConfig after alternate mask: %v", err)
+	}
+	if cfg.AppConfig.TelegramBotToken != maskedToken {
+		t.Fatalf("expected alternate masked token preserved, got %#v", cfg.AppConfig)
+	}
 	badPort := 70000
 	if err := server.updatePlatformUserMaclawSrvConfig(httptest.NewRequest(http.MethodPost, "/", nil), principal, platformMaclawSrvConfig{ThirdPartyGatewayPort: &badPort}); err == nil {
 		t.Fatalf("expected invalid gateway port error")

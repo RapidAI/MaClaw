@@ -392,26 +392,11 @@ func (a *App) sendVEAttachmentMessage(sessionID string, content string, filePath
 		return a.sendVEA2AMessage(sessionID, msg)
 	}
 
-	// Local dispatch shortcut: when local AI is enabled for this session,
-	// dispatch directly to the local agent without waiting for Hub round-trip.
-	if a.localGroupDispatcherRegistered(sessionID) {
-		msg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, false)
-		if err != nil {
-			return err
-		}
-		if a.tryLocalExecutorDispatch(sessionID, msg) {
-			return nil
-		}
-	}
-
 	msg, err := a.prepareVEAttachmentMessage(sessionID, content, filePaths, true)
 	if err != nil {
 		return err
 	}
-	if a.tryLocalExecutorDispatch(sessionID, msg) {
-		return nil
-	}
-
+	msg.ToIDs = a.groupDiscussionUnmentionedTargetIDs(sessionID)
 	return a.sendVEA2AMessage(sessionID, msg)
 }
 

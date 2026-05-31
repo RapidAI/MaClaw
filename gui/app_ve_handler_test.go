@@ -353,9 +353,9 @@ func TestVEMessageHandler_HandleGroupEnvelope_NilMessageIgnored(t *testing.T) {
 // --- Timeout handling tests ---
 
 func TestVEMessageHandler_TimeoutMechanism(t *testing.T) {
-	// Test that the 60s timeout mechanism is structurally correct
+	// Test that the per-message timeout mechanism is structurally correct
 	// by verifying the processAndRespond function handles the timeout path.
-	// We can't easily test the full 60s timeout in a unit test,
+	// We can't easily test the full timeout in a unit test,
 	// but we verify the handler structure supports it.
 
 	handler := NewVEMessageHandler(&App{})
@@ -469,6 +469,35 @@ func TestBuildVEConversationHistoryFromMessagesRestoresPriorTurns(t *testing.T) 
 	}
 }
 
+func TestBuildVEConversationHistoryFromMessagesMatchesGeneratedLocalAliases(t *testing.T) {
+	messages := []a2a.Message{
+		{ID: "m1", FromID: "human", Kind: a2a.MessageQuestion, Content: "start"},
+		{ID: "m2", FromID: "ve-local-machine", Kind: a2a.MessageStreamChunk, Content: "alias "},
+		{ID: "m3", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "answer"},
+		{ID: "m4", FromID: "ve_local-machine", Kind: a2a.MessageStreamEnd},
+	}
+
+	history := buildVEConversationHistoryFromMessages(messages, "local-machine", a2a.GroupDiscussionMessage{})
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2: %+v", len(history), history)
+	}
+	if history[1].Role != "assistant" || history[1].Content != "alias answer" {
+		t.Fatalf("assistant alias history entry = %+v", history[1])
+	}
+}
+
+func TestBuildVEConversationHistoryFromMessagesSkipsCurrentByGeneratedAlias(t *testing.T) {
+	now := time.Now()
+	messages := []a2a.Message{
+		{ID: "", FromID: "ve-human", Kind: a2a.MessageStatement, Content: "current", CreatedAt: now},
+	}
+
+	history := buildVEConversationHistoryFromMessages(messages, "local-machine", a2a.GroupDiscussionMessage{FromID: "human", Kind: a2a.MessageStatement, Content: "current", CreatedAt: now})
+	if len(history) != 0 {
+		t.Fatalf("current alias message should not be restored into history: %+v", history)
+	}
+}
+
 func TestBuildVEConversationHistoryFromMessagesSkipsCurrentByTimestampWhenIDMissing(t *testing.T) {
 	now := time.Now()
 	messages := []a2a.Message{
@@ -497,6 +526,23 @@ func TestBuildVEConversationHistoryFromMessagesPrefixesOtherParticipants(t *test
 	}
 	if got := history[1].Content; got != "Approved." {
 		t.Fatalf("assistant content should strip waiting marker, got %q", got)
+	}
+}
+
+func TestBuildVEConversationHistoryFromMessagesPreservesStreamChunks(t *testing.T) {
+	messages := []a2a.Message{
+		{ID: "m1", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "Visible "},
+		{ID: "m2", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "\n\x01raw intermediate chunk"},
+		{ID: "m3", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "reply."},
+		{ID: "m4", FromID: "local-machine", Kind: a2a.MessageStreamEnd},
+	}
+
+	history := buildVEConversationHistoryFromMessages(messages, "local-machine", a2a.GroupDiscussionMessage{})
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1: %+v", len(history), history)
+	}
+	if got := history[0].Content; got != "Visible \n\x01raw intermediate chunkreply." {
+		t.Fatalf("assistant content = %q, want raw coalesced stream", got)
 	}
 }
 

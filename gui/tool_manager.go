@@ -889,11 +889,17 @@ func (tm *ToolManager) getNpmPath() string {
 }
 
 func (a *App) InstallTool(name string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "install tool " + strings.TrimSpace(name), "tool": strings.TrimSpace(name)}); err != nil {
+		return err
+	}
 	tm := NewToolManager(a)
 	return tm.InstallTool(name)
 }
 
 func (a *App) UpdateTool(name string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "update tool " + strings.TrimSpace(name), "tool": strings.TrimSpace(name)}); err != nil {
+		return err
+	}
 	tm := NewToolManager(a)
 	return tm.UpdateTool(name)
 }

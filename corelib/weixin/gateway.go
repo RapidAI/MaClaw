@@ -22,7 +22,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,8 +39,9 @@ const (
 	DefaultBaseURL        = "https://ilinkai.weixin.qq.com"
 	DefaultCDNBaseURL     = "https://novac2c.cdn.weixin.qq.com/c2c"
 	DefaultBotType        = "3"
-	weixinVoiceSampleRate = 8000
+	weixinVoiceSampleRate = 16000
 	weixinVoiceBitRate    = 8000
+	weixinVoiceDebugKeep  = 20
 
 	longPollTimeout        = 35 * time.Second
 	apiTimeout             = 15 * time.Second
@@ -51,6 +54,8 @@ const (
 	cdnDownloadMaxBytes    = 100 * 1024 * 1024 // 100 MB
 	apiResponseMaxBytes    = 10 * 1024 * 1024  // 10 MB
 )
+
+var weixinVoiceDebugDirForTest string
 
 // Config holds WeChat gateway configuration.
 type Config struct {
@@ -106,11 +111,15 @@ type imageItem struct {
 type voiceItem struct {
 	Media         *cdnMedia `json:"media,omitempty"`
 	EncodeType    int       `json:"encode_type,omitempty"`
+	Format        string    `json:"format,omitempty"`
+	MimeType      string    `json:"mime_type,omitempty"`
 	BitsPerSample int       `json:"bits_per_sample,omitempty"`
 	SampleRate    int       `json:"sample_rate,omitempty"`
 	Playtime      int       `json:"playtime,omitempty"`
 	Len           string    `json:"len,omitempty"`
+	Size          string    `json:"size,omitempty"`
 	VoiceMD5      string    `json:"voice_md5,omitempty"`
+	MD5           string    `json:"md5,omitempty"`
 	Text          string    `json:"text,omitempty"`
 }
 
@@ -298,6 +307,7 @@ type OutgoingMedia struct {
 	FileData     []byte
 	FileName     string
 	MediaType    string // "image", "video", "voice", "file"
+	VoiceVariant string // optional: WeChat native voice wire-format experiment name
 }
 
 // MessageHandler is called when a message arrives from WeChat.
@@ -609,11 +619,13 @@ func (g *Gateway) Start(ctx context.Context) error {
 
 // Stop shuts down the gateway.
 func (g *Gateway) Stop() error {
+	wl := GetWxLog()
 	g.mu.Lock()
 	if !g.running {
 		g.mu.Unlock()
 		return nil
 	}
+	wl.Log("gw.stop", "---", "-", "begin")
 	if g.cancel != nil {
 		g.cancel()
 	}
@@ -624,6 +636,7 @@ func (g *Gateway) Stop() error {
 	g.wg.Wait()        // wait for pollLoop to exit
 	g.handlerWg.Wait() // wait for in-flight handler goroutines
 	log.Printf("[weixin/gw] stopped")
+	wl.Log("gw.stop", "---", "-", "done")
 	g.emitStatus("disconnected")
 	return nil
 }
@@ -880,9 +893,12 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 	// Extract media (first media item found: image > video > file > voice).
 	// Transcribed voice messages may carry voice_item.text without downloadable
 	// media; keep the voice modality so reply selection can preserve it.
-	mediaType, mediaData, mediaName := g.extractMedia(ctx, msg.ItemList)
+	mediaType, mediaData, mediaName := g.extractMedia(ctx, fromUserID, msg.ItemList)
 	if mediaType == "" && hasVoiceItem(msg.ItemList) {
 		mediaType = "voice"
+	}
+	if summary := voiceItemsDebugSummary(msg.ItemList); summary != "" {
+		wl.Log("gw.process", "IN", fromUserID, "voice_items=%s", summary)
 	}
 
 	var ts time.Time
@@ -1053,6 +1069,24 @@ func hasVoiceItem(items []messageItem) bool {
 	return false
 }
 
+func voiceItemsDebugSummary(items []messageItem) string {
+	out := make([]json.RawMessage, 0, 2)
+	for _, item := range items {
+		if item.Type != ItemTypeVoice || item.VoiceItem == nil {
+			continue
+		}
+		out = append(out, json.RawMessage(voiceItemDebugSummary(item.VoiceItem)))
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "<marshal-error>"
+	}
+	return string(b)
+}
+
 func extractTextBody(items []messageItem) string {
 	for _, item := range items {
 		if item.Type == ItemTypeText && item.TextItem != nil && item.TextItem.Text != "" {
@@ -1070,13 +1104,15 @@ func extractTextBody(items []messageItem) string {
 	return ""
 }
 
-func (g *Gateway) extractMedia(ctx context.Context, items []messageItem) (mediaType string, data []byte, name string) {
+func (g *Gateway) extractMedia(ctx context.Context, fromUserID string, items []messageItem) (mediaType string, data []byte, name string) {
+	wl := GetWxLog()
 	// Single pass: collect first candidate per type, then try in priority order.
 	type candidate struct {
 		mtype  string
 		param  string // encrypt_query_param
 		aesB64 string
 		name   string
+		voice  *voiceItem
 	}
 	var img, vid, file, voice *candidate
 
@@ -1111,11 +1147,11 @@ func (g *Gateway) extractMedia(ctx context.Context, items []messageItem) (mediaT
 			}
 			file = &candidate{mtype: "file", param: item.FileItem.Media.EncryptQueryParam, aesB64: item.FileItem.Media.AESKey, name: item.FileItem.FileName}
 		case ItemTypeVoice:
-			if voice != nil || item.VoiceItem == nil || item.VoiceItem.Text != "" ||
+			if voice != nil || item.VoiceItem == nil ||
 				item.VoiceItem.Media == nil || item.VoiceItem.Media.EncryptQueryParam == "" || item.VoiceItem.Media.AESKey == "" {
 				continue
 			}
-			voice = &candidate{mtype: "voice", param: item.VoiceItem.Media.EncryptQueryParam, aesB64: item.VoiceItem.Media.AESKey}
+			voice = &candidate{mtype: "voice", param: item.VoiceItem.Media.EncryptQueryParam, aesB64: item.VoiceItem.Media.AESKey, voice: item.VoiceItem}
 		}
 	}
 
@@ -1128,7 +1164,14 @@ func (g *Gateway) extractMedia(ctx context.Context, items []messageItem) (mediaT
 			buf, err := g.cdnDownloadDecrypt(ctx, c.param, c.aesB64)
 			if err != nil {
 				log.Printf("[weixin/gw] %s download failed: %v", c.mtype, err)
+				wl.Log("gw.download", "IN", fromUserID, "ERR media=%s decrypt download_param_len=%d aes_key_len=%d err=%v", c.mtype, len(c.param), len(c.aesB64), err)
 				continue
+			}
+			if c.mtype == "voice" {
+				path, saveErr := saveDebugWeixinInboundVoicePayload(buf, c.voice)
+				wl.Log("gw.download", "IN", fromUserID, "OK media=voice bytes=%d %s saved=%q save_err=%v", len(buf), voicePayloadDebugSummary(buf), path, saveErr)
+			} else {
+				wl.Log("gw.download", "IN", fromUserID, "OK media=%s bytes=%d download_param_len=%d", c.mtype, len(buf), len(c.param))
 			}
 			return c.mtype, buf, c.name
 		}
@@ -1137,8 +1180,10 @@ func (g *Gateway) extractMedia(ctx context.Context, items []messageItem) (mediaT
 			buf, err := g.cdnDownloadPlain(ctx, c.param)
 			if err != nil {
 				log.Printf("[weixin/gw] image plain download failed: %v", err)
+				wl.Log("gw.download", "IN", fromUserID, "ERR media=image plain download_param_len=%d err=%v", len(c.param), err)
 				continue
 			}
+			wl.Log("gw.download", "IN", fromUserID, "OK media=image plain bytes=%d download_param_len=%d", len(buf), len(c.param))
 			return "image", buf, ""
 		}
 	}
@@ -1248,10 +1293,15 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		if meta != nil {
 			voiceMeta = meta
 		}
+		if debugPath, err := saveDebugWeixinVoicePayload(uploadData, voiceMeta); err != nil {
+			log.Printf("[weixin/gw] save debug voice failed: %v", err)
+		} else if debugPath != "" {
+			log.Printf("[weixin/gw] saved debug SILK voice payload: %s", debugPath)
+		}
 	}
 
 	if msg.MediaType == "voice" && voiceMeta != nil {
-		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d upload_size=%d encode_type=6 sample_rate=%d playtime=%d name=%s", msg.MediaType, len(msg.FileData), len(uploadData), voiceMeta.sampleRate, voiceMeta.playtimeMS, msg.FileName)
+		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d upload_size=%d payload_codec=silk_v3 voice_item_encode_type=4 sample_rate=%d playtime=%d name=%s packets=%d packet_bytes=%d packet_min=%d packet_max=%d decoded_pcm=%d decoded_ms=%d decode_err=%q md5=%s", msg.MediaType, len(msg.FileData), len(uploadData), voiceMeta.sampleRate, voiceMeta.playtimeMS, msg.FileName, voiceMeta.packetCount, voiceMeta.packetBytes, voiceMeta.packetSizeMin, voiceMeta.packetSizeMax, voiceMeta.decodedPCM, voiceMeta.decodedMS, voiceMeta.decodeError, voiceMeta.payloadMD5)
 	} else {
 		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d upload_size=%d name=%s", msg.MediaType, len(msg.FileData), len(uploadData), msg.FileName)
 	}
@@ -1312,14 +1362,27 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 			},
 		}
 	case "voice":
+		voiceEncryptType := 0
+		if msg.VoiceVariant == "integrity_encrypt1" {
+			voiceEncryptType = 1
+		}
+		voiceParam := uploaded.downloadParam
+		if msg.VoiceVariant == "upload_param_encrypt0" && uploaded.uploadParam != "" {
+			voiceParam = uploaded.uploadParam
+		}
+		voiceAESKey := aesKeyForMedia
+		if msg.VoiceVariant == "raw_aes_encrypt0" || msg.VoiceVariant == "silk_encode6_raw_aes_encrypt0" {
+			voiceAESKey = base64.StdEncoding.EncodeToString(uploaded.aesKey)
+		}
 		item = messageItem{
 			Type: ItemTypeVoice,
 			VoiceItem: buildVoiceItem(&cdnMedia{
-				EncryptQueryParam: uploaded.downloadParam,
-				AESKey:            aesKeyForMedia,
-				EncryptType:       1,
-			}, voiceMeta),
+				EncryptQueryParam: voiceParam,
+				AESKey:            voiceAESKey,
+				EncryptType:       voiceEncryptType,
+			}, voiceMeta, msg.VoiceVariant),
 		}
+		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "voice_item variant=%s %s", firstNonEmpty(msg.VoiceVariant, "inbound_shape"), voiceItemDebugSummary(item.VoiceItem))
 	default: // file
 		item = messageItem{
 			Type: ItemTypeFile,
@@ -1360,20 +1423,83 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	return nil
 }
 
-func buildVoiceItem(media *cdnMedia, meta *voiceMetadata) *voiceItem {
+func buildVoiceItem(media *cdnMedia, meta *voiceMetadata, variant ...string) *voiceItem {
 	item := &voiceItem{
 		Media:      media,
-		EncodeType: 6,
+		EncodeType: 4,
+	}
+	if len(variant) > 0 && variant[0] == "silk_encode6_raw_aes_encrypt0" {
+		item.EncodeType = 6
 	}
 	if meta != nil {
 		item.SampleRate = meta.sampleRate
 		item.Playtime = meta.playtimeMS
-		if meta.payloadSize > 0 {
-			item.Len = strconv.Itoa(meta.payloadSize)
-		}
+	}
+	if len(variant) > 0 && variant[0] == "integrity_encrypt1" && meta != nil {
+		item.Len = strconv.Itoa(meta.payloadSize)
+		item.Size = strconv.Itoa(meta.payloadSize)
 		item.VoiceMD5 = meta.payloadMD5
+		item.MD5 = meta.payloadMD5
+		item.Format = "silk"
+		item.MimeType = "audio/silk"
 	}
 	return item
+}
+
+func voiceItemDebugSummary(item *voiceItem) string {
+	if item == nil {
+		return "null"
+	}
+	type mediaSummary struct {
+		HasEncryptQueryParam bool `json:"has_encrypt_query_param"`
+		EncryptQueryParamLen int  `json:"encrypt_query_param_len"`
+		AESKeyLen            int  `json:"aes_key_len"`
+		EncryptType          int  `json:"encrypt_type"`
+	}
+	type summary struct {
+		EncodeType  int          `json:"encode_type"`
+		Format      string       `json:"format,omitempty"`
+		MimeType    string       `json:"mime_type,omitempty"`
+		SampleRate  int          `json:"sample_rate"`
+		Playtime    int          `json:"playtime"`
+		Len         string       `json:"len"`
+		Size        string       `json:"size"`
+		HasVoiceMD5 bool         `json:"has_voice_md5"`
+		VoiceMD5Len int          `json:"voice_md5_len"`
+		VoiceMD5    string       `json:"voice_md5,omitempty"`
+		HasMD5      bool         `json:"has_md5"`
+		MD5Len      int          `json:"md5_len"`
+		MD5         string       `json:"md5,omitempty"`
+		Media       mediaSummary `json:"media"`
+	}
+	out := summary{
+		EncodeType:  item.EncodeType,
+		Format:      item.Format,
+		MimeType:    item.MimeType,
+		SampleRate:  item.SampleRate,
+		Playtime:    item.Playtime,
+		Len:         item.Len,
+		Size:        item.Size,
+		HasVoiceMD5: item.VoiceMD5 != "",
+		VoiceMD5Len: len(item.VoiceMD5),
+		VoiceMD5:    item.VoiceMD5,
+		HasMD5:      item.MD5 != "",
+		MD5Len:      len(item.MD5),
+		MD5:         item.MD5,
+	}
+	if item.Media != nil {
+		out.Media = mediaSummary{
+			HasEncryptQueryParam: item.Media.EncryptQueryParam != "",
+			EncryptQueryParamLen: len(item.Media.EncryptQueryParam),
+			AESKeyLen:            len(item.Media.AESKey),
+			EncryptType:          item.Media.EncryptType,
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "<marshal-error>"
+	}
+	return string(b)
 }
 
 type voiceMetadata struct {
@@ -1381,6 +1507,13 @@ type voiceMetadata struct {
 	channels      int
 	bitsPerSample int
 	playtimeMS    int
+	packetCount   int
+	packetSizeMin int
+	packetSizeMax int
+	packetBytes   int
+	decodedPCM    int
+	decodedMS     int
+	decodeError   string
 	dataStart     int
 	dataSize      int
 	payloadSize   int
@@ -1415,6 +1548,7 @@ func voiceUploadPayload(fileName string, data []byte) ([]byte, *voiceMetadata, e
 	if isSilkVoicePayload(data) {
 		h := md5.Sum(data)
 		meta := &voiceMetadata{sampleRate: weixinVoiceSampleRate, playtimeMS: estimateSilkPlaytimeMS(data), payloadSize: len(data), payloadMD5: hex.EncodeToString(h[:])}
+		populateSilkDiagnostics(data, meta)
 		return data, meta, nil
 	}
 
@@ -1468,7 +1602,238 @@ func encodeWAVVoicePayload(pcm []byte, meta voiceMetadata) ([]byte, *voiceMetada
 	outMeta.payloadSize = len(silkData)
 	h := md5.Sum(silkData)
 	outMeta.payloadMD5 = hex.EncodeToString(h[:])
+	populateSilkDiagnostics(silkData, &outMeta)
 	return silkData, &outMeta, nil
+}
+
+func populateSilkDiagnostics(data []byte, meta *voiceMetadata) {
+	if meta == nil {
+		return
+	}
+	packetCount, packetBytes, packetMin, packetMax, ok := inspectSilkPackets(data)
+	if ok {
+		meta.packetCount = packetCount
+		meta.packetBytes = packetBytes
+		meta.packetSizeMin = packetMin
+		meta.packetSizeMax = packetMax
+	}
+	if meta.sampleRate <= 0 {
+		meta.decodeError = "sample_rate_missing"
+		return
+	}
+	pcm, err := silk.DecodeSilkBuffToPcm(data, meta.sampleRate)
+	if err != nil {
+		meta.decodeError = err.Error()
+		return
+	}
+	meta.decodedPCM = len(pcm)
+	if meta.sampleRate > 0 {
+		meta.decodedMS = len(pcm) * 1000 / (meta.sampleRate * 2)
+	}
+}
+
+func inspectSilkPackets(data []byte) (count, packetBytes, minSize, maxSize int, ok bool) {
+	if !isSilkVoicePayload(data) {
+		return 0, 0, 0, 0, false
+	}
+	off := 9
+	if bytes.HasPrefix(data, []byte("\x02#!SILK_V3")) {
+		off = 10
+	}
+	minSize = int(^uint(0) >> 1)
+	for off+2 <= len(data) {
+		n := int(int16(binary.LittleEndian.Uint16(data[off : off+2])))
+		off += 2
+		if n <= 0 || off+n > len(data) {
+			break
+		}
+		packetBytes += n
+		if n < minSize {
+			minSize = n
+		}
+		if n > maxSize {
+			maxSize = n
+		}
+		off += n
+		count++
+	}
+	if count == 0 {
+		return 0, 0, 0, 0, false
+	}
+	return count, packetBytes, minSize, maxSize, off == len(data)
+}
+
+func saveDebugWeixinVoicePayload(data []byte, meta *voiceMetadata) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	dir, err := weixinVoiceDebugDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	now := time.Now()
+	sampleRate := 0
+	playtime := 0
+	md5sum := ""
+	if meta != nil {
+		sampleRate = meta.sampleRate
+		playtime = meta.playtimeMS
+		md5sum = meta.payloadMD5
+	}
+	if md5sum == "" {
+		h := md5.Sum(data)
+		md5sum = hex.EncodeToString(h[:])
+	}
+	name := fmt.Sprintf("voice_%s_%09d_sr%d_ms%d_len%d.silk", now.Format("20060102_150405"), now.Nanosecond(), sampleRate, playtime, len(data))
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	info := map[string]any{
+		"file":        name,
+		"format":      "silk",
+		"is_silk":     isSilkVoicePayload(data),
+		"sample_rate": sampleRate,
+		"playtime_ms": playtime,
+		"payload_len": len(data),
+		"payload_md5": md5sum,
+		"saved_at":    now.Format(time.RFC3339Nano),
+	}
+	if meta != nil {
+		info["packet_count"] = meta.packetCount
+		info["packet_bytes"] = meta.packetBytes
+		info["packet_size_min"] = meta.packetSizeMin
+		info["packet_size_max"] = meta.packetSizeMax
+		info["decoded_pcm_bytes"] = meta.decodedPCM
+		info["decoded_ms"] = meta.decodedMS
+		info["decode_error"] = meta.decodeError
+	}
+	if b, err := json.MarshalIndent(info, "", "  "); err == nil {
+		_ = os.WriteFile(path+".json", b, 0o600)
+	}
+	cleanupDebugWeixinVoicePayloads(dir)
+	return path, nil
+}
+
+func saveDebugWeixinInboundVoicePayload(data []byte, item *voiceItem) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	dir, err := weixinVoiceDebugDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	now := time.Now()
+	format, ext := detectVoicePayloadFormat(data)
+	name := fmt.Sprintf("inbound_voice_%s_%09d_%s_len%d%s", now.Format("20060102_150405"), now.Nanosecond(), format, len(data), ext)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	h := md5.Sum(data)
+	info := map[string]any{
+		"file":        name,
+		"direction":   "inbound",
+		"format":      format,
+		"is_silk":     isSilkVoicePayload(data),
+		"payload_len": len(data),
+		"payload_md5": hex.EncodeToString(h[:]),
+		"first16_hex": firstHex(data, 16),
+		"saved_at":    now.Format(time.RFC3339Nano),
+	}
+	if item != nil {
+		info["voice_item"] = json.RawMessage(voiceItemDebugSummary(item))
+		info["encode_type"] = item.EncodeType
+		info["sample_rate"] = item.SampleRate
+		info["playtime_ms"] = item.Playtime
+	}
+	if b, err := json.MarshalIndent(info, "", "  "); err == nil {
+		_ = os.WriteFile(path+".json", b, 0o600)
+	}
+	return path, nil
+}
+
+func detectVoicePayloadFormat(data []byte) (format, ext string) {
+	switch {
+	case isSilkVoicePayload(data):
+		return "silk", ".silk"
+	case bytes.HasPrefix(data, []byte("RIFF")) && len(data) >= 12 && string(data[8:12]) == "WAVE":
+		return "wav", ".wav"
+	case bytes.HasPrefix(data, []byte("#!AMR")):
+		return "amr", ".amr"
+	case len(data) >= 3 && string(data[:3]) == "ID3":
+		return "mp3", ".mp3"
+	case len(data) >= 2 && data[0] == 0xff && data[1]&0xe0 == 0xe0:
+		return "mp3", ".mp3"
+	case bytes.HasPrefix(data, []byte("OggS")):
+		return "ogg", ".ogg"
+	default:
+		return "unknown", ".bin"
+	}
+}
+
+func firstHex(data []byte, n int) string {
+	if n < 0 {
+		n = 0
+	}
+	if len(data) < n {
+		n = len(data)
+	}
+	return hex.EncodeToString(data[:n])
+}
+
+func voicePayloadDebugSummary(data []byte) string {
+	format, _ := detectVoicePayloadFormat(data)
+	h := md5.Sum(data)
+	return fmt.Sprintf("format=%s is_silk=%v first16=%s md5=%s", format, isSilkVoicePayload(data), firstHex(data, 16), hex.EncodeToString(h[:]))
+}
+
+func weixinVoiceDebugDir() (string, error) {
+	if weixinVoiceDebugDirForTest != "" {
+		return weixinVoiceDebugDirForTest, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".maclaw", "temp", "weixin_voice_debug"), nil
+}
+
+func cleanupDebugWeixinVoicePayloads(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type savedVoice struct {
+		name    string
+		modTime time.Time
+	}
+	voices := make([]savedVoice, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".silk") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		voices = append(voices, savedVoice{name: entry.Name(), modTime: info.ModTime()})
+	}
+	if len(voices) <= weixinVoiceDebugKeep {
+		return
+	}
+	sort.Slice(voices, func(i, j int) bool { return voices[i].modTime.Before(voices[j].modTime) })
+	for _, voice := range voices[:len(voices)-weixinVoiceDebugKeep] {
+		path := filepath.Join(dir, voice.name)
+		_ = os.Remove(path)
+		_ = os.Remove(path + ".json")
+	}
 }
 
 func padPCMForSilk(data []byte, sampleRate int) ([]byte, error) {
@@ -1765,12 +2130,41 @@ func (g *Gateway) cdnDownloadPlain(ctx context.Context, encryptedQueryParam stri
 
 type uploadResult struct {
 	downloadParam  string
+	uploadParam    string
 	aesKey         []byte
 	plaintextSize  int
 	ciphertextSize int
 }
 
+func uploadMediaTypeName(mediaType int) string {
+	switch mediaType {
+	case UploadMediaImage:
+		return "image"
+	case UploadMediaVideo:
+		return "video"
+	case UploadMediaFile:
+		return "file"
+	case UploadMediaVoice:
+		return "voice"
+	default:
+		return strconv.Itoa(mediaType)
+	}
+}
+
+func extractEncryptedQueryParam(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil {
+		if v := u.Query().Get("encrypted_query_param"); v != "" {
+			return v
+		}
+	}
+	return raw
+}
+
 func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID string, mediaType int) (*uploadResult, error) {
+	wl := GetWxLog()
 	rawsize := len(plaintext)
 	h := md5.Sum(plaintext)
 	rawfilemd5 := hex.EncodeToString(h[:])
@@ -1795,22 +2189,32 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 		AESKey:      hex.EncodeToString(aesKey),
 		BaseInfo:    baseInfo{ChannelVersion: "go-maclaw-1.0"},
 	}
+	wl.Log("gw.upload", "OUT", toUserID, "getuploadurl media_type=%s rawsize=%d filesize=%d raw_md5=%s filekey_len=%d aeskey_len=%d no_need_thumb=%v", uploadMediaTypeName(mediaType), rawsize, filesize, rawfilemd5, len(filekey), len(uploadReq.AESKey), uploadReq.NoNeedThumb)
 	reqBody, _ := json.Marshal(uploadReq)
 	data, err := g.apiPost(ctx, "ilink/bot/getuploadurl", reqBody, apiTimeout)
 	if err != nil {
+		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl media_type=%s err=%v", uploadMediaTypeName(mediaType), err)
 		return nil, fmt.Errorf("getUploadUrl: %w", err)
 	}
 	var uploadResp getUploadURLResp
 	if err := json.Unmarshal(data, &uploadResp); err != nil {
+		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl decode media_type=%s resp=%s err=%v", uploadMediaTypeName(mediaType), compactAPIResponseLog(data), err)
 		return nil, fmt.Errorf("getUploadUrl decode: %w", err)
 	}
 	if uploadResp.Ret != 0 {
+		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl API media_type=%s ret=%d errmsg=%q resp=%s", uploadMediaTypeName(mediaType), uploadResp.Ret, uploadResp.ErrMsg, compactAPIResponseLog(data))
 		return nil, fmt.Errorf("getUploadUrl API error: ret=%d errmsg=%q resp=%s", uploadResp.Ret, uploadResp.ErrMsg, string(data))
 	}
 	if uploadResp.UploadParam == "" && uploadResp.UploadFullURL == "" {
+		wl.Log("gw.upload", "OUT", toUserID, "ERR getuploadurl empty upload URL media_type=%s resp=%s", uploadMediaTypeName(mediaType), compactAPIResponseLog(data))
 		return nil, fmt.Errorf("getUploadUrl returned no upload_param and no upload_full_url, ret=%d errmsg=%q resp=%s",
 			uploadResp.Ret, uploadResp.ErrMsg, string(data))
 	}
+	uploadParamForDebug := uploadResp.UploadParam
+	if uploadParamForDebug == "" && uploadResp.UploadFullURL != "" {
+		uploadParamForDebug = extractEncryptedQueryParam(uploadResp.UploadFullURL)
+	}
+	wl.Log("gw.upload", "OUT", toUserID, "OK getuploadurl media_type=%s has_full_url=%v upload_param_len=%d thumb_upload_param_len=%d resp=%s", uploadMediaTypeName(mediaType), uploadResp.UploadFullURL != "", len(uploadParamForDebug), len(uploadResp.ThumbUploadParam), compactAPIResponseLog(data))
 
 	// Step 2: Encrypt and upload to CDN
 	ciphertext, err := encryptAESECB(plaintext, aesKey)
@@ -1843,6 +2247,7 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 		uploadCancel()
 		if err != nil {
 			lastErr = err
+			wl.Log("gw.upload", "OUT", toUserID, "ERR cdn_upload media_type=%s attempt=%d ciphertext_size=%d err=%v", uploadMediaTypeName(mediaType), attempt, len(ciphertext), err)
 			if attempt < cdnUploadMaxRetries {
 				log.Printf("[weixin/gw] CDN upload attempt %d failed: %v", attempt, err)
 				continue
@@ -1857,10 +2262,12 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 		uploadResp.Body.Close()
 
 		if respStatus >= 400 && respStatus < 500 {
+			wl.Log("gw.upload", "OUT", toUserID, "ERR cdn_upload client media_type=%s attempt=%d status=%d download_param_len=%d", uploadMediaTypeName(mediaType), attempt, respStatus, len(respDownloadParam))
 			return nil, fmt.Errorf("CDN upload client error %d", respStatus)
 		}
 		if respStatus != 200 {
 			lastErr = fmt.Errorf("CDN upload server error %d", respStatus)
+			wl.Log("gw.upload", "OUT", toUserID, "ERR cdn_upload server media_type=%s attempt=%d status=%d download_param_len=%d", uploadMediaTypeName(mediaType), attempt, respStatus, len(respDownloadParam))
 			if attempt < cdnUploadMaxRetries {
 				log.Printf("[weixin/gw] CDN upload attempt %d: %v", attempt, lastErr)
 				continue
@@ -1870,6 +2277,7 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 
 		if respDownloadParam == "" {
 			lastErr = fmt.Errorf("CDN response missing X-Encrypted-Param header")
+			wl.Log("gw.upload", "OUT", toUserID, "ERR cdn_upload missing download param media_type=%s attempt=%d status=%d", uploadMediaTypeName(mediaType), attempt, respStatus)
 			if attempt < cdnUploadMaxRetries {
 				continue
 			}
@@ -1877,6 +2285,7 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 		}
 		downloadParam = respDownloadParam
 		lastErr = nil
+		wl.Log("gw.upload", "OUT", toUserID, "OK cdn_upload media_type=%s attempt=%d plaintext_size=%d ciphertext_size=%d download_param_len=%d", uploadMediaTypeName(mediaType), attempt, rawsize, len(ciphertext), len(downloadParam))
 		break
 	}
 	if lastErr != nil {
@@ -1885,6 +2294,7 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 
 	return &uploadResult{
 		downloadParam:  downloadParam,
+		uploadParam:    uploadParamForDebug,
 		aesKey:         aesKey,
 		plaintextSize:  rawsize,
 		ciphertextSize: len(ciphertext),

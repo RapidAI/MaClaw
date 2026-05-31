@@ -6,9 +6,16 @@ import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } f
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
+    listVirtualEmployeesMock: vi.fn().mockResolvedValue([
+        { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+        { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+    ]),
+    initiateVEConversationMock: vi.fn().mockResolvedValue({ session_id: 'session-ve-a' }),
+    addVEToGroupMock: vi.fn().mockResolvedValue(undefined),
+    renameGroupDiscussionMock: vi.fn().mockResolvedValue({ id: 'disc-1', topic: 'Renamed group' }),
 }));
 
 const scrollIntoViewMock = vi.fn();
@@ -46,8 +53,12 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     PinTask: vi.fn(),
     HideTask: vi.fn(),
     GroupDiscussionGetConsultationDetail: vi.fn().mockResolvedValue({ discussion: { id: 'disc-1', topic: 'Vendor audit', status: 'open', local_relation: 'owned_ve_invited', readonly: true, participant_ids: ['ve-a'] }, messages: [] }),
+    GroupDiscussionRenameConsultation: renameGroupDiscussionMock,
     GroupDiscussionSendHistoryMessage: vi.fn().mockResolvedValue(undefined),
     GroupDiscussionDownloadAttachment: vi.fn().mockResolvedValue({ local_path: 'D:/maclaw/data/file.pdf' }),
+    ListVirtualEmployees: listVirtualEmployeesMock,
+    InitiateVEConversation: initiateVEConversationMock,
+    AddVEToGroup: addVEToGroupMock,
     GetTTSEnabled: vi.fn().mockResolvedValue(false),
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
     SpeakText: vi.fn().mockResolvedValue(undefined),
@@ -147,6 +158,17 @@ describe('AIAssistantPanel property tests', () => {
         openFileOrShowInFolderMock.mockResolvedValue(undefined);
         showItemInFolderMock.mockReset();
         showItemInFolderMock.mockResolvedValue(undefined);
+        listVirtualEmployeesMock.mockReset();
+        listVirtualEmployeesMock.mockResolvedValue([
+            { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+            { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+        ]);
+        initiateVEConversationMock.mockReset();
+        initiateVEConversationMock.mockResolvedValue({ session_id: 'session-ve-a' });
+        addVEToGroupMock.mockReset();
+        addVEToGroupMock.mockResolvedValue(undefined);
+        renameGroupDiscussionMock.mockReset();
+        renameGroupDiscussionMock.mockResolvedValue({ id: 'disc-1', topic: 'Renamed group' });
         if (originalCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', originalCreateObjectURL);
         else delete (URL as any).createObjectURL;
         if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
@@ -190,9 +212,19 @@ describe('AIAssistantPanel property tests', () => {
         expect(windowGroup.style.flexShrink).toBe('0');
         expect(windowGroup.style.boxSizing).toBe('border-box');
 
+        const inputStack = getByTestId('ai-input-stack');
+        expect(inputStack.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
         const inputBar = getByTestId('ai-input-bar');
         expect(inputBar.style.minWidth).toBe('0px');
         expect(inputBar.style.boxSizing).toBe('border-box');
+        expect(inputBar.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
+        const inputRow = getByTestId('ai-input-row');
+        expect(inputRow.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
     });
 
     it('keeps the inline panel body as the only scroll container wrapper', () => {
@@ -1844,6 +1876,70 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
+    it('opens digital employee invite picker after converting a direct VE chat to group mode', async () => {
+        const onPendingVEOpenHandled = vi.fn();
+        const { getByRole, getByTestId, queryByTestId, getByText } = renderPanel({
+            lang: 'en',
+            pendingVEOpen: {
+                id: 've-a',
+                machine_id: 've-a',
+                name: 'Agent A',
+                online_status: 'online',
+                status: 'active',
+                access_policy: 'public',
+                skill_description: '',
+            } as any,
+            onPendingVEOpenHandled,
+            window: { inline: true },
+        });
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        fireEvent.contextMenu(getByRole('tab', { name: /Agent A/ }));
+        fireEvent.click(getByTestId('tab-menu-invite-ve'));
+
+        await waitFor(() => expect(getByTestId('tab-participant-invite-dialog')).toBeTruthy());
+        expect(queryByTestId('tab-participant-invite-item-ve-a')).toBeNull();
+        await waitFor(() => expect(getByText('Contract Bot')).toBeTruthy());
+        fireEvent.click(getByText('Contract Bot'));
+
+        await waitFor(() => expect(addVEToGroupMock).toHaveBeenCalledWith('session-ve-a', 've-b'));
+        expect(initiateVEConversationMock).toHaveBeenCalledWith('ve-a');
+    });
+
+    it('renames an upgraded group chat through the hub binding', async () => {
+        const { getByRole, getByTestId, getByText } = renderPanel({
+            lang: 'en',
+            pendingVEOpen: {
+                id: 've-a',
+                machine_id: 've-a',
+                name: 'Agent A',
+                online_status: 'online',
+                status: 'active',
+                access_policy: 'public',
+                skill_description: '',
+            } as any,
+            onPendingVEOpenHandled: vi.fn(),
+            window: { inline: true },
+        });
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        fireEvent.contextMenu(getByRole('tab', { name: /Agent A/ }));
+        fireEvent.click(getByTestId('tab-menu-invite-ve'));
+        await waitFor(() => expect(getByTestId('tab-participant-invite-dialog')).toBeTruthy());
+        await waitFor(() => expect(getByText('Contract Bot')).toBeTruthy());
+        fireEvent.click(getByText('Contract Bot'));
+        await waitFor(() => expect(addVEToGroupMock).toHaveBeenCalledWith('session-ve-a', 've-b'));
+
+        fireEvent.contextMenu(getByRole('tab', { name: /Agent A/ }));
+        fireEvent.click(getByTestId('tab-menu-rename-group'));
+        const input = getByTestId('rename-group-input') as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'Planning room' } });
+        fireEvent.click(getByTestId('rename-group-save'));
+
+        await waitFor(() => expect(renameGroupDiscussionMock).toHaveBeenCalledWith('session-ve-a', 'Planning room'));
+        await waitFor(() => expect(getByRole('tab', { name: 'Planning room' })).toBeTruthy());
+    });
+
     it('shows animated progress cancel control while sending', () => {
         const { getByTestId, queryByTitle } = renderPanel({
             state: { messages: [], sending: true, streaming: false, ready: true },
@@ -1916,10 +2012,11 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(getByTestId('ai-hide-toggle').getAttribute('title')).toBe('Minimize window');
+        expect(getByTestId('ai-hide-toggle').querySelector('svg')).toBeTruthy();
         expect(getByTestId('ai-maximize-toggle').getAttribute('title')).toBe('Maximize window');
     });
 
-    it('double-clicking the title bar toggles inline fullscreen', () => {
+    it('double-clicking the title bar toggles inline maximized view', () => {
         const onToggleMaximize = vi.fn();
         const { getByTestId } = renderPanel({
             window: { inline: true, maximized: false, onToggleMaximize },

@@ -88,6 +88,9 @@ func isVisibleAIAssistantProgressText(text string) bool {
 
 // BackupSkills exports all NL Skills to a zip file (Wails binding).
 func (a *App) BackupSkills(outputPath string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "backup", "output_path": outputPath}); err != nil {
+		return err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -119,6 +122,9 @@ func (a *App) ExportLearnedSkillsZip(names []string) error {
 // learned/crafted skills from it, and returns a RestoreReport with
 // duplicate-skip information.
 func (a *App) ImportLearnedSkillsZip() (*RestoreReport, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "import", "source": "zip", "learned": true}); err != nil {
+		return nil, err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return nil, fmt.Errorf("skill executor not initialized")
@@ -132,6 +138,9 @@ func (a *App) ImportLearnedSkillsZip() (*RestoreReport, error) {
 
 // RestoreSkills imports NL Skills from a zip file (Wails binding).
 func (a *App) RestoreSkills(zipPath string) (*RestoreReport, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "restore", "source": "zip", "path": zipPath}); err != nil {
+		return nil, err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return nil, fmt.Errorf("skill executor not initialized")
@@ -290,6 +299,9 @@ func (a *App) SearchMixedSkills(query string) ([]MixedSkillSearchResult, error) 
 
 // InstallMixedSkill installs a skill result from mixed search sources (Wails binding).
 func (a *App) InstallMixedSkill(source, id, installRef string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -440,6 +452,9 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 
 // InstallHubSkill downloads a Skill from the specified Hub and registers it locally (Wails binding).
 func (a *App) InstallHubSkill(skillID, hubURL string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": "skillhub", "skill_id": skillID, "hub_url": hubURL}); err != nil {
+		return err
+	}
 	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "install", "source": "skillhub", "skill_id": skillID, "hub_url": hubURL}); !ok {
 		return fmt.Errorf("%s", reason)
 	}
@@ -609,6 +624,9 @@ func (a *App) checkHubSkillUpdatesSafe() []HubSkillUpdateInfo {
 
 // UpdateHubSkill updates a locally installed Hub Skill to the latest version (Wails binding).
 func (a *App) UpdateHubSkill(skillName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "update", "name": skillName, "source": "skillhub"}); err != nil {
+		return err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -688,6 +706,9 @@ func (a *App) ListMemories(category, keyword string) []memory.Entry {
 
 // SaveMemory creates a new memory entry (Wails binding).
 func (a *App) SaveMemory(content, category string, tags []string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "category": category, "tags": tags}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -697,6 +718,9 @@ func (a *App) SaveMemory(content, category string, tags []string) error {
 
 // UpdateMemory modifies an existing memory entry by ID (Wails binding).
 func (a *App) UpdateMemory(id, content, category string, tags []string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "id": id, "category": category, "tags": tags}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -706,6 +730,9 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
 func (a *App) DeleteMemory(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "delete", "id": id}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -722,6 +749,9 @@ func (a *App) DeleteMemory(id string) error {
 
 // CompressMemories runs dedup + LLM compression once and returns a summary (Wails binding).
 func (a *App) CompressMemories() (*memory.CompressResult, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "compress"}); err != nil {
+		return nil, err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil, fmt.Errorf("memory store not initialized")
@@ -755,6 +785,9 @@ func (a *App) ListMemoryBackups() ([]MemoryBackupInfo, error) {
 // RestoreMemoryBackup replaces the current memory with the named backup and
 // takes effect immediately (Wails binding).
 func (a *App) RestoreMemoryBackup(backupName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "restore_backup", "backup_name": backupName}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -768,6 +801,9 @@ func (a *App) RestoreMemoryBackup(backupName string) error {
 
 // DeleteMemoryBackup removes a backup file by name (Wails binding).
 func (a *App) DeleteMemoryBackup(backupName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "delete", "maintenance": "delete_backup", "backup_name": backupName}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -781,6 +817,9 @@ func (a *App) DeleteMemoryBackup(backupName string) error {
 
 // SetAutoCompress enables or disables the background auto-compression service (Wails binding).
 func (a *App) SetAutoCompress(enabled bool) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "set_auto_compress", "enabled": enabled}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -968,6 +1007,9 @@ func (a *App) GetMemoryMaxBackups() int {
 
 // SetMemoryMaxBackups updates the max backup retention count and persists it (Wails binding).
 func (a *App) SetMemoryMaxBackups(n int) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "set_max_backups", "max_backups": n}); err != nil {
+		return err
+	}
 	if n < memory.MinBackups {
 		n = memory.MinBackups
 	}
@@ -1003,6 +1045,9 @@ func (a *App) ListArchiveMemories(category, keyword string) []memory.Entry {
 
 // RestoreArchiveMemory moves an archived entry back to active memory (Wails binding).
 func (a *App) RestoreArchiveMemory(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "restore_archive", "id": id}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -1012,6 +1057,9 @@ func (a *App) RestoreArchiveMemory(id string) error {
 
 // PinMemory marks a memory entry as pinned (protected from eviction) (Wails binding).
 func (a *App) PinMemory(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "pin", "id": id}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -1021,6 +1069,9 @@ func (a *App) PinMemory(id string) error {
 
 // UnpinMemory removes the pinned flag from a memory entry (Wails binding).
 func (a *App) UnpinMemory(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "unpin", "id": id}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
@@ -1159,6 +1210,9 @@ func (a *App) ListTemplates() []remote.SessionTemplate {
 
 // CreateTemplate creates a new session template (Wails binding).
 func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMode bool) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"action": "create_template", "name": name, "tool": tool, "project_path": projectPath}); err != nil {
+		return err
+	}
 	a.ensureTemplateManager()
 	if a.templateManager == nil {
 		return fmt.Errorf("template manager not initialized")
@@ -1174,6 +1228,9 @@ func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMo
 
 // DeleteTemplate removes the session template with the given name (Wails binding).
 func (a *App) DeleteTemplate(name string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"action": "delete_template", "name": name}); err != nil {
+		return err
+	}
 	a.ensureTemplateManager()
 	if a.templateManager == nil {
 		return fmt.Errorf("template manager not initialized")
@@ -1218,6 +1275,9 @@ func (a *App) ListScheduledTasks() []scheduler.ScheduledTask {
 
 // CreateScheduledTask creates a new scheduled task (Wails binding).
 func (a *App) CreateScheduledTask(name, action string, hour, minute, dayOfWeek, dayOfMonth, intervalMinutes int, startDate, endDate, taskType string) (string, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "scheduled_task", "request": action, "task_name": name}); err != nil {
+		return "", err
+	}
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return "", fmt.Errorf("scheduled task manager not initialized")
@@ -1238,6 +1298,9 @@ func (a *App) CreateScheduledTask(name, action string, hour, minute, dayOfWeek, 
 
 // UpdateScheduledTask modifies a scheduled task (Wails binding).
 func (a *App) UpdateScheduledTask(id string, fields map[string]interface{}) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "scheduled_task", "task_id": id, "fields": fields}); err != nil {
+		return err
+	}
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
@@ -1247,6 +1310,9 @@ func (a *App) UpdateScheduledTask(id string, fields map[string]interface{}) erro
 
 // DeleteScheduledTask removes a scheduled task by ID (Wails binding).
 func (a *App) DeleteScheduledTask(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "scheduled_task", "task_id": strings.TrimSpace(id), "action": "delete"}); err != nil {
+		return err
+	}
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
@@ -1256,6 +1322,9 @@ func (a *App) DeleteScheduledTask(id string) error {
 
 // PauseScheduledTask pauses a scheduled task (Wails binding).
 func (a *App) PauseScheduledTask(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "scheduled_task", "task_id": strings.TrimSpace(id), "action": "pause"}); err != nil {
+		return err
+	}
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
@@ -1265,6 +1334,9 @@ func (a *App) PauseScheduledTask(id string) error {
 
 // ResumeScheduledTask resumes a paused scheduled task (Wails binding).
 func (a *App) ResumeScheduledTask(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "scheduled_task", "task_id": strings.TrimSpace(id), "action": "resume"}); err != nil {
+		return err
+	}
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
@@ -1274,6 +1346,9 @@ func (a *App) ResumeScheduledTask(id string) error {
 
 // TriggerScheduledTask immediately runs a scheduled task (Wails binding).
 func (a *App) TriggerScheduledTask(id string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "scheduled_task", "task_id": strings.TrimSpace(id)}); err != nil {
+		return err
+	}
 	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
@@ -1898,6 +1973,9 @@ func (a *App) ClearAIAssistantHistory() error {
 
 // StartAIAssistantBackgroundTask starts a visible AI background task and returns immediately.
 func (a *App) StartAIAssistantBackgroundTask(req AIAssistantBackgroundTaskRequest) (*AIAssistantBackgroundTaskResult, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("delegate_task", map[string]interface{}{"agent": "background", "request": strings.TrimSpace(req.Text), "project_path": strings.TrimSpace(req.ProjectPath)}); err != nil {
+		return nil, err
+	}
 	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
 	if hubClient == nil {
@@ -1940,7 +2018,7 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 	if hubClient == nil {
 		return "", fmt.Errorf("AI assistant not initialized")
 	}
-	return hubClient.ensureIMHandler().CancelCurrentSession()
+	return cancelAIAssistantSessionForHandler(hubClient.ensureIMHandler(), "")
 }
 
 // CancelAIAssistantSessionForSession cancels the selected desktop/project AI
@@ -1957,8 +2035,19 @@ func (a *App) CancelAIAssistantSessionForSession(userID string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	return cancelAIAssistantSessionForHandler(handler, targetUserID)
+}
+
+func cancelAIAssistantSessionForHandler(handler *IMMessageHandler, userID string) (string, error) {
+	if handler == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
+	targetUserID, err := normalizeAIAssistantSessionUserID(userID)
+	if err != nil {
+		return "", err
+	}
 	if targetUserID == "" {
-		return handler.CancelCurrentSession()
+		targetUserID = activeAIAssistantLoopUserID(handler)
 	}
 	return handler.CancelSessionForUser(targetUserID)
 }
@@ -2236,6 +2325,9 @@ func (a *App) GetBackgroundLoopOutput(sessionID string) []string {
 // ImportAgentSkillDir imports an Anthropic Agent Skills directory (SKILL.md)
 // and registers it as a local NL Skill (Wails binding).
 func (a *App) ImportAgentSkillDir(skillDir string) (string, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "import", "source": "agent_skill_dir", "path": skillDir}); err != nil {
+		return "", err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return "", fmt.Errorf("skill executor not initialized")

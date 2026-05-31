@@ -3,7 +3,8 @@ import type { CreateGroupTabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { isLocalHumanParticipantId } from "./localAIIdentity";
+import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export interface PendingProjectTabOpen {
@@ -26,14 +27,16 @@ export interface PendingHistoryDiscussionOpen {
     participant_ids?: string[];
 }
 
-function normalizePendingParticipantId(value: string | undefined): string {
-    return normalizeParticipantId(value);
-}
-
 function singlePendingParticipantId(discussion: PendingHistoryDiscussionOpen): string {
-    const ids = (discussion?.participant_ids || [])
-        .map(normalizePendingParticipantId)
-        .filter(id => id && !isLocalHumanParticipantId(id));
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const rawId of discussion?.participant_ids || []) {
+        const id = String(rawId || "").trim();
+        if (!id || isLocalHumanParticipantId(id)) continue;
+        const before = seen.size;
+        addParticipantIdentityKeys(seen, id);
+        if (seen.size !== before) ids.push(id);
+    }
     return ids.length === 1 ? ids[0] : "";
 }
 
@@ -145,11 +148,17 @@ export function usePendingAssistantTabOpen({
             if (onlyParticipant) {
                 const existingParticipantTab = tabs.find(t => {
                     if (t.type !== "ve" && t.type !== "group") return false;
-                    if (normalizePendingParticipantId(t.veId) === onlyParticipant) return true;
-                    const participants = (t.participants || [])
-                        .map(normalizePendingParticipantId)
-                        .filter(id => id && !isLocalHumanParticipantId(id));
-                    return !t.veId && participants.length === 1 && participants[0] === onlyParticipant;
+                    if (participantIdentityMatches(t.veId, onlyParticipant)) return true;
+                    const seen = new Set<string>();
+                    const participants: string[] = [];
+                    for (const rawId of t.participants || []) {
+                        const id = String(rawId || "").trim();
+                        if (!id || isLocalHumanParticipantId(id)) continue;
+                        const before = seen.size;
+                        addParticipantIdentityKeys(seen, id);
+                        if (seen.size !== before) participants.push(id);
+                    }
+                    return !t.veId && participants.length === 1 && participantIdentityMatches(participants[0], onlyParticipant);
                 });
                 if (existingParticipantTab) {
                     bindHistoryStateToTab(existingParticipantTab.id);
@@ -161,7 +170,7 @@ export function usePendingAssistantTabOpen({
 
         const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
         const role = discussion?.local_relation || discussion?.role;
-        createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role });
+        createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role, groupTitle: title });
     }, [activateTab, createGroupTab, getTabList, getTabState, lang, saveTabState]);
 
     useEffect(() => {

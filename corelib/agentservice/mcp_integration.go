@@ -82,7 +82,6 @@ func (b *MCPToolBridge) ListAvailableTools(ctx context.Context, p Principal) []M
 	var entries []MCPToolEntry
 
 	// Remote MCP servers: only include healthy ones with cached tools.
-	// Remote MCP servers: only include healthy ones with cached tools.
 	for _, srv := range appCfg.MCPServers {
 		state := runtime.remoteState(srv.ID)
 		if state == nil || state.healthStatus != MCPHealthHealthy {

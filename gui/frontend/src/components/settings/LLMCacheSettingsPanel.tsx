@@ -1,5 +1,5 @@
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { SaveConfig } from '../../../wailsjs/go/main/App';
+import { LoadConfig, SaveConfig } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
 type LLMCacheSettingsPanelProps = {
@@ -33,18 +33,33 @@ const defaults = {
 const mb = 1024 * 1024;
 const defaultCacheDir = defaults.cache_dir;
 
-const normalizeCache = (value: any = {}) => ({
-    ...defaults,
-    ...value,
-    ttl_seconds: value.ttl_seconds || defaults.ttl_seconds,
-    memory_max_entries: value.memory_max_entries || defaults.memory_max_entries,
-    memory_max_bytes: value.memory_max_bytes || defaults.memory_max_bytes,
-    disk_max_bytes: value.disk_max_bytes || defaults.disk_max_bytes,
-    singleflight_wait_timeout_ms: value.singleflight_wait_timeout_ms || defaults.singleflight_wait_timeout_ms,
-});
+const normalizeCache = (value: any = {}) => {
+    const merged = { ...defaults, ...value };
+    return {
+        ...merged,
+        enabled: !!merged.enabled,
+        openai_enabled: merged.openai_enabled ?? defaults.openai_enabled,
+        anthropic_enabled: merged.anthropic_enabled ?? defaults.anthropic_enabled,
+        stream_synthesis_enabled: merged.stream_synthesis_enabled ?? defaults.stream_synthesis_enabled,
+        normalize_deterministic_params: merged.normalize_deterministic_params ?? defaults.normalize_deterministic_params,
+        ignore_model_field: merged.ignore_model_field ?? defaults.ignore_model_field,
+        ignore_user_field: merged.ignore_user_field ?? defaults.ignore_user_field,
+        ignore_metadata_field: merged.ignore_metadata_field ?? defaults.ignore_metadata_field,
+        ttl_seconds: merged.ttl_seconds || defaults.ttl_seconds,
+        memory_max_entries: merged.memory_max_entries || defaults.memory_max_entries,
+        memory_max_bytes: merged.memory_max_bytes || defaults.memory_max_bytes,
+        disk_max_bytes: merged.disk_max_bytes || defaults.disk_max_bytes,
+        singleflight_wait_timeout_ms: merged.singleflight_wait_timeout_ms || defaults.singleflight_wait_timeout_ms,
+    };
+};
 
 const normalizeSwitchPatch = (current: any, patch: Record<string, any>) => {
     const next = { ...current, ...patch };
+    if (patch.enabled === true && !next.openai_enabled && !next.anthropic_enabled && !next.stream_synthesis_enabled) {
+        next.openai_enabled = defaults.openai_enabled;
+        next.anthropic_enabled = defaults.anthropic_enabled;
+        next.stream_synthesis_enabled = defaults.stream_synthesis_enabled;
+    }
     if (!next.openai_enabled && !next.anthropic_enabled && !next.stream_synthesis_enabled) {
         next.enabled = false;
     }
@@ -57,7 +72,7 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
     const cache = normalizeCache((config as any)?.llm_prompt_cache);
     const updateCache = (patch: Record<string, any>) => {
         const nextCache = normalizeSwitchPatch(cache, patch);
-        setConfig(new main.AppConfig({ ...(config || {}), llm_prompt_cache: nextCache }));
+        setConfig((previous) => new main.AppConfig({ ...(previous || config || {}), llm_prompt_cache: nextCache }));
     };
     const numberValue = (key: string, divisor = 1) => Math.round((cache as any)[key] / divisor);
     const updateNumber = (key: string, raw: string, multiplier = 1) => {
@@ -67,12 +82,18 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
     };
     const saveCacheConfig = async () => {
         if (!config || saving) return;
-        const next = new main.AppConfig({ ...config, llm_prompt_cache: normalizeSwitchPatch(cache, {}) });
         setSaving(true);
         setSaveError('');
         try {
+            const latest = await LoadConfig();
+            const next = new main.AppConfig({ ...latest, llm_prompt_cache: normalizeSwitchPatch(cache, {}) });
             await SaveConfig(next);
-            setConfig(next);
+            try {
+                const saved = await LoadConfig();
+                setConfig(saved);
+            } catch {
+                setConfig(next);
+            }
             showToastMessage?.(textForLang(lang, 'Saved successfully', '\u4fdd\u5b58\u6210\u529f', '\u5132\u5b58\u6210\u529f'));
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

@@ -108,6 +108,8 @@ func TestTruncationFallbackCatalogRestoresWorkflowDocRequiredTools(t *testing.T)
 	}
 	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
 		toolDef("read_file", "read", nil, nil),
+		toolDef("list_directory", "list", nil, nil),
+		toolDef("send_file", "send", nil, nil),
 		toolDef("write_file", "write", nil, nil),
 		toolDef("edit_file", "edit", nil, nil),
 		toolDef("task", "task", nil, nil),
@@ -122,11 +124,72 @@ func TestTruncationFallbackCatalogRestoresWorkflowDocRequiredTools(t *testing.T)
 		names[tool.ExtractToolName(td)] = true
 	}
 
-	if !names["read_file"] || !names["write_file"] || !names["edit_file"] {
-		t.Fatalf("workflow truncation fallback should restore doc-required tools, got %v", names)
+	if !names["read_file"] || !names["list_directory"] || !names["send_file"] {
+		t.Fatalf("workflow truncation fallback should restore doc context/delivery tools, got %v", names)
 	}
-	if names["task"] {
+	if names["task"] || names["write_file"] || names["edit_file"] {
 		t.Fatalf("workflow truncation fallback should still remove disallowed tools, got %v", names)
+	}
+}
+
+func TestTruncationFallbackCatalogUsesRuntimePolicyOwner(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	desktopID := "desktop-truncation-doc-only-owner"
+	weixinID := "weixin-truncation-user"
+	remoteOwnerID := "remote:mobile-truncation-owner"
+	_, err := handler.app.workflowEngine.StartWorkflow(desktopID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build docs",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow desktop failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(desktopID); err != nil {
+		t.Fatalf("SkipPhaseForm desktop failed: %v", err)
+	}
+	handler.lastUserID = desktopID
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+		toolDef("bash", "shell", nil, nil),
+	})
+	ctx := &LoopContext{SkipNeedsConfirmGate: true, Runtime: RuntimeContext{RequestID: "req-weixin-truncation", PolicyOwnerID: remoteOwnerID}}
+
+	got := handler.truncationFallbackToolCatalog(ctx, weixinID, nil, []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+		toolDef("bash", "shell", nil, nil),
+	})
+	names := map[string]bool{}
+	for _, td := range got {
+		names[tool.ExtractToolName(td)] = true
+	}
+	if !names["write_file"] || !names["bash"] {
+		t.Fatalf("weixin truncation fallback must not inherit desktop workflow policy, got %v", names)
+	}
+
+	_, err = handler.app.workflowEngine.StartWorkflow(remoteOwnerID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "remote docs",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow remote failed: %v", err)
+	}
+	if err := handler.app.workflowEngine.SkipPhaseForm(remoteOwnerID); err != nil {
+		t.Fatalf("SkipPhaseForm remote failed: %v", err)
+	}
+
+	got = handler.truncationFallbackToolCatalog(ctx, weixinID, nil, []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+		toolDef("write_file", "write", nil, nil),
+		toolDef("bash", "shell", nil, nil),
+	})
+	names = map[string]bool{}
+	for _, td := range got {
+		names[tool.ExtractToolName(td)] = true
+	}
+	if names["write_file"] || names["bash"] || !names["read_file"] {
+		t.Fatalf("runtime owner workflow must drive truncation fallback catalog, got %v", names)
 	}
 }
 

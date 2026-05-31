@@ -86,6 +86,22 @@ func setUserIDInContext(r *http.Request, userID string) *http.Request {
 	return r.WithContext(ctx)
 }
 
+// WithUserID returns a copy of ctx carrying the authenticated user ID under the
+// package's private context key. It is the exported bridge that lets external
+// auth middleware (e.g. the Hub's workflowUserAuth, which authenticates a VE
+// machine and sets the X-Owner-ID header) establish the same authenticated
+// identity that the context-based handlers — RuntimeAPI's
+// handleInitiateWorkflow / handleConfirm / directory views, which read the
+// caller via getUserIDFromContext — depend on.
+//
+// Without this, registering RuntimeAPI behind a header-only middleware would
+// leave every context-reading handler seeing an empty user and returning 401.
+// The header-reading handlers (InstanceAPI, DecisionAPI) continue to read
+// X-Owner-ID unchanged, so populating both conventions is purely additive.
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, userIDContextKey, userID)
+}
+
 // --- Rate Limiter ---
 
 // tokenBucket implements a single client's token bucket.

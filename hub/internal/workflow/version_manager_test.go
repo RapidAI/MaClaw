@@ -43,6 +43,17 @@ func (m *mockVersionStore) CreateVersion(_ context.Context, ver *WorkflowVersion
 	return nil
 }
 
+func (m *mockVersionStore) UpdateVersion(_ context.Context, ver *WorkflowVersion) error {
+	existing, ok := m.versions[ver.ID]
+	if !ok {
+		return nil
+	}
+	existing.Graph = ver.Graph
+	existing.VersionNumber = ver.VersionNumber
+	existing.UpdatedAt = ver.UpdatedAt
+	return nil
+}
+
 func (m *mockVersionStore) GetVersion(_ context.Context, id string) (*WorkflowVersion, error) {
 	return m.versions[id], nil
 }
@@ -145,6 +156,64 @@ func TestSaveDraft_IncrementsPatchOnExistingDraft(t *testing.T) {
 	}
 	if ver2.VersionNumber != "0.1.1" {
 		t.Errorf("second version = %q, want %q", ver2.VersionNumber, "0.1.1")
+	}
+}
+
+// TestSaveDraft_UpdateBranchDoesNotCreateNewRow asserts that re-saving an
+// existing draft updates it in place (via WorkflowStore.UpdateVersion) rather
+// than creating a new version row. This is the fix for the SaveDraft
+// "update existing draft" branch (2.9): the version-row count must not grow,
+// and the same row's graph + version number must be updated.
+func TestSaveDraft_UpdateBranchDoesNotCreateNewRow(t *testing.T) {
+	store := newMockVersionStore()
+	vm := NewVersionManager(store)
+	ctx := context.Background()
+
+	// First SaveDraft creates the initial draft (0.1.0).
+	ver1, err := vm.SaveDraft(ctx, "wf_1", validGraph())
+	if err != nil {
+		t.Fatalf("first SaveDraft failed: %v", err)
+	}
+	if got := len(store.versions); got != 1 {
+		t.Fatalf("after first SaveDraft: version-row count = %d, want 1", got)
+	}
+
+	// Second SaveDraft hits the "update existing draft" branch with a changed
+	// graph. It must update in place — NOT create a new row.
+	updatedGraph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "trigger_1", Type: NodeTrigger, Label: "Start"},
+			{ID: "approval_1", Type: NodeApproval, Label: "Review (updated)"},
+		},
+		Edges: []WorkflowEdge{
+			{ID: "e1", SourceID: "trigger_1", TargetID: "approval_1"},
+		},
+	}
+	ver2, err := vm.SaveDraft(ctx, "wf_1", updatedGraph)
+	if err != nil {
+		t.Fatalf("second SaveDraft failed: %v", err)
+	}
+
+	if got := len(store.versions); got != 1 {
+		t.Fatalf("after update branch: version-row count = %d, want 1 (update branch must not create a new row)", got)
+	}
+
+	// The updated row must carry the bumped version number and the new graph.
+	if ver2.VersionNumber != "0.1.1" {
+		t.Errorf("updated version = %q, want %q", ver2.VersionNumber, "0.1.1")
+	}
+	stored := store.versions[ver1.ID]
+	if stored == nil {
+		t.Fatalf("original draft row %q should still exist after update", ver1.ID)
+	}
+	if stored.VersionNumber != "0.1.1" {
+		t.Errorf("stored version number = %q, want %q (updated in place)", stored.VersionNumber, "0.1.1")
+	}
+	if stored.Status != VersionDraft {
+		t.Errorf("stored status = %q, want %q (stays draft)", stored.Status, VersionDraft)
+	}
+	if len(stored.Graph.Nodes) != 2 || stored.Graph.Nodes[1].Label != "Review (updated)" {
+		t.Errorf("stored graph not updated in place: %+v", stored.Graph.Nodes)
 	}
 }
 

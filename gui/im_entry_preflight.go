@@ -32,7 +32,7 @@ func (h *IMMessageHandler) prepareIMMessagePreflight(msg *IMUserMessage, trimmed
 		h.confirmationStore.clearExpired(time.Now())
 	}
 
-	result.EntriesBeforeClear = h.memory.Load(msg.UserID)
+	result.EntriesBeforeClear = sanitizeVEGroupExecutorHistory(msg.UserID, h.memory.Load(msg.UserID))
 	result.UnfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
 
 	h.extractSessionStartMemoryAsync(msg.UserID, result.EntriesBeforeClear)

@@ -176,7 +176,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"function stripUserComplexConfig",
 		"state.config = stripUserComplexConfig(cfgResp.app_config)",
 		"const next = stripUserComplexConfig(state.config)",
-		"\"maclaw_llm_protocol\", \"maclaw_llm_context_length\", \"maclaw_llm_timeout_sec\", \"maclaw_llm_current_provider\", \"maclaw_llm_providers\", \"auxiliary_llm\", \"model_routes\"",
+		"\"maclaw_llm_protocol\", \"maclaw_llm_context_length\", \"maclaw_llm_timeout_sec\", \"maclaw_llm_current_provider\", \"maclaw_llm_providers\", \"llm_prompt_cache\", \"auxiliary_llm\", \"model_routes\"",
 		"keys: [\"maclaw_llm_url\", \"maclaw_llm_key\", \"maclaw_llm_model\"]",
 		"llm_token_usage",
 		"remote_machine_token",
@@ -329,9 +329,12 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"function scalarLeafObject(value)",
 		"function flattenObjectLeaves(value, prefix = \"\")",
 		"function setPlainObjectPath(target, field, value)",
+		"function plainObjectPathValue(target, field)",
+		"function coercePlainObjectValue(current, value)",
 		"function genericObjectInput(key)",
 		"data-type=\"object-kv\"",
 		"data-deep-object=\"true\"",
+		"const typedValue = coercePlainObjectValue(plainObjectPathValue(current, pairKey), pairValue)",
 		"raw-json-editor",
 		"data-generic-object-key",
 		"data-generic-object-key-custom",
@@ -408,6 +411,23 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"mcp_servers\", \"local_mcp_servers\", \"ssh_hosts\", \"skill_hub_urls\", \"external_skill_dirs\", \"skill_sources_allowed",
 		"skill_market_url",
 		"function renderKnowledgeImporter()",
+		"function renderMemoryManager()",
+		"function renderMemorySummary(counts)",
+		"MEMORY_MAX_CONTENT_CHARS",
+		"function validateMemoryPayload(payload)",
+		"const seen = new Set()",
+		"memoryTagsTooMany",
+		"memoryTagTooLong",
+		"function clearMemoryFilters()",
+		"function scheduleMemorySearch()",
+		"function setMemoryLoading(on, append)",
+		"memoryReloadPending",
+		"function setMemorySaving(on)",
+		"function bindMemoryManager()",
+		"/api/v1/memory",
+		"data-memory-manager",
+		"memoryClearBtn",
+		"memory-list",
 		"KNOWLEDGE_TOPIC_SUGGESTIONS",
 		"KNOWLEDGE_LABEL_SUGGESTIONS",
 		"KNOWLEDGE_TITLE_SUGGESTIONS",
@@ -498,6 +518,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		`maclaw_llm_context_length: [32000, 64000, 110000, 200000]`,
 		`maclaw_llm_timeout_sec: [60, 120, 300, 480, 900]`,
 		"maclaw_llm_providers: {",
+		"llm_prompt_cache: {",
 		"auxiliary_llm: {",
 		"model_routes: {",
 	} {
@@ -547,7 +568,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	assertAdminSecurityHeaders(t, w.Result())
 	css := w.Body.String()
-	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".channel-overview", ".channel-card.managed", ".channel-protocol", ".knowledge-access-summary", ".knowledge-scope-chip", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
+	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".channel-overview", ".channel-card.managed", ".channel-protocol", ".knowledge-access-summary", ".knowledge-scope-chip", ".knowledge-scope-chip small", ".knowledge-importer", ".knowledge-import-grid", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("user css missing marker %s", needle)
 		}

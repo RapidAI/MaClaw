@@ -414,6 +414,65 @@ allowed_commands:
 	}
 }
 
+func TestTUIDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	workflowType := workflow.WorkflowType("tui_doc_only_policy_boundary")
+	app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "tui doc only policy boundary",
+		Description: "test template",
+		Phases: []workflow.PhaseTemplate{{
+			ID:          "analysis",
+			Name:        "Analysis",
+			Prompt:      "write analysis",
+			Deliverable: "analysis doc",
+			ToolPolicy:  workflow.ToolFilterDocOnly,
+		}},
+	})
+	_, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
+		Category: workflowType,
+		Summary:  "analyze project",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	tools := []map[string]interface{}{
+		agent.ToolDef("read_file", "read file", nil, nil),
+		agent.ToolDef("list_directory", "list directory", nil, nil),
+		agent.ToolDef("bash", "run shell", nil, nil),
+		agent.ToolDef("write_file", "write file", nil, nil),
+		agent.ToolDef("edit_file", "edit file", nil, nil),
+		agent.ToolDef("task", "spawn task", nil, nil),
+	}
+	got := agent.FilterToolDefinitionsByAuthorizer(&tuiCallbacks{app: app}, tools)
+
+	names := make(map[string]bool, len(got))
+	for _, def := range got {
+		names[tooldef.Name(def)] = true
+	}
+	for _, name := range []string{"read_file", "list_directory"} {
+		if !names[name] {
+			t.Fatalf("expected %s to remain available for doc-only context; got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"bash", "write_file", "edit_file", "task"} {
+		if names[name] {
+			t.Fatalf("expected %s to be filtered out in doc-only phase; got %#v", name, names)
+		}
+		if app.isWorkflowToolAllowedTUI(name) {
+			t.Fatalf("expected execution guard to block %s in doc-only phase", name)
+		}
+		allowed, reason := (&tuiCallbacks{app: app}).IsToolCallAllowed(name, `{}`)
+		if allowed {
+			t.Fatalf("expected concrete %s call to be blocked in doc-only phase", name)
+		}
+		if reason == "" {
+			t.Fatalf("expected rejection reason for %s in doc-only phase", name)
+		}
+	}
+}
+
 func TestTUIWorkflowBlockedPhaseRejectsTools(t *testing.T) {
 	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
 	_, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
@@ -450,6 +509,43 @@ func TestTUIWorkflowBlockedPhaseRejectsTools(t *testing.T) {
 	}
 	if !strings.Contains(reason, "paused") {
 		t.Fatalf("unexpected blocked reason: %q", reason)
+	}
+}
+
+func TestTUIAuxiliaryCallbacksHonorWorkflowPolicy(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	if _, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm("tui-user"); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	callbacks := []struct {
+		name string
+		cb   interface {
+			IsToolAllowed(string) bool
+			IsToolCallAllowed(string, string) (bool, string)
+		}
+	}{
+		{name: "scheduler", cb: &tuiSchedulerCallbacks{app: app}},
+		{name: "pipe", cb: &pipeCallbacks{app: app}},
+		{name: "weixin", cb: &tuiWeixinCallbacks{app: app}},
+		{name: "loop_cycle", cb: &tuiLoopCycleCallbacks{parent: &tuiLoopCommandCallbacks{app: app}}},
+	}
+	for _, tc := range callbacks {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.cb.IsToolAllowed("write_file") {
+				t.Fatal("write_file should be blocked by doc-only workflow policy")
+			}
+			if !tc.cb.IsToolAllowed("read_file") {
+				t.Fatal("read_file should remain available under doc-only workflow policy")
+			}
+			allowed, reason := tc.cb.IsToolCallAllowed("write_file", `{"path":"out.md","content":"body"}`)
+			if allowed || !strings.Contains(reason, "not allowed") {
+				t.Fatalf("write_file call = %v,%q; want policy rejection", allowed, reason)
+			}
+		})
 	}
 }
 

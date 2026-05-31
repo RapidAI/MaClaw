@@ -286,6 +286,48 @@ func TestEngine_GetPhaseToolFilterNoWorkflow(t *testing.T) {
 	}
 }
 
+func TestEngine_SingleActiveWorkflowUserID(t *testing.T) {
+	engine, _ := newTestEngine()
+	if userID, ok := engine.SingleActiveWorkflowUserID(); ok || userID != "" {
+		t.Fatalf("empty engine single active = %q,%v; want none", userID, ok)
+	}
+	if _, err := engine.StartWorkflow("u1", StructuredIntent{Category: WorkflowCoding, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow u1 failed: %v", err)
+	}
+	if userID, ok := engine.SingleActiveWorkflowUserID(); !ok || userID != "u1" {
+		t.Fatalf("single active = %q,%v; want u1,true", userID, ok)
+	}
+	if _, err := engine.StartWorkflow("u2", StructuredIntent{Category: WorkflowCoding, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow u2 failed: %v", err)
+	}
+	if userID, ok := engine.SingleActiveWorkflowUserID(); ok || userID != "" {
+		t.Fatalf("multiple active = %q,%v; want none", userID, ok)
+	}
+}
+
+func TestEngine_IsActivePhaseExecutionOrchestrator(t *testing.T) {
+	engine, _ := newTestEngine()
+	if _, err := engine.StartWorkflow("u_exec_phase", StructuredIntent{Category: WorkflowCoding, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if engine.IsActivePhaseExecutionOrchestrator("u_exec_phase") {
+		t.Fatal("requirements phase must not be an execution orchestrator phase")
+	}
+	setWorkflowPhaseForTest(t, engine, "u_exec_phase", PhaseCodingImplementation)
+	if !engine.IsActivePhaseExecutionOrchestrator("u_exec_phase") {
+		t.Fatal("implementation phase should be an execution orchestrator phase")
+	}
+
+	workflowType := WorkflowType("full_confirm_phase")
+	engine.GetRegistry().Register(&WorkflowTemplate{Type: workflowType, Name: "full confirm", Phases: []PhaseTemplate{{ID: "reviewable_full", NeedsConfirm: true, ToolPolicy: ToolFilterFull}}})
+	if _, err := engine.StartWorkflow("u_full_confirm", StructuredIntent{Category: workflowType, Summary: "confirm"}); err != nil {
+		t.Fatalf("StartWorkflow confirm failed: %v", err)
+	}
+	if engine.IsActivePhaseExecutionOrchestrator("u_full_confirm") {
+		t.Fatal("full NeedsConfirm phase must not be an execution orchestrator phase")
+	}
+}
+
 func setWorkflowPhaseForTest(t *testing.T, engine *WorkflowEngine, userID, phaseID string) *WorkflowState {
 	t.Helper()
 	engine.mu.Lock()

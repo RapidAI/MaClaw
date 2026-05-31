@@ -297,6 +297,7 @@ ON CONFLICT(discussion_id) DO UPDATE SET
 	}
 	defer stmt.Close()
 	for _, summary := range summaries {
+		summary = preserveCachedSummaryAccessMetadataTx(ctx, tx, summary)
 		summary = normalizeHistorySummaryForCache(summary)
 		id := strings.TrimSpace(summary.ID)
 		if id == "" {
@@ -312,8 +313,111 @@ ON CONFLICT(discussion_id) DO UPDATE SET
 			_ = tx.Rollback()
 			return err
 		}
+		if err := updateCachedDetailDiscussionSummaryTx(ctx, tx, id, summary, now); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 	}
 	return tx.Commit()
+}
+
+func preserveCachedSummaryAccessMetadataTx(ctx context.Context, tx *sql.Tx, incoming a2a.HubDiscussionSummary) a2a.HubDiscussionSummary {
+	if tx == nil || strings.TrimSpace(incoming.ID) == "" {
+		return incoming
+	}
+	if strings.TrimSpace(incoming.LocalRelation) != "" && strings.TrimSpace(incoming.Role) != "" && strings.TrimSpace(incoming.Status) != "" {
+		return incoming
+	}
+	var raw string
+	if err := tx.QueryRowContext(ctx, `SELECT summary_json FROM group_discussion_summaries WHERE discussion_id = ?`, strings.TrimSpace(incoming.ID)).Scan(&raw); err != nil {
+		return incoming
+	}
+	var cached a2a.HubDiscussionSummary
+	if err := json.Unmarshal([]byte(raw), &cached); err != nil {
+		return incoming
+	}
+	incoming.Role = firstNonEmptyGroupString(incoming.Role, cached.Role)
+	incoming.LocalRelation = firstNonEmptyGroupString(incoming.LocalRelation, cached.LocalRelation, localRelationFromHistoryRole(cached.Role))
+	incoming.Status = firstNonEmptyGroupString(incoming.Status, cached.Status)
+	return incoming
+}
+
+func updateCachedDetailDiscussionSummaryTx(ctx context.Context, tx *sql.Tx, discussionID string, summary a2a.HubDiscussionSummary, syncedAt string) error {
+	if tx == nil || strings.TrimSpace(discussionID) == "" {
+		return nil
+	}
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT detail_json FROM group_discussion_details WHERE discussion_id = ?`, discussionID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var detail a2a.HubDiscussionDetail
+	if err := json.Unmarshal([]byte(raw), &detail); err != nil {
+		return nil
+	}
+	detail.Discussion = mergeCachedDetailSummary(detail.Discussion, summary)
+	updated, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE group_discussion_details SET detail_json = ?, last_synced_at = ?, sync_state = 'synced', last_error = '' WHERE discussion_id = ?`, string(updated), syncedAt, discussionID)
+	return err
+}
+
+func mergeCachedDetailSummary(existing, incoming a2a.HubDiscussionSummary) a2a.HubDiscussionSummary {
+	incoming = normalizeHistorySummaryForCache(incoming)
+	if strings.TrimSpace(existing.ID) == "" {
+		existing.ID = incoming.ID
+	}
+	if strings.TrimSpace(incoming.Topic) != "" {
+		existing.Topic = incoming.Topic
+	}
+	if strings.TrimSpace(incoming.Question) != "" {
+		existing.Question = incoming.Question
+	}
+	if strings.TrimSpace(incoming.ResultSummary) != "" {
+		existing.ResultSummary = incoming.ResultSummary
+	}
+	if strings.TrimSpace(incoming.Status) != "" {
+		existing.Status = incoming.Status
+	}
+	if strings.TrimSpace(incoming.LocalRelation) != "" {
+		existing.LocalRelation = incoming.LocalRelation
+	}
+	if strings.TrimSpace(incoming.Role) != "" {
+		existing.Role = incoming.Role
+	}
+	if len(incoming.ParticipantIDs) > 0 {
+		existing.ParticipantIDs = append([]string(nil), incoming.ParticipantIDs...)
+	}
+	if incoming.MessageCount > 0 {
+		existing.MessageCount = incoming.MessageCount
+	}
+	if incoming.AnswerCount > 0 {
+		existing.AnswerCount = incoming.AnswerCount
+	}
+	if incoming.ExpectedAnswerCount > 0 {
+		existing.ExpectedAnswerCount = incoming.ExpectedAnswerCount
+	}
+	if incoming.ReadyToSummarize {
+		existing.ReadyToSummarize = true
+	}
+	if strings.TrimSpace(incoming.ReadinessReason) != "" {
+		existing.ReadinessReason = incoming.ReadinessReason
+	}
+	if !incoming.CreatedAt.IsZero() {
+		existing.CreatedAt = incoming.CreatedAt
+	}
+	if !incoming.UpdatedAt.IsZero() {
+		existing.UpdatedAt = incoming.UpdatedAt
+	}
+	if incoming.Readonly {
+		existing.Readonly = true
+	}
+	return normalizeHistorySummaryForCache(existing)
 }
 
 func (s *GroupDiscussionHistoryStore) CachedSummaries(ctx context.Context, includeHidden bool) ([]a2a.HubDiscussionSummary, error) {
@@ -364,6 +468,78 @@ func (s *GroupDiscussionHistoryStore) HiddenSummaries(ctx context.Context) ([]a2
 		}
 	}
 	return out, rows.Err()
+}
+
+func (s *GroupDiscussionHistoryStore) RenameCachedDiscussion(ctx context.Context, discussionID, topic string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	discussionID = strings.TrimSpace(discussionID)
+	topic = strings.TrimSpace(topic)
+	if discussionID == "" || topic == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := renameCachedSummaryTopicTx(ctx, tx, discussionID, topic); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := renameCachedDetailTopicTx(ctx, tx, discussionID, topic); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func renameCachedSummaryTopicTx(ctx context.Context, tx *sql.Tx, discussionID, topic string) error {
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT summary_json FROM group_discussion_summaries WHERE discussion_id = ?`, discussionID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var summary a2a.HubDiscussionSummary
+	if err := json.Unmarshal([]byte(raw), &summary); err != nil {
+		return nil
+	}
+	summary.Topic = topic
+	updated, err := json.Marshal(summary)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `UPDATE group_discussion_summaries SET topic = ?, summary_json = ?, last_synced_at = ? WHERE discussion_id = ?`, topic, string(updated), now, discussionID)
+	return err
+}
+
+func renameCachedDetailTopicTx(ctx context.Context, tx *sql.Tx, discussionID, topic string) error {
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT detail_json FROM group_discussion_details WHERE discussion_id = ?`, discussionID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var detail a2a.HubDiscussionDetail
+	if err := json.Unmarshal([]byte(raw), &detail); err != nil {
+		return nil
+	}
+	detail.Discussion.Topic = topic
+	updated, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `UPDATE group_discussion_details SET detail_json = ?, last_synced_at = ? WHERE discussion_id = ?`, string(updated), now, discussionID)
+	return err
 }
 
 func (s *GroupDiscussionHistoryStore) VisibleSummaries(ctx context.Context, summaries []a2a.HubDiscussionSummary) ([]a2a.HubDiscussionSummary, error) {
@@ -489,25 +665,22 @@ func decodeGroupDiscussionTextAttachment(content string) ([]byte, error) {
 
 func (s *GroupDiscussionHistoryStore) mergeCachedSummaryRelation(ctx context.Context, incoming a2a.HubDiscussionSummary) a2a.HubDiscussionSummary {
 	if s == nil || s.db == nil || strings.TrimSpace(incoming.ID) == "" {
-		return normalizeHistorySummaryReadonly(incoming)
+		return normalizeHistorySummaryForCache(incoming)
 	}
 	if strings.TrimSpace(incoming.LocalRelation) != "" {
 		return normalizeHistorySummaryReadonly(incoming)
 	}
-	if relation := localRelationFromHistoryRole(incoming.Role); relation != "" {
-		incoming.LocalRelation = relation
-		return normalizeHistorySummaryReadonly(incoming)
-	}
 	var raw string
 	if err := s.db.QueryRowContext(ctx, `SELECT summary_json FROM group_discussion_summaries WHERE discussion_id = ?`, incoming.ID).Scan(&raw); err != nil {
-		return normalizeHistorySummaryReadonly(incoming)
+		return normalizeHistorySummaryForCache(incoming)
 	}
 	var cached a2a.HubDiscussionSummary
 	if err := json.Unmarshal([]byte(raw), &cached); err != nil {
-		return normalizeHistorySummaryReadonly(incoming)
+		return normalizeHistorySummaryForCache(incoming)
 	}
 	incoming.Role = firstNonEmptyGroupString(incoming.Role, cached.Role)
-	incoming.LocalRelation = firstNonEmptyGroupString(localRelationFromHistoryRole(incoming.Role), cached.LocalRelation)
+	incoming.LocalRelation = firstNonEmptyGroupString(cached.LocalRelation, localRelationFromHistoryRole(incoming.Role))
+	incoming.Status = firstNonEmptyGroupString(incoming.Status, cached.Status)
 	if incoming.Readonly || cached.Readonly {
 		incoming.Readonly = true
 	}
@@ -517,6 +690,8 @@ func (s *GroupDiscussionHistoryStore) mergeCachedSummaryRelation(ctx context.Con
 func localRelationFromHistoryRole(role string) string {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
+	case "initiator":
+		return "initiated_by_me"
 	case "review", "speak", "speaker", "observe", "observer", "participant":
 		return "owned_ve_invited"
 	default:
@@ -531,13 +706,15 @@ func normalizeHistorySummaryForCache(summary a2a.HubDiscussionSummary) a2a.HubDi
 }
 
 func normalizeHistorySummaryReadonly(summary a2a.HubDiscussionSummary) a2a.HubDiscussionSummary {
-	if !normalizeGroupDiscussionSessionStatus(summary.Status).IsOpen() {
+	if normalizeGroupDiscussionSessionStatus(summary.Status).IsSetAndNotOpen() {
 		summary.Readonly = true
 		return summary
 	}
-	if !strings.EqualFold(strings.TrimSpace(summary.LocalRelation), "initiated_by_me") {
-		summary.Readonly = true
+	if strings.EqualFold(strings.TrimSpace(summary.LocalRelation), "initiated_by_me") {
+		summary.Readonly = false
+		return summary
 	}
+	summary.Readonly = true
 	return summary
 }
 

@@ -354,6 +354,74 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if !foundTag || !foundQ {
 		t.Fatalf("expected record tag and q filters in OpenAPI: %#v", recordParams)
 	}
+	memoryPath, ok := doc.Paths["/api/v1/memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected memory path object")
+	}
+	getMemory, ok := memoryPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET memory operation")
+	}
+	memoryParams, ok := getMemory["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected memory parameters")
+	}
+	foundMemoryCategory := false
+	foundMemoryOffset := false
+	foundMemoryLimit := false
+	for _, item := range memoryParams {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		schema, _ := param["schema"].(map[string]any)
+		switch name {
+		case "category":
+			enumValues, _ := schema["enum"].([]any)
+			if len(enumValues) == 9 {
+				foundMemoryCategory = true
+			}
+		case "offset":
+			if schema["type"] == "integer" && schema["minimum"] == float64(0) {
+				foundMemoryOffset = true
+			}
+		case "limit":
+			if schema["type"] == "integer" && schema["maximum"] == float64(200) {
+				foundMemoryLimit = true
+			}
+		}
+	}
+	if !foundMemoryCategory || !foundMemoryOffset || !foundMemoryLimit {
+		t.Fatalf("expected memory filters in OpenAPI: %#v", memoryParams)
+	}
+	for method, pathItem := range map[string]map[string]any{"post": memoryPath, "put": doc.Paths["/api/v1/memory/{id}"].(map[string]any)} {
+		op, ok := pathItem[method].(map[string]any)
+		if !ok {
+			t.Fatalf("expected memory %s operation", method)
+		}
+		requestBody, ok := op["requestBody"].(map[string]any)
+		if !ok || requestBody["required"] != true {
+			t.Fatalf("expected required memory request body for %s: %#v", method, op["requestBody"])
+		}
+		content, _ := requestBody["content"].(map[string]any)
+		jsonContent, _ := content["application/json"].(map[string]any)
+		schema, _ := jsonContent["schema"].(map[string]any)
+		props, _ := schema["properties"].(map[string]any)
+		contentProp, _ := props["content"].(map[string]any)
+		categoryProp, _ := props["category"].(map[string]any)
+		tagsProp, _ := props["tags"].(map[string]any)
+		tagItems, _ := tagsProp["items"].(map[string]any)
+		categoryEnum, _ := categoryProp["enum"].([]any)
+		if contentProp["maxLength"] != float64(20000) || len(categoryEnum) != 8 || tagsProp["maxItems"] != float64(32) || tagItems["maxLength"] != float64(80) {
+			t.Fatalf("unexpected memory request schema for %s: %#v", method, schema)
+		}
+		for _, value := range categoryEnum {
+			if value == "self_identity" {
+				t.Fatalf("memory write schema should not allow self_identity: %#v", categoryEnum)
+			}
+		}
+	}
 	for _, path := range []string{
 		"/api/v1/admin/knowledge/stats",
 		"/api/v1/admin/knowledge/sources",

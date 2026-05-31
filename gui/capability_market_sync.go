@@ -17,6 +17,7 @@ import (
 )
 
 const capabilityManagedSyncMinRetry = 5 * time.Minute
+const capabilityManagedSyncOwnerID = "system:scheduler:background:capability-market-sync"
 
 type CapabilitySyncStatus struct {
 	ManagedChecked    int      `json:"managed_checked"`
@@ -29,6 +30,10 @@ type CapabilitySyncStatus struct {
 }
 
 func (a *App) TriggerHubManagedCapabilitySync(reason string) {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(capabilityManagedSyncOwnerID, "manage_skill", map[string]interface{}{"action": "sync_capabilities", "reason": reason}); err != nil {
+		log.Printf("[capability-market] managed sync blocked by workflow policy reason=%s err=%v", reason, err)
+		return
+	}
 	now := time.Now()
 	if !isCapabilitySyncImmediateReason(reason) {
 		if next, ok := a.capabilitySyncNextAttempt.Load().(time.Time); ok && now.Before(next) {
@@ -112,6 +117,9 @@ func isCapabilityMarketplaceUnsupportedError(errText string) bool {
 }
 
 func (a *App) SyncHubManagedCapabilities() CapabilitySyncStatus {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(capabilityManagedSyncOwnerID, "manage_skill", map[string]interface{}{"action": "sync_capabilities"}); err != nil {
+		return CapabilitySyncStatus{Errors: []string{err.Error()}}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	return a.syncHubManagedCapabilities(ctx)
@@ -129,6 +137,9 @@ func (a *App) isCapabilityManagedDeployment(capabilityID string) bool {
 }
 
 func (a *App) InstallHubCapability(capabilityRef string) CapabilitySyncStatus {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": "capability_market", "capability_ref": capabilityRef}); err != nil {
+		return CapabilitySyncStatus{ManagedChecked: 1, Errors: []string{err.Error()}}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	status := CapabilitySyncStatus{ManagedChecked: 1}

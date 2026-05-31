@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,7 +10,268 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
+
+func TestRemoteSessionActionsHonorWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	userID := desktopUserID
+	if _, err := app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	if _, err := app.StartRemoteSession("codex", t.TempDir(), false, "", RemoteLaunchSourceDesktop); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("StartRemoteSession error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.StartRemoteSessionForProject(RemoteStartSessionRequest{Tool: "codex", ProjectPath: t.TempDir(), LaunchSource: RemoteLaunchSourceDesktop}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("StartRemoteSessionForProject error = %v, want workflow policy rejection", err)
+	}
+	if err := app.SendRemoteSessionInput("sess-1", "continue\n"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("SendRemoteSessionInput error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.StartBrowserSession(map[string]interface{}{"url": "https://example.com"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("StartBrowserSession error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.InvokeBrowserTool("browser", map[string]interface{}{"action": "click"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("InvokeBrowserTool error = %v, want workflow policy rejection", err)
+	}
+	if err := app.StopBrowserSession("browser-1", true); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("StopBrowserSession error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.RunNLSkillAsync("demo", map[string]interface{}{"x": "y"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("RunNLSkillAsync error = %v, want workflow policy rejection", err)
+	}
+	app.ensureRemoteInfra()
+	runner := NewSkillRunner(app.skillExecutor)
+	if _, err := runner.StartRun("demo", map[string]interface{}{"x": "y"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("SkillRunner.StartRun error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.StartAIAssistantBackgroundTask(AIAssistantBackgroundTaskRequest{Text: "build app", ProjectPath: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("StartAIAssistantBackgroundTask error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.RunPassthroughCommand("repair-env", nil, true); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("RunPassthroughCommand error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.SavePassthroughCommand(PassthroughCommand{Name: "repair-env", Runtime: "shell", ScriptPath: "echo hi"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("SavePassthroughCommand error = %v, want workflow policy rejection", err)
+	}
+	if err := app.DeletePassthroughCommand("repair-env"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("DeletePassthroughCommand error = %v, want workflow policy rejection", err)
+	}
+	if err := app.SetPassthroughCommandEnabled("repair-env", true); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("SetPassthroughCommandEnabled error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.SavePassthroughSettings(PassthroughSettings{AllowExec: true}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("SavePassthroughSettings error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.StartSwarmRun(swarm.SwarmRunRequest{Requirements: "build app"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("StartSwarmRun error = %v, want workflow policy rejection", err)
+	}
+	if err := app.TriggerScheduledTask("task-1"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("TriggerScheduledTask error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.buildLocalScheduledTaskExecutor()(context.Background(), &scheduler.ScheduledTask{ID: "task-1", Name: "nightly", Action: "build app"}); err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("local scheduled executor should run as system background work, got workflow policy rejection: %v", err)
+	}
+	if err := app.InstallTool("codex"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("InstallTool error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UpdateTool("codex"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UpdateTool error = %v, want workflow policy rejection", err)
+	}
+	if err := app.CreateNLSkill(corelib.NLSkillEntry{Name: "demo"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("CreateNLSkill error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UpdateNLSkill(corelib.NLSkillEntry{Name: "demo"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UpdateNLSkill error = %v, want workflow policy rejection", err)
+	}
+	if err := app.DeleteNLSkill("demo"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("DeleteNLSkill error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.ImportNLSkillZip(); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("ImportNLSkillZip error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.UploadNLSkillToMarket("demo"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UploadNLSkillToMarket error = %v, want workflow policy rejection", err)
+	}
+	if err := app.RetryBlockedSkillUpload("demo"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("RetryBlockedSkillUpload error = %v, want workflow policy rejection", err)
+	}
+	if err := app.RetrySkillUploadQueue(); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("RetrySkillUploadQueue error = %v, want workflow policy rejection", err)
+	}
+	if err := app.BackupSkills(filepath.Join(t.TempDir(), "skills.zip")); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("BackupSkills error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.ImportLearnedSkillsZip(); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("ImportLearnedSkillsZip error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.RestoreSkills("skills.zip"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("RestoreSkills error = %v, want workflow policy rejection", err)
+	}
+	if err := app.InstallMixedSkill("skillhub", "demo", ""); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("InstallMixedSkill error = %v, want workflow policy rejection", err)
+	}
+	if err := app.InstallHubSkill("demo", "https://hub.example.com"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("InstallHubSkill error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UpdateHubSkill("demo"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UpdateHubSkill error = %v, want workflow policy rejection", err)
+	}
+	if err := app.SaveMemory("fact", "project", nil); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("SaveMemory error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UpdateMemory("mem-1", "fact", "project", nil); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("UpdateMemory error = %v, want workflow policy rejection", err)
+	}
+	if err := app.DeleteMemory("mem-1"); err == nil || !strings.Contains(err.Error(), "memory action delete") {
+		t.Fatalf("DeleteMemory error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.CompressMemories(); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("CompressMemories error = %v, want workflow policy rejection", err)
+	}
+	if err := app.RestoreMemoryBackup("backup.json"); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("RestoreMemoryBackup error = %v, want workflow policy rejection", err)
+	}
+	if err := app.DeleteMemoryBackup("backup.json"); err == nil || !strings.Contains(err.Error(), "memory action delete") {
+		t.Fatalf("DeleteMemoryBackup error = %v, want workflow policy rejection", err)
+	}
+	if err := app.SetAutoCompress(true); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("SetAutoCompress error = %v, want workflow policy rejection", err)
+	}
+	if err := app.SetMemoryMaxBackups(3); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("SetMemoryMaxBackups error = %v, want workflow policy rejection", err)
+	}
+	if err := app.RestoreArchiveMemory("mem-1"); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("RestoreArchiveMemory error = %v, want workflow policy rejection", err)
+	}
+	if err := app.PinMemory("mem-1"); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("PinMemory error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UnpinMemory("mem-1"); err == nil || !strings.Contains(err.Error(), "memory action save") {
+		t.Fatalf("UnpinMemory error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.CreateScheduledTask("nightly", "build app", 0, 0, -1, -1, 0, "", "", "once"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("CreateScheduledTask error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UpdateScheduledTask("task-1", map[string]interface{}{"action": "build app"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UpdateScheduledTask error = %v, want workflow policy rejection", err)
+	}
+	if err := app.ResumeScheduledTask("task-1"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("ResumeScheduledTask error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.ImportAgentSkillDir(t.TempDir()); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("ImportAgentSkillDir error = %v, want workflow policy rejection", err)
+	}
+	if err := app.AddSkill("demo", "", "command", "echo hi", "claude"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("AddSkill error = %v, want workflow policy rejection", err)
+	}
+	if err := app.InstallDefaultMarketplace(); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("InstallDefaultMarketplace error = %v, want workflow policy rejection", err)
+	}
+	if err := app.InstallSkill("demo", "", "command", "echo hi", "global", "", "claude"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("InstallSkill error = %v, want workflow policy rejection", err)
+	}
+	if err := app.DeleteSkill("demo", "claude"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("DeleteSkill error = %v, want workflow policy rejection", err)
+	}
+	if _, err := app.StartCodeGenProxy("https://api.example.com", "secret"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("StartCodeGenProxy error = %v, want workflow policy rejection", err)
+	}
+	if err := app.CreateTemplate("demo", "codex", t.TempDir(), "", false); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("CreateTemplate error = %v, want workflow policy rejection", err)
+	}
+	if err := app.DeleteTemplate("demo"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("DeleteTemplate error = %v, want workflow policy rejection", err)
+	}
+	if err := app.RegisterMCPServer(corelib.MCPServerEntry{ID: "mcp-1", Name: "mcp", EndpointURL: "https://mcp.example.com"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("RegisterMCPServer error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UpdateMCPServer(corelib.MCPServerEntry{ID: "mcp-1", Name: "mcp", EndpointURL: "https://mcp.example.com"}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UpdateMCPServer error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UnregisterMCPServer("mcp-1"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UnregisterMCPServer error = %v, want workflow policy rejection", err)
+	}
+	if err := app.RegisterLocalMCPServer(corelib.LocalMCPServerEntry{ID: "local-1", Name: "local", Command: "node", Args: []string{"server.js"}}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("RegisterLocalMCPServer error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UpdateLocalMCPServer(corelib.LocalMCPServerEntry{ID: "local-1", Name: "local", Command: "node", Args: []string{"server.js"}}); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UpdateLocalMCPServer error = %v, want workflow policy rejection", err)
+	}
+	if err := app.UnregisterLocalMCPServer("local-1"); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("UnregisterLocalMCPServer error = %v, want workflow policy rejection", err)
+	}
+	if err := app.SyncLocalMCPServers(); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("SyncLocalMCPServers error = %v, want workflow policy rejection", err)
+	}
+	if err := app.SetLocalMCPAutoStart("local-1", true); err == nil || !strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("SetLocalMCPAutoStart error = %v, want workflow policy rejection", err)
+	}
+	status := app.SyncHubManagedCapabilities()
+	if len(status.Errors) > 0 && strings.Contains(status.Errors[0], "not allowed by the current workflow tool policy") {
+		t.Fatalf("SyncHubManagedCapabilities should run as system background work, got workflow policy rejection: %#v", status)
+	}
+	status = app.InstallHubCapability("cap-1")
+	if len(status.Errors) == 0 || !strings.Contains(status.Errors[0], "not allowed by the current workflow tool policy") {
+		t.Fatalf("InstallHubCapability status = %#v, want workflow policy rejection", status)
+	}
+}
+
+func TestRemoteSessionActionsDoNotInheritUnrelatedWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	unrelatedUserID := "remote-unrelated-doc-only-policy-user"
+	if _, err := app.workflowEngine.StartWorkflow(unrelatedUserID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(unrelatedUserID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	if err := app.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"tool": "codex"}); err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("manual remote call must not inherit unrelated workflow policy: %v", err)
+	}
+}
+
+func TestMobileRemoteSessionDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	if _, err := app.workflowEngine.StartWorkflow(desktopUserID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(desktopUserID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	_, err := app.StartRemoteSessionForProject(RemoteStartSessionRequest{Tool: "codex", ProjectPath: t.TempDir(), LaunchSource: RemoteLaunchSourceMobile})
+	if err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("mobile remote launch must not inherit desktop workflow policy: %v", err)
+	}
+}
+
+func TestMobileRemoteSessionInputDoesNotInheritDesktopWorkflowPolicy(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	if _, err := app.workflowEngine.StartWorkflow(desktopUserID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(desktopUserID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.remoteSessions.sessions["mobile-1"] = &RemoteSession{ID: "mobile-1", LaunchSource: RemoteLaunchSourceMobile}
+
+	if err := app.SendRemoteSessionInput("mobile-1", "continue"); err != nil && strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+		t.Fatalf("mobile remote input must not inherit desktop workflow policy: %v", err)
+	}
+}
 
 func TestGetRemoteClaudeReadinessDelegatesToDiagnosticCheck(t *testing.T) {
 	tempHome := t.TempDir()

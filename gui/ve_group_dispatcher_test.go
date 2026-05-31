@@ -6,11 +6,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestSendQueuedGroupMessagesCoalescesStreamChunks(t *testing.T) {
@@ -116,5 +118,42 @@ func TestUniqueVEFilePathsTrimsAndDeduplicates(t *testing.T) {
 	}
 	if paths[0] != `C:\tmp\report.pdf` || paths[1] != `D:\tmp\other.pdf` {
 		t.Fatalf("paths = %#v", paths)
+	}
+}
+
+func TestGroupExecutorSenderContextGuardsVisibleReply(t *testing.T) {
+	got := groupExecutorSenderContext(" user-1 ")
+	if !strings.Contains(got, "from group participant user-1") {
+		t.Fatalf("context = %q", got)
+	}
+	if !strings.Contains(got, "no hidden reasoning or meta notes") {
+		t.Fatalf("context missing visible-reply guard: %q", got)
+	}
+	if strings.Contains(got, "\u93c9") || strings.Contains(got, "\u9225") || strings.Contains(got, "?") {
+		t.Fatalf("context contains mojibake: %q", got)
+	}
+}
+
+func TestSanitizeVEGroupExecutorHistoryClearsReasoningFieldsOnly(t *testing.T) {
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "weather"},
+		{Role: "assistant", Content: "visible planning note", ReasoningContent: "hidden"},
+		{Role: "assistant", Content: "assistant planning note", ToolCalls: []map[string]string{{"name": "manage_skill"}}, ReasoningContent: "hidden"},
+		{Role: "tool", Content: "tool result", ToolCallID: "call-1"},
+		{Role: "assistant", Content: "Sunny, 35C."},
+	}
+
+	got := sanitizeVEGroupExecutorHistory("ve-group-executor:session-1", history)
+	if len(got) != 5 {
+		t.Fatalf("history len = %d, want 5: %+v", len(got), got)
+	}
+	if got[1].Content != "visible planning note" || got[1].ReasoningContent != "" {
+		t.Fatalf("assistant reasoning field not sanitized correctly: %+v", got[1])
+	}
+	if got[2].Content != "assistant planning note" || got[2].ReasoningContent != "" || got[2].ToolCalls == nil {
+		t.Fatalf("tool-call assistant entry not structurally sanitized correctly: %+v", got[2])
+	}
+	if got[4].Content != "Sunny, 35C." {
+		t.Fatalf("visible assistant content changed: %+v", got[4])
 	}
 }

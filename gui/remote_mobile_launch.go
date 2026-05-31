@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +64,9 @@ func (a *App) ListRemoteLaunchProjects() ([]RemoteLaunchProject, error) {
 }
 
 func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (RemoteSessionView, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerID(req.LaunchSource), "create_session", map[string]interface{}{"tool": req.Tool, "project_id": req.ProjectID, "project_path": req.ProjectPath, "provider": req.Provider, "launch_source": string(req.LaunchSource)}); err != nil {
+		return RemoteSessionView{}, err
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
@@ -181,6 +184,19 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 		return RemoteSessionView{}, err
 	}
 	return toRemoteSessionView(session), err
+}
+
+func remoteLaunchPolicyOwnerID(source RemoteLaunchSource) string {
+	switch normalizeRemoteLaunchSource(source) {
+	case RemoteLaunchSourceMobile:
+		return "remote:mobile"
+	case RemoteLaunchSourceHandoff:
+		return "remote:handoff"
+	case RemoteLaunchSourceAI:
+		return "remote:ai"
+	default:
+		return desktopUserID
+	}
 }
 
 func resolveRemoteProject(cfg corelib.AppConfig, projectID string, projectPath string) (corelib.ProjectConfig, error) {

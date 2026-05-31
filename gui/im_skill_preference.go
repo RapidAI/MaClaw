@@ -332,7 +332,7 @@ func buildSkillRecoverPrompt(skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	guidance := buildSkillProgressGuidance(skillName, runID)
 	if skillName == "" {
-		return "[Recover 闃舵]\n鏈湴 Skill 宸插皾璇曚笖澶辫触锛屽綋鍓嶈繘鍏?Recover 闃舵銆備笉瑕侀噸澶嶅悓涓€涓け璐?Skill銆傝鍩轰簬宸茬煡澶辫触鍘熷洜閲嶆柊瑙勫垝锛屾敼鐢ㄥ叾浠栫湡瀹炲伐鍏凤紙濡?send_file / craft_tool / bash锛夎蛋鏈€鐭氦浠樿矾寰勶紝骞剁户缁畬鎴愪换鍔°€俓n" + guidance + "\n[/Recover 闃舵]"
+		return "[Recover 阶段]\n本地 Skill 已尝试且失败，当前进入 Recover 阶段。不要重复同一个失败的 Skill。请基于已知失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n" + guidance + "\n[/Recover 阶段]"
 	}
-	return fmt.Sprintf("[Recover]\nLocal Skill %q was attempted and failed. Do not call the same Skill again. Replan from the failure reason and use another real tool path, such as send_file, craft_tool, or bash.\n%s\n[/Recover]", skillName, guidance)
+	return fmt.Sprintf("[Recover 阶段]\n本地 Skill %q 已尝试且失败。不要再次调用同一个 Skill。请基于失败原因重新规划，改用其他真实工具路径，如 send_file、craft_tool 或 bash。\n%s\n[/Recover 阶段]", skillName, guidance)
 }

@@ -154,7 +154,7 @@ describe('useCodePreviewState — Property Tests', () => {
         state = applyFileUpdate(state, {
             filePath: '/src/b.ts', fileName: 'b.ts', content: 'world',
             opType: 'modify', language: 'typescript', updatedAt: 2, forceOpen: true,
-        }, true);
+        });
 
         expect(state.active).toBe(true);
         expect(state.userClosed).toBe(false);

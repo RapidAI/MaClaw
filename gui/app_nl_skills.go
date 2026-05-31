@@ -1893,6 +1893,9 @@ func (a *App) RemoveExternalSkillDir(dir string) error {
 
 // CreateNLSkill registers a new NL Skill definition (Wails binding).
 func (a *App) CreateNLSkill(def corelib.NLSkillEntry) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "create", "name": def.Name}); err != nil {
+		return err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -1912,6 +1915,9 @@ func (a *App) CreateNLSkill(def corelib.NLSkillEntry) error {
 
 // UpdateNLSkill updates an existing NL Skill definition (Wails binding).
 func (a *App) UpdateNLSkill(def corelib.NLSkillEntry) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "update", "name": def.Name}); err != nil {
+		return err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -1931,6 +1937,9 @@ func (a *App) UpdateNLSkill(def corelib.NLSkillEntry) error {
 
 // DeleteNLSkill removes an NL Skill by name (Wails binding).
 func (a *App) DeleteNLSkill(name string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "delete", "name": name}); err != nil {
+		return err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
@@ -1946,6 +1955,9 @@ func (a *App) DeleteNLSkill(name string) error {
 // file-backed skill package using skill.yaml, skill.yml, or skill.md, and imports it.
 // Returns the imported skill name on success.
 func (a *App) ImportNLSkillZip() (string, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "import", "source": "zip"}); err != nil {
+		return "", err
+	}
 	a.ensureRemoteInfra()
 	if a.skillExecutor == nil {
 		return "", fmt.Errorf("skill executor not initialized")
@@ -2529,7 +2541,7 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 	if a.skillRunner == nil {
 		return "", fmt.Errorf("skill runner not initialized")
 	}
-	return a.skillRunner.StartRun(skillName, runArgs)
+	return a.skillRunner.StartRunForOwner(a.defaultManualPolicyOwnerID(), skillName, runArgs)
 }
 
 // GetNLSkillRunStatus returns the status of an async skill run for Wails.
@@ -2552,6 +2564,9 @@ func (a *App) CancelNLSkillRun(runID string) error {
 
 // UploadNLSkillToMarket manually packages and uploads a skill to SkillMarket.
 func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "upload", "name": skillName, "source": "skillmarket"}); err != nil {
+		return "", err
+	}
 	a.ensureSkillLifecycleManager()
 	if a.skillLifecycle == nil {
 		return "", fmt.Errorf("skill lifecycle manager not initialized")
@@ -2580,6 +2595,9 @@ func (a *App) ListSkillUploadQueue() ([]SkillUploadQueueItem, error) {
 
 // RetryBlockedSkillUpload moves blocked upload items back to pending after a skill is repaired or verified.
 func (a *App) RetryBlockedSkillUpload(skillName string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "upload", "name": skillName, "retry": true, "source": "skillmarket"}); err != nil {
+		return err
+	}
 	a.ensureSkillLifecycleManager()
 	if a.skillLifecycle == nil {
 		return fmt.Errorf("skill lifecycle manager not initialized")
@@ -2592,6 +2610,9 @@ func (a *App) RetryBlockedSkillUpload(skillName string) error {
 
 // RetrySkillUploadQueue asks the lifecycle manager to process pending uploads now.
 func (a *App) RetrySkillUploadQueue() error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "upload", "retry_queue": true, "source": "skillmarket"}); err != nil {
+		return err
+	}
 	a.ensureSkillLifecycleManager()
 	if a.skillLifecycle == nil {
 		return fmt.Errorf("skill lifecycle manager not initialized")

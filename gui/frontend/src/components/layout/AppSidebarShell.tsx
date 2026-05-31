@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
-import type { SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
+import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
@@ -21,7 +21,7 @@ type RecentProject = {
 
 type TaskContextMenu = { x: number; y: number; projectPath: string; name: string; pinned: boolean } | null;
 
-interface AppSidebarShellProps {
+interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
     recentTasksPaneWidth: number;
     aiThemeMode: 'light' | 'dark';
@@ -64,15 +64,11 @@ interface AppSidebarShellProps {
     hideTask: (projectPath: string) => Promise<unknown>;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
-    formatSidebarTokens: (value: number) => string;
-    formatSidebarHubExpiry: (credits: SidebarHubCredits | null) => string;
-    formatSidebarHubTotalCredits: (credits: SidebarHubCredits | null) => string;
-    formatSidebarHubUsedCredits: (credits: SidebarHubCredits | null) => string;
-    formatSidebarCredit: (value: number) => string;
     unlimitedHubCreditText: string;
     noHubAuthorizationText: string;
     showHubCreditAction: boolean;
     openHubCreditsPage: () => void;
+    openServiceRedeemPage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
     handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
@@ -146,6 +142,7 @@ export const AppSidebarShell = ({
     noHubAuthorizationText,
     showHubCreditAction,
     openHubCreditsPage,
+    openServiceRedeemPage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
     handleRecentTasksResizeStart,
@@ -239,6 +236,7 @@ export const AppSidebarShell = ({
                         noHubAuthorizationText={noHubAuthorizationText}
                         showHubCreditAction={showHubCreditAction}
                         openHubCreditsPage={openHubCreditsPage}
+                        openServiceRedeemPage={openServiceRedeemPage}
                         codingAgentProgress={codingAgentProgress}
                         codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                         handleRecentTasksResizeStart={handleRecentTasksResizeStart}

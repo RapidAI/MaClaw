@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -45,6 +46,24 @@ func (r *WorkflowRegistry) Match(wt WorkflowType) *WorkflowTemplate {
 	tmpl := r.templates[wt]
 	r.mu.RUnlock()
 	return tmpl
+}
+
+// All returns one pointer per registered template in a deterministic order
+// (sorted by Type) so downstream generation (code generator, contract tests) is
+// byte-stable across runs. It takes a read-locked snapshot and is never used on
+// the hot path.
+func (r *WorkflowRegistry) All() []*WorkflowTemplate {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	templates := make([]*WorkflowTemplate, 0, len(r.templates))
+	for _, tmpl := range r.templates {
+		templates = append(templates, tmpl)
+	}
+	sort.Slice(templates, func(i, j int) bool {
+		return templates[i].Type < templates[j].Type
+	})
+	return templates
 }
 
 // AllDescriptions returns a formatted summary of every registered template,

@@ -798,6 +798,9 @@ func (a *App) ListMCPServers() []MCPServerView {
 
 // RegisterMCPServer registers a new MCP Server (Wails binding).
 func (a *App) RegisterMCPServer(server corelib.MCPServerEntry) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("call_mcp_tool", map[string]interface{}{"action": "register_server", "server_id": server.ID, "endpoint_url": server.EndpointURL}); err != nil {
+		return err
+	}
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -809,6 +812,9 @@ func (a *App) RegisterMCPServer(server corelib.MCPServerEntry) error {
 
 // UpdateMCPServer updates an existing MCP Server (Wails binding).
 func (a *App) UpdateMCPServer(server corelib.MCPServerEntry) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("call_mcp_tool", map[string]interface{}{"action": "update_server", "server_id": server.ID, "endpoint_url": server.EndpointURL}); err != nil {
+		return err
+	}
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -824,6 +830,9 @@ func (a *App) UpdateMCPServer(server corelib.MCPServerEntry) error {
 
 // UnregisterMCPServer removes an MCP Server by ID (Wails binding).
 func (a *App) UnregisterMCPServer(serverID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("call_mcp_tool", map[string]interface{}{"action": "unregister_server", "server_id": serverID}); err != nil {
+		return err
+	}
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -1149,6 +1158,9 @@ func (a *App) ListLocalMCPServers() []LocalMCPServerView {
 
 // RegisterLocalMCPServer adds a new local MCP server config (Wails binding).
 func (a *App) RegisterLocalMCPServer(server corelib.LocalMCPServerEntry) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": strings.Join(append([]string{server.Command}, server.Args...), " "), "action": "register_local_mcp", "server_id": server.ID}); err != nil {
+		return err
+	}
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -1160,6 +1172,9 @@ func (a *App) RegisterLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 
 // UpdateLocalMCPServer updates an existing local MCP server config (Wails binding).
 func (a *App) UpdateLocalMCPServer(server corelib.LocalMCPServerEntry) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": strings.Join(append([]string{server.Command}, server.Args...), " "), "action": "update_local_mcp", "server_id": server.ID}); err != nil {
+		return err
+	}
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -1171,6 +1186,9 @@ func (a *App) UpdateLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 
 // UnregisterLocalMCPServer removes a local MCP server config by ID (Wails binding).
 func (a *App) UnregisterLocalMCPServer(serverID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "unregister local mcp " + strings.TrimSpace(serverID), "action": "unregister_local_mcp", "server_id": serverID}); err != nil {
+		return err
+	}
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
@@ -1186,6 +1204,9 @@ func (a *App) UnregisterLocalMCPServer(serverID string) error {
 // SyncLocalMCPServers triggers the local MCP manager to re-read config
 // and start/stop processes accordingly (Wails binding).
 func (a *App) SyncLocalMCPServers() error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "sync local mcp servers", "action": "sync_local_mcp"}); err != nil {
+		return err
+	}
 	a.ensureLocalMCPManager()
 	if a.localMCPManager == nil {
 		return fmt.Errorf("local MCP manager not initialized")
@@ -1200,6 +1221,9 @@ func (a *App) SyncLocalMCPServers() error {
 // governed by Disabled for the current run, but will not auto-start on the
 // next app launch.
 func (a *App) SetLocalMCPAutoStart(serverID string, enabled bool) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "set local mcp autostart " + strings.TrimSpace(serverID), "action": "set_local_mcp_autostart", "server_id": serverID, "enabled": enabled}); err != nil {
+		return err
+	}
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}

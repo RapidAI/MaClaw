@@ -388,7 +388,7 @@ func (fr *FileRelay) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	formParticipantID := strings.TrimSpace(r.FormValue("participant_id"))
 	headerParticipantID := strings.TrimSpace(r.Header.Get("X-Participant-ID"))
-	if headerParticipantID != "" && formParticipantID != "" && !strings.EqualFold(headerParticipantID, formParticipantID) {
+	if headerParticipantID != "" && formParticipantID != "" && !veParticipantIdentityMatches(headerParticipantID, formParticipantID) {
 		writeVEError(w, http.StatusForbidden, "access_denied", "participant_id must match authenticated machine")
 		return
 	}
@@ -397,7 +397,7 @@ func (fr *FileRelay) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		participantID = formParticipantID
 	}
 	if fr.validator != nil {
-		if sessionID == "" || participantID == "" || !fr.validator.IsSessionParticipant(sessionID, participantID) {
+		if sessionID == "" || participantID == "" || !fr.isSessionParticipant(sessionID, participantID) {
 			writeVEError(w, http.StatusForbidden, "access_denied", "not authorized to upload to this session")
 			return
 		}
@@ -471,7 +471,7 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	authorized := false
 
 	if fr.validator != nil && meta.SessionID != "" && participantID != "" {
-		if fr.validator.IsSessionParticipant(meta.SessionID, participantID) {
+		if fr.isSessionParticipant(meta.SessionID, participantID) {
 			authorized = true
 		}
 	}
@@ -482,7 +482,7 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 
 	// Uploader/owner access: the participant who uploaded the file can always access
 	// it regardless of session_id, which keeps direct-owner recovery working.
-	if !authorized && participantID != "" && meta.UploaderID != "" && participantID == meta.UploaderID {
+	if !authorized && participantID != "" && meta.UploaderID != "" && veParticipantIdentityMatches(participantID, meta.UploaderID) {
 		authorized = true
 	}
 
@@ -492,6 +492,70 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fr.serveFile(w, meta)
+}
+
+func (fr *FileRelay) isSessionParticipant(sessionID, participantID string) bool {
+	if fr == nil || fr.validator == nil {
+		return false
+	}
+	for _, id := range veParticipantIdentityKeys(participantID) {
+		if fr.validator.IsSessionParticipant(sessionID, id) {
+			return true
+		}
+	}
+	return false
+}
+
+func veParticipantIdentityKeys(participantID string) []string {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 4)
+	add := func(value string) {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	add(participantID)
+	cleaned := strings.NewReplacer("/", "_", "\\", "_", " ", "_", "-", "_").Replace(participantID)
+	withoutPrefix := cleaned
+	if len(cleaned) > 3 && (strings.EqualFold(cleaned[:3], "ve_") || strings.EqualFold(cleaned[:3], "ve-")) {
+		withoutPrefix = cleaned[3:]
+	}
+	add(withoutPrefix)
+	add("ve_" + withoutPrefix)
+	add("ve-" + withoutPrefix)
+	return out
+}
+
+func veParticipantIdentityMatches(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	aliases := map[string]struct{}{}
+	for _, key := range veParticipantIdentityKeys(a) {
+		aliases[key] = struct{}{}
+	}
+	_, ok := aliases[strings.ToLower(b)]
+	if ok {
+		return true
+	}
+	for _, key := range veParticipantIdentityKeys(b) {
+		if _, ok := aliases[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // HandleAdminDownload handles admin-reviewed downloads for discussion history.

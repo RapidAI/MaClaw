@@ -1,0 +1,98 @@
+name: Workflow Phase-Metadata Anti-Drift
+
+# Enforces the workflow-dashboard-consistency anti-drift guarantee: the backend
+# workflow templates are the single source of truth for dashboard phase metadata,
+# and the committed generated artifact + retained frontend fallback maps can never
+# silently diverge from them.
+#
+# This is an additive, lightweight gate. It does NOT touch the release build in
+# main.yml. It runs only the spec's anti-drift checks, which are fast and have no
+# CGO/native dependencies, so it can gate every pull request and push.
+
+on:
+  pull_request:
+    paths:
+      - 'corelib/workflow/**'
+      - 'cmd/genphasemeta/**'
+      - 'gui/workflow_adapter*.go'
+      - 'gui/workflow_phase_helpers.go'
+      - 'gui/workflow_phase_file_name.go'
+      - 'gui/frontend/src/components/ai/workflowPhase.ts'
+      - 'gui/frontend/src/components/ai/WorkflowDocPreview.tsx'
+      - 'gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts'
+      - 'gui/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts'
+      - 'generate.go'
+      - '.github/workflows/workflow-phase-metadata.yml'
+  push:
+    branches-ignore:
+      - master
+    paths:
+      - 'corelib/workflow/**'
+      - 'cmd/genphasemeta/**'
+      - 'gui/workflow_adapter*.go'
+      - 'gui/workflow_phase_helpers.go'
+      - 'gui/workflow_phase_file_name.go'
+      - 'gui/frontend/src/components/ai/workflowPhase.ts'
+      - 'gui/frontend/src/components/ai/WorkflowDocPreview.tsx'
+      - 'gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts'
+      - 'gui/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts'
+      - 'generate.go'
+      - '.github/workflows/workflow-phase-metadata.yml'
+  workflow_dispatch: {}
+
+env:
+  GO_VERSION: '1.25.0'
+  NODE_VERSION: '20'
+
+jobs:
+  verify-anti-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: gui/frontend/package-lock.json
+
+      # 1. Generated artifact is fresh (Property 5 / Requirement 2.3). The freshness
+      #    check is the in-memory Go contract test TestGeneratedArtifactUpToDate in
+      #    cmd/genphasemeta: it regenerates from the live registry and compares against
+      #    the on-disk committed file. It is git-agnostic (works whether the artifact is
+      #    tracked, untracked, or modified), so it cannot be fooled by an uncommitted
+      #    stale file the way a `git diff` check can. This test runs as part of step 2;
+      #    here we additionally smoke-test that the generator itself executes cleanly.
+      - name: Smoke-test the phase-metadata generator runs
+        run: |
+          echo "=== Running cmd/genphasemeta (generator must execute without error) ==="
+          CGO_ENABLED=0 go run ./cmd/genphasemeta
+
+      # 2. Backend deriver + generator contract tests. Includes Property 5
+      #    (TestGeneratedArtifactUpToDate — the authoritative freshness gate),
+      #    Properties 1/2/6, the deriver/registry unit tests, and the all-template
+      #    coverage + phase-index regression tests. No CGO required for these packages.
+      - name: Run backend phase-metadata tests
+        run: |
+          echo "=== corelib/workflow + cmd/genphasemeta ==="
+          CGO_ENABLED=0 go test ./corelib/workflow/... ./cmd/genphasemeta/...
+          echo "=== gui phase file-name anti-drift guards ==="
+          CGO_ENABLED=0 go test ./gui/ -run 'TestWorkflowPhaseFileNames(UniquePerTemplate|NonEmptyPerTemplate)'
+
+      # 3. Frontend anti-drift contract test (Properties 3, 4 + backend-coverage
+      #    guards): the retained fallback maps and degraded-mode rendering agree
+      #    with the generated artifact for every registered backend template.
+      - name: Run frontend anti-drift contract test
+        working-directory: gui/frontend
+        run: |
+          echo "=== workflowPhaseMeta.contract.test.ts ==="
+          npm ci --cache ./.npm_cache
+          npx vitest --run \
+            src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts \
+            src/components/ai/__tests__/deriveProgressPhases.test.ts \
+            src/components/ai/__tests__/workflowPhase.test.ts

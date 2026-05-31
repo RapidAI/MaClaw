@@ -2,7 +2,7 @@
  * FloatingButton.tsx - MaClaw desktop pet component rendered in the companion window.
  *
  * Supports click-to-open, drag positioning, animated pet states, motion SFX,
- * and a minimal context menu for quitting the app.
+ * and a minimal context menu for settings and quitting the app.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -24,6 +24,7 @@ declare global {
                 App?: {
                     OnFloatingButtonClicked(): Promise<void>;
                     OnFloatingButtonDragged(x: number, y: number): Promise<void>;
+                    OpenPetSettingsFromMenu(): Promise<void>;
                     QuitApp(): Promise<void>;
                     LoadConfig(): Promise<Record<string, unknown>>;
                     SaveConfig(config: Record<string, unknown>): Promise<void>;
@@ -35,6 +36,7 @@ declare global {
 
 function callGoBinding(method: 'OnFloatingButtonClicked'): void;
 function callGoBinding(method: 'OnFloatingButtonDragged', x: number, y: number): void;
+function callGoBinding(method: 'OpenPetSettingsFromMenu'): void;
 function callGoBinding(method: 'QuitApp'): void;
 function callGoBinding(method: string, ...args: unknown[]): void {
     try {
@@ -74,7 +76,7 @@ function isAsrSource(source: unknown): boolean {
 
 function clampContextMenuPosition(x: number, y: number): { x: number; y: number } {
     const menuWidth = 152;
-    const menuHeight = 86;
+    const menuHeight = 116;
     const maxX = Math.max(0, window.innerWidth - menuWidth - 4);
     const maxY = Math.max(0, window.innerHeight - menuHeight - 4);
     return {
@@ -824,6 +826,11 @@ export function FloatingButton() {
         callGoBinding('QuitApp');
     }, []);
 
+    const handleOpenSettings = useCallback(() => {
+        setShowMenu(false);
+        callGoBinding('OpenPetSettingsFromMenu');
+    }, []);
+
     const handleToggleSoundOff = useCallback(() => {
         const nextSoundEnabled = !petConfig.motionSoundEnabled;
         setShowMenu(false);
@@ -942,6 +949,12 @@ export function FloatingButton() {
                         <span>{"\u97f3\u6548\u5173\u95ed"}</span>
                     </button>
                     <div className="floating-context-menu-separator" />
+                    <button
+                        type="button"
+                        className="floating-context-menu-item"
+                        role="menuitem"
+                        onClick={handleOpenSettings}
+                    >{"\u8bbe\u7f6e"}</button>
                     <button
                         type="button"
                         className="floating-context-menu-item"

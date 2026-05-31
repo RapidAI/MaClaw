@@ -33,18 +33,23 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 	if !workflowAgentLoop || h.getWorkflowEngine() == nil || msg.IsBackground || resp == nil || resp.HardExit || len(resp.Text) <= 50 {
 		return
 	}
+	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
 	if h.app != nil && h.app.workflowArtifactSaver != nil {
-		h.app.workflowArtifactSaver.SetCurrentUserID(msg.UserID)
+		h.app.workflowArtifactSaver.SetCurrentUserID(ownerID)
 	}
-	if phaseID, advResp, err := h.getWorkflowEngine().SavePhaseOutputAndMaybeAdvance(msg.UserID, resp.Text); err != nil {
-		log.Printf("[WorkflowEngine] post-loop doc capture failed: user=%s err=%v", msg.UserID, err)
+	if h.shouldRejectInvalidCodingTaskBreakdownOutput(h.getWorkflowEngine(), ownerID, resp.Text) {
+		log.Printf("[WorkflowEngine] post-loop doc capture rejected invalid coding task breakdown: user=%s owner=%s len=%d", msg.UserID, ownerID, len(resp.Text))
+		return
+	}
+	if phaseID, advResp, err := h.getWorkflowEngine().SavePhaseOutputAndMaybeAdvance(ownerID, resp.Text); err != nil {
+		log.Printf("[WorkflowEngine] post-loop doc capture failed: user=%s owner=%s err=%v", msg.UserID, ownerID, err)
 	} else if phaseID != "" {
 		h.recordWorkflowPhaseCompletedExperience(msg, loopCtx, phaseID)
 		if cb := h.getWorkflowEngine().GetCallbacks(); cb != nil {
-			_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)
-			log.Printf("[WorkflowEngine] post-loop doc capture: emitted doc_update for user=%s phase=%s len=%d", msg.UserID, phaseID, len(resp.Text))
+			_ = cb.EmitDocUpdate(ownerID, phaseID, resp.Text)
+			log.Printf("[WorkflowEngine] post-loop doc capture: emitted doc_update for user=%s owner=%s phase=%s len=%d", msg.UserID, ownerID, phaseID, len(resp.Text))
 		}
-		h.applyWorkflowAutoAdvanceResponse(msg.UserID, advResp, msg.Platform)
+		h.applyWorkflowAutoAdvanceResponse(ownerID, advResp, msg.Platform)
 	}
 }
 
@@ -102,7 +107,8 @@ func (h *IMMessageHandler) recordWorkflowPhaseCompletedExperience(msg IMUserMess
 		return
 	}
 	if h != nil {
-		h.workflowReviewExperienceContext.Store(msg.UserID, workflowReviewExperienceContext{
+		ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
+		h.workflowReviewExperienceContext.Store(ownerID, workflowReviewExperienceContext{
 			EventContext: ctx,
 			PhaseID:      phaseID,
 			Query:        msg.Text,

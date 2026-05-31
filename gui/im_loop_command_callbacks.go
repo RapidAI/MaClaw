@@ -214,8 +214,26 @@ func (c *loopCycleCallbacks) BuildTools(userText string) []map[string]interface{
 }
 
 func (c *loopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
+	if c == nil || c.parent == nil || c.parent.handler == nil {
+		return fmt.Sprintf("Unknown tool: %s", name)
+	}
 	// Delegate to the host's tool implementations.
-	return c.parent.handler.executeTool(name, argsJSON, nil)
+	policyUserID := strings.TrimSpace(c.parent.userID)
+	return c.parent.handler.executeToolDetailedWithPolicyUserText(policyUserID, name, argsJSON, "", nil).Text
+}
+
+func (c *loopCycleCallbacks) IsToolAllowed(name string) bool {
+	if c == nil || c.parent == nil || c.parent.handler == nil {
+		return true
+	}
+	return c.parent.handler.isWorkflowToolAllowedForOwner(strings.TrimSpace(c.parent.userID), name)
+}
+
+func (c *loopCycleCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c == nil || c.parent == nil || c.parent.handler == nil {
+		return true, ""
+	}
+	return c.parent.handler.isWorkflowToolCallAllowedForOwner(strings.TrimSpace(c.parent.userID), name, argsJSON)
 }
 
 func (c *loopCycleCallbacks) OnToken(delta string) {

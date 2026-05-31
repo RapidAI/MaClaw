@@ -370,6 +370,7 @@ func (m *rtWorkflowStore) ListWorkflows(_ context.Context, _ string) ([]Workflow
 	return nil, nil
 }
 func (m *rtWorkflowStore) CreateVersion(_ context.Context, _ *WorkflowVersion) error { return nil }
+func (m *rtWorkflowStore) UpdateVersion(_ context.Context, _ *WorkflowVersion) error { return nil }
 func (m *rtWorkflowStore) GetVersion(_ context.Context, id string) (*WorkflowVersion, error) {
 	if m.publishedVersion != nil && m.publishedVersion.ID == id {
 		return m.publishedVersion, nil

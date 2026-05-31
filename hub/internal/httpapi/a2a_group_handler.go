@@ -17,6 +17,10 @@ type groupDiscussionMachineSender interface {
 	SendToMachine(machineID string, msg any) error
 }
 
+type groupDiscussionInviteAutoAccepter interface {
+	DiscussionInviteAutoAccepts(tenantID, targetID string) (bool, error)
+}
+
 type groupDiscussionMessageDelivery interface {
 	SendDiscussionMessage(session *corea2a.Session, msg corea2a.GroupDiscussionMessage, target corea2a.Participant) (bool, *corea2a.GroupDiscussionMessage, error)
 }
@@ -84,7 +88,7 @@ func enforceAuthenticatedGroupIdentity(w http.ResponseWriter, r *http.Request, v
 		*value = authenticatedID
 		return true
 	}
-	if strings.EqualFold(current, authenticatedID) {
+	if groupDiscussionParticipantIdentityMatches(authenticatedID, current) {
 		*value = authenticatedID
 		return true
 	}
@@ -166,7 +170,7 @@ func (h *GroupDiscussionHandler) handleHubDiscussionsMine(w http.ResponseWriter,
 	}
 	filter := listFilterFromRequest(r)
 	if authenticatedID := authenticatedGroupMachineID(r); authenticatedID != "" {
-		if filter.ParticipantID != "" && !strings.EqualFold(filter.ParticipantID, authenticatedID) {
+		if filter.ParticipantID != "" && !groupDiscussionParticipantIdentityMatches(authenticatedID, filter.ParticipantID) {
 			writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
 			return
 		}
@@ -186,13 +190,21 @@ func (h *GroupDiscussionHandler) handleHubInvitesMine(w http.ResponseWriter, r *
 		return
 	}
 	q := r.URL.Query()
-	filter := ListInvitationsFilter{ToID: q.Get("to_id"), Status: q.Get("status"), Limit: intQuery(q, "limit"), Offset: intQuery(q, "offset")}
+	filter := ListInvitationsFilter{ID: q.Get("invite_id"), FromID: q.Get("from_id"), ToID: q.Get("to_id"), Status: q.Get("status"), Limit: intQuery(q, "limit"), Offset: intQuery(q, "offset")}
 	if authenticatedID := authenticatedGroupMachineID(r); authenticatedID != "" {
-		if filter.ToID != "" && !strings.EqualFold(filter.ToID, authenticatedID) {
+		fromMatches := filter.FromID != "" && groupDiscussionParticipantIdentityMatches(authenticatedID, filter.FromID)
+		toMatches := filter.ToID != "" && groupDiscussionParticipantIdentityMatches(authenticatedID, filter.ToID)
+		if filter.FromID != "" && !fromMatches {
+			writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "from_id must match authenticated machine")
+			return
+		}
+		if filter.ToID != "" && !toMatches {
 			writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "to_id must match authenticated machine")
 			return
 		}
-		filter.ToID = authenticatedID
+		if filter.FromID == "" && filter.ToID == "" {
+			filter.ToID = authenticatedID
+		}
 	}
 	invites := h.svc.ListInvitations(requestGroupDiscussionTenantID(r), "", "", filter)
 	writeJSON(w, http.StatusOK, map[string]any{"invites": invites})
@@ -260,7 +272,7 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		}
 		participantID := firstNonEmptyQuery(r.URL.Query(), "participant_id", "agent_id", "from_id")
 		if authenticatedID := authenticatedGroupMachineID(r); authenticatedID != "" {
-			if participantID != "" && !strings.EqualFold(participantID, authenticatedID) {
+			if participantID != "" && !groupDiscussionParticipantIdentityMatches(authenticatedID, participantID) {
 				writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
 				return
 			}
@@ -290,7 +302,30 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 			writeError(w, http.StatusBadRequest, "INVITE_REJECTED", err.Error())
 			return
 		}
-		h.notifyDiscussionInvite(tid, id, inviteID, inv)
+		autoAccept := false
+		if accepter, ok := h.sender.(groupDiscussionInviteAutoAccepter); ok {
+			var err error
+			autoAccept, err = accepter.DiscussionInviteAutoAccepts(tid, inv.ToID)
+			if err != nil {
+				_ = h.svc.RespondInvitation(tid, inviteID, corea2a.GroupInvitationResponse{FromID: strings.TrimSpace(inv.ToID), Decision: corea2a.GroupInvitationReject, Reason: err.Error()})
+				writeError(w, http.StatusBadRequest, "INVITE_REJECTED", err.Error())
+				return
+			}
+			if autoAccept && !inv.Trusted {
+				reason := fmt.Sprintf("trusted invitation is required for platform digital employee %s", strings.TrimSpace(inv.ToID))
+				_ = h.svc.RespondInvitation(tid, inviteID, corea2a.GroupInvitationResponse{FromID: strings.TrimSpace(inv.ToID), Decision: corea2a.GroupInvitationReject, Reason: reason})
+				writeError(w, http.StatusBadRequest, "INVITE_REJECTED", reason)
+				return
+			}
+		}
+		if autoAccept {
+			if err := h.svc.RespondInvitation(tid, inviteID, corea2a.GroupInvitationResponse{FromID: strings.TrimSpace(inv.ToID), Decision: corea2a.GroupInvitationAccept, Reason: "platform digital employee auto accepted"}); err != nil {
+				writeError(w, http.StatusBadRequest, "INVITE_REJECTED", err.Error())
+				return
+			}
+		} else {
+			h.notifyDiscussionInvite(tid, id, inviteID, inv)
+		}
 		writeJSON(w, http.StatusCreated, map[string]any{"invite_id": inviteID})
 	case "messages":
 		var msg corea2a.GroupDiscussionMessage
@@ -378,6 +413,23 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	case "rename":
+		var req RenameDiscussionRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !enforceAuthenticatedGroupIdentity(w, r, &req.FromID, "from_id") {
+			return
+		}
+		session, err := h.svc.RenameDiscussionTopic(tid, id, req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "RENAME_REJECTED", err.Error())
+			return
+		}
+		h.notifyDiscussionRename(session, strings.TrimSpace(req.FromID))
+		summary := discussionSummaryFromSession(session)
+		decorateSummaryForParticipant(&summary, session, strings.TrimSpace(req.FromID))
+		writeJSON(w, http.StatusOK, map[string]any{"discussion": summary})
 	case "result":
 		var result corea2a.GroupDiscussionResult
 		if !decodeJSON(w, r, &result) {
@@ -686,19 +738,30 @@ func (h *GroupDiscussionHandler) notifyDiscussionMessage(session *corea2a.Sessio
 	sessionID := session.ID
 	targetFilter := map[string]struct{}{}
 	for _, id := range msg.ToIDs {
-		if id = strings.TrimSpace(id); id != "" {
-			targetFilter[strings.ToLower(id)] = struct{}{}
+		for _, key := range groupDiscussionParticipantIdentityKeys(id) {
+			targetFilter[key] = struct{}{}
 		}
 	}
+	deliveredTargets := map[string]struct{}{}
 	for _, participant := range session.Participants {
 		targetID := strings.TrimSpace(participant.ID)
-		if targetID == "" || strings.EqualFold(targetID, fromID) {
+		if targetID == "" || groupDiscussionParticipantIdentityMatches(targetID, fromID) {
 			continue
 		}
 		if len(targetFilter) > 0 {
-			if _, ok := targetFilter[strings.ToLower(targetID)]; !ok {
+			matched := false
+			for _, key := range groupDiscussionParticipantIdentityKeys(targetID) {
+				if _, ok := targetFilter[key]; ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				continue
 			}
+		}
+		if groupDiscussionMarkParticipantDelivered(deliveredTargets, targetID) {
+			continue
 		}
 		if delivery, ok := h.sender.(asyncGroupDiscussionMessageDelivery); ok {
 			sessionSnapshot := cloneSession(session)
@@ -799,9 +862,13 @@ func (h *GroupDiscussionHandler) notifyDiscussionCancel(session *corea2a.Session
 		return
 	}
 	fromID = strings.TrimSpace(fromID)
+	deliveredTargets := map[string]struct{}{}
 	for _, participant := range session.Participants {
 		targetID := strings.TrimSpace(participant.ID)
-		if targetID == "" || strings.EqualFold(targetID, fromID) {
+		if targetID == "" || groupDiscussionParticipantIdentityMatches(targetID, fromID) {
+			continue
+		}
+		if groupDiscussionMarkParticipantDelivered(deliveredTargets, targetID) {
 			continue
 		}
 		envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionResult, fromID, time.Now().UTC())
@@ -816,6 +883,54 @@ func (h *GroupDiscussionHandler) notifyDiscussionCancel(session *corea2a.Session
 			},
 		})
 	}
+}
+
+func (h *GroupDiscussionHandler) notifyDiscussionRename(session *corea2a.Session, fromID string) {
+	if h == nil || h.sender == nil || session == nil {
+		return
+	}
+	fromID = strings.TrimSpace(fromID)
+	deliveredTargets := map[string]struct{}{}
+	for _, participant := range session.Participants {
+		targetID := strings.TrimSpace(participant.ID)
+		if targetID == "" || groupDiscussionParticipantIdentityMatches(targetID, fromID) {
+			continue
+		}
+		if groupDiscussionMarkParticipantDelivered(deliveredTargets, targetID) {
+			continue
+		}
+		envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, fromID, time.Now().UTC())
+		envelope.SessionID = session.ID
+		envelope.ToIDs = []string{targetID}
+		_ = h.sender.SendToMachine(targetID, map[string]any{
+			"type": "ve:discussion_rename",
+			"ts":   time.Now().Unix(),
+			"payload": map[string]any{
+				"envelope":      envelope,
+				"session_id":    session.ID,
+				"discussion_id": session.ID,
+				"topic":         strings.TrimSpace(session.Topic),
+				"from_id":       fromID,
+				"target_role":   strings.TrimSpace(participant.RoleCode),
+			},
+		})
+	}
+}
+
+func groupDiscussionMarkParticipantDelivered(delivered map[string]struct{}, participantID string) bool {
+	if delivered == nil {
+		return false
+	}
+	keys := groupDiscussionParticipantIdentityKeys(participantID)
+	for _, key := range keys {
+		if _, ok := delivered[key]; ok {
+			return true
+		}
+	}
+	for _, key := range keys {
+		delivered[key] = struct{}{}
+	}
+	return false
 }
 
 func groupDiscussionInitiatorID(session *corea2a.Session) string {

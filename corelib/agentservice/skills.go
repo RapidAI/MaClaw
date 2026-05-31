@@ -421,6 +421,7 @@ func (s *Service) skillMarketAuthToken(ctx context.Context, p Principal, cfg Use
 	if cfg.UserID == "" {
 		cfg.UserID = p.UserID
 	}
+	cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
 	_ = s.store.SaveUserConfig(cfg)
 	_ = saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
 	return cfg.AppConfig.SkillMarketSessionToken

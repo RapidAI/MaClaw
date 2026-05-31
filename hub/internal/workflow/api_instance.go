@@ -40,6 +40,25 @@ type triggerWorkflowRequest struct {
 	TriggerData json.RawMessage `json:"trigger_data,omitempty"`
 }
 
+// --- Access control ---
+
+// instanceAccessAllowed reports whether the caller may read the given instance.
+//
+// Access is granted only when ownership is established — i.e. the instance's
+// requester_id is non-empty and equals the caller. An empty requester_id means
+// ownership was never established, so access is denied rather than granted to
+// any caller (the empty-requester_id IDOR, Requirement 2.11). This inverts the
+// previous deny-on-mismatch guard (which leaked instances whose requester_id
+// was empty) into a grant-on-established-ownership guard, while still granting
+// the legitimate owner.
+func instanceAccessAllowed(instance *WorkflowInstance, userID string) bool {
+	if instance == nil || userID == "" {
+		return false
+	}
+	requesterID, _ := instance.InstanceData["requester_id"].(string)
+	return requesterID != "" && requesterID == userID
+}
+
 // --- Handlers ---
 
 // handleTriggerWorkflow starts a new workflow instance by triggering a published workflow.
@@ -124,8 +143,10 @@ func (api *InstanceAPI) handleGetInstance(w http.ResponseWriter, r *http.Request
 	}
 
 	// Verify the requesting user has access to this instance.
-	requesterID, _ := instance.InstanceData["requester_id"].(string)
-	if requesterID != "" && requesterID != userID {
+	// Grant access only when ownership is established (requester_id is set) and
+	// matches the caller. An empty requester_id means ownership was never
+	// established, so access is denied rather than granted to any caller (IDOR).
+	if !instanceAccessAllowed(instance, userID) {
 		apiWriteError(w, http.StatusNotFound, "NOT_FOUND", "instance not found")
 		return
 	}
@@ -162,8 +183,10 @@ func (api *InstanceAPI) handleGetInstanceAudit(w http.ResponseWriter, r *http.Re
 		apiWriteError(w, http.StatusNotFound, "NOT_FOUND", "instance not found")
 		return
 	}
-	requesterID, _ := instance.InstanceData["requester_id"].(string)
-	if requesterID != "" && requesterID != userID {
+	// Grant access only when ownership is established (requester_id is set) and
+	// matches the caller; deny when requester_id is empty (unestablished
+	// ownership) to avoid leaking instances to arbitrary callers (IDOR).
+	if !instanceAccessAllowed(instance, userID) {
 		apiWriteError(w, http.StatusNotFound, "NOT_FOUND", "instance not found")
 		return
 	}

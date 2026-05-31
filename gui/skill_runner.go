@@ -151,6 +151,16 @@ func NewSkillRunner(executor *SkillExecutor) *SkillRunner {
 
 // StartRun starts a skill asynchronously and returns a run ID for polling.
 func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{}) (string, error) {
+	return r.StartRunForOwner(r.defaultSkillRunPolicyOwnerID(), skillName, runArgs)
+}
+
+// StartRunForOwner starts a skill run under an explicit workflow policy owner.
+func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) (string, error) {
+	if r != nil && r.executor != nil && r.executor.app != nil {
+		if err := r.executor.app.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, "manage_skill", map[string]interface{}{"action": "run", "name": skillName, "args": runArgs}); err != nil {
+			return "", err
+		}
+	}
 	// ?? skill ? match by name regardless of status so we can provide
 	// specific error messages for disabled/needs_setup skills (Bug #3).
 	r.executor.mu.RLock()
@@ -339,6 +349,13 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	go r.executeAsync(ctx, run, target)
 
 	return runID, nil
+}
+
+func (r *SkillRunner) defaultSkillRunPolicyOwnerID() string {
+	if r == nil || r.executor == nil || r.executor.app == nil {
+		return ""
+	}
+	return r.executor.app.defaultManualPolicyOwnerID()
 }
 
 // startPipelineRun starts a pipeline skill asynchronously.

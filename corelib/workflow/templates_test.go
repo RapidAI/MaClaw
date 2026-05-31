@@ -9,21 +9,21 @@ func TestBuiltinTemplates_Count(t *testing.T) {
 	r := NewWorkflowRegistry()
 
 	expected := map[WorkflowType]int{
-		WorkflowCoding:              5,
-		WorkflowProductDesign:       4,
-		WorkflowInnovation:          5,
-		WorkflowBusinessPlan:        5,
-		WorkflowTesting:             5,
-		WorkflowLiteratureReview:    5,
-		WorkflowResearchReport:      5,
-		WorkflowExperimentDesign:    5,
-		WorkflowGrantProposal:       5,
-		WorkflowPaperWriting:        5,
-		WorkflowProjectProposal:     5,
-		WorkflowEventPlanning:       5,
-		WorkflowCompetitiveAnalysis: 5,
-		WorkflowPresentationDesign:  5,
-		WorkflowOpsMaintenance:      5,
+		WorkflowCoding:                  5,
+		WorkflowProductDesign:           4,
+		WorkflowInnovation:              5,
+		WorkflowBusinessPlan:            5,
+		WorkflowTesting:                 5,
+		WorkflowLiteratureReview:        5,
+		WorkflowResearchReport:          5,
+		WorkflowExperimentDesign:        5,
+		WorkflowGrantProposal:           5,
+		WorkflowPaperWriting:            5,
+		WorkflowProjectProposal:         5,
+		WorkflowEventPlanning:           5,
+		WorkflowCompetitiveAnalysis:     5,
+		WorkflowPresentationDesign:      5,
+		WorkflowOpsMaintenance:          5,
 		WorkflowChangjiangScholar:       5,
 		WorkflowChangjiangScholarReview: 5,
 	}
@@ -137,6 +137,24 @@ func TestBuiltinTemplates_CodingImplementationToolPolicyFull(t *testing.T) {
 	}
 	if implPhase.ToolPolicy != ToolFilterFull {
 		t.Errorf("coding implementation phase: expected ToolPolicy=full, got %s", implPhase.ToolPolicy)
+	}
+}
+
+func TestBuiltinTemplates_CodingTaskBreakdownUsesOneBasedDependencyLabels(t *testing.T) {
+	r := NewWorkflowRegistry()
+	tmpl := r.Match(WorkflowCoding)
+	if tmpl == nil {
+		t.Fatal("coding template not found")
+	}
+	phase := tmpl.Phases[2]
+	if phase.ID != PhaseCodingTaskBreakdown {
+		t.Fatalf("expected task breakdown phase, got %s", phase.ID)
+	}
+	if !strings.Contains(phase.Prompt, "任务编号从 T1 开始") || !strings.Contains(phase.Prompt, "依赖 T1") {
+		t.Fatalf("task breakdown prompt should define one-based dependency labels, got %q", phase.Prompt)
+	}
+	if strings.Contains(phase.Prompt, "依赖 T0") {
+		t.Fatalf("task breakdown prompt must not teach T0 dependencies: %q", phase.Prompt)
 	}
 }
 

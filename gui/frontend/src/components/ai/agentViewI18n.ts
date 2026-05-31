@@ -12,6 +12,7 @@ export function agentViewStrings(lang: string) {
         submitting: t("Submitting...", "\u63d0\u4ea4\u4e2d..."),
         cancel: t("Cancel", "\u53d6\u6d88"),
         select: t("Select", "\u9009\u62e9"),
+        browse: t("Browse", "\u6d4f\u89c8"),
         selectPlaceholder: t("Select...", "\u8bf7\u9009\u62e9..."),
         next: t("Next", "\u4e0b\u4e00\u6b65"),
         back: t("Back", "\u4e0a\u4e00\u6b65"),

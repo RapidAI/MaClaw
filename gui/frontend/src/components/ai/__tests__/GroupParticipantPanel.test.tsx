@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GroupParticipantPanel } from "../GroupParticipantPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
+import { EventsOn } from "../../../../wailsjs/runtime";
 
 const { eventHandlers, listVirtualEmployeesMock } = vi.hoisted(() => ({
     eventHandlers: new Map<string, Array<(payload?: any) => void>>(),
@@ -90,6 +91,42 @@ describe("GroupParticipantPanel", () => {
         expect(screen.getByTestId("participant-status-machine-1").style.background).toBe("rgb(107, 114, 128)");
     });
 
+    it("accepts status events across hub-generated ve aliases", () => {
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "ve-machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        act(() => {
+            for (const handler of eventHandlers.get("ve:status_change") || []) {
+                handler({ payload: { employee: { machine_id: "machine-1", online_status: "offline" } } });
+            }
+        });
+
+        expect(screen.getByTestId("participant-status-ve-machine-1").style.background).toBe("rgb(107, 114, 128)");
+    });
+
+    it("accepts status events across slash and space normalized aliases", () => {
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "ve-machine 1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        act(() => {
+            for (const handler of eventHandlers.get("ve:status_change") || []) {
+                handler({ payload: { employee: { machine_id: "machine/1", online_status: "offline" } } });
+            }
+        });
+
+        expect(screen.getByTestId("participant-status-ve-machine 1").style.background).toBe("rgb(107, 114, 128)");
+    });
+
     it("shows type icons for remote and local participants", () => {
         render(
             <GroupParticipantPanel
@@ -108,6 +145,128 @@ describe("GroupParticipantPanel", () => {
         expect(screen.getByTestId("participant-status-local-maclaw")).toBeTruthy();
     });
 
+    it("renders digital employee avatar pictures in participant rows", async () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        listVirtualEmployeesMock.mockResolvedValue([
+            { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar },
+        ]);
+
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        const image = await screen.findByTestId("participant-avatar-machine-1");
+        expect(image.getAttribute("src")).toBe(avatar);
+        expect(screen.queryByLabelText("Local AI")).toBeNull();
+    });
+
+    it("resolves avatars for hub-generated ve aliases", async () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        listVirtualEmployeesMock.mockResolvedValue([
+            { id: "profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar },
+        ]);
+
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "ve-machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        const image = await screen.findByTestId("participant-avatar-ve-machine-1");
+        expect(image.getAttribute("src")).toBe(avatar);
+    });
+
+    it("prefers participant avatar data already supplied by the active tab", () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "ve-1", name: "Agent 1", online: true, avatarDataURL: avatar }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        expect(screen.getByTestId("participant-avatar-ve-1").getAttribute("src")).toBe(avatar);
+        expect(listVirtualEmployeesMock).not.toHaveBeenCalled();
+    });
+
+    it("skips avatar refresh work while mounted in a hidden tab", async () => {
+        listVirtualEmployeesMock.mockResolvedValue([
+            { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: "data:image/png;base64,iVBORw0KGgo=" },
+        ]);
+
+        render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+                active={false}
+            />
+        );
+
+        await Promise.resolve();
+        expect(listVirtualEmployeesMock).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("participant-avatar-machine-1")).toBeNull();
+    });
+
+    it("does not refetch avatars when only participant display metadata changes", async () => {
+        const avatar = "data:image/png;base64,iVBORw0KGgo=";
+        listVirtualEmployeesMock.mockResolvedValue([
+            { id: "ve-profile-1", machine_id: "machine-1", name: "Agent 1", online_status: "online", avatar_data_url: avatar },
+        ]);
+
+        const { rerender } = render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await screen.findByTestId("participant-avatar-machine-1");
+        expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1);
+
+        rerender(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent One", online: false }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        await Promise.resolve();
+        expect(listVirtualEmployeesMock).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId("participant-avatar-machine-1").getAttribute("src")).toBe(avatar);
+    });
+
+    it("does not resubscribe status events when only participant display metadata changes", () => {
+        const { rerender } = render(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent 1", online: true }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+        const statusSubscriptions = () => (EventsOn as any).mock.calls.filter((call: unknown[]) => call[0] === "ve:status_change").length;
+
+        expect(statusSubscriptions()).toBe(1);
+        rerender(
+            <GroupParticipantPanel
+                participants={[{ id: "machine-1", name: "Agent One", online: false }]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        expect(statusSubscriptions()).toBe(1);
+    });
+
     it("uses participant names instead of ids in row titles", () => {
         render(
             <GroupParticipantPanel
@@ -119,6 +278,46 @@ describe("GroupParticipantPanel", () => {
 
         expect(screen.getByTitle("安娜")).toBeTruthy();
         expect(screen.queryByTitle("m_b1821505498d817c")).toBeNull();
+    });
+
+    it("deduplicates generated VE aliases in participant count and rows", () => {
+        render(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "machine-a", name: "Agent A", online: true },
+                    { id: "ve-machine-a", name: "Agent A duplicate", online: true },
+                    { id: "machine-b", name: "Agent B", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+            />
+        );
+
+        expect(screen.getByText("Participants (2)")).toBeTruthy();
+        expect(screen.getByTitle("Agent A")).toBeTruthy();
+        expect(screen.queryByTitle("Agent A duplicate")).toBeNull();
+        expect(screen.getByTitle("Agent B")).toBeTruthy();
+    });
+
+    it("does not count duplicate aliases against invite capacity", () => {
+        const onInvite = vi.fn();
+        render(
+            <GroupParticipantPanel
+                participants={[
+                    { id: "machine-a", name: "Agent A", online: true },
+                    { id: "ve-machine-a", name: "Agent A duplicate", online: true },
+                ]}
+                theme={theme}
+                lang="en"
+                maxParticipants={2}
+                onInvite={onInvite}
+            />
+        );
+
+        const invite = screen.getByTestId("group-panel-invite-btn") as HTMLButtonElement;
+        expect(invite.disabled).toBe(false);
+        fireEvent.click(invite);
+        expect(onInvite).toHaveBeenCalledTimes(1);
     });
 
     it("falls back when participant name looks like a profile id", () => {

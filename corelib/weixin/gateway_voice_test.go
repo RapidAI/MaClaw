@@ -2,8 +2,13 @@ package weixin
 
 import (
 	"encoding/binary"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestEstimateVoicePlaytimeMS(t *testing.T) {
@@ -78,8 +83,11 @@ func TestBuildVoiceItemUsesSilkEncode(t *testing.T) {
 		t.Fatal("wavVoicePayload() failed")
 	}
 	item := buildVoiceItem(media, &meta)
-	if item.EncodeType != 6 {
-		t.Fatalf("buildVoiceItem(empty, meta).EncodeType = %d, want 6", item.EncodeType)
+	if item.EncodeType != 4 {
+		t.Fatalf("buildVoiceItem(empty, meta).EncodeType = %d, want 4", item.EncodeType)
+	}
+	if item.Format != "" || item.MimeType != "" {
+		t.Fatalf("buildVoiceItem format = %q mime = %q, want omitted", item.Format, item.MimeType)
 	}
 }
 
@@ -90,29 +98,52 @@ func TestBuildVoiceItemOnlyAddsWAVMetadataWhenKnown(t *testing.T) {
 		t.Fatal("wavVoicePayload() failed")
 	}
 	wavItem := buildVoiceItem(media, &meta)
-	if wavItem.EncodeType != 6 || wavItem.SampleRate != 16000 || wavItem.BitsPerSample != 0 || wavItem.Playtime != 3000 {
+	if wavItem.EncodeType != 4 || wavItem.SampleRate != 16000 || wavItem.BitsPerSample != 0 || wavItem.Playtime != 3000 {
 		t.Fatalf("buildVoiceItem(wav) = encode=%d sr=%d bits=%d playtime=%d", wavItem.EncodeType, wavItem.SampleRate, wavItem.BitsPerSample, wavItem.Playtime)
 	}
 
 	unknownItem := buildVoiceItem(media, nil)
-	if unknownItem.EncodeType != 6 || unknownItem.SampleRate != 0 || unknownItem.BitsPerSample != 0 || unknownItem.Playtime != 0 {
+	if unknownItem.EncodeType != 4 || unknownItem.SampleRate != 0 || unknownItem.BitsPerSample != 0 || unknownItem.Playtime != 0 {
 		t.Fatalf("buildVoiceItem(nil) = encode=%d sr=%d bits=%d playtime=%d", unknownItem.EncodeType, unknownItem.SampleRate, unknownItem.BitsPerSample, unknownItem.Playtime)
 	}
 }
 
-func TestBuildVoiceItemIncludesPayloadIntegrityMetadata(t *testing.T) {
+func TestBuildVoiceItemMatchesInboundShapeWithoutPayloadIntegrityFields(t *testing.T) {
 	wav := makeTestWAV(16000, 2, 16000*2)
-	payload, meta, err := voiceUploadPayload("voice.wav", wav)
+	_, meta, err := voiceUploadPayload("voice.wav", wav)
 	if err != nil {
 		t.Fatalf("voiceUploadPayload(wav) error = %v", err)
 	}
 	media := &cdnMedia{EncryptQueryParam: "q", AESKey: "k", EncryptType: 1}
 	item := buildVoiceItem(media, meta)
-	if item.Len != strconv.Itoa(len(payload)) {
-		t.Fatalf("voice item len = %q, want %d", item.Len, len(payload))
+	if item.Len != "" || item.Size != "" || item.VoiceMD5 != "" || item.MD5 != "" {
+		t.Fatalf("voice item integrity fields len=%q size=%q voice_md5=%q md5=%q, want omitted", item.Len, item.Size, item.VoiceMD5, item.MD5)
 	}
-	if item.VoiceMD5 == "" {
-		t.Fatal("voice item md5 is empty")
+}
+
+func TestVoiceItemsDebugSummaryRedactsMediaSecrets(t *testing.T) {
+	items := []messageItem{{
+		Type: ItemTypeVoice,
+		VoiceItem: &voiceItem{
+			Media:      &cdnMedia{EncryptQueryParam: "secret-query", AESKey: "secret-key", EncryptType: 1},
+			EncodeType: 6,
+			Format:     "silk",
+			MimeType:   "audio/silk",
+			SampleRate: 16000,
+			Playtime:   1000,
+			Len:        "510",
+			VoiceMD5:   "0123456789abcdef0123456789abcdef",
+		},
+	}}
+	got := voiceItemsDebugSummary(items)
+	if got == "" {
+		t.Fatal("voiceItemsDebugSummary() is empty")
+	}
+	if strings.Contains(got, "secret-query") || strings.Contains(got, "secret-key") {
+		t.Fatalf("voiceItemsDebugSummary leaked media secret: %s", got)
+	}
+	if !strings.Contains(got, `"format":"silk"`) || !strings.Contains(got, `"sample_rate":16000`) {
+		t.Fatalf("voiceItemsDebugSummary missing voice fields: %s", got)
 	}
 }
 
@@ -135,6 +166,97 @@ func TestVoiceUploadPayloadKeepsValidSilk(t *testing.T) {
 	}
 	if string(payload) != string(data) || meta == nil || meta.sampleRate != weixinVoiceSampleRate {
 		t.Fatalf("voiceUploadPayload(silk) payload=%q meta=%v", payload, meta)
+	}
+}
+
+func TestVoiceUploadPayloadRecordsSilkDiagnostics(t *testing.T) {
+	wav := makeTestWAV(16000, 2, 16000*2)
+	payload, meta, err := voiceUploadPayload("voice.wav", wav)
+	if err != nil {
+		t.Fatalf("voiceUploadPayload(wav) error = %v", err)
+	}
+	if !isSilkVoicePayload(payload) {
+		t.Fatal("payload is not SILK")
+	}
+	if meta == nil || meta.packetCount == 0 || meta.packetBytes == 0 || meta.packetSizeMin == 0 || meta.packetSizeMax == 0 {
+		t.Fatalf("missing packet diagnostics: %#v", meta)
+	}
+	if meta.decodeError != "" || meta.decodedPCM == 0 || meta.decodedMS == 0 {
+		t.Fatalf("decode diagnostics failed: %#v", meta)
+	}
+}
+
+func TestSaveDebugWeixinVoicePayloadWritesSilkAndMetadata(t *testing.T) {
+	dir := t.TempDir()
+	old := weixinVoiceDebugDirForTest
+	weixinVoiceDebugDirForTest = dir
+	t.Cleanup(func() { weixinVoiceDebugDirForTest = old })
+
+	wav := makeTestWAV(16000, 2, 16000*2)
+	data, voiceMeta, err := voiceUploadPayload("voice.wav", wav)
+	if err != nil {
+		t.Fatalf("voiceUploadPayload(wav) error = %v", err)
+	}
+	path, err := saveDebugWeixinVoicePayload(data, voiceMeta)
+	if err != nil {
+		t.Fatalf("saveDebugWeixinVoicePayload() error = %v", err)
+	}
+	if filepath.Dir(path) != dir || filepath.Ext(path) != ".silk" {
+		t.Fatalf("debug path = %q, want .silk in %q", path, dir)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read debug silk: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("debug silk payload = %q, want %q", got, data)
+	}
+	var meta map[string]any
+	metaBytes, err := os.ReadFile(path + ".json")
+	if err != nil {
+		t.Fatalf("read debug metadata: %v", err)
+	}
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		t.Fatalf("decode debug metadata: %v", err)
+	}
+	if meta["is_silk"] != true || int(meta["sample_rate"].(float64)) != weixinVoiceSampleRate || int(meta["packet_count"].(float64)) == 0 || int(meta["decoded_pcm_bytes"].(float64)) == 0 {
+		t.Fatalf("debug metadata = %#v", meta)
+	}
+}
+
+func TestSaveDebugWeixinVoicePayloadKeepsRecentFiles(t *testing.T) {
+	dir := t.TempDir()
+	old := weixinVoiceDebugDirForTest
+	weixinVoiceDebugDirForTest = dir
+	t.Cleanup(func() { weixinVoiceDebugDirForTest = old })
+
+	for i := 0; i < weixinVoiceDebugKeep+3; i++ {
+		path := filepath.Join(dir, "old_"+strconv.Itoa(i)+".silk")
+		if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+			t.Fatalf("write old silk: %v", err)
+		}
+		if err := os.WriteFile(path+".json", []byte("{}"), 0o600); err != nil {
+			t.Fatalf("write old metadata: %v", err)
+		}
+		mtime := time.Now().Add(-time.Duration(weixinVoiceDebugKeep+3-i) * time.Minute)
+		_ = os.Chtimes(path, mtime, mtime)
+	}
+
+	if _, err := saveDebugWeixinVoicePayload([]byte("\x02#!SILK_V3\x01\x00x"), nil); err != nil {
+		t.Fatalf("saveDebugWeixinVoicePayload() error = %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read debug dir: %v", err)
+	}
+	silkCount := 0
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) == ".silk" {
+			silkCount++
+		}
+	}
+	if silkCount != weixinVoiceDebugKeep {
+		t.Fatalf("silk file count = %d, want %d", silkCount, weixinVoiceDebugKeep)
 	}
 }
 

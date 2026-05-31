@@ -106,7 +106,7 @@ func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.Group
 
 	// Skip own messages (only relevant for Hub-routed messages)
 	machineID := d.getLocalMachineID()
-	if machineID != "" && strings.EqualFold(strings.TrimSpace(msg.FromID), machineID) {
+	if machineID != "" && veGroupParticipantIdentityMatches(msg.FromID, machineID) {
 		return
 	}
 
@@ -173,11 +173,8 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		return
 	}
 
-	// Build context with sender info for the system prompt
-	senderContext := ""
-	if msg.FromID != "" {
-		senderContext = fmt.Sprintf("[来自群聊参与者 %s 的消息]\n", msg.FromID)
-	}
+	// Build context with sender info for the system prompt.
+	senderContext := groupExecutorSenderContext(msg.FromID)
 
 	content := msg.Content
 	if HasAttachments(msg) {
@@ -191,36 +188,37 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		Lang:     "zh",
 	}
 
-	// For locally-dispatched messages (from tryLocalExecutorDispatch), emit stream
-	// events directly to frontend for zero-latency display, and async sync response
-	// chunks to Hub for other participants via a single ordered goroutine.
+	// Group-executor LLM rounds may produce assistant content before choosing
+	// tool calls. That content is part of the agent loop, not a user-visible VE
+	// answer. Publish only the final IM response after the handler has resolved
+	// all tool calls.
 
 	// hubSyncCh serializes Hub sync messages to avoid goroutine explosion and
-	// preserve chunk ordering. Buffered to avoid blocking the onToken callback.
+	// preserve final response ordering.
 
-	// Stream response
-	resp := handler.HandleIMMessageWithProgressAndStream(imMsg, nil, func(chunk string) {
-		if strings.TrimSpace(chunk) == "" {
-			return
-		}
-		if localDispatch {
-			// Emit directly to frontend — zero network latency
-			d.emitStreamToFrontend(sess.SessionID, chunk)
-			// Queue for ordered Hub sync (single goroutine, preserves order)
-			select {
-			case hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: chunk}:
-			default:
-				// Channel full — drop chunk for Hub sync (frontend already has it)
-				log.Printf("[group-dispatcher] hub sync channel full, dropping chunk for session %s", sess.SessionID)
+	resp := handler.HandleIMMessageWithProgressAndStream(imMsg, nil, nil, nil, nil)
+	if resp != nil {
+		chunk := strings.TrimSpace(resp.Text)
+		if chunk != "" {
+			if localDispatch {
+				// Emit directly to frontend after tool resolution.
+				d.emitStreamToFrontend(sess.SessionID, chunk)
+				// Queue for ordered Hub sync (single goroutine, preserves order)
+				select {
+				case hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: chunk}:
+				default:
+					// Channel full - drop chunk for Hub sync (frontend already has it).
+					log.Printf("[group-dispatcher] hub sync channel full, dropping chunk for session %s", sess.SessionID)
+				}
+			} else {
+				// Hub-routed message: send final response through Hub.
+				d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
+					Kind:    a2a.MessageStreamChunk,
+					Content: chunk,
+				})
 			}
-		} else {
-			// Hub-routed message: send response through Hub (original behavior)
-			d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
-				Kind:    a2a.MessageStreamChunk,
-				Content: chunk,
-			})
 		}
-	}, nil, nil)
+	}
 
 	// Send stream end
 	if resp != nil {
@@ -237,7 +235,7 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 			})
 		}
 	} else if localDispatch {
-		// No response — still need to close the sync channel
+		// No response - still need to close the sync channel.
 		finishHubSync()
 	}
 }
@@ -451,6 +449,14 @@ func (d *GroupChatDispatcher) sendToGroup(sessionID string, msg a2a.GroupDiscuss
 	if err := d.app.sendVEA2AMessage(sessionID, msg); err != nil {
 		log.Printf("[group-dispatcher] failed to send message to session %s: %v", sessionID, err)
 	}
+}
+
+func groupExecutorSenderContext(fromID string) string {
+	fromID = strings.TrimSpace(fromID)
+	if fromID == "" {
+		return ""
+	}
+	return fmt.Sprintf("[from group participant %s; reply only with group-visible content, no hidden reasoning or meta notes]\n", fromID)
 }
 
 // shouldExecutorRespond determines if the executor should respond to this message.

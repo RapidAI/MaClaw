@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/RapidAI/CodeClaw/tui/commands"
@@ -343,6 +345,29 @@ func TestBuildLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 	}
 	if !tuiConfigLLMReady(cfg) {
 		t.Fatal("provider key fallback should make the LLM ready")
+	}
+}
+
+func TestSimpleChatMessagesFiltersAndLimitsHistory(t *testing.T) {
+	history := []agent.ConversationEntry{
+		{Role: "tool", Content: "ignored"},
+		{Role: "user", Content: "old"},
+	}
+	for i := 0; i < 22; i++ {
+		history = append(history, agent.ConversationEntry{Role: "assistant", Content: fmt.Sprintf("reply-%02d", i)})
+	}
+
+	messages := simpleChatMessages(history, "now")
+	if len(messages) != 21 {
+		t.Fatalf("messages len = %d, want 21", len(messages))
+	}
+	first := messages[0].(map[string]interface{})
+	if first["content"] != "reply-02" {
+		t.Fatalf("first history content = %#v, want reply-02", first["content"])
+	}
+	last := messages[len(messages)-1].(map[string]interface{})
+	if last["role"] != "user" || last["content"] != "now" {
+		t.Fatalf("last message = %#v, want user now", last)
 	}
 }
 

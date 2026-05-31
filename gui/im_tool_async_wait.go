@@ -47,12 +47,16 @@ func (h *IMMessageHandler) ensureLocalBgTaskMgr() *coretool.LocalBackgroundTaskM
 // toolBashBackground handles bash(background=true): submit a command to the
 // local background task manager and return immediately with task metadata.
 func (h *IMMessageHandler) toolBashBackground(command, workDir, taskRole string) string {
+	return h.toolBashBackgroundForOwner(command, workDir, taskRole, h.currentRuntimePolicyOwnerID())
+}
+
+func (h *IMMessageHandler) toolBashBackgroundForOwner(command, workDir, taskRole, ownerID string) string {
 	mgr := h.ensureLocalBgTaskMgr()
 	if workDir != "" {
 		workDir = resolvePath(workDir)
 	} else {
 		// When no explicit working_dir, use Project Tab's projectPath if available.
-		workDir = h.projectTabWorkDir()
+		workDir = h.projectTabWorkDirForOwner(ownerID)
 	}
 
 	task, err := mgr.SubmitWithRole(command, workDir, taskRole)
@@ -73,6 +77,7 @@ func (h *IMMessageHandler) toolBashBackground(command, workDir, taskRole string)
 
 // toolAsyncWait handles the async_wait tool: check/wait/kill/list background tasks.
 func (h *IMMessageHandler) toolAsyncWait(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
+	ownerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
 	actionText := stringVal(args, "action")
 	action := normalizeAsyncWaitAction(actionText)
 
@@ -82,7 +87,7 @@ func (h *IMMessageHandler) toolAsyncWait(args map[string]interface{}, onProgress
 	case asyncWaitActionCheck:
 		return h.asyncWaitCheck(mgr, args)
 	case asyncWaitActionWait:
-		return h.asyncWaitWait(mgr, args, onProgress)
+		return h.asyncWaitWaitForOwner(mgr, args, onProgress, ownerID)
 	case asyncWaitActionKill:
 		return h.asyncWaitKill(mgr, args)
 	case asyncWaitActionList:
@@ -112,6 +117,10 @@ func (h *IMMessageHandler) asyncWaitCheck(mgr *coretool.LocalBackgroundTaskManag
 }
 
 func (h *IMMessageHandler) asyncWaitWait(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}, onProgress coretool.ProgressCallback) string {
+	return h.asyncWaitWaitForOwner(mgr, args, onProgress, h.currentRuntimePolicyOwnerID())
+}
+
+func (h *IMMessageHandler) asyncWaitWaitForOwner(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}, onProgress coretool.ProgressCallback, ownerID string) string {
 	taskID := stringVal(args, "task_id")
 	if taskID == "" {
 		return "缺少 task_id 参数"
@@ -136,9 +145,9 @@ func (h *IMMessageHandler) asyncWaitWait(mgr *coretool.LocalBackgroundTaskManage
 
 	// Build a context that cancels when the agent loop is cancelled.
 	ctx := context.Background()
-	if h.currentLoopCtx != nil {
+	if loopCtx := h.runtimeLoopContextForOwner(ownerID); loopCtx != nil {
 		var cancel context.CancelFunc
-		ctx, cancel = h.currentLoopCtx.Context()
+		ctx, cancel = loopCtx.Context()
 		defer cancel()
 	}
 
@@ -148,6 +157,20 @@ func (h *IMMessageHandler) asyncWaitWait(mgr *coretool.LocalBackgroundTaskManage
 	}
 
 	return formatTaskStatus(status)
+}
+
+func (h *IMMessageHandler) runtimeLoopContextForOwner(ownerID string) *LoopContext {
+	if h == nil {
+		return nil
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID != "" {
+		return h.getSessionLoopCtx(ownerID)
+	}
+	h.globalLoopMu.RLock()
+	ctx := h.currentLoopCtx
+	h.globalLoopMu.RUnlock()
+	return ctx
 }
 
 func (h *IMMessageHandler) asyncWaitKill(mgr *coretool.LocalBackgroundTaskManager, args map[string]interface{}) string {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -20,13 +21,13 @@ type RuntimeExecutor interface {
 // RuntimeAPI provides HTTP handlers for workflow runtime operations:
 // initiation, withdrawal, confirmation, and directory queries.
 type RuntimeAPI struct {
-	executor           RuntimeExecutor
-	instanceStore      InstanceStore
-	auditStore         AuditStore
-	formValidator      *FormValidator
-	workflowStore      WorkflowStore
-	withdrawalHandler  *WithdrawalHandler
-	directoryService   *DirectoryService
+	executor          RuntimeExecutor
+	instanceStore     InstanceStore
+	auditStore        AuditStore
+	formValidator     *FormValidator
+	workflowStore     WorkflowStore
+	withdrawalHandler *WithdrawalHandler
+	directoryService  *DirectoryService
 }
 
 // NewRuntimeAPI creates a new RuntimeAPI with the given dependencies.
@@ -81,6 +82,18 @@ func (api *RuntimeAPI) RegisterRoutes(mux *http.ServeMux, auth func(http.Handler
 
 // --- Request/Response types for Initiation ---
 
+// maxConfirmBodyBytes bounds the confirm endpoint's request body read. The only
+// payload is a short notes string (the tracker truncates notes to 2000 runes),
+// so 64 KiB is a generous ceiling that still prevents an unbounded allocation
+// from a hostile or runaway client.
+const maxConfirmBodyBytes = 64 << 10
+
+// maxInitiateBodyBytes bounds the initiation endpoint's request body read. The
+// payload is form_data validated against the workflow's schema; 1 MiB is a
+// generous ceiling for form submissions that still prevents an unbounded
+// allocation from a hostile or runaway client.
+const maxInitiateBodyBytes = 1 << 20
+
 // InitiateWorkflowRequest is the payload for creating a new workflow instance.
 type InitiateWorkflowRequest struct {
 	FormData map[string]interface{} `json:"form_data"`
@@ -122,8 +135,12 @@ func (api *RuntimeAPI) handleInitiateWorkflow(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 3. Parse request body
+	// 3. Parse request body. The read is bounded so a hostile or runaway client
+	// cannot force an unbounded allocation; an over-limit body fails the decode
+	// and is reported as 400 like any other malformed input. The limit is
+	// generous for form submissions (the only payload here).
 	var req InitiateWorkflowRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxInitiateBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber() // preserve number precision for form validation
 	if err := decoder.Decode(&req); err != nil {
@@ -261,11 +278,110 @@ func (api *RuntimeAPI) handleWithdrawInstance(w http.ResponseWriter, r *http.Req
 }
 
 func (api *RuntimeAPI) handleConfirm(w http.ResponseWriter, r *http.Request) {
-	apiWriteError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "confirmation not yet implemented")
+	// 1. Extract confirmation_id from URL path parameter {id}.
+	confirmationID := r.PathValue("id")
+	if confirmationID == "" {
+		apiWriteError(w, http.StatusBadRequest, "INVALID_INPUT", "confirmation id is required")
+		return
+	}
+
+	// 2. Authenticate the recipient.
+	userID := getUserIDFromContext(r)
+	if userID == "" {
+		apiWriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return
+	}
+
+	// 3. Resolve the confirmation store (wired via the directory service).
+	confirmStore := api.confirmationStore()
+	if confirmStore == nil {
+		apiWriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "confirmation store not configured")
+		return
+	}
+
+	// 4. Parse optional {notes} from the request body. An empty body is allowed.
+	// The read is bounded (the only payload is a short notes string, which the
+	// tracker later truncates to 2000 runes) so a hostile or runaway client
+	// cannot force an unbounded allocation here.
+	var req struct {
+		Notes string `json:"notes"`
+	}
+	if r.Body != nil {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, maxConfirmBodyBytes))
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				apiWriteError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body: "+err.Error())
+				return
+			}
+		}
+	}
+
+	// 5. Call the existing ConfirmationTracker.Confirm. The tracker is constructed
+	// from the wired store and audit store so its validation (recipient match,
+	// pending status, notes truncation) and audit-event emission are unchanged.
+	tracker := NewConfirmationTracker(confirmStore, api.instanceStore, nil, api.auditStore)
+	err := tracker.Confirm(r.Context(), confirmationID, userID, req.Notes)
+	if err == nil {
+		apiWriteJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":              true,
+			"confirmation_id": confirmationID,
+			"status":          string(ConfirmConfirmed),
+		})
+		return
+	}
+
+	// 6. Map sentinel errors to HTTP status codes.
+	switch {
+	case errors.Is(err, ErrConfirmationNotFound):
+		apiWriteError(w, http.StatusNotFound, "NOT_FOUND", "confirmation not found")
+	case errors.Is(err, ErrRecipientMismatch):
+		apiWriteError(w, http.StatusForbidden, "FORBIDDEN", "user is not the recipient of this confirmation")
+	case errors.Is(err, ErrAlreadyConfirmed):
+		apiWriteError(w, http.StatusConflict, "CONFLICT", "confirmation is not pending")
+	default:
+		apiWriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+	}
 }
 
 func (api *RuntimeAPI) handleListPendingConfirmations(w http.ResponseWriter, r *http.Request) {
-	apiWriteError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "pending confirmations not yet implemented")
+	// 1. Authenticate the user.
+	userID := getUserIDFromContext(r)
+	if userID == "" {
+		apiWriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return
+	}
+
+	// 2. Resolve the confirmation store (wired via the directory service).
+	confirmStore := api.confirmationStore()
+	if confirmStore == nil {
+		apiWriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "confirmation store not configured")
+		return
+	}
+
+	// 3. Call ConfirmationStore.ListPending and return the list.
+	confirmations, err := confirmStore.ListPending(r.Context(), userID)
+	if err != nil {
+		apiWriteError(w, http.StatusInternalServerError, "QUERY_FAILED", "failed to list pending confirmations: "+err.Error())
+		return
+	}
+	if confirmations == nil {
+		confirmations = []Confirmation{}
+	}
+
+	apiWriteJSON(w, http.StatusOK, map[string]interface{}{
+		"confirmations": confirmations,
+		"total":         len(confirmations),
+	})
+}
+
+// confirmationStore returns the ConfirmationStore wired through the directory
+// service, or nil if the directory service has not been configured. The store
+// is the single source the rest of the runtime uses for confirmation records.
+func (api *RuntimeAPI) confirmationStore() ConfirmationStore {
+	if api.directoryService == nil {
+		return nil
+	}
+	return api.directoryService.confirmStore
 }
 
 func (api *RuntimeAPI) handleMyInitiated(w http.ResponseWriter, r *http.Request) {

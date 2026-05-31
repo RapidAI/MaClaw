@@ -323,14 +323,16 @@ func (s *Session) Escalate(e Escalation) error {
 }
 
 func (s *Session) ReviewSummary(proposalID string) ReviewSummary {
-	latest := map[string]ReviewPosition{}
+	latest := map[string]Review{}
 	for _, r := range s.Reviews {
 		if r.ProposalID == proposalID {
-			latest[r.ReviewerID] = r.Position
+			latest[participantIdentityKey(r.ReviewerID)] = r
 		}
 	}
 	out := ReviewSummary{ReviewedBy: make([]string, 0, len(latest))}
-	for reviewer, pos := range latest {
+	for _, review := range latest {
+		reviewer := strings.TrimSpace(review.ReviewerID)
+		pos := review.Position
 		out.ReviewedBy = append(out.ReviewedBy, reviewer)
 		switch pos {
 		case ReviewApprove:
@@ -352,7 +354,7 @@ func (s *Session) PolicySatisfied(proposalID string) bool {
 	if summary.Rejections > 0 || summary.Concerns > 0 {
 		return false
 	}
-	participants := len(s.Participants)
+	participants := s.distinctParticipantCount()
 	if participants == 0 {
 		return false
 	}
@@ -360,6 +362,20 @@ func (s *Session) PolicySatisfied(proposalID string) bool {
 		return summary.Approvals == participants
 	}
 	return summary.Approvals > participants/2
+}
+
+func (s *Session) distinctParticipantCount() int {
+	if s == nil {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	for _, participant := range s.Participants {
+		key := participantIdentityKey(participant.ID)
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 func (s *Session) ensureOpen() error {
@@ -384,17 +400,30 @@ func (s *Session) findProposal(id string) *Proposal {
 }
 
 func (s *Session) approvers(proposalID string) []string {
-	latest := map[string]ReviewPosition{}
+	latest := map[string]Review{}
 	for _, r := range s.Reviews {
 		if r.ProposalID == proposalID {
-			latest[r.ReviewerID] = r.Position
+			latest[participantIdentityKey(r.ReviewerID)] = r
 		}
 	}
 	out := []string{}
-	for reviewer, pos := range latest {
-		if pos == ReviewApprove {
-			out = append(out, reviewer)
+	for _, review := range latest {
+		if review.Position == ReviewApprove {
+			out = append(out, strings.TrimSpace(review.ReviewerID))
 		}
 	}
+	slices.Sort(out)
 	return out
+}
+
+func participantIdentityKey(participantID string) string {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" {
+		return ""
+	}
+	cleaned := strings.NewReplacer("/", "_", "\\", "_", " ", "_", "-", "_").Replace(participantID)
+	if len(cleaned) > 3 && strings.EqualFold(cleaned[:3], "ve_") {
+		cleaned = cleaned[3:]
+	}
+	return strings.ToLower(strings.TrimSpace(cleaned))
 }

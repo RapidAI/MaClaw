@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 type OpsCommandRisk string
@@ -196,6 +198,16 @@ func ValidateToolCallByPolicyWithApproval(policy ToolFilterPolicy, name string, 
 
 func validateReadOnlyOpsToolCall(name string, args map[string]interface{}) error {
 	switch strings.TrimSpace(name) {
+	case "memory":
+		return validateReadOnlyMemoryToolCall(args)
+	case "office":
+		action := strings.TrimSpace(stringArg(args, "action"))
+		switch action {
+		case "generate_pdf", "read_excel", "read_pptx":
+			return nil
+		default:
+			return fmt.Errorf("office action %s is not allowed by the current workflow tool policy", displayOpsAction(action))
+		}
 	case "bash":
 		command := stringArg(args, "command")
 		if strings.TrimSpace(command) == "" {
@@ -222,6 +234,20 @@ func validateReadOnlyOpsToolCall(name string, args map[string]interface{}) error
 		default:
 			return fmt.Errorf("ssh action %s is not allowed before the ops risk-policy gate", displayOpsAction(action))
 		}
+	}
+	return nil
+}
+
+func validateReadOnlyMemoryToolCall(args map[string]interface{}) error {
+	action := memory.NormalizeMemoryToolAction(stringArg(args, "action"))
+	if !action.IsRecallOnlyAllowed() {
+		return fmt.Errorf("memory action %s changes memory state or is not allowed by the current workflow tool policy", displayOpsAction(string(action)))
+	}
+	if action == memory.MemoryToolActionThemes && boolArg(args, "apply") {
+		return fmt.Errorf("memory action themes apply changes memory state and is not allowed by the current workflow tool policy")
+	}
+	if action == memory.MemoryToolActionCandidates && boolArg(args, "apply") {
+		return fmt.Errorf("memory action candidates apply changes memory state and is not allowed by the current workflow tool policy")
 	}
 	return nil
 }
@@ -1041,5 +1067,13 @@ func stringArg(args map[string]interface{}, key string) string {
 		return ""
 	}
 	v, _ := args[key].(string)
+	return v
+}
+
+func boolArg(args map[string]interface{}, key string) bool {
+	if args == nil {
+		return false
+	}
+	v, _ := args[key].(bool)
 	return v
 }

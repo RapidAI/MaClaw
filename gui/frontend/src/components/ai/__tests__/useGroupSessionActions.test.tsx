@@ -58,6 +58,56 @@ describe("useGroupSessionActions", () => {
         expect(availability?.available.map((ve) => ve.id)).toEqual(["profile-new"]);
     });
 
+    it("filters already-added participants across ve aliases", async () => {
+        const listVirtualEmployees = vi.fn().mockResolvedValue([
+            { id: "profile-ve", machine_id: "machine-ve", name: "Already added", online_status: "online" },
+            { id: "profile-new", machine_id: "machine-new", name: "New Bot", online_status: "online" },
+        ]);
+        const { result } = renderHook(() => useGroupSessionActions({
+            lang: "en",
+            listVirtualEmployees,
+            initiateConversation: vi.fn().mockResolvedValue({ session_id: "session-1" }),
+        }));
+
+        let availability: Awaited<ReturnType<typeof result.current.checkInviteAvailability>> | undefined;
+        await act(async () => {
+            availability = await result.current.checkInviteAvailability({
+                sessionId: "session-1",
+                veId: "ve-a",
+                participants: ["ve-machine-ve"],
+                maxParticipants: 5,
+            });
+        });
+
+        expect(availability?.success).toBe(true);
+        expect(availability?.available.map((ve) => ve.id)).toEqual(["profile-new"]);
+    });
+
+    it("does not count duplicate VE aliases against group capacity", async () => {
+        const listVirtualEmployees = vi.fn().mockResolvedValue([
+            { id: "profile-new", machine_id: "machine-new", name: "New Bot", online_status: "online" },
+        ]);
+        const { result } = renderHook(() => useGroupSessionActions({
+            lang: "en",
+            listVirtualEmployees,
+            initiateConversation: vi.fn().mockResolvedValue({ session_id: "session-1" }),
+        }));
+
+        let availability: Awaited<ReturnType<typeof result.current.checkInviteAvailability>> | undefined;
+        await act(async () => {
+            availability = await result.current.checkInviteAvailability({
+                sessionId: "session-1",
+                veId: "ve-a",
+                participants: ["machine-ve", "ve-machine-ve"],
+                maxParticipants: 2,
+            });
+        });
+
+        expect(availability?.success).toBe(true);
+        expect(availability?.available.map((ve) => ve.id)).toEqual(["profile-new"]);
+        expect(result.current.feedback?.message).not.toBe("Group is full (max 2)");
+    });
+
     it("detects an existing local AI participant case-insensitively", async () => {
         const registerLocalExecutor = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local AI" });
         const { result } = renderHook(() => useGroupSessionActions({ lang: "en", registerLocalExecutor }));

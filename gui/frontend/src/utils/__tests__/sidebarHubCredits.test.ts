@@ -17,7 +17,7 @@ describe('normalizeSidebarHubCredits', () => {
         });
     });
 
-    it('keeps active service status even when one grant is period-limited', () => {
+    it('surfaces active period limit so the sidebar can warn about the current route', () => {
         const credits = normalizeSidebarHubCredits({
             active: true,
             credit_grants: [
@@ -27,11 +27,12 @@ describe('normalizeSidebarHubCredits', () => {
         });
 
         expect(credits?.authorized).toBe(true);
-        expect(credits?.status).toBe('active');
+        expect(credits?.serviceActive).toBe(true);
+        expect(credits?.status).toBe('period_limited');
         expect(credits?.total).toBe(200);
         expect(credits?.remaining).toBe(189);
         expect(credits?.expiresAt).toBe('2026-05-06T00:00:00Z');
-        expect(credits?.retryAfterSeconds).toBe(0);
+        expect(credits?.retryAfterSeconds).toBe(3600);
     });
 
     it('surfaces period limit retry metadata when all official routes are limited', () => {

@@ -381,22 +381,23 @@ type coreToolSpec struct {
 
 func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req ExecuteRequest) (*AgentCapabilities, error) {
 	_ = ctx
-	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer}
+	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil), req.OpsApprovedCommands...)}
 	return &AgentCapabilities{
 		Executor:          "core_agent",
 		SupportsSessions:  true,
 		SupportsAskUser:   true,
-		SupportsSSH:       cb.canUseSSH(),
-		SupportsLocalBash: cb.canUseLocalBash(),
+		SupportsSSH:       cb.canUseSSH() && cb.IsToolAllowed("ssh"),
+		SupportsLocalBash: cb.canUseLocalBash() && cb.IsToolAllowed("bash"),
 		Tools:             cb.toolCapabilities(),
 		Metadata: map[string]string{
 			"workspace_dir":              req.Instance.Workspace,
-			"bash_enabled":               boolString(cb.canUseLocalBash()),
+			"bash_enabled":               boolString(cb.canUseLocalBash() && cb.IsToolAllowed("bash")),
 			"bash_scope_tenant_id":       strings.TrimSpace(e.LocalBashTenantID),
 			"bash_scope_user_id":         strings.TrimSpace(e.LocalBashUserID),
 			"bash_trusted_single_user":   boolString(e.LocalBashTrustedSingleUser),
-			"ssh_direct_connect_enabled": boolString(e.AllowDirectSSH),
-			"ssh_file_transfer_enabled":  boolString(e.AllowSSHFileTransfer),
+			"ssh_direct_connect_enabled": boolString(e.AllowDirectSSH && cb.IsToolAllowed("ssh")),
+			"ssh_file_transfer_enabled":  boolString(e.AllowSSHFileTransfer && cb.IsToolAllowed("ssh")),
+			"tool_policy":                string(req.ToolPolicy),
 		},
 	}, nil
 }
@@ -780,11 +781,17 @@ func (c *coreAgentCallbacks) toolCapabilities() []AgentToolCapability {
 	specs := c.coreToolSpecs()
 	out := make([]AgentToolCapability, 0, len(specs))
 	for _, spec := range specs {
+		enabled := spec.Enabled
+		disabledReason := spec.DisabledReason
+		if enabled && !c.IsToolAllowed(spec.Name) {
+			enabled = false
+			disabledReason = "disabled by current workflow tool policy"
+		}
 		out = append(out, AgentToolCapability{
 			Name:           spec.Name,
 			Description:    spec.Description,
-			Enabled:        spec.Enabled,
-			DisabledReason: spec.DisabledReason,
+			Enabled:        enabled,
+			DisabledReason: disabledReason,
 			Parameters:     spec.Parameters,
 		})
 	}

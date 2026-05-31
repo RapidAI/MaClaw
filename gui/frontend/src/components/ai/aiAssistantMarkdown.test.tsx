@@ -1,10 +1,29 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
 import { lightTheme } from "./aiAssistantPanelTheme";
 
+const { openFileOrShowInFolderMock, showItemInFolderMock } = vi.hoisted(() => ({
+    openFileOrShowInFolderMock: vi.fn(async () => undefined),
+    showItemInFolderMock: vi.fn(async () => undefined),
+}));
+
+vi.mock("../../../wailsjs/go/main/App", () => ({
+    OpenFileOrShowInFolder: openFileOrShowInFolderMock,
+    ShowItemInFolder: showItemInFolderMock,
+}));
+
+vi.mock("../../../wailsjs/runtime", () => ({
+    BrowserOpenURL: vi.fn(),
+}));
+
 describe("renderContentWithCodeBlocks", () => {
+    beforeEach(() => {
+        openFileOrShowInFolderMock.mockClear();
+        showItemInFolderMock.mockClear();
+    });
+
     it("normalizes escaped newline sequences before rendering", () => {
         render(<div>{renderContentWithCodeBlocks("First line\\nSecond line\\nThird line", lightTheme)}</div>);
 
@@ -105,6 +124,69 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("多云")).toBeTruthy();
     });
 
+    it("splits compact markdown headings after sentence text", () => {
+        render(<div>{renderContentWithCodeBlocks("previous text###Next heading", lightTheme)}</div>);
+
+        expect(screen.getByText("previous text")).toBeTruthy();
+        expect(screen.getByText("Next heading")).toBeTruthy();
+    });
+
+    it("supports compact markdown heading levels without keyword lists", () => {
+        render(<div>{renderContentWithCodeBlocks("Intro##Second level\nBody#####Fifth level", lightTheme)}</div>);
+
+        expect(screen.getByText("Intro")).toBeTruthy();
+        expect(screen.getByText("Second level")).toBeTruthy();
+        expect(screen.getByText("Body")).toBeTruthy();
+        expect(screen.getByText("Fifth level")).toBeTruthy();
+    });
+
+    it("does not split compact heading markers before digits or punctuation", () => {
+        render(<div>{renderContentWithCodeBlocks("issue ##42 and value###.1 remain inline", lightTheme)}</div>);
+
+        expect(screen.getByText("issue ##42 and value###.1 remain inline")).toBeTruthy();
+    });
+
+    it("does not split compact heading markers inside inline code", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("Use `foo###bar` then continue", lightTheme)}</div>);
+
+        expect(container.querySelector("code")?.textContent).toBe("foo###bar");
+        expect(screen.getByText(/Use/).textContent).toContain("foo###bar");
+    });
+
+    it("does not split compact heading markers inside URLs", () => {
+        render(<div>{renderContentWithCodeBlocks("See https://example.com/a###anchor now", lightTheme)}</div>);
+
+        expect(screen.getByText("See https://example.com/a###anchor now")).toBeTruthy();
+    });
+
+    it("does not split compact heading markers inside markdown links", () => {
+        render(<div>{renderContentWithCodeBlocks("Open [foo###bar](https://example.com/a###anchor) now", lightTheme)}</div>);
+
+        expect(screen.getByText(/Open/).textContent).toContain("foo###bar");
+        expect(screen.getByText("foo###bar")).toBeTruthy();
+    });
+
+    it("does not split compact heading markers inside markdown image syntax", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("Preview ![foo###bar](https://example.com/a###anchor.png) now", lightTheme)}</div>);
+
+        expect(screen.getByText(/Preview/).textContent).toContain("foo###bar");
+        expect(container.querySelectorAll("div")).toHaveLength(2);
+    });
+
+    it("does not split compact heading markers inside inline emphasis", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("Keep **foo###bar** and *baz###qux* inline", lightTheme)}</div>);
+
+        expect(container.querySelector("strong")?.textContent).toBe("foo###bar");
+        expect(container.querySelector("em")?.textContent).toBe("baz###qux");
+    });
+
+    it("does not corrupt text that resembles protected markdown placeholder tokens", () => {
+        render(<div>{renderContentWithCodeBlocks("Keep __MACLAW_MD_PROTECTED__0__ and `foo###bar`", lightTheme)}</div>);
+
+        expect(screen.getByText(/Keep/).textContent).toContain("__MACLAW_MD_PROTECTED__0__");
+        expect(screen.getByText(/Keep/).textContent).toContain("foo###bar");
+    });
+
     it("does not treat ordinary hashtags as compact markdown headings", () => {
         render(<div>{renderContentWithCodeBlocks("#topic remains inline", lightTheme)}</div>);
 
@@ -128,6 +210,64 @@ describe("renderContentWithCodeBlocks", () => {
 
         expect(screen.getByTitle("C:\\Users\\demo\\notes\\report.pdf")).toBeTruthy();
         expect(screen.queryByText("Users")).toBeNull();
+    });
+
+    it("renders single-quoted Windows folder paths in bold text as clickable links", () => {
+        render(<div>{renderContentWithCodeBlocks("Saved to: **'C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\'**", lightTheme)}</div>);
+
+        const link = screen.getByTitle("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
+        expect(link.tagName).toBe("A");
+        expect(link.textContent).toContain("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
+        expect(link.textContent).not.toContain("'");
+        fireEvent.click(link);
+        expect(openFileOrShowInFolderMock).toHaveBeenCalledWith("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
+    });
+
+    it("renders single-quoted bare Windows folder paths as clickable links", () => {
+        render(<div>{renderContentWithCodeBlocks("Saved to: 'C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\', open it.", lightTheme)}</div>);
+
+        const link = screen.getByTitle("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
+        expect(link.tagName).toBe("A");
+        fireEvent.click(link);
+        expect(openFileOrShowInFolderMock).toHaveBeenCalledWith("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
+    });
+
+    it("renders single-quoted Windows file paths as clickable links", () => {
+        render(<div>{renderContentWithCodeBlocks("Saved file: 'C:\\Users\\ma139\\Desktop\\report.pdf', open it.", lightTheme)}</div>);
+
+        const link = screen.getByTitle("C:\\Users\\ma139\\Desktop\\report.pdf");
+        expect(link.tagName).toBe("A");
+        expect(link.textContent).not.toContain("'");
+        fireEvent.click(link);
+        expect(openFileOrShowInFolderMock).toHaveBeenCalledWith("C:\\Users\\ma139\\Desktop\\report.pdf");
+    });
+
+    it("keeps sentence punctuation out of quoted Windows path links", () => {
+        render(<div>{renderContentWithCodeBlocks("Saved file: **'C:\\Users\\ma139\\Desktop\\report.pdf'.**", lightTheme)}</div>);
+
+        const link = screen.getByTitle("C:\\Users\\ma139\\Desktop\\report.pdf");
+        expect(link.tagName).toBe("A");
+        expect(link.textContent).toContain("C:\\Users\\ma139\\Desktop\\report.pdf");
+        expect(link.textContent).not.toContain("'");
+    });
+
+    it("uses the cleaned path when falling back to ShowItemInFolder", async () => {
+        openFileOrShowInFolderMock.mockRejectedValueOnce(new Error("open failed"));
+        render(<div>{renderContentWithCodeBlocks("Saved to: 'C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\', open it.", lightTheme)}</div>);
+
+        fireEvent.click(screen.getByTitle("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\"));
+
+        await waitFor(() => {
+            expect(showItemInFolderMock).toHaveBeenCalledWith("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
+        });
+    });
+
+    it("renders single-quoted Windows paths inside code blocks without keeping quote wrappers", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("```text\n'C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\'\n```", lightTheme)}</div>);
+
+        const link = screen.getByTitle("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
+        expect(link.tagName).toBe("A");
+        expect(container.querySelector("code")?.textContent).toBe("C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\");
     });
 
     it("renders GitHub-style pipe tables without leading outer pipes", () => {
@@ -230,5 +370,25 @@ describe("renderContentWithCodeBlocks", () => {
         expect(container.querySelector("table")).toBeTruthy();
         expect(screen.getByText("天气")).toBeTruthy();
         expect(screen.getByText("100%")).toBeTruthy();
+    });
+
+    it("repairs prose accidentally placed in the first table header by structure", () => {
+        render(
+            <div>{renderContentWithCodeBlocks("| This introductory sentence should be outside the grid | Column A | Column B |\n| --- | --- | --- |\n| Alpha | Beta | trailing note |", lightTheme)}</div>
+        );
+
+        expect(screen.getByTestId("markdown-table-prefix").textContent).toContain("introductory sentence");
+        expect(screen.getByTestId("markdown-table-note").textContent).toContain("trailing note");
+        expect(screen.getByText("Column A")).toBeTruthy();
+        expect(screen.getByTestId("markdown-table").querySelector("thead")?.textContent).not.toContain("introductory sentence");
+    });
+
+    it("keeps long title-like table headers inside normal tables", () => {
+        render(
+            <div>{renderContentWithCodeBlocks("| Internationalization Compatibility Matrix | Column A | Column B |\n| --- | --- | --- |\n| Alpha | Beta | Gamma |", lightTheme)}</div>
+        );
+
+        expect(screen.queryByTestId("markdown-table-prefix")).toBeNull();
+        expect(screen.getByText("Internationalization Compatibility Matrix")).toBeTruthy();
     });
 });

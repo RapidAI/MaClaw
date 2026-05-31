@@ -53,6 +53,11 @@ type WorkflowStore interface {
 
 	// CreateVersion creates a new workflow version.
 	CreateVersion(ctx context.Context, ver *WorkflowVersion) error
+	// UpdateVersion updates an existing draft version in place — its graph and
+	// version number — leaving the status as draft. It is used by SaveDraft's
+	// "update existing draft" branch so that re-saving a draft updates the same
+	// version row rather than creating a new one.
+	UpdateVersion(ctx context.Context, ver *WorkflowVersion) error
 	// GetVersion retrieves a workflow version by ID.
 	GetVersion(ctx context.Context, id string) (*WorkflowVersion, error)
 	// GetPublishedVersion returns the currently published version for a workflow.

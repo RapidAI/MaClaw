@@ -25,7 +25,7 @@ import (
 //
 // This ensures MCP tools are available on the FIRST agent loop iteration,
 // not the second. The tradeoff is up to 5s latency on the first call after
-// process restart — acceptable because it only happens once per user per
+// process restart; acceptable because it only happens once per user per
 // process lifetime (subsequent calls hit the cooldown fast path).
 type MCPReadinessManager struct {
 	svc *Service
@@ -76,6 +76,7 @@ func (m *MCPReadinessManager) EnsureReady(ctx context.Context, p Principal) (cor
 	if err != nil {
 		return corelib.AppConfig{}, false
 	}
+	cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
 	if len(cfg.AppConfig.LocalMCPServers) == 0 && len(cfg.AppConfig.MCPServers) == 0 {
 		return cfg.AppConfig, true
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +77,7 @@ func TestGroupDiscussionHistoryStoreCacheSummariesNormalizesRelationAndReadonly(
 
 	ctx := context.Background()
 	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{
+		{ID: "role-initiator", Role: "initiator", Status: "open", Readonly: true},
 		{ID: "role-review", Role: "review", Status: "open", Readonly: false},
 		{ID: "closed-mine", LocalRelation: "initiated_by_me", Status: "closed", Readonly: false},
 	}, nil); err != nil {
@@ -92,10 +94,94 @@ func TestGroupDiscussionHistoryStoreCacheSummariesNormalizesRelationAndReadonly(
 	if got := byID["role-review"]; got.LocalRelation != "owned_ve_invited" || !got.Readonly {
 		t.Fatalf("role-review not normalized: %+v", got)
 	}
+	if got := byID["role-initiator"]; got.LocalRelation != "initiated_by_me" || got.Readonly {
+		t.Fatalf("role-initiator not normalized writable: %+v", got)
+	}
 	if got := byID["closed-mine"]; got.LocalRelation != "initiated_by_me" || !got.Readonly {
 		t.Fatalf("closed-mine not normalized: %+v", got)
 	}
 }
+
+func TestGroupDiscussionHistoryStoreCacheSummariesUpdatesCachedDetailTopic(t *testing.T) {
+	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ID: "disc-rename", LocalRelation: "initiated_by_me", Readonly: true, Status: "open", Topic: "Old group", ParticipantIDs: []string{"me", "ve-a"}, UpdatedAt: time.Now().UTC()},
+		Messages:   []a2a.Message{{ID: "m1", FromID: "me", Content: "hello"}},
+	}
+	if err := store.CacheDetail(ctx, detail, nil); err != nil {
+		t.Fatalf("CacheDetail: %v", err)
+	}
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "disc-rename", Status: "open", Topic: "Renamed group", ParticipantIDs: []string{"me", "ve-a"}, MessageCount: 1, UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries rename: %v", err)
+	}
+	summaries, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].LocalRelation != "initiated_by_me" || summaries[0].Readonly {
+		t.Fatalf("cached summary access metadata = %+v, want writable initiated_by_me", summaries)
+	}
+	cached, ok, err := store.CachedDetail(ctx, "disc-rename")
+	if err != nil || !ok {
+		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
+	}
+	if cached.Discussion.Topic != "Renamed group" || cached.Discussion.Readonly || len(cached.Messages) != 1 || cached.Messages[0].Content != "hello" {
+		t.Fatalf("cached detail after rename = %+v", cached)
+	}
+}
+
+func TestGroupDiscussionHistoryStoreCacheSummariesPreservesStatusForBareSummary(t *testing.T) {
+	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "disc-bare", LocalRelation: "initiated_by_me", Status: "open", Topic: "Old", Readonly: false}}, nil); err != nil {
+		t.Fatalf("CacheSummaries initial: %v", err)
+	}
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "disc-bare", Topic: "New"}}, nil); err != nil {
+		t.Fatalf("CacheSummaries bare: %v", err)
+	}
+	cached, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(cached) != 1 || cached[0].Topic != "New" || cached[0].Status != "open" || cached[0].LocalRelation != "initiated_by_me" || cached[0].Readonly {
+		t.Fatalf("bare summary lost access metadata: %+v", cached)
+	}
+}
+
+func TestGroupDiscussionHistoryStoreCacheSummariesPreservesStatusForRoleOnlySummary(t *testing.T) {
+	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "disc-closed-role", LocalRelation: "initiated_by_me", Role: "initiator", Status: "closed", Readonly: true}}, nil); err != nil {
+		t.Fatalf("CacheSummaries initial: %v", err)
+	}
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "disc-closed-role", Role: "initiator", Topic: "Still closed"}}, nil); err != nil {
+		t.Fatalf("CacheSummaries role-only: %v", err)
+	}
+	cached, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(cached) != 1 || cached[0].Status != "closed" || !cached[0].Readonly {
+		t.Fatalf("role-only summary lost closed status: %+v", cached)
+	}
+}
+
 func TestGroupDiscussionHistoryStoreNormalizesReadonlyOnCachedRead(t *testing.T) {
 	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {
@@ -196,7 +282,9 @@ func TestIsWritableHistoryDiscussionSummary(t *testing.T) {
 		{name: "initiated closed", summary: a2a.HubDiscussionSummary{ID: "closed", LocalRelation: "initiated_by_me", Status: "closed"}, want: false},
 		{name: "invited open readonly", summary: a2a.HubDiscussionSummary{ID: "invited", LocalRelation: "owned_ve_invited", Readonly: true, Status: "open"}, want: false},
 		{name: "unknown open relation", summary: a2a.HubDiscussionSummary{ID: "unknown", Status: "open"}, want: false},
-		{name: "initiator role without local relation stays read-only", summary: a2a.HubDiscussionSummary{ID: "role", Role: "initiator", Status: "open"}, want: false},
+		{name: "initiator role without local relation", summary: a2a.HubDiscussionSummary{ID: "role", Role: "initiator", Status: "open"}, want: true},
+		{name: "initiator role without status", summary: a2a.HubDiscussionSummary{ID: "role-no-status", Role: "initiator"}, want: true},
+		{name: "initiator role clears stale readonly", summary: a2a.HubDiscussionSummary{ID: "role-stale", Role: "initiator", Status: "open", Readonly: true}, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -426,6 +514,40 @@ func TestGroupDiscussionHistoryStoreSeparatesAttachmentsByDiscussion(t *testing.
 	}
 }
 
+func TestGroupDiscussionHistoryStoreRenameCachedDiscussionPreservesAccessAndMessages(t *testing.T) {
+	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ID: "disc-local-rename", LocalRelation: "initiated_by_me", Status: "open", Topic: "Old title", UpdatedAt: time.Now().UTC()},
+		Messages:   []a2a.Message{{ID: "m1", FromID: "me", Content: "keep me"}},
+	}
+	if err := store.CacheDetail(ctx, detail, nil); err != nil {
+		t.Fatalf("CacheDetail: %v", err)
+	}
+	if err := store.RenameCachedDiscussion(ctx, "disc-local-rename", "New title"); err != nil {
+		t.Fatalf("RenameCachedDiscussion: %v", err)
+	}
+	summaries, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].Topic != "New title" || summaries[0].LocalRelation != "initiated_by_me" || summaries[0].Readonly {
+		t.Fatalf("renamed summaries = %+v", summaries)
+	}
+	cached, ok, err := store.CachedDetail(ctx, "disc-local-rename")
+	if err != nil || !ok {
+		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
+	}
+	if cached.Discussion.Topic != "New title" || len(cached.Messages) != 1 || cached.Messages[0].Content != "keep me" {
+		t.Fatalf("renamed detail = %+v", cached)
+	}
+}
+
 func TestGroupDiscussionHistoryStoreMigratesLegacyAttachmentPrimaryKey(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "history.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -580,7 +702,7 @@ func TestMergeGroupDiscussionSummariesSortsByUpdatedAt(t *testing.T) {
 	if len(got) != 2 || got[0].ID != "newer-cached" || got[1].ID != "older-live" {
 		t.Fatalf("merged summaries not sorted by updated_at desc: %+v", got)
 	}
-	if got[0].LocalRelation != "" || !got[0].Readonly || got[1].LocalRelation != "owned_ve_invited" || !got[1].Readonly {
+	if got[0].LocalRelation != "initiated_by_me" || got[0].Readonly || got[1].LocalRelation != "owned_ve_invited" || !got[1].Readonly {
 		t.Fatalf("merged summaries not normalized: %+v", got)
 	}
 }
@@ -615,6 +737,10 @@ func TestNormalizeHistorySummaryReadonlyForInvitedAndClosed(t *testing.T) {
 	closed := normalizeHistorySummaryReadonly(a2a.HubDiscussionSummary{ID: "closed", LocalRelation: "initiated_by_me", Status: "closed"})
 	if !closed.Readonly {
 		t.Fatalf("closed initiated session should be readonly: %+v", closed)
+	}
+	initiated := normalizeHistorySummaryReadonly(a2a.HubDiscussionSummary{ID: "initiated", LocalRelation: "initiated_by_me", Status: "open", Readonly: true})
+	if initiated.Readonly {
+		t.Fatalf("open initiated session should clear stale readonly: %+v", initiated)
 	}
 }
 
@@ -726,6 +852,267 @@ func TestGroupDiscussionSendHistoryMessageNormalizesLocalMaclawTarget(t *testing
 	}
 }
 
+func TestGroupDiscussionSendHistoryMessageDefaultsToFirstRemoteParticipant(t *testing.T) {
+	var gotToIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-default/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-default", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator", ParticipantIDs: []string{"me", "local-maclaw", "anna-machine"}},
+				Session: &a2a.Session{Participants: []a2a.Participant{
+					{ID: "me", RoleCode: "initiator"},
+					{ID: "local-maclaw", RoleCode: "speak"},
+					{ID: "anna-machine", RoleCode: "speak"},
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-default/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			gotToIDs = append([]string(nil), msg.ToIDs...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	if err := app.GroupDiscussionSendHistoryMessage("disc-default", a2a.GroupDiscussionMessage{Content: "continue"}); err != nil {
+		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+	}
+	if len(gotToIDs) != 1 || gotToIDs[0] != "anna-machine" {
+		t.Fatalf("to_ids = %v, want [anna-machine]", gotToIDs)
+	}
+}
+
+func TestGroupDiscussionSendHistoryMessageDefaultsWithDuplicateRemoteAliases(t *testing.T) {
+	var gotToIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-default-alias/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-default-alias", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator", ParticipantIDs: []string{"me", "anna-machine", "ve-anna-machine"}},
+				Session: &a2a.Session{Participants: []a2a.Participant{
+					{ID: "me", RoleCode: "initiator"},
+					{ID: "anna-machine", RoleCode: "speak"},
+					{ID: "ve-anna-machine", RoleCode: "speak"},
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-default-alias/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			gotToIDs = append([]string(nil), msg.ToIDs...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	if err := app.GroupDiscussionSendHistoryMessage("disc-default-alias", a2a.GroupDiscussionMessage{Content: "continue"}); err != nil {
+		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+	}
+	if len(gotToIDs) != 1 || gotToIDs[0] != "anna-machine" {
+		t.Fatalf("to_ids = %v, want [anna-machine]", gotToIDs)
+	}
+}
+
+func TestGroupDiscussionSendHistoryMessageTargetsMultiVEGroup(t *testing.T) {
+	var gotToIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-multi/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-multi", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator", ParticipantIDs: []string{"me", "anna-machine", "xiaoyan-machine"}},
+				Session: &a2a.Session{Participants: []a2a.Participant{
+					{ID: "me", RoleCode: "initiator"},
+					{ID: "anna-machine", RoleCode: "speak"},
+					{ID: "xiaoyan-machine", RoleCode: "speak"},
+					{ID: "local-maclaw", RoleCode: "speak"},
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-multi/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			gotToIDs = append([]string(nil), msg.ToIDs...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	if err := app.GroupDiscussionSendHistoryMessage("disc-multi", a2a.GroupDiscussionMessage{Content: "continue"}); err != nil {
+		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+	}
+	want := []string{"anna-machine", "xiaoyan-machine"}
+	if !reflect.DeepEqual(gotToIDs, want) {
+		t.Fatalf("to_ids = %v, want %v", gotToIDs, want)
+	}
+}
+
+func TestGroupDiscussionSendHistoryMessageDoesNotDefaultUnresolvedMention(t *testing.T) {
+	var gotToIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-unknown/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-unknown", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator", ParticipantIDs: []string{"me", "anna-machine"}},
+				Session:    &a2a.Session{Participants: []a2a.Participant{{ID: "me", RoleCode: "initiator"}, {ID: "anna-machine", RoleCode: "speak"}}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-unknown/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			gotToIDs = append([]string(nil), msg.ToIDs...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	if err := app.GroupDiscussionSendHistoryMessage("disc-unknown", a2a.GroupDiscussionMessage{Content: "@unknown continue"}); err != nil {
+		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+	}
+	if len(gotToIDs) != 0 {
+		t.Fatalf("to_ids = %v, want empty", gotToIDs)
+	}
+}
+
+func TestGroupDiscussionSendHistoryMessageNormalizesGeneratedVETarget(t *testing.T) {
+	var gotToIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-generated/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-generated", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator"},
+				Session:    &a2a.Session{Participants: []a2a.Participant{{ID: "me", RoleCode: "initiator"}, {ID: "m_anna", RoleCode: "speak"}}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-generated/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			gotToIDs = append([]string(nil), msg.ToIDs...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	if err := app.GroupDiscussionSendHistoryMessage("disc-generated", a2a.GroupDiscussionMessage{Content: "@Anna continue", ToIDs: []string{"ve-m_anna"}}); err != nil {
+		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+	}
+	if len(gotToIDs) != 1 || gotToIDs[0] != "m_anna" {
+		t.Fatalf("to_ids = %v, want [m_anna]", gotToIDs)
+	}
+}
+
+func TestGroupDiscussionHistoryDefaultResponderCanonicalizesGeneratedIDs(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ParticipantIDs: []string{"ve-machine-1", "ve-m_anna"}},
+		Session:    &a2a.Session{Participants: []a2a.Participant{{ID: "machine-1", RoleCode: "speak"}, {ID: "m_anna", RoleCode: "speak"}}},
+	}
+	if got := groupDiscussionHistoryDefaultResponderID(detail, "machine-1"); got != "m_anna" {
+		t.Fatalf("default responder = %q, want m_anna", got)
+	}
+}
+
+func TestGroupDiscussionHistoryDefaultResponderSkipsGeneratedLocalIDs(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ParticipantIDs: []string{"ve-machine-1", "ve_local-maclaw", "anna-machine"}},
+	}
+	if got := groupDiscussionHistoryDefaultResponderID(detail, "machine-1"); got != "anna-machine" {
+		t.Fatalf("default responder = %q, want anna-machine", got)
+	}
+}
+
+func TestGroupDiscussionHistoryUnmentionedTargetsRemoteVEsAndSkipsLocalAI(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Session: &a2a.Session{Participants: []a2a.Participant{
+			{ID: "machine-1", RoleCode: "initiator"},
+			{ID: "anna-machine", RoleCode: "speak"},
+			{ID: "xiaoyan-machine", RoleCode: "speak"},
+			{ID: "local-maclaw", RoleCode: "speak"},
+		}},
+	}
+	want := []string{"anna-machine", "xiaoyan-machine"}
+	if got := groupDiscussionHistoryUnmentionedTargetIDs(detail, "machine-1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	if got := groupDiscussionHistoryDefaultResponderID(detail, "machine-1"); got != "" {
+		t.Fatalf("default responder = %q, want empty for multi-VE group", got)
+	}
+}
+
+func TestVEGroupIdentityMatchesGeneratedAliases(t *testing.T) {
+	if !isVEGroupDefaultResponderMatch("machine-1", "ve-machine-1") {
+		t.Fatalf("machine id should match generated hyphen alias")
+	}
+	if !isVEGroupDefaultResponderMatch("ve_machine-1", "machine-1") {
+		t.Fatalf("generated underscore alias should match machine id")
+	}
+	if !isVEGroupLocalAIID("ve-local-maclaw") {
+		t.Fatalf("local AI should match generated hyphen alias")
+	}
+}
+
+func TestCachedVEDirectSessionMatchUsesGeneratedAliases(t *testing.T) {
+	targets := baseVEDirectSessionCandidateIDs("maclaw-b")
+	summary := a2a.HubDiscussionSummary{
+		ID:            "disc-alias",
+		Status:        "open",
+		LocalRelation: "initiated_by_me",
+		ParticipantIDs: []string{
+			"ve-maclaw-a",
+			"ve_maclaw-b",
+		},
+	}
+	if !isCachedVEDirectSessionMatch(summary, "maclaw-a", targets) {
+		t.Fatalf("direct-session match should accept generated aliases")
+	}
+}
+
+func TestGroupDiscussionAnswerMessagesUseParticipantRoleAliases(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Session: &a2a.Session{Participants: []a2a.Participant{
+			{ID: "human-1", RoleCode: "initiator"},
+			{ID: "observer-1", RoleCode: "observe"},
+			{ID: "maclaw-1", RoleCode: "speak"},
+		}},
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "human/1", Kind: a2a.MessageStatement, Content: "start"},
+			{ID: "m2", FromID: "ve_observer-1", Kind: a2a.MessageStatement, Content: "watch"},
+			{ID: "m3", FromID: "ve-maclaw-1", Kind: a2a.MessageStatement, Content: "answer"},
+		},
+	}
+	answers := groupDiscussionAnswerMessagesForDetail(detail)
+	if len(answers) != 1 || answers[0].ID != "m3" {
+		t.Fatalf("answers = %+v, want only aliased speaker", answers)
+	}
+}
+
+func TestGroupDiscussionContributionQualityUsesParticipantAliases(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{Messages: []a2a.Message{{ID: "m1", FromID: "ve-maclaw-1", Kind: a2a.MessageAnswer, Content: "answer"}}}
+	result := GroupDiscussionSummarizeResult{AnswerCount: 1, Confidence: 0.8, ParticipantContributions: map[string]string{"ve_maclaw-1": "useful"}}
+	if got := groupDiscussionContributionQuality(detail, result, "maclaw-1"); got < 0.8 {
+		t.Fatalf("contribution quality = %v, want alias contribution counted", got)
+	}
+}
+
 func TestNormalizeGroupDiscussionHistoryTargetIDs(t *testing.T) {
 	got := normalizeGroupDiscussionHistoryTargetIDs([]string{"", "local-maclaw", "VE-A", "ve-a"}, "machine-1")
 	want := []string{"machine-1", "VE-A"}
@@ -736,6 +1123,15 @@ func TestNormalizeGroupDiscussionHistoryTargetIDs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("targets = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestNormalizeGroupDiscussionHistoryTargetIDsDedupesParticipantAliases(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{Session: &a2a.Session{Participants: []a2a.Participant{{ID: "machine-a", RoleCode: "speak"}}}}
+	want := []string{"machine-a"}
+	got := normalizeGroupDiscussionHistoryTargetIDs([]string{"machine-a", "ve-machine-a", "machine/a", "machine a"}, "local-machine", detail)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("targets = %v, want %v", got, want)
 	}
 }
 

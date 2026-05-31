@@ -748,7 +748,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.llmMissing() {
 					return m, m.routeMissingLLMFromChat()
 				}
-				return m, m.handleChatSend(msg.Text)
+				return m, m.handleChatSend(msg.Text, msg.AgentMode)
 			}
 			if trimmedCmd == "/loop" || strings.HasPrefix(trimmedCmd, "/loop ") {
 				if m.llmMissing() {
@@ -766,14 +766,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (ChatModel.Update handles the Enter key, adds the message, and
 		// returns ChatSendMsg as a Cmd 鈥?Bubble Tea renders View() between
 		// that Update and this one). No artificial delay needed.
-		return m, m.handleChatSend(msg.Text)
+		return m, m.handleChatSend(msg.Text, msg.AgentMode)
 
 	case views.ChatQueueFireMsg:
 		// Pre-input queue auto-fire or manual fire follows the same path as ChatSendMsg.
 		if m.llmMissing() {
 			return m, m.routeMissingLLMFromChat()
 		}
-		return m, m.handleChatSend(msg.Text)
+		return m, m.handleChatSend(msg.Text, msg.AgentMode)
 
 	case views.ChatResponseMsg:
 		if m.activeCb == nil && msg.Error == "cancelled" {
@@ -1350,8 +1350,8 @@ func (m *tuiModel) View() string {
 	return m.root.View()
 }
 
-// handleChatSend runs the agent loop in a goroutine and streams results back.
-func (m *tuiModel) handleChatSend(text string) tea.Cmd {
+// handleChatSend runs either the Agent loop or simple no-tool chat in a goroutine.
+func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 	prog := m.program
 	app := m.app
 	lang := m.uiLang()
@@ -1394,6 +1394,10 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 
 			return views.ChatResponseMsg{Text: responseText}
 		}
+	}
+
+	if !agentMode {
+		return m.handleSimpleChatSend(text)
 	}
 
 	cb := newTuiCallbacks(app, prog)
@@ -1483,6 +1487,58 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 		}
 		return views.ChatResponseMsg{Text: result.Text}
 	}
+}
+
+func (m *tuiModel) handleSimpleChatSend(text string) tea.Cmd {
+	app := m.app
+	lang := m.uiLang()
+	return func() tea.Msg {
+		history := app.history.Load("tui-user")
+		messages := simpleChatMessages(history, text)
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := agent.DoSimpleLLMRequest(app.llmConfig, messages, client, 60*time.Second)
+		if err != nil {
+			return views.ChatResponseMsg{Error: err.Error()}
+		}
+
+		answer := ""
+		if resp != nil {
+			answer = strings.TrimSpace(resp.Content)
+		}
+		if answer == "" {
+			answer = "模型返回了空响应。"
+			if lang == "en" {
+				answer = "The model returned an empty response."
+			}
+		}
+
+		history = append(history, agent.ConversationEntry{Role: "user", Content: text})
+		history = append(history, agent.ConversationEntry{Role: "assistant", Content: answer})
+		app.history.Save("tui-user", history)
+		return views.ChatResponseMsg{Text: answer}
+	}
+}
+
+func simpleChatMessages(history []agent.ConversationEntry, text string) []interface{} {
+	const maxHistoryEntries = 20
+	start := 0
+	if len(history) > maxHistoryEntries {
+		start = len(history) - maxHistoryEntries
+	}
+	messages := make([]interface{}, 0, len(history)-start+1)
+	for _, entry := range history[start:] {
+		role := strings.TrimSpace(entry.Role)
+		if role != "user" && role != "assistant" && role != "system" {
+			continue
+		}
+		content, ok := entry.Content.(string)
+		if !ok || strings.TrimSpace(content) == "" {
+			continue
+		}
+		messages = append(messages, map[string]interface{}{"role": role, "content": content})
+	}
+	messages = append(messages, map[string]interface{}{"role": "user", "content": text})
+	return messages
 }
 
 // --- Skill / MCP async handlers ---
@@ -2471,26 +2527,10 @@ func (c *tuiCallbacks) IsToolAllowed(name string) bool {
 }
 
 func (c *tuiCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
-	if c == nil || c.app == nil {
+	if c == nil {
 		return true, ""
 	}
-	if c.app.isWorkflowPhaseExecutionBlockedTUI() {
-		return false, "current workflow phase is waiting for required input or review; tool execution is paused"
-	}
-	var args map[string]interface{}
-	if strings.TrimSpace(argsJSON) != "" {
-		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return false, tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
-		}
-	}
-	var approved []workflow.OpsApprovedCommand
-	if engine := c.app.getWorkflowEngine(); engine != nil {
-		approved = engine.GetOpsApprovedCommands("tui-user")
-	}
-	if err := workflow.ValidateToolCallByPolicyWithApproval(c.app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
-		return false, err.Error()
-	}
-	return true, ""
+	return c.app.isWorkflowToolCallAllowedTUI(name, argsJSON)
 }
 
 func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
@@ -2501,6 +2541,29 @@ func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
 		return false
 	}
 	return workflow.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
+}
+
+func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, string) {
+	if app == nil {
+		return true, ""
+	}
+	if app.isWorkflowPhaseExecutionBlockedTUI() {
+		return false, "current workflow phase is waiting for required input or review; tool execution is paused"
+	}
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return false, tuiFormat(tuiConfigLang(app.appConfig), "toolArgParseFailed", err.Error())
+		}
+	}
+	var approved []workflow.OpsApprovedCommand
+	if engine := app.getWorkflowEngine(); engine != nil {
+		approved = engine.GetOpsApprovedCommands("tui-user")
+	}
+	if err := workflow.ValidateToolCallByPolicyWithApproval(app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
 }
 
 func (app *TUIApp) isWorkflowPhaseExecutionBlockedTUI() bool {

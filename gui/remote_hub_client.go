@@ -1305,7 +1305,7 @@ func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 			_, _ = c.imHandler.CancelSessionForUser(payload.UserID)
 			return
 		}
-		_, _ = c.imHandler.CancelCurrentSession()
+		log.Printf("[hub-client] im.cancel_session ignored: missing user_id payload")
 	}
 }
 

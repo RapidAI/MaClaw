@@ -93,19 +93,18 @@ const (
 
 // WorkflowMarketListing represents a published workflow displayed in the market.
 type WorkflowMarketListing struct {
-	ID             string              `json:"id"`
-	Name           string              `json:"name"`
-	Description    string              `json:"description"`
-	Author         string              `json:"author"`
-	Version        string              `json:"version"`
-	UsageCount     int                 `json:"usage_count"`
-	Category       MarketCategory      `json:"category"`
-	SubCategory    WorkflowSubCategory `json:"sub_category"`
-	NodeCount      int                 `json:"node_count"`
-	ApprovalModes  []string            `json:"approval_modes"`
-	FlowPreviewURL string              `json:"flow_preview_url,omitempty"`
-	PublishedAt    string              `json:"published_at,omitempty"`
-	CapabilityID   string              `json:"capability_id"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Description   string              `json:"description"`
+	Author        string              `json:"author"`
+	Version       string              `json:"version"`
+	UsageCount    int                 `json:"usage_count"`
+	Category      MarketCategory      `json:"category"`
+	SubCategory   WorkflowSubCategory `json:"sub_category"`
+	NodeCount     int                 `json:"node_count"`
+	ApprovalModes []string            `json:"approval_modes"`
+	PublishedAt   string              `json:"published_at,omitempty"`
+	CapabilityID  string              `json:"capability_id"`
 }
 
 // MarketListingFilter defines the filtering criteria for market listing queries.
@@ -202,7 +201,6 @@ func buildWorkflowMarketListing(cap capability.CapabilitySummary) WorkflowMarket
 			listing.NodeCount = metadata.NodeCount
 			listing.ApprovalModes = metadata.ApprovalModes
 			listing.UsageCount = metadata.UsageCount
-			listing.FlowPreviewURL = metadata.ThumbnailURL
 			listing.PublishedAt = metadata.PublishedAt
 			if metadata.VersionNumber != "" {
 				listing.Version = metadata.VersionNumber
@@ -215,11 +213,16 @@ func buildWorkflowMarketListing(cap capability.CapabilitySummary) WorkflowMarket
 
 // workflowMarketMetadata is the parsed structure of the metadata_json field
 // stored in the capability record for approval workflows.
+//
+// thumbnail_url is intentionally NOT parsed: the Hub serves no thumbnail route
+// and the publish path no longer emits one, so the market listing advertises no
+// preview URL. Any stale thumbnail_url key in an older capability row is simply
+// ignored on unmarshal, keeping the advertised state and the served state in
+// agreement (no advertised URL ⇔ no served route).
 type workflowMarketMetadata struct {
 	Category      string   `json:"category"`
 	NodeCount     int      `json:"node_count"`
 	ApprovalModes []string `json:"approval_modes"`
-	ThumbnailURL  string   `json:"thumbnail_url"`
 	VersionNumber string   `json:"version_number"`
 	PublishedAt   string   `json:"published_at"`
 	UsageCount    int      `json:"usage_count"`

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
-import type { SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
+import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SidebarToolSelector } from './SidebarToolSelector';
 import { SidebarRecentTasks, type RecentProject, type TaskContextMenu } from './SidebarRecentTasks';
@@ -34,7 +34,7 @@ export function shouldShowDigitalEmployeeMiddleTabs(status: any, nowMs = Date.no
     return shouldShowDigitalEmployeeFeatureTabs(status, nowMs);
 }
 
-type SidebarAiPaneProps = {
+type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     recentTasksPaneWidth: number;
     lang: string;
     aiThemeMode?: 'light' | 'dark';
@@ -67,15 +67,11 @@ type SidebarAiPaneProps = {
     hideTask: (projectPath: string) => Promise<unknown>;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
-    formatSidebarTokens: (value: number) => string;
-    formatSidebarHubExpiry: (credits: SidebarHubCredits | null) => string;
-    formatSidebarHubTotalCredits: (credits: SidebarHubCredits | null) => string;
-    formatSidebarHubUsedCredits: (credits: SidebarHubCredits | null) => string;
-    formatSidebarCredit: (value: number) => string;
     unlimitedHubCreditText: string;
     noHubAuthorizationText: string;
     showHubCreditAction: boolean;
     openHubCreditsPage: () => void;
+    openServiceRedeemPage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
     handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
@@ -134,6 +130,7 @@ export const SidebarAiPane = ({
     noHubAuthorizationText,
     showHubCreditAction,
     openHubCreditsPage,
+    openServiceRedeemPage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
     handleRecentTasksResizeStart,
@@ -172,7 +169,7 @@ export const SidebarAiPane = ({
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
-                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} />
+                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} />
             </div>
             <div onMouseDown={handleRecentTasksResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
         </>

@@ -110,6 +110,7 @@ type GroupInviteSummary struct {
 	SecurityGroupID string    `json:"security_group_id,omitempty"`
 	ContextPolicy   string    `json:"context_policy,omitempty"`
 	Status          string    `json:"status"`
+	Reason          string    `json:"reason,omitempty"`
 	Topic           string    `json:"topic,omitempty"`
 	Question        string    `json:"question,omitempty"`
 	CreatedAt       time.Time `json:"created_at,omitempty"`
@@ -178,11 +179,54 @@ func (c *HubClient) listDiscussions(ctx context.Context, agentID, role string) (
 }
 
 func (c *HubClient) ListInvites(ctx context.Context, agentID string) ([]GroupInviteSummary, error) {
+	return c.ListInvitesByStatus(ctx, agentID, "pending")
+}
+
+func (c *HubClient) ListInvitesByStatus(ctx context.Context, agentID, status string) ([]GroupInviteSummary, error) {
+	return c.listInvitesByStatus(ctx, "to_id", agentID, status, "")
+}
+
+func (c *HubClient) ListSentInvitesByStatus(ctx context.Context, agentID, status string) ([]GroupInviteSummary, error) {
+	return c.listInvitesByStatus(ctx, "from_id", agentID, status, "")
+}
+
+func (c *HubClient) GetSentInvite(ctx context.Context, agentID, inviteID string) (GroupInviteSummary, bool, error) {
+	inviteID = strings.TrimSpace(inviteID)
+	if inviteID == "" {
+		return GroupInviteSummary{}, false, fmt.Errorf("invite id is required")
+	}
+	invites, err := c.listInvitesByStatus(ctx, "from_id", agentID, "all", inviteID)
+	if err != nil {
+		return GroupInviteSummary{}, false, err
+	}
+	for _, invite := range invites {
+		if strings.EqualFold(strings.TrimSpace(invite.ID), inviteID) {
+			return invite, true, nil
+		}
+	}
+	return GroupInviteSummary{}, false, nil
+}
+
+func (c *HubClient) listInvitesByStatus(ctx context.Context, idParam, agentID, status, inviteID string) ([]GroupInviteSummary, error) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return nil, fmt.Errorf("agent id is required")
 	}
-	path := "/api/a2a/invites/mine?to_id=" + url.QueryEscape(agentID) + "&status=pending"
+	idParam = strings.TrimSpace(idParam)
+	if idParam == "" {
+		idParam = "to_id"
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "pending"
+	}
+	values := url.Values{}
+	values.Set(idParam, agentID)
+	values.Set("status", status)
+	if inviteID = strings.TrimSpace(inviteID); inviteID != "" {
+		values.Set("invite_id", inviteID)
+	}
+	path := "/api/a2a/invites/mine?" + values.Encode()
 	var out InviteListResponse
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
@@ -354,6 +398,29 @@ func (c *HubClient) EscalateDiscussion(ctx context.Context, consultationID strin
 		return fmt.Errorf("escalation raised_by and reason are required")
 	}
 	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/escalate", escalation, nil)
+}
+
+func (c *HubClient) RenameConsultationTopic(ctx context.Context, consultationID, fromID, topic string) (HubDiscussionSummary, error) {
+	consultationID = strings.TrimSpace(consultationID)
+	fromID = strings.TrimSpace(fromID)
+	topic = strings.TrimSpace(topic)
+	if consultationID == "" {
+		return HubDiscussionSummary{}, fmt.Errorf("consultation id is required")
+	}
+	if fromID == "" {
+		return HubDiscussionSummary{}, fmt.Errorf("from_id is required")
+	}
+	if topic == "" {
+		return HubDiscussionSummary{}, fmt.Errorf("topic is required")
+	}
+	var out struct {
+		Discussion HubDiscussionSummary `json:"discussion"`
+	}
+	payload := map[string]string{"from_id": fromID, "topic": topic}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/rename", payload, &out); err != nil {
+		return HubDiscussionSummary{}, err
+	}
+	return out.Discussion, nil
 }
 
 func (c *HubClient) SetConsultationState(ctx context.Context, consultationID, action string) error {

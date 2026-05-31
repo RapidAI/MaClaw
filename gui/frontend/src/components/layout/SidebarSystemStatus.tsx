@@ -1,8 +1,8 @@
-import type { SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
+import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 
-type SidebarSystemStatusProps = {
+type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     lang: string;
     maclawLLMOnline: boolean;
     showLansenger?: boolean;
@@ -15,15 +15,11 @@ type SidebarSystemStatusProps = {
     localLLMCacheEnabled?: boolean;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
-    formatSidebarTokens: (value: number) => string;
-    formatSidebarHubExpiry: (credits: SidebarHubCredits | null) => string;
-    formatSidebarHubTotalCredits: (credits: SidebarHubCredits | null) => string;
-    formatSidebarHubUsedCredits: (credits: SidebarHubCredits | null) => string;
-    formatSidebarCredit: (value: number) => string;
     unlimitedHubCreditText: string;
     noHubAuthorizationText: string;
     showHubCreditAction: boolean;
     openHubCreditsPage: () => void;
+    openServiceRedeemPage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
 };
@@ -57,7 +53,7 @@ const formatHubCreditStateText = (status: string, retryText: string, lang: strin
         return textForLang(lang, `${enPrefix} ${separator} ${retryText} ${enSuffix}`, `${zhPrefix} ${separator} ${retryText}${zhSuffix}`, `${zhHantPrefix} ${separator} ${retryText}${zhHantSuffix}`);
     };
     if (status === 'period_limited') {
-        return withRetry('Period limit', '\u5468\u671f\u9650\u6d41', '\u9031\u671f\u9650\u6d41', 'to recover', '\u540e\u6062\u590d', '\u5f8c\u6062\u5fa9');
+        return withRetry('Period limit', '\u5468\u671f\u9650\u989d', '\u9031\u671f\u9650\u984d', 'to recover', '\u540e\u6062\u590d', '\u5f8c\u6062\u5fa9');
     }
     if (status === 'queued') {
         return withRetry('Starts later', '\u5f85\u751f\u6548', '\u5f85\u751f\u6548', 'to start', '\u540e\u751f\u6548', '\u5f8c\u751f\u6548');
@@ -93,6 +89,7 @@ export const SidebarSystemStatus = ({
     noHubAuthorizationText,
     showHubCreditAction,
     openHubCreditsPage,
+    openServiceRedeemPage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
 }: SidebarSystemStatusProps) => {
@@ -130,8 +127,27 @@ export const SidebarSystemStatus = ({
         </span>
     );
     const hubCreditStatus = String(sidebarHubCredits?.status || '').toLowerCase();
+    const hubServicePeriodLimited = !!sidebarHubCredits && hubCreditStatus === 'period_limited';
+    const hubServiceStoppedByPeriodLimit = hubServicePeriodLimited && sidebarHubCredits?.serviceActive === false;
+    const openHubCreditAction = hubServicePeriodLimited
+        ? (openServiceRedeemPage || openHubCreditsPage)
+        : openHubCreditsPage;
     const hubCreditRetryText = sidebarHubCredits ? formatRetryAfter(sidebarHubCredits.retryAfterSeconds, sidebarHubCredits.retryAfterAt, lang) : '';
     const hubCreditStateText = formatHubCreditStateText(hubCreditStatus, hubCreditRetryText, lang);
+    const periodLimitStopTitle = textForLang(
+        lang,
+        `MaClaw official service stopped: current period quota is exhausted.${hubCreditRetryText ? ` Recovers in ${hubCreditRetryText}.` : ''} Click to open Service Redeem.`,
+        `MaClaw \u5b98\u65b9\u670d\u52a1\u5df2\u505c\u6b62\uff1a\u672c\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d\u3002${hubCreditRetryText ? `${hubCreditRetryText}\u540e\u6062\u590d\u3002` : ''}\u70b9\u51fb\u524d\u5f80\u670d\u52a1\u5151\u6362\u3002`,
+        `MaClaw \u5b98\u65b9\u670d\u52d9\u5df2\u505c\u6b62\uff1a\u672c\u9031\u671f\u984d\u5ea6\u5df2\u7528\u76e1\u3002${hubCreditRetryText ? `${hubCreditRetryText}\u5f8c\u6062\u5fa9\u3002` : ''}\u9ede\u64ca\u524d\u5f80\u670d\u52d9\u5151\u63db\u3002`,
+    );
+    const periodLimitNoticeTitle = hubServiceStoppedByPeriodLimit
+        ? periodLimitStopTitle
+        : textForLang(
+            lang,
+            `Current MaClaw official route reached its period quota.${hubCreditRetryText ? ` Recovers in ${hubCreditRetryText}.` : ''} Click to open Service Redeem.`,
+            `\u5f53\u524d MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u8fbe\u5230\u672c\u5468\u671f\u9650\u989d\u3002${hubCreditRetryText ? `${hubCreditRetryText}\u540e\u6062\u590d\u3002` : ''}\u70b9\u51fb\u524d\u5f80\u670d\u52a1\u5151\u6362\u3002`,
+            `\u76ee\u524d MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u9054\u5230\u672c\u9031\u671f\u9650\u984d\u3002${hubCreditRetryText ? `${hubCreditRetryText}\u5f8c\u6062\u5fa9\u3002` : ''}\u9ede\u64ca\u524d\u5f80\u670d\u52d9\u5151\u63db\u3002`,
+        );
     const creditTitle = sidebarHubCredits
         ? textForLang(lang, 'Expires', '\u6709\u6548\u671f', '\u6709\u6548\u671f') + ': ' + formatSidebarHubExpiry(sidebarHubCredits)
             + CREDIT_SEPARATOR + textForLang(lang, 'Total', '\u603b\u91cf', '\u7e3d\u91cf') + ' ' + formatSidebarHubTotalCredits(sidebarHubCredits)
@@ -162,6 +178,19 @@ export const SidebarSystemStatus = ({
                     <span className="sidebar-system-status__provider" title={providerLabel}>
                         {providerLabel}
                     </span>
+                    {hubServicePeriodLimited && (
+                        <button
+                            type="button"
+                            className="sidebar-system-status__stop-badge"
+                            data-state={hubServiceStoppedByPeriodLimit ? 'stopped' : 'limited'}
+                            onClick={openHubCreditAction}
+                            title={periodLimitNoticeTitle}
+                            aria-label={periodLimitNoticeTitle}
+                        >
+                            <span className="sidebar-system-status__stop-icon" aria-hidden="true">!</span>
+                            <span>{hubServiceStoppedByPeriodLimit ? textForLang(lang, 'Stopped', '\u5df2\u505c\u6b62', '\u5df2\u505c\u6b62') : textForLang(lang, 'Limited', '\u9650\u989d', '\u9650\u984d')}</span>
+                        </button>
+                    )}
                     <span className="sidebar-system-status__tokens">
                         <strong title={cacheTitle || undefined}>{formatSidebarTokens(sidebarCurrentProviderTokenUsage.total)}</strong>
                         <span className="sidebar-system-status__tokens-unit">tokens</span>
@@ -194,7 +223,7 @@ export const SidebarSystemStatus = ({
                             </span>
                         </div>
                         {showHubCreditAction && (
-                            <button type="button" onClick={openHubCreditsPage} className="sidebar-system-status__buy">
+                            <button type="button" onClick={openHubCreditAction} className="sidebar-system-status__buy" title={hubServicePeriodLimited ? periodLimitNoticeTitle : undefined}>
                                 {textForLang(lang, 'Buy', '\u8d2d\u4e70', '\u8cfc\u8cb7')}
                             </button>
                         )}

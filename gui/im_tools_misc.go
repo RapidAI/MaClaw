@@ -253,6 +253,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		return "Skill Executor 未初始化"
 	}
 
+	runtimePlatform := consumeRuntimePlatformFromToolArgs(args)
+	installPolicyOwnerID, explicitRuntimeOwner := h.toolArgsOrCurrentRuntimePolicyOwnerState(args)
+	if installPolicyOwnerID == "" && explicitRuntimeOwner {
+		return "Skill 安装失败: runtime owner is missing; isolated runtime will not fall back to desktop owner"
+	}
+
 	// Determine effective source and check permission before downloading.
 	var effectiveSource string
 	switch {
@@ -348,12 +354,12 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 				"\n" + localizedSkillInstallBlockedMessage(h.skillConfirmLang(), entry.Name, true)
 		}
 		if h.app != nil && h.app.skillInstallReviewNeedsConfirmationForSource(scanReport, effectiveSource) {
-			platform := ""
-			if h.currentLoopCtx != nil {
-				platform = h.currentLoopCtx.Platform
-			}
+			platform := runtimePlatform
 			confirmCtx := context.Background()
-			if h.currentLoopCtx != nil {
+			if platform == "" {
+				platform = h.currentRuntimePlatform()
+			}
+			if platform == "" && h.currentLoopCtx != nil {
 				var cancel context.CancelFunc
 				confirmCtx, cancel = h.currentLoopCtx.Context()
 				defer cancel()
@@ -365,7 +371,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			}
 
 			confirmed := h.confirmRiskSkillInstall(
-				confirmCtx, entry.Name, hubURL, scanReport.FinalLevel, allFactors, platform, h.lastUserID,
+				confirmCtx, entry.Name, hubURL, scanReport.FinalLevel, allFactors, platform, installPolicyOwnerID,
 			)
 
 			if !confirmed {
@@ -490,7 +496,14 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		// skill runner so the auto-run after install actually has the parameters
 		// the user intended. Previously this passed nil, causing skills that
 		// require parameters to fail on auto-run every time.
-		runID, err := h.app.RunNLSkillAsync(entry.Name, buildRunSkillArgs(args))
+		h.ensureSkillRunner()
+		runner := h.getSkillRunner()
+		if runner == nil {
+			b.WriteString("Skill Runner 未初始化")
+			return b.String()
+		}
+		consumeRuntimePolicyOwnerIDFromToolArgs(args)
+		runID, err := runner.StartRunForOwner(installPolicyOwnerID, entry.Name, buildRunSkillArgs(args))
 		if err != nil {
 			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
@@ -1265,10 +1278,21 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if h.contextResolver != nil {
 		projectPath, _ = h.contextResolver.ResolveProject()
 	}
+	ownerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
+	if ownerID == "" {
+		var explicitRuntime bool
+		ownerID, explicitRuntime = h.currentRuntimePolicyOwnerState()
+		if ownerID == "" && explicitRuntime {
+			return "memory owner is missing; isolated runtime will not fall back to desktop memory"
+		}
+	}
+	if ownerID == "" {
+		ownerID = desktopUserID
+	}
 	return corememory.HandleTool(h.memoryStore, args, corememory.ToolOptions{
 		ProjectPath: projectPath,
-		ContextHint: h.buildMemoryContextHint(),
-		OwnerID:     h.lastUserID,
+		ContextHint: h.buildMemoryContextHintForUser(ownerID),
+		OwnerID:     ownerID,
 		AfterWrite: func() {
 			if h.app != nil {
 				h.app.triggerMemoryPipelineSoon(45 * time.Second)
@@ -1277,11 +1301,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			// system prompt reflects the newly saved/deleted memory.
 			// Without this, user_fact changes (e.g. "remember my name is X")
 			// are invisible to the LLM until the next /new or topic switch.
-			userID := h.lastUserID
-			if userID == "" {
-				userID = desktopUserID
-			}
-			h.RefreshMemorySnapshot(userID)
+			h.RefreshMemorySnapshot(ownerID)
 		},
 	})
 }
@@ -1289,10 +1309,17 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 // buildMemoryContextHint extracts recent conversation text (last 5 user+assistant
 // messages) to provide alias and context terms for tag enrichment during memory save.
 func (h *IMMessageHandler) buildMemoryContextHint() string {
+	ownerID, explicitRuntime := h.currentRuntimePolicyOwnerState()
+	if ownerID == "" && explicitRuntime {
+		return ""
+	}
+	return h.buildMemoryContextHintForUser(ownerID)
+}
+
+func (h *IMMessageHandler) buildMemoryContextHintForUser(userID string) string {
 	if h.memory == nil {
 		return ""
 	}
-	userID := h.lastUserID
 	if userID == "" {
 		userID = desktopUserID
 	}
@@ -1575,6 +1602,10 @@ func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) strin
 // iterations for the current conversation loop. This does NOT change the
 // persisted config — it only affects the in-flight loop.
 func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "set_max_iterations failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 	n, ok := args["max_iterations"].(float64)
 	if !ok || n < 1 {
 		return fmt.Sprintf("缺少或无效的 max_iterations 参数（需要 %d-%d 的整数）", config.MinAgentIterations, config.MaxAgentIterationsCap)
@@ -1582,10 +1613,16 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 	// Use the single source of truth for value normalization.
 	limit := config.EffectiveMaxIterations(int(n))
 	reason := stringVal(args, "reason")
-	h.loopMaxOverride = limit
-	// Also update the active LoopContext so background loops see the change.
-	if h.currentLoopCtx != nil {
-		h.currentLoopCtx.SetMaxIterations(limit)
+	if hasRuntimeOwner {
+		if ctx := h.runtimeLoopContextForOwner(ownerID); ctx != nil {
+			ctx.SetMaxIterations(limit)
+		}
+	} else {
+		h.loopMaxOverride = limit
+		// Also update the active LoopContext so background loops see the change.
+		if ctx := h.runtimeLoopContextForOwner(""); ctx != nil {
+			ctx.SetMaxIterations(limit)
+		}
 	}
 
 	if reason != "" {

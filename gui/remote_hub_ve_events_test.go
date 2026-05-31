@@ -134,6 +134,89 @@ func TestDecodeVEDiscussionPayloadWrappedAndLegacy(t *testing.T) {
 	}
 }
 
+func TestHandleVEDiscussionInviteAutoAcceptsForDigitalEmployee(t *testing.T) {
+	accepted := make(chan a2a.GroupInvitationResponse, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/invites/invite-1/accept":
+			if got := r.Header.Get("X-Machine-ID"); got != "machine-1" {
+				t.Errorf("X-Machine-ID = %q, want machine-1", got)
+			}
+			var resp a2a.GroupInvitationResponse
+			if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
+				t.Errorf("decode response: %v", err)
+				return
+			}
+			accepted <- resp
+			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Availability: "available"},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client := &RemoteHubClient{app: app}
+	inv := a2a.GroupInvitation{FromID: "machine-owner", ToID: "machine-1", Role: a2a.GroupRoleSpeak, Trusted: true}
+	envelope := a2a.NewGroupEnvelope("env-1", a2a.GroupMessageInvitation, inv.FromID, time.Now())
+	envelope.SessionID = "session-1"
+	envelope.Invitation = &inv
+	raw, err := json.Marshal(map[string]any{"envelope": envelope, "invite_id": "invite-1"})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	client.handleVEEvent(inboundHubEnvelope{Type: veEventDiscussionInvite, Payload: raw})
+
+	select {
+	case resp := <-accepted:
+		if resp.FromID != "machine-1" || resp.Decision != a2a.GroupInvitationAccept || resp.Reason == "" {
+			t.Fatalf("response = %+v, want accepted by machine-1 with reason", resp)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for invite accept")
+	}
+}
+
+func TestHandleVEDiscussionInviteIgnoresUntrustedInvite(t *testing.T) {
+	acceptCalls := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&acceptCalls, 1)
+		t.Errorf("unexpected accept request: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client := &RemoteHubClient{app: app}
+	inv := a2a.GroupInvitation{FromID: "machine-owner", ToID: "machine-1", Role: a2a.GroupRoleSpeak}
+	envelope := a2a.NewGroupEnvelope("env-1", a2a.GroupMessageInvitation, inv.FromID, time.Now())
+	envelope.SessionID = "session-1"
+	envelope.Invitation = &inv
+	raw, err := json.Marshal(map[string]any{"envelope": envelope, "invite_id": "invite-1"})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	client.handleVEEvent(inboundHubEnvelope{Type: veEventDiscussionInvite, Payload: raw})
+
+	if got := atomic.LoadInt32(&acceptCalls); got != 0 {
+		t.Fatalf("accept calls = %d, want 0", got)
+	}
+}
+
 func TestBuildVEDiscussionStreamEventPayloadIncludesSenderIdentity(t *testing.T) {
 	payload := buildVEDiscussionStreamEventPayload(a2a.GroupEnvelope{
 		FromID:    "envelope-sender",
@@ -168,14 +251,26 @@ func TestShouldEmitVEDiscussionAttachmentMessageToFrontend(t *testing.T) {
 	if !shouldEmitVEDiscussionMessageToFrontend("speak", msg) {
 		t.Fatal("attachment-bearing participant messages should be visible in the frontend")
 	}
-	if !shouldRouteVEDiscussionToDigitalEmployee("speak", msg, false) {
+	if !shouldRouteVEDiscussionToDigitalEmployee("speak", msg, false, "") {
 		t.Fatal("attachment-bearing speak messages should still route to the digital employee")
 	}
 	if shouldEmitVEDiscussionMessageToFrontend("executor", msg) {
 		t.Fatal("executor-targeted attachment messages should still route to the local executor")
 	}
-	if shouldRouteVEDiscussionToDigitalEmployee("executor", msg, true) {
+	if shouldRouteVEDiscussionToDigitalEmployee("executor", msg, true, "machine-1") {
 		t.Fatal("executor-targeted attachment messages should stay with the local dispatcher")
+	}
+	if shouldRouteVEDiscussionToDigitalEmployee("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}, true, "machine-1") {
+		t.Fatal("broadcast group turns must not route to local digital employee handler when local dispatcher owns the session")
+	}
+	if shouldRouteVEDiscussionToDigitalEmployee("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello", ToIDs: []string{"remote-1"}}, false, "machine-1") {
+		t.Fatal("messages targeted to another participant must not route to this digital employee")
+	}
+	if !shouldRouteVEDiscussionToDigitalEmployee("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello", ToIDs: []string{"machine-1"}}, false, "machine-1") {
+		t.Fatal("messages targeted to this machine should route to the digital employee when no local dispatcher owns the session")
+	}
+	if !shouldRouteVEDiscussionToDigitalEmployee("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello", ToIDs: []string{"ve_machine-1"}}, false, "machine-1") {
+		t.Fatal("messages targeted to this generated local id should route to the digital employee when no local dispatcher owns the session")
 	}
 	if !shouldEmitVEDiscussionMessageToFrontend("initiator", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
 		t.Fatal("initiator messages should be visible in the frontend")
@@ -321,8 +416,8 @@ func TestCachePushedVEDiscussionSnapshotFallsBackToRemoteClientID(t *testing.T) 
 	if err != nil || !ok {
 		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
 	}
-	if !cached.Discussion.Readonly || cached.Discussion.LocalRelation != "" {
-		t.Fatalf("role-only initiator detail should remain read-only/unknown relation: %+v", cached.Discussion)
+	if cached.Discussion.Readonly || cached.Discussion.LocalRelation != "initiated_by_me" {
+		t.Fatalf("role-only initiator detail should normalize as writable initiator: %+v", cached.Discussion)
 	}
 }
 
@@ -387,6 +482,104 @@ func TestCachePushedVEDiscussionSnapshotCachesHubDetail(t *testing.T) {
 	}
 	if !cached.Discussion.Readonly || cached.Discussion.LocalRelation != "owned_ve_invited" {
 		t.Fatalf("cached discussion relation/readonly = %+v", cached.Discussion)
+	}
+}
+
+func TestCachePushedVEDiscussionRenameUpdatesLocalHistoryCache(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	ctx := t.Context()
+	if err := store.CacheDetail(ctx, a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ID: "disc-rename", LocalRelation: "initiated_by_me", Status: "open", Topic: "Old title", UpdatedAt: time.Now().UTC()},
+		Messages:   []a2a.Message{{ID: "m1", Content: "keep"}},
+	}, nil); err != nil {
+		t.Fatalf("CacheDetail: %v", err)
+	}
+	store.Close()
+
+	client := &RemoteHubClient{app: app}
+	client.cachePushedVEDiscussionRename(map[string]any{"discussion_id": "disc-rename", "topic": "New title"})
+
+	store, err = app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store.Close()
+	cached, ok, err := store.CachedDetail(ctx, "disc-rename")
+	if err != nil || !ok {
+		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
+	}
+	if cached.Discussion.Topic != "New title" || cached.Discussion.LocalRelation != "initiated_by_me" || cached.Discussion.Readonly || len(cached.Messages) != 1 {
+		t.Fatalf("cached renamed detail = %+v", cached)
+	}
+}
+
+func TestHandleVEEventCachesDiscussionRenameWithoutFrontendContext(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	ctx := t.Context()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "disc-background", LocalRelation: "initiated_by_me", Status: "open", Topic: "Old title", UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+	store.Close()
+
+	raw, err := json.Marshal(map[string]any{"discussion_id": "disc-background", "topic": "Background title"})
+	if err != nil {
+		t.Fatalf("marshal rename payload: %v", err)
+	}
+	client := &RemoteHubClient{app: app}
+	client.handleVEEvent(inboundHubEnvelope{Type: veEventDiscussionRename, Payload: raw})
+
+	store, err = app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store.Close()
+	summaries, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].Topic != "Background title" || summaries[0].LocalRelation != "initiated_by_me" || summaries[0].Readonly {
+		t.Fatalf("cached summaries after background rename = %+v", summaries)
+	}
+}
+
+func TestHandleVEEventCachesWrappedDiscussionRenamePayload(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	ctx := t.Context()
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{{ID: "disc-wrapped", LocalRelation: "initiated_by_me", Status: "open", Topic: "Old title", UpdatedAt: time.Now().UTC()}}, nil); err != nil {
+		t.Fatalf("CacheSummaries: %v", err)
+	}
+	store.Close()
+
+	raw, err := json.Marshal(map[string]any{"type": "ve:discussion_rename", "payload": map[string]any{"discussionId": "disc-wrapped", "title": "Wrapped title"}})
+	if err != nil {
+		t.Fatalf("marshal rename payload: %v", err)
+	}
+	client := &RemoteHubClient{app: app}
+	client.handleVEEvent(inboundHubEnvelope{Type: veEventDiscussionRename, Payload: raw})
+
+	store, err = app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store.Close()
+	summaries, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].Topic != "Wrapped title" || summaries[0].Readonly {
+		t.Fatalf("cached summaries after wrapped rename = %+v", summaries)
 	}
 }
 
@@ -459,17 +652,26 @@ func TestCachePushedVEDiscussionMessageCoalescesConcurrentRefreshWithFollowup(t 
 	}
 }
 
-func TestShouldRouteVEDiscussionToLocalDispatcherSupportsSpeakRole(t *testing.T) {
-	if !shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
-		t.Fatal("speak role should route registered local sessions to the local dispatcher")
+func TestShouldRouteVEDiscussionToLocalDispatcherRequiresExecutorOrDirectTarget(t *testing.T) {
+	if shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}, "machine-1") {
+		t.Fatal("speak role must stay with the digital employee when local AI is merely a participant")
 	}
-	if !shouldRouteVEDiscussionToLocalDispatcher("executor", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
+	if !shouldRouteVEDiscussionToLocalDispatcher("executor", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}, "machine-1") {
 		t.Fatal("executor role should remain supported for compatibility")
 	}
-	if shouldRouteVEDiscussionToLocalDispatcher("observe", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}) {
+	if !shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello", ToIDs: []string{"machine-1"}}, "machine-1") {
+		t.Fatal("directly targeted local messages should route to the local dispatcher")
+	}
+	if !shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello", ToIDs: []string{"ve_machine-1"}}, "machine-1") {
+		t.Fatal("directly targeted generated local messages should route to the local dispatcher")
+	}
+	if shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello", ToIDs: []string{"remote-1"}}, "machine-1") {
+		t.Fatal("messages targeted to another participant must not route to local dispatcher")
+	}
+	if shouldRouteVEDiscussionToLocalDispatcher("observe", a2a.GroupDiscussionMessage{Kind: a2a.MessageStatement, Content: "hello"}, "machine-1") {
 		t.Fatal("observe role must not route to the local dispatcher")
 	}
-	if shouldRouteVEDiscussionToLocalDispatcher("speak", a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: "hello"}) {
+	if shouldRouteVEDiscussionToLocalDispatcher("executor", a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: "hello"}, "machine-1") {
 		t.Fatal("stream chunks must not trigger a local dispatcher response")
 	}
 }

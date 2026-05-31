@@ -64,8 +64,14 @@ func (c *tuiWorkflowLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeou
 // TUIWorkflowCallbacks implements workflow.EngineCallbacks for the TUI.
 // In TUI mode, events are logged but not emitted to a frontend; the
 // workflow state is communicated through inline text in the chat.
+//
+// registry is the same WorkflowRegistry the engine holds. It lets
+// EmitPhaseUpdate derive dashboard phase metadata through the single
+// source-of-truth deriver (workflow.PhaseMetadata) the GUI adapter uses,
+// keeping the TUI in parity rather than maintaining a separate phase list.
 type TUIWorkflowCallbacks struct {
-	app *TUIApp
+	app      *TUIApp
+	registry *workflow.WorkflowRegistry
 }
 
 func (c *TUIWorkflowCallbacks) SendTextToUser(userID, text string) error {
@@ -74,8 +80,35 @@ func (c *TUIWorkflowCallbacks) SendTextToUser(userID, text string) error {
 }
 
 func (c *TUIWorkflowCallbacks) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
-	log.Printf("[TUI-workflow] phase update: phase=%s index=%d", state.CurrentPhase, state.PhaseIndex)
+	if state == nil {
+		return nil
+	}
+	// Derive dashboard phase metadata through the same single source-of-truth
+	// deriver the GUI adapter uses (workflow.PhaseMetadata), rather than
+	// maintaining a separate phase list. TUI is text-only: there is no doc
+	// preview board, so the metadata is logged structurally for parity.
+	var phases []workflow.PhaseMeta
+	if c.registry != nil {
+		phases = workflow.PhaseMetadata(c.registry.Match(state.Type))
+	}
+	log.Printf("[TUI-workflow] phase update: type=%s phase=%s index=%d phases=%s",
+		state.Type, state.CurrentPhase, state.PhaseIndex, formatTUIPhaseMeta(phases))
 	return nil
+}
+
+// formatTUIPhaseMeta renders derived PhaseMeta as a compact structural log line.
+// It mirrors what the GUI adapter attaches to workflow:phase_update so the TUI
+// stays in parity with the dashboard's phase ordering, labels, and flags.
+func formatTUIPhaseMeta(phases []workflow.PhaseMeta) string {
+	if len(phases) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(phases))
+	for _, p := range phases {
+		parts = append(parts, fmt.Sprintf("%d:%s(%s doc=%t skip=%t confirm=%t)",
+			p.Index, p.ID, p.Name, p.ExpectsDocument, p.CanSkip, p.NeedsConfirm))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 func (c *TUIWorkflowCallbacks) EmitDocUpdate(userID, phaseID, content string) error {
@@ -121,7 +154,7 @@ func (s *tuiWorkflowStore) CleanupExpired(olderThan time.Duration) error   { ret
 func (app *TUIApp) initWorkflowEngine() *workflow.WorkflowEngine {
 	registry := workflow.NewWorkflowRegistry()
 	store := &tuiWorkflowStore{}
-	callbacks := &TUIWorkflowCallbacks{app: app}
+	callbacks := &TUIWorkflowCallbacks{app: app, registry: registry}
 	llmCaller := &tuiWorkflowLLMCaller{
 		app:    app,
 		client: &http.Client{},

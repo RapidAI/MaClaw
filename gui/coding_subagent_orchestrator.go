@@ -92,7 +92,7 @@ func (r *SubAgentTaskRunner) RunCurrentTask(
 
 	task, runID := r.orchestrator.CurrentTaskHandle()
 	if task == nil {
-		return "没有待执行的任务", false
+		return "No runnable task", false
 	}
 	return r.runTaskHandle(task, runID, r.collectPreviousOutputs(), onToken, onProgress)
 }
@@ -102,11 +102,12 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		return "SubAgent runner is not attached to an active task orchestrator", false
 	}
 	taskTitle := compactSubAgentTaskTitle(task.Title)
+	displayIndex := taskDisplayNumber(task)
 	eventRunID := fmt.Sprint(runID)
 	turnCtx := newCodingTurnContext(eventRunID, task, r.orchestrator.ProjectPath)
 	turnProgress := turnCtx.WrapProgress(onProgress)
 
-	log.Printf("[subagent-runner] delegating T%d to SubAgent: %s", task.Index, taskTitle)
+	log.Printf("[subagent-runner] delegating T%d to SubAgent: %s", displayIndex, taskTitle)
 	turnCtx.Emit(onProgress, turnCtx.TaskEvent("starting", task, taskTitle))
 
 	// Mark task as in-progress.
@@ -118,7 +119,7 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecFailed, panicErr) {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
-		return fmt.Sprintf("T%d: %s - failed\nError: %s", task.Index, taskTitle, panicErr), false
+		return fmt.Sprintf("T%d: %s - failed\nError: %s", displayIndex, taskTitle, panicErr), false
 	}
 	if result == nil {
 		errSummary := "coding SubAgent returned no result"
@@ -126,7 +127,7 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecFailed, errSummary) {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
-		return fmt.Sprintf("T%d: %s - failed\nError: %s", task.Index, taskTitle, errSummary), false
+		return fmt.Sprintf("T%d: %s - failed\nError: %s", displayIndex, taskTitle, errSummary), false
 	}
 
 	// Update orchestrator based on result.
@@ -141,47 +142,47 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecPassed, "") {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
-		log.Printf("[subagent-runner] T%d passed (%d iterations, %d tool calls, %d files, %d created)", task.Index, result.Iterations, result.ToolCalls, len(result.FilesModified), len(result.FilesCreated))
+		log.Printf("[subagent-runner] T%d passed (%d iterations, %d tool calls, %d files, %d created)", displayIndex, result.Iterations, result.ToolCalls, len(result.FilesModified), len(result.FilesCreated))
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("completed", task, taskTitle))
-		return fmt.Sprintf("✅ T%d: %s — 完成\n%s", task.Index, taskTitle, resultSummary), true
+		return fmt.Sprintf("T%d: %s - completed\n%s", displayIndex, taskTitle, resultSummary), true
 
 	case TaskExecFailed:
-		if isSubAgentRateLimitError(resultError) {
-			log.Printf("[subagent-runner] T%d paused by rate limit: %s", task.Index, resultError)
+		if isSubAgentTransientProviderError(resultError) {
+			log.Printf("[subagent-runner] T%d paused by transient provider error: %s", displayIndex, resultError)
 			event := turnCtx.TaskEvent("failed", task, taskTitle)
-			event.Detail = "rate_limited"
+			event.Detail = "provider_transient"
 			turnCtx.Emit(onProgress, event)
-			return fmt.Sprintf("T%d: %s - paused by rate limit\nError: %s",
-				task.Index, taskTitle, resultError), false
+			return fmt.Sprintf("T%d: %s - paused by transient provider error\nError: %s",
+				displayIndex, taskTitle, resultError), false
 		}
 		retryCount, canRetry := r.orchestrator.IncrementTaskRetryForRun(task, runID)
 		if retryCount == 0 && !canRetry {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
 		if canRetry {
-			// Retry available — will be re-executed on next call.
-			log.Printf("[subagent-runner] T%d failed (retry %d/%d): %s", task.Index, retryCount, r.orchestrator.MaxRetries, resultError)
+			// Retry available; will be re-executed on next call.
+			log.Printf("[subagent-runner] T%d failed (retry %d/%d): %s", displayIndex, retryCount, r.orchestrator.MaxRetries, resultError)
 			event := turnCtx.TaskEvent("retrying", task, taskTitle)
 			event.Detail = fmt.Sprintf("%d/%d", retryCount, r.orchestrator.MaxRetries)
 			turnCtx.Emit(onProgress, event)
-			return fmt.Sprintf("⚠️ T%d: %s — 失败，将重试 (%d/%d)\n错误: %s",
-				task.Index, taskTitle, retryCount, r.orchestrator.MaxRetries, resultError), false
+			return fmt.Sprintf("T%d: %s - failed, will retry (%d/%d)\nError: %s",
+				displayIndex, taskTitle, retryCount, r.orchestrator.MaxRetries, resultError), false
 		}
 		// Max retries exhausted.
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecFailed, resultError) {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
-		log.Printf("[subagent-runner] T%d failed permanently: %s", task.Index, resultError)
+		log.Printf("[subagent-runner] T%d failed permanently: %s", displayIndex, resultError)
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("failed", task, taskTitle))
-		return fmt.Sprintf("❌ T%d: %s — 失败（已重试 %d 次）\n错误: %s",
-			task.Index, taskTitle, r.orchestrator.MaxRetries, resultError), false
+		return fmt.Sprintf("T%d: %s - failed permanently after %d retries\nError: %s",
+			displayIndex, taskTitle, r.orchestrator.MaxRetries, resultError), false
 
 	default:
 		if !r.orchestrator.MarkTaskStatusForRun(task, runID, TaskExecSkipped, resultError) {
 			return staleSubAgentRunSummary(task, taskTitle), false
 		}
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("skipped", task, taskTitle))
-		return fmt.Sprintf("⏭️ T%d: %s — 跳过\n%s", task.Index, taskTitle, resultError), false
+		return fmt.Sprintf("T%d: %s - skipped\n%s", displayIndex, taskTitle, resultError), false
 	}
 }
 
@@ -249,9 +250,9 @@ func (r *SubAgentTaskRunner) runTaskWithRecover(
 func staleSubAgentRunSummary(task *TaskItem, taskTitle string) string {
 	index := -1
 	if task != nil {
-		index = task.Index
+		index = taskDisplayNumber(task)
 	}
-	return fmt.Sprintf("⏭️ T%d: %s — 结果已忽略：任务执行轮次已过期", index, taskTitle)
+	return fmt.Sprintf("T%d: %s - result ignored: task run expired/stale", index, taskTitle)
 }
 
 // RunAllTasks executes runnable tasks via SubAgent with bounded concurrency.
@@ -276,10 +277,10 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			break
 		}
 
-		// Check cancellation between tasks — don't start a new task if
+		// Check cancellation between tasks; don't start a new task if
 		// the user already clicked cancel.
 		if r.loopCtx != nil && r.loopCtx.IsCancelled() {
-			reports = append(reports, "⏹️ 用户取消，剩余任务未执行")
+			reports = append(reports, "User cancelled; remaining tasks were not executed")
 			break
 		}
 
@@ -305,8 +306,8 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			summary, _ := r.runTaskHandle(handle.Task, handle.RunID, r.collectPreviousOutputs(), onToken, onProgress)
 			reports = append(reports, summary)
 
-			if isSubAgentRateLimitError(summary) {
-				reports = append(reports, "LLM rate limit reached; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
+			if isSubAgentTransientProviderError(summary) {
+				reports = append(reports, "LLM provider is temporarily unavailable; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
 				break
 			}
 			continue
@@ -337,15 +338,15 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 		}
 		wg.Wait()
 		reports = append(reports, batchReports...)
-		if containsSubAgentRateLimitReport(batchReports) {
-			reports = append(reports, "LLM rate limit reached; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
+		if containsSubAgentTransientProviderReport(batchReports) {
+			reports = append(reports, "LLM provider is temporarily unavailable; SubAgent execution paused to avoid retry storms. Retry after the provider recovers.")
 			break
 		}
 	}
 
 	// Generate final report.
 	var b strings.Builder
-	b.WriteString("## 编码执行报告\n\n")
+	b.WriteString("## Coding Execution Report\n\n")
 	appendSubAgentRunReports(&b, reports)
 	b.WriteString("---\n")
 	b.WriteString(r.orchestrator.ProgressSummary())
@@ -386,9 +387,9 @@ func (r *SubAgentTaskRunner) configuredConcurrency() int {
 	return r.handler.app.GetSubAgentConcurrency()
 }
 
-func containsSubAgentRateLimitReport(reports []string) bool {
+func containsSubAgentTransientProviderReport(reports []string) bool {
 	for _, report := range reports {
-		if isSubAgentRateLimitError(report) {
+		if isSubAgentTransientProviderError(report) {
 			return true
 		}
 	}
@@ -423,6 +424,31 @@ func isSubAgentRateLimitError(text string) bool {
 		strings.Contains(lower, "too many requests")
 }
 
+func isSubAgentTransientProviderError(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	providerContext := strings.Contains(lower, "llm") ||
+		strings.Contains(lower, "provider") ||
+		strings.Contains(lower, "api/") ||
+		strings.Contains(lower, "chat/completions") ||
+		strings.Contains(lower, "anthropic") ||
+		strings.Contains(lower, "/v1/messages") ||
+		strings.Contains(lower, "openai") ||
+		strings.Contains(lower, "bigmodel")
+	return isSubAgentRateLimitError(lower) ||
+		strings.Contains(lower, "http 500") ||
+		strings.Contains(lower, "http 502") ||
+		strings.Contains(lower, "http 503") ||
+		strings.Contains(lower, "http 504") ||
+		strings.Contains(lower, "500 internal server error") ||
+		strings.Contains(lower, "503 service unavailable") ||
+		(providerContext && strings.Contains(lower, "context deadline exceeded")) ||
+		(providerContext && strings.Contains(lower, "connection reset")) ||
+		(providerContext && strings.Contains(lower, "temporarily unavailable"))
+}
+
 func appendSubAgentExecutionStats(b *strings.Builder, tasks []*TaskItem) {
 	passed, failed, skipped := 0, 0, 0
 	var modified []string
@@ -451,18 +477,18 @@ func appendSubAgentExecutionStats(b *strings.Builder, tasks []*TaskItem) {
 	created = uniqueSortedSubAgentStrings(created)
 	plannedOnly = uniqueSortedSubAgentStrings(plannedOnly)
 
-	b.WriteString("## 执行统计\n\n")
-	b.WriteString(fmt.Sprintf("- 任务结果: %d passed / %d failed / %d skipped\n", passed, failed, skipped))
-	b.WriteString(fmt.Sprintf("- 实际修改文件: %d\n", len(modified)))
+	b.WriteString("## Execution Stats\n\n")
+	b.WriteString(fmt.Sprintf("- Task results: %d passed / %d failed / %d skipped\n", passed, failed, skipped))
+	b.WriteString(fmt.Sprintf("- Modified files: %d\n", len(modified)))
 	if len(modified) > 0 {
 		b.WriteString(fmt.Sprintf("  %s\n", compactSubAgentFileList(modified, codingSubAgentFileChangeSummaryMax)))
 	}
-	b.WriteString(fmt.Sprintf("- 新建文件: %d\n", len(created)))
+	b.WriteString(fmt.Sprintf("- Created files: %d\n", len(created)))
 	if len(created) > 0 {
 		b.WriteString(fmt.Sprintf("  %s\n", compactSubAgentFileList(created, codingSubAgentFileChangeSummaryMax)))
 	}
 	if len(plannedOnly) > 0 {
-		b.WriteString(fmt.Sprintf("- 仅有计划产物、未追踪实际修改: %d\n", len(plannedOnly)))
+		b.WriteString(fmt.Sprintf("- Planned artifacts without tracked file changes: %d\n", len(plannedOnly)))
 	}
 }
 
@@ -476,7 +502,7 @@ func appendSubAgentRunReports(b *strings.Builder, reports []string) {
 		b.WriteString("\n\n")
 	}
 	if remaining := len(reports) - shown; remaining > 0 {
-		b.WriteString(fmt.Sprintf("... 还有 %d 条任务报告未展开\n\n", remaining))
+		b.WriteString(fmt.Sprintf("... and %d more task reports omitted\n\n", remaining))
 	}
 }
 
@@ -527,7 +553,7 @@ func previousTaskFileOutputs(t *TaskItem) []string {
 		if created[f] {
 			kind = "created"
 		}
-		outputs = append(outputs, fmt.Sprintf("%s (%s by T%d: %s ✅)", compactSubAgentPathText(f), kind, t.Index, title))
+		outputs = append(outputs, fmt.Sprintf("%s (%s by T%d: %s passed)", compactSubAgentPathText(f), kind, taskDisplayNumber(t), title))
 	}
 	return outputs
 }
@@ -535,7 +561,7 @@ func previousTaskFileOutputs(t *TaskItem) []string {
 func compactSubAgentTaskTitle(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return "未命名任务"
+		return "Untitled task"
 	}
 	return truncateRunesForSubAgent(title, codingSubAgentTaskTitleMaxRunes)
 }

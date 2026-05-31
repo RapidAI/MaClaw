@@ -57,14 +57,19 @@ func TestFilterToolDefinitionsDocOnlyCanReturnEmpty(t *testing.T) {
 	}
 }
 
-func TestDocOnlyPolicyKeepsWorkflowWriteToolsConsistent(t *testing.T) {
-	for _, name := range []string{"write_file", "read_file", "edit_file", "edit_lines", "bash"} {
+func TestDocOnlyPolicyBlocksExecutionAndMutationTools(t *testing.T) {
+	for _, name := range []string{"read_file", "list_directory", "send_file"} {
 		if !IsToolAllowedByPolicy(ToolFilterDocOnly, name) {
 			t.Fatalf("expected %s to be allowed by doc-only workflow policy", name)
 		}
 	}
-	if err := ValidateToolCallByPolicy(ToolFilterDocOnly, "write_file", map[string]interface{}{"path": "out.md", "content": "body"}); err != nil {
-		t.Fatalf("doc-only write_file validation failed: %v", err)
+	for _, name := range []string{"bash", "ssh", "write_file", "edit_file", "edit_lines", "async_wait", "task", "delegate_task", "browser"} {
+		if IsToolAllowedByPolicy(ToolFilterDocOnly, name) {
+			t.Fatalf("expected %s to be blocked by doc-only workflow policy", name)
+		}
+		if err := ValidateToolCallByPolicy(ToolFilterDocOnly, name, map[string]interface{}{"path": "out.md", "command": "true"}); err == nil {
+			t.Fatalf("expected %s execution to be rejected by doc-only workflow policy", name)
+		}
 	}
 
 	required := RequiredToolNamesForPolicy(ToolFilterDocOnly)
@@ -72,9 +77,14 @@ func TestDocOnlyPolicyKeepsWorkflowWriteToolsConsistent(t *testing.T) {
 	for _, name := range required {
 		requiredSet[name] = true
 	}
-	for _, name := range []string{"write_file", "read_file", "edit_file", "edit_lines", "bash"} {
+	for _, name := range []string{"read_file", "list_directory", "send_file"} {
 		if !requiredSet[name] {
 			t.Fatalf("expected %s to be a required doc-only workflow tool; got %#v", name, required)
+		}
+	}
+	for _, name := range []string{"write_file", "edit_file", "edit_lines", "bash", "ssh", "async_wait"} {
+		if requiredSet[name] {
+			t.Fatalf("expected %s to be absent from required doc-only workflow tools; got %#v", name, required)
 		}
 	}
 }

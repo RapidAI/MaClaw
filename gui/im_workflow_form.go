@@ -229,6 +229,14 @@ func resolveWorkflowFormUserID(handler *IMMessageHandler, engine *workflow.Workf
 		return userID
 	}
 	if handler != nil {
+		if userID := strings.TrimSpace(handler.currentRuntimePolicyOwnerID()); userID != "" {
+			if engine == nil {
+				return userID
+			}
+			if ws := engine.GetActiveWorkflow(userID); ws != nil && ws.CurrentPhase == phaseID {
+				return userID
+			}
+		}
 		if userID := strings.TrimSpace(handler.lastUserID); userID != "" {
 			if engine == nil {
 				return userID

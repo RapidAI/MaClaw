@@ -29,14 +29,23 @@ func (a *App) GetPassthroughCommand(name string) (PassthroughCommand, error) {
 }
 
 func (a *App) SavePassthroughCommand(cmd PassthroughCommand) (PassthroughCommand, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": strings.TrimSpace(cmd.Name), "passthrough": true, "action": "save"}); err != nil {
+		return PassthroughCommand{}, err
+	}
 	return a.ensurePassthroughRegistry().UpsertWithAudit(cmd, "desktop:monitor")
 }
 
 func (a *App) DeletePassthroughCommand(name string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": strings.TrimSpace(name), "passthrough": true, "action": "delete"}); err != nil {
+		return err
+	}
 	return a.ensurePassthroughRegistry().DeleteWithAudit(strings.TrimSpace(name), "desktop:monitor")
 }
 
 func (a *App) SetPassthroughCommandEnabled(name string, enabled bool) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": strings.TrimSpace(name), "passthrough": true, "action": "set_enabled", "enabled": enabled}); err != nil {
+		return err
+	}
 	return a.ensurePassthroughRegistry().SetEnabledWithAudit(strings.TrimSpace(name), enabled, "desktop:monitor")
 }
 
@@ -45,6 +54,9 @@ func (a *App) GetPassthroughSettings() (PassthroughSettings, error) {
 }
 
 func (a *App) SavePassthroughSettings(settings PassthroughSettings) (PassthroughSettings, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": "update passthrough settings", "passthrough": true, "action": "settings"}); err != nil {
+		return PassthroughSettings{}, err
+	}
 	reg := a.ensurePassthroughRegistry()
 	previous, _ := reg.GetSettings()
 	saved, err := reg.SaveSettings(settings)
@@ -63,6 +75,9 @@ func (a *App) ListPassthroughAudit(limit int) ([]PassthroughAuditEntry, error) {
 }
 
 func (a *App) RunPassthroughCommand(name string, values map[string]string, confirmed bool) (PassthroughRunResult, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("bash", map[string]interface{}{"command": strings.TrimSpace(name), "passthrough": true}); err != nil {
+		return PassthroughRunResult{}, err
+	}
 	result, err := a.ensurePassthroughRegistry().RunWithSource(context.Background(), strings.TrimSpace(name), values, confirmed, "desktop:monitor")
 	if err != nil && result.CommandName != "" {
 		return result, nil

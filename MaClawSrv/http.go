@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -341,6 +340,10 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("PUT /api/v1/config", s.withPrincipal(s.handleUpdateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/validate", s.withPrincipal(s.handleValidateConfig))
 	s.mux.HandleFunc("POST /api/v1/config/test", s.withPrincipal(s.handleTestConfig))
+	s.mux.HandleFunc("GET /api/v1/memory", s.withPrincipal(s.handleListMemory))
+	s.mux.HandleFunc("POST /api/v1/memory", s.withPrincipal(s.handleCreateMemory))
+	s.mux.HandleFunc("PUT /api/v1/memory/{id}", s.withPrincipal(s.handleUpdateMemory))
+	s.mux.HandleFunc("DELETE /api/v1/memory/{id}", s.withPrincipal(s.handleDeleteMemory))
 	s.mux.HandleFunc("GET /api/v1/usage/summary", s.withPrincipal(s.handleGetUsageSummary))
 	s.mux.HandleFunc("GET /api/v1/mcp/servers", s.withPrincipal(s.handleListMCPServers))
 	s.mux.HandleFunc("GET /api/v1/mcp/market", s.withPrincipal(s.handleSearchMCPMarket))
@@ -2464,14 +2467,13 @@ func (s *HTTPServer) handleGetConfig(w http.ResponseWriter, r *http.Request, p a
 	out, err := s.svc.GetUserConfig(r.Context(), p)
 	if err != nil {
 		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
-			writeJSON(w, http.StatusOK, map[string]any{"app_config": corelib.AppConfig{}})
+			writeJSON(w, http.StatusOK, map[string]any{"app_config": map[string]any{}})
 			return
 		}
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	out.AppConfig = stripUserComplexConfig(out.AppConfig)
-	writeJSON(w, http.StatusOK, out)
+	writeUserConfigResponse(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	// Accept both raw AppConfig JSON and {"app_config": {...}} envelope format.
@@ -2483,14 +2485,17 @@ func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
 		return
 	}
-	*inPtr = stripUserComplexConfig(*inPtr)
-	out, err := s.svc.UpdateUserConfig(r.Context(), p, *inPtr)
+	next, err := s.userVisibleConfigUpdate(r.Context(), p, *inPtr)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	out.AppConfig = stripUserComplexConfig(out.AppConfig)
-	writeJSON(w, http.StatusOK, out)
+	out, err := s.svc.UpdateUserConfig(r.Context(), p, next)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeUserConfigResponse(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleValidateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	candidate, ok := decodeOptionalAppConfig(w, r)
@@ -2526,6 +2531,54 @@ func (s *HTTPServer) handleTestConfig(w http.ResponseWriter, r *http.Request, p 
 	}
 	writeJSON(w, http.StatusOK, sanitizeConfigTestResultForAPI(s.svc.DataRoot(), out))
 }
+
+func (s *HTTPServer) handleListMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
+	out, err := s.svc.ListUserMemories(r.Context(), p, agentservice.UserMemoryListInput{Category: r.URL.Query().Get("category"), Query: r.URL.Query().Get("q"), Limit: limit, Offset: offset})
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleCreateMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.UserMemorySaveInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid memory body"})
+		return
+	}
+	out, err := s.svc.SaveUserMemory(r.Context(), p, in)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *HTTPServer) handleUpdateMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.UserMemorySaveInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid memory body"})
+		return
+	}
+	out, err := s.svc.UpdateUserMemory(r.Context(), p, r.PathValue("id"), in)
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleDeleteMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if err := s.svc.DeleteUserMemory(r.Context(), p, r.PathValue("id")); err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 func (s *HTTPServer) handleGetUsageSummary(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetUsageSummary(r.Context(), p)
 	if err != nil {
@@ -2812,14 +2865,73 @@ var userComplexConfigKeys = map[string]struct{}{
 	"maclaw_llm_timeout_sec":      {},
 	"maclaw_llm_current_provider": {},
 	"maclaw_llm_providers":        {},
+	"llm_prompt_cache":            {},
 	"auxiliary_llm":               {},
 	"model_routes":                {},
+}
+
+var userHiddenConfigKeys = map[string]struct{}{
+	"claude":                           {},
+	"gemini":                           {},
+	"codex":                            {},
+	"opencode":                         {},
+	"codebuddy":                        {},
+	"iflow":                            {},
+	"kilo":                             {},
+	"cursor":                           {},
+	"projects":                         {},
+	"current_project":                  {},
+	"active_tool":                      {},
+	"default_tool":                     {},
+	"default_tool_provider":            {},
+	"show_gemini":                      {},
+	"show_codex":                       {},
+	"show_opencode":                    {},
+	"show_codebuddy":                   {},
+	"show_iflow":                       {},
+	"show_kilo":                        {},
+	"show_cursor":                      {},
+	"extra_tool_configs":               {},
+	"default_proxy_scope_coding_tools": {},
+	"use_windows_terminal":             {},
+	"nl_skills":                        {},
+	"llm_token_usage":                  {},
+	"mcp_servers":                      {},
+	"local_mcp_servers":                {},
+	"ssh_hosts":                        {},
+	"skill_hub_urls":                   {},
+	"external_skill_dirs":              {},
+	"skill_sources_allowed":            {},
+	"remote_user_id":                   {},
+	"remote_tenant_id":                 {},
+	"remote_tenant_name":               {},
+	"remote_machine_id":                {},
+	"remote_machine_name":              {},
+	"remote_machine_token":             {},
+	"remote_viewer_token":              {},
+	"skill_market_session_token":       {},
+	"remote_client_id":                 {},
+	"remote_sn":                        {},
+	"env_check_done":                   {},
+	"last_env_check_time":              {},
+	"onboarding_done":                  {},
+	"floating_btn_x":                   {},
+	"floating_btn_y":                   {},
+	"floating_btn_position_set":        {},
+	"noise_floor_calibrated":           {},
+	"speech_level_calibrated":          {},
+}
+
+func init() {
+	for key := range userComplexConfigKeys {
+		userHiddenConfigKeys[key] = struct{}{}
+	}
 }
 
 func filterUserConfigSchema(defs []agentservice.ParameterDefinition) []agentservice.ParameterDefinition {
 	out := make([]agentservice.ParameterDefinition, 0, len(defs))
 	for _, def := range defs {
-		if _, hidden := userComplexConfigKeys[def.Key]; hidden {
+		if _, hidden := userHiddenConfigKeys[def.Key]; hidden {
 			continue
 		}
 		out = append(out, def)
@@ -2827,21 +2939,108 @@ func filterUserConfigSchema(defs []agentservice.ParameterDefinition) []agentserv
 	return out
 }
 
-func (s *HTTPServer) userVisibleConfigCandidate(ctx context.Context, p agentservice.Principal, cfg *corelib.AppConfig) (*corelib.AppConfig, error) {
+func writeUserConfigResponse(w http.ResponseWriter, status int, cfg *agentservice.UserConfig) {
 	if cfg == nil {
-		current, err := s.svc.GetUserConfig(ctx, p)
-		if err != nil {
-			if errors.Is(err, agentservice.ErrUserConfigNotFound) {
-				out := corelib.AppConfig{}
-				return &out, nil
-			}
-			return nil, err
+		writeJSON(w, status, map[string]any{"app_config": map[string]any{}})
+		return
+	}
+	writeJSON(w, status, map[string]any{
+		"tenant_id":  cfg.TenantID,
+		"user_id":    cfg.UserID,
+		"app_config": userVisibleAppConfigMap(cfg.AppConfig),
+		"updated_at": cfg.UpdatedAt,
+	})
+}
+
+func userVisibleAppConfigMap(cfg corelib.AppConfig) map[string]any {
+	data, err := json.Marshal(stripUserComplexConfig(cfg))
+	if err != nil {
+		return map[string]any{}
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return map[string]any{}
+	}
+	allowed := make(map[string]struct{})
+	for _, def := range filterUserConfigSchema(agentservice.DefaultParameterDefinitions()) {
+		allowed[def.Key] = struct{}{}
+	}
+	for key := range raw {
+		if _, ok := allowed[key]; !ok {
+			delete(raw, key)
 		}
-		out := stripUserComplexConfig(current.AppConfig)
+	}
+	return raw
+}
+
+func (s *HTTPServer) userVisibleConfigCandidate(ctx context.Context, p agentservice.Principal, cfg *corelib.AppConfig) (*corelib.AppConfig, error) {
+	current, found, err := s.currentUserConfigForVisibleMerge(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		if !found {
+			out := corelib.AppConfig{}
+			return &out, nil
+		}
+		out := current
 		return &out, nil
 	}
-	out := stripUserComplexConfig(*cfg)
+	out := *cfg
+	if found {
+		out = preserveUserComplexConfig(current, out)
+	} else {
+		out = stripUserComplexConfig(out)
+	}
 	return &out, nil
+}
+
+func (s *HTTPServer) userVisibleConfigUpdate(ctx context.Context, p agentservice.Principal, cfg corelib.AppConfig) (corelib.AppConfig, error) {
+	current, found, err := s.currentUserConfigForVisibleMerge(ctx, p)
+	if err != nil {
+		return corelib.AppConfig{}, err
+	}
+	if !found {
+		return stripUserComplexConfig(cfg), nil
+	}
+	return preserveUserComplexConfig(current, cfg), nil
+}
+
+func (s *HTTPServer) currentUserConfigForVisibleMerge(ctx context.Context, p agentservice.Principal) (corelib.AppConfig, bool, error) {
+	current, err := s.svc.GetRawUserConfig(ctx, p)
+	if err != nil {
+		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
+			return corelib.AppConfig{}, false, nil
+		}
+		return corelib.AppConfig{}, false, err
+	}
+	return current.AppConfig, true, nil
+}
+
+func preserveUserComplexConfig(current, next corelib.AppConfig) corelib.AppConfig {
+	next = preserveUserFlatLLMConfig(current, next)
+	next.MaclawLLMProtocol = current.MaclawLLMProtocol
+	next.MaclawLLMContextLength = current.MaclawLLMContextLength
+	next.MaclawLLMTimeoutSec = current.MaclawLLMTimeoutSec
+	next.MaclawLLMCurrentProvider = current.MaclawLLMCurrentProvider
+	next.MaclawLLMProviders = current.MaclawLLMProviders
+	next.LLMPromptCache = current.LLMPromptCache
+	next.AuxiliaryLLM = current.AuxiliaryLLM
+	next.ModelRoutes = current.ModelRoutes
+	return next
+}
+
+func preserveUserFlatLLMConfig(current, next corelib.AppConfig) corelib.AppConfig {
+	if strings.TrimSpace(next.MaclawLLMUrl) == "" {
+		next.MaclawLLMUrl = current.MaclawLLMUrl
+	}
+	if strings.TrimSpace(next.MaclawLLMKey) == "" || agentservice.IsMaskedSecretPlaceholder(next.MaclawLLMKey) {
+		next.MaclawLLMKey = current.MaclawLLMKey
+	}
+	if strings.TrimSpace(next.MaclawLLMModel) == "" {
+		next.MaclawLLMModel = current.MaclawLLMModel
+	}
+	return next
 }
 
 func stripUserComplexConfig(cfg corelib.AppConfig) corelib.AppConfig {
@@ -2850,6 +3049,7 @@ func stripUserComplexConfig(cfg corelib.AppConfig) corelib.AppConfig {
 	cfg.MaclawLLMTimeoutSec = 0
 	cfg.MaclawLLMCurrentProvider = ""
 	cfg.MaclawLLMProviders = nil
+	cfg.LLMPromptCache = corelib.LLMPromptCacheConfig{}
 	cfg.AuxiliaryLLM = corelib.AuxiliaryLLMConfig{}
 	cfg.ModelRoutes = nil
 	return cfg
@@ -3646,9 +3846,16 @@ func decodeOptionalAppConfig(w http.ResponseWriter, r *http.Request) (*corelib.A
 		return nil, true
 	}
 
-	var envelope configEnvelope
-	if err := json.Unmarshal(body, &envelope); err == nil && !isZeroAppConfig(envelope.AppConfig) {
-		return &envelope.AppConfig, true
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err == nil {
+		if appConfigBody, ok := raw["app_config"]; ok {
+			var cfg corelib.AppConfig
+			if err := json.Unmarshal(appConfigBody, &cfg); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid app_config body: " + err.Error()})
+				return nil, false
+			}
+			return &cfg, true
+		}
 	}
 
 	var cfg corelib.AppConfig
@@ -3657,9 +3864,6 @@ func decodeOptionalAppConfig(w http.ResponseWriter, r *http.Request) (*corelib.A
 		return nil, false
 	}
 	return &cfg, true
-}
-func isZeroAppConfig(cfg corelib.AppConfig) bool {
-	return reflect.DeepEqual(cfg, corelib.AppConfig{})
 }
 
 type pageQuery struct {

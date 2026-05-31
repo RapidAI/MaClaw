@@ -26,7 +26,7 @@ func (h *IMMessageHandler) appendSteeringSection(b *strings.Builder, userMessage
 	}
 
 	cfg := h.getMaclawLLMConfig()
-	userID := h.lastUserID
+	userID := h.promptRuntimeUserID(nil)
 
 	ctx := steering.ResolveContext{
 		UserMessage:            userMessage,
@@ -72,7 +72,7 @@ func (h *IMMessageHandler) trackSteeringFile(path string) {
 	if path == "" {
 		return
 	}
-	userID := h.lastUserID
+	userID := h.promptRuntimeUserID(nil)
 	if userID == "" {
 		userID = "_default"
 	}

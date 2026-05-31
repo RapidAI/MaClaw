@@ -3,6 +3,7 @@ package main
 import "time"
 
 func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
+	platform := h.consumeRuntimePlatformFromToolArgsOrCurrent(args)
 	if msg := screenshotLocalImagePathGuardMessage(h.lastUserText); msg != "" {
 		return msg
 	}
@@ -40,5 +41,5 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 		return "会话管理器未初始化"
 	}
 
-	return h.captureSessionScreenshotResult(sessionID)
+	return h.captureSessionScreenshotResultForPlatform(sessionID, platform)
 }

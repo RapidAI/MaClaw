@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -165,6 +167,279 @@ func TestEmitDocUpdateUsesExplicitPhaseIDWithoutContentInference(t *testing.T) {
 	}
 	if _, err := os.Stat(tasksPath); !os.IsNotExist(err) {
 		t.Fatalf("tasks doc should not be created from content heading, stat err=%v", err)
+	}
+}
+
+func TestGUIWorkflowAdapterSetWorkingDirCreatesDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing", "project")
+	adapter := NewGUIWorkflowAdapter(&App{}, nil)
+
+	adapter.SetWorkingDir("u1", dir)
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("SetWorkingDir should create directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("working dir should be directory, got file: %s", dir)
+	}
+	if got := adapter.GetWorkingDir(); got != dir {
+		t.Fatalf("GetWorkingDir() = %q, want %q", got, dir)
+	}
+}
+
+func TestGUIWorkflowAdapterUsesWorkflowStateProjectPathForDocs(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	currentProject := t.TempDir()
+	workflowProject := filepath.Join(t.TempDir(), "workflow-project")
+	if err := app.SaveConfig(corelib.AppConfig{
+		Projects:       []corelib.ProjectConfig{{Id: "current", Name: "Current", Path: currentProject}},
+		CurrentProject: "current",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	engine := workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
+	adapter := NewGUIWorkflowAdapter(app, engine)
+	engine.SetCallbacks(adapter)
+
+	state, err := engine.StartWorkflowWithOptions("u1", workflow.StructuredIntent{Category: workflow.WorkflowCoding}, workflow.WorkflowStartOptions{ProjectPath: workflowProject})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions() error = %v", err)
+	}
+	if got := adapter.GetWorkingDir(); got != workflowProject {
+		t.Fatalf("adapter working dir = %q, want workflow project %q", got, workflowProject)
+	}
+	content := "# Requirements\n\nUse workflow project path."
+	if err := adapter.EmitDocUpdate("u1", workflow.PhaseCodingRequirements, content); err != nil {
+		t.Fatalf("EmitDocUpdate() error = %v", err)
+	}
+
+	wantPath := filepath.Join(workflowProject, ".maclaw", "workflow", state.ID, workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if got, err := os.ReadFile(wantPath); err != nil || string(got) != content {
+		t.Fatalf("workflow doc not persisted under workflow project, content=%q err=%v path=%s", string(got), err, wantPath)
+	}
+	wrongPath := filepath.Join(currentProject, ".maclaw", "workflow", state.ID, workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if _, err := os.Stat(wrongPath); !os.IsNotExist(err) {
+		t.Fatalf("workflow doc should not persist under current app project, stat err=%v path=%s", err, wrongPath)
+	}
+}
+
+func TestGUIWorkflowAdapterClearsStaleWorkingDirForNewWorkflowWithoutProjectPath(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	firstProject := filepath.Join(t.TempDir(), "first-project")
+	currentProject := t.TempDir()
+	if err := app.SaveConfig(corelib.AppConfig{
+		Projects:       []corelib.ProjectConfig{{Id: "current", Name: "Current", Path: currentProject}},
+		CurrentProject: "current",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	adapter := NewGUIWorkflowAdapter(app, nil)
+
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.WorkflowState{ID: "wf-first", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: firstProject}); err != nil {
+		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
+	}
+	if got := adapter.GetWorkingDir(); got != firstProject {
+		t.Fatalf("first working dir = %q, want %q", got, firstProject)
+	}
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.WorkflowState{ID: "wf-second", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding}); err != nil {
+		t.Fatalf("EmitPhaseUpdate(second) error = %v", err)
+	}
+	if got := adapter.GetWorkingDir(); got != "" {
+		t.Fatalf("new workflow without ProjectPath must clear stale working dir, got %q", got)
+	}
+
+	content := "# Requirements\n\nNo stale project path."
+	if err := adapter.EmitDocUpdate("u1", workflow.PhaseCodingRequirements, content); err != nil {
+		t.Fatalf("EmitDocUpdate() error = %v", err)
+	}
+	stalePath := filepath.Join(firstProject, ".maclaw", "workflow", "wf-second", workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("doc should not persist under stale workflow project, stat err=%v path=%s", err, stalePath)
+	}
+	wrongPath := filepath.Join(currentProject, ".maclaw", "workflow", "wf-second", workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if _, err := os.Stat(wrongPath); !os.IsNotExist(err) {
+		t.Fatalf("active workflow without ProjectPath should not fall back to current project, stat err=%v path=%s", err, wrongPath)
+	}
+}
+
+func TestGUIWorkflowAdapterDoesNotUseUnpreparedWorkflowProjectPath(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	staleProject := filepath.Join(t.TempDir(), "stale-project")
+	invalidProject := filepath.Join(t.TempDir(), "project-file")
+	if err := os.WriteFile(invalidProject, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	adapter := NewGUIWorkflowAdapter(app, nil)
+
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.WorkflowState{ID: "wf-first", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: staleProject}); err != nil {
+		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
+	}
+	if got := adapter.GetWorkingDir(); got != staleProject {
+		t.Fatalf("first working dir = %q, want %q", got, staleProject)
+	}
+	if err := adapter.EmitPhaseUpdate("u1", &workflow.WorkflowState{ID: "wf-second", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: invalidProject}); err != nil {
+		t.Fatalf("EmitPhaseUpdate(second) error = %v", err)
+	}
+	if got := adapter.GetWorkingDir(); got != "" {
+		t.Fatalf("invalid workflow ProjectPath must clear stale working dir, got %q", got)
+	}
+
+	content := "# Requirements\n\nInvalid project path should not reuse stale dir."
+	if err := adapter.EmitDocUpdate("u1", workflow.PhaseCodingRequirements, content); err != nil {
+		t.Fatalf("EmitDocUpdate() error = %v", err)
+	}
+	stalePath := filepath.Join(staleProject, ".maclaw", "workflow", "wf-second", workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("doc should not persist under stale workflow project after invalid ProjectPath, stat err=%v path=%s", err, stalePath)
+	}
+	invalidPath := filepath.Join(invalidProject, ".maclaw", "workflow", "wf-second", workflowPhaseFileName(workflow.PhaseCodingRequirements))
+	if _, err := os.Stat(invalidPath); !os.IsNotExist(err) {
+		t.Fatalf("doc should not persist under invalid workflow ProjectPath, stat err=%v path=%s", err, invalidPath)
+	}
+}
+
+func TestGUIWorkflowAdapterWorkflowStateProjectPathChangeInvalidatesProjectStorage(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	firstProject := filepath.Join(t.TempDir(), "first-project")
+	secondProject := filepath.Join(t.TempDir(), "second-project")
+	adapter := NewGUIWorkflowAdapter(app, nil)
+	state := &workflow.WorkflowState{ID: "wf-same", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: firstProject}
+
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
+	}
+	firstStorage := adapter.resolveProjectStorageDir()
+	if firstStorage == "" || !strings.HasPrefix(firstStorage, filepath.Join(firstProject, "docs", "workflow")) {
+		t.Fatalf("first project storage dir = %q, want under %q", firstStorage, firstProject)
+	}
+	state.ProjectPath = secondProject
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(second) error = %v", err)
+	}
+	secondStorage := adapter.resolveProjectStorageDir()
+	if secondStorage == "" || !strings.HasPrefix(secondStorage, filepath.Join(secondProject, "docs", "workflow")) {
+		t.Fatalf("second project storage dir = %q, want under %q", secondStorage, secondProject)
+	}
+	if secondStorage == firstStorage {
+		t.Fatalf("project storage dir cache was not invalidated: %q", secondStorage)
+	}
+}
+
+func TestGUIWorkflowAdapterWorkflowStateEmptyProjectPathClearsWorkingDirForSameWorkflow(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	project := filepath.Join(t.TempDir(), "workflow-project")
+	adapter := NewGUIWorkflowAdapter(app, nil)
+	state := &workflow.WorkflowState{ID: "wf-same", Status: workflow.WorkflowActive, Type: workflow.WorkflowCoding, ProjectPath: project}
+
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(first) error = %v", err)
+	}
+	if got := adapter.GetWorkingDir(); got != project {
+		t.Fatalf("working dir = %q, want %q", got, project)
+	}
+	state.ProjectPath = ""
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(clear) error = %v", err)
+	}
+	if got := adapter.GetWorkingDir(); got != "" {
+		t.Fatalf("same workflow empty ProjectPath should clear working dir, got %q", got)
+	}
+}
+
+func TestGUIWorkflowAdapterCompletionUsesWorkflowStateProjectPathForManifest(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	workflowProject := filepath.Join(t.TempDir(), "workflow-project")
+	adapter := NewGUIWorkflowAdapter(app, nil)
+	adapter.activeWorkflowID = "wf-complete"
+	adapter.activeWorkflowType = workflow.WorkflowCoding
+	adapter.workflowStartDate = time.Date(2026, 5, 31, 9, 0, 0, 0, time.Local)
+
+	state := &workflow.WorkflowState{
+		ID:          "wf-complete",
+		Status:      workflow.WorkflowCompleted,
+		Type:        workflow.WorkflowCoding,
+		ProjectPath: workflowProject,
+		PhaseOutputs: map[string]string{
+			workflow.PhaseCodingRequirements: "requirements",
+		},
+	}
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(completed) error = %v", err)
+	}
+
+	manifestPath := filepath.Join(workflowProject, "docs", "workflow", "coding", "2026-05-31", "workflow-manifest.json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Fatalf("completion manifest should use workflow state ProjectPath, stat err=%v path=%s", err, manifestPath)
+	}
+}
+
+func TestGUIWorkflowAdapterCompletionInvalidProjectPathDoesNotUseStaleWorkingDir(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	staleProject := filepath.Join(t.TempDir(), "stale-project")
+	invalidProject := filepath.Join(t.TempDir(), "project-file")
+	if err := os.WriteFile(invalidProject, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	adapter := NewGUIWorkflowAdapter(app, nil)
+	adapter.workingDir = staleProject
+	adapter.activeWorkflowID = "wf-complete"
+	adapter.activeWorkflowType = workflow.WorkflowCoding
+	adapter.workflowStartDate = time.Date(2026, 5, 31, 9, 0, 0, 0, time.Local)
+
+	state := &workflow.WorkflowState{
+		ID:          "wf-complete",
+		Status:      workflow.WorkflowCompleted,
+		Type:        workflow.WorkflowCoding,
+		ProjectPath: invalidProject,
+		PhaseOutputs: map[string]string{
+			workflow.PhaseCodingRequirements: "requirements",
+		},
+	}
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(completed) error = %v", err)
+	}
+
+	staleManifestPath := filepath.Join(staleProject, "docs", "workflow", "coding", "2026-05-31", "workflow-manifest.json")
+	if _, err := os.Stat(staleManifestPath); !os.IsNotExist(err) {
+		t.Fatalf("completion with invalid ProjectPath should not write manifest under stale dir, stat err=%v path=%s", err, staleManifestPath)
+	}
+}
+
+func TestGUIWorkflowAdapterCompletionInvalidProjectPathClearsCachedProjectStorage(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	staleProject := filepath.Join(t.TempDir(), "stale-project")
+	invalidProject := filepath.Join(t.TempDir(), "project-file")
+	if err := os.WriteFile(invalidProject, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	adapter := NewGUIWorkflowAdapter(app, nil)
+	adapter.workingDir = staleProject
+	adapter.activeWorkflowID = "wf-complete"
+	adapter.activeWorkflowType = workflow.WorkflowCoding
+	adapter.workflowStartDate = time.Date(2026, 5, 31, 9, 0, 0, 0, time.Local)
+	staleStorage := adapter.resolveProjectStorageDir()
+	if staleStorage == "" {
+		t.Fatal("expected initial cached project storage dir")
+	}
+	adapter.workingDir = ""
+
+	state := &workflow.WorkflowState{
+		ID:          "wf-complete",
+		Status:      workflow.WorkflowCompleted,
+		Type:        workflow.WorkflowCoding,
+		ProjectPath: invalidProject,
+		PhaseOutputs: map[string]string{
+			workflow.PhaseCodingRequirements: "requirements",
+		},
+	}
+	if err := adapter.EmitPhaseUpdate("u1", state); err != nil {
+		t.Fatalf("EmitPhaseUpdate(completed) error = %v", err)
+	}
+
+	staleManifestPath := filepath.Join(staleStorage, "workflow-manifest.json")
+	if _, err := os.Stat(staleManifestPath); !os.IsNotExist(err) {
+		t.Fatalf("completion with invalid ProjectPath should clear cached project storage, stat err=%v path=%s", err, staleManifestPath)
 	}
 }
 

@@ -43,7 +43,10 @@ func (h *IMMessageHandler) toolCompressContext(args map[string]interface{}) stri
 		}
 	}
 
-	userID := h.lastUserID
+	userID := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrent(args)
+	if strings.TrimSpace(userID) == "" {
+		return "无法压缩上下文：当前运行上下文缺少 owner。"
+	}
 	h.pendingContextCompression.Store(userID, &contextCompressionRequest{
 		Summary:       summary,
 		PreserveLastN: preserveLastN,

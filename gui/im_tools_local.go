@@ -22,6 +22,7 @@ import (
 )
 
 func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
+	ownerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
 	command, _ := args["command"].(string)
 	if command == "" {
 		return "缺少 command 参数"
@@ -33,12 +34,12 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 
 	// --- Background mode: submit to LocalBackgroundTaskManager ---
 	if bg, ok := args["background"].(bool); ok && bg {
-		return h.toolBashBackground(command, stringVal(args, "working_dir"), stringVal(args, "task_role"))
+		return h.toolBashBackgroundForOwner(command, stringVal(args, "working_dir"), stringVal(args, "task_role"), ownerID)
 	}
 
 	timeout := resolveBashTimeout(args, command)
 
-	workDir := h.resolveToolWorkDir(stringVal(args, "working_dir"))
+	workDir := h.resolveToolWorkDirForOwner(stringVal(args, "working_dir"), ownerID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -157,7 +158,11 @@ func projectPathFromUserID(userID string) string {
 // synthesized userID. If the path doesn't exist as a directory, falls back to
 // the user's home directory. Returns empty string if not in a Project Tab context.
 func (h *IMMessageHandler) projectTabWorkDir() string {
-	projectPath := projectPathFromUserID(h.lastUserID)
+	return h.projectTabWorkDirForOwner(h.currentRuntimeOrLegacyPolicyOwnerID())
+}
+
+func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
+	projectPath := projectPathFromUserID(ownerID)
 	if projectPath == "" {
 		return ""
 	}
@@ -179,11 +184,15 @@ func (h *IMMessageHandler) projectTabWorkDir() string {
 // the bound projectPath as the working directory. Falls back to the default
 // workspace directory (~/.maclaw/workspace) if not in a Project Tab context.
 func (h *IMMessageHandler) resolveToolWorkDir(workingDir string) string {
+	return h.resolveToolWorkDirForOwner(workingDir, h.currentRuntimeOrLegacyPolicyOwnerID())
+}
+
+func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string) string {
 	if workingDir != "" {
 		return resolvePath(workingDir)
 	}
 	// Project Tab: use projectPath as default working directory.
-	if dir := h.projectTabWorkDir(); dir != "" {
+	if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 		return dir
 	}
 	// Default: ~/.maclaw/workspace (same as resolvePath(""))

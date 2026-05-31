@@ -799,6 +799,111 @@ func (e *WorkflowEngine) requestReviewRegenerationLocked(ws *WorkflowState, phas
 	}
 	return e.regenerateCurrentPhaseResponse(ws, phase, feedback), nil
 }
+
+func cloneQualityGateResults(src map[string]*QualityGateResult) map[string]*QualityGateResult {
+	if src == nil {
+		return nil
+	}
+	cp := make(map[string]*QualityGateResult, len(src))
+	for k, v := range src {
+		if v == nil {
+			cp[k] = nil
+			continue
+		}
+		gate := *v
+		gate.Items = append([]GateCheckItem(nil), v.Items...)
+		cp[k] = &gate
+	}
+	return cp
+}
+
+// ReopenPhaseForRevision rewinds an active workflow to a previous NeedsConfirm
+// phase and requests regeneration of that phase's deliverable. It is used when
+// a later execution boundary discovers that an earlier reviewed artifact is not
+// structurally executable and must be repaired before continuing.
+func (e *WorkflowEngine) ReopenPhaseForRevision(userID, phaseID, feedback string) (*WorkflowResponse, error) {
+	e.mu.Lock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("no active workflow for user %s", userID)
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("workflow template not found for type %s", ws.Type)
+	}
+	targetIndex, ok := workflowTemplatePhaseIndex(tmpl, phaseID)
+	if !ok || targetIndex < 0 || targetIndex >= len(tmpl.Phases) {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("workflow phase %s not found", phaseID)
+	}
+	phase := &tmpl.Phases[targetIndex]
+	if !phase.NeedsConfirm {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("workflow phase %s is not reviewable", phaseID)
+	}
+	if targetIndex > ws.PhaseIndex {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("workflow phase %s is ahead of current phase %s", phaseID, ws.CurrentPhase)
+	}
+
+	previousPhaseIndex := ws.PhaseIndex
+	previousCurrentPhase := ws.CurrentPhase
+	previousPendingReviewPhaseID := ws.PendingReviewPhaseID
+	previousPendingReviewRevisionRequested := ws.PendingReviewRevisionRequested
+	previousPhaseFormData := ws.PhaseFormData
+	previousPhaseFormSubmitted := ws.PhaseFormSubmitted
+	previousPhaseFormSkipped := ws.PhaseFormSkipped
+	previousOutputs := cloneStringMap(ws.PhaseOutputs)
+	previousGates := cloneQualityGateResults(ws.GateResults)
+	previousUpdatedAt := ws.UpdatedAt
+
+	rollback := func() {
+		ws.PhaseIndex = previousPhaseIndex
+		ws.CurrentPhase = previousCurrentPhase
+		ws.PendingReviewPhaseID = previousPendingReviewPhaseID
+		ws.PendingReviewRevisionRequested = previousPendingReviewRevisionRequested
+		ws.PhaseFormData = previousPhaseFormData
+		ws.PhaseFormSubmitted = previousPhaseFormSubmitted
+		ws.PhaseFormSkipped = previousPhaseFormSkipped
+		ws.PhaseOutputs = previousOutputs
+		ws.GateResults = previousGates
+		ws.UpdatedAt = previousUpdatedAt
+	}
+
+	for i := targetIndex + 1; i < len(tmpl.Phases); i++ {
+		delete(ws.PhaseOutputs, tmpl.Phases[i].ID)
+		delete(ws.GateResults, tmpl.Phases[i].ID)
+	}
+	ws.PhaseIndex = targetIndex
+	ws.CurrentPhase = phase.ID
+	ws.PendingReviewPhaseID = phase.ID
+	ws.PendingReviewRevisionRequested = true
+	ws.PhaseFormData = nil
+	ws.PhaseFormSubmitted = false
+	ws.PhaseFormSkipped = false
+	ws.UpdatedAt = time.Now()
+
+	if e.store != nil {
+		if err := e.store.SaveWorkflowState(ws); err != nil {
+			rollback()
+			e.mu.Unlock()
+			return nil, fmt.Errorf("save reopened workflow phase: %w", err)
+		}
+	}
+	stateForCallback := ws.Clone()
+	callbacks := e.callbacks
+	resp := e.regenerateCurrentPhaseResponse(ws, phase, feedback)
+	e.mu.Unlock()
+
+	if callbacks != nil {
+		_ = callbacks.EmitPhaseUpdate(userID, stateForCallback)
+	}
+	return resp, nil
+}
+
 func (e *WorkflowEngine) regenerateCurrentPhaseResponse(ws *WorkflowState, phase *PhaseTemplate, feedback string) *WorkflowResponse {
 	phasePrompt := BuildPhaseSystemPrompt(ws, phase, e.registry)
 	if strings.TrimSpace(feedback) != "" {
@@ -986,6 +1091,26 @@ func (e *WorkflowEngine) ActiveWorkflowUserIDForPhase(phaseID string) (string, b
 	return matchedUserID, matchedUserID != ""
 }
 
+// SingleActiveWorkflowUserID returns the user ID when exactly one active
+// workflow exists. If there are none or more than one, it returns false so
+// callers do not guess across sessions.
+func (e *WorkflowEngine) SingleActiveWorkflowUserID() (string, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	matchedUserID := ""
+	for userID, ws := range e.workflows {
+		if ws == nil || ws.Status != WorkflowActive {
+			continue
+		}
+		if matchedUserID != "" {
+			return "", false
+		}
+		matchedUserID = userID
+	}
+	return matchedUserID, matchedUserID != ""
+}
+
 // ---------------------------------------------------------------------------
 // Cancel
 // ---------------------------------------------------------------------------
@@ -1078,6 +1203,27 @@ func (e *WorkflowEngine) GetActivePhaseToolFilter(userID string) ToolFilterPolic
 	}
 
 	return GetToolFilterForPhase(phase)
+}
+
+// IsActivePhaseExecutionOrchestrator reports whether the active phase is an
+// implementation phase that may launch the task/CodingSubAgent orchestrator.
+func (e *WorkflowEngine) IsActivePhaseExecutionOrchestrator(userID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return false
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex < 0 || ws.PhaseIndex >= len(tmpl.Phases) {
+		return false
+	}
+	phase := &tmpl.Phases[ws.PhaseIndex]
+	if phase.ID != ws.CurrentPhase || e.isPhaseExecutionBlockedLocked(ws, tmpl, phase) {
+		return false
+	}
+	return IsExecutionOrchestratorPhase(*phase)
 }
 
 // IsPhaseExecutionBlocked reports whether the active workflow phase is waiting
@@ -1580,16 +1726,21 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) (string, error)
 			return "", fmt.Errorf("save phase output state: %w", err)
 		}
 	}
-	if gateResult != nil && e.callbacks != nil {
-		_ = e.callbacks.EmitGateResult(userID, phaseID, gateResult)
-	}
-
 	// Capture values needed for artifact sinking before releasing the lock.
 	saver := e.artifactSaver
 	wsType := string(ws.Type)
 	projectPath := ws.ProjectPath
+	stateForCallback := ws.Clone()
+	callbacks := e.callbacks
 
 	e.mu.Unlock()
+
+	if gateResult != nil && callbacks != nil {
+		_ = callbacks.EmitGateResult(userID, phaseID, gateResult)
+	}
+	if callbacks != nil {
+		_ = callbacks.EmitPhaseUpdate(userID, stateForCallback)
+	}
 
 	// Sink phase output summary to long-term memory OUTSIDE the engine lock.
 	// This avoids WorkflowEngine.mu -> memory.Store.mu lock nesting.

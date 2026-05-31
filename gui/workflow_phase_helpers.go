@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 const (
@@ -19,14 +20,18 @@ type workflowPhaseKind string
 
 const workflowPhaseUnknown workflowPhaseKind = ""
 
+// normalizeWorkflowPhaseKind classifies a raw phase ID into one of the three
+// canonical coding-workflow kinds, or workflowPhaseUnknown for anything else.
+//
+// It delegates to workflow.CanonicalPhaseID so the phase-ID alias table lives in
+// exactly one place (corelib/workflow): adding or changing an alias there flows
+// here automatically and the two can never drift. A canonical ID that is not one
+// of the three known coding kinds (i.e. CanonicalPhaseID passed it through
+// unchanged) maps to workflowPhaseUnknown.
 func normalizeWorkflowPhaseKind(value string) workflowPhaseKind {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "requirements", "requirement", "req":
-		return workflowPhaseKind(workflowPhaseRequirements)
-	case "design", "tech_design", "technical_design":
-		return workflowPhaseKind(workflowPhaseDesign)
-	case "tasks", "task", "task_plan", "task_breakdown":
-		return workflowPhaseKind(workflowPhaseTasks)
+	switch canonical := workflow.CanonicalPhaseID(value); canonical {
+	case workflowPhaseRequirements, workflowPhaseDesign, workflowPhaseTasks:
+		return workflowPhaseKind(canonical)
 	default:
 		return workflowPhaseUnknown
 	}
@@ -79,6 +84,14 @@ func (h *IMMessageHandler) toolSearchAndInstallSkillResult(args map[string]inter
 			onProgress(msg)
 		}
 	}
+	platform := consumeRuntimePlatformFromToolArgs(args)
+	if platform == "" {
+		platform = h.currentRuntimePlatform()
+	}
+	policyOwnerID, explicitRuntime := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
+	if policyOwnerID == "" && explicitRuntime {
+		return searchAndInstallSkillResult{Text: "Skill search failed: runtime owner is missing; isolated runtime will not fall back to desktop owner", Success: false}
+	}
 	ctx := context.Background()
 	searcher := NewSkillSearcher(NewSkillMarketClient(h.app))
 	best, err := searcher.SearchAndInstall(ctx, query)
@@ -88,10 +101,6 @@ func (h *IMMessageHandler) toolSearchAndInstallSkillResult(args map[string]inter
 	if best == nil {
 		return searchAndInstallSkillResult{Text: fmt.Sprintf("No matching skill found for %q.", query), Success: false}
 	}
-	platform := ""
-	if h.currentLoopCtx != nil {
-		platform = h.currentLoopCtx.Platform
-	}
-	installResult := h.installAndExecuteSkill(ctx, best, query, platform, h.lastUserID, sendStatus)
+	installResult := h.installAndExecuteSkill(ctx, best, query, platform, policyOwnerID, policyOwnerID, sendStatus)
 	return searchAndInstallSkillResult{Text: installResult.Text, Success: installResult.Success}
 }

@@ -6,6 +6,7 @@ import { AssistantInputStack } from "./AssistantInputStack";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { getParticipantColor } from "./VEGroupChat";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { participantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
 import { useAssistantInputHistory } from "./useAssistantInputHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
@@ -136,6 +137,7 @@ export type VEConversationError =
     | { type: "hub_disconnected"; message: string }
     | { type: "ve_offline"; message: string }
     | { type: "auth_pending"; message: string }
+    | { type: "auth_timeout"; message: string }
     | { type: "access_denied"; message: string }
     | { type: "send_failed"; message: string }
     | { type: "session_timeout"; message: string };
@@ -197,8 +199,26 @@ const MAX_RECONNECT_RETRIES = 5;
 const MENTION_TRIGGER_PATTERN = /(^|[^A-Za-z0-9_.-])@([^\s@]*)$/;
 const VE_PROMPT_HISTORY_STORAGE_PREFIX = "ve-conversation-prompt-history:";
 const MAX_VE_PROMPT_HISTORY = 100;
+const DEFAULT_AUTH_PENDING_TIMEOUT_MS = 5 * 60 * 1000;
 
 // --- Helpers ---
+
+function extractAuthPendingExpiryMs(err: unknown): number | null {
+    const message = extractErrorMessage(err) || String((err as any)?.message || err || "");
+    const match = message.match(/"?(expires_at|expiresAt|expiry|retry_after_ms|retryAfterMs)"?\s*[:=]\s*"?([^",\s}]+)"?/i);
+    if (!match) return null;
+    const key = match[1].toLowerCase();
+    const value = match[2];
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+        if (key.includes("retry")) return Date.now() + Math.max(0, numeric);
+        if (numeric > 10_000_000_000) return numeric;
+        if (numeric > 1_000_000_000) return numeric * 1000;
+        return Date.now() + numeric;
+    }
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : Date.now() + DEFAULT_AUTH_PENDING_TIMEOUT_MS;
+}
 
 /** Generate a unique message ID */
 function generateMsgId(): string {
@@ -232,7 +252,7 @@ function normalizeMentionParticipantId(value: string | undefined): string {
 function participantNameById(participants: MentionParticipant[] | undefined, id?: string): string {
     const normalized = normalizeMentionParticipantId(id);
     if (!normalized || !participants?.length) return "";
-    return participants.find((p) => normalizeMentionParticipantId(p.id) === normalized)?.name || "";
+    return participants.find((p) => participantIdentityMatches(p.id, normalized))?.name || "";
 }
 
 
@@ -258,7 +278,7 @@ function readableConversationPartnerName(name: string, id: string, isZh: boolean
 
 function participantColorById(participants: MentionParticipant[] | undefined, id: string | undefined, fallback: string): string {
     const normalized = normalizeMentionParticipantId(id);
-    const index = participants?.findIndex((p) => normalizeMentionParticipantId(p.id) === normalized) ?? -1;
+    const index = participants?.findIndex((p) => participantIdentityMatches(p.id, normalized)) ?? -1;
     return index >= 0 ? getParticipantColor(index) : fallback;
 }
 
@@ -280,7 +300,7 @@ function mentionLabelsForParticipant(participant: MentionParticipant): string[] 
     const labels = new Set<string>();
     const name = String(participant.name || "").trim();
     if (name) labels.add(name);
-    if (normalizeMentionParticipantId(participant.id) === LEGACY_LOCAL_AI_PARTICIPANT_ID || isLocalAIName(name)) {
+    if (participantIdentityMatches(participant.id, LEGACY_LOCAL_AI_PARTICIPANT_ID) || isLocalAIName(name)) {
         labels.add(LOCAL_AI_DISPLAY_NAME_EN);
         labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANS);
         labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANT);
@@ -307,9 +327,35 @@ function mentionedParticipantIds(content: string, participants: MentionParticipa
     return [...mentioned];
 }
 
+function hasUnresolvedMentionTrigger(content: string): boolean {
+    return /(^|[^A-Za-z0-9_.-])@[^\s@]+/.test(content);
+}
+
+function defaultResponderParticipantId(defaultParticipantId: string, participants: MentionParticipant[] | undefined): string {
+    const normalizedDefault = normalizeMentionParticipantId(defaultParticipantId);
+    if (!normalizedDefault || !participants?.length) return "";
+    for (const participant of participants) {
+        const id = String(participant.id || "").trim();
+        if (!id) continue;
+        if (participantIdentityMatches(id, normalizedDefault)) {
+            return id;
+        }
+    }
+    return "";
+}
+
+function outgoingTargetParticipantIds(content: string, participants: MentionParticipant[] | undefined, defaultParticipantId: string): string[] {
+    const mentioned = mentionedParticipantIds(content, participants);
+    if (mentioned.length > 0 || hasUnresolvedMentionTrigger(content)) return mentioned;
+    const remoteParticipants = (participants || []).filter((participant) => !isLocalGroupParticipant(participant));
+    if (remoteParticipants.length > 1) return [];
+    const defaultID = defaultResponderParticipantId(defaultParticipantId, participants);
+    return defaultID ? [defaultID] : [];
+}
+
 function isLocalGroupParticipant(participant: MentionParticipant): boolean {
     const id = normalizeMentionParticipantId(participant.id);
-    return id === LEGACY_LOCAL_AI_PARTICIPANT_ID || isLocalAIName(participant.name);
+    return participantIdentityMatches(id, LEGACY_LOCAL_AI_PARTICIPANT_ID) || isLocalAIName(participant.name);
 }
 
 function groupSessionVEIds(primaryVEId: string, participants: MentionParticipant[] | undefined): string[] {
@@ -318,7 +364,7 @@ function groupSessionVEIds(primaryVEId: string, participants: MentionParticipant
         const id = String(value || "").trim();
         if (!id) return;
         const normalized = normalizeMentionParticipantId(id);
-        if (ids.some(existing => normalizeMentionParticipantId(existing) === normalized)) return;
+        if (ids.some(existing => participantIdentityMatches(existing, normalized))) return;
         ids.push(id);
     };
     add(primaryVEId);
@@ -410,6 +456,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const awaitingReplyRef = useRef(false);
     const queueDrainRunningRef = useRef(false);
     const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const authPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadedHistorySessionRef = useRef<string>("");
     const sessionInitInFlightRef = useRef<Promise<boolean> | null>(null);
     const sessionInitGenerationRef = useRef(0);
@@ -422,6 +469,31 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, isZh), [isZh, veId, veName]);
     const safeAssistantAvatar = useMemo(() => safeAvatarDataURL(avatarDataURL), [avatarDataURL]);
     const canSend = veOnline && !readOnly && !sending && (!!inputText.trim() || pendingAttachments.length > 0);
+
+    const clearAuthPendingTimer = useCallback(() => {
+        if (authPendingTimerRef.current) {
+            clearTimeout(authPendingTimerRef.current);
+            authPendingTimerRef.current = null;
+        }
+    }, []);
+
+    const scheduleAuthPendingTimeout = useCallback((err: unknown) => {
+        clearAuthPendingTimer();
+        const expiresAt = extractAuthPendingExpiryMs(err);
+        if (!expiresAt) return;
+        const delay = expiresAt - Date.now();
+        authPendingTimerRef.current = setTimeout(() => {
+            authPendingTimerRef.current = null;
+            sessionInitGenerationRef.current += 1;
+            sessionInitInFlightRef.current = null;
+            if (!mountedRef.current || sessionIdRef.current) return;
+            setState((prev) => prev.sessionId ? prev : {
+                ...prev,
+                connectionState: "disconnected",
+                error: { type: "auth_timeout", message: "expired" } as VEConversationError,
+            });
+        }, Math.max(0, delay));
+    }, [clearAuthPendingTimer]);
     const inputReady = veOnline && !readOnly;
     const inputThemeMode: "light" | "dark" = isDarkHexColor(theme.bg) ? "dark" : "light";
     const voiceInputDisabledRef = useRef<((level: number) => void) | null>(null);
@@ -493,11 +565,11 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         });
     }, [resizeInput, scheduleInputFocus]);
 
-    const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue: inputText, submittedPrompts: promptHistoryState.veId === veId ? promptHistoryState.history : [] });
+    const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue: inputText, submittedPrompts: participantIdentityMatches(promptHistoryState.veId, veId) ? promptHistoryState.history : [] });
 
     const recordSubmittedPrompt = useCallback((prompt: string) => {
         setPromptHistoryState(prev => {
-            const history = prev.veId === veId ? prev.history : loadVEPromptHistory(veId);
+            const history = participantIdentityMatches(prev.veId, veId) ? prev.history : loadVEPromptHistory(veId);
             return { veId, history: appendVEPromptHistory(history, prompt) };
         });
     }, [veId]);
@@ -638,7 +710,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         const unsub = EventsOn("ve:status_change", (data: any) => {
             if (!data) return;
             const { ids, status } = veStatusEventInfo(data);
-            if (!ids.includes(normalizeParticipantId(veId))) return;
+            if (!ids.some((id) => participantIdentityMatches(id, veId))) return;
             if (status === "online") setVeOnline(true);
             else if (status === "offline") setVeOnline(false);
         });
@@ -720,7 +792,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     }
                 }
                 if (sessionInitGenerationRef.current !== initGeneration) return false;
-                if (sessionId) sessionIdRef.current = sessionId;
+                if (sessionId) {
+                    sessionIdRef.current = sessionId;
+                    clearAuthPendingTimer();
+                }
                 if (mountedRef.current) {
                     setState((prev) => ({
                         ...prev,
@@ -735,6 +810,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (sessionInitGenerationRef.current !== initGeneration) return false;
                 if (mountedRef.current) {
                     const errorType = classifySessionInitError(err);
+                    if (errorType === "auth_pending") scheduleAuthPendingTimeout(err);
+                    else clearAuthPendingTimer();
                     setState((prev) => ({
                         ...prev,
                         error: {
@@ -752,7 +829,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         } finally {
             if (sessionInitInFlightRef.current === run) sessionInitInFlightRef.current = null;
         }
-    }, [initiateConversation, initiateGroupConversation, participants, registerLocalExecutorInGroup, veId]);
+    }, [clearAuthPendingTimer, initiateConversation, initiateGroupConversation, participants, registerLocalExecutorInGroup, scheduleAuthPendingTimeout, veId]);
 
     useEffect(() => {
         const nextSessionId = existingSessionId || null;
@@ -784,6 +861,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (responseWatchdogRef.current) {
                 clearTimeout(responseWatchdogRef.current);
             }
+            clearAuthPendingTimer();
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -807,15 +885,18 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             const normalizedVEIds = authResultCandidateIds(veId);
             const targetIds = [payload?.target_ve_id, payload?.ve_id, payload?.target_machine_id]
                 .flatMap((value) => authResultCandidateIds(value));
-            if (!targetIds.some((id) => normalizedVEIds.includes(id))) return;
+            if (!targetIds.some((id) => normalizedVEIds.some((veID) => participantIdentityMatches(id, veID)))) return;
             const decision = String(payload?.decision || "").trim();
             const status = String(payload?.status || "").trim();
             if (status === "allowed" || decision === "allow_once" || decision === "allow_long" || decision === "allow") {
+                clearAuthPendingTimer();
                 const hasSession = !!sessionIdRef.current;
                 setState((prev) => ({ ...prev, error: null, connectionState: hasSession || prev.sessionId ? "connected" : "reconnecting" }));
                 if (!hasSession) void initSession();
                 return;
             }
+            clearAuthPendingTimer();
+            const expired = status === "expired" || decision === "timeout";
             const blocked = status === "blocked" || decision === "block";
             sessionInitGenerationRef.current += 1;
             sessionInitInFlightRef.current = null;
@@ -823,8 +904,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 ...prev,
                 connectionState: "disconnected",
                 error: {
-                    type: "access_denied",
-                    message: blocked ? "blocked" : "denied",
+                    type: expired ? "auth_timeout" : "access_denied",
+                    message: expired ? "expired" : (blocked ? "blocked" : "denied"),
                 } as VEConversationError,
             }));
         };
@@ -833,7 +914,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (typeof unsub === "function") unsub();
             else EventsOff("ve:auth_result");
         };
-    }, [initSession, veId]);
+    }, [clearAuthPendingTimer, initSession, veId]);
 
     const clearConversation = useCallback(async () => {
         if (readOnly) return;
@@ -943,16 +1024,16 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     useEffect(() => {
         const handleStreamChunk = (data: any) => {
             const sessionId = data?.session_id || data?.sessionId;
-            const content = data?.content || data?.chunk || "";
+            const content = String(data?.content || data?.chunk || "");
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
+            const attachments = normalizeVEMessageAttachments(data?.attachments);
             hideAwaitingReply();
             const senderId = String(data?.from_id || data?.fromId || data?.sender_id || data?.senderId || "");
             const senderName = String(data?.from_name || data?.fromName || data?.sender_name || data?.senderName || "");
-            const attachments = normalizeVEMessageAttachments(data?.attachments);
             setState((prev) => {
                 const hasPendingStream = !!prev.streamContent || prev.streamAttachments.length > 0;
-                if (prev.streaming && hasPendingStream && senderId && prev.streamFromId && senderId !== prev.streamFromId) {
+                if (prev.streaming && hasPendingStream && senderId && prev.streamFromId && !participantIdentityMatches(senderId, prev.streamFromId)) {
                     const completedMsg: VEMessage = {
                         id: generateMsgId(),
                         role: "assistant",
@@ -1056,24 +1137,25 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (!sid) return false;
 
             try {
+                const targetParticipantIds = outgoingTargetParticipantIds(content, participants, veId);
                 if (filePaths && filePaths.length > 0 && participants?.length && sendGroupMessageWithAttachments) {
-                    await sendGroupMessageWithAttachments(sid, content, mentionedParticipantIds(content, participants), filePaths);
+                    await sendGroupMessageWithAttachments(sid, content, targetParticipantIds, filePaths);
                 } else if (filePaths && filePaths.length > 0 && sendMessageWithAttachments) {
                     await sendMessageWithAttachments(sid, content, filePaths);
                 } else if (sendGroupMessage && participants?.length) {
-                    await sendGroupMessage(sid, content, mentionedParticipantIds(content, participants));
+                    await sendGroupMessage(sid, content, targetParticipantIds);
                 } else if (sendMessage) {
                     await sendMessage(sid, content);
                 } else {
                     const mod = await getWailsAppModule();
                     if (filePaths && filePaths.length > 0) {
                         if (participants?.length && typeof (mod as any).SendVEGroupMessageWithAttachments === "function") {
-                            await (mod as any).SendVEGroupMessageWithAttachments(sid, content, mentionedParticipantIds(content, participants), filePaths);
+                            await (mod as any).SendVEGroupMessageWithAttachments(sid, content, targetParticipantIds, filePaths);
                         } else {
                             await (mod as any).SendVEMessageWithAttachments(sid, content, filePaths);
                         }
                     } else if (participants?.length && typeof (mod as any).SendVEGroupMessage === "function") {
-                        await (mod as any).SendVEGroupMessage(sid, content, mentionedParticipantIds(content, participants));
+                        await (mod as any).SendVEGroupMessage(sid, content, targetParticipantIds);
                     } else {
                         await (mod as any).SendVEMessage(sid, content);
                     }
@@ -1103,7 +1185,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 return false;
             }
         },
-        [participants, sendGroupMessage, sendGroupMessageWithAttachments, sendMessage, sendMessageWithAttachments]
+        [participants, sendGroupMessage, sendGroupMessageWithAttachments, sendMessage, sendMessageWithAttachments, veId]
     );
 
     const drainQueuedMessages = useCallback(async () => {
@@ -1374,7 +1456,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     />
                 ))}
 
-                {/* Awaiting first response chunk */}
+                {/* Awaiting visible response */}
                 {awaitingReplyVisible && !state.streaming && (
                     <div data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
                         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 8, background: theme.fieldBg, borderLeft: `3px solid ${theme.responseBorderLeft}`, fontSize: 13, color: theme.textMuted || theme.text }}>
@@ -1474,6 +1556,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     : !veOnline
                     ? (isZh ? `${assistantDisplayName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${assistantDisplayName} is offline`)
                     : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}...` : `Message ${assistantDisplayName}...`)}
+                textareaAriaLabel={isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${assistantDisplayName}` : `Message ${assistantDisplayName}`}
                 ready={inputReady}
                 queuePanelTestId="ve-queued-message-panel"
                 recallHistory={recallHistory}
@@ -1875,10 +1958,7 @@ function AttachmentDisplay({ attachment, sessionId, theme, prefetchRemoteImage =
 // --- Utility Functions ---
 
 function authResultCandidateIds(value: unknown): string[] {
-    const normalized = normalizeParticipantId(String(value || ""));
-    if (!normalized) return [];
-    const paired = normalized.startsWith("ve_") ? normalized.slice(3) : `ve_${normalized}`;
-    return paired && paired !== normalized ? [normalized, paired] : [normalized];
+    return participantIdentityKeys(value);
 }
 
 function formatError(error: VEConversationError, isZh: boolean): string {
@@ -1889,6 +1969,8 @@ function formatError(error: VEConversationError, isZh: boolean): string {
             return isZh ? "\u8be5\u6570\u5b57\u5458\u5de5\u5f53\u524d\u4e0d\u5728\u7ebf" : "Digital employee is offline";
         case "auth_pending":
             return isZh ? "\u6b63\u5728\u8bf7\u6c42\u8bbf\u95ee\uff0c\u7b49\u5f85\u5bf9\u65b9\u786e\u8ba4" : "Waiting for access confirmation";
+        case "auth_timeout":
+            return isZh ? "\u5bf9\u65b9\u672a\u53ca\u65f6\u540c\u610f\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5" : "Approval timed out. Try again later.";
         case "access_denied":
             return error.message === "blocked"
                 ? (isZh ? "\u5f53\u524d\u65e0\u6cd5\u8bbf\u95ee\u8be5\u6570\u5b57\u5458\u5de5" : "This digital employee is unavailable")
@@ -1901,6 +1983,7 @@ function formatError(error: VEConversationError, isZh: boolean): string {
             return (error as VEConversationError).message;
     }
 }
+
 function extractErrorMessage(err: unknown): string {
     if (typeof err === "string") return err;
     if (!err || typeof err !== "object") return "";
@@ -1980,6 +2063,13 @@ function normalizeVEMessageAttachments(raw: unknown): VEMessageAttachment[] {
     return out;
 }
 
+function sameHistorySender(left: string, right: string): boolean {
+    const a = String(left || "").trim();
+    const b = String(right || "").trim();
+    if (!a || !b) return a === b;
+    return participantIdentityMatches(a, b);
+}
+
 function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assistantName: string, userName: string): VEMessage[] {
     const messages = firstHistoryList(detail.messages, detail.Messages, detail.session?.messages, detail.session?.Messages);
     if (!messages.length) return [];
@@ -1987,7 +2077,9 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
     for (const participant of detail.session?.participants || []) {
         const id = String(participant.id || participant.ID || "").trim();
         const role = String(participant.role_code || participant.roleCode || participant.RoleCode || "").trim().toLowerCase();
-        if (id && role === "initiator") localIds.add(normalizeParticipantId(id));
+        if (id && role === "initiator") {
+            participantIdentityKeys(id).forEach((key) => localIds.add(key));
+        }
     }
 
     const normalizedVEId = normalizeParticipantId(veId);
@@ -2001,7 +2093,7 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
         const attachments = normalizeVEHistoryAttachments(message);
         const content = String(message.content || message.Content || "");
         if (kind === "stream_end") {
-            if (streamIndex >= 0 && (!fromId || streamFromId === fromId)) {
+            if (streamIndex >= 0 && (!fromId || sameHistorySender(streamFromId, fromId))) {
                 const existing = out[streamIndex];
                 if (content) existing.content += content;
                 existing.attachments = mergeVEMessageAttachments(existing.attachments || [], attachments);
@@ -2018,7 +2110,7 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
 
         if (kind === "stream_chunk" && !content && attachments.length === 0) return;
 
-        if (kind === "stream_chunk" && streamIndex >= 0 && streamFromId === fromId) {
+        if (kind === "stream_chunk" && streamIndex >= 0 && sameHistorySender(streamFromId, fromId)) {
             const existing = out[streamIndex];
             existing.content += content;
             existing.attachments = mergeVEMessageAttachments(existing.attachments || [], attachments);
@@ -2026,8 +2118,8 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
         }
 
         const normalizedFromId = normalizeParticipantId(fromId);
-        const isLocalUser = localIds.has(normalizedFromId);
-        const isAssistant = normalizedFromId === normalizedVEId || (!isLocalUser && normalizedFromId !== "");
+        const isLocalUser = participantIdentityKeys(fromId).some((key) => localIds.has(key));
+        const isAssistant = participantIdentityMatches(fromId, normalizedVEId) || (!isLocalUser && normalizedFromId !== "");
         const fromName = String(message.from_name || message.fromName || message.FromName || "").trim();
         const createdAt = message.created_at || message.createdAt || message.CreatedAt;
         out.push({

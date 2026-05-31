@@ -5,9 +5,9 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels } from "../wailsjs/go/main/App";
 
-import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
+import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
@@ -89,6 +89,42 @@ import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHu
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
 
+const unavailableDigitalEmployeeFeatureStatus = { visible: false, reason: 'unavailable' };
+
+function callBackend<T>(call: () => T | Promise<T>): Promise<T> {
+    return Promise.resolve().then(call);
+}
+
+function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {
+    try {
+        return EventsOn(eventName, callback);
+    } catch {
+        return undefined;
+    }
+}
+
+function safeEventsOff(eventName: string, ...additionalEventNames: string[]) {
+    try {
+        EventsOff(eventName, ...additionalEventNames);
+    } catch {
+        // Runtime events are unavailable in a plain browser dev session.
+    }
+}
+
+function safeBrowserOpenURL(url: string) {
+    try {
+        BrowserOpenURL(url);
+    } catch {
+        window.open(url, "_blank", "noopener,noreferrer");
+    }
+}
+
+function fetchDigitalEmployeeFeatureStatus() {
+    return callBackend(() => GetDigitalEmployeeFeatureStatus())
+        .then((status: any) => status || { visible: false })
+        .catch(() => unavailableDigitalEmployeeFeatureStatus);
+}
+
 
 type SensitivePermissionRequest = {
     request_id: string;
@@ -145,7 +181,23 @@ function App() {
     const [navTab, setNavTab] = useState<string>("ai");
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
+    const aiPanelMaximizedWindowRef = useRef(false);
+    const aiPanelMaximizeSeqRef = useRef(0);
     const [windowMaximized, setWindowMaximized] = useState(false);
+    const restoreAIPanelOwnedWindowMaximize = useCallback(async () => {
+        if (!aiPanelMaximizedWindowRef.current) return false;
+        aiPanelMaximizedWindowRef.current = false;
+        try {
+            if (await callBackend(() => WindowIsMaximised())) {
+                void callBackend(() => WindowToggleMaximise());
+                setWindowMaximized(false);
+                return true;
+            }
+        } catch {
+            // Window state can be unavailable while closing; CSS restore still applies.
+        }
+        return false;
+    }, []);
     useEffect(() => {
         let debounceTimer: ReturnType<typeof setTimeout> | null = null;
         const syncMaximized = () => {
@@ -154,7 +206,7 @@ function App() {
                 // Window state is a 3-state enum: normal | maximised | fullscreen.
                 // The title bar restore button should show "restore" icon when the
                 // window is in ANY non-normal state (maximised OR fullscreen).
-                Promise.all([WindowIsMaximised(), WindowIsFullscreen()]).then(
+                Promise.all([callBackend(() => WindowIsMaximised()), callBackend(() => WindowIsFullscreen())]).then(
                     ([isMax, isFs]) => setWindowMaximized(isMax || isFs)
                 );
             }, 150);
@@ -213,7 +265,6 @@ function App() {
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
     const [isMarketplaceInstalling, setIsMarketplaceInstalling] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
-    const [toolProviders, setToolProviders] = useState<Array<{ name: string; valid: boolean; builtin: boolean }>>([]);
     const [isManualCheck, setIsManualCheck] = useState(false);
     const [showStartupPopup, setShowStartupPopup] = useState(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
@@ -265,43 +316,41 @@ function App() {
         };
         fetchVeList();
         // Refresh on VE status changes
-        const unsub1 = EventsOn("ve:list_update", fetchVeList);
-        const unsub2 = EventsOn("ve:status_change", fetchVeList);
+        const unsub1 = safeEventsOn("ve:list_update", fetchVeList);
+        const unsub2 = safeEventsOn("ve:status_change", fetchVeList);
         return () => {
             cancelled = true;
             if (retryTimer) clearTimeout(retryTimer);
-            if (typeof unsub1 === "function") unsub1(); else EventsOff("ve:list_update");
-            if (typeof unsub2 === "function") unsub2(); else EventsOff("ve:status_change");
+            if (typeof unsub1 === "function") unsub1(); else safeEventsOff("ve:list_update");
+            if (typeof unsub2 === "function") unsub2(); else safeEventsOff("ve:status_change");
         };
     }, [config?.remote_hub_url, config?.remote_machine_id]);
 
     const refreshDigitalEmployeeFeatureStatus = useCallback(() => {
-        return GetDigitalEmployeeFeatureStatus()
-            .then((status: any) => setDigitalEmployeeFeatureStatus(status || { visible: false }))
-            .catch(() => setDigitalEmployeeFeatureStatus({ visible: false, reason: 'unavailable' }));
+        return fetchDigitalEmployeeFeatureStatus()
+            .then(setDigitalEmployeeFeatureStatus);
     }, []);
 
     useEffect(() => {
         let cancelled = false;
         const refresh = () => {
-            GetDigitalEmployeeFeatureStatus()
-                .then((status: any) => { if (!cancelled) setDigitalEmployeeFeatureStatus(status || { visible: false }); })
-                .catch(() => { if (!cancelled) setDigitalEmployeeFeatureStatus({ visible: false, reason: 'unavailable' }); });
+            fetchDigitalEmployeeFeatureStatus()
+                .then((status: any) => { if (!cancelled) setDigitalEmployeeFeatureStatus(status); });
         };
         refresh();
         const subscriptions = [
-            ["digital-employee-authorization-changed", EventsOn("digital-employee-authorization-changed", refresh)] as const,
-            ["ve:status_change", EventsOn("ve:status_change", refresh)] as const,
-            ["ve:list_update", EventsOn("ve:list_update", refresh)] as const,
-            ["ve:approved", EventsOn("ve:approved", refresh)] as const,
-            ["ve:rejected", EventsOn("ve:rejected", refresh)] as const,
-            ["ve:disabled", EventsOn("ve:disabled", refresh)] as const,
+            ["digital-employee-authorization-changed", safeEventsOn("digital-employee-authorization-changed", refresh)] as const,
+            ["ve:status_change", safeEventsOn("ve:status_change", refresh)] as const,
+            ["ve:list_update", safeEventsOn("ve:list_update", refresh)] as const,
+            ["ve:approved", safeEventsOn("ve:approved", refresh)] as const,
+            ["ve:rejected", safeEventsOn("ve:rejected", refresh)] as const,
+            ["ve:disabled", safeEventsOn("ve:disabled", refresh)] as const,
         ];
         return () => {
             cancelled = true;
             subscriptions.forEach(([name, unsubscribe]) => {
                 if (typeof unsubscribe === "function") unsubscribe();
-                else EventsOff(name);
+                else safeEventsOff(name);
             });
         };
     }, [config?.remote_hub_url, config?.remote_machine_id, veList.length]);
@@ -372,9 +421,9 @@ function App() {
         setFavoriteEmployeeIds(normalized);
         setFavoriteEmployeeNames(normalizedNames);
         try {
-            const latest = await LoadConfig();
+            const latest = await callBackend(() => LoadConfig());
             const updated = new main.AppConfig({ ...latest, favorite_employees: normalized, favorite_employee_names: normalizedNames } as any);
-            await SaveConfig(updated);
+            await callBackend(() => SaveConfig(updated));
             setConfig(updated);
         } catch (error) {
             if (options?.throwOnError) throw error;
@@ -487,23 +536,12 @@ function App() {
     const [showProxySettings, setShowProxySettings] = useState(false);
 
     useEffect(() => {
-        const selectedTool = config?.default_tool || '';
-        if (!selectedTool) {
-            setToolProviders([]);
-            return;
-        }
-        ListToolProviders(selectedTool).then((providers) => {
-            setToolProviders(providers || []);
-        }).catch(() => {
-            setToolProviders([]);
-        });
-    }, [config?.default_tool]);
-    useEffect(() => {
         if (navTab !== 'ai' && aiPanelMaximized) {
-            WindowUnfullscreen();
+            aiPanelMaximizeSeqRef.current += 1;
+            void restoreAIPanelOwnedWindowMaximize();
             setAiPanelMaximized(false);
         }
-    }, [navTab, aiPanelMaximized]);
+    }, [navTab, aiPanelMaximized, restoreAIPanelOwnedWindowMaximize]);
 
     useEffect(() => {
         if (showModelSettings && activeTab === 0) {
@@ -528,7 +566,7 @@ function App() {
             }
 
             // Load skills with install status
-            ListSkillsWithInstallStatus(activeTool, installLocation, targetProjectPath)
+            callBackend(() => ListSkillsWithInstallStatus(activeTool, installLocation, targetProjectPath))
                 .then(list => setSkills(list || []))
                 .catch(err => console.error('Failed to load skills:', err));
         }
@@ -537,7 +575,7 @@ function App() {
     // Load skills when navigating to skills tab
     useEffect(() => {
         if (navTab === 'skills') {
-            ListSkills(activeTool)
+            callBackend(() => ListSkills(activeTool))
                 .then(list => setSkills(list || []))
                 .catch(err => console.error('Failed to load skills:', err));
         }
@@ -645,7 +683,7 @@ function App() {
     }, [sensitivePermissionRequest]);
 
     useEffect(() => {
-        const unsubscribe = EventsOn('digital-employee-sensitive-request', (payload: SensitivePermissionRequest) => {
+        const unsubscribe = safeEventsOn('digital-employee-sensitive-request', (payload: SensitivePermissionRequest) => {
             const requestId = String(payload?.request_id || '').trim();
             if (!requestId) return;
             const request = { ...payload, request_id: requestId };
@@ -668,7 +706,7 @@ function App() {
         });
         return () => {
             if (typeof unsubscribe === 'function') unsubscribe();
-            else EventsOff('digital-employee-sensitive-request');
+            else safeEventsOff('digital-employee-sensitive-request');
         };
     }, []);
 
@@ -686,7 +724,7 @@ function App() {
         setSensitivePermissionRequest(null);
         setSensitivePermissionQueue(queue => queue.filter(item => item.request_id !== request.request_id));
         try {
-            await RespondDigitalEmployeeSensitiveRequest(request.request_id, decision);
+            await callBackend(() => RespondDigitalEmployeeSensitiveRequest(request.request_id, decision));
         } catch (err: any) {
             showToastMessage(err?.message || String(err || localizeText('Failed to respond', '响应失败', '回應失敗')));
         }
@@ -694,7 +732,7 @@ function App() {
 
     const handleShowThanks = async () => {
         try {
-            const content = await ReadThanks();
+            const content = await callBackend(() => ReadThanks());
             setThanksContent(content);
             setShowThanksModal(true);
         } catch (err) {
@@ -706,7 +744,7 @@ function App() {
     useEffect(() => {
         if (navTab !== 'about' || thanksContent.trim()) return;
         let cancelled = false;
-        ReadThanks()
+        callBackend(() => ReadThanks())
             .then((content) => {
                 if (!cancelled) setThanksContent(content || "");
             })
@@ -726,8 +764,8 @@ function App() {
             message: t("confirmDeleteSkill"),
             onConfirm: async () => {
                 try {
-                    await DeleteSkill(name, activeTool);
-                    const list = await ListSkills(activeTool);
+                    await callBackend(() => DeleteSkill(name, activeTool));
+                    const list = await callBackend(() => ListSkills(activeTool));
                     setSkills(list || []);
                     if (selectedSkill === name) setSelectedSkill(null);
                     showToastMessage(t("skillDeleted"));
@@ -777,20 +815,31 @@ function App() {
         }
     };
 
-    const handleAIPanelMaximizeToggle = () => {
+    const handleAIPanelMaximizeToggle = async () => {
         if (aiPanelMaximized) {
-            WindowUnfullscreen();
+            aiPanelMaximizeSeqRef.current += 1;
+            await restoreAIPanelOwnedWindowMaximize();
             setAiPanelMaximized(false);
             return;
         }
-        WindowFullscreen();
+        const maximizeSeq = ++aiPanelMaximizeSeqRef.current;
         setAiPanelMaximized(true);
+        try {
+            const alreadyMaximized = await callBackend(() => WindowIsMaximised());
+            if (maximizeSeq !== aiPanelMaximizeSeqRef.current || navTabRef.current !== 'ai') return;
+            if (!alreadyMaximized) {
+                void callBackend(() => WindowToggleMaximise());
+                aiPanelMaximizedWindowRef.current = true;
+            }
+        } catch {
+            aiPanelMaximizedWindowRef.current = false;
+        }
     };
 
     const handleWindowHide = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        WindowHide();
+        void callBackend(() => WindowHide());
     };
 
     const handleWindowMaximizeToggle = (e?: React.MouseEvent) => {
@@ -798,16 +847,15 @@ function App() {
             e.preventDefault();
             e.stopPropagation();
         }
-        // If the AI panel is in fullscreen mode, WindowToggleMaximise won't
-        // Windows quirk: drag-to-maximize can break if we are already fullscreen.
-        // (aiPanelMaximized) to avoid an async round-trip on every click.
+        // AI panel maximization may use native maximize, but never native
+        // fullscreen because WebView2 IME input can fail there.
         if (aiPanelMaximized) {
-            WindowUnfullscreen();
+            aiPanelMaximizeSeqRef.current += 1;
+            void restoreAIPanelOwnedWindowMaximize();
             setAiPanelMaximized(false);
-            setWindowMaximized(false);
         } else {
             setWindowMaximized(m => !m); // optimistic update for instant icon feedback
-            WindowToggleMaximise();
+            void callBackend(() => WindowToggleMaximise());
         }
     };
 
@@ -852,10 +900,10 @@ function App() {
             initialLang = "zh-Hans";
         }
         setLang(initialLang);
-        SetLanguage(initialLang);
+        void callBackend(() => SetLanguage(initialLang));
 
         // Load brand info from backend
-        GetBrandInfo().then((info: any) => {
+        callBackend(() => GetBrandInfo()).then((info: any) => {
             setBrandInfo(info);
         }).catch(() => {
             setBrandInfo(null);
@@ -864,9 +912,9 @@ function App() {
         });
 
         // Detect OS from backend for Windows Terminal check
-        GetSystemInfo().then(info => {
+        callBackend(() => GetSystemInfo()).then(info => {
             if (info.os === "windows") {
-                IsWindowsTerminalAvailable().then(available => {
+                callBackend(() => IsWindowsTerminalAvailable()).then(available => {
                     setHasWindowsTerminal(available);
                 }).catch(() => {
                     setHasWindowsTerminal(false);
@@ -887,35 +935,35 @@ function App() {
             }
         };
         const doneHandler = () => {
-            ResizeWindow(867, 554);
+            void callBackend(() => ResizeWindow(867, 554));
             setIsLoading(false);
             setIsManualCheck(false);
         };
 
-        EventsOn("env-log", logHandler);
-        EventsOn("env-check-done", doneHandler);
-        EventsOn("show-env-logs", () => {
+        safeEventsOn("env-log", logHandler);
+        safeEventsOn("env-check-done", doneHandler);
+        safeEventsOn("show-env-logs", () => {
             setEnvLogs([]);
             setShowLogs(true);
             setIsManualCheck(true);
         });
 
         // Tool repair events
-        EventsOn("tool-repair-start", (toolName: string) => {
+        safeEventsOn("tool-repair-start", (toolName: string) => {
             setToolRepairStatus({show: true, toolName, status: 'installing', message: ''});
         });
-        EventsOn("tool-repair-success", (toolName: string, version: string) => {
+        safeEventsOn("tool-repair-success", (toolName: string, version: string) => {
             setToolRepairStatus({show: true, toolName, status: 'success', message: version});
             // Auto-close after 2 seconds on success
             setTimeout(() => {
                 setToolRepairStatus(prev => ({...prev, show: false}));
             }, 2000);
         });
-        EventsOn("tool-repair-failed", (toolName: string, error: string) => {
+        safeEventsOn("tool-repair-failed", (toolName: string, error: string) => {
             setToolRepairStatus({show: true, toolName, status: 'failed', message: error});
         });
 
-        EventsOn("download-progress", (data: any) => {
+        safeEventsOn("download-progress", (data: any) => {
             console.log("Download progress event:", data);
             if (data.status === "downloading") {
                 setDownloadProgress(Math.floor(data.percentage));
@@ -931,15 +979,15 @@ function App() {
             }
         });
 
-        CheckEnvironment(false); // Start checks
+        void callBackend(() => CheckEnvironment(false)); // Start checks
 
         // Load environment check interval and check if due
-        GetEnvCheckInterval().then(val => setEnvCheckInterval(val));
+        callBackend(() => GetEnvCheckInterval()).then(val => setEnvCheckInterval(val)).catch(() => {});
 
-        ShouldCheckEnvironment().then(due => {
+        callBackend(() => ShouldCheckEnvironment()).then(due => {
             if (due) {
                 // Fetch interval again to use in message
-                GetEnvCheckInterval().then(days => {
+                callBackend(() => GetEnvCheckInterval()).then(days => {
                     const currentLang = initialLang;
                     const localT = (key: string) => translations[currentLang][key] || translations["en"][key] || key;
 
@@ -949,31 +997,31 @@ function App() {
                         message: localT("envCheckDueMessage").replace("{days}", days.toString()),
                         onConfirm: () => {
                             setConfirmDialog(prev => ({ ...prev, show: false }));
-                            UpdateLastEnvCheckTime();
+                            void callBackend(() => UpdateLastEnvCheckTime());
                             setEnvLogs([]);
                             setShowLogs(true);
                             setIsLoading(true);
                             setIsManualCheck(true);
-                            CheckEnvironment(true);
+                            void callBackend(() => CheckEnvironment(true));
                         },
                         onCancel: () => {
                             setConfirmDialog(prev => ({ ...prev, show: false }));
-                            UpdateLastEnvCheckTime(); // Reset timer even if cancelled
+                            void callBackend(() => UpdateLastEnvCheckTime()); // Reset timer even if cancelled
                         }
                     });
-                });
+                }).catch(() => {});
             }
-        });
+        }).catch(() => {});
 
         // Load Python environments
-        ListPythonEnvironments().then((envs) => {
+        callBackend(() => ListPythonEnvironments()).then((envs) => {
             setPythonEnvironments(envs);
         }).catch(err => {
             console.error("Failed to load Python environments:", err);
         });
 
         // Config Logic
-        LoadConfig().then((cfg) => {
+        callBackend(() => LoadConfig()).then((cfg) => {
             // Apply default launch mode setting on startup
             if (cfg.default_launch_mode === 'remote') {
                 cfg.remote_enabled = true;
@@ -983,12 +1031,12 @@ function App() {
             setConfig(cfg);
 
             // Apply saved UI zoom factor
-            GetUIZoomFactor().then((z) => {
+            callBackend(() => GetUIZoomFactor()).then((z) => {
                 if (z > 0) {
                     setUiZoom(z);
                 }
             }).catch(() => {});
-            GetChatFontSize().then((s) => {
+            callBackend(() => GetChatFontSize()).then((s) => {
                 if (s >= 12) {
                     setChatFontSize(s);
                 }
@@ -1000,7 +1048,7 @@ function App() {
 
             if (cfg && cfg.language) {
                 setLang(cfg.language);
-                SetLanguage(cfg.language);
+                void callBackend(() => SetLanguage(cfg.language));
             }
 
             // Automatic update check on startup disabled - use "Online Update" button instead
@@ -1023,7 +1071,7 @@ function App() {
                     setActiveTool(lastActiveTool);
                 }
 
-                ReadBBS().then(content => setBbsContent(content)).catch(err => console.error(err));
+                callBackend(() => ReadBBS()).then(content => setBbsContent(content)).catch(err => console.error(err));
 
                 const toolCfg = (cfg as any)[lastActiveTool];
                 if (toolCfg && toolCfg.models) {
@@ -1040,11 +1088,11 @@ function App() {
             // Fallback: retry once after a short delay. If the config file was
             // being written by a concurrent SaveConfig, it should be ready now.
             setTimeout(() => {
-                LoadConfig().then((cfg) => {
+                callBackend(() => LoadConfig()).then((cfg) => {
                     setConfig(cfg);
                     if (cfg && cfg.language) {
                         setLang(cfg.language);
-                        SetLanguage(cfg.language);
+                        void callBackend(() => SetLanguage(cfg.language));
                     }
                 }).catch(err2 => {
                     console.error("Retry load config also failed:", err2);
@@ -1058,12 +1106,12 @@ function App() {
         // Listen for external config changes (e.g. from Tray)
         const handleConfigChange = (cfg: main.AppConfig) => {
             setConfig(cfg);
-            GetUIZoomFactor().then((z) => {
+            callBackend(() => GetUIZoomFactor()).then((z) => {
                 if (z > 0) {
                     setUiZoom(z);
                 }
             }).catch(() => {});
-            GetChatFontSize().then((s) => {
+            callBackend(() => GetChatFontSize()).then((s) => {
                 if (s >= 12) {
                     setChatFontSize(s);
                 }
@@ -1084,108 +1132,108 @@ function App() {
                 }
             }
         };
-        EventsOn("config-changed", handleConfigChange);
-        EventsOn("config-updated", handleConfigChange);
+        safeEventsOn("config-changed", handleConfigChange);
+        safeEventsOn("config-updated", handleConfigChange);
 
         // QQ Bot status listener
-        EventsOn("qqbot-status-changed", (status: string) => {
+        safeEventsOn("qqbot-status-changed", (status: string) => {
             setQQBotStatus(status);
         });
         // Fetch initial QQ Bot status
-        GetQQBotStatus().then(setQQBotStatus).catch(() => {});
-        GetQQBotLocalMode().then(setQQBotLocalModeState).catch(() => {});
+        callBackend(() => GetQQBotStatus()).then(setQQBotStatus).catch(() => {});
+        callBackend(() => GetQQBotLocalMode()).then(setQQBotLocalModeState).catch(() => {});
 
         // Telegram Bot status listener
-        EventsOn("telegram-status-changed", (status: string) => {
+        safeEventsOn("telegram-status-changed", (status: string) => {
             setTelegramStatus(status);
         });
-        GetTelegramStatus().then(setTelegramStatus).catch(() => {});
-        GetTelegramLocalMode().then(setTelegramLocalModeState).catch(() => {});
+        callBackend(() => GetTelegramStatus()).then(setTelegramStatus).catch(() => {});
+        callBackend(() => GetTelegramLocalMode()).then(setTelegramLocalModeState).catch(() => {});
 
         // WeChat status listener
-        EventsOn("weixin-status-changed", (status: string) => {
+        safeEventsOn("weixin-status-changed", (status: string) => {
             setWeixinStatus(status);
         });
-        GetWeixinStatus().then(setWeixinStatus).catch(() => {});
-        GetWeixinLocalMode().then(setWeixinLocalModeState).catch(() => {});
+        callBackend(() => GetWeixinStatus()).then(setWeixinStatus).catch(() => {});
+        callBackend(() => GetWeixinLocalMode()).then(setWeixinLocalModeState).catch(() => {});
 
-        EventsOn("thirdparty-gateway-status-changed", (status: string) => {
+        safeEventsOn("thirdparty-gateway-status-changed", (status: string) => {
             setThirdPartyGatewayStatus(status);
         });
-        GetThirdPartyGatewayStatus().then(setThirdPartyGatewayStatus).catch(() => {});
-        GetThirdPartyGatewayLocalMode().then(setThirdPartyGatewayLocalModeState).catch(() => {});
+        callBackend(() => GetThirdPartyGatewayStatus()).then(setThirdPartyGatewayStatus).catch(() => {});
+        callBackend(() => GetThirdPartyGatewayLocalMode()).then(setThirdPartyGatewayLocalModeState).catch(() => {});
 
         // Listen for background tool installation events
-        EventsOn("tool-checking", (toolName: string) => {
+        safeEventsOn("tool-checking", (toolName: string) => {
             setBackgroundInstallStatus(`Checking ${toolName}...`);
             setBackgroundInstallingTool("");  // Clear previous tool's installing state
         });
 
-        EventsOn("tool-installing", (toolName: string) => {
+        safeEventsOn("tool-installing", (toolName: string) => {
             setBackgroundInstallStatus(`Installing ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
-        EventsOn("tool-updating", (toolName: string) => {
+        safeEventsOn("tool-updating", (toolName: string) => {
             setBackgroundInstallStatus(`Updating ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
-        EventsOn("tool-installed", (toolName: string) => {
+        safeEventsOn("tool-installed", (toolName: string) => {
             console.log("Tool installed in background:", toolName);
             setBackgroundInstallStatus(`${toolName} installed`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
-            CheckToolsStatus().then(statuses => {
+            callBackend(() => CheckToolsStatus()).then(statuses => {
                 setToolStatuses(statuses);
-            });
+            }).catch(() => {});
         });
 
-        EventsOn("tool-updated", (toolName: string) => {
+        safeEventsOn("tool-updated", (toolName: string) => {
             console.log("Tool updated in background:", toolName);
             setBackgroundInstallStatus(`${toolName} updated`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
-            CheckToolsStatus().then(statuses => {
+            callBackend(() => CheckToolsStatus()).then(statuses => {
                 setToolStatuses(statuses);
-            });
+            }).catch(() => {});
         });
 
-        EventsOn("tools-install-done", () => {
+        safeEventsOn("tools-install-done", () => {
             console.log("Background tool installation complete");
             setBackgroundInstallStatus("");
             setBackgroundInstallingTool("");
             // Final refresh of tool statuses
-            CheckToolsStatus().then(statuses => {
+            callBackend(() => CheckToolsStatus()).then(statuses => {
                 setToolStatuses(statuses);
-            });
+            }).catch(() => {});
         });
 
         // Hub security policy: refresh gossip visibility when policy changes (Req 6.1)
-        IsGossipAllowed().then(setGossipAllowed).catch(() => {});
-        EventsOn("hub-security-policy-changed", () => {
-            IsGossipAllowed().then(setGossipAllowed).catch(() => {});
+        callBackend(() => IsGossipAllowed()).then(setGossipAllowed).catch(() => {});
+        safeEventsOn("hub-security-policy-changed", () => {
+            callBackend(() => IsGossipAllowed()).then(setGossipAllowed).catch(() => {});
         });
 
         return () => {
-            EventsOff("env-log");
-            EventsOff("env-check-done");
-            EventsOff("download-progress");
-            EventsOff("config-changed");
-            EventsOff("config-updated");
-            EventsOff("qqbot-status-changed");
-            EventsOff("telegram-status-changed");
-            EventsOff("weixin-status-changed");
-            EventsOff("thirdparty-gateway-status-changed");
-            EventsOff("tool-checking");
-            EventsOff("tool-installing");
-            EventsOff("tool-updating");
-            EventsOff("tool-installed");
-            EventsOff("tool-updated");
-            EventsOff("tools-install-done");
-            EventsOff("hub-security-policy-changed");
+            safeEventsOff("env-log");
+            safeEventsOff("env-check-done");
+            safeEventsOff("download-progress");
+            safeEventsOff("config-changed");
+            safeEventsOff("config-updated");
+            safeEventsOff("qqbot-status-changed");
+            safeEventsOff("telegram-status-changed");
+            safeEventsOff("weixin-status-changed");
+            safeEventsOff("thirdparty-gateway-status-changed");
+            safeEventsOff("tool-checking");
+            safeEventsOff("tool-installing");
+            safeEventsOff("tool-updating");
+            safeEventsOff("tool-installed");
+            safeEventsOff("tool-updated");
+            safeEventsOff("tools-install-done");
+            safeEventsOff("hub-security-policy-changed");
         };
     }, []);
 
@@ -1196,13 +1244,13 @@ function App() {
             setLansengerLocalModeState(true);
             return;
         }
-        EventsOn("lansenger-status-changed", (status: string) => {
+        safeEventsOn("lansenger-status-changed", (status: string) => {
             setLansengerStatus(status);
         });
-        GetLansengerStatus().then(setLansengerStatus).catch(() => {});
-        GetLansengerLocalMode().then(setLansengerLocalModeState).catch(() => {});
+        callBackend(() => GetLansengerStatus()).then(setLansengerStatus).catch(() => {});
+        callBackend(() => GetLansengerLocalMode()).then(setLansengerLocalModeState).catch(() => {});
         return () => {
-            EventsOff("lansenger-status-changed");
+            safeEventsOff("lansenger-status-changed");
         };
     }, [brandInfoLoaded, isTigerClawBrand]);
 
@@ -1211,7 +1259,7 @@ function App() {
     // tab (settingsTab changes), which covers the "just saved config" scenario.
     useEffect(() => {
         const pingLLM = () => {
-            PingMaclawLLM().then((s: any) => {
+            callBackend(() => PingMaclawLLM()).then((s: any) => {
                 setMaclawLLMOnline(!!s.online);
                 setMaclawLLMConfigured(!!s.configured);
                 // Stash the first ping result; the separate config-aware effect will decide whether to show the popup.
@@ -1249,7 +1297,7 @@ function App() {
 
     const checkTools = async () => {
         try {
-            const statuses = await CheckToolsStatus();
+            const statuses = await callBackend(() => CheckToolsStatus());
             setToolStatuses(statuses);
             // Tools are now installed in background by the backend
             // No need to install here - just update the status
@@ -1261,11 +1309,11 @@ function App() {
     const handleLangChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const newLang = e.target.value;
         setLang(newLang);
-        SetLanguage(newLang);
+        void callBackend(() => SetLanguage(newLang));
         if (config) {
             const newConfig = new main.AppConfig({ ...config, language: newLang });
             setConfig(newConfig);
-            SaveConfig(newConfig);
+            void callBackend(() => SaveConfig(newConfig));
         }
     };
 
@@ -1285,12 +1333,12 @@ function App() {
 
         if (tool === 'tutorial') {
             setShowModelSettings(false);
-            ReadTutorial().then(content => setTutorialContent(content)).catch(err => console.error(err));
+            callBackend(() => ReadTutorial()).then(content => setTutorialContent(content)).catch(err => console.error(err));
         }
 
         if (tool === 'skills') {
             setShowModelSettings(false);
-            ListSkills(activeTool).then(list => setSkills(list || [])).catch(err => console.error(err));
+            callBackend(() => ListSkills(activeTool)).then(list => setSkills(list || [])).catch(err => console.error(err));
         }
 
         if (config) {
@@ -1298,7 +1346,7 @@ function App() {
             if (tool !== 'ai') {
                 const newConfig = new main.AppConfig({ ...config, active_tool: tool });
                 setConfig(newConfig);
-                SaveConfig(newConfig);
+                void callBackend(() => SaveConfig(newConfig));
             }
 
             const toolCfg = (config as any)[tool];
@@ -1407,7 +1455,7 @@ function App() {
         );
         const newConfig = new main.AppConfig({ ...config, projects: newProjects });
         setConfig(newConfig);
-        SaveConfig(newConfig);
+        void callBackend(() => SaveConfig(newConfig));
     };
     const getSelectedProjectForRemote = () => resolvedLaunchProject?.path || "";
     const launchProjectSelectOptions = useMemo(() => {
@@ -1535,6 +1583,15 @@ function App() {
     }, []);
 
     useEffect(() => {
+        const openPetSettings = () => {
+            setNavTab('settings');
+            setSettingsTab('pet');
+        };
+        const unsubscribe = safeEventsOn('open-pet-settings', openPetSettings);
+        return unsubscribe;
+    }, []);
+
+    useEffect(() => {
         if (!config) return;
         if (groupDiscussionConfig.enabled === false) {
             setGroupDiscussionStatus({ enabled: false, discoverable: false, pending_invites: [] });
@@ -1562,7 +1619,7 @@ function App() {
         [codingAgentTurnSnapshot, aiAssistant.sending, aiAssistant.progressMessages],
     );
     const refreshRecentProjects = useCallback(() => {
-        SearchProjects("", 10).then((r: any) => setRecentProjects(r || [])).catch(() => setRecentProjects([]));
+        callBackend(() => SearchProjects("", 10)).then((r: any) => setRecentProjects(r || [])).catch(() => setRecentProjects([]));
     }, []);
 
     useEffect(() => {
@@ -1573,11 +1630,11 @@ function App() {
         const refresh = () => {
             if (navTabRef.current === 'ai') refreshRecentProjects();
         };
-        EventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
-        EventsOn(EVENT_TASKS_CHANGED, refresh);
+        safeEventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
+        safeEventsOn(EVENT_TASKS_CHANGED, refresh);
         return () => {
-            EventsOff(EVENT_PROJECT_INDEX_CHANGED);
-            EventsOff(EVENT_TASKS_CHANGED);
+            safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
+            safeEventsOff(EVENT_TASKS_CHANGED);
         };
     }, [refreshRecentProjects]);
 
@@ -1657,14 +1714,14 @@ function App() {
             const currentProvider = providerSummaries.find((provider) => provider.name === currentProviderName);
             let hubStatus: Awaited<ReturnType<typeof GetHubLLMServiceStatus>> | null = null;
             try {
-                hubStatus = await GetHubLLMServiceStatus();
+                hubStatus = await callBackend(() => GetHubLLMServiceStatus());
             } catch {
                 hubStatus = null;
             }
             const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url ?? hubStatus?.HubLLMBaseURL);
             const currentProviderURL = normalizeProviderURL(currentProvider?.url);
             const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
-            const hubCredits = currentProviderIsHubService ? normalizeSidebarHubCredits(hubStatus) : null;
+            const hubCredits = normalizeSidebarHubCredits(hubStatus);
             if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
             setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, isHubService: currentProviderIsHubService, ...currentProviderUsage });
             setSidebarHubCredits(hubCredits);
@@ -1689,26 +1746,38 @@ function App() {
             void refreshSidebarTokenUsage();
             queueDelayedRefresh(2500);
         };
-        const offTokenUsageChanged = EventsOn("llm-token-usage-changed", onTokenUsageChanged);
-        const offHubLLMServiceChanged = EventsOn("hub-llm-service-changed", onTokenUsageChanged);
+        const offTokenUsageChanged = safeEventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        const offHubLLMServiceChanged = safeEventsOn("hub-llm-service-changed", onTokenUsageChanged);
         const usageRefreshTimer = window.setInterval(() => { void refreshSidebarTokenUsage(); }, 10 * 60 * 1000);
         return () => {
             sidebarTokenUsageSeqRef.current += 1;
             window.clearInterval(usageRefreshTimer);
             delayedRefreshTimers.forEach((timer) => window.clearTimeout(timer));
-            if (typeof offTokenUsageChanged === 'function') offTokenUsageChanged(); else EventsOff("llm-token-usage-changed");
-            if (typeof offHubLLMServiceChanged === 'function') offHubLLMServiceChanged(); else EventsOff("hub-llm-service-changed");
+            if (typeof offTokenUsageChanged === 'function') offTokenUsageChanged(); else safeEventsOff("llm-token-usage-changed");
+            if (typeof offHubLLMServiceChanged === 'function') offHubLLMServiceChanged(); else safeEventsOff("hub-llm-service-changed");
         };
     }, [refreshSidebarTokenUsage]);
 
+    const handleLLMProviderChanged = useCallback(() => {
+        void refreshSidebarTokenUsage();
+        void callBackend(() => LoadConfig()).then((freshConfig) => setConfig(freshConfig)).catch((err) => {
+            console.warn('Failed to reload config after LLM provider change:', err);
+        });
+    }, [refreshSidebarTokenUsage]);
+
     const openHubCreditsPage = useCallback(() => {
-        const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token);
+        const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token, (config as any)?.remote_tenant_id);
         if (url) {
-            BrowserOpenURL(url);
+            safeBrowserOpenURL(url);
             return;
         }
-        showAlert(lang === 'zh-Hans' ? 'Hub \u767b\u5f55\u4fe1\u606f\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002' : 'Hub login information is missing, so the Credits page cannot be opened.');
+        showAlert(lang === 'zh-Hans' ? 'Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002' : 'Hub URL is missing, so the Credits page cannot be opened.');
     }, [config, lang, showAlert]);
+
+    const openServiceRedeemPage = useCallback(() => {
+        setNavTab('settings');
+        setSettingsTab('redeem');
+    }, []);
 
     const formatSidebarCredit = useCallback((value: number) => {
         if (!Number.isFinite(value)) return '0';
@@ -1756,7 +1825,7 @@ function App() {
         return formatSidebarCredit(credits.used);
     }, [formatSidebarCredit, noHubAuthorizationText]);
 
-    const showHubCreditAction = !!sidebarHubCredits && (!sidebarHubCredits.authorized || (sidebarHubCredits.total > 0 && sidebarHubCredits.remaining / sidebarHubCredits.total < 0.2));
+    const showHubCreditAction = !!sidebarHubCredits && (!sidebarHubCredits.authorized || sidebarHubCredits.status === 'period_limited' || (sidebarHubCredits.total > 0 && sidebarHubCredits.remaining / sidebarHubCredits.total < 0.2));
 
     const activeRemoteSessionForTool = useMemo(() => {
         return remoteSessions.find((session) => {
@@ -1781,12 +1850,12 @@ function App() {
             }
         };
         refresh();
-        const cleanup = EventsOn("background-loops-changed", refresh);
+        const cleanup = safeEventsOn("background-loops-changed", refresh);
         const timer = setInterval(refresh, 5000);
         return () => {
             cancelled = true;
             clearInterval(timer);
-            if (typeof cleanup === "function") cleanup(); else EventsOff("background-loops-changed");
+            if (typeof cleanup === "function") cleanup(); else safeEventsOff("background-loops-changed");
         };
     }, []);
 
@@ -2145,7 +2214,7 @@ function App() {
         if (isCodexProviderSwitch) {
             setCodexConfigUpdateCount((count) => count + 1);
         }
-        SaveConfig(newConfig).then(() => {
+        callBackend(() => SaveConfig(newConfig)).then(() => {
             setStatus(t("switched"));
             setTimeout(() => setStatus(""), 1500);
         }).catch(err => {
@@ -2169,12 +2238,12 @@ function App() {
         setSelectedProjectForLaunch(projectId);
         setStatus(t("projectSwitched"));
         setTimeout(() => setStatus(""), 1500);
-        SaveConfig(newConfig);
+        void callBackend(() => SaveConfig(newConfig));
     };
 
     const handleSelectDir = () => {
         if (!config) return;
-        SelectProjectDir().then((dir) => {
+        callBackend(() => SelectProjectDir()).then((dir) => {
             if (dir && dir.length > 0) {
                 const currentProj = getCurrentProject();
                 if (!currentProj) return;
@@ -2187,7 +2256,7 @@ function App() {
                 setConfig(newConfig);
                 setStatus(t("dirUpdated"));
                 setTimeout(() => setStatus(""), 1500);
-                SaveConfig(newConfig);
+                void callBackend(() => SaveConfig(newConfig));
             }
         });
     };
@@ -2205,7 +2274,7 @@ function App() {
         setConfig(newConfig);
         setStatus(t("saved"));
         setTimeout(() => setStatus(""), 1500);
-        SaveConfig(newConfig);
+        void callBackend(() => SaveConfig(newConfig));
     };
 
     const openRemoteActivationModal = (toolName: string) => {
@@ -2233,7 +2302,7 @@ function App() {
         }
         setLoadingRemoteCenterHubs(true);
         try {
-            const hubs = await ListRemoteHubs(centerURL, email) as RemoteCenterHubOption[];
+            const hubs = await callBackend(() => ListRemoteHubs(centerURL, email)) as RemoteCenterHubOption[];
             setRemoteCenterHubs(Array.isArray(hubs) ? hubs : []);
             if (Array.isArray(hubs) && hubs.length > 0) {
                 setRemoteActivationDraft((prev) => {
@@ -2267,7 +2336,7 @@ function App() {
             remote_enabled: true,
         });
         setConfig(newConfig);
-        await SaveConfig(newConfig);
+        await callBackend(() => SaveConfig(newConfig));
         const activated = await activateRemoteWithEmail();
         if (!activated) {
             return;
@@ -2294,7 +2363,7 @@ function App() {
             i++;
         }
 
-        const homeDir = await GetUserHomeDir();
+        const homeDir = await callBackend(() => GetUserHomeDir());
         const newId = Math.random().toString(36).substr(2, 9);
         const newProject = {
             id: newId,
@@ -2306,7 +2375,7 @@ function App() {
         const newProjects = [...config.projects, newProject];
         const newConfig = new main.AppConfig({ ...config, projects: newProjects });
         setConfig(newConfig);
-        SaveConfig(newConfig);
+        void callBackend(() => SaveConfig(newConfig));
         setStatus(t("saved"));
         setTimeout(() => setStatus(""), 1500);
     };
@@ -2314,7 +2383,7 @@ function App() {
     const handleOpenSubscribe = (modelName: string) => {
         const url = subscriptionUrls[modelName];
         if (url) {
-            BrowserOpenURL(url);
+            safeBrowserOpenURL(url);
         }
     };
 
@@ -2337,7 +2406,7 @@ function App() {
         setConfig(sanitizedConfig);
 
         setStatus(t("saving"));
-        SaveConfig(sanitizedConfig).then(() => {
+        callBackend(() => SaveConfig(sanitizedConfig)).then(() => {
             setStatus(t("saved"));
             setTimeout(() => {
                 setStatus("");
@@ -2467,13 +2536,13 @@ ${instruction}`;
         });
         setConfig(newConfig);
         try {
-            await SetDefaultLaunchMode(mode);
-            const freshConfig = await LoadConfig();
+            await callBackend(() => SetDefaultLaunchMode(mode));
+            const freshConfig = await callBackend(() => LoadConfig());
             setConfig(freshConfig);
         } catch (err) {
             setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
             try {
-                const freshConfig = await LoadConfig();
+                const freshConfig = await callBackend(() => LoadConfig());
                 setConfig(freshConfig);
             } catch {
                 // Keep the optimistic UI state if recovery load fails.
@@ -2539,6 +2608,7 @@ ${instruction}`;
                 noHubAuthorizationText={noHubAuthorizationText}
                 showHubCreditAction={showHubCreditAction}
                 openHubCreditsPage={openHubCreditsPage}
+                openServiceRedeemPage={openServiceRedeemPage}
                 codingAgentProgress={codingAgentProgress}
                 codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                 handleRecentTasksResizeStart={handleRecentTasksResizeStart}
@@ -2591,7 +2661,7 @@ ${instruction}`;
                                 inline: true,
                                 maximized: aiPanelMaximized,
                                 onToggleMaximize: handleAIPanelMaximizeToggle,
-                                onHideWindow: () => WindowHide(),
+                                onHideWindow: () => { void callBackend(() => WindowHide()); },
                             }}
                         />
                     </div>
@@ -2761,7 +2831,7 @@ ${instruction}`;
                                     lang={lang}
                                     codexModels={config?.codex?.models}
                                     onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }}
-                                    onProviderChanged={() => { void refreshSidebarTokenUsage(); }}
+                                    onProviderChanged={handleLLMProviderChanged}
                                 />
                             </div>
 
@@ -2884,8 +2954,6 @@ ${instruction}`;
                                     config={config}
                                     setConfig={setConfig}
                                     lang={lang}
-                                    remoteToolMetadata={remoteToolMetadata}
-                                    toolProviders={toolProviders}
                                 />
                             </div>
                         </div>
@@ -2900,7 +2968,7 @@ ${instruction}`;
                             thanksContent={thanksContent}
                             config={config}
                             t={t}
-                            onOpenWebsite={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
+                            onOpenWebsite={() => safeBrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
                             onCheckUpdate={() => {
                                 setStatus(t("checkingUpdate"));
                                 CheckUpdate(APP_VERSION).then((res: any) => {
@@ -2922,7 +2990,7 @@ ${instruction}`;
                                 });
                             }}
                             onShowInstallLog={() => setShowInstallLog(true)}
-                            onOpenBugReport={() => BrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}
+                            onOpenBugReport={() => safeBrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}
                             onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}
                         />
                     )}
@@ -3182,9 +3250,9 @@ ${instruction}`;
                                                     ));
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {
-                                                        await InstallToolOnDemand(activeTool);
+                                                        await callBackend(() => InstallToolOnDemand(activeTool));
                                                         // Refresh tool statuses
-                                                        const updatedStatuses = await CheckToolsStatus();
+                                                        const updatedStatuses = await callBackend(() => CheckToolsStatus());
                                                         setToolStatuses(updatedStatuses);
                                                         setStatus(localizeText(`${activeTool} installed`, `${activeTool} 已安装`, `${activeTool} 已安裝`));
                                                         setOnDemandInstallingTool("");
@@ -3193,7 +3261,7 @@ ${instruction}`;
                                                             setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
                                                             setLaunchingTool(activeTool);
                                                             try {
-                                                                await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
+                                                                await callBackend(() => LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false));
                                                                 setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                                             } catch (err) {
                                                                 setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
@@ -3211,9 +3279,9 @@ ${instruction}`;
                                                 setOnDemandInstallingTool(activeTool);
                                                 setToolRepairStatus({show: true, toolName: activeTool, status: 'installing', message: ''});
                                                 try {
-                                                    await InstallToolOnDemand(activeTool);
+                                                    await callBackend(() => InstallToolOnDemand(activeTool));
                                                     // Refresh tool statuses
-                                                    const updatedStatuses = await CheckToolsStatus();
+                                                    const updatedStatuses = await callBackend(() => CheckToolsStatus());
                                                     setToolStatuses(updatedStatuses);
                                                     setToolRepairStatus({show: true, toolName: activeTool, status: 'success', message: ''});
 
@@ -3225,7 +3293,7 @@ ${instruction}`;
                                                         setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
                                                         setLaunchingTool(activeTool);
                                                         try {
-                                                            await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
+                                                            await callBackend(() => LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false));
                                                             console.log("LaunchTool call returned successfully after install");
                                                             setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                                         } catch (err) {
@@ -3246,7 +3314,7 @@ ${instruction}`;
                                             console.log("Launching tool with project:", selectedProj.name, "path:", selectedProj.path);
                                             setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
                                             setLaunchingTool(activeTool);
-                                            LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false)
+                                            callBackend(() => LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false))
                                                 .then(() => {
                                                     console.log("LaunchTool call returned successfully");
                                                     setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
@@ -3771,11 +3839,11 @@ ${instruction}`;
                         // Reload config to pick up CodeGen model injected into tool configs by SSO.
                         // Delay slightly to avoid racing with SaveConfig writing the file.
                         setTimeout(() => {
-                            LoadConfig().then((c: any) => setConfig(c)).catch((err) => {
+                            callBackend(() => LoadConfig()).then((c: any) => setConfig(c)).catch((err) => {
                                 console.error("Failed to reload config after LLM configured:", err);
                                 // Retry once after a short delay
                                 setTimeout(() => {
-                                    LoadConfig().then((c: any) => setConfig(c)).catch((err2) => {
+                                    callBackend(() => LoadConfig()).then((c: any) => setConfig(c)).catch((err2) => {
                                         console.error("Retry reload config also failed:", err2);
                                     });
                                 }, 1000);

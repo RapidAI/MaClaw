@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { SidebarSystemStatus } from '../SidebarSystemStatus';
 import type { SidebarHubCredits } from '../../../types/appShell';
 
@@ -17,7 +17,9 @@ const baseCredits: SidebarHubCredits = {
     retryAfterAt: '',
 };
 
-function renderStatus(credits: SidebarHubCredits) {
+function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction?: boolean; isHubService?: boolean } = {}) {
+    const openServiceRedeemPage = vi.fn();
+    const openHubCreditsPage = vi.fn();
     render(
         <SidebarSystemStatus
             lang="zh-Hans"
@@ -27,7 +29,7 @@ function renderStatus(credits: SidebarHubCredits) {
             telegramStatus=""
             weixinStatus=""
             lansengerStatus=""
-            sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw\u5b98\u65b9', isHubService: true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
+            sidebarCurrentProviderTokenUsage={{ provider: options.isHubService === false ? '\u79c1\u6709\u670d\u52a1\u5546' : 'MaClaw\u5b98\u65b9', isHubService: options.isHubService ?? true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
             sidebarHubCredits={credits}
             formatSidebarTokens={(value) => String(value)}
             formatSidebarHubExpiry={() => '05/06/26'}
@@ -36,19 +38,93 @@ function renderStatus(credits: SidebarHubCredits) {
             formatSidebarCredit={(value) => String(value)}
             unlimitedHubCreditText="\u65e0\u9650"
             noHubAuthorizationText="\u65e0"
-            showHubCreditAction={false}
-            openHubCreditsPage={vi.fn()}
+            showHubCreditAction={options.showHubCreditAction ?? false}
+            openHubCreditsPage={openHubCreditsPage}
+            openServiceRedeemPage={openServiceRedeemPage}
         />,
     );
+    return { openServiceRedeemPage, openHubCreditsPage };
 }
 
 describe('SidebarSystemStatus Hub credits', () => {
     it('shows period limit state with recovery time instead of remaining credits', () => {
         renderStatus({ ...baseCredits, status: 'period_limited', retryAfterSeconds: 3600 });
 
-        expect(screen.getByText(/\u5468\u671f\u9650\u6d41/)).toBeTruthy();
+        expect(screen.getByText(/\u5468\u671f\u9650\u989d/)).toBeTruthy();
         expect(screen.getByText(/\u7ea6 1 \u5c0f\u65f6\u540e\u6062\u590d/)).toBeTruthy();
         expect(screen.queryByText('90')).toBeNull();
+    });
+
+    it('shows a stopped quota badge that opens service redeem for period-limited official service', () => {
+        const { openServiceRedeemPage } = renderStatus({ ...baseCredits, serviceActive: false, status: 'period_limited', retryAfterSeconds: 3600 });
+
+        const badge = screen.getByRole('button', { name: /\u5df2\u505c\u6b62/ });
+        expect(badge.textContent).toContain('\u5df2\u505c\u6b62');
+        expect(badge.getAttribute('data-state')).toBe('stopped');
+        expect(badge.getAttribute('title')).toContain('MaClaw \u5b98\u65b9\u670d\u52a1\u5df2\u505c\u6b62');
+        expect(badge.getAttribute('title')).toContain('\u672c\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d');
+        expect(badge.getAttribute('title')).toContain('\u7ea6 1 \u5c0f\u65f6\u540e\u6062\u590d');
+        expect(badge.getAttribute('title')).not.toContain('\u9884\u8ba1 \u7ea6');
+        expect(badge.getAttribute('title')).toContain('\u670d\u52a1\u5151\u6362');
+
+        fireEvent.click(badge);
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+    });
+
+    it('still shows official period limit badge when the current provider is not the Hub route', () => {
+        const { openServiceRedeemPage } = renderStatus(
+            { ...baseCredits, serviceActive: false, status: 'period_limited', retryAfterSeconds: 3600 },
+            { isHubService: false },
+        );
+
+        const badge = screen.getByRole('button', { name: /\u5df2\u505c\u6b62/ });
+        expect(screen.queryByText('05/06/26')).toBeNull();
+
+        fireEvent.click(badge);
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a period limit badge even when another official route keeps service active', () => {
+        const { openServiceRedeemPage } = renderStatus({ ...baseCredits, serviceActive: true, status: 'period_limited', retryAfterSeconds: 39600 });
+
+        const badge = screen.getByRole('button', { name: /\u9650\u989d/ });
+        expect(badge.textContent).toContain('\u9650\u989d');
+        expect(badge.getAttribute('data-state')).toBe('limited');
+        expect(badge.getAttribute('title')).toContain('MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u8fbe\u5230\u672c\u5468\u671f\u9650\u989d');
+        expect(badge.getAttribute('title')).toContain('\u7ea6 11 \u5c0f\u65f6\u540e\u6062\u590d');
+
+        fireEvent.click(badge);
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+    });
+
+    it('routes the sidebar buy action to service redeem while current official route is period-limited but service is still active', () => {
+        const { openServiceRedeemPage, openHubCreditsPage } = renderStatus(
+            { ...baseCredits, serviceActive: true, status: 'period_limited', retryAfterSeconds: 39600 },
+            { showHubCreditAction: true },
+        );
+
+        const buy = screen.getByRole('button', { name: '\u8d2d\u4e70' });
+        expect(buy.getAttribute('title')).toContain('MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u8fbe\u5230\u672c\u5468\u671f\u9650\u989d');
+
+        fireEvent.click(buy);
+
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+        expect(openHubCreditsPage).not.toHaveBeenCalled();
+    });
+
+    it('routes the sidebar buy action to service redeem while official service is period-limited', () => {
+        const { openServiceRedeemPage, openHubCreditsPage } = renderStatus(
+            { ...baseCredits, serviceActive: false, status: 'period_limited', retryAfterSeconds: 3600 },
+            { showHubCreditAction: true },
+        );
+
+        const buy = screen.getByRole('button', { name: '\u8d2d\u4e70' });
+        expect(buy.getAttribute('title')).toContain('\u672c\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d');
+
+        fireEvent.click(buy);
+
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+        expect(openHubCreditsPage).not.toHaveBeenCalled();
     });
 
     it('shows queued state with activation time instead of remaining credits', () => {

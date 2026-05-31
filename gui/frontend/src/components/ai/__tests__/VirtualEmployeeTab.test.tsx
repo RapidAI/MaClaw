@@ -1,6 +1,6 @@
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { VirtualEmployeeTab, truncateText, policyIcon } from '../VirtualEmployeeTab';
+import { VirtualEmployeeTab, truncateText, policyIcon, policyLabel } from '../VirtualEmployeeTab';
 import type { VirtualEmployeeEntry, VETabProps } from '../VirtualEmployeeTab';
 import type { Theme } from '../aiAssistantPanelTheme';
 import { safeAvatarDataURL, safeAvatarSourceDataURL } from '../virtualEmployeeAvatar';
@@ -146,6 +146,12 @@ describe('VirtualEmployeeTab', () => {
             expect(policyIcon("per_request")).toBe("🔒");
             expect(policyIcon("unknown")).toBe("❓");
         });
+
+        it('returns readable labels for each policy', () => {
+            expect(policyLabel("per_request", "zh")).toBe("首次访问需同意");
+            expect(policyLabel("per_request", "en")).toBe("Approval required");
+            expect(policyLabel("blacklist", "zh")).toBe("黑名单");
+        });
     });
 
     describe('safeAvatarDataURL', () => {
@@ -248,11 +254,12 @@ describe('VirtualEmployeeTab', () => {
             expect(offlineIndicator.style.background).toBe("rgb(156, 163, 175)"); // #9ca3af
         });
 
-        it('shows "待确认" badge for per_request policy', async () => {
+        it('shows "需同意" badge for per_request policy', async () => {
             renderVETab();
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(screen.getByTestId("ve-badge-ve-2")).toBeTruthy();
-            expect(screen.getByTestId("ve-badge-ve-2").textContent).toBe("待确认");
+            expect(screen.getByTestId("ve-badge-ve-2").textContent).toBe("需同意");
+            expect(screen.getByTestId("ve-badge-ve-2").getAttribute("title")).toBe("首次访问需同意");
         });
 
         it('does not show badge for non-per_request policies', async () => {
@@ -321,6 +328,26 @@ describe('VirtualEmployeeTab', () => {
             await act(async () => { await vi.runAllTimersAsync(); });
 
             fireEvent.contextMenu(screen.getByTestId("ve-item-profile-1"));
+            fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
+
+            expect(onRemoveFavorite).toHaveBeenCalledWith(employee);
+            expect(onSetFavorite).not.toHaveBeenCalled();
+        });
+
+        it('treats generated VE alias favorites as already favorited in the context menu', async () => {
+            const employee = {
+                id: "ve_machine-1",
+                machine_id: "machine-1",
+                name: "Machine Bot",
+                skill_description: "Ops",
+                access_policy: "public" as const,
+                status: "active",
+                online_status: "online" as const,
+            };
+            const { onRemoveFavorite, onSetFavorite } = renderVETab({ favoriteEmployeeIds: ["ve-machine-1"] }, [employee]);
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.contextMenu(screen.getByTestId("ve-item-ve_machine-1"));
             fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
 
             expect(onRemoveFavorite).toHaveBeenCalledWith(employee);

@@ -187,6 +187,27 @@ func (s *WorkflowStoreSQLite) CreateVersion(ctx context.Context, ver *workflow.W
 	return err
 }
 
+// UpdateVersion updates an existing draft version in place: its version number
+// and graph, leaving the status unchanged. Used by SaveDraft's "update existing
+// draft" branch so re-saving a draft mutates the same row rather than creating
+// a new version row.
+func (s *WorkflowStoreSQLite) UpdateVersion(ctx context.Context, ver *workflow.WorkflowVersion) error {
+	graphJSON, err := json.Marshal(ver.Graph)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE workflow_versions SET version_number = ?, graph_json = ?, updated_at = ? WHERE id = ? AND workflow_id IN (SELECT id FROM workflow_definitions WHERE tenant_id = ?)`,
+		ver.VersionNumber,
+		string(graphJSON),
+		now,
+		ver.ID,
+		store.TenantIDFromContext(ctx),
+	)
+	return err
+}
+
 func (s *WorkflowStoreSQLite) GetVersion(ctx context.Context, id string) (*workflow.WorkflowVersion, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT v.id, v.workflow_id, v.version_number, v.status, v.graph_json, v.submitted_at, v.published_at, v.rejection_reason, v.created_at, v.updated_at

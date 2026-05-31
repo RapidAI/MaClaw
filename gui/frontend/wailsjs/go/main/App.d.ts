@@ -128,6 +128,8 @@ export function GroupDiscussionSubmitResult(arg1:string,arg2:any):Promise<void>;
 
 export function GroupDiscussionSetState(arg1:string,arg2:string):Promise<void>;
 
+export function GroupDiscussionRenameConsultation(arg1:string,arg2:string):Promise<any>;
+
 export function GroupDiscussionCleanupStale(arg1:any):Promise<any>;
 
 export function GetRemoteClaudeReadiness(arg1:string,arg2:boolean):Promise<any>;
@@ -240,8 +242,6 @@ export function GetExperienceAuditHealth():Promise<any>;
 export function ListExperienceAudit():Promise<Array<any>>;
 
 export function ListRemoteToolMetadata():Promise<Array<any>>;
-
-export function ListToolProviders(arg1:string):Promise<Array<any>>;
 
 export function ListSkills(arg1:string):Promise<Array<main.Skill>>;
 
@@ -768,6 +768,7 @@ export function RedeemHubLLMService(arg1:string):Promise<any>;
 export function OnFloatingButtonClicked():Promise<void>;
 export function OnFloatingButtonDragged(arg1:number,arg2:number):Promise<void>;
 export function HideFloatingButton():Promise<void>;
+export function OpenPetSettingsFromMenu():Promise<void>;
 export function QuitApp():Promise<void>;
 
 export function DeleteIMAuditMessagesBefore(arg1:number):Promise<number>;

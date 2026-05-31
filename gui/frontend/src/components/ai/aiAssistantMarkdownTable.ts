@@ -7,6 +7,11 @@ export interface MarkdownTableModel {
     minTableWidth: number;
 }
 
+export interface MarkdownTableRenderModel extends MarkdownTableModel {
+    prefix: string;
+    notes: string[];
+}
+
 export function isMarkdownTableRow(line: string): boolean {
     const trimmed = line.trim();
     if (trimmed.startsWith("|") && trimmed.length > 1) return true;
@@ -64,6 +69,53 @@ export function parseMarkdownTableCells(line: string): string[] {
 export function parseMarkdownTableAlignments(separatorLine: string, columnCount: number): MarkdownTableAlignment[] {
     const cells = parseMarkdownTableCells(separatorLine);
     return Array.from({ length: columnCount }, (_, index) => parseAlignmentCell(cells[index] || ""));
+}
+
+export function repairMixedNarrativeTable(model: MarkdownTableModel): MarkdownTableRenderModel {
+    const fallback: MarkdownTableRenderModel = { ...model, prefix: "", notes: [] };
+    if (model.headerCells.length < 3) return fallback;
+    const [firstHeader, ...restHeaders] = model.headerCells;
+    if (!looksLikeNarrativeTablePrefix(firstHeader, restHeaders)) return fallback;
+
+    const visibleColumnCount = restHeaders.length;
+    const notes: string[] = [];
+    const bodyRows = model.bodyRows.map((row) => {
+        const cells = parseMarkdownTableCells(row);
+        const visible = cells.slice(0, visibleColumnCount);
+        const extra = cells.slice(visibleColumnCount).map(cell => cell.trim()).filter(Boolean).join(" ");
+        if (extra) notes.push(extra);
+        return `| ${visible.map(escapeMarkdownTableCell).join(" | ")} |`;
+    });
+
+    return {
+        headerCells: restHeaders,
+        bodyRows,
+        columnAlignments: model.columnAlignments.slice(1, 1 + visibleColumnCount),
+        minTableWidth: Math.max(280, visibleColumnCount * 120),
+        prefix: firstHeader,
+        notes,
+    };
+}
+
+function escapeMarkdownTableCell(cell: string): string {
+    return cell.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
+
+function looksLikeNarrativeTablePrefix(firstHeader: string, restHeaders: string[]): boolean {
+    const prefix = firstHeader.trim();
+    if (prefix.length < 18) return false;
+    const compactRest = restHeaders.map(cell => cell.trim()).filter(Boolean);
+    if (compactRest.length < 2 || compactRest.some(cell => cell.length > 24)) return false;
+    const averageRestLength = compactRest.reduce((sum, cell) => sum + cell.length, 0) / compactRest.length;
+    if (prefix.length < Math.max(18, averageRestLength * 2.5)) return false;
+    return looksLikeProse(prefix);
+}
+
+function looksLikeProse(text: string): boolean {
+    const cjkCount = (text.match(/[\u3400-\u9FFF]/g) || []).length;
+    const wordCount = (text.match(/[A-Za-z0-9]+/g) || []).length;
+    const hasSentencePunctuation = /[\uFF0C\u3001\u3002\uFF01\uFF1F,;.!?~]/.test(text);
+    return hasSentencePunctuation || cjkCount >= 14 || wordCount >= 6;
 }
 
 function parseAlignmentCell(cell: string): MarkdownTableAlignment {

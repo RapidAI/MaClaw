@@ -32,10 +32,19 @@ func (h *IMMessageHandler) enrichSendAndObserveTextForTask(sessionID, text strin
 }
 
 func (h *IMMessageHandler) activeTaskOrchestratorForSendObserve() *TaskExecutionOrchestrator {
-	if h == nil || h.taskOrchestratorRegistry == nil || h.lastUserID == "" {
+	if h == nil || h.taskOrchestratorRegistry == nil {
 		return nil
 	}
-	return h.taskOrchestratorRegistry.Get(h.lastUserID)
+	ownerID := h.currentRuntimePolicyOwnerID()
+	if ownerID == "" {
+		return nil
+	}
+	if allowed, reason := h.workflowAllowsSubAgentExecutionForOwner(ownerID); !allowed {
+		log.Printf("[task-orchestrator] skipped send_and_observe enrichment by workflow policy user=%s reason=%s", ownerID, reason)
+		h.deactivateTaskOrchestratorForWorkflowPolicyBlock(ownerID, reason)
+		return nil
+	}
+	return h.taskOrchestratorRegistry.Get(ownerID)
 }
 
 func mergeTaskPromptWithSendObserveText(taskPrompt, text string) string {

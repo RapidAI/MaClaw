@@ -3,27 +3,35 @@ const digitalEmployeeCapabilityIconPattern = "[\\u{1f4c1}\\u{1f4c2}\\u{1f4c4}\\u
 const digitalEmployeeCapabilityIconScanPattern = new RegExp(digitalEmployeeCapabilityIconPattern, "gu");
 const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])\\s*(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])\\s+(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
-const windowsPathEscapeProtectPattern = /[A-Za-z]:\\[^\n\r\s*?"<>|]+/g;
+const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
-const bareHeadingMarkerBeforeTextPattern = /(^|\n)(#{1,4})[ \t\r]*\n(?=[^\n\s])/g;
+const bareHeadingMarkerBeforeTextPattern = /(^|\n)(#{1,6})[ \t\r]*\n(?=[^\n\s])/g;
+const compactHeadingMarkerPattern = /([^#\n\s])\s*(#{2,6})(?=[^\s#\d.,;:!?，。；：！？、)\]）}])/gu;
 
 function hasMultipleCapabilityIcons(text: string): boolean {
     const matches = text.match(digitalEmployeeCapabilityIconScanPattern);
     return (matches?.length || 0) >= 2;
 }
 
-function withWindowsPathsProtected(text: string, transform: (value: string) => string): string {
-    const paths: string[] = [];
-    const protectedText = text.replace(windowsPathEscapeProtectPattern, (path) => {
-        const token = `__MACLAW_WIN_PATH_${paths.length}__`;
-        paths.push(path);
+function withMarkdownSensitiveSpansProtected(text: string, transform: (value: string) => string): string {
+    const spans: string[] = [];
+    let tokenPrefix = "__MACLAW_MD_PROTECTED__";
+    while (text.includes(tokenPrefix)) tokenPrefix = `${tokenPrefix}_`;
+    const protectedText = text.replace(markdownSensitiveSpanPattern, (span) => {
+        const token = `${tokenPrefix}${spans.length}__`;
+        spans.push(span);
         return token;
     });
     const transformed = transform(protectedText);
-    return transformed.replace(/__MACLAW_WIN_PATH_(\d+)__/g, (_token, indexText) => {
+    const tokenPattern = new RegExp(`${escapeRegExp(tokenPrefix)}(\\d+)__`, "g");
+    return transformed.replace(tokenPattern, (_token, indexText) => {
         const index = Number(indexText);
-        return paths[index] ?? _token;
+        return spans[index] ?? _token;
     });
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeCompactPipeTables(text: string): string {
@@ -56,14 +64,15 @@ export function normalizeInlineListMarkers(content: string): string {
                 .replace(/\\r(```\s*)$/, "\n$1");
             continue;
         }
-        let normalized = withWindowsPathsProtected(parts[i], (segment) => segment
+        let normalized = withMarkdownSensitiveSpansProtected(parts[i], (segment) => segment
             .replace(escapedNewlinePattern, "\n")
             .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
             .replace(bareHeadingMarkerBeforeTextPattern, "$1$2 ")
-            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,4}\s+)/g, "$1\n$2")
-            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,4})(?=[^#\s])/g, "$1\n$2 ")
-            .replace(/([^#\n\s])\s*(#{2,4})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
-            .replace(/(^|\n)(#{3,4})(?=[^#\s])/g, "$1$2 ")
+            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,6}\s+)/g, "$1\n$2")
+            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,6})(?=[^#\s])/g, "$1\n$2 ")
+            .replace(compactHeadingMarkerPattern, "$1\n$2 ")
+            .replace(/([^#\n\s])\s*(#{2,6})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
+            .replace(/(^|\n)(#{3,6})(?=[^#\s])/g, "$1$2 ")
             .replace(/([\uff1a:])\s*(-\s+)/g, "$1\n$2")
             .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
             .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")

@@ -195,6 +195,66 @@ func TestLoadVERegistryDropsInvalidAvatarDataURL(t *testing.T) {
 	}
 }
 
+func TestDigitalEmployeeRegistryLookupMatchesGeneratedAliases(t *testing.T) {
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{{ID: "ve_machine-a", MachineID: "machine-a", PlatformEmployeeID: "platform-a"}}}
+
+	if idx := registry.findByMachineID("ve-machine-a"); idx != 0 {
+		t.Fatalf("findByMachineID alias idx=%d, want 0", idx)
+	}
+	if idx := registry.findByID("ve-machine-a"); idx != 0 {
+		t.Fatalf("findByID dash alias idx=%d, want 0", idx)
+	}
+	if idx := registry.findByIDOrMachineID("machine-a"); idx != 0 {
+		t.Fatalf("findByIDOrMachineID machine idx=%d, want 0", idx)
+	}
+	if idx := registry.findByIDOrMachineIDOrPlatformEmployeeID("ve-machine-a"); idx != 0 {
+		t.Fatalf("findByIDOrMachineIDOrPlatformEmployeeID alias idx=%d, want 0", idx)
+	}
+	if idx := registry.findByIDOrMachineIDOrPlatformEmployeeID("platform-a"); idx != 0 {
+		t.Fatalf("findByIDOrMachineIDOrPlatformEmployeeID platform idx=%d, want 0", idx)
+	}
+	if idx := registry.findByPlatformEmployeeID("ve-machine-a"); idx >= 0 {
+		t.Fatalf("platform employee id should stay exact, got idx=%d", idx)
+	}
+}
+
+func TestReusableVEDirectSessionMatchesParticipantAliases(t *testing.T) {
+	session := &corea2a.Session{Status: corea2a.SessionOpen, Participants: []corea2a.Participant{
+		{ID: "machine-b", RoleCode: "initiator"},
+		{ID: "machine-a", RoleCode: "speak"},
+	}}
+
+	if !isReusableVEDirectSession(session, "ve-machine-b", "ve_machine-a") {
+		t.Fatal("expected direct session reuse to match generated participant aliases")
+	}
+
+	session.Participants = append(session.Participants, corea2a.Participant{ID: "ve-machine-a", RoleCode: "speak"})
+	if !isReusableVEDirectSession(session, "ve-machine-b", "ve_machine-a") {
+		t.Fatal("expected duplicate participant aliases to still be reusable as a direct session")
+	}
+}
+
+func TestUpsertVEAccessRequestMatchesMachineAliases(t *testing.T) {
+	requests := &digitalEmployeeAccessRequestStore{Requests: []digitalEmployeeAccessRequest{{
+		ID:                 "req-existing",
+		Status:             "pending",
+		RequesterMachineID: "machine-b",
+		TargetMachineID:    "machine-a",
+		CreatedAt:          "created",
+	}}}
+
+	updated := upsertVEAccessRequest(requests, digitalEmployeeAccessRequest{
+		ID:                 "req-new",
+		Status:             "pending",
+		RequesterMachineID: "ve-machine-b",
+		TargetMachineID:    "ve_machine-a",
+	})
+
+	if updated.ID != "req-existing" || updated.CreatedAt != "created" || len(requests.Requests) != 1 {
+		t.Fatalf("expected alias request to update existing pending request, got updated=%+v requests=%+v", updated, requests.Requests)
+	}
+}
+
 func TestDigitalEmployeeRegisterAutoApprove(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	enableVEDigitalEmployeeAuthorization(t, settings, 2)
@@ -736,6 +796,9 @@ func TestDigitalEmployeePerRequestConfirmationAllowLongAndBlock(t *testing.T) {
 	if requestID == "" {
 		t.Fatalf("missing request_id in %v", pendingBody)
 	}
+	if expiresAt, _ := pendingBody["expires_at"].(string); expiresAt == "" {
+		t.Fatalf("missing expires_at in pending response: %v", pendingBody)
+	}
 	repeatedPendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
 	repeatedPendingReq.Header.Set("X-Machine-ID", "machine-b")
 	repeatedPendingReq.Header.Set("Authorization", "Bearer machine-token")
@@ -759,6 +822,19 @@ func TestDigitalEmployeePerRequestConfirmationAllowLongAndBlock(t *testing.T) {
 	}, "machine-a", "machine-token")
 	if expiredRR.Code != http.StatusConflict {
 		t.Fatalf("expired request should reject response, got %d body=%s", expiredRR.Code, expiredRR.Body.String())
+	}
+	foundExpiredAuthResult := false
+	for _, sent := range sender.messages {
+		if sent.machineID != "machine-b" || sent.msg["type"] != "ve:auth_result" {
+			continue
+		}
+		payload, _ := sent.msg["payload"].(map[string]any)
+		if payload["request_id"] == requestID && payload["decision"] == "timeout" && payload["status"] == "expired" {
+			foundExpiredAuthResult = true
+		}
+	}
+	if !foundExpiredAuthResult {
+		t.Fatalf("expired request should notify requester with timeout auth_result, messages=%#v", sender.messages)
 	}
 	freshPendingReq := httptest.NewRequest(http.MethodPost, "/api/ve/ve_machine-a/initiate", nil)
 	freshPendingReq.Header.Set("X-Machine-ID", "machine-b")

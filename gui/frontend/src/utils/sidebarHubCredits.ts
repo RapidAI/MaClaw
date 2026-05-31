@@ -7,16 +7,17 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     const grants = creditGrants.length ? creditGrants : activeGrants;
     const hasGrant = grants.length > 0;
     const grantStatusPriority = ['period_limited', 'queued', 'exhausted', 'expired'];
+    const periodLimitedGrant = grants.find((grant) => String(grant.status ?? grant.Status ?? '').toLowerCase() === 'period_limited');
     const activeGrant = grants.find((grant) => {
         const status = String(grant.status ?? grant.Status ?? '').toLowerCase();
         return status === 'active' || grant.active === true || grant.Active === true;
     });
     const statusGrant = active
-        ? (activeGrant || grants[0])
+        ? (periodLimitedGrant || activeGrant || grants[0])
         : (grantStatusPriority
             .map((status) => grants.find((grant) => String(grant.status ?? grant.Status ?? '').toLowerCase() === status))
             .find(Boolean) || grants[0]);
-    const grantStatus = active ? 'active' : String(statusGrant?.status ?? statusGrant?.Status ?? '').toLowerCase();
+    const grantStatus = String(statusGrant?.status ?? statusGrant?.Status ?? '').toLowerCase() || (active ? 'active' : '');
     const retryAfterSeconds = Number(statusGrant?.retry_after_seconds ?? statusGrant?.RetryAfterSeconds ?? 0);
     const retryAfterAt = String(statusGrant?.retry_after_at ?? statusGrant?.RetryAfterAt ?? '');
     if (!active && !hasGrant) {
@@ -59,6 +60,7 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
         .sort()[0] || '';
     return {
         authorized: true,
+        serviceActive: active,
         total,
         used,
         remaining,

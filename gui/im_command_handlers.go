@@ -20,9 +20,16 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		}
 		h.flushEvidenceOnSessionEnd(msg.UserID)
 		resp := &IMAgentResponse{Text: localizedIMConversationResetMessage(responseLang), ClearUI: true}
-		if h.currentLoopCtx != nil {
-			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, ""), true
+		if ctx := h.getSessionLoopCtx(msg.UserID); ctx != nil {
+			return h.finalizeTraceResult(ctx, resp, resp.Text, ""), true
 		}
+		h.globalLoopMu.RLock()
+		if h.lastUserID == msg.UserID && h.currentLoopCtx != nil {
+			ctx := h.currentLoopCtx
+			h.globalLoopMu.RUnlock()
+			return h.finalizeTraceResult(ctx, resp, resp.Text, ""), true
+		}
+		h.globalLoopMu.RUnlock()
 		return resp, true
 	}
 

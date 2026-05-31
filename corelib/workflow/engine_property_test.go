@@ -8,6 +8,7 @@ import (
 // MockEngineCallbacks is a no-op implementation of EngineCallbacks for testing.
 type MockEngineCallbacks struct {
 	PhaseUpdates []string
+	PhaseStates  []*WorkflowState
 }
 
 func (m *MockEngineCallbacks) SendTextToUser(userID, text string) error { return nil }
@@ -16,6 +17,7 @@ func (m *MockEngineCallbacks) EmitPhaseUpdate(userID string, state *WorkflowStat
 		m.PhaseUpdates = []string{}
 	}
 	m.PhaseUpdates = append(m.PhaseUpdates, state.CurrentPhase)
+	m.PhaseStates = append(m.PhaseStates, state.Clone())
 	return nil
 }
 func (m *MockEngineCallbacks) EmitDocUpdate(userID, phaseID, content string) error { return nil }

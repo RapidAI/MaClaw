@@ -35,6 +35,7 @@ type groupInviteRecord struct {
 	SessionID   string
 	Invite      corea2a.GroupInvitation
 	Status      string
+	Reason      string
 	CreatedAt   time.Time
 	RespondedAt time.Time
 }
@@ -69,6 +70,8 @@ type ListSessionsFilter struct {
 }
 
 type ListInvitationsFilter struct {
+	ID     string
+	FromID string
 	ToID   string
 	Status string
 	Limit  int
@@ -113,6 +116,11 @@ type EscalateRequest struct {
 	RaisedBy string `json:"raised_by"`
 	Reason   string `json:"reason"`
 	Target   string `json:"target"`
+}
+
+type RenameDiscussionRequest struct {
+	FromID string `json:"from_id"`
+	Topic  string `json:"topic"`
 }
 
 type AdminGroupDiscussionSnapshot struct {
@@ -212,10 +220,21 @@ func decorateSummaryForParticipant(summary *corea2a.HubDiscussionSummary, sessio
 
 func discussionSummaryFromSession(session *corea2a.Session) corea2a.HubDiscussionSummary {
 	participants := make([]string, 0, len(session.Participants))
+	seenParticipants := map[string]struct{}{}
 	for _, p := range session.Participants {
-		if strings.TrimSpace(p.ID) != "" {
-			participants = append(participants, p.ID)
+		id := strings.TrimSpace(p.ID)
+		if id == "" {
+			continue
 		}
+		key := groupDiscussionCanonicalParticipantIdentityKey(id)
+		if key == "" {
+			continue
+		}
+		if _, ok := seenParticipants[key]; ok {
+			continue
+		}
+		seenParticipants[key] = struct{}{}
+		participants = append(participants, id)
 	}
 	summary := ""
 	if session.Decision != nil {
@@ -265,7 +284,7 @@ func discussionAnswerCount(session *corea2a.Session) int {
 		return 0
 	}
 	roles := participantRoleMap(session)
-	count := 0
+	answered := map[string]struct{}{}
 	for _, msg := range session.Messages {
 		content := strings.TrimSpace(msg.Content)
 		if content == "" || strings.HasPrefix(strings.ToLower(content), "invitation ") {
@@ -274,15 +293,30 @@ func discussionAnswerCount(session *corea2a.Session) int {
 		if groupDiscussionMessageTargetsOnlySender(msg) {
 			continue
 		}
-		if role, ok := roles[strings.TrimSpace(msg.FromID)]; ok && !groupDiscussionRoleContributesAnswer(role) {
+		if role, ok := groupDiscussionParticipantRoleForID(roles, msg.FromID); ok && !groupDiscussionRoleContributesAnswer(role) {
 			continue
 		}
 		switch msg.Kind {
 		case corea2a.MessageAnswer, corea2a.MessageStatement, corea2a.MessageEvidence, corea2a.MessageObjection:
-			count++
+			key := groupDiscussionCanonicalParticipantIdentityKey(msg.FromID)
+			if key != "" {
+				answered[key] = struct{}{}
+			}
 		}
 	}
-	return count
+	return len(answered)
+}
+
+func groupDiscussionCanonicalParticipantIdentityKey(participantID string) string {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" {
+		return ""
+	}
+	cleaned := strings.NewReplacer("/", "_", "\\", "_", " ", "_", "-", "_").Replace(participantID)
+	if len(cleaned) > 3 && (strings.EqualFold(cleaned[:3], "ve_") || strings.EqualFold(cleaned[:3], "ve-")) {
+		cleaned = cleaned[3:]
+	}
+	return strings.ToLower(strings.TrimSpace(cleaned))
 }
 
 func groupDiscussionMessageTargetsOnlySender(msg corea2a.Message) bool {
@@ -290,19 +324,24 @@ func groupDiscussionMessageTargetsOnlySender(msg corea2a.Message) bool {
 	if fromID == "" || len(msg.ToIDs) != 1 {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(msg.ToIDs[0]), fromID)
+	return groupDiscussionParticipantIdentityMatches(msg.ToIDs[0], fromID)
 }
 
 func discussionExpectedAnswerCount(session *corea2a.Session) int {
 	if session == nil {
 		return 1
 	}
-	count := 0
+	participants := map[string]struct{}{}
 	for _, participant := range session.Participants {
-		if groupDiscussionRoleContributesAnswer(participant.RoleCode) {
-			count++
+		if !groupDiscussionRoleContributesAnswer(participant.RoleCode) {
+			continue
+		}
+		key := groupDiscussionCanonicalParticipantIdentityKey(participant.ID)
+		if key != "" {
+			participants[key] = struct{}{}
 		}
 	}
+	count := len(participants)
 	if count < 1 {
 		return 1
 	}
@@ -314,10 +353,25 @@ func participantRoleMap(session *corea2a.Session) map[string]string {
 	for _, participant := range session.Participants {
 		id := strings.TrimSpace(participant.ID)
 		if id != "" {
-			roles[id] = strings.ToLower(strings.TrimSpace(participant.RoleCode))
+			role := strings.ToLower(strings.TrimSpace(participant.RoleCode))
+			for _, key := range groupDiscussionParticipantIdentityKeys(id) {
+				roles[key] = role
+			}
 		}
 	}
 	return roles
+}
+
+func groupDiscussionParticipantRoleForID(roles map[string]string, participantID string) (string, bool) {
+	if len(roles) == 0 {
+		return "", false
+	}
+	for _, key := range groupDiscussionParticipantIdentityKeys(participantID) {
+		if role, ok := roles[key]; ok {
+			return role, true
+		}
+	}
+	return "", false
 }
 
 func groupDiscussionRoleContributesAnswer(role string) bool {
@@ -406,6 +460,42 @@ func (s *GroupDiscussionService) GetDiscussionDetail(tenantID, sessionID string)
 	}, nil
 }
 
+func (s *GroupDiscussionService) RenameDiscussionTopic(tenantID, sessionID string, req RenameDiscussionRequest) (*corea2a.Session, error) {
+	tenantID = normalizeTenantID(tenantID)
+	sessionID = strings.TrimSpace(sessionID)
+	fromID := strings.TrimSpace(req.FromID)
+	topic := strings.TrimSpace(req.Topic)
+	if sessionID == "" {
+		return nil, fmt.Errorf("consultation id is required")
+	}
+	if fromID == "" {
+		return nil, fmt.Errorf("from_id is required")
+	}
+	if topic == "" {
+		return nil, fmt.Errorf("topic is required")
+	}
+	if len([]rune(topic)) > 60 {
+		return nil, fmt.Errorf("topic must be 60 characters or fewer")
+	}
+	s.mu.Lock()
+	session, err := s.loadSessionLocked(tenantID, sessionID)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	participant := findGroupDiscussionParticipant(session, fromID)
+	if participant == nil || !strings.EqualFold(strings.TrimSpace(participant.RoleCode), "initiator") {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("only the discussion initiator can rename the discussion")
+	}
+	session.Topic = topic
+	session.UpdatedAt = time.Now().UTC()
+	sessionCopy := cloneSession(session)
+	s.mu.Unlock()
+	s.persistSession(tenantID, sessionCopy)
+	return sessionCopy, nil
+}
+
 func reviewSummariesFromSession(session *corea2a.Session) map[string]corea2a.ReviewSummary {
 	if session == nil || len(session.Proposals) == 0 {
 		return nil
@@ -431,6 +521,7 @@ func reviewSummariesFromSession(session *corea2a.Session) map[string]corea2a.Rev
 func (s *GroupDiscussionService) ListInvitations(tenantID, toID, status string, filters ...ListInvitationsFilter) []corea2a.GroupInviteSummary {
 	tenantID = normalizeTenantID(tenantID)
 	filter := firstInvitationFilter(filters)
+	fromID := strings.TrimSpace(filter.FromID)
 	if filter.ToID != "" {
 		toID = filter.ToID
 	}
@@ -446,7 +537,13 @@ func (s *GroupDiscussionService) ListInvitations(tenantID, toID, status string, 
 	defer s.mu.RUnlock()
 	items := make([]corea2a.GroupInviteSummary, 0, len(s.invites[tenantID]))
 	for _, record := range s.invites[tenantID] {
-		if toID != "" && strings.TrimSpace(record.Invite.ToID) != toID {
+		if filter.ID != "" && !strings.EqualFold(strings.TrimSpace(record.ID), strings.TrimSpace(filter.ID)) {
+			continue
+		}
+		if fromID != "" && !groupDiscussionParticipantIdentityMatches(record.Invite.FromID, fromID) {
+			continue
+		}
+		if toID != "" && !groupDiscussionParticipantIdentityMatches(record.Invite.ToID, toID) {
 			continue
 		}
 		recordStatus := strings.TrimSpace(record.Status)
@@ -471,6 +568,7 @@ func (s *GroupDiscussionService) ListInvitations(tenantID, toID, status string, 
 			SecurityGroupID: record.Invite.SecurityGroupID,
 			ContextPolicy:   record.Invite.ContextPolicy,
 			Status:          recordStatus,
+			Reason:          strings.TrimSpace(record.Reason),
 			Topic:           summary.Topic,
 			Question:        summary.Question,
 			CreatedAt:       record.CreatedAt,
@@ -552,13 +650,42 @@ func (s *GroupDiscussionService) RespondInvitation(tenantID, inviteID string, re
 	if fromID == "" {
 		fromID = inviteeID
 	}
-	if !strings.EqualFold(fromID, inviteeID) {
+	if !groupDiscussionParticipantIdentityMatches(inviteeID, fromID) {
 		s.mu.Unlock()
 		return fmt.Errorf("invite response sender %s does not match invite target %s", fromID, inviteeID)
+	}
+	if groupDiscussionGeneratedVEAlias(fromID) {
+		fromID = inviteeID
 	}
 	decision := resp.Decision
 	if decision == "" {
 		decision = corea2a.GroupInvitationReject
+	}
+	switch decision {
+	case corea2a.GroupInvitationAccept, corea2a.GroupInvitationReject:
+	default:
+		s.mu.Unlock()
+		return fmt.Errorf("unsupported invite decision %q", decision)
+	}
+	recordStatus := strings.TrimSpace(record.Status)
+	if recordStatus == "" {
+		recordStatus = "pending"
+	}
+	if recordStatus != "pending" {
+		if recordStatus == string(decision) {
+			if decision == corea2a.GroupInvitationAccept && session.Status == corea2a.SessionOpen {
+				if addParticipantIfMissing(session, corea2a.Participant{ID: fromID, RoleCode: string(record.Invite.Role)}) {
+					sessionCopy := cloneSession(session)
+					s.mu.Unlock()
+					s.persistSession(tenantID, sessionCopy)
+					return nil
+				}
+			}
+			s.mu.Unlock()
+			return nil
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("invite %s is already %s", inviteID, recordStatus)
 	}
 	if decision == corea2a.GroupInvitationAccept && session.Status != corea2a.SessionOpen {
 		s.mu.Unlock()
@@ -568,6 +695,7 @@ func (s *GroupDiscussionService) RespondInvitation(tenantID, inviteID string, re
 		addParticipantIfMissing(session, corea2a.Participant{ID: fromID, RoleCode: string(record.Invite.Role)})
 	}
 	record.Status = string(decision)
+	record.Reason = strings.TrimSpace(resp.Reason)
 	record.RespondedAt = time.Now().UTC()
 	s.invites[tenantID][inviteID] = record
 	content := fmt.Sprintf("invitation %s: %s", inviteID, decision)
@@ -597,7 +725,7 @@ func (s *GroupDiscussionService) AddDiscussionMessage(tenantID, sessionID string
 		if err := requireGroupDiscussionWritableParticipant(session, fromID); err != nil {
 			return err
 		}
-		toIDs, err := normalizeGroupDiscussionTargetIDs(session, msg.ToIDs)
+		toIDs, err := normalizeGroupDiscussionMessageTargetIDs(session, fromID, msg.ToIDs)
 		if err != nil {
 			return err
 		}
@@ -648,6 +776,56 @@ func (s *GroupDiscussionService) RemoveDiscussionMessage(tenantID, sessionID, me
 	return err
 }
 
+func normalizeGroupDiscussionMessageTargetIDs(session *corea2a.Session, fromID string, toIDs []string) ([]string, error) {
+	if len(toIDs) > 0 {
+		return normalizeGroupDiscussionTargetIDs(session, toIDs)
+	}
+	return groupDiscussionDefaultMessageTargetIDs(session, fromID), nil
+}
+
+func groupDiscussionDefaultMessageTargetIDs(session *corea2a.Session, fromID string) []string {
+	if session == nil {
+		return nil
+	}
+	senderRole := participantRole(session, fromID)
+	out := make([]string, 0, len(session.Participants))
+	seen := map[string]struct{}{}
+	for _, participant := range session.Participants {
+		id := strings.TrimSpace(participant.ID)
+		if id == "" || groupDiscussionParticipantIdentityMatches(id, fromID) || groupDiscussionParticipantIdentityMatches(id, "local-maclaw") {
+			continue
+		}
+		if groupDiscussionRoleIsInitiator(senderRole) {
+			if !groupDiscussionRoleContributesAnswer(participant.RoleCode) {
+				continue
+			}
+		} else if groupDiscussionRoleContributesAnswer(senderRole) {
+			if !groupDiscussionRoleIsInitiator(participant.RoleCode) {
+				continue
+			}
+		} else {
+			continue
+		}
+		key := groupDiscussionCanonicalParticipantIdentityKey(id)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func groupDiscussionRoleIsInitiator(role string) bool {
+	return strings.EqualFold(strings.TrimSpace(role), "initiator")
+}
+
 func normalizeGroupDiscussionTargetIDs(session *corea2a.Session, toIDs []string) ([]string, error) {
 	if len(toIDs) == 0 {
 		return nil, nil
@@ -656,7 +834,7 @@ func normalizeGroupDiscussionTargetIDs(session *corea2a.Session, toIDs []string)
 	for _, participant := range session.Participants {
 		id := strings.TrimSpace(participant.ID)
 		if id != "" {
-			participants[strings.ToLower(id)] = id
+			addGroupDiscussionParticipantAliases(participants, id)
 		}
 	}
 	out := make([]string, 0, len(toIDs))
@@ -670,7 +848,7 @@ func normalizeGroupDiscussionTargetIDs(session *corea2a.Session, toIDs []string)
 		if !ok {
 			return nil, fmt.Errorf("target participant %s is not in discussion", id)
 		}
-		key := strings.ToLower(canonical)
+		key := groupDiscussionCanonicalParticipantIdentityKey(canonical)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -682,13 +860,90 @@ func normalizeGroupDiscussionTargetIDs(session *corea2a.Session, toIDs []string)
 	}
 	return out, nil
 }
+
+func addGroupDiscussionParticipantAliases(target map[string]string, participantID string) {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" || target == nil {
+		return
+	}
+	for _, alias := range groupDiscussionParticipantIdentityKeys(participantID) {
+		if _, ok := target[alias]; ok {
+			continue
+		}
+		target[alias] = participantID
+	}
+}
+
+func groupDiscussionParticipantIdentityKeys(participantID string) []string {
+	participantID = strings.TrimSpace(participantID)
+	if participantID == "" {
+		return nil
+	}
+	out := make([]string, 0, 6)
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	add(participantID)
+	cleaned := strings.NewReplacer("/", "_", "\\", "_", " ", "_").Replace(participantID)
+	withoutPrefix := cleaned
+	if len(withoutPrefix) > 3 && (strings.EqualFold(withoutPrefix[:3], "ve_") || strings.EqualFold(withoutPrefix[:3], "ve-")) {
+		withoutPrefix = withoutPrefix[3:]
+	}
+	for _, base := range []string{withoutPrefix, strings.ReplaceAll(withoutPrefix, "-", "_")} {
+		add(base)
+		add("ve_" + base)
+		add("ve-" + base)
+	}
+	return out
+}
+
+func groupDiscussionParticipantIdentityMatches(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	aKeys := map[string]struct{}{}
+	for _, key := range groupDiscussionParticipantIdentityKeys(a) {
+		aKeys[key] = struct{}{}
+	}
+	for _, key := range groupDiscussionParticipantIdentityKeys(b) {
+		if _, ok := aKeys[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func groupDiscussionGeneratedVEAlias(id string) bool {
+	id = strings.TrimSpace(id)
+	return len(id) > 3 && (strings.EqualFold(id[:3], "ve_") || strings.EqualFold(id[:3], "ve-"))
+}
+
+func canonicalGroupDiscussionParticipantID(session *corea2a.Session, participantID string) string {
+	participant := findGroupDiscussionParticipant(session, participantID)
+	if participant == nil {
+		return ""
+	}
+	return strings.TrimSpace(participant.ID)
+}
+
 func findGroupDiscussionParticipant(session *corea2a.Session, participantID string) *corea2a.Participant {
 	participantID = strings.TrimSpace(participantID)
 	if session == nil || participantID == "" {
 		return nil
 	}
 	for i := range session.Participants {
-		if strings.EqualFold(strings.TrimSpace(session.Participants[i].ID), participantID) {
+		if groupDiscussionParticipantIdentityMatches(session.Participants[i].ID, participantID) {
 			return &session.Participants[i]
 		}
 	}
@@ -758,9 +1013,16 @@ func (s *GroupDiscussionService) SubmitDiscussionResult(tenantID, sessionID stri
 			}
 		}
 		decidedBy := make([]string, 0, len(session.Participants))
+		seenDeciders := map[string]struct{}{}
 		for _, participant := range session.Participants {
-			if strings.TrimSpace(participant.ID) != "" {
-				decidedBy = append(decidedBy, participant.ID)
+			id := strings.TrimSpace(participant.ID)
+			key := groupDiscussionCanonicalParticipantIdentityKey(id)
+			if id != "" && key != "" {
+				if _, ok := seenDeciders[key]; ok {
+					continue
+				}
+				seenDeciders[key] = struct{}{}
+				decidedBy = append(decidedBy, id)
 			}
 		}
 		if len(decidedBy) == 0 {
@@ -1013,7 +1275,7 @@ func participantRole(session *corea2a.Session, participantID string) string {
 		return ""
 	}
 	for _, participant := range session.Participants {
-		if strings.TrimSpace(participant.ID) == participantID {
+		if groupDiscussionParticipantIdentityMatches(participant.ID, participantID) {
 			return strings.TrimSpace(participant.RoleCode)
 		}
 	}
@@ -1041,13 +1303,13 @@ func (s *GroupDiscussionService) loadSessionLocked(tenantID, sessionID string) (
 	return session, nil
 }
 
-func addParticipantIfMissing(session *corea2a.Session, participant corea2a.Participant) {
+func addParticipantIfMissing(session *corea2a.Session, participant corea2a.Participant) bool {
 	if session == nil || strings.TrimSpace(participant.ID) == "" {
-		return
+		return false
 	}
 	participant.ID = strings.TrimSpace(participant.ID)
 	for i := range session.Participants {
-		if !strings.EqualFold(strings.TrimSpace(session.Participants[i].ID), participant.ID) {
+		if !groupDiscussionParticipantIdentityMatches(session.Participants[i].ID, participant.ID) {
 			continue
 		}
 		changed := false
@@ -1069,10 +1331,11 @@ func addParticipantIfMissing(session *corea2a.Session, participant corea2a.Parti
 		if changed {
 			session.UpdatedAt = time.Now().UTC()
 		}
-		return
+		return changed
 	}
 	session.Participants = append(session.Participants, participant)
 	session.UpdatedAt = time.Now().UTC()
+	return true
 }
 
 func cloneSession(in *corea2a.Session) *corea2a.Session {

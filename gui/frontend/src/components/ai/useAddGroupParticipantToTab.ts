@@ -1,6 +1,8 @@
 import { useCallback } from "react";
 import type { AITab, AITabState } from "./AITabTypes";
-import { looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { looksLikeRawParticipantId } from "./localAIIdentity";
+import { extractErrorMessage } from "./participantAddError";
+import { addParticipantIdentityKeys } from "./participantIdentity";
 
 
 function participantNameFromInput(name: string, participantId: string): string {
@@ -22,6 +24,17 @@ function participantNameFromTab(tab: AITab): Record<string, string> {
     return names;
 }
 
+function hasParticipantIdentity(participants: string[], participantId: string): boolean {
+    const current = new Set<string>();
+    participants.forEach((id) => addParticipantIdentityKeys(current, id));
+    const candidate = new Set<string>();
+    addParticipantIdentityKeys(candidate, participantId);
+    for (const key of candidate) {
+        if (current.has(key)) return true;
+    }
+    return false;
+}
+
 type UseAddGroupParticipantToTabOptions = {
     getTabState: (tabId: string) => AITabState | undefined;
     upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string, participantNames?: Record<string, string>) => AITab | null;
@@ -33,8 +46,7 @@ export function useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup }
         if (!participantId) return null;
 
         const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-        const normalizedParticipantId = normalizeParticipantId(participantId);
-        if (currentParticipants.some((id) => normalizeParticipantId(id) === normalizedParticipantId)) return null;
+        if (hasParticipantIdentity(currentParticipants, participantId)) return null;
 
         const nextParticipants = [...currentParticipants, participantId];
         const participantName = participantNameFromInput(veName, participantId);
@@ -49,23 +61,24 @@ export function useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup }
             if (!sessionId) {
                 const initiateConversation = (mod as any).InitiateVEConversation;
                 if (typeof initiateConversation !== "function" || !tab.veId) {
-                    return null;
+                    throw new Error("missing InitiateVEConversation binding");
                 }
                 const created = await initiateConversation(tab.veId);
                 sessionId = String(created?.session_id || created?.SessionID || "").trim();
-                if (!sessionId) return null;
+                if (!sessionId) throw new Error("created discussion has no session id");
             }
 
             const addVEToGroup = (mod as any).AddVEToGroup;
             if (typeof addVEToGroup !== "function") {
-                return null;
+                throw new Error("missing AddVEToGroup binding");
             }
 
             await addVEToGroup(sessionId, participantId);
             return updateUI(sessionId);
         } catch (err) {
             console.error("Failed to add group participant:", err);
-            return null;
+            const message = extractErrorMessage(err);
+            throw new Error(message || "participant_add_failed");
         }
     }, [getTabState, upgradeVETabToGroup]);
 }

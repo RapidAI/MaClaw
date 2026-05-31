@@ -50,7 +50,7 @@ func (h *IMMessageHandler) applyAgentLoopRecoverPrompt(
 		phase.ForceSkillPreference = false
 		phase.SkillMode = skillPreferenceFallbackAllowed
 		phase.RemoteSearchExhausted = true
-		result.Tools, result.ToolsTokenBudget, result.DirectModeToolsFiltered = h.restoreToolsAfterSkillRecover(userID, baseTools, *phase, gateConfig, skipCodingGate, orchestratorActive)
+		result.Tools, result.ToolsTokenBudget, result.DirectModeToolsFiltered = h.restoreToolsAfterSkillRecover(h.workflowPolicyOwnerID(userID, ctx), baseTools, *phase, gateConfig, skipCodingGate, orchestratorActive)
 	}
 	recoverReason := firstNonEmptyTraceText(phase.RecoverReason.String(), "recover")
 	if h.traceService != nil && ctx != nil && ctx.RunID != "" {
@@ -408,18 +408,18 @@ func (h *IMMessageHandler) resetCompactionTokenCalibration(_ string) {
 
 func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []string) string {
 	var b strings.Builder
-	b.WriteString("[Recover]\nThe previous real tool attempt failed. Adjust the plan based on the failure and do not repeat the same failed attempt.")
+	b.WriteString("[Recover 阶段]\n上一次真实工具调用失败。请基于失败原因调整方案，不要重复同样的失败尝试。")
 	if obs := strings.TrimSpace(observation); obs != "" {
-		b.WriteString("\nFailure observation: ")
+		b.WriteString("\n失败观察：")
 		b.WriteString(obs)
 	}
 	if len(repeatedFailures) > 0 {
 		items := append([]string(nil), repeatedFailures...)
 		sort.Strings(items)
-		b.WriteString("\nAvoid repeating: ")
+		b.WriteString("\n避免重复：")
 		b.WriteString(strings.Join(items, ", "))
 	}
-	b.WriteString("\nNext step: use a different path or corrected parameters. If completion is still impossible, explain the blocker and current state.\n[/Recover]")
+	b.WriteString("\n下一步：改用不同的路径或修正后的参数。如果仍然无法完成，请说明阻塞点和当前状态。\n[/Recover 阶段]")
 	return b.String()
 }
 

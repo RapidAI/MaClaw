@@ -207,9 +207,11 @@ func TestBuildWorkflowMarketListing_WithMetadata(t *testing.T) {
 	if len(listing.ApprovalModes) != 2 {
 		t.Errorf("ApprovalModes len = %d, want 2", len(listing.ApprovalModes))
 	}
-	if listing.FlowPreviewURL != "/api/v1/workflow/456/thumbnail" {
-		t.Errorf("FlowPreviewURL = %q, want %q", listing.FlowPreviewURL, "/api/v1/workflow/456/thumbnail")
-	}
+	// The listing must NOT advertise a thumbnail/preview URL even when a stale
+	// thumbnail_url key is present in an older capability metadata row: the Hub
+	// serves no thumbnail route, so advertising one would make the advertised
+	// state diverge from the served state (Requirement 2.12). The market layer
+	// no longer parses or surfaces thumbnail_url.
 	if listing.Version != "2.1.0" {
 		t.Errorf("Version = %q, want %q", listing.Version, "2.1.0")
 	}

@@ -33,7 +33,11 @@ func (h *IMMessageHandler) captureDirectScreenshotResult() string {
 }
 
 func (h *IMMessageHandler) captureSessionScreenshotResult(sessionID string) string {
-	if h.shouldReturnScreenshotBase64ForCurrentPlatform() {
+	return h.captureSessionScreenshotResultForPlatform(sessionID, h.currentRuntimePlatform())
+}
+
+func (h *IMMessageHandler) captureSessionScreenshotResultForPlatform(sessionID, platform string) string {
+	if shouldReturnScreenshotBase64ForPlatform(platform) {
 		captureStart := time.Now()
 		base64Data, err := h.manager.CaptureScreenshotToBase64(sessionID)
 		log.Printf("[screenshot] CaptureScreenshotToBase64 took %v, data_len=%d, err=%v", time.Since(captureStart), len(base64Data), err)
@@ -52,9 +56,10 @@ func (h *IMMessageHandler) captureSessionScreenshotResult(sessionID string) stri
 }
 
 func (h *IMMessageHandler) shouldReturnScreenshotBase64ForCurrentPlatform() bool {
-	platform := ""
-	if h != nil && h.currentLoopCtx != nil {
-		platform = h.currentLoopCtx.Platform
-	}
+	platform := h.currentRuntimePlatform()
+	return shouldReturnScreenshotBase64ForPlatform(platform)
+}
+
+func shouldReturnScreenshotBase64ForPlatform(platform string) bool {
 	return !normalizeIMMessagePlatformKind(platform).IsDesktopPlaybackTarget()
 }

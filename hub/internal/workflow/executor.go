@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,10 @@ type WorkflowExecutor struct {
 	notifier        WorkflowNotifier
 	notifDispatcher *NotificationDispatcher
 	confirmTracker  *ConfirmationTracker
+	// resumeLocks serializes the approval read-modify-write-persist cycle in
+	// ResumeInstance per instance, so concurrent decisions on the same node
+	// cannot lose a vote (Requirement 2.6). See instance_locks.go.
+	resumeLocks *instanceLocks
 }
 
 // ApprovalDispatcher sends approval requests to VE approvers via A2A.
@@ -58,6 +63,7 @@ func NewWorkflowExecutor(store WorkflowStore, instanceStore InstanceStore, audit
 		instanceStore: instanceStore,
 		auditStore:    auditStore,
 		dispatcher:    dispatcher,
+		resumeLocks:   newInstanceLocks(),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -132,13 +138,14 @@ func (e *WorkflowExecutor) StartInstance(ctx context.Context, workflowID, trigge
 		return nil, fmt.Errorf("create instance: %w", err)
 	}
 
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: inst.ID,
-		EventType:  "instance_created",
-		Details:    fmt.Sprintf(`{"workflow_id":"%s","version_id":"%s"}`, workflowID, ver.ID),
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, inst.ID, triggerNode.ID, "audit_instance_created",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			EventType:  "instance_created",
+			Details:    fmt.Sprintf(`{"workflow_id":"%s","version_id":"%s"}`, workflowID, ver.ID),
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 
 	// Execute from trigger node
 	if err := e.executeNode(ctx, inst, triggerNode, &ver.Graph); err != nil {
@@ -204,6 +211,16 @@ func setApprovalNodeState(inst *WorkflowInstance, nodeID string, state *approval
 //   - Any N of M: track approval count; advance when N approvals reached; reject when impossible to reach N
 //   - Sequential: ordered list; advance to next on approve; reject immediately on reject
 func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string, nodeID string, response ApprovalResponse) error {
+	// Serialize the approval read-modify-write-persist cycle per instance so
+	// concurrent decisions on the same node (countersign / any-N-of-M) cannot
+	// clobber each other's persisted vote (Requirement 2.6). Decisions on
+	// different instances never contend. This changes only HOW approvalNodeState
+	// is persisted; the per-mode decision logic below is unchanged.
+	if e.resumeLocks != nil {
+		release := e.resumeLocks.acquire(instanceID)
+		defer release()
+	}
+
 	inst, err := e.instanceStore.Get(ctx, instanceID)
 	if err != nil {
 		return fmt.Errorf("get instance: %w", err)
@@ -247,15 +264,15 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 		return fmt.Errorf("parse approval node config: %w", err)
 	}
 
-	// Determine whether to advance based on approval mode
-	shouldAdvance, shouldReject, err := e.processApprovalResponse(ctx, inst, nodeID, &cfg, response)
+	// Determine whether to advance based on approval mode, and persist the
+	// resulting approval state under an optimistic-locking guard so that
+	// near-simultaneous decisions on the same node (countersign / any-N-of-M)
+	// cannot lose a vote across processes (Requirement 2.6). The per-mode
+	// decision logic in process*Mode is unchanged; only HOW approvalNodeState is
+	// persisted changes.
+	shouldAdvance, shouldReject, err := e.applyDecisionWithOptimisticLock(ctx, inst, nodeID, &cfg, response)
 	if err != nil {
 		return err
-	}
-
-	// Persist updated instance data (approval state) to the store.
-	if err := e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData); err != nil {
-		return fmt.Errorf("persist approval state: %w", err)
 	}
 
 	if shouldReject {
@@ -297,6 +314,100 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 	}
 
 	return nil
+}
+
+// maxResumeDecisionCASRetries bounds how many times ResumeInstance re-reads and
+// re-applies an approval decision when the optimistic-lock guard reports that a
+// concurrent decision on the same instance won the race. Conflicts are rare
+// (only under genuine same-node concurrency) and each retry observes the prior
+// writer's persisted state, so a small bound converges.
+const maxResumeDecisionCASRetries = 8
+
+// applyDecisionWithOptimisticLock evaluates the approval response against the
+// node's mode and persists the resulting approval state under an
+// optimistic-locking guard (Finding 1.6 / Requirement 2.6).
+//
+// When the instance store implements OptimisticInstanceDataUpdater, the persist
+// is a conditional UPDATE guarded by the row version observed at read time. If a
+// concurrent decision on the same instance committed first, the CAS reports a
+// conflict; this function re-reads the fresh instance state, re-applies the
+// per-mode decision logic against it, and retries — so neither vote is lost,
+// even across processes that share one database (where a per-process mutex
+// cannot help).
+//
+// When the store does not implement the capability (e.g. a lightweight test
+// mock), it falls back to the existing unconditional UpdateInstanceData; the
+// per-instance mutex held by the caller still serializes writers within one
+// process.
+//
+// The per-mode decision logic in process*Mode is unchanged — only HOW the
+// approval state is persisted changes (preserves 3.2, 3.3, 3.12).
+func (e *WorkflowExecutor) applyDecisionWithOptimisticLock(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (shouldAdvance, shouldReject bool, err error) {
+	cas, ok := e.instanceStore.(OptimisticInstanceDataUpdater)
+	if !ok {
+		// No optimistic-locking capability: evaluate and persist with the
+		// existing unconditional overwrite (legacy path for stores/mocks that
+		// do not implement the capability).
+		shouldAdvance, shouldReject, err = e.processApprovalResponse(ctx, inst, nodeID, cfg, response)
+		if err != nil {
+			return false, false, err
+		}
+		if perr := e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData); perr != nil {
+			return false, false, fmt.Errorf("persist approval state: %w", perr)
+		}
+		return shouldAdvance, shouldReject, nil
+	}
+
+	for attempt := 0; attempt < maxResumeDecisionCASRetries; attempt++ {
+		// Evaluate the per-mode decision logic against the current in-memory
+		// instance state (fresh on the first attempt from ResumeInstance's Get,
+		// re-read below on each conflict). This re-applies this approver's vote
+		// on top of whatever state is currently persisted.
+		shouldAdvance, shouldReject, err = e.processApprovalResponse(ctx, inst, nodeID, cfg, response)
+		if err != nil {
+			return false, false, err
+		}
+
+		newVersion, perr := cas.UpdateInstanceDataCAS(ctx, inst.ID, inst.RowVersion, inst.InstanceData)
+		if perr == nil {
+			inst.RowVersion = newVersion
+			return shouldAdvance, shouldReject, nil
+		}
+		if !errors.Is(perr, ErrInstanceVersionConflict) {
+			return false, false, fmt.Errorf("persist approval state: %w", perr)
+		}
+
+		// A concurrent decision committed first. Re-read the fresh instance
+		// state (which now includes the other writer's vote) and retry: the
+		// per-mode logic re-applies this decision on top of the merged state so
+		// no vote is lost.
+		fresh, gerr := e.instanceStore.Get(ctx, inst.ID)
+		if gerr != nil {
+			return false, false, fmt.Errorf("reload instance after version conflict: %w", gerr)
+		}
+		if fresh == nil {
+			return false, false, fmt.Errorf("instance %s disappeared during concurrent decision", inst.ID)
+		}
+		inst.InstanceData = fresh.InstanceData
+		inst.RowVersion = fresh.RowVersion
+		inst.Status = fresh.Status
+
+		// If the concurrent decision that won the race already SETTLED the
+		// instance (the winning writer advanced past this node and reached a
+		// terminal node, rejected, or blocked it), this decision arrived too
+		// late: the node's outcome is already decided. Re-applying it on top of
+		// the settled state and returning shouldAdvance/shouldReject again would
+		// re-execute downstream nodes or re-complete/re-fail the instance. Mirror
+		// the top-level running-state guard in ResumeInstance so the
+		// cross-process CAS path behaves exactly like the single-process mutex
+		// path, where the second writer's Get observes the settled status and is
+		// rejected here. The winning writer's vote is preserved (it is in
+		// fresh.InstanceData); only this redundant late decision is declined.
+		if inst.Status != InstanceRunning {
+			return false, false, fmt.Errorf("instance %s is not running (status: %s), cannot process approval response", inst.ID, inst.Status)
+		}
+	}
+	return false, false, fmt.Errorf("persist approval state: exhausted %d optimistic-lock retries for instance %s node %s", maxResumeDecisionCASRetries, inst.ID, nodeID)
 }
 
 // processApprovalResponse evaluates the response against the approval mode and
@@ -533,13 +644,14 @@ func (e *WorkflowExecutor) markInstanceFailed(ctx context.Context, inst *Workflo
 	}
 	inst.Status = InstanceFailed
 
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: inst.ID,
-		EventType:  "instance_failed",
-		Details:    fmt.Sprintf(`{"reason":"%s"}`, reason),
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, inst.ID, "", "audit_instance_failed",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			EventType:  "instance_failed",
+			Details:    fmt.Sprintf(`{"reason":"%s"}`, reason),
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 	return nil
 }
 
@@ -570,14 +682,15 @@ func (e *WorkflowExecutor) HandleTimeout(ctx context.Context, instanceID, nodeID
 	}
 
 	// Record the timeout event in audit trail.
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: instanceID,
-		NodeID:     nodeID,
-		EventType:  "node_timeout",
-		Details:    `{"reason":"timeout_exceeded"}`,
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, instanceID, nodeID, "audit_node_timeout",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: instanceID,
+			NodeID:     nodeID,
+			EventType:  "node_timeout",
+			Details:    `{"reason":"timeout_exceeded"}`,
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 
 	// Parse the approval node config to check for fallback approver.
 	var cfg ApprovalNodeConfig
@@ -611,15 +724,16 @@ func (e *WorkflowExecutor) HandleUnavailable(ctx context.Context, instanceID, no
 	}
 
 	// Record unavailability in audit trail.
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: instanceID,
-		NodeID:     nodeID,
-		EventType:  "approver_unavailable",
-		ActorID:    approverID,
-		Details:    `{"reason":"capability_disabled"}`,
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, instanceID, nodeID, "audit_approver_unavailable",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: instanceID,
+			NodeID:     nodeID,
+			EventType:  "approver_unavailable",
+			ActorID:    approverID,
+			Details:    `{"reason":"capability_disabled"}`,
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 
 	var cfg ApprovalNodeConfig
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
@@ -651,15 +765,16 @@ func (e *WorkflowExecutor) HandleQueueFull(ctx context.Context, instanceID, node
 	}
 
 	// Record queue full event in audit trail.
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: instanceID,
-		NodeID:     nodeID,
-		EventType:  "approver_queue_full",
-		ActorID:    approverID,
-		Details:    `{"reason":"queue_full"}`,
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, instanceID, nodeID, "audit_approver_queue_full",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: instanceID,
+			NodeID:     nodeID,
+			EventType:  "approver_queue_full",
+			ActorID:    approverID,
+			Details:    `{"reason":"queue_full"}`,
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 
 	var cfg ApprovalNodeConfig
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
@@ -685,30 +800,32 @@ func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *Work
 	err := e.dispatcher.DispatchFallback(ctx, req, cfg.FallbackApprover, reason)
 	if err != nil {
 		// Cascading failure; fallback approver is also unavailable.
-		_ = e.auditStore.Append(ctx, &AuditEntry{
-			ID:         generateID("audit"),
-			InstanceID: inst.ID,
-			NodeID:     node.ID,
-			EventType:  "fallback_failed",
-			ActorID:    cfg.FallbackApprover,
-			Details:    fmt.Sprintf(`{"reason":"cascading_failure","fallback_error":"%s","original_reason":"%s"}`, escapeJSON(err.Error()), reason),
-			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-		})
+		e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_fallback_failed",
+			e.auditStore.Append(ctx, &AuditEntry{
+				ID:         generateID("audit"),
+				InstanceID: inst.ID,
+				NodeID:     node.ID,
+				EventType:  "fallback_failed",
+				ActorID:    cfg.FallbackApprover,
+				Details:    fmt.Sprintf(`{"reason":"cascading_failure","fallback_error":"%s","original_reason":"%s"}`, escapeJSON(err.Error()), reason),
+				Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+			}))
 
 		// Mark node as blocked due to cascading failure.
 		return e.markNodeBlocked(ctx, inst, node, reason, "fallback approver also unavailable: "+err.Error())
 	}
 
 	// Fallback dispatch succeeded; record the event.
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: inst.ID,
-		NodeID:     node.ID,
-		EventType:  "fallback_routed",
-		ActorID:    cfg.FallbackApprover,
-		Details:    fmt.Sprintf(`{"reason":"%s","original_approvers":%s,"fallback_approver":"%s"}`, reason, marshalStringSlice(cfg.ApproverIDs), cfg.FallbackApprover),
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_fallback_routed",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			NodeID:     node.ID,
+			EventType:  "fallback_routed",
+			ActorID:    cfg.FallbackApprover,
+			Details:    fmt.Sprintf(`{"reason":"%s","original_approvers":%s,"fallback_approver":"%s"}`, reason, marshalStringSlice(cfg.ApproverIDs), cfg.FallbackApprover),
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 
 	return nil
 }
@@ -721,24 +838,30 @@ func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowIn
 	pendingExecs, _ := e.instanceStore.GetPendingApprovals(ctx, "")
 	for _, exec := range pendingExecs {
 		if exec.InstanceID == inst.ID && exec.NodeID == node.ID {
-			_ = e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, reason+": "+details)
+			e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_blocked",
+				e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, reason+": "+details))
 			break
 		}
 	}
 
-	// Update instance status to blocked.
-	_ = e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked)
+	// Update instance status to blocked. This conditional transition (the store
+	// guards WHERE status = running) leaves a blocked instance the timeout/
+	// reconciliation path can pick up; surface a failure rather than drop it so
+	// drift between the in-memory and persisted status is diagnosable.
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_status_blocked",
+		e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
 	inst.Status = InstanceBlocked
 
 	// Record blocked event in audit trail.
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: inst.ID,
-		NodeID:     node.ID,
-		EventType:  "node_blocked",
-		Details:    fmt.Sprintf(`{"reason":"%s","details":"%s"}`, reason, escapeJSON(details)),
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_node_blocked",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			NodeID:     node.ID,
+			EventType:  "node_blocked",
+			Details:    fmt.Sprintf(`{"reason":"%s","details":"%s"}`, reason, escapeJSON(details)),
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 
 	// Notify the workflow initiator (within 60 seconds per requirement 11.4).
 	if e.notifier != nil {
@@ -800,13 +923,57 @@ func marshalStringSlice(ss []string) string {
 	return string(data)
 }
 
+// surfaceWriteError records a non-fatal persistence/audit write failure that
+// occurs AFTER a node's work has already happened (completion bookkeeping,
+// audit trail). These writes record progress that has already been made, so
+// aborting would discard genuine work; but they must NOT be silently dropped
+// (Finding 1.7 / Requirement 2.7). Surfacing them via the log (and, where a
+// store is available, the audit trail) keeps a mid-graph crash diagnosable and
+// the orphan-reconciliation path able to repair drift. The caller decides
+// whether the failure is fatal; this helper only ensures it is observable.
+func (e *WorkflowExecutor) surfaceWriteError(ctx context.Context, instanceID, nodeID, op string, err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("[workflow-executor] critical write dropped: instance=%s node=%s op=%s err=%v",
+		instanceID, nodeID, op, err)
+	// Best-effort: leave a breadcrumb in the audit trail so the drift is
+	// visible to operators and reconciliation. If the audit store itself is the
+	// failing dependency, this is a no-op beyond the log line above.
+	_ = e.auditStore.Append(ctx, &AuditEntry{
+		ID:         generateID("audit"),
+		InstanceID: instanceID,
+		NodeID:     nodeID,
+		EventType:  "critical_write_failed",
+		Details:    fmt.Sprintf(`{"op":"%s","error":"%s"}`, op, escapeJSON(err.Error())),
+		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+	})
+}
+
 // executeNode dispatches execution to the appropriate handler based on node type.
+//
+// Recoverable mid-graph execution (Finding 1.7 / Requirement 2.7): the writes
+// that establish WHERE execution will resume — advancing current_node and
+// creating the node-execution record — are propagated as fatal. If either
+// fails, the node is NOT executed and the in-memory cursor is NOT advanced, so
+// the instance is left at a clean, resumable pre-execution boundary instead of
+// a state where current_node has drifted ahead of the persisted node-exec /
+// status records. Writes that merely RECORD work already done (node-completion
+// status, audit events) are surfaced via surfaceWriteError rather than silently
+// dropped, so a crash leaves a diagnosable, reconcilable trail.
 func (e *WorkflowExecutor) executeNode(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, graph *WorkflowGraph) error {
-	// Update current node
-	_ = e.instanceStore.UpdateCurrentNode(ctx, inst.ID, node.ID)
+	// Advance the resume cursor BEFORE executing the node. This write decides
+	// where ResumeInstance / reconciliation will pick up, so a failure here is
+	// fatal: do not advance the in-memory cursor and do not execute, leaving the
+	// instance resumable at its prior consistent position.
+	if err := e.instanceStore.UpdateCurrentNode(ctx, inst.ID, node.ID); err != nil {
+		return fmt.Errorf("advance current node to %s: %w", node.ID, err)
+	}
 	inst.CurrentNodeID = node.ID
 
-	// Create node execution record
+	// Create node execution record. This is the durable record that the node is
+	// in-flight; a failure means we cannot account for the node's execution, so
+	// it is fatal and we stop before running the node.
 	now := time.Now().UTC()
 	nodeExec := &NodeExecution{
 		ID:         generateID("nexec"),
@@ -816,7 +983,9 @@ func (e *WorkflowExecutor) executeNode(ctx context.Context, inst *WorkflowInstan
 		Status:     NodeRunning,
 		StartedAt:  now,
 	}
-	_ = e.instanceStore.CreateNodeExecution(ctx, nodeExec)
+	if err := e.instanceStore.CreateNodeExecution(ctx, nodeExec); err != nil {
+		return fmt.Errorf("create node execution for %s: %w", node.ID, err)
+	}
 
 	var execErr error
 	switch node.Type {
@@ -841,32 +1010,36 @@ func (e *WorkflowExecutor) executeNode(ctx context.Context, inst *WorkflowInstan
 	}
 
 	if execErr != nil {
-		_ = e.instanceStore.UpdateNodeExecution(ctx, nodeExec.ID, NodeFailed, nil, execErr.Error())
+		e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_failed",
+			e.instanceStore.UpdateNodeExecution(ctx, nodeExec.ID, NodeFailed, nil, execErr.Error()))
 
 		// Record node_failed audit event
-		_ = e.auditStore.Append(ctx, &AuditEntry{
-			ID:         generateID("audit"),
-			InstanceID: inst.ID,
-			NodeID:     node.ID,
-			EventType:  "node_failed",
-			Details:    fmt.Sprintf("node_type=%s, reason=%s", node.Type, execErr.Error()),
-			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-		})
+		e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_node_failed",
+			e.auditStore.Append(ctx, &AuditEntry{
+				ID:         generateID("audit"),
+				InstanceID: inst.ID,
+				NodeID:     node.ID,
+				EventType:  "node_failed",
+				Details:    fmt.Sprintf("node_type=%s, reason=%s", node.Type, execErr.Error()),
+				Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+			}))
 		return execErr
 	}
 
 	// Mark node as completed (for non-blocking nodes)
 	if node.Type != NodeApproval {
-		_ = e.instanceStore.UpdateNodeExecution(ctx, nodeExec.ID, NodeCompleted, nil, "")
+		e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_completed",
+			e.instanceStore.UpdateNodeExecution(ctx, nodeExec.ID, NodeCompleted, nil, ""))
 
-		_ = e.auditStore.Append(ctx, &AuditEntry{
-			ID:         generateID("audit"),
-			InstanceID: inst.ID,
-			NodeID:     node.ID,
-			EventType:  "node_completed",
-			Details:    fmt.Sprintf("node_type=%s", node.Type),
-			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-		})
+		e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_node_completed",
+			e.auditStore.Append(ctx, &AuditEntry{
+				ID:         generateID("audit"),
+				InstanceID: inst.ID,
+				NodeID:     node.ID,
+				EventType:  "node_completed",
+				Details:    fmt.Sprintf("node_type=%s", node.Type),
+				Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+			}))
 	}
 
 	return nil
@@ -926,14 +1099,15 @@ func (e *WorkflowExecutor) executeConditionBranchNode(ctx context.Context, inst 
 
 	// No match and no default; mark node as failed.
 	failReason := "no condition branch matched and no default branch configured"
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: inst.ID,
-		NodeID:     node.ID,
-		EventType:  "node_failed",
-		Details:    fmt.Sprintf(`{"reason":"%s"}`, failReason),
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_node_failed",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			NodeID:     node.ID,
+			EventType:  "node_failed",
+			Details:    fmt.Sprintf(`{"reason":"%s"}`, failReason),
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 	return fmt.Errorf("%s", failReason)
 }
 
@@ -1023,23 +1197,26 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 		for _, approverID := range cfg.ApproverIDs {
 			if err := e.dispatcher.Dispatch(ctx, req, approverID); err != nil {
 				// Partial dispatch failure: some approvers already received the request.
-				_ = e.auditStore.Append(ctx, &AuditEntry{
-					ID:         generateID("audit"),
-					InstanceID: inst.ID,
-					NodeID:     node.ID,
-					EventType:  "dispatch_partial_failure",
-					Details:    fmt.Sprintf(`{"failed_approver":"%s","dispatched":%s,"error":"%s"}`, approverID, marshalStringSlice(dispatched), escapeJSON(err.Error())),
-					Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-				})
+				e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_dispatch_partial_failure",
+					e.auditStore.Append(ctx, &AuditEntry{
+						ID:         generateID("audit"),
+						InstanceID: inst.ID,
+						NodeID:     node.ID,
+						EventType:  "dispatch_partial_failure",
+						Details:    fmt.Sprintf(`{"failed_approver":"%s","dispatched":%s,"error":"%s"}`, approverID, marshalStringSlice(dispatched), escapeJSON(err.Error())),
+						Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+					}))
 				// Mark node as blocked so timeout handler can retry or route to fallback.
 				pendingExecs, _ := e.instanceStore.GetPendingApprovals(ctx, "")
 				for _, exec := range pendingExecs {
 					if exec.InstanceID == inst.ID && exec.NodeID == node.ID {
-						_ = e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, fmt.Sprintf("partial dispatch failure at approver %s", approverID))
+						e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_blocked",
+							e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, fmt.Sprintf("partial dispatch failure at approver %s", approverID)))
 						break
 					}
 				}
-				_ = e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked)
+				e.surfaceWriteError(ctx, inst.ID, node.ID, "update_status_blocked",
+					e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
 				inst.Status = InstanceBlocked
 				return nil // Don't fail the node; let timeout handler deal with it.
 			}
@@ -1051,22 +1228,25 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 		for _, approverID := range cfg.ApproverIDs {
 			if err := e.dispatcher.Dispatch(ctx, req, approverID); err != nil {
 				// Partial dispatch failure.
-				_ = e.auditStore.Append(ctx, &AuditEntry{
-					ID:         generateID("audit"),
-					InstanceID: inst.ID,
-					NodeID:     node.ID,
-					EventType:  "dispatch_partial_failure",
-					Details:    fmt.Sprintf(`{"failed_approver":"%s","dispatched":%s,"error":"%s"}`, approverID, marshalStringSlice(dispatched), escapeJSON(err.Error())),
-					Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-				})
+				e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_dispatch_partial_failure",
+					e.auditStore.Append(ctx, &AuditEntry{
+						ID:         generateID("audit"),
+						InstanceID: inst.ID,
+						NodeID:     node.ID,
+						EventType:  "dispatch_partial_failure",
+						Details:    fmt.Sprintf(`{"failed_approver":"%s","dispatched":%s,"error":"%s"}`, approverID, marshalStringSlice(dispatched), escapeJSON(err.Error())),
+						Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+					}))
 				pendingExecs, _ := e.instanceStore.GetPendingApprovals(ctx, "")
 				for _, exec := range pendingExecs {
 					if exec.InstanceID == inst.ID && exec.NodeID == node.ID {
-						_ = e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, fmt.Sprintf("partial dispatch failure at approver %s", approverID))
+						e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_blocked",
+							e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, fmt.Sprintf("partial dispatch failure at approver %s", approverID)))
 						break
 					}
 				}
-				_ = e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked)
+				e.surfaceWriteError(ctx, inst.ID, node.ID, "update_status_blocked",
+					e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
 				inst.Status = InstanceBlocked
 				return nil
 			}
@@ -1168,28 +1348,30 @@ func (e *WorkflowExecutor) executeTerminalNode(ctx context.Context, inst *Workfl
 	inst.Status = InstanceCompleted
 
 	// 2. Record instance_completed audit event
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: inst.ID,
-		NodeID:     node.ID,
-		EventType:  "instance_completed",
-		Details:    fmt.Sprintf(`{"terminal_node_id":"%s"}`, node.ID),
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_instance_completed",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			NodeID:     node.ID,
+			EventType:  "instance_completed",
+			Details:    fmt.Sprintf(`{"terminal_node_id":"%s"}`, node.ID),
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 
 	// 3. Parse terminal node config
 	var termConfig TerminalNodeConfig
 	if node.Config != nil {
 		if err := json.Unmarshal(node.Config, &termConfig); err != nil {
 			// Config parse failure is non-fatal; instance is already completed.
-			_ = e.auditStore.Append(ctx, &AuditEntry{
-				ID:         generateID("audit"),
-				InstanceID: inst.ID,
-				NodeID:     node.ID,
-				EventType:  "terminal_config_parse_error",
-				Details:    fmt.Sprintf(`{"error":"%s"}`, escapeJSON(err.Error())),
-				Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-			})
+			e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_terminal_config_parse_error",
+				e.auditStore.Append(ctx, &AuditEntry{
+					ID:         generateID("audit"),
+					InstanceID: inst.ID,
+					NodeID:     node.ID,
+					EventType:  "terminal_config_parse_error",
+					Details:    fmt.Sprintf(`{"error":"%s"}`, escapeJSON(err.Error())),
+					Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+				}))
 			return nil
 		}
 	}
@@ -1257,14 +1439,15 @@ func (e *WorkflowExecutor) executeTerminalNode(ctx context.Context, inst *Workfl
 	if e.notifDispatcher != nil && len(notifs) > 0 {
 		if err := e.notifDispatcher.DispatchBatch(ctx, notifs); err != nil {
 			// Notification dispatch failure is non-fatal; instance is already completed.
-			_ = e.auditStore.Append(ctx, &AuditEntry{
-				ID:         generateID("audit"),
-				InstanceID: inst.ID,
-				NodeID:     node.ID,
-				EventType:  "notification_dispatch_error",
-				Details:    fmt.Sprintf(`{"error":"%s","recipient_count":%d}`, escapeJSON(err.Error()), len(notifs)),
-				Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-			})
+			e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_notification_dispatch_error",
+				e.auditStore.Append(ctx, &AuditEntry{
+					ID:         generateID("audit"),
+					InstanceID: inst.ID,
+					NodeID:     node.ID,
+					EventType:  "notification_dispatch_error",
+					Details:    fmt.Sprintf(`{"error":"%s","recipient_count":%d}`, escapeJSON(err.Error()), len(notifs)),
+					Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+				}))
 		}
 	}
 
@@ -1272,14 +1455,15 @@ func (e *WorkflowExecutor) executeTerminalNode(ctx context.Context, inst *Workfl
 	if e.confirmTracker != nil {
 		if err := e.confirmTracker.StartTracking(ctx, inst, &termConfig); err != nil {
 			// Confirmation tracking failure is non-fatal; instance is already completed.
-			_ = e.auditStore.Append(ctx, &AuditEntry{
-				ID:         generateID("audit"),
-				InstanceID: inst.ID,
-				NodeID:     node.ID,
-				EventType:  "confirmation_tracking_error",
-				Details:    fmt.Sprintf(`{"error":"%s"}`, escapeJSON(err.Error())),
-				Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-			})
+			e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_confirmation_tracking_error",
+				e.auditStore.Append(ctx, &AuditEntry{
+					ID:         generateID("audit"),
+					InstanceID: inst.ID,
+					NodeID:     node.ID,
+					EventType:  "confirmation_tracking_error",
+					Details:    fmt.Sprintf(`{"error":"%s"}`, escapeJSON(err.Error())),
+					Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+				}))
 		}
 	}
 
@@ -1321,12 +1505,13 @@ func (e *WorkflowExecutor) markInstanceCompleted(ctx context.Context, inst *Work
 	}
 	inst.Status = InstanceCompleted
 
-	_ = e.auditStore.Append(ctx, &AuditEntry{
-		ID:         generateID("audit"),
-		InstanceID: inst.ID,
-		EventType:  "instance_completed",
-		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-	})
+	e.surfaceWriteError(ctx, inst.ID, "", "audit_instance_completed",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			EventType:  "instance_completed",
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
 	return nil
 }
 

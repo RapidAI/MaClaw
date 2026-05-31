@@ -47,6 +47,7 @@ export interface AssistantInputComposerProps {
     showVoiceInput?: boolean;
     sendButtonTestId?: string;
     sendButtonStyle?: CSSProperties;
+    textareaAriaLabel?: string;
     textareaTestId?: string;
     theme: Theme;
     themeMode: "light" | "dark";

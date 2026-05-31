@@ -102,6 +102,8 @@ Object.assign(I18N.en, { loading: "Loading...", knowledgeImport: "Knowledge impo
 Object.assign(I18N.zh, { loading: "\u52a0\u8f7d\u4e2d...", knowledgeImport: "\u77e5\u8bc6\u5e93\u5bfc\u5165", knowledgeImportHint: "\u5c06\u6587\u672c\u3001\u5355\u6587\u6863\u3001\u6587\u6863\u538b\u7f29\u5305\u6216\u6307\u5b9a\u6df1\u5ea6\u7684 URL \u6293\u53d6\u7ed3\u679c\u5bfc\u5165\u5f53\u524d\u7528\u6237\u77e5\u8bc6\u5e93\u3002", connectedKnowledge: "\u5df2\u63a5\u5165\u77e5\u8bc6", connectedKnowledgeHint: "\u5f53\u524d\u7528\u6237\u53ef\u8bfb\u7684\u6709\u6548\u77e5\u8bc6\u8303\u56f4\uff0c\u5305\u62ec\u7ba1\u7406\u5458\u6302\u8f7d\u7684\u516c\u7528\u77e5\u8bc6\u5e93\u3002", noConnectedKnowledge: "\u6682\u65e0\u989d\u5916\u63a5\u5165\u77e5\u8bc6", selfKnowledge: "\u81ea\u6709\u77e5\u8bc6", publicKnowledge: "\u516c\u7528\u77e5\u8bc6", knowledgeScopeIDs: "\u539f\u59cb ID", importText: "\u6587\u672c", importFile: "\u6587\u4ef6/\u538b\u7f29\u5305", importURL: "URL \u679a\u4e3e", title: "\u6807\u9898", topicHint: "\u4e3b\u9898\u63d0\u793a", labels: "\u6807\u7b7e", textToImport: "\u5bfc\u5165\u6587\u672c", chooseFiles: "\u9009\u62e9\u6587\u6863\u3001ZIP \u6216 RAR", urlsToImport: "\u5bfc\u5165 URL", crawlDepth: "\u679a\u4e3e\u6df1\u5ea6", sameDomainOnly: "\u4ec5\u540c\u57df\u540d", import: "\u5bfc\u5165", importing: "\u5bfc\u5165\u4e2d...", importStarted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5f00\u59cb", importedKnowledge: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importCompleted: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u5df2\u5b8c\u6210", importStillRunning: "\u77e5\u8bc6\u5e93\u5bfc\u5165\u4ecd\u5728\u8fd0\u884c", importTextPlaceholder: "\u7c98\u8d34\u8981\u5bfc\u5165\u7684\u6587\u672c...", importURLPlaceholder: "https://example.com/docs", knowledgeTemplate: "\u6a21\u677f", insertTemplate: "\u63d2\u5165\u6a21\u677f", urlExample: "URL \u793a\u4f8b", addURL: "\u6dfb\u52a0 URL", importJob: "\u5bfc\u5165\u4efb\u52a1", importStatus: "\u72b6\u6001", importSource: "\u6765\u6e90", importTitle: "\u6807\u9898", importKind: "\u7c7b\u578b", importFiles: "\u6587\u4ef6", importUrls: "URL", importProcessed: "\u5df2\u5904\u7406", importImported: "\u5df2\u5bfc\u5165", importFailed: "\u5931\u8d25", importSkipped: "\u8df3\u8fc7", importDuplicates: "\u91cd\u590d", importWarnings: "\u8b66\u544a" });
 Object.assign(I18N.en, { enterTextFirst: "Enter text before importing.", chooseFileFirst: "Choose at least one document or archive.", enterURLFirst: "Enter at least one URL.", customTopicRequired: "Enter the custom topic hint.", customLabelRequired: "Enter the custom labels.", customTitleRequired: "Enter the custom title.", importQueued: "Import submitted. Checking progress...", importProgress: "Checking progress {current}/{total}..." });
 Object.assign(I18N.zh, { enterTextFirst: "\u8bf7\u5148\u8f93\u5165\u8981\u5bfc\u5165\u7684\u6587\u672c\u3002", chooseFileFirst: "\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u6587\u6863\u6216\u538b\u7f29\u5305\u3002", enterURLFirst: "\u8bf7\u5148\u8f93\u5165\u81f3\u5c11\u4e00\u4e2a URL\u3002", customTopicRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u4e3b\u9898\u63d0\u793a\u3002", customLabelRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u7b7e\u3002", customTitleRequired: "\u8bf7\u8f93\u5165\u81ea\u5b9a\u4e49\u6807\u9898\u3002", importQueued: "\u5bfc\u5165\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6...", importProgress: "\u6b63\u5728\u67e5\u8be2\u8fdb\u5ea6 {current}/{total}..." });
+Object.assign(I18N.en, { memoryManager: "Memory management", memoryManagerHint: "View, search, add, edit, and delete this user's long-term memory.", memorySearch: "Search memory", memoryCategory: "Category", memoryContent: "Memory content", memoryContentRequired: "Enter memory content.", memoryContentTooLong: "Memory content must be {max} characters or fewer.", memoryTags: "Tags", memoryTagsHint: "Comma or newline separated", memoryTagsTooMany: "Use {max} tags or fewer.", memoryTagTooLong: "Each tag must be {max} characters or fewer.", memoryRefresh: "Refresh", memoryClear: "Clear", memoryAdd: "Add memory", memoryUpdate: "Update memory", memoryCancelEdit: "Cancel edit", memoryEmpty: "No memory entries", memorySaved: "Memory saved", memoryDeleted: "Memory deleted", memoryUpdated: "Memory updated", memoryEdit: "Edit", memoryDelete: "Delete", memoryAllCategories: "All categories", memoryTotal: "Total", memoryAccessCount: "Access", memoryUpdatedAt: "Updated", memoryLoadMore: "Load more" });
+Object.assign(I18N.zh, { memoryManager: "\u8bb0\u5fc6\u7ba1\u7406", memoryManagerHint: "\u67e5\u770b\u3001\u641c\u7d22\u3001\u65b0\u589e\u3001\u7f16\u8f91\u548c\u5220\u9664\u5f53\u524d\u7528\u6237\u7684\u957f\u671f\u8bb0\u5fc6\u3002", memorySearch: "\u641c\u7d22\u8bb0\u5fc6", memoryCategory: "\u5206\u7c7b", memoryContent: "\u8bb0\u5fc6\u5185\u5bb9", memoryContentRequired: "\u8bf7\u8f93\u5165\u8bb0\u5fc6\u5185\u5bb9\u3002", memoryContentTooLong: "\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryTags: "\u6807\u7b7e", memoryTagsHint: "\u9017\u53f7\u6216\u6362\u884c\u5206\u9694", memoryTagsTooMany: "\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u3002", memoryTagTooLong: "\u5355\u4e2a\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryRefresh: "\u5237\u65b0", memoryClear: "\u6e05\u9664", memoryAdd: "\u6dfb\u52a0\u8bb0\u5fc6", memoryUpdate: "\u66f4\u65b0\u8bb0\u5fc6", memoryCancelEdit: "\u53d6\u6d88\u7f16\u8f91", memoryEmpty: "\u6682\u65e0\u8bb0\u5fc6\u6761\u76ee", memorySaved: "\u8bb0\u5fc6\u5df2\u4fdd\u5b58", memoryDeleted: "\u8bb0\u5fc6\u5df2\u5220\u9664", memoryUpdated: "\u8bb0\u5fc6\u5df2\u66f4\u65b0", memoryEdit: "\u7f16\u8f91", memoryDelete: "\u5220\u9664", memoryAllCategories: "\u5168\u90e8\u5206\u7c7b", memoryTotal: "\u603b\u6570", memoryAccessCount: "\u8bbf\u95ee", memoryUpdatedAt: "\u66f4\u65b0", memoryLoadMore: "\u52a0\u8f7d\u66f4\u591a" });
 Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
 Object.assign(I18N.zh, { mcpManager: "MCP", mcpManagerHint: "\u4f18\u5148\u4ece\u80fd\u529b\u5e02\u573a\u9009\uff1b\u53ea\u6709\u5fc5\u8981\u65f6\u518d\u7528 JSON \u6216\u7cbe\u7b80\u7f16\u8f91\u754c\u9762\u6dfb\u52a0 MCP \u914d\u7f6e\u3002", mcpMarketplace: "\u80fd\u529b\u5e02\u573a", mcpMarketplaceHint: "\u641c\u7d22\u5e76\u5b89\u88c5 Hub/HubCenter MCP \u80fd\u529b\uff1b\u624b\u52a8\u914d\u7f6e\u4fdd\u6301\u7cbe\u7b80\u3002", mcpInstalled: "\u5df2\u5b89\u88c5 MCP", mcpNoServers: "\u6682\u65e0 MCP \u670d\u52a1", mcpManualAdd: "\u6dfb\u52a0 MCP", mcpModeMarket: "\u80fd\u529b\u5e02\u573a", mcpModeRemote: "\u8fdc\u7a0b HTTP", mcpModeLocal: "\u672c\u5730 stdio", mcpModeJson: "JSON \u5bfc\u5165", mcpName: "\u540d\u79f0", mcpEndpoint: "\u63a5\u5165\u5730\u5740", mcpCommand: "\u547d\u4ee4", mcpArgs: "\u53c2\u6570", mcpEnv: "\u73af\u5883\u53d8\u91cf", mcpHeaders: "Headers", mcpAuthType: "\u8ba4\u8bc1", mcpSecret: "\u5bc6\u94a5", mcpAutoStart: "\u81ea\u52a8\u542f\u52a8", mcpDisabled: "\u7981\u7528", mcpAdd: "\u6dfb\u52a0", mcpEdit: "\u7f16\u8f91", mcpSave: "\u4fdd\u5b58 MCP", mcpClose: "\u6536\u8d77", mcpAddParam: "\u6dfb\u52a0\u53c2\u6570", mcpParamName: "\u53c2\u6570", mcpParamValue: "\u503c", mcpStart: "\u542f\u52a8", mcpStop: "\u505c\u6b62", mcpCheck: "\u68c0\u67e5", mcpDelete: "\u5220\u9664", mcpAdded: "MCP \u5df2\u6dfb\u52a0", mcpUpdated: "MCP \u5df2\u66f4\u65b0", mcpDeleted: "MCP \u5df2\u5220\u9664", mcpJson: "MCP JSON", mcpJsonHint: "\u7c98\u8d34 Claude \u98ce\u683c mcpServers JSON\uff0c\u6216 MaClaw MCP \u6761\u76ee\u6570\u7ec4/\u5bf9\u8c61\u3002", mcpOpenGui: "\u8bf7\u5728 MaClaw GUI > MCP > \u80fd\u529b\u5e02\u573a\u5b8c\u6210\u5e02\u573a\u5b89\u88c5\u3002" });
 Object.assign(I18N.en, { webSearchManager: "Web search", webSearchHint: "Choose current search service and add a provider from common presets. Details stay grouped.", webSearchNoProviders: "No search provider", webSearchCurrent: "Current search service", webSearchAdd: "Add search service", webSearchProviderName: "Name", webSearchProviderType: "Type", webSearchBaseURL: "Base URL", webSearchKey: "Key", webSearchDelete: "Delete" });
@@ -128,14 +130,14 @@ const HIDDEN_CONFIG_KEYS = new Set([
   "show_gemini", "show_codex", "show_opencode", "show_codebuddy", "show_iflow", "show_kilo", "show_cursor",
   "extra_tool_configs", "default_proxy_scope_coding_tools", "use_windows_terminal", "nl_skills", "llm_token_usage",
   "mcp_servers", "local_mcp_servers", "ssh_hosts", "skill_hub_urls", "external_skill_dirs", "skill_sources_allowed", "web_search_providers", "web_search_current_provider",
-  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes",
+  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "llm_prompt_cache", "auxiliary_llm", "model_routes",
   "remote_user_id", "remote_tenant_id", "remote_tenant_name", "remote_machine_id", "remote_machine_name",
   "remote_machine_token", "remote_viewer_token", "skill_market_session_token", "remote_client_id", "remote_sn",
   "env_check_done", "last_env_check_time", "onboarding_done", "floating_btn_x", "floating_btn_y",
   "floating_btn_position_set", "noise_floor_calibrated", "speech_level_calibrated"
 ]);
 const CLEARED_USER_COMPLEX_CONFIG_KEYS = new Set([
-  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "auxiliary_llm", "model_routes",
+  "maclaw_llm_protocol", "maclaw_llm_context_length", "maclaw_llm_timeout_sec", "maclaw_llm_current_provider", "maclaw_llm_providers", "llm_prompt_cache", "auxiliary_llm", "model_routes",
 ]);
 function stripUserComplexConfig(config) {
   const next = { ...(config || {}) };
@@ -190,7 +192,7 @@ function fieldMeta(def = {}) { const tr = FIELD_I18N[locale]?.[def.key]; return 
 function configTypeName(type) { if (locale !== "zh") return type; return type === "integer" ? "整数" : type === "number" ? "数字" : type; }
 function configIssueLabel(issue = {}) { const key = String(issue.key || ""); const base = key.split(".")[0]; const meta = fieldMeta({ key: base, title: base }); const suffix = key.includes(".") ? ` / ${key.split(".").slice(1).join(".")}` : ""; return `${meta.title || key}${suffix}`; }
 function configIssueMessage(issue = {}) { const msg = String(issue.message || ""); if (locale !== "zh") return msg; const key = issue.key || ""; if (msg.includes("managed-by-hub")) return "仍然使用 VE Platform managed-by-hub 占位符，请从 VE Platform 重新打开并传入 Hub LLM 地址和 viewer token。"; if (msg.includes("Selected provider URL is required") || msg.includes("URL is required")) return "必须填写 LLM 服务地址。"; if (msg.includes("API key is required") || msg.includes("credential is required")) return "必须填写 LLM 访问令牌。"; if (msg.includes("Selected provider model is required") || msg.includes("model is required")) return "必须填写 LLM 模型；接入 VE Platform Hub 时填写 auto。"; if (msg.includes("selected provider") && msg.includes("was not found")) return "当前服务商不在 LLM 服务商列表中。"; if (key === "maclaw_llm_current_provider") return msg.replace("maclaw_llm_current_provider is required when multiple providers are configured", "配置多个服务商时必须选择当前服务商"); return msg; }
-const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const state = { token: "", me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, settingsTab: "", busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const launchToken = params.get("launch_token") || "";
 const hasLaunchToken = params.has("launch_token");
@@ -1175,7 +1177,7 @@ function knowledgeProgressText(value) {
   const status = String(value.status || "").toLowerCase();
   if (["pending", "queued", "running"].includes(status)) return t("importQueued");
   if (status === "succeeded") return t("importCompleted");
-  if (status === "failed" || status === "canceled") return `${t("failed")}: ${value.error || status}`;
+  if (status === "failed" || status === "canceled") return `${t("importFailed")}: ${value.error || status}`;
   return "";
 }
 function formatKnowledgeImportStatus(value) {
@@ -1194,7 +1196,7 @@ function formatKnowledgeImportStatus(value) {
   const stats = [["processed_files", "importProcessed"], ["imported_files", "importImported"], ["failed_files", "importFailed"], ["skipped_files", "importSkipped"], ["duplicate_files", "importDuplicates"]];
   stats.forEach(([key, label]) => { if (Number.isFinite(result[key])) lines.push(`${t(label)}: ${result[key]}`); });
   if (Array.isArray(result.warnings) && result.warnings.length) lines.push(`${t("importWarnings")}: ${result.warnings.length}`);
-  if (value.error || result.error) lines.push(`${t("failed")}: ${value.error || result.error}`);
+  if (value.error || result.error) lines.push(`${t("importFailed")}: ${value.error || result.error}`);
   return lines.length ? lines.join("\n") : pretty(value);
 }
 function displayWithID(label, id) {
@@ -1249,7 +1251,7 @@ async function runKnowledgeImport(buttonID, task) {
 function toastKnowledgeImportResult(job) {
   const status = String(job?.status || "").toLowerCase();
   if (status === "succeeded") toast(t("importCompleted"));
-  else if (status === "failed" || status === "canceled") toast(`${t("failed")}: ${job?.error || status}`);
+  else if (status === "failed" || status === "canceled") toast(`${t("importFailed")}: ${job?.error || status}`);
   else toast(t("importStillRunning"));
 }
 async function importKnowledgeText() {
@@ -1307,6 +1309,83 @@ async function importKnowledgeURLs() {
       setKnowledgeImportStatus(out); toast(t("importStarted")); toastKnowledgeImportResult(await watchKnowledgeImportJob(out.job_id));
     });
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+}
+const MEMORY_CATEGORIES = ["", "self_identity", "user_fact", "preference", "project_knowledge", "instruction", "conversation_summary", "session_checkpoint", "task_artifact", "profile"];
+const MEMORY_EDITABLE_CATEGORIES = MEMORY_CATEGORIES.filter((cat) => cat && cat !== "self_identity");
+const MEMORY_MAX_CONTENT_CHARS = 20000;
+const MEMORY_MAX_TAGS = 32;
+const MEMORY_MAX_TAG_CHARS = 80;
+const MEMORY_PAGE_LIMIT = 50;
+function isProtectedMemory(item) { return item?.read_only === true || item?.protected === true || String(item?.category || "") === "self_identity"; }
+function renderMemoryManager() {
+  const options = MEMORY_CATEGORIES.map((cat) => `<option value="${esc(cat)}">${esc(cat ? configChoiceLabel("memory_category", cat) : t("memoryAllCategories"))}</option>`).join("");
+  return `<section class="memory-manager" data-memory-manager><div class="split"><div><h3>${esc(t("memoryManager"))}</h3><p class="helper">${esc(t("memoryManagerHint"))}</p></div><span id="memoryCount" class="badge">${esc(t("memoryTotal"))}: 0</span></div><div class="memory-toolbar" role="search"><input id="memorySearchInput" type="search" placeholder="${esc(t("memorySearch"))}"><select id="memoryCategoryFilter">${options}</select><button id="memoryRefreshBtn" type="button" class="secondary">${esc(t("memoryRefresh"))}</button><button id="memoryClearBtn" type="button" class="secondary">${esc(t("memoryClear"))}</button></div><div id="memorySummary" class="memory-summary"></div><div class="memory-editor"><input id="memoryEditID" type="hidden"><label>${esc(t("memoryContent"))}<textarea id="memoryContentInput" rows="3" maxlength="20000"></textarea></label><label>${esc(t("memoryCategory"))}<select id="memoryCategoryInput">${MEMORY_EDITABLE_CATEGORIES.map((cat) => `<option value="${esc(cat)}">${esc(configChoiceLabel("memory_category", cat))}</option>`).join("")}</select></label><label>${esc(t("memoryTags"))}<textarea id="memoryTagsInput" rows="2" maxlength="3000" placeholder="${esc(t("memoryTagsHint"))}"></textarea></label><div class="row"><button id="memorySaveBtn" type="button" class="primary">${esc(t("memoryAdd"))}</button><button id="memoryCancelEditBtn" type="button" class="secondary" hidden>${esc(t("memoryCancelEdit"))}</button></div></div><div id="memoryList" class="memory-list"></div><button id="memoryLoadMoreBtn" type="button" class="secondary memory-load-more" hidden>${esc(t("memoryLoadMore"))}</button></section>`;
+}
+function memoryTagsValue() {
+  const seen = new Set();
+  return String($("memoryTagsInput")?.value || "").split(/[\n,]/).map((x) => x.trim()).filter(Boolean).filter((tag) => { if (seen.has(tag)) return false; seen.add(tag); return true; });
+}
+function memoryPayload() { return { content: String($("memoryContentInput")?.value || "").trim(), category: String($("memoryCategoryInput")?.value || "user_fact"), tags: memoryTagsValue() }; }
+function validateMemoryPayload(payload) {
+  if (!payload.content) return toast(t("memoryContentRequired"));
+  if ([...payload.content].length > MEMORY_MAX_CONTENT_CHARS) return toast(t("memoryContentTooLong", { max: MEMORY_MAX_CONTENT_CHARS }));
+  if (items(payload.tags).length > MEMORY_MAX_TAGS) return toast(t("memoryTagsTooMany", { max: MEMORY_MAX_TAGS }));
+  if (items(payload.tags).some((tag) => [...String(tag)].length > MEMORY_MAX_TAG_CHARS)) return toast(t("memoryTagTooLong", { max: MEMORY_MAX_TAG_CHARS }));
+  return true;
+}
+function fmtMemoryDate(value) { if (!value) return "-"; try { return new Date(value).toLocaleString(locale === "en" ? "en-US" : "zh-CN"); } catch { return value; } }
+function resetMemoryEditor() { $("memoryEditID").value = ""; $("memoryContentInput").value = ""; $("memoryTagsInput").value = ""; $("memoryCategoryInput").value = "user_fact"; $("memorySaveBtn").textContent = t("memoryAdd"); $("memoryCancelEditBtn").hidden = true; }
+function renderMemoryList(itemsList) {
+  const list = $("memoryList");
+  if (!list) return;
+  if (!itemsList.length) { list.innerHTML = `<p class="helper">${esc(t("memoryEmpty"))}</p>`; return; }
+  list.innerHTML = itemsList.map((item) => `<article class="memory-entry" data-memory-id="${esc(item.id)}"><div class="split"><span class="badge">${esc(configChoiceLabel("memory_category", item.category || ""))}</span><small>${esc(t("memoryUpdatedAt"))}: ${esc(fmtMemoryDate(item.updated_at || item.created_at || ""))} \u00b7 ${esc(t("memoryAccessCount"))}: ${esc(String(item.access_count || 0))}</small></div><p>${esc(item.content || "")}</p>${items(item.tags).length ? `<div class="memory-tags">${items(item.tags).map((tag) => `<span>${esc(tag)}</span>`).join("")}</div>` : ""}${isProtectedMemory(item) ? "" : `<div class="row"><button type="button" class="secondary" data-memory-edit>${esc(t("memoryEdit"))}</button><button type="button" class="danger" data-memory-delete>${esc(t("memoryDelete"))}</button></div>`}</article>`).join("");
+  list.querySelectorAll("[data-memory-edit]").forEach((btn) => { btn.onclick = () => { const entry = itemsList.find((x) => x.id === btn.closest("[data-memory-id]")?.dataset.memoryId); if (!entry) return; $("memoryEditID").value = entry.id || ""; $("memoryContentInput").value = entry.content || ""; $("memoryCategoryInput").value = entry.category || "user_fact"; $("memoryTagsInput").value = items(entry.tags).join("\n"); $("memorySaveBtn").textContent = t("memoryUpdate"); $("memoryCancelEditBtn").hidden = false; $("memoryContentInput").focus(); }; });
+  list.querySelectorAll("[data-memory-delete]").forEach((btn) => { btn.onclick = async () => { const id = btn.closest("[data-memory-id]")?.dataset.memoryId; if (state.memorySaving || !id || !confirm(t("memoryDelete") + "?")) return; setMemorySaving(true); try { await api(`/api/v1/memory/${encodeURIComponent(id)}`, { method: "DELETE" }); if ($("memoryEditID")?.value === id) resetMemoryEditor(); toast(t("memoryDeleted")); await loadMemoryEntries(); } catch (e) { if (!handleAPIError(e)) toast(e.message); } finally { setMemorySaving(false); } }; });
+}
+function renderMemorySummary(counts) {
+  const el = $("memorySummary");
+  if (!el) return;
+  const chips = MEMORY_CATEGORIES.filter(Boolean).map((cat) => ({ cat, count: Number(counts?.[cat] || 0) })).filter((item) => item.count > 0);
+  el.innerHTML = chips.map((item) => `<button type="button" class="memory-chip" data-memory-category-chip="${esc(item.cat)}"><span>${esc(configChoiceLabel("memory_category", item.cat))}</span><strong>${esc(String(item.count))}</strong></button>`).join("");
+  el.querySelectorAll("[data-memory-category-chip]").forEach((btn) => { btn.onclick = () => { $("memoryCategoryFilter").value = btn.dataset.memoryCategoryChip || ""; loadMemoryEntries(false); }; });
+}
+function clearMemoryFilters() { clearTimeout(state.memorySearchTimer); $("memorySearchInput").value = ""; $("memoryCategoryFilter").value = ""; loadMemoryEntries(false); }
+function scheduleMemorySearch() { clearTimeout(state.memorySearchTimer); state.memorySearchTimer = setTimeout(() => loadMemoryEntries(false), 300); }
+function setMemoryLoading(on, append) {
+  ["memoryRefreshBtn", "memoryClearBtn", "memoryLoadMoreBtn", "memorySaveBtn"].forEach((id) => { const el = $(id); if (el) el.disabled = on || state.memorySaving; });
+  document.querySelectorAll("[data-memory-edit], [data-memory-delete]").forEach((el) => { el.disabled = on || state.memorySaving; });
+  if (on && !append && !items(state.memoryItems).length && $("memoryList")) $("memoryList").innerHTML = `<p class="helper">${esc(t("loading"))}</p>`;
+}
+function setMemorySaving(on) {
+  state.memorySaving = on;
+  ["memorySaveBtn", "memoryCancelEditBtn", "memoryRefreshBtn", "memoryClearBtn", "memoryLoadMoreBtn"].forEach((id) => { const el = $(id); if (el) el.disabled = on || state.memoryLoading; });
+  document.querySelectorAll("[data-memory-edit], [data-memory-delete]").forEach((el) => { el.disabled = on || state.memoryLoading; });
+}
+async function loadMemoryEntries() {
+  const append = arguments[0] === true;
+  if (state.memoryLoading) { if (!append) state.memoryReloadPending = true; return; }
+  state.memoryReloadPending = false;
+  const q = encodeURIComponent(String($("memorySearchInput")?.value || "").trim());
+  const category = encodeURIComponent(String($("memoryCategoryFilter")?.value || ""));
+  const offset = append ? state.memoryNextOffset || 0 : 0;
+  state.memoryLoading = true;
+  setMemoryLoading(true, append);
+  try { const out = await api(`/api/v1/memory?q=${q}&category=${category}&limit=${MEMORY_PAGE_LIMIT}&offset=${offset}`); state.memoryItems = append ? state.memoryItems.concat(items(out.items)) : items(out.items); state.memoryNextOffset = Number(out.next_offset || state.memoryItems.length); state.memoryHasMore = !!out.has_more; $("memoryCount").textContent = `${t("memoryTotal")}: ${out.total || 0}`; renderMemorySummary(out.category_counts || {}); renderMemoryList(state.memoryItems); const more = $("memoryLoadMoreBtn"); if (more) more.hidden = !state.memoryHasMore; }
+  catch (e) { if (!handleAPIError(e)) $("memoryList").innerHTML = `<p class="error">${esc(e.message || t("loadFailed"))}</p>`; }
+  finally { state.memoryLoading = false; setMemoryLoading(false, append); if (state.memoryReloadPending) loadMemoryEntries(false); }
+}
+function bindMemoryManager() {
+  if (!$("memoryList")) return;
+  $("memoryRefreshBtn").onclick = () => loadMemoryEntries(false);
+  $("memoryClearBtn").onclick = clearMemoryFilters;
+  $("memoryLoadMoreBtn").onclick = () => loadMemoryEntries(true);
+  $("memorySearchInput").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); clearTimeout(state.memorySearchTimer); loadMemoryEntries(false); } };
+  $("memorySearchInput").oninput = scheduleMemorySearch;
+  $("memoryCategoryFilter").onchange = () => loadMemoryEntries(false);
+  $("memoryCancelEditBtn").onclick = resetMemoryEditor;
+  $("memorySaveBtn").onclick = async () => { if (state.memorySaving) return; const payload = memoryPayload(); if (validateMemoryPayload(payload) !== true) return; const id = String($("memoryEditID")?.value || ""); setMemorySaving(true); try { const path = id ? `/api/v1/memory/${encodeURIComponent(id)}` : "/api/v1/memory"; await api(path, { method: id ? "PUT" : "POST", body: JSON.stringify(payload) }); toast(id ? t("memoryUpdated") : t("memorySaved")); resetMemoryEditor(); await loadMemoryEntries(); } catch (e) { if (!handleAPIError(e)) toast(e.message); } finally { setMemorySaving(false); } };
+  if (state.settingsTab === "memory") loadMemoryEntries(false);
 }
 function renderIssues(validation) { $("issues").innerHTML = (validation.issues || []).map((i) => `<p class="error"><strong>${esc(configIssueLabel(i))}</strong><span>${esc(configIssueMessage(i))}</span></p>`).join("") || `<p class="ok">${t("currentConfigOk")}</p>`; }
 function updateConfigStatus(validation) { const el = $("cfgStatus"); if (!el) return; const valid = validation.valid ? "ok" : "error"; el.className = `badge ${valid}`; el.textContent = validation.valid ? t("valid") : t("needsAttention"); }
@@ -1591,7 +1670,8 @@ const CONFIG_CHOICE_LABELS = {
     pet_interaction_mode: { quiet: "Quiet", balanced: "Balanced", active: "Active" },
     pet_conversation_mode: { "text-first": "Text first", "voice-turn": "Voice turn", continuous: "Continuous" },
     pet_readback_mode: { off: "Off", summary: "Summary", full: "Full", "done-only": "Done only" },
-    pet_motion_sound_preset: { classic: "Classic", bubble: "Bubble", chime: "Chime", synth: "Synth", soft: "Soft" }
+    pet_motion_sound_preset: { classic: "Classic", bubble: "Bubble", chime: "Chime", synth: "Synth", soft: "Soft" },
+    memory_category: { self_identity: "Self identity", user_fact: "User fact", preference: "Preference", project_knowledge: "Project knowledge", instruction: "Instruction", conversation_summary: "Conversation summary", session_checkpoint: "Session checkpoint", task_artifact: "Task artifact", profile: "Profile" }
   },
   zh: {
     default_proxy_protocol: { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" },
@@ -1606,7 +1686,8 @@ const CONFIG_CHOICE_LABELS = {
     pet_interaction_mode: { quiet: "\u5b89\u9759", balanced: "\u5e73\u8861", active: "\u6d3b\u8dc3" },
     pet_conversation_mode: { "text-first": "\u6587\u5b57\u4f18\u5148", "voice-turn": "\u8bed\u97f3\u8f6e\u6b21", continuous: "\u8fde\u7eed\u5bf9\u8bdd" },
     pet_readback_mode: { off: "\u5173\u95ed", summary: "\u6458\u8981", full: "\u5b8c\u6574", "done-only": "\u4ec5\u5b8c\u6210\u65f6" },
-    pet_motion_sound_preset: { classic: "\u7ecf\u5178", bubble: "\u6c14\u6ce1", chime: "\u63d0\u793a\u97f3", synth: "\u5408\u6210", soft: "\u67d4\u548c" }
+    pet_motion_sound_preset: { classic: "\u7ecf\u5178", bubble: "\u6c14\u6ce1", chime: "\u63d0\u793a\u97f3", synth: "\u5408\u6210", soft: "\u67d4\u548c" },
+    memory_category: { self_identity: "\u81ea\u6211\u8ba4\u77e5", user_fact: "\u7528\u6237\u4e8b\u5b9e", preference: "\u504f\u597d", project_knowledge: "\u9879\u76ee\u77e5\u8bc6", instruction: "\u6307\u4ee4", conversation_summary: "\u5bf9\u8bdd\u6458\u8981", session_checkpoint: "\u4f1a\u8bdd\u68c0\u67e5\u70b9", task_artifact: "\u4efb\u52a1\u4ea7\u7269", profile: "\u7528\u6237\u753b\u50cf" }
   }
 };
 function configBoolLabel(value) {
@@ -1724,6 +1805,7 @@ function setActiveConfigTab(tab) {
   state.settingsTab = tab;
   document.querySelectorAll("[data-cfg-tab]").forEach((b) => { const on = b.dataset.cfgTab === tab; b.classList.toggle("active", on); b.setAttribute("aria-selected", on ? "true" : "false"); });
   document.querySelectorAll("[data-cfg-panel]").forEach((p) => { const off = p.dataset.cfgPanel !== tab; p.hidden = off; p.setAttribute("aria-hidden", off ? "true" : "false"); });
+  if (tab === "memory" && $("memoryList")) loadMemoryEntries(false);
 }
 function bindChoiceCustomControls() {
   document.querySelectorAll(".choice-custom").forEach((box) => {
@@ -1906,6 +1988,25 @@ function setPlainObjectPath(target, field, value) {
     cur = cur[part];
   });
   cur[parts[parts.length - 1]] = value;
+}
+function plainObjectPathValue(target, field) {
+  const parts = String(field || "").split(".").filter(Boolean);
+  let cur = target;
+  for (const part of parts) {
+    if (!cur || typeof cur !== "object" || Array.isArray(cur)) return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+function coercePlainObjectValue(current, value) {
+  const raw = String(value ?? "").trim();
+  if (typeof current === "boolean") return raw === "true" ? true : raw === "false" ? false : raw;
+  if (typeof current === "number") {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : raw;
+  }
+  if (current === null && raw === "null") return null;
+  return raw;
 }
 function genericObjectInput(key) {
   const raw = state.config?.[key];
@@ -2122,7 +2223,7 @@ function renderConfigFields() {
   const groups = configGroups(state.schema);
   if (!groups.some((g) => g.id === state.settingsTab)) state.settingsTab = groups[0]?.id || "";
   $("cfgTabs").innerHTML = groups.map((group) => `<button id="cfg_tab_${esc(group.id)}" type="button" role="tab" class="cfg-tab ${group.id === state.settingsTab ? "active" : ""}" data-cfg-tab="${esc(group.id)}" aria-controls="cfg_panel_${esc(group.id)}" aria-selected="${group.id === state.settingsTab ? "true" : "false"}">${esc(group.title)}</button>`).join("");
-  $("cfgForm").innerHTML = groups.map((group) => `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : ""}${group.id === "skills" ? renderSkillManager() : ""}${group.id === "memory" ? renderKnowledgeImporter() : ""}${group.id === "channels" ? renderChannelOverview() : ""}${group.keys.map((key) => {
+  $("cfgForm").innerHTML = groups.map((group) => `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : ""}${group.id === "skills" ? renderSkillManager() : ""}${group.id === "memory" ? renderMemoryManager() + renderKnowledgeImporter() : ""}${group.id === "channels" ? renderChannelOverview() : ""}${group.keys.map((key) => {
     const d = fieldMeta(defs[key] || { key, title: key, type: Array.isArray(state.config[key]) ? "array" : typeof state.config[key] === "boolean" ? "bool" : typeof state.config[key] === "number" ? "number" : "string" });
     const label = `${esc(d.title || key)}${d.required ? " *" : ""}`;
     return `<div class="field"><label for="cfg_${key}">${label}</label>${fieldInput(key, d)}<span class="helper">${esc(fieldHelper(d))}</span></div>`;
@@ -2130,6 +2231,7 @@ function renderConfigFields() {
   bindSkillManager();
   bindMCPManager();
   bindWebSearchManager();
+  bindMemoryManager();
   bindKnowledgeImporter();
   bindChoiceCustomControls();
   bindChannelTools();
@@ -2264,13 +2366,15 @@ function collectConfig() {
       try { next[key] = JSON.parse(el.value || (type === "array" ? "[]" : "{}")); } catch { throw new Error(t("jsonInvalid", { key: configIssueLabel({ key }) })); }
     } else if (type === "object-kv") {
       const out = {};
+      const current = state.config?.[key] && typeof state.config[key] === "object" && !Array.isArray(state.config[key]) ? state.config[key] : {};
       el.querySelectorAll(".kv-pair").forEach((pair) => {
         const keySelect = String(pair.querySelector("[data-generic-object-key]")?.value || "");
         const valueSelect = String(pair.querySelector("[data-generic-object-value]")?.value || "");
         const pairKey = String(keySelect === "__custom__" ? pair.querySelector("[data-generic-object-key-custom]")?.value || "" : keySelect).trim();
         const pairValue = String(valueSelect === "__custom__" ? pair.querySelector("[data-generic-object-value-custom]")?.value || "" : valueSelect).trim();
         if (pairKey && pairValue) {
-          if (el.dataset.deepObject === "true") setPlainObjectPath(out, pairKey, pairValue); else out[pairKey] = pairValue;
+          const typedValue = coercePlainObjectValue(plainObjectPathValue(current, pairKey), pairValue);
+          if (el.dataset.deepObject === "true") setPlainObjectPath(out, pairKey, typedValue); else out[pairKey] = typedValue;
         }
       });
       if (Object.keys(out).length) next[key] = out; else delete next[key];

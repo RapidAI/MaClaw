@@ -179,9 +179,10 @@ func (h *IMMessageHandler) truncationFallbackToolCatalog(ctx *LoopContext, userI
 		}
 	}
 	if engine := h.getWorkflowEngine(); engine != nil {
-		applyFilter := ctx == nil || shouldApplyWorkflowFilter(ctx.SkipNeedsConfirmGate, engine.IsAwaitingReview(userID), ctx.WorkflowAgentLoop, engine.IsPhaseExecutionBlocked(userID))
+		policyOwnerID := h.workflowPolicyOwnerID(userID, ctx)
+		applyFilter := ctx == nil || shouldApplyWorkflowFilter(ctx.SkipNeedsConfirmGate, engine.IsAwaitingReview(policyOwnerID), ctx.WorkflowAgentLoop, engine.IsPhaseExecutionBlocked(policyOwnerID), engine.GetActiveWorkflow(policyOwnerID) != nil)
 		if applyFilter {
-			catalog = h.applyWorkflowToolFilter(userID, catalog)
+			catalog = h.applyWorkflowToolFilter(policyOwnerID, catalog)
 		}
 	}
 	return catalog

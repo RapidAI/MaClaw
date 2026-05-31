@@ -10,6 +10,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/progress"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func testHandlerWithDelegateGate(label intent.IntentLabel, workflowType string) *IMMessageHandler {
@@ -60,6 +62,9 @@ func TestExecuteAgentLoopDelegateTaskRunsCodingSubAgent(t *testing.T) {
 	if gotTask == nil || gotTask.Description == "" {
 		t.Fatalf("task = %#v, want populated delegated task", gotTask)
 	}
+	if gotTask.Index != 0 || taskDisplayNumber(gotTask) != 1 {
+		t.Fatalf("delegated task numbering = index %d display T%d, want index 0 display T1", gotTask.Index, taskDisplayNumber(gotTask))
+	}
 	if !tokenCallbackForwarded {
 		t.Fatal("expected delegate_task(coding_workflow) to forward token callback")
 	}
@@ -89,6 +94,64 @@ func TestToolDelegateTaskCodingWorkflowRunsCodingSubAgent(t *testing.T) {
 	}
 }
 
+func TestToolDelegateTaskCodingWorkflowBlockedByActiveDocOnlyWorkflow(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		t.Fatal("doc-only workflow phase must reject direct delegate_task before CodingSubAgent starts")
+		return nil
+	}
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "manual-delegate-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	h.lastUserID = userID
+
+	got := h.toolDelegateTask(map[string]interface{}{
+		"agent":   "coding_workflow",
+		"request": `create app in d:\workprj\testprj`,
+	})
+	if !strings.Contains(got, "not allowed by the current workflow phase") {
+		t.Fatalf("delegate result = %q, want workflow phase rejection", got)
+	}
+}
+
+func TestToolDelegateTaskCodingWorkflowDoesNotInheritSingleActiveWorkflowPolicy(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	called := false
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		called = true
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "direct implemented"}
+	}
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	h.app.unifiedClassifier = testHandlerWithDelegateGate(intent.LabelCoding, "coding").app.unifiedClassifier
+	userID := "project-workflow-doc-only-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	got := h.toolDelegateTask(map[string]interface{}{
+		"agent":   "coding_workflow",
+		"request": `create app in d:\workprj\testprj`,
+	})
+	if !called {
+		t.Fatalf("delegate_task without explicit owner must not inherit single active workflow policy, got %q", got)
+	}
+	if got != "direct implemented" {
+		t.Fatalf("delegate result = %q, want CodingSubAgent summary", got)
+	}
+}
+
 func TestBonusRoundDelegateTaskRunsCodingSubAgent(t *testing.T) {
 	original := runTaskWithSubAgent
 	defer func() { runTaskWithSubAgent = original }()
@@ -103,13 +166,80 @@ func TestBonusRoundDelegateTaskRunsCodingSubAgent(t *testing.T) {
 	result := h.executeBonusRoundTool(llm.ToolCall{Function: llm.ToolCallFunction{
 		Name:      "delegate_task",
 		Arguments: `{"agent":"coding_workflow","request":"create app in d:\\workprj\\testprj"}`,
-	}}, nil, nil, nil, "desktop-user")
+	}}, nil, nil, nil, "desktop-user", nil)
 
 	if !called {
 		t.Fatal("expected bonus-round delegate_task(coding_workflow) to execute CodingSubAgent")
 	}
 	if result.Outcome != toolOutcomeSucceeded || result.Text != "bonus implemented" {
 		t.Fatalf("result = %+v, want successful CodingSubAgent result", result)
+	}
+}
+
+func TestBonusRoundDelegateTaskBlockedByDocOnlyWorkflowPolicy(t *testing.T) {
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		t.Fatal("doc-only workflow phase must reject bonus-round delegate_task before CodingSubAgent starts")
+		return nil
+	}
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "bonus-doc-only-delegate-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	result := h.executeBonusRoundTool(llm.ToolCall{Function: llm.ToolCallFunction{
+		Name:      "delegate_task",
+		Arguments: `{"agent":"coding_workflow","request":"create app in d:\\workprj\\testprj"}`,
+	}}, nil, nil, nil, userID, nil)
+
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected workflow policy rejection, got %+v", result)
+	}
+	if !strings.Contains(result.Text, "not allowed") {
+		t.Fatalf("expected not allowed text, got %q", result.Text)
+	}
+}
+
+func TestBonusRoundWorkflowPolicyRejectsBeforeProgressAndTrajectory(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "bonus-doc-only-progress-user"
+	if _, err := h.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := h.app.workflowEngine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	progressEmitted := false
+	recordedToolName := ""
+	choice := llm.Choice{Message: llm.Message{ToolCalls: []llm.ToolCall{{ID: "call_write", Function: llm.ToolCallFunction{
+		Name:      "write_file",
+		Arguments: `{"path":"out.txt","content":"x"}`,
+	}}}}}
+	_, history, _ := h.applyBonusRoundChoice(nil, nil, choice, agentLoopBonusRoundOptions{
+		UserID:            userID,
+		Debug:             true,
+		MilestoneTracker:  progress.NewAgentProgressTracker(nil, "build app", "coding", nil),
+		InFlightLifecycle: &imInFlightLifecycle{},
+		SendProgress:      func(string) { progressEmitted = true },
+		RecordToolCall:    func(_ string, name string, _ string) { recordedToolName = name },
+		RecordToolResult:  func(string, interface{}) {},
+	})
+	if progressEmitted {
+		t.Fatal("bonus-round workflow policy rejection must happen before user-facing progress")
+	}
+	if recordedToolName != "" {
+		t.Fatalf("bonus-round workflow policy rejection must happen before trajectory recording, got %q", recordedToolName)
+	}
+	if len(history) < 2 || history[len(history)-1].ToolOutcome != toolOutcomeFailed.String() {
+		t.Fatalf("expected failed tool result in history, got %#v", history)
 	}
 }
 

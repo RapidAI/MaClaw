@@ -10,6 +10,7 @@ export type AgentViewFieldType =
     | "array_table"
     | "boolean"
     | "file"
+    | "directory"
     | "hidden"
     | "user_ref"
     | "department_ref"
@@ -23,7 +24,7 @@ export interface AgentViewOption {
 export interface AgentViewTableColumn {
     name: string;
     label?: string;
-    type?: "text" | "number" | "select" | "boolean" | "date";
+    type?: "text" | "number" | "select" | "boolean" | "date" | "directory";
     required?: boolean;
     readOnly?: boolean;
     sensitive?: boolean;

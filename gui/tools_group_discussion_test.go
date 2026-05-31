@@ -654,6 +654,60 @@ func TestGroupDiscussionWorkflowStateExposesMissingParticipants(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionReviewSummaryDedupesReviewerAliasesWithoutSession(t *testing.T) {
+	t.Parallel()
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ID: "disc-1", Status: string(a2a.SessionOpen), ParticipantIDs: []string{"owner", "machine-a", "ve-machine-a", "machine-b"}},
+		Reviews: []a2a.Review{
+			{ID: "rev-1", ProposalID: "prop-1", ReviewerID: "machine-a", Position: a2a.ReviewApprove},
+			{ID: "rev-2", ProposalID: "prop-1", ReviewerID: "ve-machine-a", Position: a2a.ReviewConcern},
+			{ID: "rev-3", ProposalID: "prop-1", ReviewerID: "machine-b", Position: a2a.ReviewApprove},
+		},
+	}
+
+	summary := groupDiscussionReviewSummaryFor(detail, "prop-1")
+	if summary.Approvals != 1 || summary.Concerns != 1 || summary.Rejections != 0 || summary.Abstains != 0 {
+		t.Fatalf("review summary = %+v, want alias-deduped latest review counts", summary)
+	}
+	if strings.Join(summary.ReviewedBy, ",") != "machine-b,ve-machine-a" {
+		t.Fatalf("reviewed_by = %v, want latest alias reviewer ids", summary.ReviewedBy)
+	}
+	if groupDiscussionProposalPolicySatisfied(detail, "prop-1", summary) {
+		t.Fatal("concern from reviewer alias should block proposal policy")
+	}
+
+	detail.Reviews = append(detail.Reviews, a2a.Review{ID: "rev-4", ProposalID: "prop-1", ReviewerID: "ve_machine-a", Position: a2a.ReviewApprove})
+	summary = groupDiscussionReviewSummaryFor(detail, "prop-1")
+	if summary.Approvals != 2 || !groupDiscussionProposalPolicySatisfied(detail, "prop-1", summary) {
+		t.Fatalf("alias approvals should satisfy deduped participant majority, summary=%+v", summary)
+	}
+}
+
+func TestGroupDiscussionReadinessDedupesExpectedParticipantAliases(t *testing.T) {
+	t.Parallel()
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ID: "disc-alias", Status: string(a2a.SessionOpen), ParticipantIDs: []string{"owner", "machine-a", "ve-machine-a", "machine-b"}},
+		Session: &a2a.Session{Participants: []a2a.Participant{
+			{ID: "owner", RoleCode: "initiator"},
+			{ID: "machine-a", RoleCode: "speak"},
+			{ID: "ve-machine-a", RoleCode: "speak"},
+			{ID: "machine-b", RoleCode: "speak"},
+		}},
+		Messages: []a2a.Message{{ID: "msg-1", FromID: "machine/a", Kind: a2a.MessageAnswer, Content: "A"}},
+	}
+
+	readiness := groupDiscussionReadiness(detail)
+	if readiness.ParticipantCount != 3 || readiness.AnswerCount != 1 || readiness.ExpectedAnswerCount != 2 || readiness.Ready {
+		t.Fatalf("readiness = %+v, want one of two distinct expert answers", readiness)
+	}
+
+	detail.Messages = append(detail.Messages, a2a.Message{ID: "msg-2", FromID: "machine-b", Kind: a2a.MessageAnswer, Content: "B"})
+	readiness = groupDiscussionReadiness(detail)
+	if readiness.ParticipantCount != 3 || readiness.AnswerCount != 2 || readiness.ExpectedAnswerCount != 2 || !readiness.Ready {
+		t.Fatalf("readiness after second expert = %+v, want ready with deduped participants", readiness)
+	}
+}
+
 func TestGroupDiscussionEscalationRouteSuggestsOwnerForBlockingReviews(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
@@ -1313,6 +1367,36 @@ func TestGroupDiscussionContributionQualityRewardsEvidence(t *testing.T) {
 	}
 	if missing := groupDiscussionContributionQuality(detail, result, "other"); missing != 0 {
 		t.Fatalf("missing participant quality = %.3f, want 0", missing)
+	}
+}
+
+func TestMissingGroupDiscussionAnswerParticipantsMatchesGeneratedVEAliases(t *testing.T) {
+	t.Parallel()
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ParticipantIDs: []string{"human", "machine-anna", "machine-xiaoyan"}},
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "ve-machine-anna", Kind: a2a.MessageAnswer, Content: "Anna answer"},
+			{ID: "m2", FromID: "ve_machine-xiaoyan", Kind: a2a.MessageAnswer, Content: "Xiaoyan answer"},
+		},
+	}
+	if got := missingGroupDiscussionAnswerParticipants(detail); len(got) != 0 {
+		t.Fatalf("missing = %v, want none after alias-matched answers", got)
+	}
+}
+
+func TestMissingGroupDiscussionProposalReviewersMatchesGeneratedVEAliases(t *testing.T) {
+	t.Parallel()
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ParticipantIDs: []string{"human", "machine-anna", "machine-xiaoyan"}},
+	}
+	proposal := GroupDiscussionProposalWorkflowState{
+		AuthorID: "ve-machine-anna",
+		ReviewSummary: a2a.ReviewSummary{
+			ReviewedBy: []string{"ve_machine-xiaoyan"},
+		},
+	}
+	if got := missingGroupDiscussionProposalReviewers(detail, proposal); len(got) != 1 || got[0] != "human" {
+		t.Fatalf("missing reviewers = %v, want only human", got)
 	}
 }
 

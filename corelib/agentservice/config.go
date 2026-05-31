@@ -296,7 +296,12 @@ func stringMapContainsMaskedSecrets(values map[string]string) bool {
 }
 
 func maskedSecretPlaceholder(value string) bool {
-	return strings.TrimSpace(value) == "******"
+	value = strings.TrimSpace(value)
+	return value == "******" || value == "********" || strings.EqualFold(value, "__masked__")
+}
+
+func IsMaskedSecretPlaceholder(value string) bool {
+	return maskedSecretPlaceholder(value)
 }
 
 func ValidateAppConfig(cfg corelib.AppConfig) ConfigValidationResult {
@@ -390,6 +395,109 @@ func resolveProviderSecret(provider corelib.MaclawLLMProvider) string {
 		return key
 	}
 	return oauthToken
+}
+
+func normalizeLLMFlatConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	return projectSelectedProviderToFlat(cfg, false)
+}
+
+func effectiveLLMFlatConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	return projectSelectedProviderToFlat(cfg, true)
+}
+
+func projectSelectedProviderToFlat(cfg corelib.AppConfig, overwrite bool) corelib.AppConfig {
+	provider, ok := resolveSelectedProviderForFlatConfig(cfg)
+	if !ok {
+		return cfg
+	}
+	if overwrite || strings.TrimSpace(cfg.MaclawLLMUrl) == "" {
+		cfg.MaclawLLMUrl = strings.TrimSpace(provider.URL)
+	}
+	if overwrite || secretPlaceholderOrEmpty(cfg.MaclawLLMKey) {
+		cfg.MaclawLLMKey = resolveProviderSecret(provider)
+	}
+	if overwrite || strings.TrimSpace(cfg.MaclawLLMModel) == "" {
+		cfg.MaclawLLMModel = strings.TrimSpace(provider.Model)
+	}
+	return cfg
+}
+
+func normalizeLLMConfigForSave(current, next corelib.AppConfig) corelib.AppConfig {
+	provider, providerIndex, ok := resolveSelectedProviderForFlatConfigWithIndex(next)
+	if !ok {
+		return normalizeLLMFlatConfig(next)
+	}
+	if _, currentProviderOK := resolveSelectedProviderForFlatConfig(current); !currentProviderOK {
+		return normalizeLLMFlatConfig(next)
+	}
+	currentEffective := effectiveLLMFlatConfig(current)
+	flatURLChanged := llmFlatStringFieldShouldSync(current.MaclawLLMUrl, currentEffective.MaclawLLMUrl, next.MaclawLLMUrl)
+	flatKeyChanged := llmFlatSecretFieldShouldSync(current.MaclawLLMKey, currentEffective.MaclawLLMKey, next.MaclawLLMKey)
+	flatModelChanged := llmFlatStringFieldShouldSync(current.MaclawLLMModel, currentEffective.MaclawLLMModel, next.MaclawLLMModel)
+	flatChanged := flatURLChanged || flatKeyChanged || flatModelChanged
+	providerChanged := selectedLLMProviderChanged(current, next) || selectedLLMProviderConfigChanged(current, provider)
+	if providerChanged {
+		return projectSelectedProviderToFlat(next, true)
+	}
+	if flatChanged {
+		if value := strings.TrimSpace(next.MaclawLLMUrl); flatURLChanged {
+			provider.URL = value
+		}
+		if value := strings.TrimSpace(next.MaclawLLMKey); flatKeyChanged {
+			provider.Key = value
+		}
+		if value := strings.TrimSpace(next.MaclawLLMModel); flatModelChanged {
+			provider.Model = value
+		}
+		next.MaclawLLMProviders[providerIndex] = provider
+		return projectSelectedProviderToFlat(next, true)
+	}
+	return normalizeLLMFlatConfig(next)
+}
+
+func selectedLLMProviderChanged(current, next corelib.AppConfig) bool {
+	return strings.TrimSpace(current.MaclawLLMCurrentProvider) != strings.TrimSpace(next.MaclawLLMCurrentProvider)
+}
+
+func selectedLLMProviderConfigChanged(current corelib.AppConfig, nextProvider corelib.MaclawLLMProvider) bool {
+	currentProvider, ok := resolveSelectedProviderForFlatConfig(current)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(currentProvider.URL) != strings.TrimSpace(nextProvider.URL) ||
+		resolveProviderSecret(currentProvider) != resolveProviderSecret(nextProvider) ||
+		strings.TrimSpace(currentProvider.Model) != strings.TrimSpace(nextProvider.Model)
+}
+
+func llmFlatStringFieldShouldSync(currentRaw, currentEffective, next string) bool {
+	value := strings.TrimSpace(next)
+	return value != "" && value != strings.TrimSpace(currentEffective) && value != strings.TrimSpace(currentRaw)
+}
+
+func llmFlatSecretFieldShouldSync(currentRaw, currentEffective, next string) bool {
+	value := strings.TrimSpace(next)
+	return value != "" && !maskedSecretPlaceholder(value) && value != strings.TrimSpace(currentEffective) && value != strings.TrimSpace(currentRaw)
+}
+
+func resolveSelectedProviderForFlatConfig(cfg corelib.AppConfig) (corelib.MaclawLLMProvider, bool) {
+	provider, _, ok := resolveSelectedProviderForFlatConfigWithIndex(cfg)
+	return provider, ok
+}
+
+func resolveSelectedProviderForFlatConfigWithIndex(cfg corelib.AppConfig) (corelib.MaclawLLMProvider, int, bool) {
+	if len(cfg.MaclawLLMProviders) == 0 {
+		return corelib.MaclawLLMProvider{}, -1, false
+	}
+	selected := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+	if selected == "" && len(cfg.MaclawLLMProviders) == 1 {
+		return cfg.MaclawLLMProviders[0], 0, true
+	}
+	for i, provider := range cfg.MaclawLLMProviders {
+		if strings.EqualFold(strings.TrimSpace(provider.Name), selected) {
+			return provider, i, true
+		}
+	}
+	return corelib.MaclawLLMProvider{}, -1, false
 }
 
 func validateLLMConfig(cfg corelib.AppConfig) []ConfigValidationIssue {

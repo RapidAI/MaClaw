@@ -1219,6 +1219,51 @@ func TestCoreAgentToolPolicyFiltersExposedTools(t *testing.T) {
 	}
 }
 
+func TestCoreAgentDocOnlyToolPolicyBlocksImplementationTools(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		allowLocalBash:             true,
+		localBashTrustedSingleUser: true,
+		localBashTenantID:          "tenant_a",
+		localBashUserID:            "user_a",
+		principal:                  Principal{TenantID: "tenant_a", UserID: "user_a"},
+		workspace:                  t.TempDir(),
+		toolPolicy:                 workflow.ToolFilterDocOnly,
+	}
+	tools := agent.FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools(""))
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		seen[tooldef.Name(tool)] = true
+	}
+	for _, name := range []string{"read_file", "list_directory"} {
+		if !seen[name] {
+			t.Fatalf("expected %s to remain available for doc-only context, got %#v", name, seen)
+		}
+	}
+	for _, name := range []string{"bash", "write_file", "edit_file", "task"} {
+		if seen[name] {
+			t.Fatalf("expected %s to be filtered out by doc-only policy, got %#v", name, seen)
+		}
+		if cb.IsToolAllowed(name) {
+			t.Fatalf("expected execution guard to block %s under doc-only policy", name)
+		}
+		allowed, reason := cb.IsToolCallAllowed(name, `{}`)
+		if allowed {
+			t.Fatalf("expected concrete %s call to be blocked under doc-only policy", name)
+		}
+		if reason == "" {
+			t.Fatalf("expected rejection reason for %s under doc-only policy", name)
+		}
+	}
+
+	result := cb.ExecuteToolStructured("write_file", `{"path":"out.md","content":"body"}`)
+	if result.Outcome != agent.ToolExecutionOutcomeError {
+		t.Fatalf("Outcome = %q, want %q", result.Outcome, agent.ToolExecutionOutcomeError)
+	}
+	if !strings.Contains(result.Result, "workflow tool policy") {
+		t.Fatalf("expected workflow policy rejection, got %q", result.Result)
+	}
+}
+
 func TestCoreAgentToolPolicyBlocksExecution(t *testing.T) {
 	cb := &coreAgentCallbacks{toolPolicy: workflow.ToolFilterOpsControlled}
 	if cb.IsToolAllowed("bash") != true {
@@ -1346,6 +1391,39 @@ func TestCoreAgentDescribeCapabilitiesEnablesBashWhenAllowed(t *testing.T) {
 	}
 	if bash == nil || !bash.Enabled {
 		t.Fatalf("expected enabled bash capability, got %#v", bash)
+	}
+}
+
+func TestCoreAgentDescribeCapabilitiesHonorsWorkflowToolPolicy(t *testing.T) {
+	executor := &CoreAgentExecutor{AllowLocalBash: true, LocalBashTrustedSingleUser: true, LocalBashTenantID: "tenant_a", LocalBashUserID: "user_a"}
+	caps, err := executor.DescribeCapabilities(context.Background(), ExecuteRequest{
+		Principal:  Principal{TenantID: "tenant_a", UserID: "user_a"},
+		Instance:   Instance{Workspace: "/tmp/workspace"},
+		ToolPolicy: workflow.ToolFilterDocOnly,
+	})
+	if err != nil {
+		t.Fatalf("DescribeCapabilities: %v", err)
+	}
+	if caps.SupportsLocalBash {
+		t.Fatalf("doc-only workflow policy must disable local bash support, got %#v", caps)
+	}
+	if caps.Metadata["bash_enabled"] != "false" || caps.Metadata["tool_policy"] != string(workflow.ToolFilterDocOnly) {
+		t.Fatalf("unexpected policy metadata: %#v", caps.Metadata)
+	}
+	var bash, readFile *AgentToolCapability
+	for i := range caps.Tools {
+		switch caps.Tools[i].Name {
+		case "bash":
+			bash = &caps.Tools[i]
+		case "read_file":
+			readFile = &caps.Tools[i]
+		}
+	}
+	if bash == nil || bash.Enabled || !strings.Contains(bash.DisabledReason, "workflow tool policy") {
+		t.Fatalf("expected bash disabled by workflow policy, got %#v", bash)
+	}
+	if readFile == nil || !readFile.Enabled {
+		t.Fatalf("expected read_file to remain enabled under doc-only policy, got %#v", readFile)
 	}
 }
 

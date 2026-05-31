@@ -1,4 +1,5 @@
 import { normalizeParticipantId } from "./localAIIdentity";
+import { participantIdentityMatches } from "./participantIdentity";
 
 export type VEStatusEventInfo = {
     ids: string[];
@@ -40,7 +41,7 @@ export function veStatusEventInfo(data: any): VEStatusEventInfo {
 export function veStatusEventMatches(data: any, id: string): boolean {
     const normalized = normalizeParticipantId(id);
     if (!normalized) return false;
-    return veStatusEventInfo(data).ids.includes(normalized);
+    return veStatusEventInfo(data).ids.some((candidate) => participantIdentityMatches(candidate, normalized));
 }
 
 function uniqueNormalizedIds(values: unknown[]): string[] {

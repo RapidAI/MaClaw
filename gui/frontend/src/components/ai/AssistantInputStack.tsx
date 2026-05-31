@@ -61,6 +61,7 @@ interface AssistantInputStackProps {
     sendButtonStyle?: React.CSSProperties;
     sendButtonTestId?: string;
     startInputResize: (event: React.MouseEvent<HTMLDivElement>) => void;
+    textareaAriaLabel?: string;
     textareaTestId?: string;
     theme: Theme;
     themeMode: "light" | "dark";
@@ -79,7 +80,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         inputLocked, inputOverlay, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments,
         pendingAttachmentsTestId, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
-        showVoiceInput, sendButtonStyle, sendButtonTestId, startInputResize, textareaTestId, theme: t,
+        showVoiceInput, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
         themeMode, toolbarTestId, updateInputValue, voiceInput,
     } = props;
 
@@ -130,9 +131,10 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     maxHeight: "55%",
                     height: inputAreaHeight ? `${inputAreaHeight}px` : undefined,
                     minWidth: 0,
-                    overflow: "hidden",
+                    overflow: inputOverlay ? "visible" : "hidden",
                     background: t.inputBarBg,
                     borderTop: `1px solid ${t.inputBarBorder}`,
+                    ['--wails-draggable' as any]: 'no-drag',
                 }}
             >
                 {queuePanelTestId && queuePanel ? <div data-testid={queuePanelTestId}>{queuePanel}</div> : queuePanel}
@@ -180,6 +182,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     showVoiceInput={showVoiceInput}
                     sendButtonStyle={sendButtonStyle}
                     sendButtonTestId={sendButtonTestId}
+                    textareaAriaLabel={textareaAriaLabel}
                     textareaTestId={textareaTestId}
                     theme={t}
                     themeMode={themeMode}

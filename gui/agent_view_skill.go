@@ -86,7 +86,11 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 			return &IMAgentResponse{Text: "Skill parameters are still incomplete. Review the task panel.", Error: "missing required parameters: " + strings.Join(missing, ", "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 	}
-	runID, err := a.skillRunner.StartRun(skillName, runArgs)
+	policyOwnerID := a.defaultManualPolicyOwnerID()
+	if rejection := a.skillRunWorkflowPolicyRejectionForOwner(policyOwnerID, skillName, runArgs); rejection != nil {
+		return rejection
+	}
+	runID, err := a.skillRunner.StartRunForOwner(policyOwnerID, skillName, runArgs)
 	if err != nil {
 		return &IMAgentResponse{Text: "Skill start failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
@@ -103,6 +107,22 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 	b.WriteString(fmt.Sprintf("✅ Skill「%s」已从任务面板启动\n", skillName))
 	appendSkillRunSummary(&b, status, runID)
 	return &IMAgentResponse{Text: strings.TrimRight(b.String(), "\n"), ResponseSource: imResponseSourceAgentViewSubmit.String()}
+}
+
+func (a *App) skillRunWorkflowPolicyRejection(skillName string, runArgs map[string]interface{}) *IMAgentResponse {
+	return a.skillRunWorkflowPolicyRejectionForOwner(a.defaultManualPolicyOwnerID(), skillName, runArgs)
+}
+
+func (a *App) skillRunWorkflowPolicyRejectionForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) *IMAgentResponse {
+	if a == nil {
+		return nil
+	}
+	args := map[string]interface{}{
+		"action": "run",
+		"name":   skillName,
+		"args":   cloneMISInterfaceMap(runArgs),
+	}
+	return (&IMMessageHandler{app: a}).registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, "manage_skill", args)
 }
 
 func (a *App) handleSkillStatusAgentViewSubmit(data map[string]interface{}) *IMAgentResponse {
@@ -678,6 +698,8 @@ func skillAgentViewPlaceholder(param corelib.NLSkillParam, fieldType string) str
 	switch normalizedFieldType {
 	case agentViewFieldTypeFile:
 		return "Enter a file or folder path"
+	case agentViewFieldTypeDirectory:
+		return "Choose or enter a folder path"
 	case agentViewFieldTypeDate:
 		return "YYYY-MM-DD"
 	default:

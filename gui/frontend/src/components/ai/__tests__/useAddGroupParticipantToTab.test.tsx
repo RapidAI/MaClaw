@@ -133,9 +133,7 @@ describe("useAddGroupParticipantToTab", () => {
             upgradeVETabToGroup,
         }));
 
-        await act(async () => {
-            await result.current(tab, "ve-b", "Contract Bot");
-        });
+        await expect(result.current(tab, "ve-b", "Contract Bot")).rejects.toThrow("offline");
 
         expect(addVEToGroupMock).not.toHaveBeenCalled();
         expect(upgradeVETabToGroup).not.toHaveBeenCalled();
@@ -152,9 +150,7 @@ describe("useAddGroupParticipantToTab", () => {
             upgradeVETabToGroup,
         }));
 
-        await act(async () => {
-            await result.current(tab, "ve-b", "Contract Bot");
-        });
+        await expect(result.current(tab, "ve-b", "Contract Bot")).rejects.toThrow("offline");
 
         expect(addVEToGroupMock).toHaveBeenCalledWith("session-1", "ve-b");
         expect(upgradeVETabToGroup).not.toHaveBeenCalled();
@@ -174,6 +170,22 @@ describe("useAddGroupParticipantToTab", () => {
         });
 
         expect(addVEToGroupMock).not.toHaveBeenCalledWith("session-1", "ve-a");
+        expect(upgradeVETabToGroup).not.toHaveBeenCalled();
+    });
+
+    it("does not add duplicate participants across ve aliases", async () => {
+        const upgradeVETabToGroup = vi.fn();
+        const tab: AITab = { id: "group-1", type: "group", title: "Group", veId: "ve-machine-a", participants: ["ve-machine-a"], closable: true };
+        const { result } = renderHook(() => useAddGroupParticipantToTab({
+            getTabState: () => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 }),
+            upgradeVETabToGroup,
+        }));
+
+        await act(async () => {
+            await result.current(tab, "machine-a", "Agent A");
+        });
+
+        expect(addVEToGroupMock).not.toHaveBeenCalled();
         expect(upgradeVETabToGroup).not.toHaveBeenCalled();
     });
 });

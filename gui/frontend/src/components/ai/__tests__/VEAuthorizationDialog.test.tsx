@@ -446,6 +446,66 @@ describe("VEAuthorizationRequestCenter", () => {
         expect(screen.getByText("Analyst")).toBeTruthy();
     });
 
+    it("keeps request list inside the assistant title bar lane", () => {
+        const rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+            const testId = this.getAttribute("data-testid");
+            if (testId === "ai-title-bar") return { left: 510, top: 38, right: 1328, bottom: 76, width: 818, height: 38, x: 510, y: 38, toJSON: () => ({}) } as DOMRect;
+            if (testId === "ve-auth-request-trigger") return { left: 824, top: 43, right: 854, bottom: 71, width: 30, height: 28, x: 824, y: 43, toJSON: () => ({}) } as DOMRect;
+            return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+        });
+        vi.stubGlobal("innerWidth", 1366);
+        vi.stubGlobal("innerHeight", 768);
+
+        render(
+            <div data-testid="ai-title-bar">
+                <VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={vi.fn()} />
+            </div>
+        );
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({ payload: { request_id: "center-req-lane" } });
+        });
+        fireEvent.click(screen.getByTestId("ve-auth-request-trigger"));
+
+        const popover = screen.getByTestId("ve-auth-request-popover");
+        expect(parseFloat(popover.style.left)).toBeGreaterThanOrEqual(522);
+        expect(popover.style.position).toBe("fixed");
+
+        rectSpy.mockRestore();
+        vi.unstubAllGlobals();
+    });
+
+    it("keeps request list inside a short viewport", () => {
+        const rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+            const testId = this.getAttribute("data-testid");
+            if (testId === "ai-title-bar") return { left: 0, top: 0, right: 420, bottom: 38, width: 420, height: 38, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+            if (testId === "ve-auth-request-trigger") return { left: 360, top: 190, right: 390, bottom: 218, width: 30, height: 28, x: 360, y: 190, toJSON: () => ({}) } as DOMRect;
+            return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+        });
+        vi.stubGlobal("innerWidth", 420);
+        vi.stubGlobal("innerHeight", 260);
+
+        render(
+            <div data-testid="ai-title-bar">
+                <VEAuthorizationRequestCenter theme={mockTheme} lang="en" respondAuthRequest={vi.fn()} />
+            </div>
+        );
+
+        act(() => {
+            eventHandlers.get("ve:auth_request")?.({ payload: { request_id: "center-req-short" } });
+        });
+        fireEvent.click(screen.getByTestId("ve-auth-request-trigger"));
+
+        const popover = screen.getByTestId("ve-auth-request-popover");
+        const top = parseFloat(popover.style.top);
+        const maxHeight = parseFloat(popover.style.maxHeight);
+        expect(top).toBeLessThanOrEqual(86);
+        expect(top + maxHeight).toBeLessThanOrEqual(246);
+
+        rectSpy.mockRestore();
+        vi.unstubAllGlobals();
+    });
+
     it("plays configured ringtone when request arrives", async () => {
         LoadConfigMock.mockResolvedValue({
             group_discussion: {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -76,14 +77,37 @@ func (a *GUIWorkflowAdapter) GetLang() string {
 // EmitPhaseUpdate notifies the frontend of a phase change.
 func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
 	if state != nil {
+		stateProjectPath := ""
+		preparedStateProjectPath := ""
+		workflowStateHasPath := state.ID != "" && (state.Status == workflow.WorkflowActive || state.Status == workflow.WorkflowCompleted || state.Status == workflow.WorkflowCancelled)
+		if workflowStateHasPath {
+			stateProjectPath = strings.TrimSpace(state.ProjectPath)
+			if stateProjectPath != "" {
+				if err := os.MkdirAll(stateProjectPath, 0o755); err != nil {
+					log.Printf("[WorkflowAdapter] failed to create workflow project directory %s: %v", stateProjectPath, err)
+				} else {
+					preparedStateProjectPath = stateProjectPath
+				}
+			}
+		}
 		a.mu.Lock()
 		if state.Status == workflow.WorkflowActive && state.ID != "" {
 			// Only set workflowStartDate when a new workflow instance is detected
 			// (different ID from current). This prevents resetting the date on
 			// every phase transition within the same workflow.
-			if a.activeWorkflowID != state.ID {
+			newWorkflow := a.activeWorkflowID != state.ID
+			if newWorkflow {
 				a.workflowStartDate = time.Now()
 				a.projectStorageDir = "" // force re-resolution for new workflow
+			}
+			if preparedStateProjectPath != "" {
+				if a.workingDir != preparedStateProjectPath {
+					a.projectStorageDir = ""
+				}
+				a.workingDir = preparedStateProjectPath
+			} else {
+				a.projectStorageDir = ""
+				a.workingDir = ""
 			}
 			a.activeWorkflowID = state.ID
 			a.activeWorkflowType = state.Type
@@ -94,6 +118,15 @@ func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.Work
 			// then release the lock before calling writeManifestOnCompletion to avoid
 			// holding the lock during I/O.
 			if state.Status == workflow.WorkflowCompleted || state.Status == workflow.WorkflowCancelled {
+				if preparedStateProjectPath != "" {
+					if a.workingDir != preparedStateProjectPath {
+						a.projectStorageDir = ""
+					}
+					a.workingDir = preparedStateProjectPath
+				} else if stateProjectPath != "" {
+					a.projectStorageDir = ""
+					a.workingDir = ""
+				}
 				a.mu.Unlock()
 				a.writeManifestOnCompletion(state)
 				// Clean Internal_Storage only on successful completion (Req 3.3).
@@ -156,7 +189,16 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 // Also emits a frontend event so the UI can display the path.
 func (a *GUIWorkflowAdapter) SetWorkingDir(userID, dir string) {
 	trimmed := strings.TrimSpace(dir)
+	if trimmed != "" {
+		if err := os.MkdirAll(trimmed, 0o755); err != nil {
+			log.Printf("[WorkflowAdapter] failed to create workflow working directory %s: %v", trimmed, err)
+			return
+		}
+	}
 	a.mu.Lock()
+	if a.workingDir != trimmed {
+		a.projectStorageDir = ""
+	}
 	a.workingDir = trimmed
 	a.mu.Unlock()
 	if a.engine != nil {
