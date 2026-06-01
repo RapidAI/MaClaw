@@ -107,10 +107,9 @@ func (r *SkillRunner) pollSessionProgress(manager *RemoteSessionManager, session
 	}
 }
 
-// truncateSessionField truncates a string to maxLen, appending "..." if truncated.
+// truncateSessionField truncates a string to maxLen runes, appending "..." if
+// truncated. Rune-aware so multi-byte (e.g. Chinese) session text isn't split
+// mid-character into invalid UTF-8.
 func truncateSessionField(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return truncateRunesMarker(s, maxLen, "...")
 }

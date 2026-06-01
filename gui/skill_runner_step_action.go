@@ -49,7 +49,11 @@ func (k skillStepActionKind) IsCraftTool() bool {
 
 func (k skillStepActionKind) UsesManagedProcessEnv() bool {
 	switch k {
-	case skillStepActionBash, skillStepActionCraftTool:
+	case skillStepActionBash, skillStepActionCraftTool, skillStepActionPoll:
+		// bash/craft_tool inject env per-subprocess via cmd.Env (BuildCommandEnv).
+		// poll launches bash subprocesses internally and likewise receives env
+		// through cmd.Env once its params carry the env, so it must NOT pin the
+		// global os.Setenv mutex across its (up to minutes-long) poll loop.
 		return false
 	default:
 		return true

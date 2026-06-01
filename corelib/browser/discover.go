@@ -302,9 +302,7 @@ func killManagedBrowser() bool {
 	return true
 }
 
-
-
-// ── browser detection (mirrors freeproxy/browser.go logic) ──
+// ── browser detection ──
 
 type browserInfo struct {
 	path string // absolute path to executable

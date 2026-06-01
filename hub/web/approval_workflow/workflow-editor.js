@@ -34,6 +34,9 @@
     isLibraryLoading: false,
     libraryRequestId: 0,
     invalidConfigFields: {},
+    approverPicker: null,
+    approverDirectory: null,
+    approverDirectoryLoading: false,
     nextNodeId: 1,
     nextEdgeId: 1,
     toolMode: 'select',
@@ -116,10 +119,25 @@
     countersign: 'Countersign (All must approve)',
     anyNOfM: 'Any N of M',
     sequential: 'Sequential',
-    approverIds: 'Approver IDs (comma-separated)',
+    approverIds: 'Approvers',
+    chooseApprovers: 'Choose approvers',
+    chooseFallbackApprover: 'Choose fallback approver',
+    approverPickerTitle: 'Choose approvers from organization',
+    fallbackApproverPickerTitle: 'Choose fallback approver from organization',
+    approverPickerSearch: 'Search department or user',
+    approverPickerLoading: 'Loading organization...',
+    approverPickerEmpty: 'No selectable approvers in this department.',
+    approverPickerLoadFailed: 'Load organization failed: {error}',
+    selectedApprovers: '{count} selected',
+    clearSelection: 'Clear',
+    cancel: 'Cancel',
+    confirm: 'Confirm',
+    noApproverIdentity: 'No online approver identity found',
+    virtualEmployee: 'VE',
+    userMachine: 'Machine',
     minApprovals: 'Min Approvals (for Any N of M)',
     timeoutHours: 'Timeout (hours, 1-720)',
-    fallbackApprover: 'Fallback Approver ID',
+    fallbackApprover: 'Fallback Approver',
     branchesJson: 'Branches (JSON)',
     defaultBranch: 'Default Branch (target node ID)',
     actionType: 'Action Type',
@@ -328,6 +346,18 @@
     return storageGet('maclawHubAdminToken');
   }
 
+  function adminScopedPath(path) {
+    try {
+      var profile = JSON.parse(storageGet('maclawHubAdminProfile') || 'null');
+      var tenantID = profile && String(profile.scope || '').toLowerCase() === 'tenant' ? String(profile.tenant_id || '').trim() : '';
+      if (!tenantID) return path;
+      var sep = path.indexOf('?') === -1 ? '?' : '&';
+      return path + sep + 'tenant_id=' + encodeURIComponent(tenantID);
+    } catch (_) {
+      return path;
+    }
+  }
+
   async function adminWorkflowApi(path, options) {
     var adminToken = getAdminToken();
     if (!adminToken) throw new Error(tr('adminAuthRequired'));
@@ -336,7 +366,7 @@
     Object.keys(opts.headers || {}).forEach(function (key) { headers[key] = opts.headers[key]; });
     var resp;
     try {
-      resp = await fetch(path, Object.assign({}, opts, { headers: headers }));
+      resp = await fetch(adminScopedPath(path), Object.assign({}, opts, { headers: headers }));
     } catch (err) {
       throw new Error(tr('requestFailed', { error: err && err.message || 'network' }));
     }
@@ -1231,7 +1261,8 @@
         html += '</div>';
         html += '<div class="config-field">';
         html += '<label>' + escapeHtml(tr('approverIds')) + '</label>';
-        html += '<input type="text" id="cfgApproverIds" value="' + escapeAttr((node.config.approver_ids || []).join(', ')) + '">';
+        html += '<button type="button" class="approver-select-control" id="cfgApproverIdsPicker">' + escapeHtml(formatApproverSelection(node.config.approver_ids || [], tr('chooseApprovers'))) + '</button>';
+        html += '<input type="hidden" id="cfgApproverIds" value="' + escapeAttr((node.config.approver_ids || []).join(', ')) + '">';
         html += '</div>';
         html += '<div class="config-field">';
         html += '<label>' + escapeHtml(tr('minApprovals')) + '</label>';
@@ -1243,7 +1274,8 @@
         html += '</div>';
         html += '<div class="config-field">';
         html += '<label>' + escapeHtml(tr('fallbackApprover')) + '</label>';
-        html += '<input type="text" id="cfgFallback" value="' + escapeAttr(node.config.fallback_approver || '') + '">';
+        html += '<button type="button" class="approver-select-control" id="cfgFallbackPicker">' + escapeHtml(formatApproverSelection(node.config.fallback_approver ? [node.config.fallback_approver] : [], tr('chooseFallbackApprover'))) + '</button>';
+        html += '<input type="hidden" id="cfgFallback" value="' + escapeAttr(node.config.fallback_approver || '') + '">';
         html += '</div>';
         break;
 
@@ -1346,10 +1378,10 @@
         break;
       case 'approval':
         bindSelect('cfgMode', function (v) { node.config.mode = v; });
-        bindInput('cfgApproverIds', function (v) { node.config.approver_ids = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean); });
+        bindApproverPicker(node, 'cfgApproverIdsPicker', true, function (ids) { node.config.approver_ids = ids; });
         bindInput('cfgMinApprovals', function (v) { node.config.min_approvals = parseInt(v, 10) || 1; });
         bindInput('cfgTimeout', function (v) { node.config.timeout_hours = Math.min(720, Math.max(1, parseInt(v, 10) || 24)); });
-        bindInput('cfgFallback', function (v) { node.config.fallback_approver = v.trim(); });
+        bindApproverPicker(node, 'cfgFallbackPicker', false, function (ids) { node.config.fallback_approver = ids[0] || ''; });
         break;
       case 'condition_branch':
         bindJsonTextarea('cfgBranches', function (v) { node.config.branches = v; });
@@ -1448,6 +1480,291 @@
         updateConfigErrorSummary(getInvalidConfigErrors());
       }
     });
+  }
+
+  function bindApproverPicker(node, buttonId, multiple, cb) {
+    var button = document.getElementById(buttonId);
+    if (!button) return;
+    button.addEventListener('click', function () {
+      if (isReadOnlyPreview()) return;
+      var current = multiple ? (node.config.approver_ids || []) : (node.config.fallback_approver ? [node.config.fallback_approver] : []);
+      openApproverPicker({
+        multiple: multiple,
+        selectedIds: current,
+        title: multiple ? tr('approverPickerTitle') : tr('fallbackApproverPickerTitle'),
+        onConfirm: function (ids) {
+          cb(ids);
+          syncApproverPickerField(buttonId, ids, multiple);
+          markDirty();
+        }
+      });
+    });
+  }
+
+  function syncApproverPickerField(buttonId, ids, multiple) {
+    ids = normalizeApproverIds(ids);
+    if (buttonId === 'cfgApproverIdsPicker') {
+      var approverInput = document.getElementById('cfgApproverIds');
+      var approverButton = document.getElementById('cfgApproverIdsPicker');
+      if (approverInput) approverInput.value = ids.join(', ');
+      if (approverButton) approverButton.textContent = formatApproverSelection(ids, tr('chooseApprovers'));
+      return;
+    }
+    var fallbackInput = document.getElementById('cfgFallback');
+    var fallbackButton = document.getElementById('cfgFallbackPicker');
+    var value = multiple ? ids : ids.slice(0, 1);
+    if (fallbackInput) fallbackInput.value = value[0] || '';
+    if (fallbackButton) fallbackButton.textContent = formatApproverSelection(value, tr('chooseFallbackApprover'));
+  }
+
+  function normalizeApproverIds(ids) {
+    var seen = {};
+    var out = [];
+    (ids || []).forEach(function (id) {
+      id = String(id || '').trim();
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      out.push(id);
+    });
+    return out;
+  }
+
+  function formatApproverSelection(ids, emptyText) {
+    ids = normalizeApproverIds(ids);
+    if (!ids.length) return emptyText;
+    var directory = state.approverDirectory;
+    if (!directory || !directory.byId) return tr('selectedApprovers', { count: ids.length });
+    var names = ids.map(function (id) {
+      var entry = directory && directory.byId && directory.byId[id];
+      return entry && entry.name ? entry.name : '';
+    }).filter(Boolean);
+    return names.length ? names.join(', ') : tr('selectedApprovers', { count: ids.length });
+  }
+
+  function ensureApproverPickerShell() {
+    var overlay = document.getElementById('approverPickerOverlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.id = 'approverPickerOverlay';
+    overlay.className = 'approver-picker-overlay';
+    overlay.hidden = true;
+    overlay.innerHTML =
+      '<div class="approver-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="approverPickerTitle">' +
+        '<div class="approver-picker-head">' +
+          '<div><h2 id="approverPickerTitle"></h2><p id="approverPickerCount"></p></div>' +
+          '<button type="button" class="approver-picker-close" id="approverPickerClose" aria-label="Close">&times;</button>' +
+        '</div>' +
+        '<input class="approver-picker-search" id="approverPickerSearch" autocomplete="off">' +
+        '<div class="approver-picker-body" id="approverPickerBody"></div>' +
+        '<div class="approver-picker-actions">' +
+          '<button type="button" class="approver-picker-secondary" id="approverPickerClear"></button>' +
+          '<span></span>' +
+          '<button type="button" class="approver-picker-secondary" id="approverPickerCancel"></button>' +
+          '<button type="button" class="approver-picker-primary" id="approverPickerConfirm"></button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('mousedown', function (event) {
+      if (event.target === overlay) closeApproverPicker();
+    });
+    document.getElementById('approverPickerClose').addEventListener('click', closeApproverPicker);
+    document.getElementById('approverPickerCancel').addEventListener('click', closeApproverPicker);
+    document.getElementById('approverPickerClear').addEventListener('click', function () {
+      if (!state.approverPicker) return;
+      state.approverPicker.selected = {};
+      renderApproverPicker();
+    });
+    document.getElementById('approverPickerConfirm').addEventListener('click', function () {
+      if (!state.approverPicker) return;
+      var ids = Object.keys(state.approverPicker.selected || {}).filter(function (id) { return state.approverPicker.selected[id]; });
+      state.approverPicker.onConfirm(ids);
+      closeApproverPicker();
+    });
+    document.getElementById('approverPickerSearch').addEventListener('input', renderApproverPicker);
+    return overlay;
+  }
+
+  function openApproverPicker(options) {
+    var overlay = ensureApproverPickerShell();
+    var selected = {};
+    normalizeApproverIds(options.selectedIds).forEach(function (id) { selected[id] = true; });
+    state.approverPicker = {
+      multiple: !!options.multiple,
+      selected: selected,
+      onConfirm: typeof options.onConfirm === 'function' ? options.onConfirm : function () {},
+      title: options.title || tr('approverPickerTitle')
+    };
+    document.getElementById('approverPickerTitle').textContent = state.approverPicker.title;
+    document.getElementById('approverPickerSearch').placeholder = tr('approverPickerSearch');
+    document.getElementById('approverPickerSearch').value = '';
+    document.getElementById('approverPickerClear').textContent = tr('clearSelection');
+    document.getElementById('approverPickerCancel').textContent = tr('cancel');
+    document.getElementById('approverPickerConfirm').textContent = tr('confirm');
+    overlay.hidden = false;
+    loadApproverDirectory().then(function () {
+      refreshApproverControls();
+      renderApproverPicker();
+    }).catch(function (err) {
+      var body = document.getElementById('approverPickerBody');
+      if (body) body.innerHTML = '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerLoadFailed', { error: err && err.message || String(err) })) + '</div>';
+    });
+    renderApproverPicker();
+    setTimeout(function () {
+      var search = document.getElementById('approverPickerSearch');
+      if (search) search.focus();
+    }, 0);
+  }
+
+  function closeApproverPicker() {
+    var overlay = document.getElementById('approverPickerOverlay');
+    if (overlay) overlay.hidden = true;
+    state.approverPicker = null;
+  }
+
+  function refreshApproverControls() {
+    var node = state.nodes.find(function (n) { return n.id === state.selectedNodeId; });
+    if (!node || node.type !== 'approval') return;
+    syncApproverPickerField('cfgApproverIdsPicker', node.config.approver_ids || [], true);
+    syncApproverPickerField('cfgFallbackPicker', node.config.fallback_approver ? [node.config.fallback_approver] : [], false);
+  }
+
+  async function loadApproverDirectory() {
+    if (state.approverDirectory) return state.approverDirectory;
+    if (state.approverDirectoryLoading) return state.approverDirectoryLoading;
+    state.approverDirectoryLoading = (async function () {
+      var data = await workflowApi('/api/v1/workflow-directory/approvers');
+      var groupRoot = normalizeGroupNode(data && data.tree);
+      var membersByGroup = data && data.members_by_group || {};
+      var usersByEmail = {};
+      (data && data.users || []).forEach(function (user) {
+        var email = normalizeEmail(user && user.email);
+        if (email) usersByEmail[email] = user;
+      });
+      var machinesByEmail = {};
+      (data && data.machines || []).forEach(function (machine) {
+        var email = normalizeEmail(machine && (machine.user_email || machine.UserEmail));
+        var machineId = String(machine && (machine.machine_id || machine.id || machine.ID || machine.MachineID) || '').trim();
+        if (!email || !machineId) return;
+        if (!machinesByEmail[email]) machinesByEmail[email] = [];
+        machinesByEmail[email].push({ id: machineId, name: machine.alias || machine.name || machine.hostname || '' });
+      });
+      var veEntries = (data && data.employees || []).filter(function (entry) {
+        return String(entry && entry.status || '').toLowerCase() === 'active';
+      }).map(function (entry) {
+        return {
+          id: String(entry.machine_id || entry.id || '').trim(),
+          name: String(entry.name || entry.owner_email || tr('virtualEmployee')).trim(),
+          kind: 've'
+        };
+      }).filter(function (entry) { return entry.id; });
+      var directory = { root: groupRoot, membersByGroup: membersByGroup, usersByEmail: usersByEmail, machinesByEmail: machinesByEmail, veEntries: veEntries, byId: {} };
+      indexApproverDirectory(directory);
+      state.approverDirectory = directory;
+      state.approverDirectoryLoading = false;
+      return directory;
+    })().catch(function (err) {
+      state.approverDirectoryLoading = false;
+      throw err;
+    })();
+    return state.approverDirectoryLoading;
+  }
+
+  function normalizeGroupNode(node) {
+    if (!node) return null;
+    return {
+      id: String(node.id || node.ID || '').trim(),
+      name: String(node.name || node.Name || '').trim(),
+      children: (node.children || node.Children || []).map(normalizeGroupNode).filter(Boolean)
+    };
+  }
+
+  function normalizeEmail(email) {
+    return String(email || '').trim().toLowerCase();
+  }
+
+  function indexApproverDirectory(directory) {
+    (directory.veEntries || []).forEach(function (entry) {
+      directory.byId[entry.id] = entry;
+    });
+    Object.keys(directory.machinesByEmail || {}).forEach(function (email) {
+      var user = directory.usersByEmail[email] || {};
+      (directory.machinesByEmail[email] || []).forEach(function (machine) {
+        directory.byId[machine.id] = { id: machine.id, name: user.email || email, kind: 'machine', email: email };
+      });
+    });
+  }
+
+  function approverRowsForGroup(directory, group) {
+    var rows = [];
+    (directory.membersByGroup[group.id] || []).forEach(function (email) {
+      email = normalizeEmail(email);
+      var machines = directory.machinesByEmail[email] || [];
+      if (!machines.length) {
+        rows.push({ disabled: true, name: email, meta: tr('noApproverIdentity') });
+        return;
+      }
+      machines.forEach(function (machine) {
+        rows.push({ id: machine.id, name: email, kind: 'machine' });
+      });
+    });
+    if (group === directory.root) {
+      (directory.veEntries || []).forEach(function (entry) { rows.push(entry); });
+    }
+    return rows;
+  }
+
+  function renderApproverPicker() {
+    var picker = state.approverPicker;
+    var body = document.getElementById('approverPickerBody');
+    var count = document.getElementById('approverPickerCount');
+    if (!picker || !body) return;
+    var selectedIds = Object.keys(picker.selected || {}).filter(function (id) { return picker.selected[id]; });
+    if (count) count.textContent = tr('selectedApprovers', { count: selectedIds.length });
+    var directory = state.approverDirectory;
+    if (!directory) {
+      body.innerHTML = '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerLoading')) + '</div>';
+      return;
+    }
+    var queryEl = document.getElementById('approverPickerSearch');
+    var query = String(queryEl && queryEl.value || '').trim().toLowerCase();
+    var html = renderApproverGroup(directory, directory.root, query);
+    body.innerHTML = html || '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>';
+    body.querySelectorAll('[data-approver-id]').forEach(function (row) {
+      row.addEventListener('click', function () { toggleApproverSelection(row.getAttribute('data-approver-id')); });
+      row.addEventListener('keydown', function (event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        toggleApproverSelection(row.getAttribute('data-approver-id'));
+      });
+    });
+  }
+
+  function renderApproverGroup(directory, group, query) {
+    if (!group) return '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>';
+    var rows = approverRowsForGroup(directory, group).filter(function (row) {
+      if (!query) return true;
+      return String(row.name || '').toLowerCase().indexOf(query) !== -1 || String(group.name || '').toLowerCase().indexOf(query) !== -1;
+    });
+    var childHtml = (group.children || []).map(function (child) { return renderApproverGroup(directory, child, query); }).join('');
+    var rowsHtml = rows.map(renderApproverRow).join('');
+    if (query && !rowsHtml && !childHtml) return '';
+    return '<section class="approver-group"><h3>' + escapeHtml(group.name || 'Root') + '</h3>' + (rowsHtml || '<div class="approver-picker-subempty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>') + childHtml + '</section>';
+  }
+
+  function renderApproverRow(row) {
+    if (row.disabled) {
+      return '<div class="approver-row disabled"><span>' + escapeHtml(row.name) + '</span><small>' + escapeHtml(row.meta || '') + '</small></div>';
+    }
+    var selected = !!(state.approverPicker && state.approverPicker.selected && state.approverPicker.selected[row.id]);
+    var kind = row.kind === 've' ? tr('virtualEmployee') : tr('userMachine');
+    return '<div class="approver-row' + (selected ? ' selected' : '') + '" role="button" tabindex="0" data-approver-id="' + escapeAttr(row.id) + '"><span>' + escapeHtml(row.name || kind) + '</span><small>' + escapeHtml(kind) + '</small></div>';
+  }
+
+  function toggleApproverSelection(id) {
+    if (!state.approverPicker || !id) return;
+    if (!state.approverPicker.multiple) state.approverPicker.selected = {};
+    state.approverPicker.selected[id] = !state.approverPicker.selected[id];
+    renderApproverPicker();
   }
 
   function clearInvalidConfigFieldsForNode(nodeId) {

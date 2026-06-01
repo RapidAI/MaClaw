@@ -22,11 +22,9 @@ require (
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.10
-	github.com/refraction-networking/utls v1.8.2
 	github.com/shakinm/xlsReader v0.9.12
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/stretchr/testify v1.10.0
-	github.com/tetratelabs/wazero v1.11.0
 	github.com/viterin/vek v0.4.3
 	github.com/wailsapp/wails/v2 v2.11.0
 	github.com/wdvxdr1123/go-silk v0.0.0-20220304095002-f67345df09ea
@@ -43,7 +41,6 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
@@ -62,7 +59,6 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/labstack/echo/v4 v4.13.3 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect

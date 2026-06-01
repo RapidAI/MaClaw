@@ -112,6 +112,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"wait_seconds": map[string]string{"type": "number", "description": "等待状态快照的秒数（install/run/status 时可选，默认 2，最大 30）"},
 				"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填，从 run 返回值中获取）"},
 				"auto_fix":     map[string]string{"type": "boolean", "description": "与 action=validate 配合使用，为 true 时自动修复检测到的可移植性问题（可选，默认 false）"},
+				"force":        map[string]string{"type": "boolean", "description": "与 action=upload 配合使用，为 true 时跳过可移植性/质量门禁强制上传（可选，默认 false。仅在你已确认并修正问题后使用）"},
 			}, []string{"action"}),
 		toolDef("parallel_execute", "按 SubAgent 并发数分批执行多个编程任务（最多5个任务，并发上限4），每个任务在独立会话中运行",
 			map[string]interface{}{

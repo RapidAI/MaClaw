@@ -27,6 +27,14 @@ const (
 	approvalDecisionEscalate = "escalate"
 )
 
+// pendingDispatch is a deferred side-effect computed during decision
+// evaluation and executed exactly once AFTER the approval state is durably
+// persisted, so an optimistic-lock retry cannot deliver a duplicate request.
+type pendingDispatch struct {
+	req        *ApprovalRequest
+	approverID string
+}
+
 // WorkflowExecutor manages the lifecycle of workflow instances.
 type WorkflowExecutor struct {
 	store           WorkflowStore
@@ -270,9 +278,24 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 	// cannot lose a vote across processes (Requirement 2.6). The per-mode
 	// decision logic in process*Mode is unchanged; only HOW approvalNodeState is
 	// persisted changes.
-	shouldAdvance, shouldReject, err := e.applyDecisionWithOptimisticLock(ctx, inst, nodeID, &cfg, response)
+	shouldAdvance, shouldReject, pending, err := e.applyDecisionWithOptimisticLock(ctx, inst, nodeID, &cfg, response)
 	if err != nil {
 		return err
+	}
+
+	// Execute the deferred side-effect (dispatch to the next sequential
+	// approver) exactly once, AFTER the approval state has been durably
+	// persisted by applyDecisionWithOptimisticLock. The dispatch intent is
+	// computed during decision evaluation — possibly recomputed on each CAS
+	// retry — but it is never executed inside that retry loop, so a
+	// cross-process optimistic-lock conflict that re-runs the evaluation cannot
+	// deliver a duplicate approval-request envelope to the next approver. If the
+	// CAS path declined a late decision (instance no longer running), err is
+	// non-nil above and we returned before reaching here, so no dispatch occurs.
+	if pending != nil {
+		if derr := e.dispatcher.Dispatch(ctx, pending.req, pending.approverID); derr != nil {
+			return fmt.Errorf("dispatch to next sequential approver %s: %w", pending.approverID, derr)
+		}
 	}
 
 	if shouldReject {
@@ -342,39 +365,45 @@ const maxResumeDecisionCASRetries = 8
 //
 // The per-mode decision logic in process*Mode is unchanged — only HOW the
 // approval state is persisted changes (preserves 3.2, 3.3, 3.12).
-func (e *WorkflowExecutor) applyDecisionWithOptimisticLock(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (shouldAdvance, shouldReject bool, err error) {
+func (e *WorkflowExecutor) applyDecisionWithOptimisticLock(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (shouldAdvance, shouldReject bool, pending *pendingDispatch, err error) {
 	cas, ok := e.instanceStore.(OptimisticInstanceDataUpdater)
 	if !ok {
 		// No optimistic-locking capability: evaluate and persist with the
 		// existing unconditional overwrite (legacy path for stores/mocks that
-		// do not implement the capability).
-		shouldAdvance, shouldReject, err = e.processApprovalResponse(ctx, inst, nodeID, cfg, response)
+		// do not implement the capability). Return the pending dispatch from the
+		// single evaluation.
+		shouldAdvance, shouldReject, pending, err = e.processApprovalResponse(ctx, inst, nodeID, cfg, response)
 		if err != nil {
-			return false, false, err
+			return false, false, nil, err
 		}
 		if perr := e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData); perr != nil {
-			return false, false, fmt.Errorf("persist approval state: %w", perr)
+			return false, false, nil, fmt.Errorf("persist approval state: %w", perr)
 		}
-		return shouldAdvance, shouldReject, nil
+		return shouldAdvance, shouldReject, pending, nil
 	}
 
 	for attempt := 0; attempt < maxResumeDecisionCASRetries; attempt++ {
 		// Evaluate the per-mode decision logic against the current in-memory
 		// instance state (fresh on the first attempt from ResumeInstance's Get,
 		// re-read below on each conflict). This re-applies this approver's vote
-		// on top of whatever state is currently persisted.
-		shouldAdvance, shouldReject, err = e.processApprovalResponse(ctx, inst, nodeID, cfg, response)
+		// on top of whatever state is currently persisted. The pending dispatch
+		// intent is recomputed on each attempt, which is harmless: it is never
+		// executed here, only by the caller after the winning CAS commit.
+		shouldAdvance, shouldReject, pending, err = e.processApprovalResponse(ctx, inst, nodeID, cfg, response)
 		if err != nil {
-			return false, false, err
+			return false, false, nil, err
 		}
 
 		newVersion, perr := cas.UpdateInstanceDataCAS(ctx, inst.ID, inst.RowVersion, inst.InstanceData)
 		if perr == nil {
 			inst.RowVersion = newVersion
-			return shouldAdvance, shouldReject, nil
+			// Return the pending dispatch from the attempt whose CAS commit
+			// SUCCEEDED, so the caller dispatches exactly once against durably
+			// persisted state.
+			return shouldAdvance, shouldReject, pending, nil
 		}
 		if !errors.Is(perr, ErrInstanceVersionConflict) {
-			return false, false, fmt.Errorf("persist approval state: %w", perr)
+			return false, false, nil, fmt.Errorf("persist approval state: %w", perr)
 		}
 
 		// A concurrent decision committed first. Re-read the fresh instance
@@ -383,10 +412,10 @@ func (e *WorkflowExecutor) applyDecisionWithOptimisticLock(ctx context.Context, 
 		// no vote is lost.
 		fresh, gerr := e.instanceStore.Get(ctx, inst.ID)
 		if gerr != nil {
-			return false, false, fmt.Errorf("reload instance after version conflict: %w", gerr)
+			return false, false, nil, fmt.Errorf("reload instance after version conflict: %w", gerr)
 		}
 		if fresh == nil {
-			return false, false, fmt.Errorf("instance %s disappeared during concurrent decision", inst.ID)
+			return false, false, nil, fmt.Errorf("instance %s disappeared during concurrent decision", inst.ID)
 		}
 		inst.InstanceData = fresh.InstanceData
 		inst.RowVersion = fresh.RowVersion
@@ -404,37 +433,45 @@ func (e *WorkflowExecutor) applyDecisionWithOptimisticLock(ctx context.Context, 
 		// rejected here. The winning writer's vote is preserved (it is in
 		// fresh.InstanceData); only this redundant late decision is declined.
 		if inst.Status != InstanceRunning {
-			return false, false, fmt.Errorf("instance %s is not running (status: %s), cannot process approval response", inst.ID, inst.Status)
+			return false, false, nil, fmt.Errorf("instance %s is not running (status: %s), cannot process approval response", inst.ID, inst.Status)
 		}
 	}
-	return false, false, fmt.Errorf("persist approval state: exhausted %d optimistic-lock retries for instance %s node %s", maxResumeDecisionCASRetries, inst.ID, nodeID)
+	return false, false, nil, fmt.Errorf("persist approval state: exhausted %d optimistic-lock retries for instance %s node %s", maxResumeDecisionCASRetries, inst.ID, nodeID)
 }
 
 // processApprovalResponse evaluates the response against the approval mode and
-// returns (shouldAdvance, shouldReject, error).
-// - shouldAdvance=true means the approval node is satisfied and workflow should continue.
-// - shouldReject=true means the approval node is rejected and workflow should fail.
-// - Both false means still waiting for more responses.
-func (e *WorkflowExecutor) processApprovalResponse(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, error) {
+// returns (shouldAdvance, shouldReject, pending, error).
+//   - shouldAdvance=true means the approval node is satisfied and workflow should continue.
+//   - shouldReject=true means the approval node is rejected and workflow should fail.
+//   - Both false means still waiting for more responses.
+//   - pending is a deferred dispatch intent (sequential mode only); nil otherwise.
+//     It is NOT executed here — the caller dispatches it exactly once after the
+//     approval state is durably committed, so an optimistic-lock retry cannot
+//     deliver a duplicate request.
+func (e *WorkflowExecutor) processApprovalResponse(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, *pendingDispatch, error) {
 	if !isAllowedApprovalDecision(response.Decision) {
-		return false, false, fmt.Errorf("invalid approval decision %q", response.Decision)
+		return false, false, nil, fmt.Errorf("invalid approval decision %q", response.Decision)
 	}
 	if !isConfiguredApprover(cfg, response.ApproverID) {
-		return false, false, fmt.Errorf("approver %q is not assigned to approval node %s", response.ApproverID, nodeID)
+		return false, false, nil, fmt.Errorf("approver %q is not assigned to approval node %s", response.ApproverID, nodeID)
 	}
 
 	switch cfg.Mode {
 	case ModeSingle:
-		return e.processSingleMode(response)
+		shouldAdvance, shouldReject, err := e.processSingleMode(response)
+		return shouldAdvance, shouldReject, nil, err
 	case ModeCountersign:
-		return e.processCountersignMode(ctx, inst, nodeID, cfg, response)
+		shouldAdvance, shouldReject, err := e.processCountersignMode(ctx, inst, nodeID, cfg, response)
+		return shouldAdvance, shouldReject, nil, err
 	case ModeAnyNofM:
-		return e.processAnyNofMMode(ctx, inst, nodeID, cfg, response)
+		shouldAdvance, shouldReject, err := e.processAnyNofMMode(ctx, inst, nodeID, cfg, response)
+		return shouldAdvance, shouldReject, nil, err
 	case ModeSequential:
 		return e.processSequentialMode(ctx, inst, nodeID, cfg, response)
 	default:
 		// Unknown mode; treat as single approver.
-		return e.processSingleMode(response)
+		shouldAdvance, shouldReject, err := e.processSingleMode(response)
+		return shouldAdvance, shouldReject, nil, err
 	}
 }
 
@@ -567,13 +604,24 @@ func (e *WorkflowExecutor) processAnyNofMMode(ctx context.Context, inst *Workflo
 // - Approvers are consulted in a defined order.
 // - On approve: advance to the next approver in the sequence, or complete if last.
 // - On reject: reject immediately (stop the sequence).
-func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, error) {
+//
+// The per-mode DECISION logic (state tracking, ordering validation,
+// advance/reject/wait outcomes) is unchanged. The only difference from the
+// historic behavior is that the dispatch to the next approver is NOT executed
+// here: instead this function builds the *ApprovalRequest and the
+// nextApproverID exactly as before and RETURNS them as a *pendingDispatch. The
+// caller executes the dispatch exactly once, AFTER the approval state is
+// durably persisted, so a cross-process optimistic-lock retry that re-runs this
+// evaluation cannot deliver a duplicate approval-request envelope. pending is
+// nil whenever there is nothing to dispatch (reject, escalate,
+// last-approver-advance, or the pre-dispatch ordering-error cases).
+func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, *pendingDispatch, error) {
 	// Reject immediately on any rejection
 	if response.Decision == approvalDecisionReject {
-		return false, true, nil
+		return false, true, nil, nil
 	}
 	if response.Decision == approvalDecisionEscalate {
-		return false, false, nil
+		return false, false, nil, nil
 	}
 
 	// Track the approval
@@ -596,23 +644,25 @@ func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *Work
 		}
 	}
 	if currentIdx == -1 {
-		return false, false, fmt.Errorf("approver %q is not in sequential approval order", response.ApproverID)
+		return false, false, nil, fmt.Errorf("approver %q is not in sequential approval order", response.ApproverID)
 	}
 	for i := 0; i < currentIdx; i++ {
 		if state.Decisions[order[i]] != approvalDecisionApprove {
-			return false, false, fmt.Errorf("sequential approval response from %q arrived before approver %q completed", response.ApproverID, order[i])
+			return false, false, nil, fmt.Errorf("sequential approval response from %q arrived before approver %q completed", response.ApproverID, order[i])
 		}
 	}
 
 	// If this is the last approver in the sequence, advance the workflow
 	if currentIdx >= len(order)-1 {
-		return true, false, nil
+		return true, false, nil, nil
 	}
 
-	// Dispatch to the next approver in the sequence
+	// Build the deferred dispatch intent for the next approver in the sequence.
+	// This is NOT executed here; the caller dispatches it exactly once after the
+	// approval state is durably committed (see ResumeInstance), so an
+	// optimistic-lock retry cannot deliver a duplicate request.
 	nextApproverID := order[currentIdx+1]
 
-	// Build the approval request for the next approver
 	req := &ApprovalRequest{
 		ID:         generateID("areq"),
 		InstanceID: inst.ID,
@@ -629,12 +679,9 @@ func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *Work
 		req.Details = details
 	}
 
-	if err := e.dispatcher.Dispatch(ctx, req, nextApproverID); err != nil {
-		return false, false, fmt.Errorf("dispatch to next sequential approver %s: %w", nextApproverID, err)
-	}
-
-	// Still waiting; next approver needs to respond.
-	return false, false, nil
+	// Still waiting; next approver needs to respond. Return the dispatch intent
+	// for the caller to execute after persistence.
+	return false, false, &pendingDispatch{req: req, approverID: nextApproverID}, nil
 }
 
 // markInstanceFailed marks the workflow instance as failed and records the event.

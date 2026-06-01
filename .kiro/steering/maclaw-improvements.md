@@ -5631,3 +5631,65 @@ Guards 防止误杀合法 session 交互：
 - 带 ANSI 颜色/标题的 prompt → 正确识别为 prompt
 - 所有 remote 包测试通过
 - corelib/remote 编译通过
+
+
+### 99. Skill 上传前可移植性门禁——共享 PrepareSkillForUpload 预检
+
+**来源**：用户需求——优化 skill 上传到 SkillMarket（hubcenter/hub）之前的处理，让 agent 检查确认并修正以下问题再上传：文件完整、skill 中没有影响其它机器安装使用的绝对路径（如果有，需改为 SkillRunner 支持的宏或相对路径）。
+
+#### 根因（机制性分析）
+
+可移植性基础设施已存在（`ValidateSkillPortability` 检测绝对路径、`AutoFixPortability` 把包内绝对路径改写为 `{baseDir}`/把家目录路径改写为 `$HOME`、`CheckStepFileReferences` 检查引用文件是否打包），但 **agent 上传路径存在两个机制缺口**：
+
+1. **GUI `toolUploadSkill`**：只检查 usage/success 计数，然后委托 `UploadNow`。`UploadNow` 的 autofix 跑在**临时副本**上——源 skill 目录从不被持久化修正；被质量门禁拦截时只返回一句 `score=X reasons=Y`，agent 看不到**具体是哪些绝对路径/缺失文件**，无法定位修正后重试。
+2. **TUI `skillUpload`**：只做 `ValidateSkillPortability`（无 autofix），且**完全没有**文件完整性检查，引用但未打包的脚本会漏到其它机器。
+
+两端各自实现一套上传前处理，缺口不一致。
+
+#### 修复：单一共享预检 `PrepareSkillForUpload`
+
+**机制原则**：上传前"是否能在其它机器安装/运行"的判定只实现一次，放在 corelib，GUI 和 TUI 共享同一条预检路径。
+
+- `corelib/skill/upload_preflight.go`（新文件）：
+  - `PrepareSkillForUpload(skillDir)`：
+    1. 对**真实** skill 目录运行 `AutoFixPortability`（持久化改写 + `.bak` 备份）——包内绝对路径→`{baseDir}`、家目录路径→`$HOME`、反斜杠→正斜杠、补全 platforms
+    2. 重新 `ValidateSkillPortability`，收集 autofix 后**仍残留**的绝对路径（既不在包内也不在 `$HOME` 下的机器特定路径，如 `/opt/acme/...`）→ `BlockingPaths`
+    3. 复用 `CheckStepFileReferences`（与 runner 同一套 precheck）验证命令引用的本地文件是否都打包进 skill 目录 → `MissingFiles`
+  - `UploadPreflightResult.Portable()`：无残留绝对路径且无缺失文件时为 true
+  - `FormatUploadPreflight(result)`：生成 agent 可读报告——列出每个绝对路径及其修正建议、缺失文件清单，并说明 SkillRunner 支持的可移植引用方式（`{baseDir}/...`、`$HOME/...`、`{{key}}` 运行时参数），引导 agent 修正后重试
+
+- `gui/im_tools_misc.go`：
+  - `toolUploadSkill` 在 usage/quality 门禁**之前**新增 `runUploadPortabilityGate(name)`
+  - `runUploadPortabilityGate`：解析真实 skill 目录 → 快照（用于回滚）→ `PrepareSkillForUpload`（持久化 autofix）→ 若 autofix 改写了文件则跑安全扫描（`scanManagedSkillWriteback`），未通过则回滚 → 刷新索引（`refreshSkillIndexesAfterMutation`）→ 不可移植时返回 `FormatUploadPreflight` 报告阻止上传
+  - 新增 `resolveManagedSkillDir(name)`：按名解析已注册 skill 的目录，回退到 `PrimarySkillsDir/<name>`
+  - `force=true` 时跳过门禁（agent 已确认并修正后强制上传）
+
+- `tui/tool_manage_skill.go`：`skillUpload` 把原来的"仅 validate"改为 `PrepareSkillForUpload`（autofix + blocking paths + missing files），不可移植时返回 `FormatUploadPreflight`，与 GUI 行为一致；同样支持 `force`
+
+- `corelib/skill/manage_skill_actions.go`：`upload` action 描述更新为"上传前自动检查并修正绝对路径、补全缺失文件等可移植性问题"
+- `gui/im_tool_definitions.go`：`manage_skill` 工具新增 `force` 参数说明（与 action=upload 配合，跳过门禁强制上传）
+
+#### 机制性特征
+
+- **单一数据源**：`PrepareSkillForUpload` 是上传前可移植性判定的唯一实现，GUI/TUI 共享；新增检测规则只改这一处
+- **复用运行时同款检查**：文件完整性用 `CollectMissingStepFileReferences`（与 runner precheck `CheckStepFileReferences` 共享同一套引用提取原语），上传门禁与运行时行为一致
+- **一次报告所有问题**：`CheckStepFileReferences` 在第一个缺失文件处即返回（运行时快速 precheck），但上传门禁用 `CollectMissingStepFileReferences` 一次性收集所有缺失文件，避免 agent 反复"修一个→重传→再发现下一个"的多轮往返；不再依赖脆弱的错误字符串解析
+- **持久化修正**：autofix 跑在真实 skill 目录（带 `.bak` 备份 + 安全扫描回滚），而非临时副本——修正结果对后续 run/upload 都生效
+- **可操作报告**：阻止时列出具体绝对路径、缺失文件和修正方式，agent 能定位并修正后重试，而非只看到一个分数
+
+#### Review/Fix/Optimize（本轮）
+
+- `corelib/skill/runner_filecheck.go`：新增 `CollectMissingStepFileReferences(entry)`——不在首个缺失文件处提前返回，一次扫描收集所有缺失的引用文件和 working_dir（绝对路径、去重、保持首次出现顺序），与 runtime precheck 共享 `commandFileReferencesForPrecheck`/`resolveCommandFileReference` 原语
+- `corelib/skill/upload_preflight.go`：`missingBundledFileReferences` 改为调用 `CollectMissingStepFileReferences`，删除脆弱的错误字符串解析（`extractMissingReferencePath`/`stripActionTag`）
+- `gui/im_tools_misc.go`：`toolUploadSkill` 两个 `if !force` 块合并为一个，门禁顺序不变（可移植性门禁 → usage/quality 门禁）
+
+#### 验收标准
+
+- skill 含包内绝对路径（如 `python /skills/x/scripts/run.py`）→ 自动改写为 `{baseDir}/scripts/run.py` 并持久化，门禁放行
+- skill 含机器特定绝对路径（如 `cat /opt/acme/config.json`）→ 门禁阻止，报告列出该路径及"改为 {baseDir}/相对路径或 {{key}} 运行时参数"建议
+- skill 引用未打包的脚本（如 `{baseDir}/scripts/missing.py` 不存在）→ 门禁阻止，报告列出缺失文件
+- skill 跨多个 step 引用多个缺失文件 → 报告**一次性**列出所有缺失文件（不只第一个）
+- 干净 skill（`{baseDir}/scripts/run.py` 且文件已打包）→ 门禁放行
+- `force=true` → 跳过门禁
+- 6 个 corelib 预检测试 + 2 个 GUI 门禁测试通过；corelib/skill 全量测试通过；GUI/TUI/corelib 编译通过、`go vet` 通过
+- 注：`TestToolValidateSkillAutoFixScansAndRollsBackRiskyWriteback`（TUI `TestManageSkillRunHydratesMarkdownMetadata`）为预先存在的失败，与本次改动无关

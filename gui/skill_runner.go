@@ -265,9 +265,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		if docContent != "" {
 			log.Printf("[skill-runner] skill %q has no steps but has documentation (%d chars), creating craft_tool fallback", skillName, len(docContent))
 			// Truncate very long documentation to avoid overwhelming the LLM.
-			if len(docContent) > 8000 {
-				docContent = docContent[:8000] + "\n\n... (truncated)"
-			}
+			docContent = truncateRunesMarker(docContent, 8000, "\n\n... (truncated)")
 			// Build task description from user context + documentation.
 			var userContext string
 			for _, key := range []string{"user_prompt", "input", "query"} {
@@ -450,11 +448,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		run.status.Error = err.Error()
 		r.mu.Unlock()
 		r.updateUsageStats(entry, execErr)
-		r.mu.Lock()
-		run.status.Status = skillRunStatusFailed
-		run.status.EndedAt = time.Now().Format(time.RFC3339)
-		run.status.DurationMs = time.Since(execStart).Milliseconds()
-		r.mu.Unlock()
+		r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
 		return
 	}
 
@@ -499,11 +493,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	if finalStatus != skillRunStatusCancelled {
 		r.updateUsageStats(entry, execErr)
 	}
-	r.mu.Lock()
-	run.status.Status = finalStatus
-	run.status.EndedAt = time.Now().Format(time.RFC3339)
-	run.status.DurationMs = time.Since(execStart).Milliseconds()
-	r.mu.Unlock()
+	r.finalizeRunOutcome(run, finalStatus, execStart)
 }
 
 func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
@@ -513,27 +503,44 @@ func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 		r.mu.RUnlock()
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
-	cp := run.status
-	cp.Steps = make([]StepResult, len(run.status.Steps))
-	copy(cp.Steps, run.status.Steps)
-	if len(run.status.Warnings) > 0 {
-		cp.Warnings = append([]string(nil), run.status.Warnings...)
-	}
-	// Deep copy SessionProgress to avoid the monitor goroutine mutating
-	// the returned snapshot's LastOutputLines slice.
-	if run.status.SessionProgress != nil {
-		spCopy := *run.status.SessionProgress
-		if len(run.status.SessionProgress.LastOutputLines) > 0 {
-			spCopy.LastOutputLines = make([]string, len(run.status.SessionProgress.LastOutputLines))
-			copy(spCopy.LastOutputLines, run.status.SessionProgress.LastOutputLines)
-		}
-		cp.SessionProgress = &spCopy
-	}
+	cp := snapshotRunStatus(&run.status)
 	r.mu.RUnlock()
 
 	r.hydrateRunSessionMeta(&cp)
 	summarizeSkillRun(&cp)
 	return &cp, nil
+}
+
+// snapshotRunStatus returns a deep copy of src safe to mutate outside the
+// runner lock. Single source of truth for run-status copying so the
+// GetRunStatus and ListRuns paths can never drift in which fields they
+// deep-copy (the original Session race came from exactly that drift).
+// Caller must hold r.mu.
+func snapshotRunStatus(src *SkillRunStatus) SkillRunStatus {
+	cp := *src
+	cp.Steps = make([]StepResult, len(src.Steps))
+	copy(cp.Steps, src.Steps)
+	if len(src.Warnings) > 0 {
+		cp.Warnings = append([]string(nil), src.Warnings...)
+	}
+	// Deep copy Session so post-lock hydrate/summarize mutate the snapshot,
+	// not the shared live SkillRunSessionMeta that concurrent callers also
+	// dereference.
+	if src.Session != nil {
+		sessCopy := *src.Session
+		cp.Session = &sessCopy
+	}
+	// Deep copy SessionProgress (incl. its LastOutputLines slice) to avoid the
+	// monitor goroutine mutating the returned snapshot.
+	if src.SessionProgress != nil {
+		spCopy := *src.SessionProgress
+		if len(src.SessionProgress.LastOutputLines) > 0 {
+			spCopy.LastOutputLines = make([]string, len(src.SessionProgress.LastOutputLines))
+			copy(spCopy.LastOutputLines, src.SessionProgress.LastOutputLines)
+		}
+		cp.SessionProgress = &spCopy
+	}
+	return cp
 }
 
 // CancelRun cancels a running skill.
@@ -556,13 +563,7 @@ func (r *SkillRunner) ListRuns() []SkillRunStatus {
 	r.mu.RLock()
 	result := make([]SkillRunStatus, 0, len(r.runs))
 	for _, run := range r.runs {
-		cp := run.status
-		cp.Steps = make([]StepResult, len(run.status.Steps))
-		copy(cp.Steps, run.status.Steps)
-		if len(run.status.Warnings) > 0 {
-			cp.Warnings = append([]string(nil), run.status.Warnings...)
-		}
-		result = append(result, cp)
+		result = append(result, snapshotRunStatus(&run.status))
 	}
 	r.mu.RUnlock()
 	for i := range result {
@@ -590,13 +591,10 @@ func (r *SkillRunner) CleanupFinished(maxKeep int) {
 			finished = append(finished, finishedEntry{id: id, endedAt: run.status.EndedAt})
 		}
 	}
-	for i := 0; i < len(finished); i++ {
-		for j := i + 1; j < len(finished); j++ {
-			if finished[j].endedAt < finished[i].endedAt {
-				finished[i], finished[j] = finished[j], finished[i]
-			}
-		}
-	}
+	// Oldest first (EndedAt is RFC3339, lexically sortable).
+	slices.SortFunc(finished, func(a, b finishedEntry) int {
+		return strings.Compare(a.endedAt, b.endedAt)
+	})
 	// 删除最旧的，直到总数 <= maxKeep
 	for _, f := range finished {
 		if len(r.runs) <= maxKeep {
@@ -928,10 +926,32 @@ func truncateSkillRunSnippet(text string) string {
 	if text == "" {
 		return ""
 	}
-	if len(text) > 160 {
-		return text[:160] + "..."
+	return truncateRunesWithEllipsis(text, 160)
+}
+
+// truncateRunesWithEllipsis truncates s to at most maxRunes runes, appending
+// "..." when truncated. See truncateRunesMarker.
+func truncateRunesWithEllipsis(s string, maxRunes int) string {
+	return truncateRunesMarker(s, maxRunes, "...")
+}
+
+// truncateRunesMarker truncates s to at most maxRunes runes, appending marker
+// when truncated. It is UTF-8 safe: byte slicing would split a multi-byte rune
+// and emit invalid UTF-8 into JSON status payloads (this codebase is heavily
+// Chinese, so byte slicing corrupts text routinely). Single-pass over byte
+// offsets so it avoids both the RuneCount pre-scan and a full []rune copy.
+func truncateRunesMarker(s string, maxRunes int, marker string) string {
+	if maxRunes <= 0 {
+		return ""
 	}
-	return text
+	count := 0
+	for i := range s { // range over string yields rune start byte offsets
+		if count == maxRunes {
+			return s[:i] + marker
+		}
+		count++
+	}
+	return s // fewer than or exactly maxRunes runes; no truncation
 }
 
 // mapKeys returns the keys of a string map for diagnostic logging.
@@ -1123,6 +1143,38 @@ func (r *SkillRunner) resolveStepSessionID(runID string, step corelib.NLSkillSte
 
 // ── 异步执行核心 ────────────────────────────────────────────────────────
 
+// finalizeRunOutcome sets the terminal status and timing on a run under the
+// runner lock. It is the single tail shared by every finalization path
+// (success, failure, cancel, timeout, panic) so the "set Status + EndedAt +
+// DurationMs" triple can never drift between them. Caller must NOT hold r.mu;
+// it is only safe to call where the prior mutation already released the lock
+// (i.e. not fused into a single lock-hold with other status writes).
+func (r *SkillRunner) finalizeRunOutcome(run *skillRun, status skillRunLifecycleStatus, execStart time.Time) {
+	r.mu.Lock()
+	run.status.Status = status
+	run.status.EndedAt = time.Now().Format(time.RFC3339)
+	run.status.DurationMs = time.Since(execStart).Milliseconds()
+	r.mu.Unlock()
+}
+
+// failRunPendingSkipped marks all still-pending steps as skipped, records
+// errMsg as the run error, updates usage stats, and finalizes the run as
+// failed. It captures the recurring "fail-and-finalize" lock-dance used by the
+// pre-execution guard paths (proxy config/start failures). Caller must NOT hold
+// r.mu.
+func (r *SkillRunner) failRunPendingSkipped(run *skillRun, skill *corelib.NLSkillEntry, errMsg string, execErr error, execStart time.Time) {
+	r.mu.Lock()
+	for i := range run.status.Steps {
+		if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
+			run.status.Steps[i].Status = skillStepStatusSkipped
+		}
+	}
+	run.status.Error = errMsg
+	r.mu.Unlock()
+	r.updateUsageStats(skill, execErr)
+	r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
+}
+
 func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *corelib.NLSkillEntry) {
 	execStart := time.Now()
 	// Global timeout: use skill-level setting if available, otherwise 5 minutes.
@@ -1141,11 +1193,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			run.status.Error = execErr.Error()
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
-			r.mu.Lock()
-			run.status.Status = skillRunStatusFailed
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
-			run.status.DurationMs = time.Since(execStart).Milliseconds()
-			r.mu.Unlock()
+			r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
 		}
 	}()
 
@@ -1160,11 +1208,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 		r.mu.Unlock()
 		r.updateUsageStats(skill, nil)
-		r.mu.Lock()
-		run.status.Status = skillRunStatusSuccess
-		run.status.EndedAt = time.Now().Format(time.RFC3339)
-		run.status.DurationMs = time.Since(execStart).Milliseconds()
-		r.mu.Unlock()
+		r.finalizeRunOutcome(run, skillRunStatusSuccess, execStart)
 		return
 	}
 
@@ -1236,21 +1280,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 		if strings.TrimSpace(proxyCfg.URL) == "" || strings.TrimSpace(proxyCfg.Model) == "" {
 			errMsg := "skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because no LLM provider URL/model is configured [action: configure_llm]"
-			execErr := fmt.Errorf("%s", errMsg)
-			r.mu.Lock()
-			for i := range run.status.Steps {
-				if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
-					run.status.Steps[i].Status = skillStepStatusSkipped
-				}
-			}
-			run.status.Error = errMsg
-			r.mu.Unlock()
-			r.updateUsageStats(skill, execErr)
-			r.mu.Lock()
-			run.status.Status = skillRunStatusFailed
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
-			run.status.DurationMs = time.Since(execStart).Milliseconds()
-			r.mu.Unlock()
+			r.failRunPendingSkipped(run, skill, errMsg, fmt.Errorf("%s", errMsg), execStart)
 			return
 		}
 
@@ -1258,21 +1288,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		port, proxyErr := proxy.Start()
 		if proxyErr != nil {
 			errMsg := fmt.Sprintf("skill requires OpenAI-compatible environment variables, but the GUI local proxy failed to start: %v [action: retry]", proxyErr)
-			execErr := fmt.Errorf("%s", errMsg)
-			r.mu.Lock()
-			for i := range run.status.Steps {
-				if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
-					run.status.Steps[i].Status = skillStepStatusSkipped
-				}
-			}
-			run.status.Error = errMsg
-			r.mu.Unlock()
-			r.updateUsageStats(skill, execErr)
-			r.mu.Lock()
-			run.status.Status = skillRunStatusFailed
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
-			run.status.DurationMs = time.Since(execStart).Milliseconds()
-			r.mu.Unlock()
+			r.failRunPendingSkipped(run, skill, errMsg, fmt.Errorf("%s", errMsg), execStart)
 			return
 		}
 		defer proxy.Stop()
@@ -1321,10 +1337,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			for j := i; j < len(skill.Steps); j++ {
 				run.status.Steps[j].Status = skillStepStatusSkipped
 			}
-			run.status.Status = skillRunStatusCancelled
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
-			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
+			r.finalizeRunOutcome(run, skillRunStatusCancelled, execStart)
 			return
 		case <-globalCtx.Done():
 			if ctx.Err() != nil {
@@ -1332,10 +1346,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				for j := i; j < len(skill.Steps); j++ {
 					run.status.Steps[j].Status = skillStepStatusSkipped
 				}
-				run.status.Status = skillRunStatusCancelled
-				run.status.EndedAt = time.Now().Format(time.RFC3339)
-				run.status.DurationMs = time.Since(execStart).Milliseconds()
 				r.mu.Unlock()
+				r.finalizeRunOutcome(run, skillRunStatusCancelled, execStart)
 				return
 			}
 			execErr := fmt.Errorf("skill execution exceeded global timeout of %v", globalTimeout)
@@ -1350,11 +1362,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			run.status.Error = execErr.Error()
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
-			r.mu.Lock()
-			run.status.Status = skillRunStatusFailed
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
-			run.status.DurationMs = time.Since(execStart).Milliseconds()
-			r.mu.Unlock()
+			r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
 			return
 		default:
 		}
@@ -1459,6 +1467,22 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				cskill.MergeExtraEnvParam(resolvedStep.Params, run.extraEnv)
 			}
 		}
+		// Poll steps run bash subprocesses internally via runBashStepWithContext,
+		// which injects env from params through BuildCommandEnv (cmd.Env). Merge
+		// required_env/extra_env into the poll step's params so the polled
+		// subprocess receives them without the runner pinning the global
+		// os.Setenv mutex for the entire (minutes-long) poll loop.
+		if resolvedStepAction == skillStepActionPoll {
+			if resolvedStep.Params == nil {
+				resolvedStep.Params = map[string]interface{}{}
+			}
+			if len(skill.RequiredEnv) > 0 {
+				cskill.MergeRequiredEnvParam(resolvedStep.Params, skill.RequiredEnv)
+			}
+			if len(run.extraEnv) > 0 {
+				cskill.MergeExtraEnvParam(resolvedStep.Params, run.extraEnv)
+			}
+		}
 		// Propagate skill-level required_env to bash steps for auto-injection.
 		resolvedStep = cskill.PrepareResolvedStepEnv(resolvedStep, skill.RequiredEnv, run.extraEnv)
 		restoreEnv := installSkillStepProcessEnv(resolvedStep.Action, run.extraEnv)
@@ -1547,10 +1571,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		if run.monitorCancel != nil {
 			run.monitorCancel()
 		}
-		run.status.Status = skillRunStatusCancelled
-		run.status.EndedAt = time.Now().Format(time.RFC3339)
-		run.status.DurationMs = time.Since(execStart).Milliseconds()
 		r.mu.Unlock()
+		r.finalizeRunOutcome(run, skillRunStatusCancelled, execStart)
 		return
 	}
 	finalStatus := skillRunStatusSuccess
@@ -1571,11 +1593,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	// 更新 skill 使用统计
 	r.updateUsageStats(skill, execErr)
 
-	r.mu.Lock()
-	run.status.Status = finalStatus
-	run.status.EndedAt = time.Now().Format(time.RFC3339)
-	run.status.DurationMs = time.Since(execStart).Milliseconds()
-	r.mu.Unlock()
+	r.finalizeRunOutcome(run, finalStatus, execStart)
 
 	// 自动上传触发
 	r.tryAutoUpload(skill, run)
@@ -2487,20 +2505,14 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	}
 	b.WriteString("───────────────\n")
 	if stdout.Len() > 0 {
-		out := stdout.String()
-		if len(out) > 8192 {
-			out = out[:8192] + "\n... (truncated)"
-		}
+		out := truncateRunesMarker(stdout.String(), 8192, "\n... (truncated)")
 		b.WriteString(out)
 	}
 	if stderr.Len() > 0 {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		errOut := stderr.String()
-		if len(errOut) > 4096 {
-			errOut = errOut[:4096] + "\n... (truncated)"
-		}
+		errOut := truncateRunesMarker(stderr.String(), 4096, "\n... (truncated)")
 		b.WriteString("[stderr] ")
 		b.WriteString(errOut)
 	}
@@ -2514,16 +2526,12 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 		errMsg := err.Error()
 		stderrText := strings.TrimSpace(stderr.String())
 		if stderrText != "" {
-			if len(stderrText) > 2048 {
-				stderrText = stderrText[:2048] + "..."
-			}
+			stderrText = truncateRunesMarker(stderrText, 2048, "...")
 			errMsg = fmt.Sprintf("%s | stderr: %s", errMsg, stderrText)
 		}
 		stdoutText := strings.TrimSpace(stdout.String())
 		if stdoutText != "" && stderrText == "" {
-			if len(stdoutText) > 2048 {
-				stdoutText = stdoutText[:2048] + "..."
-			}
+			stdoutText = truncateRunesMarker(stdoutText, 2048, "...")
 			errMsg = fmt.Sprintf("%s | stdout: %s", errMsg, stdoutText)
 		}
 		return b.String(), &bashStepError{
@@ -2937,7 +2945,10 @@ func (r *SkillRunner) executeStepWithPoll(ctx context.Context, runID string, ste
 		var err error
 		matchRe, err = regexp.Compile(poll.UntilMatch)
 		if err != nil {
-			log.Printf("[skill-runner] poll: invalid until_match regex %q: %v", poll.UntilMatch, err)
+			// Fail loudly: a typo'd until_match must not silently degrade
+			// polling into a single-shot execution (the step would appear to
+			// "succeed" without ever waiting for its termination condition).
+			return "", fmt.Errorf("poll: invalid until_match regex %q: %w", poll.UntilMatch, err)
 		}
 	}
 	var lastOutput string

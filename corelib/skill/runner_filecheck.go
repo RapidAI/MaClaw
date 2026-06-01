@@ -177,6 +177,65 @@ func checkStepWorkingDir(skillName string, stepIndex int, step corelib.NLSkillSt
 	return nil
 }
 
+// CollectMissingStepFileReferences returns every local file/script reference
+// in the skill's bash steps that does not exist on disk, as resolved absolute
+// paths, de-duplicated in first-seen order.
+//
+// Unlike CheckStepFileReferences — which returns on the first missing file for
+// a fast runtime precheck — this collects all problems in one pass so callers
+// like the upload portability gate can surface every missing dependency at once
+// (avoiding repeated fix/retry round trips). It shares the same reference
+// extraction primitives as the runtime precheck, so the two stay consistent.
+func CollectMissingStepFileReferences(entry *corelib.NLSkillEntry) []string {
+	if entry == nil {
+		return nil
+	}
+	var missing []string
+	seen := make(map[string]bool)
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		missing = append(missing, path)
+	}
+	for i, rawStep := range entry.Steps {
+		step := NormalizeStepForRunnerCopy(rawStep, entry.SkillDir)
+		if step.Action != "bash" {
+			continue
+		}
+		command, _ := step.Params["command"].(string)
+		if strings.TrimSpace(command) == "" {
+			continue
+		}
+		baseDir := effectiveStepReferenceDir(step, entry.SkillDir)
+
+		// Missing working_dir is also a completeness problem.
+		if rawWD, _ := step.Params["working_dir"].(string); strings.TrimSpace(rawWD) != "" &&
+			strings.TrimSpace(baseDir) != "" && !containsUnresolvedRunPlaceholder(rawWD) {
+			if _, err := os.Stat(baseDir); err != nil && os.IsNotExist(err) {
+				add(baseDir)
+			}
+		}
+
+		// commandFileReferencesForPrecheck may return an error when a `cd`
+		// target is missing; it still returns the references gathered so far,
+		// so ignore the error and report what we found.
+		fileRefs, _ := commandFileReferencesForPrecheck(entry.Name, i+1, command, baseDir, stepPreferredShell(step))
+		for _, ref := range fileRefs {
+			fullPath, ok := resolveCommandFileReference(ref.Path, ref.BaseDir)
+			if !ok {
+				continue
+			}
+			if _, err := os.Stat(fullPath); err != nil && os.IsNotExist(err) {
+				add(fullPath)
+			}
+		}
+	}
+	return missing
+}
+
 func commandFileReferencesForPrecheck(skillName string, stepIndex int, command, baseDir, shell string) ([]commandFileReference, error) {
 	currentBaseDir := baseDir
 	var dirStack []string

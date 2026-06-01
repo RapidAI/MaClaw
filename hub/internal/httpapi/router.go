@@ -330,6 +330,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/llm/access-logs", requireTenantAdmin(GetLLMEndpointAccessLogsHandler(system)))
 	mux.HandleFunc("GET /api/admin/card-store/config", requireTenantAdmin(GetCardStoreConfigHandler(system)))
 	mux.HandleFunc("PUT /api/admin/card-store/config", requireTenantAdmin(UpdateCardStoreConfigHandler(system, adminAudit)))
+	cardStoreQRDir := filepath.Join(resolveHubRuntimeDataDir(hubCfg, configPath), "card-store", "payment-qr")
+	mux.HandleFunc("POST /api/admin/card-store/payment-qr/upload", requireTenantAdmin(AdminCardStorePaymentQRUploadHandler(cardStoreQRDir)))
 	mux.HandleFunc("GET /api/admin/card-store/sales", requireTenantAdmin(GetCardStoreSalesStatsHandler(system)))
 	mux.HandleFunc("POST /api/admin/card-store/orders/{orderNo}/approve", requireTenantAdmin(AdminApproveCardStorePersonalOrderHandler(system, mailer, identity, adminAudit)))
 	mux.HandleFunc("POST /api/admin/card-store/orders/{orderNo}/reject", requireTenantAdmin(AdminRejectCardStorePersonalOrderHandler(system, adminAudit)))
@@ -341,6 +343,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache))
 	mux.HandleFunc("GET /api/card-store/products", GetCardStoreProductsHandler(system, tenantRepo))
+	mux.HandleFunc("GET /api/card-store/payment-qr/{tenantID}/{filename}", CardStorePaymentQRImageHandler(cardStoreQRDir))
 	mux.HandleFunc("GET /api/card-store/me", GetCardStoreMeHandler(identity))
 	mux.HandleFunc("POST /api/card-store/orders", CreateCardStoreOrderHandler(identity, system, mailer, nil))
 	mux.HandleFunc("GET /api/card-store/orders/{orderNo}/alipay/pay", CardStoreAlipayPayPageHandler(system))
@@ -542,10 +545,12 @@ func NewRouter(
 			// runtime wiring below — see the caller instead of returning 401.
 			ctx := workflow.WithUserID(r.Context(), principal.MachineID)
 			ctx = store.WithTenant(ctx, principal.TenantID)
+			ctx = WithRequestTenant(ctx, principal.TenantID)
 			r = r.WithContext(ctx)
 			h(w, r)
 		}
 	}
+	mux.HandleFunc("GET /api/v1/workflow-directory/approvers", workflowUserAuth(WorkflowApproverDirectoryHandler(securitySvc, identity, deviceSvc, system)))
 
 	// Workflow CRUD API (user-facing)
 	{
@@ -568,19 +573,27 @@ func NewRouter(
 		// directory/confirm routes use below, so the tracker and those routes
 		// share one store (Fix wiring item 5 / ordering note 3).
 		//
-		// The NotificationDispatcher is constructed exactly as the
-		// production-mirroring tests wire it (reconcile_orphaned_test.go:
-		// "Build the tracker as production wires it"): there is no production
-		// HubInAppNotifier / IMPushNotifier in router scope (no implementation
-		// of those interfaces exists in the hub), so reminder *delivery*
-		// degrades gracefully (Dispatch logs "hub notifier not configured")
-		// while StartTracking and ReconcileOrphanedInstances — which touch only
-		// confirmStore + auditStore — work fully. SetWorkflowStore injects the
-		// WorkflowStore so ReconcileOrphanedInstances can re-derive a completed
-		// instance's terminal-node TerminalNodeConfig from its published version
-		// graph. The NotificationDispatcher and ConfirmationTracker public APIs
+		// The NotificationDispatcher is now wired with a real HubInAppNotifier
+		// (HubNotifier, below) in place of the former first nil, so reminder and
+		// completion *delivery* actually reaches recipient machines.
+		// StartTracking and ReconcileOrphanedInstances — which touch only
+		// confirmStore + auditStore — continue to work fully. SetWorkflowStore
+		// injects the WorkflowStore so ReconcileOrphanedInstances can re-derive a
+		// completed instance's terminal-node TerminalNodeConfig from its
+		// published version graph. The NotificationDispatcher and
+		// ConfirmationTracker public APIs are unchanged.
+		// Real HubInAppNotifier backed by the Hub machine sender
+		// (device.Service.SendToMachine), with presence sourced from
+		// device.Service.IsMachineOnline — the same sources HubApprovalDispatcher
+		// and HubAvailabilityChecker use. Replaces the first nil notifier so
+		// terminal-node completion notifications and confirmation reminders are
+		// actually delivered to recipient machines. imPusher (arg 2) and
+		// notifStore (arg 4) stay nil (out of scope); auditStore (arg 3) is
+		// unchanged so delivery-failure audit recording remains active. The
+		// HubInAppNotifier interface and the NewNotificationDispatcher signature
 		// are unchanged.
-		notifDispatcher := workflow.NewNotificationDispatcher(nil, nil, auditStore, nil)
+		hubNotifier := NewHubNotifier(deviceSvc).WithPresence(deviceSvc)
+		notifDispatcher := workflow.NewNotificationDispatcher(hubNotifier, nil, auditStore, nil)
 		confirmTracker := workflow.NewConfirmationTracker(confirmStore, instStore, notifDispatcher, auditStore).
 			SetWorkflowStore(wfStore)
 

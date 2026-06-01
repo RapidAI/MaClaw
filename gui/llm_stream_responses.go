@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/freeproxy"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -391,18 +390,8 @@ postLoop:
 
 	// Fallback: parse XML tool calls from content (same as OpenAI path).
 	if len(msg.ToolCalls) == 0 {
-		if xmlCalls := freeproxy.ParseXMLToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
-			for _, xc := range xmlCalls {
-				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
-					ID: xc.ID, Type: xc.Type,
-					Function: struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					}{
-						Name: xc.Function.Name, Arguments: xc.Function.Arguments,
-					},
-				})
-			}
+		if xmlCalls := parseXMLContentToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
 			finishReason = "tool_calls"
 		}
 	}

@@ -888,8 +888,11 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 		return "缺少 name 参数（要上传的 Skill 名称）"
 	}
 
-	// Quality gate: prevent uploading untested or consistently failing skills.
-	// Skip when force=true (user explicitly wants to upload regardless).
+	// Pre-upload portability gate (runs before the usage/quality gate so the
+	// agent can fix path/completeness problems and retry). This auto-fixes safe
+	// absolute paths in place ({baseDir}/$HOME), then reports any remaining
+	// machine-specific absolute paths or missing bundled files. Skipped when
+	// force=true so the agent can override after reviewing.
 	force := false
 	if v, ok := args["force"]; ok {
 		switch val := v.(type) {
@@ -899,7 +902,13 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 			force = strings.EqualFold(val, "true")
 		}
 	}
+
 	if !force {
+		// Pre-upload portability gate runs first so the agent fixes path /
+		// completeness problems before the usage/quality checks.
+		if gate := h.runUploadPortabilityGate(name); gate != "" {
+			return gate
+		}
 		if exec := h.getSkillExecutor(); exec != nil {
 			exec.mu.RLock()
 			skills := exec.loadSkills()
@@ -923,6 +932,70 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 		return fmt.Sprintf("上传失败: %s", err.Error())
 	}
 	return fmt.Sprintf("✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s", name, submissionID)
+}
+
+// runUploadPortabilityGate runs the shared pre-upload portability preflight on
+// the real skill directory. It returns a non-empty agent-readable message that
+// must be returned to the agent (instead of uploading) when the skill is not
+// portable; it returns "" when the skill is safe to upload. Auto-fixes are
+// persisted to disk and indexes are refreshed so the fixed definition is used.
+func (h *IMMessageHandler) runUploadPortabilityGate(name string) string {
+	skillDir := h.resolveManagedSkillDir(name)
+	if skillDir == "" {
+		// No directory-backed skill (e.g. learned/crafted in-config skill);
+		// nothing to sanitize. Let the normal upload path handle it.
+		return ""
+	}
+
+	// Snapshot for rollback so a failed security scan after auto-fix cannot
+	// leave the skill dir in a partially-modified state.
+	snapshotDir, cleanupSnapshot, snapErr := snapshotSkillDirForRollback(skillDir)
+	if snapErr != nil {
+		return fmt.Sprintf("上传前可移植性检查失败（无法创建快照）: %s", snapErr.Error())
+	}
+	defer cleanupSnapshot()
+
+	result, err := cskill.PrepareSkillForUpload(skillDir)
+	if err != nil {
+		return fmt.Sprintf("上传前可移植性检查失败: %s", err.Error())
+	}
+
+	// If auto-fix rewrote files, verify the writeback still passes the
+	// install-grade security scan; roll back and report if not.
+	if len(result.AutoFixed) > 0 {
+		if scanErr := h.scanManagedSkillWriteback(skillDir, name); scanErr != nil {
+			if restoreErr := restoreSkillDirFromSnapshot(skillDir, snapshotDir); restoreErr != nil {
+				return fmt.Sprintf("可移植性自动修复后安全扫描未通过: %s；回滚失败: %v", scanErr.Error(), restoreErr)
+			}
+			return fmt.Sprintf("可移植性自动修复触发安全扫描拦截，已回滚改动: %s", scanErr.Error())
+		}
+		h.refreshSkillIndexesAfterMutation(name)
+	}
+
+	if !result.Portable() {
+		return cskill.FormatUploadPreflight(result)
+	}
+	return ""
+}
+
+// resolveManagedSkillDir resolves the on-disk directory of a registered skill
+// by name, falling back to PrimarySkillsDir/<name>. Returns "" when no
+// directory-backed skill is found.
+func (h *IMMessageHandler) resolveManagedSkillDir(name string) string {
+	if exec := h.getSkillExecutor(); exec != nil {
+		for _, s := range exec.loadSkills() {
+			if s.MatchesName(name) && strings.TrimSpace(s.SkillDir) != "" {
+				return s.SkillDir
+			}
+		}
+	}
+	if primaryDir, err := cskill.PrimarySkillsDir(); err == nil {
+		candidate := filepath.Join(primaryDir, name)
+		if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // toolValidateSkill validates a skill for portability issues and optionally auto-fixes them.

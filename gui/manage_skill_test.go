@@ -670,3 +670,89 @@ func skillListContainsCommand(skills []corelib.NLSkillEntry, name, command strin
 	}
 	return false
 }
+
+// TestToolUploadSkill_PortabilityGateBlocksMachinePath verifies that uploading a
+// directory-backed skill containing a machine-specific absolute path is blocked
+// with an actionable report instead of being submitted.
+func TestToolUploadSkill_PortabilityGateBlocksMachinePath(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	skillDir := filepath.Join(tempHome, "skills", "upload-gate")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "name: upload-gate\ndescription: A skill referencing a machine-specific absolute path.\ntriggers:\n  - upload-gate\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: cat /opt/acme/secret/config.json\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# upload-gate\n\nReads a config file.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{Name: "upload-gate", SkillDir: skillDir, Source: "test", UsageCount: 5, SuccessCount: 5})
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app}
+
+	got := h.toolUploadSkill(map[string]interface{}{"name": "upload-gate"})
+	if !strings.Contains(got, "上传被阻止") {
+		t.Fatalf("expected portability block message, got %q", got)
+	}
+	if !strings.Contains(got, "/opt/acme/secret/config.json") {
+		t.Fatalf("block message should name the offending path, got %q", got)
+	}
+	if !strings.Contains(got, "{baseDir}") {
+		t.Fatalf("block message should explain the {baseDir} macro, got %q", got)
+	}
+}
+
+// TestToolUploadSkill_PortabilityGateAutoFixesInDirPath verifies that an
+// absolute path pointing inside the skill directory is auto-fixed in place so
+// the gate does not block; the source skill.yaml is persistently rewritten.
+func TestToolUploadSkill_PortabilityGateAutoFixesInDirPath(t *testing.T) {
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	skillDir := filepath.Join(tempHome, "skills", "upload-autofix")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absScript := filepath.Join(skillDir, "scripts", "run.py")
+	yaml := "name: upload-autofix\ndescription: A skill with an in-dir absolute path that should auto-fix.\ntriggers:\n  - upload-autofix\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: python " + absScript + "\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# upload-autofix\n\nRuns a bundled script.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{Name: "upload-autofix", SkillDir: skillDir, Source: "test", UsageCount: 5, SuccessCount: 5})
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	h := &IMMessageHandler{app: app}
+
+	// The gate itself must not block (it auto-fixes the in-dir path).
+	if gate := h.runUploadPortabilityGate("upload-autofix"); gate != "" {
+		t.Fatalf("expected gate to pass after auto-fix, got block:\n%s", gate)
+	}
+	// The source skill.yaml must be persistently rewritten with the macro.
+	data, err := os.ReadFile(filepath.Join(skillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "{baseDir}/scripts/run.py") {
+		t.Fatalf("skill.yaml was not persistently auto-fixed:\n%s", string(data))
+	}
+}

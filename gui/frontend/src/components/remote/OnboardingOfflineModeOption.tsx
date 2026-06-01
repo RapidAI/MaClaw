@@ -1,4 +1,5 @@
 import { colors } from "./styles";
+import { wizardOptionCardStyle } from "./OnboardingWizardShared";
 
 type Translator = (zh: string, en: string, zhHant?: string) => string;
 
@@ -12,10 +13,9 @@ export function OnboardingOfflineModeOption({ offlineMode, onToggle, t }: Props)
     return (
         <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
             <label style={{
-                display: "flex", alignItems: "flex-start", gap: 8,
-                padding: "8px 10px", borderRadius: 8, border: `1px solid ${!offlineMode ? colors.primary : colors.border}`,
+                ...wizardOptionCardStyle,
+                border: `1px solid ${!offlineMode ? colors.primary : colors.border}`,
                 background: !offlineMode ? "var(--theme-info-bg)" : colors.surfaceMuted,
-                cursor: "pointer", fontSize: "0.76rem", color: colors.text,
             }}>
                 <input type="radio" name="onboarding-run-mode" checked={!offlineMode} onChange={() => onToggle(false)} style={{ marginTop: 2 }} />
                 <span style={{ lineHeight: 1.45 }}>
@@ -32,10 +32,9 @@ export function OnboardingOfflineModeOption({ offlineMode, onToggle, t }: Props)
                 </span>
             </label>
             <label style={{
-                display: "flex", alignItems: "flex-start", gap: 8,
-                padding: "8px 10px", borderRadius: 8, border: `1px solid ${offlineMode ? colors.primary : colors.border}`,
+                ...wizardOptionCardStyle,
+                border: `1px solid ${offlineMode ? colors.primary : colors.border}`,
                 background: offlineMode ? "rgba(245,158,11,0.10)" : colors.surfaceMuted,
-                cursor: "pointer", fontSize: "0.76rem", color: colors.text,
             }}>
                 <input type="radio" name="onboarding-run-mode" checked={offlineMode} onChange={() => onToggle(true)} style={{ marginTop: 2 }} />
                 <span style={{ lineHeight: 1.45 }}>

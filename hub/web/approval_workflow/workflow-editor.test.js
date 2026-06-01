@@ -36,6 +36,20 @@ var helpers = new Function('state', helperCode + '\nreturn { latestVersion: late
 var state = { workflowVersionsById: {} };
 var workflowHelpers = helpers(state);
 
+var approverHelpers = new Function('state', 'tr', [
+  extractFunction('normalizeApproverIds'),
+  extractFunction('formatApproverSelection'),
+  extractFunction('renderApproverRow')
+].join('\n') + '\nreturn { normalizeApproverIds: normalizeApproverIds, formatApproverSelection: formatApproverSelection, renderApproverRow: renderApproverRow };')(
+  state,
+  function (key, params) {
+    if (key === 'selectedApprovers') return String(params.count) + ' selected';
+    if (key === 'virtualEmployee') return 'VE';
+    if (key === 'userMachine') return 'Machine';
+    return key;
+  }
+);
+
 var testCount = 0;
 var passCount = 0;
 
@@ -74,6 +88,23 @@ latest = workflowHelpers.latestVersion([
 assertEqual(latest.id, 'new-same-version', 'uses timestamp only as same-version tie breaker');
 
 assertEqual(workflowHelpers.parseVersionNumber('bad.version').join('.'), '0.0.0', 'invalid version parses to safe floor');
+assertEqual(approverHelpers.normalizeApproverIds([' m1 ', 'm1', '', ' ve1 ']).join(','), 'm1,ve1', 'normalizes approver ids without duplicates');
+
+state.approverDirectory = null;
+assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1'], 'Choose approvers'), '1 selected', 'hides raw approver id before directory loads');
+
+state.approverDirectory = { byId: { 'machine-secret-1': { name: 'Alice' }, 've-secret-1': { name: 'Runtime Worker' } } };
+assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1', 've-secret-1'], 'Choose approvers'), 'Alice, Runtime Worker', 'renders approver names from directory');
+
+global.escapeHtml = function (value) { return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+global.escapeAttr = global.escapeHtml;
+state.approverPicker = { selected: { 've-secret-1': true } };
+var veRowHtml = approverHelpers.renderApproverRow({ id: 've-secret-1', name: 'Runtime Worker', kind: 've' });
+assertTrue(veRowHtml.indexOf('Runtime Worker') !== -1 && veRowHtml.indexOf('>ve-secret-1<') === -1, 'renders VE row name without visible id');
+var machineRowHtml = approverHelpers.renderApproverRow({ id: 'machine-secret-1', name: 'Alice', kind: 'machine' });
+assertTrue(machineRowHtml.indexOf('Alice') !== -1 && machineRowHtml.indexOf('>machine-secret-1<') === -1, 'renders machine row name without visible id');
+delete global.escapeHtml;
+delete global.escapeAttr;
 
 state.workflowVersionsById = { wf_failed: null };
 assertEqual(workflowHelpers.workflowVersionHistoryUnavailable('wf_failed'), true, 'marks missing version history unavailable');

@@ -1197,14 +1197,26 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 		return fmt.Sprintf("Skill「%s」没有关联的目录，无法打包上传", name)
 	}
 
-	// Pre-upload portability validation.
-	report, err := skill.ValidateSkillPortability(entry.SkillDir)
-	if err != nil {
-		return fmt.Sprintf("可移植性验证失败: %s", err.Error())
+	// Pre-upload portability gate (shared with GUI): auto-fix safe absolute
+	// paths in place, then block when machine-specific paths or missing
+	// bundled files remain. Skipped when force=true.
+	force := false
+	if v, ok := args["force"]; ok {
+		switch val := v.(type) {
+		case bool:
+			force = val
+		case string:
+			force = strings.EqualFold(val, "true")
+		}
 	}
-	if report.Summary.Errors > 0 {
-		return fmt.Sprintf("上传被阻止: 发现 %d 个可移植性错误。\n%s\n\n💡 使用 manage_skill(action=\"validate\", name=\"%s\", auto_fix=true) 尝试自动修复",
-			report.Summary.Errors, skill.FormatPortabilityReport(report), name)
+	if !force {
+		result, prepErr := skill.PrepareSkillForUpload(entry.SkillDir)
+		if prepErr != nil {
+			return fmt.Sprintf("上传前可移植性检查失败: %s", prepErr.Error())
+		}
+		if !result.Portable() {
+			return skill.FormatUploadPreflight(result)
+		}
 	}
 
 	// Resolve email.

@@ -55,7 +55,6 @@ corelib/config/doc.go,corelib,Backend/Core,prod,Go,1
 corelib/config/manager.go,corelib,Backend/Core,prod,Go,826
 corelib/config/store.go,corelib,Backend/Core,prod,Go,6
 corelib/event_emitter.go,corelib,Backend/Core,prod,Go,50
-corelib/freeproxy/server.go,corelib,Backend/Core,prod,Go,252
 corelib/kernel.go,corelib,Backend/Core,prod,Go,134
 corelib/kernel_options.go,corelib,Backend/Core,prod,Go,15
 corelib/logger.go,corelib,Backend/Core,prod,Go,32
@@ -161,7 +160,6 @@ gui/android_pwa_shell.go,gui,Backend/Core,prod,Go,1417
 gui/android_pwa_shell_test.go,gui,Backend/Core,test,Go,185
 gui/app.go,gui,Backend/Core,prod,Go,4894
 gui/app_clawnet.go,gui,Backend/Core,prod,Go,1132
-gui/app_freeproxy.go,gui,Backend/Core,prod,Go,227
 gui/app_gossip.go,gui,Backend/Core,prod,Go,41
 gui/app_maclaw_llm.go,gui,Backend/Core,prod,Go,513
 gui/app_maclaw_llm_test.go,gui,Backend/Core,test,Go,83

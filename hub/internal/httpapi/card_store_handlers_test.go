@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/rand"
@@ -12,9 +13,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,6 +33,7 @@ type cardStoreTestMailer struct {
 	subject string
 	body    string
 	count   int
+	err     error
 }
 
 func (m *cardStoreTestMailer) Send(_ context.Context, to []string, subject string, body string) error {
@@ -36,6 +41,9 @@ func (m *cardStoreTestMailer) Send(_ context.Context, to []string, subject strin
 	m.to = append([]string(nil), to...)
 	m.subject = subject
 	m.body = body
+	if m.err != nil {
+		return m.err
+	}
 	return nil
 }
 
@@ -154,6 +162,139 @@ func TestUpdateCardStoreConfigValidatesAlipayDirectKeys(t *testing.T) {
 	}
 }
 
+func TestUpdateCardStoreConfigValidatesEnabledAlipayDirectMethod(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	payload := `{"enabled":true,"payment_mode":"payment_fm","payment_methods":["payment_fm","alipay_direct"],"alipay_direct":{"app_id":"2021000000000000","gateway_url":"https://openapi.alipay.com/gateway.do","private_key":"bad","alipay_public_key":"bad"},"products":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/card-store/config", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	UpdateCardStoreConfigHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "private key") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateCardStoreConfigStoreScopeDoesNotValidateOrMutatePayment(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	oldCfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, PaymentMethods: []string{cardStorePaymentModeAlipay}, NotifyURL: "https://hub.example.com/api/zhifuxpay/notify", AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", GatewayURL: "https://openapi.alipay.com/gateway.do", PrivateKey: "bad", AlipayPublicKey: "bad"}})
+	oldCfg.Products[0].Price = 10
+	oldData, _ := json.Marshal(oldCfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(oldData)); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"enabled":true,"payment_mode":"alipay_direct","payment_methods":["alipay_direct"],"alipay_direct":{"app_id":"2021000000000000","gateway_url":"https://openapi.alipay.com/gateway.do","private_key":"","alipay_public_key":"bad"},"products":[{"id":"service_day","kind":"service_card","label":"Day Card","enabled":true,"price":3,"duration_days":1,"credits":300}]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/card-store/config?scope=store", strings.NewReader(payload))
+	req.Host = "hub.example.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	UpdateCardStoreConfigHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored := loadCardStoreConfig(context.Background(), system)
+	if stored.PaymentMode != cardStorePaymentModeAlipay || len(stored.PaymentMethods) != 1 || stored.PaymentMethods[0] != cardStorePaymentModeAlipay || stored.NotifyURL != "https://hub.example.com/api/zhifuxpay/notify" || stored.AlipayDirect.PrivateKey != "bad" {
+		t.Fatalf("payment settings mutated: mode=%q methods=%#v alipay=%#v", stored.PaymentMode, stored.PaymentMethods, stored.AlipayDirect)
+	}
+	if stored.Products[0].Price != 3 {
+		t.Fatalf("store product price = %v, want 3", stored.Products[0].Price)
+	}
+}
+
+func TestUpdateCardStoreConfigKeepsSelectedDefaultPaymentMethod(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	payload := `{"enabled":true,"payment_mode":"personal_semimanual","payment_methods":["payment_fm","personal_semimanual"],"payment_api_base_url":"https://pay.example.com/api","merchant_num":"merchant-a","access_key":"key-a","pay_type":"aloop","personal_payment":{"admin_emails":["admin@example.com"],"channels":[{"id":"wechat","enabled":true,"image_url":"https://pay.example.com/wx.png"}]},"products":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/card-store/config", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	UpdateCardStoreConfigHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored := loadCardStoreConfig(context.Background(), system)
+	if stored.PaymentMode != cardStorePaymentModeManual || len(stored.PaymentMethods) != 2 || stored.PaymentMethods[0] != cardStorePaymentModeManual || stored.PaymentMethods[1] != cardStorePaymentModeFM {
+		t.Fatalf("payment mode/method order not preserved: mode=%q methods=%#v", stored.PaymentMode, stored.PaymentMethods)
+	}
+}
+
+func TestCardStorePaymentQRUploadAndServe(t *testing.T) {
+	dir := t.TempDir()
+	png := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, bytes.Repeat([]byte{0}, 520)...)
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	if err := writer.WriteField("channel", "alipay"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("file", "qr.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(png); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/card-store/payment-qr/upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req = req.WithContext(WithRequestTenant(req.Context(), "tenant_store"))
+	rec := httptest.NewRecorder()
+	AdminCardStorePaymentQRUploadHandler(dir).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		URL      string `json:"url"`
+		ImageURL string `json:"image_url"`
+		Channel  string `json:"channel"`
+		TenantID string `json:"tenant_id"`
+		Size     int    `json:"size"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Channel != "alipay" || body.TenantID != "tenant_store" || body.URL == "" || body.URL != body.ImageURL || body.Size != len(png) {
+		t.Fatalf("unexpected upload body: %+v", body)
+	}
+	if !strings.HasPrefix(body.URL, "/api/card-store/payment-qr/tenant_store/alipay-") || !strings.HasSuffix(body.URL, ".png") {
+		t.Fatalf("unexpected image url: %s", body.URL)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tenant_store", strings.TrimPrefix(body.URL, "/api/card-store/payment-qr/tenant_store/"))); err != nil {
+		t.Fatalf("uploaded file missing: %v", err)
+	}
+
+	serveReq := httptest.NewRequest(http.MethodGet, body.URL, nil)
+	serveReq.SetPathValue("tenantID", "tenant_store")
+	serveReq.SetPathValue("filename", strings.TrimPrefix(body.URL, "/api/card-store/payment-qr/tenant_store/"))
+	serveRec := httptest.NewRecorder()
+	CardStorePaymentQRImageHandler(dir).ServeHTTP(serveRec, serveReq)
+	if serveRec.Code != http.StatusOK || !bytes.Equal(serveRec.Body.Bytes(), png) {
+		t.Fatalf("serve status=%d len=%d", serveRec.Code, serveRec.Body.Len())
+	}
+}
+
+func TestCardStorePaymentQRUploadRejectsNonImage(t *testing.T) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("channel", "wechat")
+	part, err := writer.CreateFormFile("file", "qr.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("not an image"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/card-store/payment-qr/upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	AdminCardStorePaymentQRUploadHandler(t.TempDir()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "CARD_STORE_PAYMENT_QR_TYPE_INVALID") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpdateCardStoreConfigValidatesPersonalPayment(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -163,12 +304,12 @@ func TestUpdateCardStoreConfigValidatesPersonalPayment(t *testing.T) {
 		{
 			name:    "admin email",
 			payload: `{"enabled":true,"payment_mode":"personal_semimanual","personal_payment":{"channels":[{"id":"wechat","enabled":true,"image_url":"https://pay.example.com/wx.png"}]},"products":[]}`,
-			want:    "admin email",
+			want:    "store owner email",
 		},
 		{
 			name:    "qr image",
 			payload: `{"enabled":true,"payment_mode":"personal_semimanual","personal_payment":{"admin_emails":["admin@example.com"],"channels":[{"id":"wechat","enabled":true}]},"products":[]}`,
-			want:    "QR image URL",
+			want:    "QR image",
 		},
 		{
 			name:    "all enabled channels need qr image",
@@ -350,6 +491,9 @@ func TestPersonalSemimanualOrderOpenSendsAdminReminder(t *testing.T) {
 	if created["payment_mode"] != cardStorePaymentModeManual || created["status"] != cardStoreStatusPersonalCreated || created["pay_code"] == "" || created["pay_qr_url"] == "" {
 		t.Fatalf("unexpected manual order response: %#v", created)
 	}
+	if created["product_id"] != "service_day" || created["product_label"] == "" || created["amount"] != 12.34 {
+		t.Fatalf("manual response missing product/amount detail: %#v", created)
+	}
 
 	orderNo := created["order_no"].(string)
 	mailer := &cardStoreTestMailer{}
@@ -370,9 +514,84 @@ func TestPersonalSemimanualOrderOpenSendsAdminReminder(t *testing.T) {
 	if mailer.count != 1 || len(mailer.to) != 1 || mailer.to[0] != "admin@example.com" {
 		t.Fatalf("admin reminder not sent: count=%d to=%#v", mailer.count, mailer.to)
 	}
-	for _, want := range []string{orderNo, "12.34", orders.Orders[0].PayCode, "https://hub.example.com/card_store/admin/confirm", "https://hub.example.com/card_store/admin/delete", "https://pay.example.com/alipay.png"} {
+	for _, want := range []string{orderNo, "12.34", orders.Orders[0].PayCode, "One-time confirm link", "One-time reject/delete link", "https://hub.example.com/card_store/admin/confirm", "https://hub.example.com/card_store/admin/delete", "https://pay.example.com/alipay.png"} {
 		if !strings.Contains(mailer.body, want) {
 			t.Fatalf("reminder missing %q: %s", want, mailer.body)
+		}
+	}
+}
+
+func TestPersonalSemimanualEmailExpandsRelativeQRURL(t *testing.T) {
+	mailer := &cardStoreTestMailer{}
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeManual, PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"owner@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "alipay", Enabled: true, ImageURL: "/api/card-store/payment-qr/default/alipay-test.png"}}}})
+	order := cardStoreOrder{OrderNo: "manual-relative-qr", TenantID: store.DefaultTenantID, ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, PayChannelLabel: "Alipay", Payee: "Alice", PayCode: "CS123456", PayQRURL: "/api/card-store/payment-qr/default/alipay-test.png", OpenedPaymentAt: time.Now().UTC()}
+	if err := sendCardStorePersonalPaymentReminder(context.Background(), mailer, cfg, order, "https://hub.example.com", "approve-token", "delete-token"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mailer.body, "Payment QR: https://hub.example.com/api/card-store/payment-qr/default/alipay-test.png") {
+		t.Fatalf("relative QR URL was not expanded: %s", mailer.body)
+	}
+}
+
+func TestPersonalSemimanualPaymentOpenedReturnsReminderFailure(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeManual, PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"owner@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "alipay", Label: "Alipay", Enabled: true, ImageURL: "https://pay.example.com/alipay.png"}}}})
+	data, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "manual-mail-failed", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: cardStoreStatusPersonalCreated, PaymentMode: cardStorePaymentModeManual, PayChannel: "alipay", PayChannelLabel: "Alipay", Payee: "Alice", PayCode: "CS123456", PayQRURL: "https://pay.example.com/alipay.png", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/orders/manual-mail-failed/payment-opened", strings.NewReader(`{"email":"buyer@example.com"}`))
+	req.SetPathValue("orderNo", "manual-mail-failed")
+	rec := httptest.NewRecorder()
+	CardStorePaymentOpenedHandler(system, &cardStoreTestMailer{err: fmt.Errorf("smtp down")}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"reminder_mail_status":"failed"`) || !strings.Contains(rec.Body.String(), "smtp down") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	lookupReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/manual-mail-failed?email=buyer@example.com", nil)
+	lookupReq.SetPathValue("orderNo", "manual-mail-failed")
+	lookupRec := httptest.NewRecorder()
+	GetCardStoreOrderHandler(system).ServeHTTP(lookupRec, lookupReq)
+	if lookupRec.Code != http.StatusOK || !strings.Contains(lookupRec.Body.String(), `"reminder_mail_status":"failed"`) || !strings.Contains(lookupRec.Body.String(), "smtp down") {
+		t.Fatalf("lookup status=%d body=%s", lookupRec.Code, lookupRec.Body.String())
+	}
+}
+
+func TestPersonalSemimanualEmailTokenLinksAreOneTime(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeManual, PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"owner@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "wechat", Label: "WeChat Pay", Enabled: true, Payee: "Alice", ImageURL: "https://pay.example.com/wx.png"}}}})
+	cfg.Products[0].Price = 12.34
+	data, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "manual-token-1", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: cardStoreStatusPersonalCreated, PaymentMode: cardStorePaymentModeManual, PayChannel: "wechat", PayChannelLabel: "WeChat Pay", Payee: "Alice", PayCode: "CS123456", PayQRURL: "https://pay.example.com/wx.png", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &cardStoreTestMailer{}
+	if _, approveToken, _, err := markCardStorePaymentOpened(context.Background(), system, cfg, order.OrderNo, order.Email, "https://hub.example.com", mailer); err != nil {
+		t.Fatal(err)
+	} else if approveToken == "" || !strings.Contains(mailer.body, "One-time confirm link") {
+		t.Fatalf("missing one-time token/link: token=%q body=%s", approveToken, mailer.body)
+	} else {
+		form := url.Values{"order_no": {order.OrderNo}, "token": {approveToken}, "note": {"ok"}}
+		req := httptest.NewRequest(http.MethodPost, "/api/card-store/personal-payment/confirm", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		CardStorePersonalPaymentTokenActionHandler(system, nil, nil, "approve").ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("first token action status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		retryReq := httptest.NewRequest(http.MethodPost, "/api/card-store/personal-payment/confirm", strings.NewReader(form.Encode()))
+		retryReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		retryRec := httptest.NewRecorder()
+		CardStorePersonalPaymentTokenActionHandler(system, nil, nil, "approve").ServeHTTP(retryRec, retryReq)
+		if retryRec.Code != http.StatusForbidden {
+			t.Fatalf("reused token status=%d body=%s", retryRec.Code, retryRec.Body.String())
 		}
 	}
 }
@@ -405,30 +624,178 @@ func TestGetCardStoreProductsReturnsPublicManualChannels(t *testing.T) {
 	}
 }
 
+func TestCreateCardStoreOrderSelectsEnabledPaymentMethod(t *testing.T) {
+	var fmCalled int
+	system := newTestLLMServiceSystemSettings()
+	paySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmCalled++
+		if r.URL.Path != "/startOrder" {
+			t.Fatalf("payment path = %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "msg": "success", "code": 200, "data": map[string]any{"id": "pay-1", "payUrl": "https://pay.example.com/pay?orderNo=pay-1"}})
+	}))
+	defer paySrv.Close()
+
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, PaymentMethods: []string{cardStorePaymentModeFM, cardStorePaymentModeManual}, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success", PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"admin@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "wechat", Label: "WeChat Pay", Enabled: true, Payee: "Bob", ImageURL: "https://pay.example.com/wx.png"}}}})
+	cfg.Products[0].Price = 12.34
+	data, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+
+	productsReq := httptest.NewRequest(http.MethodGet, "/api/card-store/products", nil)
+	productsRec := httptest.NewRecorder()
+	GetCardStoreProductsHandler(system).ServeHTTP(productsRec, productsReq)
+	if productsRec.Code != http.StatusOK || !strings.Contains(productsRec.Body.String(), `"id":"payment_fm"`) || !strings.Contains(productsRec.Body.String(), `"id":"manual:wechat"`) {
+		t.Fatalf("products status=%d body=%s", productsRec.Code, productsRec.Body.String())
+	}
+
+	fmReq := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(`{"product_id":"service_day","email":"buyer@example.com","payment_method":"payment_fm"}`))
+	fmReq.Header.Set("Content-Type", "application/json")
+	fmRec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, paySrv.Client()).ServeHTTP(fmRec, fmReq)
+	if fmRec.Code != http.StatusOK || !strings.Contains(fmRec.Body.String(), `"payment_mode":"payment_fm"`) || !strings.Contains(fmRec.Body.String(), `"pay_url":"https://pay.example.com/pay?orderNo=pay-1"`) {
+		t.Fatalf("fm status=%d body=%s", fmRec.Code, fmRec.Body.String())
+	}
+
+	invalidMethodReq := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(`{"product_id":"service_day","email":"buyer@example.com","payment_method":"wechat"}`))
+	invalidMethodReq.Header.Set("Content-Type", "application/json")
+	invalidMethodRec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, paySrv.Client()).ServeHTTP(invalidMethodRec, invalidMethodReq)
+	if invalidMethodRec.Code != http.StatusBadRequest || !strings.Contains(invalidMethodRec.Body.String(), "CARD_STORE_PAYMENT_METHOD_INVALID") {
+		t.Fatalf("invalid method status=%d body=%s", invalidMethodRec.Code, invalidMethodRec.Body.String())
+	}
+
+	invalidManualReq := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(`{"product_id":"service_day","email":"buyer@example.com","payment_method":"manual:qq"}`))
+	invalidManualReq.Header.Set("Content-Type", "application/json")
+	invalidManualRec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, paySrv.Client()).ServeHTTP(invalidManualRec, invalidManualReq)
+	if invalidManualRec.Code != http.StatusBadRequest || !strings.Contains(invalidManualRec.Body.String(), "payment channel is not enabled") {
+		t.Fatalf("invalid manual status=%d body=%s", invalidManualRec.Code, invalidManualRec.Body.String())
+	}
+
+	manualReq := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(`{"product_id":"service_day","email":"buyer@example.com","payment_method":"manual:wechat"}`))
+	manualReq.Header.Set("Content-Type", "application/json")
+	manualRec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, paySrv.Client()).ServeHTTP(manualRec, manualReq)
+	if manualRec.Code != http.StatusOK || !strings.Contains(manualRec.Body.String(), `"payment_mode":"personal_semimanual"`) || !strings.Contains(manualRec.Body.String(), `"pay_channel":"wechat"`) {
+		t.Fatalf("manual status=%d body=%s", manualRec.Code, manualRec.Body.String())
+	}
+
+	legacyManualReq := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(`{"product_id":"service_day","email":"buyer@example.com","pay_channel":"manual:wechat"}`))
+	legacyManualReq.Header.Set("Content-Type", "application/json")
+	legacyManualRec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, paySrv.Client()).ServeHTTP(legacyManualRec, legacyManualReq)
+	if legacyManualRec.Code != http.StatusOK || !strings.Contains(legacyManualRec.Body.String(), `"payment_mode":"personal_semimanual"`) || !strings.Contains(legacyManualRec.Body.String(), `"pay_channel":"wechat"`) {
+		t.Fatalf("legacy manual status=%d body=%s", legacyManualRec.Code, legacyManualRec.Body.String())
+	}
+	if fmCalled != 1 {
+		t.Fatalf("payment fm called %d times, want 1", fmCalled)
+	}
+}
+
+func TestCreateCardStoreOrderRejectsUnknownPaymentMethodBeforePersist(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "payment_method channel without manual prefix", body: `{"product_id":"service_day","email":"buyer@example.com","payment_method":"wechat"}`},
+		{name: "legacy pay_channel unsupported", body: `{"product_id":"service_day","email":"buyer@example.com","pay_channel":"manual:qq"}`},
+		{name: "legacy pay_channel unknown", body: `{"product_id":"service_day","email":"buyer@example.com","pay_channel":"bitcoin"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertCreateCardStoreOrderRejectsBeforePersist(t, tc.body)
+		})
+	}
+}
+
+func assertCreateCardStoreOrderRejectsBeforePersist(t *testing.T, body string) {
+	t.Helper()
+	var adapterCalled int
+	system := newTestLLMServiceSystemSettings()
+	paySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adapterCalled++
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "msg": "success", "code": 200})
+	}))
+	defer paySrv.Close()
+
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, PaymentMethods: []string{cardStorePaymentModeFM, cardStorePaymentModeManual}, PaymentAPIBaseURL: paySrv.URL, MerchantNum: "merchant-a", AccessKey: "key-a", PayType: "aloop", NotifyURL: "https://hub.example.com/success", PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"admin@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "wechat", Label: "WeChat Pay", Enabled: true, Payee: "Bob", ImageURL: "https://pay.example.com/wx.png"}}}})
+	cfg.Products[0].Price = 12.34
+	data, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/orders", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	CreateCardStoreOrderHandler(nil, system, nil, paySrv.Client()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "CARD_STORE_PAYMENT_METHOD_INVALID") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if adapterCalled != 0 {
+		t.Fatalf("payment adapter called %d times, want 0", adapterCalled)
+	}
+	orders := loadCardStoreOrders(context.Background(), system)
+	if len(orders.Orders) != 0 {
+		t.Fatalf("invalid payment_method should not create order: %#v", orders.Orders)
+	}
+}
+
+func TestGetCardStoreProductsReturnsDistinctPublicPaymentMethods(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, PaymentMethods: []string{"bogus", cardStorePaymentModeAlipay, cardStorePaymentModeManual, "bogus"}, PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"admin@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "alipay", Label: "Alipay", Enabled: true, Payee: "Alice", ImageURL: "https://pay.example.com/alipay.png"}}}})
+	data, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/card-store/products", nil)
+	rec := httptest.NewRecorder()
+	GetCardStoreProductsHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		PaymentChannels []map[string]string `json:"payment_channels"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.PaymentChannels) != 2 || body.PaymentChannels[0]["id"] != cardStorePaymentModeAlipay || body.PaymentChannels[0]["label"] != "Alipay direct" || body.PaymentChannels[1]["id"] != "manual:alipay" || body.PaymentChannels[1]["label"] != "Alipay QR" {
+		t.Fatalf("unexpected public payment methods: %#v", body.PaymentChannels)
+	}
+	if strings.Contains(rec.Body.String(), "2088000000000000") || strings.Contains(rec.Body.String(), "pay.example.com") || strings.Contains(rec.Body.String(), "Alice") {
+		t.Fatalf("public product response leaked payment details: %s", rec.Body.String())
+	}
+}
+
 func TestPersonalSemimanualOrderRequiresAdminEmailAndQRCode(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		cfg        cardStoreConfig
 		payChannel string
 		want       string
+		persist    bool
 	}{
 		{
 			name:       "admin email",
 			cfg:        cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeManual, PersonalPayment: cardStorePersonalPaymentConfig{Channels: []cardStorePersonalPaymentChannel{{ID: "wechat", Label: "WeChat Pay", Enabled: true, ImageURL: "https://pay.example.com/wx.png"}}}},
 			payChannel: "wechat",
-			want:       "admin email",
+			want:       "store owner email",
+			persist:    true,
 		},
 		{
 			name:       "qr image",
 			cfg:        cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeManual, PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"admin@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "wechat", Label: "WeChat Pay", Enabled: true}}}},
 			payChannel: "wechat",
-			want:       "QR image URL",
+			want:       "QR image",
+			persist:    true,
 		},
 		{
 			name:       "unsupported channel",
 			cfg:        cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeManual, PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"admin@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "wechat", Label: "WeChat Pay", Enabled: true, ImageURL: "https://pay.example.com/wx.png"}}}},
 			payChannel: "bitcoin",
-			want:       "not supported",
+			want:       "payment channel is not supported",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -448,6 +815,12 @@ func TestPersonalSemimanualOrderRequiresAdminEmailAndQRCode(t *testing.T) {
 				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 			}
 			orders := loadCardStoreOrders(context.Background(), system)
+			if !tc.persist {
+				if len(orders.Orders) != 0 {
+					t.Fatalf("invalid manual request should not be persisted: %#v", orders.Orders)
+				}
+				return
+			}
 			if len(orders.Orders) != 1 || orders.Orders[0].Status != "payment_failed" || !strings.Contains(orders.Orders[0].PaymentMsg, tc.want) {
 				t.Fatalf("manual config failure was not persisted: %#v", orders.Orders)
 			}
@@ -529,6 +902,19 @@ func TestCreateCardStoreOrderAlipayDirectUsesComputerWebsitePay(t *testing.T) {
 	if !strings.Contains(body, "alipay.trade.page.pay") || !strings.Contains(body, "FAST_INSTANT_TRADE_PAY") || !strings.Contains(body, `name="sign_type" value="RSA2"`) || strings.Contains(body, "alipay.trade.wap.pay") || strings.Contains(body, "QUICK_WAP_WAY") {
 		t.Fatalf("pay page did not use computer website pay: %s", body)
 	}
+	if !strings.Contains(body, `accept-charset="utf-8"`) || !strings.Contains(body, `action="https://openapi.alipay.com/gateway.do?charset=utf-8"`) {
+		t.Fatalf("pay page did not put charset on gateway action: %s", body)
+	}
+}
+
+func TestRenderAlipaySubmitPageKeepsCharsetOnGatewayQuery(t *testing.T) {
+	values := url.Values{}
+	values.Set("charset", "utf-8")
+	values.Set("app_id", "2021000000000000")
+	body := renderAlipaySubmitPage("https://openapi.alipay.com/gateway.do?foo=bar", values)
+	if !strings.Contains(body, `action="https://openapi.alipay.com/gateway.do?charset=utf-8&amp;foo=bar"`) {
+		t.Fatalf("gateway action missing encoded charset query: %s", body)
+	}
 }
 
 func TestCreateCardStoreOrderAlipayDirectRejectsInvalidStoredKey(t *testing.T) {
@@ -582,6 +968,27 @@ func TestAlipayDirectPayPageAddsTenantToConfiguredNotifyURL(t *testing.T) {
 	}
 }
 
+func TestAlipayDirectPayPageAllowsAlipayWhenNotDefaultPaymentMethod(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeFM, PaymentMethods: []string{cardStorePaymentModeFM, cardStorePaymentModeAlipay}, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-NONDEFAULT", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	payReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-NONDEFAULT/alipay/pay", nil)
+	payReq.SetPathValue("orderNo", "ALI-NONDEFAULT")
+	payRec := httptest.NewRecorder()
+	CardStoreAlipayPayPageHandler(system).ServeHTTP(payRec, payReq)
+	if payRec.Code != http.StatusOK || !strings.Contains(payRec.Body.String(), "alipay.trade.page.pay") {
+		t.Fatalf("pay page status=%d body=%s", payRec.Code, payRec.Body.String())
+	}
+}
+
 func TestAlipayDirectPayPageRejectsPaidOrDisabledOrders(t *testing.T) {
 	privateKey, publicKey := newAlipayTestKeys(t)
 	system := newTestLLMServiceSystemSettings()
@@ -603,6 +1010,7 @@ func TestAlipayDirectPayPageRejectsPaidOrDisabledOrders(t *testing.T) {
 	}
 
 	cfg.PaymentMode = cardStorePaymentModeFM
+	cfg.PaymentMethods = []string{cardStorePaymentModeFM}
 	cfgData, _ = json.Marshal(cfg)
 	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
 		t.Fatal(err)
@@ -796,15 +1204,15 @@ func TestAlipayDirectNotifyRejectsInvalidAppSignAndAmount(t *testing.T) {
 	}
 }
 
-func TestAlipaySignContentExcludesSignAndSignType(t *testing.T) {
+func TestAlipaySignContentExcludesSignButKeepsSignType(t *testing.T) {
 	values := url.Values{}
 	values.Set("app_id", "2021000000000000")
 	values.Set("method", "alipay.trade.page.pay")
 	values.Set("sign_type", "RSA2")
 	values.Set("sign", "signature")
 	got := alipaySignContent(values)
-	if strings.Contains(got, "sign_type=RSA2") {
-		t.Fatalf("sign_type leaked into sign content: %q", got)
+	if !strings.Contains(got, "sign_type=RSA2") {
+		t.Fatalf("sign_type missing from sign content: %q", got)
 	}
 	if strings.Contains(got, "signature") {
 		t.Fatalf("sign value leaked into sign content: %q", got)
@@ -846,6 +1254,44 @@ func TestAlipayDirectNotifyRejectsNonAlipayOrder(t *testing.T) {
 	orders := loadCardStoreOrders(context.Background(), system)
 	if len(orders.Orders) != 1 || orders.Orders[0].Status != "payment_started" || orders.Orders[0].CardID != "" {
 		t.Fatalf("non-alipay order changed: %#v", orders.Orders)
+	}
+}
+
+func TestAlipayDirectNotifyDoesNotReviveIssueFailedOrder(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-ISSUE-FAILED", ProductID: "missing_product", ProductLabel: "Missing Card", Email: "buyer@example.com", Amount: 12.34, Status: "issue_failed", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", PaymentMsg: "product not found", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{}
+	form.Set("app_id", "2021000000000000")
+	form.Set("charset", "utf-8")
+	form.Set("trade_status", "TRADE_SUCCESS")
+	form.Set("out_trade_no", "ALI-ISSUE-FAILED")
+	form.Set("trade_no", "2026060122000000000004")
+	form.Set("total_amount", "12.34")
+	form.Set("sign_type", "RSA2")
+	sign, err := alipayRSA2Sign(alipaySignContent(form), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.Set("sign", sign)
+	req := httptest.NewRequest(http.MethodPost, "/api/card-store/payment/notify", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	CardStorePaymentNotifyHandler(system, nil).ServeHTTP(rec, req)
+	if strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("notify body = %q", rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), system)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status != "issue_failed" || orders.Orders[0].CardID != "" || orders.Orders[0].PlatformOrderNo != "" {
+		t.Fatalf("issue_failed order changed: %#v", orders.Orders)
 	}
 }
 
@@ -1016,6 +1462,11 @@ func TestZhifuXPayNotifyAutoRedeemsWhenRegisteredEmailExists(t *testing.T) {
 	}
 	values := url.Values{}
 	values.Set("amount", "888")
+	values.Set("actualPayAmount", "888")
+	values.Set("payTime", "2026-04-02 11:50:24")
+	values.Set("platformOrderNo", "633718715472560128")
+	values.Set("channelOrderNo", "4200003058202604028462299362")
+	values.Set("type", "wxpaynative")
 	values.Set("orderNo", "AI123")
 	values.Set("merchantNum", "1234567890")
 	values.Set("state", "1")
@@ -1039,8 +1490,10 @@ func TestZhifuXPayNotifyAutoRedeemsWhenRegisteredEmailExists(t *testing.T) {
 	if len(reg.Grants) != 1 || reg.Grants[0].Email != "buyer@example.com" || reg.Cards[0].RedeemedByEmail != "buyer@example.com" || reg.Cards[0].RedeemedAt == nil {
 		t.Fatalf("registry not redeemed to buyer: grants=%#v cards=%#v", reg.Grants, reg.Cards)
 	}
-	if !strings.Contains(mailer.body, "已自动充值到账户：buyer@example.com") {
-		t.Fatalf("auto redeem email line missing: %q", mailer.body)
+	for _, want := range []string{"服务卡已自动兑换完成", "兑换账户：buyer@example.com", "兑换时间：", "订单号：AI123", "商品：Day Card", "订单金额：888.00", "实付金额：888", "支付时间：2026-04-02 11:50:24", "平台订单号：633718715472560128", "渠道订单号：4200003058202604028462299362", "服务卡 ID：cardstore_AI123"} {
+		if !strings.Contains(mailer.body, want) {
+			t.Fatalf("auto redeem email detail %q missing: %q", want, mailer.body)
+		}
 	}
 	lookupReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/AI123?tenant_id=tenant_auto&email=buyer@example.com", nil)
 	lookupReq.SetPathValue("orderNo", "AI123")
@@ -1063,6 +1516,100 @@ func TestZhifuXPayNotifyAutoRedeemsWhenRegisteredEmailExists(t *testing.T) {
 	}
 	if mailer.count != 1 {
 		t.Fatalf("mailer count = %d", mailer.count)
+	}
+}
+
+func TestZhifuXPayNotifySendsCompletionEmailWhenExistingPaidOrderAutoRedeems(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	identity, cleanup := newBindHandlerIdentity(t)
+	defer cleanup()
+	seedBindUser(t, identity, "tenant_auto", "buyer@example.com")
+	code, err := llmservice.GenerateCardCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := llmservice.EncryptCardCode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceReg := llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding", AccessPolicy: llmservice.AccessPolicyGrantRequired}}, Cards: []llmservice.RechargeCard{{ID: "cardstore_AI123", CodeHash: llmserviceHashCode(code), EncryptedCode: enc, Label: "Day Card", ServiceGroupIDs: []string{"coding-basic"}, Credits: 300, DurationDays: 1, CreatedAt: time.Now().UTC()}}}
+	settings := scopedSystemSettingsForTenant("tenant_auto", system)
+	if err := llmservice.SaveRegistry(context.Background(), settings, &serviceReg); err != nil {
+		t.Fatal(err)
+	}
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, MerchantNum: "1234567890", AccessKey: "secret", PayType: "wxpaynative", ServiceGroupIDs: []string{"coding-basic"}})
+	cfgData, _ := json.Marshal(cfg)
+	_ = settings.Set(context.Background(), cardStoreConfigKey, string(cfgData))
+	order := cardStoreOrder{OrderNo: "AI123", TenantID: "tenant_auto", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 888, Status: "paid", CardID: "cardstore_AI123", EncryptedCode: enc, MailStatus: "sent", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), settings, order); err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{}
+	values.Set("amount", "888")
+	values.Set("actualPayAmount", "888")
+	values.Set("payTime", "2026-04-02 11:50:24")
+	values.Set("platformOrderNo", "633718715472560128")
+	values.Set("channelOrderNo", "4200003058202604028462299362")
+	values.Set("orderNo", "AI123")
+	values.Set("merchantNum", "1234567890")
+	values.Set("state", "1")
+	values.Set("tenant_id", "tenant_auto")
+	values.Set("sign", zhifuXPayNotifySign("1", "1234567890", "AI123", "888", "secret"))
+	req := httptest.NewRequest(http.MethodGet, "/api/zhifuxpay/notify?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	mailer := &cardStoreTestMailer{}
+	CardStorePaymentNotifyHandler(system, mailer, identity).ServeHTTP(rec, req)
+	if strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("notify body = %q", rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), settings)
+	if len(orders.Orders) != 1 || orders.Orders[0].AutoRedeemedAt.IsZero() || orders.Orders[0].MailStatus != "sent" {
+		t.Fatalf("order not auto redeemed with mail sent: %#v", orders.Orders)
+	}
+	if mailer.count != 1 || !strings.Contains(mailer.subject, "已自动兑换完成") || !strings.Contains(mailer.body, "兑换账户：buyer@example.com") || !strings.Contains(mailer.body, "平台订单号：633718715472560128") || !strings.Contains(mailer.body, "支付时间：2026-04-02 11:50:24") {
+		t.Fatalf("completion email not sent: count=%d subject=%q body=%q", mailer.count, mailer.subject, mailer.body)
+	}
+}
+
+func TestZhifuXPayNotifyPersistsDetailsForExistingPaidOrderWithoutMailer(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, MerchantNum: "1234567890", AccessKey: "secret", PayType: "wxpaynative"})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	code, err := llmservice.GenerateCardCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := llmservice.EncryptCardCode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "AI124", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 888, Status: "paid", EncryptedCode: enc, MailStatus: "sent", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{}
+	values.Set("amount", "888")
+	values.Set("actualPayAmount", "887.99")
+	values.Set("payTime", "2026-04-02 11:50:24")
+	values.Set("platformOrderNo", "633718715472560128")
+	values.Set("channelOrderNo", "4200003058202604028462299362")
+	values.Set("type", "wxpaynative")
+	values.Set("orderNo", "AI124")
+	values.Set("merchantNum", "1234567890")
+	values.Set("state", "1")
+	values.Set("sign", zhifuXPayNotifySign("1", "1234567890", "AI124", "888", "secret"))
+	req := httptest.NewRequest(http.MethodGet, "/api/zhifuxpay/notify?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+	CardStorePaymentNotifyHandler(system, nil, nil).ServeHTTP(rec, req)
+	if strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("notify body = %q", rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), system)
+	if len(orders.Orders) != 1 || orders.Orders[0].ActualPayAmount != "887.99" || orders.Orders[0].PayTime != "2026-04-02 11:50:24" || orders.Orders[0].PlatformOrderNo != "633718715472560128" || orders.Orders[0].ChannelOrderNo != "4200003058202604028462299362" || orders.Orders[0].PayType != "wxpaynative" {
+		t.Fatalf("payment details not persisted: %#v", orders.Orders)
 	}
 }
 

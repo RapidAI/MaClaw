@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/freeproxy"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -996,7 +995,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	// Fall back to contentBuf only when filteredBuf is empty (e.g. all content
 	// was inside <think> tags or was entirely tool calls).
 	// Apply stripXMLToolCalls to filteredBuf too — the stream filter chain
-	// does not handle XML-formatted tool calls from free proxy models.
+	// does not handle XML-formatted tool calls from models that emit tools in content.
 	filteredStr := filteredBuf.String()
 	if filteredStr != "" {
 		content = stripXMLToolCalls(filteredStr)
@@ -1045,18 +1044,8 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		}
 	}
 	if len(msg.ToolCalls) == 0 {
-		if xmlCalls := freeproxy.ParseXMLToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
-			for _, xc := range xmlCalls {
-				msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
-					ID: xc.ID, Type: xc.Type,
-					Function: struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					}{
-						Name: xc.Function.Name, Arguments: xc.Function.Arguments,
-					},
-				})
-			}
+		if xmlCalls := parseXMLContentToolCalls(contentBuf.String()); len(xmlCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
 			finishReason = llmFinishReasonToolCalls.String()
 		}
 	}

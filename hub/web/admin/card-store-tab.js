@@ -2,10 +2,10 @@
 (function(global) {
   const I18N = {
     en: {
-      nav: 'Online Store', navDesc: 'Sell service cards and credits', title: 'Online Store', subtitle: 'Configure payment, product pricing, and sales reporting for /card_store.', reload: 'Reload', save: 'Save Store', open: 'Open Store', manageTab: 'Store Management', paymentTab: 'Payment Settings', salesTab: 'Sales Management', manageTitle: 'Store Controls', manageDesc: 'Enable the tenant store and choose default service groups for generated cards.', paymentTitle: 'Payment', paymentDesc: 'Choose Payment FM, Alipay direct, or personal QR confirmation for card-store orders.', paymentMode: 'Payment mode', personalAdminEmails: 'Admin reminder emails', personalInstruction: 'Personal payment instructions', alipayEnabled: 'Enable Alipay QR', wechatEnabled: 'Enable WeChat QR', alipayAppID: 'Alipay App ID', alipayGateway: 'Alipay Gateway', alipayPrivateKey: 'App Private Key', alipayPublicKey: 'Alipay Public Key', alipayPaymentMethod: 'Alipay product', alipaySubjectPrefix: 'Order subject prefix', alipayNotifyURL: 'Alipay notify URL', alipayReturnURL: 'Alipay return URL', enabled: 'Enable online store', apiBase: 'API Base URL', merchant: 'Merchant No.', accessKey: 'Access Key', payType: 'Pay Type', notifyUrl: 'Notify URL', serviceGroups: 'Default service groups', serviceGroupsHint: 'Selected {count} of {total}. Issued cards use product groups first, then these default groups, then Model Services default new-user groups.', noServiceGroups: 'No model service groups found. Create one in Model Services first.', productsTitle: 'Products', productsDesc: 'Set price and enable state for service exchange cards and pure credit cards.', price: 'Price', active: 'Enabled', salesTitle: 'Sales Statistics', salesDesc: 'Paid order totals grouped by day or month for this tenant. Sold service cards are listed below.', day: 'By day', month: 'By month', orders: 'Paid orders', revenue: 'Revenue', cards: 'Cards issued', emptySales: 'No paid sales in this period.', code: 'Code', buyer: 'Buyer', status: 'Status', issueFailed: 'Issue failed', paid: 'Paid', paidAt: 'Paid at', redeemedAccount: 'Redeemed account', redeemedAt: 'Redeemed at', autoRedeemedAt: 'Auto credited at', autoRedeemFailed: 'Auto credit failed', notRedeemed: 'Not redeemed', saved: 'Card store saved.', saveFailed: 'Save card store failed: {error}', loadFailed: 'Load card store failed: {error}', salesLoadFailed: 'Load sales failed: {error}'
+      nav: 'Online Store', navDesc: 'Sell service cards and credits', title: 'Online Store', subtitle: 'Configure payment, product pricing, and sales reporting for /card_store.', reload: 'Reload', save: 'Save Store', saveSettings: 'Save Settings', open: 'Open Store', manageTab: 'Store Management', paymentTab: 'Payment Settings', salesTab: 'Sales Management', manageTitle: 'Store Controls', manageDesc: 'Enable the tenant store and choose default service groups for generated cards.', paymentTitle: 'Payment', paymentDesc: 'Choose Payment FM, Alipay direct, or personal QR confirmation for card-store orders.', paymentMode: 'Payment mode', personalAdminEmails: 'Store owner confirmation email', personalInstruction: 'Personal payment instructions', alipayEnabled: 'Enable Alipay QR', wechatEnabled: 'Enable WeChat QR', alipayAppID: 'Alipay App ID', alipayGateway: 'Alipay Gateway', alipayPrivateKey: 'App Private Key', alipayPublicKey: 'Alipay Public Key', alipayPaymentMethod: 'Alipay product', alipaySubjectPrefix: 'Order subject prefix', alipayNotifyURL: 'Alipay notify URL', alipayReturnURL: 'Alipay return URL', enabled: 'Enable online store', apiBase: 'API Base URL', merchant: 'Merchant No.', accessKey: 'Access Key', payType: 'Pay Type', notifyUrl: 'Notify URL', serviceGroups: 'Default service groups', serviceGroupsHint: 'Selected {count} of {total}. Issued cards use product groups first, then these default groups, then Model Services default new-user groups.', noServiceGroups: 'No model service groups found. Create one in Model Services first.', productsTitle: 'Products', productsDesc: 'Set price and enable state for service exchange cards and pure credit cards.', price: 'Price', active: 'Enabled', salesTitle: 'Sales Statistics', salesDesc: 'Paid order totals grouped by day or month for this tenant. Sold service cards are listed below.', day: 'By day', month: 'By month', orders: 'Paid orders', revenue: 'Revenue', cards: 'Cards issued', emptySales: 'No paid sales in this period.', code: 'Code', buyer: 'Buyer', status: 'Status', issueFailed: 'Issue failed', paid: 'Paid', confirmPaid: 'Confirm paid', reject: 'Reject', pendingConfirm: 'Pending confirm', orderRemark: 'Remark', orderChannel: 'Channel', approveConfirm: 'Confirm payment received and issue card?', rejectConfirm: 'Reject this order?', orderLabel: 'Order', amountLabel: 'Amount', paidAt: 'Paid at', redeemedAccount: 'Redeemed account', redeemedAt: 'Redeemed at', autoRedeemedAt: 'Auto credited at', autoRedeemFailed: 'Auto credit failed', notRedeemed: 'Not redeemed', qrUploaded: 'QR uploaded. Click Save Settings to apply.', saved: 'Card store saved.', saveFailed: 'Save card store failed: {error}', loadFailed: 'Load card store failed: {error}', salesLoadFailed: 'Load sales failed: {error}'
     },
     zh: {
-      nav: '\u5728\u7ebf\u5546\u5e97', navDesc: '\u9500\u552e\u670d\u52a1\u5361\u548c\u70b9\u5361', title: '\u5728\u7ebf\u5546\u5e97', subtitle: '\u914d\u7f6e\u652f\u4ed8\u65b9\u5f0f\u3001/card_store \u5546\u54c1\u4ef7\u683c\u4e0e\u9500\u552e\u7edf\u8ba1\u3002', reload: '\u91cd\u65b0\u52a0\u8f7d', save: '\u4fdd\u5b58\u5546\u5e97', open: '\u6253\u5f00\u5546\u5e97', manageTab: '\u5546\u5e97\u7ba1\u7406', paymentTab: '\u652f\u4ed8\u8bbe\u7f6e', salesTab: '\u9500\u552e\u7ba1\u7406', manageTitle: '\u5546\u5e97\u63a7\u5236', manageDesc: '\u542f\u7528\u5f53\u524d\u79df\u6237\u5546\u5e97\uff0c\u5e76\u4ece\u5217\u8868\u9009\u62e9\u751f\u6210\u5361\u7684\u9ed8\u8ba4\u670d\u52a1\u7ec4\u3002', paymentTitle: '\u652f\u4ed8\u8bbe\u7f6e', paymentDesc: '\u9009\u62e9 Payment FM\u3001\u652f\u4ed8\u5b9d\u7535\u8111\u7f51\u7ad9\u652f\u4ed8\u6216\u4e2a\u4eba\u6536\u6b3e\u7801\u786e\u8ba4\u3002', paymentMode: '\u652f\u4ed8\u6a21\u5f0f', personalAdminEmails: '\u7ba1\u7406\u5458\u63d0\u9192\u90ae\u7bb1', personalInstruction: '\u4e2a\u4eba\u6536\u6b3e\u8bf4\u660e', alipayEnabled: '\u542f\u7528\u652f\u4ed8\u5b9d\u6536\u6b3e\u7801', wechatEnabled: '\u542f\u7528\u5fae\u4fe1\u6536\u6b3e\u7801', enabled: '\u542f\u7528\u5728\u7ebf\u5546\u5e97', apiBase: '\u63a5\u53e3\u6839\u5730\u5740', merchant: '\u5546\u6237\u53f7', accessKey: '\u63a5\u5165\u5bc6\u94a5', payType: '\u652f\u4ed8\u65b9\u5f0f', notifyUrl: '\u5f02\u6b65\u901a\u77e5\u5730\u5740', serviceGroups: '\u9ed8\u8ba4\u670d\u52a1\u7ec4', serviceGroupsHint: '\u5df2\u9009 {count}/{total}\u3002\u53d1\u5361\u65f6\u4f18\u5148\u4f7f\u7528\uff1a\u5546\u54c1\u4e13\u5c5e\u670d\u52a1\u7ec4 > \u8fd9\u91cc\u7684\u9ed8\u8ba4\u670d\u52a1\u7ec4 > \u6a21\u578b\u670d\u52a1\u9ed8\u8ba4\u65b0\u7528\u6237\u670d\u52a1\u7ec4\u3002', noServiceGroups: '\u6682\u65e0\u6a21\u578b\u670d\u52a1\u7ec4\uff0c\u8bf7\u5148\u5728\u6a21\u578b\u670d\u52a1\u4e2d\u521b\u5efa\u3002', productsTitle: '\u5546\u54c1', productsDesc: '\u8bbe\u7f6e\u670d\u52a1\u5151\u6362\u5361\u548c\u7eaf\u70b9\u5361\u7684\u4ef7\u683c\u4e0e\u542f\u7528\u72b6\u6001\u3002', price: '\u4ef7\u683c', active: '\u542f\u7528', salesTitle: '\u9500\u552e\u7edf\u8ba1', salesDesc: '\u6309\u5929\u6216\u6309\u6708\u7edf\u8ba1\u5f53\u524d\u79df\u6237\u7684\u5df2\u652f\u4ed8\u8ba2\u5355\uff0c\u4e0b\u65b9\u4ee5\u5361\u7247\u5f62\u5f0f\u5217\u51fa\u5df2\u552e\u670d\u52a1\u5361\u3002', day: '\u6309\u5929', month: '\u6309\u6708', orders: '\u5df2\u652f\u4ed8\u8ba2\u5355', revenue: '\u9500\u552e\u989d', cards: '\u53d1\u5361\u6570', emptySales: '\u8be5\u65f6\u6bb5\u6682\u65e0\u5df2\u652f\u4ed8\u9500\u552e\u3002', code: '\u5151\u6362\u7801', buyer: '\u8d2d\u4e70\u90ae\u7bb1', status: '\u72b6\u6001', issueFailed: '\u53d1\u5361\u5931\u8d25', paid: '\u5df2\u652f\u4ed8', paidAt: '\u652f\u4ed8\u65f6\u95f4', redeemedAccount: '\u5151\u6362\u5e10\u6237', redeemedAt: '\u5151\u6362\u65f6\u95f4', autoRedeemedAt: '\u81ea\u52a8\u5145\u503c\u65f6\u95f4', autoRedeemFailed: '\u81ea\u52a8\u5145\u503c\u5931\u8d25', notRedeemed: '\u672a\u5151\u6362', saved: '\u5728\u7ebf\u5546\u5e97\u5df2\u4fdd\u5b58\u3002', saveFailed: '\u4fdd\u5b58\u5728\u7ebf\u5546\u5e97\u5931\u8d25\uff1a{error}', loadFailed: '\u52a0\u8f7d\u5728\u7ebf\u5546\u5e97\u5931\u8d25\uff1a{error}', salesLoadFailed: '\u52a0\u8f7d\u9500\u552e\u7edf\u8ba1\u5931\u8d25\uff1a{error}'
+      nav: '\u5728\u7ebf\u5546\u5e97', navDesc: '\u9500\u552e\u670d\u52a1\u5361\u548c\u70b9\u5361', title: '\u5728\u7ebf\u5546\u5e97', subtitle: '\u914d\u7f6e\u652f\u4ed8\u65b9\u5f0f\u3001/card_store \u5546\u54c1\u4ef7\u683c\u4e0e\u9500\u552e\u7edf\u8ba1\u3002', reload: '\u91cd\u65b0\u52a0\u8f7d', save: '\u4fdd\u5b58\u5546\u5e97', saveSettings: '\u4fdd\u5b58\u8bbe\u7f6e', open: '\u6253\u5f00\u5546\u5e97', manageTab: '\u5546\u5e97\u7ba1\u7406', paymentTab: '\u652f\u4ed8\u8bbe\u7f6e', salesTab: '\u9500\u552e\u7ba1\u7406', manageTitle: '\u5546\u5e97\u63a7\u5236', manageDesc: '\u542f\u7528\u5f53\u524d\u79df\u6237\u5546\u5e97\uff0c\u5e76\u4ece\u5217\u8868\u9009\u62e9\u751f\u6210\u5361\u7684\u9ed8\u8ba4\u670d\u52a1\u7ec4\u3002', paymentTitle: '\u652f\u4ed8\u8bbe\u7f6e', paymentDesc: '\u9009\u62e9 Payment FM\u3001\u652f\u4ed8\u5b9d\u7535\u8111\u7f51\u7ad9\u652f\u4ed8\u6216\u4e2a\u4eba\u6536\u6b3e\u7801\u786e\u8ba4\u3002', paymentMode: '\u652f\u4ed8\u6a21\u5f0f', personalAdminEmails: '\u5e97\u4e3b\u786e\u8ba4\u90ae\u7bb1', personalInstruction: '\u4e2a\u4eba\u6536\u6b3e\u8bf4\u660e', alipayEnabled: '\u542f\u7528\u652f\u4ed8\u5b9d\u6536\u6b3e\u7801', wechatEnabled: '\u542f\u7528\u5fae\u4fe1\u6536\u6b3e\u7801', enabled: '\u542f\u7528\u5728\u7ebf\u5546\u5e97', apiBase: '\u63a5\u53e3\u6839\u5730\u5740', merchant: '\u5546\u6237\u53f7', accessKey: '\u63a5\u5165\u5bc6\u94a5', payType: '\u652f\u4ed8\u65b9\u5f0f', notifyUrl: '\u5f02\u6b65\u901a\u77e5\u5730\u5740', serviceGroups: '\u9ed8\u8ba4\u670d\u52a1\u7ec4', serviceGroupsHint: '\u5df2\u9009 {count}/{total}\u3002\u53d1\u5361\u65f6\u4f18\u5148\u4f7f\u7528\uff1a\u5546\u54c1\u4e13\u5c5e\u670d\u52a1\u7ec4 > \u8fd9\u91cc\u7684\u9ed8\u8ba4\u670d\u52a1\u7ec4 > \u6a21\u578b\u670d\u52a1\u9ed8\u8ba4\u65b0\u7528\u6237\u670d\u52a1\u7ec4\u3002', noServiceGroups: '\u6682\u65e0\u6a21\u578b\u670d\u52a1\u7ec4\uff0c\u8bf7\u5148\u5728\u6a21\u578b\u670d\u52a1\u4e2d\u521b\u5efa\u3002', productsTitle: '\u5546\u54c1', productsDesc: '\u8bbe\u7f6e\u670d\u52a1\u5151\u6362\u5361\u548c\u7eaf\u70b9\u5361\u7684\u4ef7\u683c\u4e0e\u542f\u7528\u72b6\u6001\u3002', price: '\u4ef7\u683c', active: '\u542f\u7528', salesTitle: '\u9500\u552e\u7edf\u8ba1', salesDesc: '\u6309\u5929\u6216\u6309\u6708\u7edf\u8ba1\u5f53\u524d\u79df\u6237\u7684\u5df2\u652f\u4ed8\u8ba2\u5355\uff0c\u4e0b\u65b9\u4ee5\u5361\u7247\u5f62\u5f0f\u5217\u51fa\u5df2\u552e\u670d\u52a1\u5361\u3002', day: '\u6309\u5929', month: '\u6309\u6708', orders: '\u5df2\u652f\u4ed8\u8ba2\u5355', revenue: '\u9500\u552e\u989d', cards: '\u53d1\u5361\u6570', emptySales: '\u8be5\u65f6\u6bb5\u6682\u65e0\u5df2\u652f\u4ed8\u9500\u552e\u3002', code: '\u5151\u6362\u7801', buyer: '\u8d2d\u4e70\u90ae\u7bb1', status: '\u72b6\u6001', issueFailed: '\u53d1\u5361\u5931\u8d25', paid: '\u5df2\u652f\u4ed8', confirmPaid: '\u786e\u8ba4\u5230\u8d26', reject: '\u62d2\u7edd', pendingConfirm: '\u5f85\u786e\u8ba4', orderRemark: '\u5907\u6ce8', orderChannel: '\u6e20\u9053', approveConfirm: '\u786e\u8ba4\u5df2\u6536\u5230\u4ed8\u6b3e\u5e76\u53d1\u5361\uff1f', rejectConfirm: '\u62d2\u7edd\u8be5\u8ba2\u5355\uff1f', orderLabel: '\u8ba2\u5355', amountLabel: '\u91d1\u989d', paidAt: '\u652f\u4ed8\u65f6\u95f4', redeemedAccount: '\u5151\u6362\u5e10\u6237', redeemedAt: '\u5151\u6362\u65f6\u95f4', autoRedeemedAt: '\u81ea\u52a8\u5145\u503c\u65f6\u95f4', autoRedeemFailed: '\u81ea\u52a8\u5145\u503c\u5931\u8d25', notRedeemed: '\u672a\u5151\u6362', qrUploaded: '\u6536\u6b3e\u7801\u5df2\u4e0a\u4f20\uff0c\u8bf7\u70b9\u51fb\u4fdd\u5b58\u8bbe\u7f6e\u751f\u6548\u3002', saved: '\u5728\u7ebf\u5546\u5e97\u5df2\u4fdd\u5b58\u3002', saveFailed: '\u4fdd\u5b58\u5728\u7ebf\u5546\u5e97\u5931\u8d25\uff1a{error}', loadFailed: '\u52a0\u8f7d\u5728\u7ebf\u5546\u5e97\u5931\u8d25\uff1a{error}', salesLoadFailed: '\u52a0\u8f7d\u9500\u552e\u7edf\u8ba1\u5931\u8d25\uff1a{error}'
     }
   };
   const EXTRA_I18N = {
@@ -31,13 +31,18 @@
   function serviceGroupLabel(group) { const id = String(group && group.id || '').trim(); const name = String(group && group.name || '').trim(); return name && name !== id ? id + ' - ' + name : id; }
   function personalChannel(id) { const channels = currentConfig && currentConfig.personal_payment && currentConfig.personal_payment.channels || []; return channels.find(function(ch) { return String(ch.id || '') === id; }) || { id: id }; }
   function splitEmails(value) { return String(value || '').split(/[;,\s]+/).map(function(v) { return v.trim().toLowerCase(); }).filter(Boolean); }
+  function setQRPreview(channel, url) { const prefix = channel === 'wechat' ? 'Wechat' : 'Alipay'; const img = document.getElementById('cardStore' + prefix + 'QRPreview'); if (!img) return; const value = String(url || '').trim(); img.style.display = value ? 'block' : 'none'; if (value) img.src = value; }
+  function selectedPaymentMethods() { const mode = document.getElementById('cardStorePaymentMode'); return [mode && mode.value || 'payment_fm']; }
+  function setSelectedPaymentMethods(methods) { const mode = document.getElementById('cardStorePaymentMode'); if (mode && methods && methods.length) mode.value = methods[0] || mode.value || 'payment_fm'; }
+  function syncPaymentMethodSelection(preferred) { const mode = document.getElementById('cardStorePaymentMode'); if (mode && preferred) mode.value = preferred; return selectedPaymentMethods(); }
   function setFieldVisible(id, visible) { const el = document.getElementById(id); const wrap = el && el.closest('div'); if (wrap) wrap.style.display = visible ? '' : 'none'; }
   function updatePaymentModeUI() {
     const mode = document.getElementById('cardStorePaymentMode');
-    const value = mode ? mode.value : 'payment_fm';
-    const useFM = value === 'payment_fm';
-    const useManual = value === 'personal_semimanual';
-    const useAlipay = value === 'alipay_direct';
+    const methods = syncPaymentMethodSelection();
+    const hasMethod = function(value) { return methods.indexOf(value) >= 0 || (mode && mode.value === value); };
+    const useFM = hasMethod('payment_fm');
+    const useManual = hasMethod('personal_semimanual');
+    const useAlipay = hasMethod('alipay_direct');
     ['cardStorePayType', 'cardStoreMerchantNum', 'cardStorePaymentAPIBaseURL', 'cardStoreAccessKey', 'cardStoreNotifyURL'].forEach(function(id) { setFieldVisible(id, useFM); });
     ['cardStorePersonalAdminEmails', 'cardStorePersonalInstruction', 'cardStoreAlipayEnabled', 'cardStoreWechatEnabled'].forEach(function(id) { setFieldVisible(id, useManual); });
     ['cardStoreAlipayAppID', 'cardStoreAlipayGateway', 'cardStoreAlipayPrivateKey', 'cardStoreAlipayPublicKey', 'cardStoreAlipayPaymentMethod', 'cardStoreAlipaySubjectPrefix', 'cardStoreAlipayNotifyURL', 'cardStoreAlipayReturnURL'].forEach(function(id) { setFieldVisible(id, useAlipay); });
@@ -82,11 +87,11 @@
   function applyCardStoreI18N() {
     setText('navCardStore', t('nav')); setText('navCardStoreDesc', t('navDesc'));
     setText('cardStoreTitle', t('title')); setText('cardStoreSubtitle', t('subtitle'));
-    setText('cardStoreReloadBtn', t('reload')); setText('cardStoreSaveBtn', t('save')); setText('cardStorePaymentSaveBtn', t('save')); setText('cardStoreOpenLink', t('open'));
+    setText('cardStoreReloadBtn', t('reload')); setText('cardStoreSaveBtn', t('save')); setText('cardStorePaymentSaveBtn', t('saveSettings')); setText('cardStoreOpenLink', t('open'));
     setText('cardStoreManageSubtab', t('manageTab')); setText('cardStorePaymentSubtab', t('paymentTab')); setText('cardStoreSalesSubtab', t('salesTab'));
     setText('cardStoreManageTitle', t('manageTitle')); setText('cardStoreManageDesc', t('manageDesc'));
     setText('cardStorePaymentTitle', t('paymentTitle')); setText('cardStorePaymentDesc', t('paymentDesc'));
-    setText('cardStorePaymentModeLabel', cardStoreLabel('paymentMode', 'Payment mode')); setText('cardStorePersonalAdminEmailsLabel', cardStoreLabel('personalAdminEmails', 'Admin reminder emails'));
+    setText('cardStorePaymentModeLabel', cardStoreLabel('paymentMode', 'Payment mode')); setText('cardStorePersonalAdminEmailsLabel', cardStoreLabel('personalAdminEmails', 'Store owner confirmation email'));
     setText('cardStorePersonalInstructionLabel', cardStoreLabel('personalInstruction', 'Personal payment instructions')); setText('cardStoreAlipayEnabledLabel', cardStoreLabel('alipayEnabled', 'Enable Alipay QR')); setText('cardStoreWechatEnabledLabel', cardStoreLabel('wechatEnabled', 'Enable WeChat QR'));
     setText('cardStoreAlipayAppIDLabel', cardStoreLabel('alipayAppID', 'Alipay App ID')); setText('cardStoreAlipayGatewayLabel', cardStoreLabel('alipayGateway', 'Alipay Gateway')); setText('cardStoreAlipayPrivateKeyLabel', cardStoreLabel('alipayPrivateKey', 'App Private Key')); setText('cardStoreAlipayPublicKeyLabel', cardStoreLabel('alipayPublicKey', 'Alipay Public Key'));
     setText('cardStoreAlipayPaymentMethodLabel', cardStoreLabel('alipayPaymentMethod', 'Alipay product')); setText('cardStoreAlipaySubjectPrefixLabel', cardStoreLabel('alipaySubjectPrefix', 'Order subject prefix')); setText('cardStoreAlipayNotifyURLLabel', cardStoreLabel('alipayNotifyURL', 'Alipay notify URL')); setText('cardStoreAlipayReturnURLLabel', cardStoreLabel('alipayReturnURL', 'Alipay return URL'));
@@ -117,6 +122,7 @@
     currentConfig = cfg || {};
     document.getElementById('cardStoreEnabled').checked = !!currentConfig.enabled;
     document.getElementById('cardStorePaymentMode').value = currentConfig.payment_mode || 'payment_fm';
+    setSelectedPaymentMethods(currentConfig.payment_methods || [currentConfig.payment_mode || 'payment_fm']);
     document.getElementById('cardStorePaymentAPIBaseURL').value = currentConfig.payment_api_base_url || defaultPaymentAPIBaseURL;
     document.getElementById('cardStoreMerchantNum').value = currentConfig.merchant_num || defaultPaymentMerchantNum;
     document.getElementById('cardStoreAccessKey').value = '';
@@ -141,11 +147,15 @@
     document.getElementById('cardStoreAlipayEnabled').checked = !!alipay.enabled;
     document.getElementById('cardStoreAlipayPayee').value = alipay.payee || '';
     document.getElementById('cardStoreAlipayQR').value = alipay.image_url || '';
+    setQRPreview('alipay', alipay.image_url || '');
     document.getElementById('cardStoreAlipayUserID').value = alipay.alipay_user_id || '';
     document.getElementById('cardStoreWechatEnabled').checked = !!wechat.enabled;
     document.getElementById('cardStoreWechatPayee').value = wechat.payee || '';
     document.getElementById('cardStoreWechatQR').value = wechat.image_url || '';
-    document.getElementById('cardStorePaymentMode').onchange = updatePaymentModeUI;
+    setQRPreview('wechat', wechat.image_url || '');
+    document.getElementById('cardStoreAlipayQR').oninput = function() { setQRPreview('alipay', this.value); };
+    document.getElementById('cardStoreWechatQR').oninput = function() { setQRPreview('wechat', this.value); };
+    document.getElementById('cardStorePaymentMode').onchange = function() { syncPaymentMethodSelection(document.getElementById('cardStorePaymentMode').value); updatePaymentModeUI(); };
     updatePaymentModeUI();
     const openLink = document.getElementById('cardStoreOpenLink'); if (openLink) openLink.href = publicStoreURL();
     renderServiceGroupOptions(false);
@@ -169,17 +179,30 @@
     try { const cfg = await api('/api/admin/card-store/config'); let services = null; try { services = await api('/api/admin/llm/services?include_cards=false'); } catch (_) { services = null; } serviceGroups = normalizeServiceGroups(services); fillConfig(cfg); if (activeSubtab === 'sales') loadCardStoreSales(); }
     catch (err) { showToast(t('loadFailed', { error: err.message }), 'error'); }
   }
-  async function saveCardStoreConfig() {
+  async function saveCardStoreConfig(scope) {
+    scope = scope === 'payment' ? 'payment' : 'store';
     const products = (currentConfig && currentConfig.products || []).map(function(product) {
       const price = document.querySelector('[data-card-store-price="' + CSS.escape(product.id) + '"]');
       const enabled = document.querySelector('[data-card-store-enabled="' + CSS.escape(product.id) + '"]');
       return Object.assign({}, product, { price: Number(price && price.value || 0), enabled: !!(enabled && enabled.checked) });
     });
+    if (scope === 'store') {
+      const storePayload = Object.assign({}, currentConfig || {}, { enabled: document.getElementById('cardStoreEnabled').checked, service_group_ids: selectedServiceGroupIDs(), products: products });
+      try { fillConfig(await api('/api/admin/card-store/config?scope=store', { method: 'PUT', body: JSON.stringify(storePayload) })); showToast(t('saved'), 'success'); }
+      catch (err) { showToast(t('saveFailed', { error: err.message }), 'error'); }
+      return;
+    }
+    const methods = syncPaymentMethodSelection();
+    const useManualPayment = methods.indexOf('personal_semimanual') >= 0;
+    try {
+      if (useManualPayment && document.getElementById('cardStoreAlipayEnabled').checked) await uploadCardStoreQRFile('alipay');
+      if (useManualPayment && document.getElementById('cardStoreWechatEnabled').checked) await uploadCardStoreQRFile('wechat');
+    } catch (err) { showToast(t('saveFailed', { error: err.message }), 'error'); return; }
     const personalPayment = { admin_emails: splitEmails(document.getElementById('cardStorePersonalAdminEmails').value), instruction: document.getElementById('cardStorePersonalInstruction').value, channels: [
       { id: 'alipay', label: 'Alipay', enabled: document.getElementById('cardStoreAlipayEnabled').checked, payee: document.getElementById('cardStoreAlipayPayee').value, image_url: document.getElementById('cardStoreAlipayQR').value, alipay_user_id: document.getElementById('cardStoreAlipayUserID').value, deep_link_mode: 'to_account' },
       { id: 'wechat', label: 'WeChat Pay', enabled: document.getElementById('cardStoreWechatEnabled').checked, payee: document.getElementById('cardStoreWechatPayee').value, image_url: document.getElementById('cardStoreWechatQR').value }
     ] };
-    if (document.getElementById('cardStorePaymentMode').value === 'alipay_direct') {
+    if (scope === 'payment' && methods.indexOf('alipay_direct') >= 0) {
       const required = ['cardStoreAlipayAppID', 'cardStoreAlipayPrivateKey', 'cardStoreAlipayPublicKey'];
       for (let i = 0; i < required.length; i++) {
         const field = document.getElementById(required[i]);
@@ -187,7 +210,7 @@
       }
     }
     const alipayDirect = Object.assign({}, currentConfig && currentConfig.alipay_direct || {}, { app_id: document.getElementById('cardStoreAlipayAppID').value, gateway_url: document.getElementById('cardStoreAlipayGateway').value, private_key: document.getElementById('cardStoreAlipayPrivateKey').value, alipay_public_key: document.getElementById('cardStoreAlipayPublicKey').value, payment_method: 'page', subject_prefix: document.getElementById('cardStoreAlipaySubjectPrefix').value, notify_url: document.getElementById('cardStoreAlipayNotifyURL').value, return_url: document.getElementById('cardStoreAlipayReturnURL').value });
-    const payload = Object.assign({}, currentConfig || {}, { enabled: document.getElementById('cardStoreEnabled').checked, payment_mode: document.getElementById('cardStorePaymentMode').value, payment_api_base_url: document.getElementById('cardStorePaymentAPIBaseURL').value, merchant_num: document.getElementById('cardStoreMerchantNum').value, access_key: document.getElementById('cardStoreAccessKey').value, pay_type: document.getElementById('cardStorePayType').value, notify_url: document.getElementById('cardStoreNotifyURL').value, personal_payment: personalPayment, alipay_direct: alipayDirect, service_group_ids: selectedServiceGroupIDs(), products: products });
+    const payload = Object.assign({}, currentConfig || {}, { enabled: document.getElementById('cardStoreEnabled').checked, payment_mode: document.getElementById('cardStorePaymentMode').value, payment_methods: methods, payment_api_base_url: document.getElementById('cardStorePaymentAPIBaseURL').value, merchant_num: document.getElementById('cardStoreMerchantNum').value, access_key: document.getElementById('cardStoreAccessKey').value, pay_type: document.getElementById('cardStorePayType').value, notify_url: document.getElementById('cardStoreNotifyURL').value, personal_payment: personalPayment, alipay_direct: alipayDirect, service_group_ids: selectedServiceGroupIDs(), products: products });
     try { fillConfig(await api('/api/admin/card-store/config', { method: 'PUT', body: JSON.stringify(payload) })); showToast(t('saved'), 'success'); }
     catch (err) { showToast(t('saveFailed', { error: err.message }), 'error'); }
   }
@@ -195,6 +218,37 @@
     const period = document.getElementById('cardStoreSalesPeriod') && document.getElementById('cardStoreSalesPeriod').value || 'day';
     try { renderCardStoreSales(await api('/api/admin/card-store/sales?period=' + encodeURIComponent(period))); }
     catch (err) { showToast(t('salesLoadFailed', { error: err.message }), 'error'); }
+  }
+  async function uploadCardStoreQRFile(channel) {
+    const prefix = channel === 'wechat' ? 'Wechat' : 'Alipay';
+    const input = document.getElementById('cardStore' + prefix + 'QRFile');
+    const target = document.getElementById('cardStore' + prefix + 'QR');
+    const file = input && input.files && input.files[0];
+    if (!file) return String(target && target.value || '').trim();
+    const form = new FormData();
+    form.append('channel', channel);
+    form.append('file', file);
+    const headers = {};
+    const authToken = typeof global.token === 'function' ? global.token() : '';
+    if (authToken) headers.Authorization = 'Bearer ' + authToken;
+    const res = await fetch('/api/admin/card-store/payment-qr/upload', { method: 'POST', headers: headers, body: form });
+    const body = await res.json().catch(function() { return {}; });
+    if (!res.ok) throw new Error(body.message || res.statusText || 'Upload failed');
+    const imageURL = body.image_url || body.url || '';
+    if (!imageURL) throw new Error('Upload did not return QR image URL');
+    if (target) target.value = imageURL;
+    setQRPreview(channel, imageURL);
+    if (input) input.value = '';
+    return imageURL;
+  }
+  async function uploadCardStoreQR(channel) {
+    const prefix = channel === 'wechat' ? 'Wechat' : 'Alipay';
+    const input = document.getElementById('cardStore' + prefix + 'QRFile');
+    const target = document.getElementById('cardStore' + prefix + 'QR');
+    const file = input && input.files && input.files[0];
+    if (!file && !(target && target.value)) { showToast(t('saveFailed', { error: 'Choose a QR image first.' }), 'error'); return; }
+    try { await uploadCardStoreQRFile(channel); showToast(t('qrUploaded'), 'success'); }
+    catch (err) { showToast(t('saveFailed', { error: err.message }), 'error'); }
   }
   function renderCardStoreSales(data) {
     setText('cardStoreSalesOrders', String(data.total_orders || 0)); setText('cardStoreSalesRevenue', money(data.total_revenue)); setText('cardStoreSalesCards', String(data.total_cards || 0));
@@ -214,23 +268,23 @@
     (cards || []).forEach(function(card) {
       const item = document.createElement('div'); item.className = 'item'; item.style.padding = '12px 14px';
       const redeemed = card.redeemed_email ? escapeHtml(card.redeemed_email) : t('notRedeemed');
-      const statusText = card.status === 'issue_failed' ? t('issueFailed') : (card.status === 'personal_opened' ? cardStoreLabel('pendingConfirm', 'Pending confirm') : t('paid'));
+      const statusText = card.status === 'issue_failed' ? t('issueFailed') : (card.status === 'personal_opened' ? t('pendingConfirm') : t('paid'));
       const detail = card.message || card.mail_error || '';
       const autoLine = card.auto_redeemed_at ? '<div class="item-meta">' + t('autoRedeemedAt') + ': ' + escapeHtml(dateText(card.auto_redeemed_at)) + '</div>' : (card.auto_redeem_error ? '<div class="item-meta">' + t('autoRedeemFailed') + ': ' + escapeHtml(card.auto_redeem_error) + '</div>' : '');
-      const actions = card.status === 'personal_opened' ? '<div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="approveCardStoreOrder(\'' + jsString(card.order_no || '') + '\',' + Number(card.amount || 0) + ',\'' + jsString(card.pay_code || '') + '\')">' + t('paid') + '</button><button class="btn-ghost" type="button" onclick="rejectCardStoreOrder(\'' + jsString(card.order_no || '') + '\')">Reject</button></div>' : '';
-      item.innerHTML = '<div class="item-title">' + escapeHtml(card.product_label || card.product_id || '-') + '</div><div class="item-meta">' + t('buyer') + ': ' + escapeHtml(card.email || '-') + '</div><div class="item-meta">' + t('status') + ': ' + escapeHtml(statusText) + '</div>' + (card.pay_code ? '<div class="item-meta">Remark: <strong>' + escapeHtml(card.pay_code) + '</strong></div>' : '') + (card.pay_channel_label ? '<div class="item-meta">Channel: ' + escapeHtml(card.pay_channel_label) + '</div>' : '') + (detail ? '<div class="item-meta">' + escapeHtml(detail) + '</div>' : '') + '<div class="mono" style="margin-top:8px;padding:8px 10px">' + t('code') + ': ' + escapeHtml(card.code || '-') + '</div><div class="grid2" style="margin-top:8px"><div><div class="item-meta">' + t('price') + '</div><strong>' + money(card.amount) + '</strong></div><div><div class="item-meta">credits</div><strong>' + Number(card.credits || 0) + '</strong></div></div><div class="item-meta" style="margin-top:8px">' + t('paidAt') + ': ' + escapeHtml(dateText(card.paid_at)) + '</div>' + autoLine + '<div class="item-meta">' + t('redeemedAccount') + ': ' + redeemed + '</div><div class="item-meta">' + t('redeemedAt') + ': ' + escapeHtml(card.redeemed_at ? dateText(card.redeemed_at) : '-') + '</div><div class="item-meta">' + escapeHtml(card.order_no || '') + '</div>' + actions;
+      const actions = card.status === 'personal_opened' ? '<div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="approveCardStoreOrder(\'' + jsString(card.order_no || '') + '\',' + Number(card.amount || 0) + ',\'' + jsString(card.pay_code || '') + '\')">' + t('confirmPaid') + '</button><button class="btn-ghost" type="button" onclick="rejectCardStoreOrder(\'' + jsString(card.order_no || '') + '\')">' + t('reject') + '</button></div>' : '';
+      item.innerHTML = '<div class="item-title">' + escapeHtml(card.product_label || card.product_id || '-') + '</div><div class="item-meta">' + t('buyer') + ': ' + escapeHtml(card.email || '-') + '</div><div class="item-meta">' + t('status') + ': ' + escapeHtml(statusText) + '</div>' + (card.pay_code ? '<div class="item-meta">' + t('orderRemark') + ': <strong>' + escapeHtml(card.pay_code) + '</strong></div>' : '') + (card.pay_channel_label ? '<div class="item-meta">' + t('orderChannel') + ': ' + escapeHtml(card.pay_channel_label) + '</div>' : '') + (detail ? '<div class="item-meta">' + escapeHtml(detail) + '</div>' : '') + '<div class="mono" style="margin-top:8px;padding:8px 10px">' + t('code') + ': ' + escapeHtml(card.code || '-') + '</div><div class="grid2" style="margin-top:8px"><div><div class="item-meta">' + t('price') + '</div><strong>' + money(card.amount) + '</strong></div><div><div class="item-meta">credits</div><strong>' + Number(card.credits || 0) + '</strong></div></div><div class="item-meta" style="margin-top:8px">' + t('paidAt') + ': ' + escapeHtml(dateText(card.paid_at)) + '</div>' + autoLine + '<div class="item-meta">' + t('redeemedAccount') + ': ' + redeemed + '</div><div class="item-meta">' + t('redeemedAt') + ': ' + escapeHtml(card.redeemed_at ? dateText(card.redeemed_at) : '-') + '</div><div class="item-meta">' + escapeHtml(card.order_no || '') + '</div>' + actions;
       root.appendChild(item);
     });
   }
   async function approveCardStoreOrder(orderNo, amount, payCode) {
-    const detail = 'Amount: ' + money(amount) + (payCode ? '\nRemark: ' + payCode : '') + '\nOrder: ' + orderNo;
-    if (!orderNo || !global.confirm('Confirm payment received and issue card?\n\n' + detail)) return;
+    const detail = t('amountLabel') + ': ' + money(amount) + (payCode ? '\n' + t('orderRemark') + ': ' + payCode : '') + '\n' + t('orderLabel') + ': ' + orderNo;
+    if (!orderNo || !global.confirm(t('approveConfirm') + '\n\n' + detail)) return;
     try { await api('/api/admin/card-store/orders/' + encodeURIComponent(orderNo) + '/approve', { method: 'POST', body: JSON.stringify({}) }); showToast(t('saved'), 'success'); loadCardStoreSales(); }
     catch (err) { showToast(t('saveFailed', { error: err.message }), 'error'); }
   }
   async function rejectCardStoreOrder(orderNo) {
-    if (!orderNo || !global.confirm('Reject this order?')) return;
-    try { await api('/api/admin/card-store/orders/' + encodeURIComponent(orderNo) + '/reject', { method: 'POST', body: JSON.stringify({ note: 'Rejected by admin' }) }); showToast(t('saved'), 'success'); loadCardStoreSales(); }
+    if (!orderNo || !global.confirm(t('rejectConfirm'))) return;
+    try { await api('/api/admin/card-store/orders/' + encodeURIComponent(orderNo) + '/reject', { method: 'POST', body: JSON.stringify({ note: 'Rejected by store owner' }) }); showToast(t('saved'), 'success'); loadCardStoreSales(); }
     catch (err) { showToast(t('saveFailed', { error: err.message }), 'error'); }
   }
   if (global.AdminTabRegistry) {
@@ -238,6 +292,6 @@
     global.AdminTabRegistry.onLanguageChange(applyCardStoreI18N);
   }
   global.adminTenantOnlyTabs = Object.assign({}, global.adminTenantOnlyTabs || {}, { cardstore: true });
-  Object.assign(global, { loadCardStoreConfig, saveCardStoreConfig, switchCardStoreSubtab, loadCardStoreSales, approveCardStoreOrder, rejectCardStoreOrder });
+  Object.assign(global, { loadCardStoreConfig, saveCardStoreConfig, switchCardStoreSubtab, loadCardStoreSales, approveCardStoreOrder, rejectCardStoreOrder, uploadCardStoreQR });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyCardStoreI18N); else applyCardStoreI18N();
 })(window);

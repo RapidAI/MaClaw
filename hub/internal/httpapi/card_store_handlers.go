@@ -17,6 +17,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,6 +66,7 @@ var cardStoreDefaultProductSpecs = []struct {
 type cardStoreConfig struct {
 	Enabled           bool                           `json:"enabled"`
 	PaymentMode       string                         `json:"payment_mode,omitempty"`
+	PaymentMethods    []string                       `json:"payment_methods,omitempty"`
 	PaymentAPIBaseURL string                         `json:"payment_api_base_url"`
 	MerchantNum       string                         `json:"merchant_num,omitempty"`
 	AccessKey         string                         `json:"access_key,omitempty"`
@@ -173,6 +176,7 @@ type createCardStoreOrderRequest struct {
 	SecondaryEmail string `json:"secondary_email,omitempty"`
 	TenantID       string `json:"tenant_id,omitempty"`
 	PayChannel     string `json:"pay_channel,omitempty"`
+	PaymentMethod  string `json:"payment_method,omitempty"`
 }
 
 type cardStorePaymentOpenedRequest struct {
@@ -314,6 +318,136 @@ func cardStorePaymentAdapterForMode(mode string) cardStorePaymentAdapter {
 	}
 }
 
+func normalizeCardStorePaymentMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case cardStorePaymentModeManual:
+		return cardStorePaymentModeManual
+	case cardStorePaymentModeAlipay:
+		return cardStorePaymentModeAlipay
+	case cardStorePaymentModeFM:
+		return cardStorePaymentModeFM
+	default:
+		return cardStorePaymentModeFM
+	}
+}
+
+func parseCardStorePaymentMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case cardStorePaymentModeFM:
+		return cardStorePaymentModeFM, true
+	case cardStorePaymentModeManual:
+		return cardStorePaymentModeManual, true
+	case cardStorePaymentModeAlipay:
+		return cardStorePaymentModeAlipay, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeCardStorePaymentMethods(methods []string, fallback string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, method := range methods {
+		mode, ok := parseCardStorePaymentMode(method)
+		if !ok {
+			continue
+		}
+		if _, ok := seen[mode]; ok {
+			continue
+		}
+		seen[mode] = struct{}{}
+		out = append(out, mode)
+	}
+	if preferred, ok := parseCardStorePaymentMode(fallback); ok {
+		for i, method := range out {
+			if method != preferred {
+				continue
+			}
+			if i > 0 {
+				copy(out[1:i+1], out[0:i])
+				out[0] = preferred
+			}
+			break
+		}
+	}
+	if len(out) == 0 {
+		if mode, ok := parseCardStorePaymentMode(fallback); ok {
+			out = append(out, mode)
+		} else {
+			out = append(out, cardStorePaymentModeFM)
+		}
+	}
+	return out
+}
+
+func cardStorePaymentMethodEnabled(cfg cardStoreConfig, mode string) bool {
+	mode, ok := parseCardStorePaymentMode(mode)
+	if !ok {
+		return false
+	}
+	if len(cfg.PaymentMethods) == 0 {
+		return normalizeCardStorePaymentMode(cfg.PaymentMode) == mode
+	}
+	for _, method := range cfg.PaymentMethods {
+		if parsed, ok := parseCardStorePaymentMode(method); ok && parsed == mode {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveCardStorePaymentSelection(cfg cardStoreConfig, req createCardStoreOrderRequest) (string, string, error) {
+	requestedMethod := strings.TrimSpace(req.PaymentMethod)
+	requestedChannel := strings.TrimSpace(req.PayChannel)
+	requested := firstNonEmptyString(requestedMethod, requestedChannel)
+	if requested == "" {
+		return cfg.PaymentMode, "", nil
+	}
+	key := strings.ToLower(requested)
+	if strings.HasPrefix(key, "manual:") {
+		rawChannel := strings.TrimPrefix(key, "manual:")
+		channel := normalizeCardStorePaymentChannel(rawChannel)
+		if channel == "" {
+			channel = rawChannel
+		}
+		if !cardStorePaymentMethodEnabled(cfg, cardStorePaymentModeManual) {
+			return "", "", fmt.Errorf("payment method is not enabled: %s", cardStorePaymentModeManual)
+		}
+		if rawChannel != "" {
+			if _, err := selectCardStorePersonalChannel(cfg.PersonalPayment, rawChannel); err != nil {
+				return "", "", err
+			}
+		}
+		return cardStorePaymentModeManual, channel, nil
+	}
+	switch key {
+	case cardStorePaymentModeFM, cardStorePaymentModeAlipay, cardStorePaymentModeManual:
+		mode := normalizeCardStorePaymentMode(key)
+		if !cardStorePaymentMethodEnabled(cfg, mode) {
+			return "", "", fmt.Errorf("payment method is not enabled: %s", mode)
+		}
+		return mode, "", nil
+	default:
+		if requestedMethod != "" {
+			return "", "", fmt.Errorf("payment method is not enabled: %s", requested)
+		}
+		channel := normalizeCardStorePaymentChannel(key)
+		if channel != "" && cardStorePaymentMethodEnabled(cfg, cardStorePaymentModeManual) {
+			if _, err := selectCardStorePersonalChannel(cfg.PersonalPayment, channel); err != nil {
+				return "", "", err
+			}
+			return cardStorePaymentModeManual, channel, nil
+		}
+		if cardStorePaymentMethodEnabled(cfg, cardStorePaymentModeManual) {
+			if _, err := selectCardStorePersonalChannel(cfg.PersonalPayment, requested); err != nil {
+				return "", "", err
+			}
+			return cardStorePaymentModeManual, normalizeCardStorePaymentChannel(requested), nil
+		}
+	}
+	return "", "", fmt.Errorf("payment method is not enabled: %s", requested)
+}
+
 func GetCardStoreProductsHandler(system store.SystemSettingsRepository, tenants ...store.TenantRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		settings := system
@@ -374,13 +508,29 @@ func UpdateCardStoreConfigHandler(system store.SystemSettingsRepository, audit s
 		if strings.TrimSpace(req.AlipayDirect.PrivateKey) == "" {
 			req.AlipayDirect.PrivateKey = oldCfg.AlipayDirect.PrivateKey
 		}
-		if notifyURLMatchesCurrentHub(req.NotifyURL, defaultCardStoreNotifyURL(r)) {
+		scope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope")))
+		validatePayment := true
+		if scope == "store" {
+			req.PaymentMode = oldCfg.PaymentMode
+			req.PaymentMethods = append([]string(nil), oldCfg.PaymentMethods...)
+			req.PaymentAPIBaseURL = oldCfg.PaymentAPIBaseURL
+			req.MerchantNum = oldCfg.MerchantNum
+			req.AccessKey = oldCfg.AccessKey
+			req.PayType = oldCfg.PayType
+			req.NotifyURL = oldCfg.NotifyURL
+			req.PersonalPayment = oldCfg.PersonalPayment
+			req.AlipayDirect = oldCfg.AlipayDirect
+			validatePayment = false
+		}
+		if validatePayment && notifyURLMatchesCurrentHub(req.NotifyURL, defaultCardStoreNotifyURL(r)) {
 			req.NotifyURL = ""
 		}
 		next := normalizeCardStoreConfig(req)
-		if err := validateCardStoreConfigForSave(next); err != nil {
-			writeError(w, http.StatusBadRequest, "CARD_STORE_CONFIG_INVALID", err.Error())
-			return
+		if validatePayment {
+			if err := validateCardStoreConfigForSave(next); err != nil {
+				writeError(w, http.StatusBadRequest, "CARD_STORE_CONFIG_INVALID", err.Error())
+				return
+			}
 		}
 		data, err := json.Marshal(next)
 		if err != nil {
@@ -419,6 +569,113 @@ func GetCardStoreSalesStatsHandler(system store.SystemSettingsRepository) http.H
 	}
 }
 
+func AdminCardStorePaymentQRUploadHandler(uploadDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		channel := normalizeCardStorePaymentChannel(r.FormValue("channel"))
+		if channel == "" {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_QR_CHANNEL_INVALID", "valid payment channel is required")
+			return
+		}
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_QR_FILE_REQUIRED", "payment QR image file is required")
+			return
+		}
+		defer file.Close()
+		const maxQRSize = 2 << 20
+		data, err := io.ReadAll(io.LimitReader(file, maxQRSize+1))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_QR_READ_FAILED", err.Error())
+			return
+		}
+		if len(data) == 0 || len(data) > maxQRSize {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_QR_SIZE_INVALID", "payment QR image must be smaller than 2MB")
+			return
+		}
+		contentType, ext, ok := cardStoreDetectPaymentQRImage(data)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_QR_TYPE_INVALID", "payment QR image must be PNG, JPEG, GIF, or WebP")
+			return
+		}
+		tenantID := store.NormalizeTenantID(RequestTenantID(r))
+		base := filepath.Clean(strings.TrimSpace(uploadDir))
+		if base == "." || base == "" {
+			base = filepath.Join("data", "card-store", "payment-qr")
+		}
+		tenantDir := filepath.Join(base, cardStoreSafePathSegment(tenantID))
+		if err := os.MkdirAll(tenantDir, 0o755); err != nil {
+			writeError(w, http.StatusInternalServerError, "CARD_STORE_PAYMENT_QR_SAVE_FAILED", err.Error())
+			return
+		}
+		sum := sha256.Sum256(data)
+		filename := channel + "-" + hex.EncodeToString(sum[:8]) + ext
+		path := filepath.Join(tenantDir, filename)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			writeError(w, http.StatusInternalServerError, "CARD_STORE_PAYMENT_QR_SAVE_FAILED", err.Error())
+			return
+		}
+		publicURL := "/api/card-store/payment-qr/" + url.PathEscape(tenantID) + "/" + url.PathEscape(filename)
+		writeJSON(w, http.StatusOK, map[string]any{"url": publicURL, "image_url": publicURL, "channel": channel, "tenant_id": tenantID, "content_type": contentType, "size": len(data)})
+	}
+}
+
+func CardStorePaymentQRImageHandler(uploadDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := store.NormalizeTenantID(r.PathValue("tenantID"))
+		filename := strings.TrimSpace(r.PathValue("filename"))
+		if tenantID == "" || filename == "" || filepath.Base(filename) != filename {
+			http.NotFound(w, r)
+			return
+		}
+		switch strings.ToLower(filepath.Ext(filename)) {
+		case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		base := filepath.Clean(strings.TrimSpace(uploadDir))
+		if base == "." || base == "" {
+			base = filepath.Join("data", "card-store", "payment-qr")
+		}
+		path := filepath.Join(base, cardStoreSafePathSegment(tenantID), filename)
+		if filepath.Base(path) != filename {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, path)
+	}
+}
+
+func cardStoreDetectPaymentQRImage(data []byte) (string, string, bool) {
+	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
+		return "image/png", ".png", true
+	}
+	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
+		return "image/jpeg", ".jpg", true
+	}
+	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
+		return "image/gif", ".gif", true
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "image/webp", ".webp", true
+	}
+	return "", "", false
+}
+
+func cardStoreSafePathSegment(value string) string {
+	value = store.NormalizeTenantID(value)
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return store.DefaultTenantID
+	}
+	return b.String()
+}
+
 func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, mailer cardStoreMailer, client *http.Client) http.HandlerFunc {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
@@ -455,12 +712,17 @@ func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusBadRequest, "CARD_STORE_PRICE_REQUIRED", "product price is not configured")
 			return
 		}
-		if cfg.PaymentMode == cardStorePaymentModeFM && (strings.TrimSpace(cfg.MerchantNum) == "" || strings.TrimSpace(cfg.AccessKey) == "" || strings.TrimSpace(cfg.PayType) == "") {
+		selectedMode, selectedPersonalChannel, err := resolveCardStorePaymentSelection(cfg, req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_METHOD_INVALID", err.Error())
+			return
+		}
+		if selectedMode == cardStorePaymentModeFM && (strings.TrimSpace(cfg.MerchantNum) == "" || strings.TrimSpace(cfg.AccessKey) == "" || strings.TrimSpace(cfg.PayType) == "") {
 			writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_CONFIG_REQUIRED", "payment configuration is incomplete")
 			return
 		}
-		if cfg.PaymentMode == cardStorePaymentModeAlipay {
-			if err := validateCardStoreConfigForSave(cfg); err != nil {
+		if selectedMode == cardStorePaymentModeAlipay {
+			if err := validateCardStorePaymentMethodForSave(cfg, cardStorePaymentModeAlipay); err != nil {
 				writeError(w, http.StatusBadRequest, "CARD_STORE_PAYMENT_CONFIG_REQUIRED", err.Error())
 				return
 			}
@@ -471,13 +733,17 @@ func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.Sy
 		}
 		notifyURL = cardStoreNotifyURLWithTenant(notifyURL, tenantID)
 		now := time.Now().UTC()
-		order := cardStoreOrder{OrderNo: newCardStoreOrderNo(now), TenantID: tenantID, ProductID: product.ID, ProductLabel: product.Label, Email: email, SecondaryEmail: secondaryEmail, Amount: roundMoney(product.Price), Status: "created", PaymentMode: cfg.PaymentMode, PayType: cfg.PayType, CreatedAt: now, UpdatedAt: now}
-		adapter := cardStorePaymentAdapterForMode(cfg.PaymentMode)
+		order := cardStoreOrder{OrderNo: newCardStoreOrderNo(now), TenantID: tenantID, ProductID: product.ID, ProductLabel: product.Label, Email: email, SecondaryEmail: secondaryEmail, Amount: roundMoney(product.Price), Status: "created", PaymentMode: selectedMode, PayType: cfg.PayType, CreatedAt: now, UpdatedAt: now}
+		adapter := cardStorePaymentAdapterForMode(selectedMode)
+		startReq := req
+		if selectedPersonalChannel != "" {
+			startReq.PayChannel = selectedPersonalChannel
+		}
 		if err := appendCardStoreOrder(r.Context(), tenantSystem, order); err != nil {
 			writeError(w, http.StatusInternalServerError, "CARD_STORE_ORDER_SAVE_FAILED", err.Error())
 			return
 		}
-		started, err := adapter.Start(r.Context(), client, cfg, tenantSystem, order, req, notifyURL)
+		started, err := adapter.Start(r.Context(), client, cfg, tenantSystem, order, startReq, notifyURL)
 		if err != nil {
 			_ = saveCardStorePaymentFailed(r.Context(), tenantSystem, started)
 			if current, ok := findCardStoreOrder(r.Context(), tenantSystem, order.OrderNo); ok && isCardStorePaidLikeStatus(current.Status) {
@@ -506,7 +772,7 @@ func CreateCardStoreOrderHandler(identity *auth.IdentityService, system store.Sy
 }
 
 func cardStoreOrderCreateResponse(tenantID string, email string, order cardStoreOrder) map[string]any {
-	resp := map[string]any{"order_no": order.OrderNo, "tenant_id": tenantID, "email": email, "payment_mode": order.PaymentMode, "pay_url": order.PayURL, "payment_id": order.PaymentID, "status": order.Status, "mail_status": order.MailStatus}
+	resp := map[string]any{"order_no": order.OrderNo, "tenant_id": tenantID, "email": email, "product_id": order.ProductID, "product_label": order.ProductLabel, "payment_mode": order.PaymentMode, "pay_url": order.PayURL, "payment_id": order.PaymentID, "status": order.Status, "mail_status": order.MailStatus}
 	if order.PayChannel != "" {
 		resp["pay_channel"] = order.PayChannel
 		resp["pay_channel_label"] = order.PayChannelLabel
@@ -519,6 +785,12 @@ func cardStoreOrderCreateResponse(tenantID string, email string, order cardStore
 	}
 	if !order.OpenedPaymentAt.IsZero() {
 		resp["opened_payment_at"] = order.OpenedPaymentAt.UTC().Format(time.RFC3339)
+	}
+	if order.ReminderMailStatus != "" {
+		resp["reminder_mail_status"] = order.ReminderMailStatus
+	}
+	if order.ReminderMailError != "" {
+		resp["reminder_mail_error"] = order.ReminderMailError
 	}
 	if order.ReviewNote != "" {
 		resp["review_note"] = order.ReviewNote
@@ -613,7 +885,7 @@ func CardStoreAlipayPayPageHandler(system store.SystemSettingsRepository) http.H
 			return
 		}
 		cfg := loadCardStoreConfig(r.Context(), settings)
-		if cfg.PaymentMode != cardStorePaymentModeAlipay {
+		if !cardStorePaymentMethodEnabled(cfg, cardStorePaymentModeAlipay) {
 			http.Error(w, "alipay direct payment is disabled", http.StatusConflict)
 			return
 		}
@@ -650,7 +922,7 @@ func handleAlipayDirectNotify(w http.ResponseWriter, r *http.Request, system sto
 	tenantID := store.NormalizeTenantID(r.URL.Query().Get("tenant_id"))
 	tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
 	cfg := loadCardStoreConfig(r.Context(), tenantSystem)
-	if cfg.PaymentMode != cardStorePaymentModeAlipay || !strings.EqualFold(strings.TrimSpace(r.Form.Get("app_id")), strings.TrimSpace(cfg.AlipayDirect.AppID)) {
+	if !cardStorePaymentMethodEnabled(cfg, cardStorePaymentModeAlipay) || !strings.EqualFold(strings.TrimSpace(r.Form.Get("app_id")), strings.TrimSpace(cfg.AlipayDirect.AppID)) {
 		writePlainPaymentNotifyResult(w, "fail")
 		return
 	}
@@ -761,7 +1033,7 @@ func CardStorePersonalPaymentConfirmPageHandler(system store.SystemSettingsRepos
 			button = "Reject/delete this order"
 			endpoint = "/api/card-store/personal-payment/reject"
 		}
-		html := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Card Store Payment Review</title><style>body{font-family:Segoe UI,Arial,sans-serif;margin:32px;color:#172033}main{max-width:720px;margin:auto}.box{border:1px solid #d8e0ea;border-radius:12px;padding:20px}dt{font-weight:700}dd{margin:0 0 12px}button{height:40px;border:0;border-radius:8px;background:#0f8f68;color:#fff;font-weight:800;padding:0 16px;cursor:pointer}textarea{width:100%%;min-height:80px}</style></head><body><main><h1>Card Store Payment Review</h1><div class="box"><dl><dt>Order</dt><dd>%s</dd><dt>Product</dt><dd>%s</dd><dt>Buyer</dt><dd>%s</dd><dt>Channel</dt><dd>%s</dd><dt>Amount</dt><dd>%s</dd><dt>Remark</dt><dd><strong>%s</strong></dd><dt>Payee</dt><dd>%s</dd></dl><p>Check the payment record before continuing. The next button changes order state.</p><form method="post" action="%s"><input type="hidden" name="tenant_id" value="%s"><input type="hidden" name="order_no" value="%s"><input type="hidden" name="token" value="%s"><textarea name="note" placeholder="Optional note"></textarea><p><button type="submit">%s</button></p></form></div></main></body></html>`, escHTML(order.OrderNo), escHTML(order.ProductLabel), escHTML(order.Email), escHTML(order.PayChannelLabel), escHTML(formatPaymentAmount(order.Amount)), escHTML(order.PayCode), escHTML(order.Payee), endpoint, escHTML(tenantID), escHTML(order.OrderNo), escHTML(token), escHTML(button))
+		html := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Card Store Payment Review</title><style>:root{color-scheme:light}*{box-sizing:border-box}html,body{margin:0;background:#f6f8fb!important;color:#172033!important;font-family:Segoe UI,Arial,sans-serif}body{padding:28px 14px}main{width:min(720px,100%%);margin:auto}h1{margin:0 0 18px;color:#111827!important;font-size:30px;line-height:1.15}.box{border:1px solid #d8e0ea;border-radius:16px;padding:22px;background:#fff!important;box-shadow:0 16px 42px rgba(24,34,49,.10)}dl{display:grid;grid-template-columns:108px minmax(0,1fr);gap:12px 18px;margin:0 0 18px}dt{font-weight:800;color:#526174!important}dd{margin:0;color:#172033!important;font-weight:700;word-break:break-word}.amount{font-size:22px;color:#0f8f68!important}.remark{display:inline-block;padding:4px 8px;border-radius:8px;background:#fff7ed;color:#9a3412!important;letter-spacing:.04em}.hint{margin:0 0 14px;color:#334155!important;line-height:1.55}button{width:100%%;min-height:50px;border:0;border-radius:10px;background:#0f8f68;color:#fff!important;font-size:18px;font-weight:900;padding:0 16px;cursor:pointer}textarea{width:100%%;min-height:112px;margin:0 0 14px;border:1px solid #cbd5e1;border-radius:10px;background:#fff!important;color:#172033!important;padding:12px;font:inherit;resize:vertical}textarea::placeholder{color:#64748b}@media(max-width:560px){body{padding:20px 12px}h1{font-size:26px}.box{padding:18px}dl{grid-template-columns:1fr;gap:4px}dd{margin:0 0 10px}button{font-size:16px}}</style></head><body><main><h1>Payment Review</h1><div class="box"><dl><dt>Order</dt><dd>%s</dd><dt>Product</dt><dd>%s</dd><dt>Buyer</dt><dd>%s</dd><dt>Channel</dt><dd>%s</dd><dt>Amount</dt><dd class="amount">%s</dd><dt>Remark</dt><dd><strong class="remark">%s</strong></dd><dt>Payee</dt><dd>%s</dd></dl><p class="hint">Check the payment record before continuing. The next button changes order state.</p><form method="post" action="%s"><input type="hidden" name="tenant_id" value="%s"><input type="hidden" name="order_no" value="%s"><input type="hidden" name="token" value="%s"><textarea name="note" placeholder="Optional note"></textarea><button type="submit">%s</button></form></div></main></body></html>`, escHTML(order.OrderNo), escHTML(order.ProductLabel), escHTML(order.Email), escHTML(order.PayChannelLabel), escHTML(formatPaymentAmount(order.Amount)), escHTML(order.PayCode), escHTML(order.Payee), endpoint, escHTML(tenantID), escHTML(order.OrderNo), escHTML(token), escHTML(button))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(html))
 	}
@@ -788,7 +1060,8 @@ func CardStorePersonalPaymentTokenActionHandler(system store.SystemSettingsRepos
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			_, _ = w.Write([]byte("Order rejected."))
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Order rejected</title><style>:root{color-scheme:light}body{margin:0;padding:32px 14px;background:#f6f8fb!important;color:#172033!important;font-family:Segoe UI,Arial,sans-serif}.box{max-width:560px;margin:auto;padding:24px;border:1px solid #d8e0ea;border-radius:16px;background:#fff!important;box-shadow:0 16px 42px rgba(24,34,49,.10)}h1{margin:0 0 8px;color:#111827!important}</style></head><body><main class="box"><h1>Order rejected.</h1><p>This one-time link is now used.</p></main></body></html>`))
 			return
 		}
 		cfg := loadCardStoreConfig(r.Context(), settings)
@@ -797,7 +1070,8 @@ func CardStorePersonalPaymentTokenActionHandler(system store.SystemSettingsRepos
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_, _ = w.Write([]byte("Payment confirmed and card issued."))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Payment confirmed</title><style>:root{color-scheme:light}body{margin:0;padding:32px 14px;background:#f6f8fb!important;color:#172033!important;font-family:Segoe UI,Arial,sans-serif}.box{max-width:560px;margin:auto;padding:24px;border:1px solid #d8e0ea;border-radius:16px;background:#fff!important;box-shadow:0 16px 42px rgba(24,34,49,.10)}h1{margin:0 0 8px;color:#0f8f68!important}</style></head><body><main class="box"><h1>Payment confirmed and card issued.</h1><p>This one-time link is now used.</p></main></body></html>`))
 	}
 }
 
@@ -817,13 +1091,12 @@ func loadCardStoreConfig(ctx context.Context, system store.SystemSettingsReposit
 }
 
 func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
-	cfg.PaymentMode = strings.ToLower(strings.TrimSpace(cfg.PaymentMode))
+	cfg.PaymentMode = normalizeCardStorePaymentMode(cfg.PaymentMode)
 	if cfg.PaymentMode == "" {
 		cfg.PaymentMode = cardStorePaymentModeFM
 	}
-	if cfg.PaymentMode != cardStorePaymentModeManual && cfg.PaymentMode != cardStorePaymentModeAlipay {
-		cfg.PaymentMode = cardStorePaymentModeFM
-	}
+	cfg.PaymentMethods = normalizeCardStorePaymentMethods(cfg.PaymentMethods, cfg.PaymentMode)
+	cfg.PaymentMode = cfg.PaymentMethods[0]
 	cfg.PaymentAPIBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PaymentAPIBaseURL), "/")
 	if cfg.PaymentAPIBaseURL == "" {
 		cfg.PaymentAPIBaseURL = defaultPaymentFMAPIBaseURL
@@ -939,15 +1212,24 @@ func normalizeCardStoreAlipayDirect(cfg cardStoreAlipayDirectConfig) cardStoreAl
 	cfg.ReturnURL = strings.TrimSpace(cfg.ReturnURL)
 	cfg.NotifyURL = strings.TrimSpace(cfg.NotifyURL)
 	cfg.SignType = "RSA2"
-	cfg.PaymentMethod = strings.ToLower(strings.TrimSpace(cfg.PaymentMethod))
 	cfg.PaymentMethod = "page"
 	return cfg
 }
 
 func validateCardStoreConfigForSave(cfg cardStoreConfig) error {
-	if cfg.PaymentMode == cardStorePaymentModeManual {
+	for _, method := range normalizeCardStorePaymentMethods(cfg.PaymentMethods, cfg.PaymentMode) {
+		if err := validateCardStorePaymentMethodForSave(cfg, method); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCardStorePaymentMethodForSave(cfg cardStoreConfig, method string) error {
+	method = normalizeCardStorePaymentMode(method)
+	if method == cardStorePaymentModeManual {
 		if len(cfg.PersonalPayment.AdminEmails) == 0 {
-			return fmt.Errorf("personal payment admin email is required")
+			return fmt.Errorf("personal payment store owner email is required")
 		}
 		hasEnabledChannel := false
 		for _, channel := range cfg.PersonalPayment.Channels {
@@ -956,7 +1238,7 @@ func validateCardStoreConfigForSave(cfg cardStoreConfig) error {
 			}
 			hasEnabledChannel = true
 			if strings.TrimSpace(channel.ImageURL) == "" {
-				return fmt.Errorf("payment QR image URL is required for channel: %s", channel.ID)
+				return fmt.Errorf("payment QR image is required for channel: %s", channel.ID)
 			}
 		}
 		if !hasEnabledChannel {
@@ -964,7 +1246,7 @@ func validateCardStoreConfigForSave(cfg cardStoreConfig) error {
 		}
 		return nil
 	}
-	if cfg.PaymentMode != cardStorePaymentModeAlipay {
+	if method != cardStorePaymentModeAlipay {
 		return nil
 	}
 	if strings.TrimSpace(cfg.AlipayDirect.AppID) == "" {
@@ -1037,15 +1319,27 @@ func publicCardStoreProduct(product cardStoreProduct) cardStoreProduct {
 }
 
 func publicCardStorePaymentChannels(cfg cardStoreConfig) []map[string]string {
-	if cfg.PaymentMode != cardStorePaymentModeManual {
-		return nil
+	channels := make([]map[string]string, 0, len(cfg.PaymentMethods)+len(cfg.PersonalPayment.Channels))
+	for _, method := range cfg.PaymentMethods {
+		mode, ok := parseCardStorePaymentMode(method)
+		if !ok {
+			continue
+		}
+		switch mode {
+		case cardStorePaymentModeFM:
+			channels = append(channels, map[string]string{"id": cardStorePaymentModeFM, "label": "Payment FM"})
+		case cardStorePaymentModeAlipay:
+			channels = append(channels, map[string]string{"id": cardStorePaymentModeAlipay, "label": "Alipay direct"})
+		}
 	}
-	channels := make([]map[string]string, 0, len(cfg.PersonalPayment.Channels))
+	if !cardStorePaymentMethodEnabled(cfg, cardStorePaymentModeManual) {
+		return channels
+	}
 	for _, channel := range cfg.PersonalPayment.Channels {
 		if !channel.Enabled || strings.TrimSpace(channel.ImageURL) == "" {
 			continue
 		}
-		channels = append(channels, map[string]string{"id": channel.ID, "label": channel.Label})
+		channels = append(channels, map[string]string{"id": "manual:" + channel.ID, "label": strings.TrimSpace(channel.Label + " QR")})
 	}
 	return channels
 }
@@ -1071,14 +1365,14 @@ func findCardStoreProduct(cfg cardStoreConfig, id string) (cardStoreProduct, boo
 
 func preparePersonalSemimanualOrder(ctx context.Context, system store.SystemSettingsRepository, cfg cardStoreConfig, order cardStoreOrder, requestedChannel string) (cardStoreOrder, error) {
 	if len(cfg.PersonalPayment.AdminEmails) == 0 {
-		return order, fmt.Errorf("personal payment admin email is required")
+		return order, fmt.Errorf("personal payment store owner email is required")
 	}
 	channel, err := selectCardStorePersonalChannel(cfg.PersonalPayment, requestedChannel)
 	if err != nil {
 		return order, err
 	}
 	if strings.TrimSpace(channel.ImageURL) == "" {
-		return order, fmt.Errorf("payment QR image URL is required for channel: %s", channel.ID)
+		return order, fmt.Errorf("payment QR image is required for channel: %s", channel.ID)
 	}
 	payCode, err := newCardStorePayCode(ctx, system)
 	if err != nil {
@@ -1281,8 +1575,8 @@ func buildAlipayDirectRequest(cfg cardStoreAlipayDirectConfig, order cardStoreOr
 
 func renderAlipaySubmitPage(gateway string, values url.Values) string {
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Alipay</title></head><body><form id="pay" method="post" action="`)
-	b.WriteString(escHTML(gateway))
+	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Alipay</title></head><body><form id="pay" method="post" accept-charset="utf-8" action="`)
+	b.WriteString(escHTML(alipayGatewayWithCharset(gateway, values.Get("charset"))))
 	b.WriteString(`">`)
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -1298,6 +1592,26 @@ func renderAlipaySubmitPage(gateway string, values url.Values) string {
 	}
 	b.WriteString(`<noscript><button type="submit">Continue to Alipay</button></noscript></form><script>document.getElementById('pay').submit();</script></body></html>`)
 	return b.String()
+}
+
+func alipayGatewayWithCharset(gateway string, charset string) string {
+	gateway = strings.TrimSpace(gateway)
+	charset = strings.TrimSpace(charset)
+	if charset == "" {
+		charset = "utf-8"
+	}
+	parsed, err := url.Parse(gateway)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		sep := "?"
+		if strings.Contains(gateway, "?") {
+			sep = "&"
+		}
+		return gateway + sep + "charset=" + url.QueryEscape(charset)
+	}
+	query := parsed.Query()
+	query.Set("charset", charset)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func verifyAlipayDirectNotify(values url.Values, publicKey string) bool {
@@ -1348,7 +1662,7 @@ func alipayRSA2Sign(content string, privateKey string) (string, error) {
 func alipaySignContent(values url.Values) string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
-		if key == "sign" || key == "sign_type" {
+		if key == "sign" {
 			continue
 		}
 		if strings.TrimSpace(values.Get(key)) == "" {
@@ -1587,6 +1901,23 @@ func createLLMServiceCardForCardStore(ctx context.Context, system store.SystemSe
 	return llmservice.RechargeCard{}, "", fmt.Errorf("could not generate unique card code")
 }
 
+func cardStoreActualPayAmountText(order cardStoreOrder) string {
+	if strings.TrimSpace(order.ActualPayAmount) != "" {
+		return strings.TrimSpace(order.ActualPayAmount)
+	}
+	return formatPaymentAmount(order.Amount)
+}
+
+func cardStorePayTimeText(order cardStoreOrder) string {
+	if strings.TrimSpace(order.PayTime) != "" {
+		return strings.TrimSpace(order.PayTime)
+	}
+	if !order.PaidAt.IsZero() {
+		return order.PaidAt.UTC().Format(time.RFC3339)
+	}
+	return "-"
+}
+
 func sendCardStoreCodeEmail(ctx context.Context, mailer cardStoreMailer, order cardStoreOrder, code string) error {
 	if mailer == nil || strings.TrimSpace(code) == "" {
 		return nil
@@ -1596,11 +1927,14 @@ func sendCardStoreCodeEmail(ctx context.Context, mailer cardStoreMailer, order c
 		recipients = append(recipients, secondary)
 	}
 	subject := "MaClaw Hub 服务兑换码"
-	autoRedeemLine := ""
+	title := "MaClaw Hub 服务卡购买成功"
+	autoRedeemLine := "兑换状态：未自动兑换，请使用下方服务兑换码手动兑换。\r\n"
 	if !order.AutoRedeemedAt.IsZero() {
-		autoRedeemLine = fmt.Sprintf("已自动充值到账户：%s\r\n充值时间：%s\r\n", order.Email, order.AutoRedeemedAt.UTC().Format(time.RFC3339))
+		subject = "MaClaw Hub 服务卡已自动兑换完成"
+		title = "MaClaw Hub 服务卡已自动兑换完成"
+		autoRedeemLine = fmt.Sprintf("兑换状态：已自动充值到账户\r\n兑换账户：%s\r\n兑换时间：%s\r\n", order.Email, order.AutoRedeemedAt.UTC().Format(time.RFC3339))
 	}
-	body := fmt.Sprintf("MaClaw Hub 服务卡购买成功\r\n\r\n订单号：%s\r\n卡种：%s\r\n%s服务兑换码：%s\r\n\r\n请妥善保存该兑换码。\r\n", order.OrderNo, order.ProductLabel, autoRedeemLine, code)
+	body := fmt.Sprintf("%s\r\n\r\n订单号：%s\r\n租户：%s\r\n购买邮箱：%s\r\n备用邮箱：%s\r\n商品：%s\r\n订单金额：%s\r\n实付金额：%s\r\n支付时间：%s\r\n支付方式：%s\r\n平台订单号：%s\r\n渠道订单号：%s\r\n服务卡 ID：%s\r\n%s服务兑换码：%s\r\n\r\n请妥善保存该兑换码，可用于后续核对或找回。\r\n", title, order.OrderNo, store.NormalizeTenantID(order.TenantID), order.Email, firstNonEmptyString(order.SecondaryEmail, "-"), order.ProductLabel, formatPaymentAmount(order.Amount), cardStoreActualPayAmountText(order), cardStorePayTimeText(order), firstNonEmptyString(order.PayChannelLabel, order.PayType, order.PaymentMode, "-"), firstNonEmptyString(order.PlatformOrderNo, "-"), firstNonEmptyString(order.ChannelOrderNo, "-"), firstNonEmptyString(order.CardID, "-"), autoRedeemLine, code)
 	return mailer.Send(store.WithTenant(ctx, order.TenantID), recipients, subject, body)
 }
 
@@ -1610,8 +1944,10 @@ func sendCardStorePersonalPaymentReminder(ctx context.Context, mailer cardStoreM
 		return nil
 	}
 	subject := "MaClaw Hub personal payment pending: " + order.OrderNo
-	confirmURL := strings.TrimRight(baseURL, "/") + "/card_store/admin/confirm?order_no=" + url.QueryEscape(order.OrderNo)
-	deleteURL := strings.TrimRight(baseURL, "/") + "/card_store/admin/delete?order_no=" + url.QueryEscape(order.OrderNo)
+	baseURL = strings.TrimRight(baseURL, "/")
+	confirmURL := baseURL + "/card_store/admin/confirm?order_no=" + url.QueryEscape(order.OrderNo)
+	deleteURL := baseURL + "/card_store/admin/delete?order_no=" + url.QueryEscape(order.OrderNo)
+	qrURL := absoluteCardStoreURL(baseURL, order.PayQRURL)
 	if order.TenantID != "" {
 		confirmURL += "&tenant_id=" + url.QueryEscape(order.TenantID)
 		deleteURL += "&tenant_id=" + url.QueryEscape(order.TenantID)
@@ -1622,8 +1958,22 @@ func sendCardStorePersonalPaymentReminder(ctx context.Context, mailer cardStoreM
 	if deleteToken != "" {
 		deleteURL += "&token=" + url.QueryEscape(deleteToken)
 	}
-	body := fmt.Sprintf("MaClaw Hub personal payment needs confirmation\r\n\r\nOrder: %s\r\nTenant: %s\r\nProduct: %s\r\nBuyer email: %s\r\nPayment channel: %s\r\nPayee: %s\r\nAmount: %s\r\nRemark code: %s\r\nPayment QR: %s\r\nOpened payment at: %s\r\n\r\nCheck your Alipay/WeChat records before confirming:\r\n1. Amount equals %s\r\n2. Remark contains %s\r\n3. Payment time is after order creation\r\n\r\nConfirm page: %s\r\nReject/delete page: %s\r\n", order.OrderNo, order.TenantID, order.ProductLabel, order.Email, order.PayChannelLabel, order.Payee, formatPaymentAmount(order.Amount), order.PayCode, order.PayQRURL, order.OpenedPaymentAt.UTC().Format(time.RFC3339), formatPaymentAmount(order.Amount), order.PayCode, confirmURL, deleteURL)
+	body := fmt.Sprintf("MaClaw Hub personal payment needs confirmation\r\n\r\nOrder: %s\r\nTenant: %s\r\nProduct: %s\r\nBuyer email: %s\r\nPayment channel: %s\r\nPayee: %s\r\nAmount: %s\r\nRemark code: %s\r\nPayment QR: %s\r\nBuyer clicked paid at: %s\r\n\r\nCheck your Alipay/WeChat records before confirming:\r\n1. Amount equals %s\r\n2. Remark contains %s\r\n3. Payment time is after order creation\r\n\r\nOne-time confirm link: %s\r\nOne-time reject/delete link: %s\r\n\r\nEach link opens a review page and becomes invalid after confirm or reject succeeds.\r\n", order.OrderNo, order.TenantID, order.ProductLabel, order.Email, order.PayChannelLabel, order.Payee, formatPaymentAmount(order.Amount), order.PayCode, qrURL, order.OpenedPaymentAt.UTC().Format(time.RFC3339), formatPaymentAmount(order.Amount), order.PayCode, confirmURL, deleteURL)
 	return mailer.Send(store.WithTenant(ctx, order.TenantID), recipients, subject, body)
+}
+
+func absoluteCardStoreURL(baseURL, rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(rawURL); err == nil && parsed.IsAbs() {
+		return rawURL
+	}
+	if strings.TrimSpace(baseURL) == "" || !strings.HasPrefix(rawURL, "/") {
+		return rawURL
+	}
+	return strings.TrimRight(baseURL, "/") + rawURL
 }
 
 func autoRedeemCardStoreOrder(ctx context.Context, identity *auth.IdentityService, system store.SystemSettingsRepository, tenantID string, order cardStoreOrder, code string, hubBaseURL string) (bool, error) {
@@ -1785,6 +2135,10 @@ func markCardStorePaymentOpened(ctx context.Context, system store.SystemSettings
 		orders.Orders[i].Status = cardStoreStatusPersonalOpened
 		orders.Orders[i].OpenedPaymentAt = now
 		orders.Orders[i].UpdatedAt = now
+		if mailer == nil {
+			orders.Orders[i].ReminderMailStatus = "failed"
+			orders.Orders[i].ReminderMailError = "mail service is not configured"
+		}
 		shouldSend := mailer != nil && (orders.Orders[i].ReminderMailSentAt.IsZero() || now.Sub(orders.Orders[i].ReminderMailSentAt) > 5*time.Minute)
 		if shouldSend {
 			var approveHash, deleteHash string
@@ -1854,8 +2208,14 @@ func markCardStoreOrderPaid(ctx context.Context, system store.SystemSettingsRepo
 					autoRedeemChanged = true
 				}
 			}
-			if mailer == nil || strings.EqualFold(strings.TrimSpace(orders.Orders[i].MailStatus), "sent") {
-				if autoRedeemChanged {
+			paymentDetailsChanged := applyCardStorePaymentDetails(&orders.Orders[i], update)
+			paidAtChanged := false
+			if orders.Orders[i].PaidAt.IsZero() && !update.PaidAt.IsZero() {
+				orders.Orders[i].PaidAt = update.PaidAt
+				paidAtChanged = true
+			}
+			if mailer == nil || (strings.EqualFold(strings.TrimSpace(orders.Orders[i].MailStatus), "sent") && !autoRedeemChanged) {
+				if autoRedeemChanged || paymentDetailsChanged || paidAtChanged {
 					orders.Orders[i].UpdatedAt = update.UpdatedAt
 					return saveCardStoreOrders(ctx, system, orders)
 				}
@@ -1874,6 +2234,9 @@ func markCardStoreOrderPaid(ctx context.Context, system store.SystemSettingsRepo
 			}
 			orders.Orders[i].UpdatedAt = update.UpdatedAt
 			return saveCardStoreOrders(ctx, system, orders)
+		}
+		if isCardStorePaidLikeStatus(orders.Orders[i].Status) {
+			return nil
 		}
 		if strings.TrimSpace(orders.Orders[i].EncryptedCode) == "" {
 			card, generatedCode, err := createCardStoreServiceCard(ctx, system, cfg, orders.Orders[i])
@@ -1933,31 +2296,40 @@ func markCardStoreOrderPaid(ctx context.Context, system store.SystemSettingsRepo
 	return system.Set(ctx, cardStoreOrdersKey, string(data))
 }
 
-func applyCardStorePaymentDetails(order *cardStoreOrder, update cardStoreOrder) {
+func applyCardStorePaymentDetails(order *cardStoreOrder, update cardStoreOrder) bool {
 	if order == nil {
-		return
+		return false
 	}
+	changed := false
 	if update.ActualPayAmount != "" {
+		changed = changed || order.ActualPayAmount != update.ActualPayAmount
 		order.ActualPayAmount = update.ActualPayAmount
 	}
 	if update.Payee != "" {
+		changed = changed || order.Payee != update.Payee
 		order.Payee = update.Payee
 	}
 	if update.PayTime != "" {
+		changed = changed || order.PayTime != update.PayTime
 		order.PayTime = update.PayTime
 	}
 	if update.PlatformOrderNo != "" {
+		changed = changed || order.PlatformOrderNo != update.PlatformOrderNo
 		order.PlatformOrderNo = update.PlatformOrderNo
 	}
 	if update.ChannelOrderNo != "" {
+		changed = changed || order.ChannelOrderNo != update.ChannelOrderNo
 		order.ChannelOrderNo = update.ChannelOrderNo
 	}
 	if update.PayType != "" {
+		changed = changed || order.PayType != update.PayType
 		order.PayType = update.PayType
 	}
 	if update.TradeType != "" {
+		changed = changed || order.TradeType != update.TradeType
 		order.TradeType = update.TradeType
 	}
+	return changed
 }
 
 func approveCardStorePersonalOrder(ctx context.Context, system store.SystemSettingsRepository, cfg cardStoreConfig, update cardStoreOrder, mailer cardStoreMailer, identity *auth.IdentityService, tenantID string, hubBaseURL string) error {
@@ -2031,29 +2403,9 @@ func GetCardStoreOrderHandler(system store.SystemSettingsRepository) http.Handle
 			if strings.TrimSpace(order.OrderNo) != orderNo || !cardStoreOrderEmailMatches(order, email) {
 				continue
 			}
-			resp := map[string]any{"order_no": order.OrderNo, "tenant_id": tenantID, "status": order.Status, "payment_mode": order.PaymentMode, "product_label": order.ProductLabel, "amount": order.Amount, "email": order.Email, "secondary_email": order.SecondaryEmail, "mail_status": order.MailStatus, "pay_channel": order.PayChannel, "pay_channel_label": order.PayChannelLabel, "payee": order.Payee, "pay_code": order.PayCode, "pay_qr_url": order.PayQRURL, "pay_deep_link": order.PayDeepLink, "pay_instruction": order.PayInstruction}
-			if !order.OpenedPaymentAt.IsZero() {
-				resp["opened_payment_at"] = order.OpenedPaymentAt.UTC().Format(time.RFC3339)
-			}
-			if order.ReviewNote != "" {
-				resp["review_note"] = order.ReviewNote
-			}
-			if order.PaymentMsg != "" {
-				resp["message"] = order.PaymentMsg
-			}
-			if order.MailError != "" {
-				resp["mail_error"] = order.MailError
-			}
-			if !order.AutoRedeemedAt.IsZero() {
-				resp["auto_redeemed"] = true
-				resp["auto_redeemed_at"] = order.AutoRedeemedAt.UTC().Format(time.RFC3339)
-			}
-			if order.AutoRedeemError != "" {
-				resp["auto_redeem_error"] = order.AutoRedeemError
-			}
-			if order.Status == "paid" {
-				resp["code"] = llmservice.DecryptCardCode(order.EncryptedCode)
-				resp["card_id"] = order.CardID
+			resp := cardStoreOrderCreateResponse(tenantID, order.Email, order)
+			if order.SecondaryEmail != "" {
+				resp["secondary_email"] = order.SecondaryEmail
 			}
 			writeJSON(w, http.StatusOK, resp)
 			return
