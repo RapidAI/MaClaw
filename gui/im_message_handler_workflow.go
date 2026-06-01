@@ -1375,6 +1375,17 @@ func detectWorkflowReviewIntentFast(text string) (workflow.ReviewIntent, bool) {
 		return workflow.ReviewIntentOther, false
 	}
 	switch trimmed {
+	case "\u786e\u8ba4", "\u786e\u8ba4\u901a\u8fc7", "\u901a\u8fc7", "\u540c\u610f", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u7ee7\u7eed", "\u7ee7\u7eed\u63a8\u8fdb", "\u5f00\u5de5", "\u5f00\u59cb", "\u5f00\u59cb\u5427", "\u6267\u884c", "\u8d70\u8d77", "\u597d", "\u597d\u7684", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u5f00\u59cb\u5199\u4ee3\u7801", "\u5f00\u59cb\u5b9e\u73b0", "\u5f00\u59cb\u5f00\u53d1", "\u5f00\u59cb\u6267\u884c", "\u786e\u8ba4\u5f00\u59cb\u7f16\u7801", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0":
+		return workflow.ReviewIntentConfirm, true
+	case "\u8df3\u8fc7":
+		return workflow.ReviewIntentSkip, true
+	case "\u53d6\u6d88", "\u505c\u6b62", "\u7ec8\u6b62", "\u653e\u5f03":
+		return workflow.ReviewIntentCancel, true
+	}
+	if looksLikeWorkflowReviewApproval(trimmed) {
+		return workflow.ReviewIntentConfirm, true
+	}
+	switch trimmed {
 	case "确认", "确认通过", "通过", "同意", "可以", "没问题", "没意见", "继续", "继续推进", "开工", "开始", "开始吧", "执行", "走起", "好", "好的", "ok", "okay", "yes", "y", "go", "go ahead", "start", "continue", "proceed", "approved", "approve", "confirmed", "confirm":
 		return workflow.ReviewIntentConfirm, true
 	case "跳过", "skip", "skip it":
@@ -1385,6 +1396,14 @@ func detectWorkflowReviewIntentFast(text string) (workflow.ReviewIntent, bool) {
 	return workflow.ReviewIntentOther, false
 }
 
+func looksLikeWorkflowReviewApproval(text string) bool {
+	if !strings.Contains(text, "\u7ee7\u7eed") && !strings.Contains(text, "continue") && !strings.Contains(text, "proceed") {
+		return false
+	}
+	approvalMarkers := []string{"\u5408\u7406", "\u53ef\u4ee5", "\u6ca1\u95ee\u9898", "\u6ca1\u610f\u89c1", "\u540c\u610f", "\u786e\u8ba4", "\u901a\u8fc7", "\u597d", "ok", "approve", "approved", "looks good"}
+	return containsAnyWorkflowReviewMarker(text, approvalMarkers)
+}
+
 func detectWorkflowReviewBlockedExecutionIntent(text string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(text))
 	if trimmed == "" {
@@ -1392,6 +1411,15 @@ func detectWorkflowReviewBlockedExecutionIntent(text string) bool {
 	}
 	if _, ok := detectWorkflowReviewIntentFast(trimmed); ok {
 		return false
+	}
+	utf8DocumentTargets := []string{"\u6587\u6863", "\u9700\u6c42", "\u8bbe\u8ba1", "\u65b9\u6848", "\u4efb\u52a1", "\u8ba1\u5212", "\u62a5\u544a", "document", "doc", "requirements", "design", "plan"}
+	for _, marker := range []string{"\u5199\u4ee3\u7801", "\u7f16\u5199\u4ee3\u7801", "\u5f00\u59cb\u7f16\u7801", "\u7f16\u7801", "\u5b9e\u73b0\u4ee3\u7801", "\u6539\u4ee3\u7801", "\u8dd1\u4ee3\u7801", "build", "compile", "cmake", "npm", "git", "bash", "powershell", "\u547d\u4ee4", "\u811a\u672c", "\u521b\u5efa\u76ee\u5f55", "\u65b0\u5efa\u76ee\u5f55", "\u521b\u5efa\u6587\u4ef6\u5939", "\u65b0\u5efa\u6587\u4ef6\u5939", "mkdir", "d:\\\\", "c:\\\\", "src/", "assets/"} {
+		if strings.Contains(trimmed, marker) {
+			return true
+		}
+	}
+	if (strings.Contains(trimmed, "\u521b\u5efa") || strings.Contains(trimmed, "\u65b0\u5efa")) && !containsAnyWorkflowReviewMarker(trimmed, utf8DocumentTargets) {
+		return true
 	}
 	documentTargets := []string{"文档", "需求", "设计", "方案", "任务", "计划", "报告", "document", "doc", "requirements", "design", "plan"}
 	for _, marker := range []string{"写代码", "编写代码", "开始编码", "编码", "实现代码", "改代码", "跑代码", "build", "compile", "cmake", "npm", "git", "bash", "powershell", "命令", "脚本", "创建目录", "新建目录", "创建文件夹", "新建文件夹", "mkdir", "d:\\", "c:\\", "src/", "assets/"} {

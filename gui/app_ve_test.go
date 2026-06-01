@@ -917,6 +917,54 @@ func TestSendVEGroupMessageDefaultsWithDuplicateRemoteAliases(t *testing.T) {
 	}
 }
 
+func TestSendVEGroupMessageWithoutMentionDefersToHubDefaultReplyTarget(t *testing.T) {
+	gotToIDs := make(chan []string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-1/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+				Discussion: a2a.HubDiscussionSummary{ID: "session-1"},
+				Session: &a2a.Session{
+					Participants:        []a2a.Participant{{ID: "machine-1", RoleCode: "initiator"}, {ID: "anna-machine", RoleCode: "speak"}, {ID: "local-maclaw", RoleCode: "speak"}},
+					DefaultReplyTargets: map[string][]string{"machine-1": {"local-maclaw"}},
+				},
+			})
+		case "/api/a2a/consultations/session-1/messages":
+			var body struct {
+				ToIDs []string `json:"to_ids"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+				return
+			}
+			gotToIDs <- append([]string(nil), body.ToIDs...)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SendVEGroupMessage("session-1", "continue", nil); err != nil {
+		t.Fatalf("SendVEGroupMessage: %v", err)
+	}
+
+	select {
+	case got := <-gotToIDs:
+		if len(got) != 0 {
+			t.Fatalf("to_ids = %v, want Hub to resolve stored default", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Hub send")
+	}
+}
+
 func TestRegisterLocalExecutorInGroupUsesRegisteredDispatcherFastPath(t *testing.T) {
 	hubCalls := int32(0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

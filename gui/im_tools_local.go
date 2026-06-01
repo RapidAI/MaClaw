@@ -22,7 +22,10 @@ import (
 )
 
 func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
-	ownerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "bash failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
 	command, _ := args["command"].(string)
 	if command == "" {
 		return "缺少 command 参数"

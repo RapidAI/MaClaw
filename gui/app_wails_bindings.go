@@ -2067,6 +2067,27 @@ func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
 	return handler.InjectSupplementary(activeAIAssistantLoopUserID(handler), text), nil
 }
 
+// InjectAIAssistantSupplementaryForSession injects supplementary text into an
+// explicitly selected desktop/project session. This prevents task-panel fallback
+// messages from being routed through legacy lastUserID when another channel is
+// active.
+func (a *App) InjectAIAssistantSupplementaryForSession(text string, userID string) (bool, error) {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return false, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	targetUserID, err := normalizeAIAssistantSessionUserID(userID)
+	if err != nil {
+		return false, err
+	}
+	if targetUserID == "" {
+		targetUserID = activeAIAssistantLoopUserID(handler)
+	}
+	return handler.InjectSupplementary(targetUserID, text), nil
+}
+
 // InjectAIAssistantGuideReference injects input-buffer guide-launch text as
 // background reference for the next agent loop iteration. It is not treated as
 // a new user turn and should not make the current session finalize by itself.
@@ -2123,9 +2144,7 @@ func activeAIAssistantLoopUserID(handler *IMMessageHandler) string {
 	if handler == nil {
 		return desktopUserID
 	}
-	handler.globalLoopMu.RLock()
-	userID := handler.lastUserID
-	handler.globalLoopMu.RUnlock()
+	userID := handler.legacyLastUserID()
 	if normalized, err := normalizeAIAssistantSessionUserID(userID); err == nil && normalized != "" {
 		return normalized
 	}

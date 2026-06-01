@@ -2443,29 +2443,9 @@ func macLawSrvDiscussionContext(session *corea2a.Session, msg corea2a.GroupDiscu
 	if session == nil {
 		return current
 	}
-	var recent []string
-	for _, item := range session.Messages {
-		if strings.EqualFold(strings.TrimSpace(item.ID), strings.TrimSpace(msg.ID)) && strings.TrimSpace(msg.ID) != "" {
-			continue
-		}
-		if item.Kind == corea2a.MessageStreamEnd || item.Kind == corea2a.MessageHandoff {
-			continue
-		}
-		content := strings.TrimSpace(item.Content)
-		if content == "" {
-			continue
-		}
-		fromID := strings.TrimSpace(item.FromID)
-		if fromID == "" {
-			fromID = "unknown"
-		}
-		recent = append(recent, fmt.Sprintf("[%s] %s", fromID, content))
-	}
-	if len(recent) > 12 {
-		recent = recent[len(recent)-12:]
-	}
+	recent := macLawSrvDiscussionRecentContext(macLawSrvDiscussionRecentMessages(session), msg)
 	var b strings.Builder
-	b.WriteString("你正在参与一个多人 Hub 群聊。请基于共享群聊上下文回答，不要把当前消息当成孤立的 1v1 私聊。")
+	b.WriteString("你正在参与一个多人 Hub 群聊。请基于共享群聊上下文回答，不要把当前消息当成孤立的 1v1 私聊。@ 和 to_ids 只决定本轮谁回复，不决定可见范围。")
 	if topic := strings.TrimSpace(session.Topic); topic != "" {
 		b.WriteString("\n主题: " + topic)
 	}
@@ -2479,6 +2459,10 @@ func macLawSrvDiscussionContext(session *corea2a.Session, msg corea2a.GroupDiscu
 		b.WriteString("\n\nParticipants:\n")
 		b.WriteString(participants)
 	}
+	if summary := strings.TrimSpace(session.ContextSummary); summary != "" {
+		b.WriteString("\n\nShared compressed memory:\n")
+		b.WriteString(summary)
+	}
 	if len(recent) > 0 {
 		b.WriteString("\n\n最近群聊上下文:\n")
 		b.WriteString(strings.Join(recent, "\n"))
@@ -2487,6 +2471,128 @@ func macLawSrvDiscussionContext(session *corea2a.Session, msg corea2a.GroupDiscu
 		b.WriteString("\n\n当前消息来自 " + strings.TrimSpace(msg.FromID) + ": " + current)
 	}
 	return b.String()
+}
+
+func macLawSrvDiscussionRecentMessages(session *corea2a.Session) []corea2a.Message {
+	if session == nil {
+		return nil
+	}
+	if strings.TrimSpace(session.ContextSummary) == "" {
+		return session.Messages
+	}
+	return macLawSrvDiscussionMessagesAfterSummary(session.Messages, session.SummaryUpToID)
+}
+
+func macLawSrvDiscussionMessagesAfterSummary(messages []corea2a.Message, summaryUpToID string) []corea2a.Message {
+	summaryUpToID = strings.TrimSpace(summaryUpToID)
+	if summaryUpToID == "" {
+		return messages
+	}
+	for i, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.ID), summaryUpToID) {
+			return messages[i+1:]
+		}
+	}
+	return messages
+}
+
+func macLawSrvDiscussionRecentContext(messages []corea2a.Message, current corea2a.GroupDiscussionMessage) []string {
+	recent := make([]string, 0, len(messages))
+	currentID := strings.TrimSpace(current.ID)
+	currentIndex := macLawSrvDiscussionCurrentMessageIndex(messages, current)
+	var streamFrom string
+	var streamContent strings.Builder
+	flushStream := func() {
+		content := strings.TrimSpace(streamContent.String())
+		if content != "" {
+			fromID := strings.TrimSpace(streamFrom)
+			if fromID == "" {
+				fromID = "unknown"
+			}
+			recent = append(recent, fmt.Sprintf("[%s] %s", fromID, truncateMacLawSrvDiscussionContext(content, 1200)))
+		}
+		streamFrom = ""
+		streamContent.Reset()
+	}
+	for i, item := range messages {
+		if i == currentIndex {
+			continue
+		}
+		content := strings.TrimSpace(item.Content)
+		if currentID != "" && strings.EqualFold(strings.TrimSpace(item.ID), currentID) {
+			continue
+		}
+		switch item.Kind {
+		case corea2a.MessageStreamEnd, corea2a.MessageHandoff:
+			flushStream()
+			continue
+		case corea2a.MessageStreamChunk:
+			chunk := item.Content
+			if chunk == "" {
+				continue
+			}
+			fromID := strings.TrimSpace(item.FromID)
+			if streamFrom != "" && !groupDiscussionParticipantIdentityMatches(streamFrom, fromID) {
+				flushStream()
+			}
+			if streamFrom == "" {
+				streamFrom = fromID
+			}
+			streamContent.WriteString(chunk)
+			continue
+		default:
+			flushStream()
+		}
+		if content == "" || strings.HasPrefix(strings.ToLower(content), "invitation ") {
+			continue
+		}
+		fromID := strings.TrimSpace(item.FromID)
+		if fromID == "" {
+			fromID = "unknown"
+		}
+		recent = append(recent, fmt.Sprintf("[%s] %s", fromID, truncateMacLawSrvDiscussionContext(content, 1200)))
+	}
+	flushStream()
+	if len(recent) > 12 {
+		recent = recent[len(recent)-12:]
+	}
+	return recent
+}
+
+func macLawSrvDiscussionCurrentMessageIndex(messages []corea2a.Message, current corea2a.GroupDiscussionMessage) int {
+	if strings.TrimSpace(current.ID) != "" {
+		return -1
+	}
+	currentContent := strings.TrimSpace(current.Content)
+	if currentContent == "" {
+		return -1
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if strings.TrimSpace(msg.Content) != currentContent {
+			continue
+		}
+		if current.Kind != "" && msg.Kind != current.Kind {
+			continue
+		}
+		if strings.TrimSpace(current.FromID) != "" && !groupDiscussionParticipantIdentityMatches(msg.FromID, current.FromID) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func truncateMacLawSrvDiscussionContext(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func macLawSrvDiscussionParticipantContext(session *corea2a.Session) string {

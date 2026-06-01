@@ -360,6 +360,35 @@ func TestSearchAndInstallSkillCarriesRuntimePlatform(t *testing.T) {
 	}
 }
 
+func TestManageSkillCarriesRuntimeOwnerAndPlatform(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	var seenOwner, seenPlatform string
+	if err := handler.registry.Register(RegisteredTool{
+		Name: "manage_skill",
+		Handler: func(args map[string]interface{}) string {
+			seenOwner = consumeRuntimePolicyOwnerIDFromToolArgs(args)
+			seenPlatform = consumeRuntimePlatformFromToolArgs(args)
+			if _, ok := args[registeredToolPolicyOwnerIDField]; ok {
+				t.Fatal("runtime owner field should be consumed by manage_skill handler")
+			}
+			if _, ok := args[registeredToolRuntimePlatformField]; ok {
+				t.Fatal("runtime platform field should be consumed by manage_skill handler")
+			}
+			return "ok"
+		},
+	}); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	result := handler.executeToolDetailedWithRuntime("remote:mobile", "weixin", "manage_skill", `{"action":"run","name":"demo"}`, "", nil)
+	if result.Text != "ok" {
+		t.Fatalf("tool result = %+v, want ok", result)
+	}
+	if seenOwner != "remote:mobile" || seenPlatform != "weixin" {
+		t.Fatalf("runtime fields = owner %q platform %q, want remote:mobile/weixin", seenOwner, seenPlatform)
+	}
+}
+
 func TestBonusRoundToolExecutionUsesRuntimePolicyOwner(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	desktopID := desktopUserID
@@ -434,6 +463,27 @@ func TestToolMemoryWithoutRuntimeOwnerDoesNotFallbackToDesktop(t *testing.T) {
 	}
 	if entries := store.List("", ""); len(entries) != 0 {
 		t.Fatalf("memory tool wrote entries without owner: %#v", entries)
+	}
+}
+
+func TestToolMemoryEmptyHiddenRuntimeOwnerDoesNotFallbackToDesktop(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	handler := &IMMessageHandler{memoryStore: store}
+
+	got := handler.toolMemory(map[string]interface{}{
+		"action":                         "save",
+		"content":                        "desktop leak",
+		registeredToolPolicyOwnerIDField: "",
+	})
+	if !strings.Contains(got, "owner is missing") {
+		t.Fatalf("memory tool should reject empty hidden runtime owner, got %q", got)
+	}
+	if entries := store.List("", ""); len(entries) != 0 {
+		t.Fatalf("memory tool wrote entries with empty hidden owner: %#v", entries)
 	}
 }
 

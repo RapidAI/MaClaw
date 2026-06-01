@@ -899,6 +899,7 @@ Format:
 
 type GroupDiscussionSummarizeRequest struct {
 	ConsultationID string `json:"consultation_id"`
+	UserID         string `json:"user_id,omitempty"`
 	Submit         bool   `json:"submit,omitempty"`
 	Inject         bool   `json:"inject,omitempty"`
 	Force          bool   `json:"force,omitempty"`
@@ -941,6 +942,9 @@ func (a *App) GroupDiscussionSummarizeResult(req GroupDiscussionSummarizeRequest
 	if consultationID == "" {
 		return GroupDiscussionSummarizeResult{}, fmt.Errorf("consultation id is required")
 	}
+	if req.Inject && strings.TrimSpace(req.UserID) == "" {
+		return GroupDiscussionSummarizeResult{}, fmt.Errorf("group discussion summary injection requires runtime owner user_id")
+	}
 	detail, err := a.GroupDiscussionGetConsultationDetail(consultationID)
 	if err != nil {
 		return GroupDiscussionSummarizeResult{}, err
@@ -972,13 +976,24 @@ func (a *App) GroupDiscussionSummarizeResult(req GroupDiscussionSummarizeRequest
 		result.Submitted = true
 	}
 	if req.Inject {
-		injected, err := a.InjectAIAssistantSupplementary(formatGroupDiscussionSupplement(result))
+		injected, err := a.injectGroupDiscussionSummaryForUser(strings.TrimSpace(req.UserID), result)
 		if err != nil {
 			return result, err
 		}
 		result.Injected = injected
 	}
 	return result, nil
+}
+
+func (a *App) injectGroupDiscussionSummaryForUser(userID string, result GroupDiscussionSummarizeResult) (bool, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false, fmt.Errorf("group discussion summary injection requires runtime owner user_id")
+	}
+	if a == nil || a.imHandler == nil {
+		return false, fmt.Errorf("AI assistant handler is not ready")
+	}
+	return a.imHandler.InjectSupplementary(userID, formatGroupDiscussionSupplement(result)), nil
 }
 
 func (a *App) groupDiscussionGenerateResultSummary(detail a2a.HubDiscussionDetail) (GroupDiscussionSummarizeResult, error) {
@@ -1858,7 +1873,7 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 	if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
 		localID := groupDiscussionAgentID(cfg)
 		msg.ToIDs = normalizeGroupDiscussionHistoryTargetIDs(msg.ToIDs, localID, detail)
-		if len(msg.ToIDs) == 0 && !groupDiscussionHistoryUnresolvedMentionPattern.MatchString(msg.Content) {
+		if len(msg.ToIDs) == 0 && !groupDiscussionHistoryUnresolvedMentionPattern.MatchString(msg.Content) && !groupDiscussionDetailHasDefaultReplyTarget(detail, localID) {
 			msg.ToIDs = groupDiscussionHistoryUnmentionedTargetIDs(detail, localID)
 		}
 	}
@@ -1993,6 +2008,22 @@ func groupDiscussionHistoryDefaultResponderID(detail a2a.HubDiscussionDetail, lo
 		return ids[0]
 	}
 	return ""
+}
+
+func groupDiscussionDetailHasDefaultReplyTarget(detail a2a.HubDiscussionDetail, senderID string) bool {
+	if detail.Session == nil || len(detail.Session.DefaultReplyTargets) == 0 {
+		return false
+	}
+	key := groupDiscussionCanonicalIdentityKey(senderID)
+	if key == "" {
+		return false
+	}
+	for storedKey, targets := range detail.Session.DefaultReplyTargets {
+		if groupDiscussionCanonicalIdentityKey(storedKey) == key && len(targets) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func groupDiscussionHistoryTargetIDsForCandidates(candidates []string) []string {

@@ -39,7 +39,7 @@ import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './util
 import { translations } from './i18n/appTranslations';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
-import { TOOL_NAMES, isToolTab } from './config/toolCatalog';
+import { TOOL_NAMES, getToolLabel, isToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, type SettingsTabId } from './config/settingsTabs';
 import { SettingsTabsRail } from './components/settings/SettingsTabsRail';
 import { GeneralSettingsPanel } from './components/settings/GeneralSettingsPanel';
@@ -68,7 +68,6 @@ import { SkillsPage } from './components/pages/SkillsPage';
 import { MCPPage } from './components/pages/MCPPage';
 import { GossipPage } from './components/pages/GossipPage';
 
-import { StartupPopup } from './components/modals/StartupPopup';
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
@@ -266,7 +265,6 @@ function App() {
     const [isMarketplaceInstalling, setIsMarketplaceInstalling] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isManualCheck, setIsManualCheck] = useState(false);
-    const [showStartupPopup, setShowStartupPopup] = useState(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
@@ -1052,10 +1050,6 @@ function App() {
             }
 
             // Automatic update check on startup disabled - use "Online Update" button instead
-            // Show welcome page if needed
-            if (cfg && !cfg.hide_startup_popup) {
-                setShowStartupPopup(true);
-            }
             if (cfg && cfg.current_project) {
                 setSelectedProjectForLaunch(cfg.current_project);
             } else if (cfg && cfg.projects && cfg.projects.length > 0) {
@@ -1288,8 +1282,6 @@ function App() {
         const { online } = maclawLLMFirstPingResult.current;
         if (!online) {
             setShowMaclawLLMPopup(true);
-            // Suppress the startup welcome popup to avoid two overlapping modals
-            setShowStartupPopup(false);
         }
         // Clear so this only fires once.
         maclawLLMFirstPingResult.current = null;
@@ -1766,7 +1758,7 @@ function App() {
     }, [refreshSidebarTokenUsage]);
 
     const openHubCreditsPage = useCallback(() => {
-        const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token, (config as any)?.remote_tenant_id);
+        const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token, (config as any)?.remote_tenant_id, (config as any)?.remote_email);
         if (url) {
             safeBrowserOpenURL(url);
             return;
@@ -1886,7 +1878,6 @@ function App() {
         onboardingRegCheckDone.current = true;
         if (!remoteActivationStatus.activated && !config.onboarding_done) {
             setShowMaclawLLMPopup(true);
-            setShowStartupPopup(false);
         }
     }, [config, remoteActivationStatus]);
     const hasActiveRemoteSessionForTool = !!activeRemoteSessionForTool;
@@ -2672,6 +2663,7 @@ ${instruction}`;
                     lang={lang}
                     t={t}
                     activeTool={activeTool}
+                    config={config}
                     switchTool={switchTool}
                     handleAddNewProject={handleAddNewProject}
                     setRefreshStatus={setRefreshStatus}
@@ -3003,7 +2995,7 @@ ${instruction}`;
                             <div className="coding-launch-meta-row">
                                 <div className="coding-launch-summary">
                                     {/* runnerStatus label removed */}
-                                    <span className="coding-launch-tool-name">{activeTool}</span>
+                                    <span className="coding-launch-tool-name">{getToolLabel(activeTool)}</span>
                                     <span
                                         className="coding-launch-provider-name"
                                         title={(config as any)[activeTool].current_model === "Original" ? t("original") : (config as any)[activeTool].current_model}
@@ -3205,6 +3197,7 @@ ${instruction}`;
                                 <button
                                     className="btn-launch coding-launch-button"
                                     disabled={onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool || launchingTool === activeTool}
+                                    aria-busy={launchingTool === activeTool || onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool}
                                     onClick={async () => {
                                         console.log("Launch button clicked. activeTool:", activeTool);
                                         if (launchRemoteEnabled && hasActiveRemoteSessionForTool && activeRemoteSessionForTool?.id) {
@@ -3336,8 +3329,8 @@ ${instruction}`;
                                 >
                                     <span className="coding-launch-state-dot" aria-hidden="true" />
                                     {launchRemoteEnabled
-                                        ? (hasActiveRemoteSessionForTool ? t("remoteStopTool") : t("remoteStartTool"))
-                                        : t("launch")}
+                                        ? (launchingTool === activeTool ? t("launchStarting") : (hasActiveRemoteSessionForTool ? t("remoteStopTool") : t("remoteStartTool")))
+                                        : (launchingTool === activeTool ? t("launchStarting") : (onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool ? t("installing") : t("launch")))}
                                 </button>
                             </div>
                         </div>
@@ -3448,9 +3441,6 @@ ${instruction}`;
                     onUpdateResultChange={setUpdateResult}
                     onClose={() => {
                         setShowUpdateModal(false);
-                        if (isStartupUpdateCheck && config && !config.hide_startup_popup) {
-                            setShowStartupPopup(true);
-                        }
                         setIsStartupUpdateCheck(false);
                         setDownloadError("");
                     }}
@@ -3810,16 +3800,6 @@ ${instruction}`;
                     localizeText={localizeText}
                     onConfirm={confirmProviderSelection}
                     onClose={() => { setShowProviderSelector(false); setSelectedProviderForUrl(null); setHoveredProvider(null); }}
-                />
-            )}
-
-            {showStartupPopup && (
-                <StartupPopup
-                    config={config}
-                    setConfig={setConfig}
-                    lang={lang}
-                    t={t}
-                    onClose={() => setShowStartupPopup(false)}
                 />
             )}
 

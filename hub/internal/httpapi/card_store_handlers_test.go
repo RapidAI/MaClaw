@@ -81,7 +81,7 @@ func TestCardStoreConfigUsesPaymentFMDefaults(t *testing.T) {
 		t.Fatalf("payment defaults not applied: %#v", cfg)
 	}
 	product, ok := findCardStoreProduct(cfg, "service_test_10")
-	if !ok || product.Price != 0.01 || product.Credits != 10 || !strings.Contains(strings.ToLower(product.Description), "testing") {
+	if !ok || product.Price != 0.01 || product.Credits != 1 || !strings.Contains(strings.ToLower(product.Description), "testing") {
 		t.Fatalf("test product defaults not applied: %#v", product)
 	}
 }
@@ -150,6 +150,32 @@ func TestUpdateCardStoreConfigKeepsDefaultNotifyURLDynamic(t *testing.T) {
 	}
 }
 
+func TestUpdateCardStoreConfigKeepsAlipayDefaultURLsDynamic(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	oldCfg := normalizeCardStoreConfig(cardStoreConfig{AlipayDirect: cardStoreAlipayDirectConfig{PrivateKey: "old-alipay-private"}})
+	oldData, _ := json.Marshal(oldCfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(oldData)); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"enabled":true,"payment_mode":"payment_fm","alipay_direct":{"notify_url":"https://oldhub.example.com/api/card-store/payment/notify?tenant_id=tenant_default","return_url":"https://oldhub.example.com/card_store?tenant_id=tenant_default"},"products":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/card-store/config", strings.NewReader(payload))
+	req.Host = "hub.example.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	UpdateCardStoreConfigHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored := loadCardStoreConfig(context.Background(), system)
+	if strings.TrimSpace(stored.AlipayDirect.NotifyURL) != "" || strings.TrimSpace(stored.AlipayDirect.ReturnURL) != "" {
+		t.Fatalf("stored alipay default urls should be dynamic: notify=%q return=%q", stored.AlipayDirect.NotifyURL, stored.AlipayDirect.ReturnURL)
+	}
+	if stored.AlipayDirect.PrivateKey != "old-alipay-private" {
+		t.Fatalf("stored alipay private key = %q, want preserved", stored.AlipayDirect.PrivateKey)
+	}
+}
+
 func TestUpdateCardStoreConfigValidatesAlipayDirectKeys(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	payload := `{"enabled":true,"payment_mode":"alipay_direct","alipay_direct":{"app_id":"2021000000000000","gateway_url":"https://openapi.alipay.com/gateway.do","private_key":"bad","alipay_public_key":"bad"},"products":[]}`
@@ -198,6 +224,31 @@ func TestUpdateCardStoreConfigStoreScopeDoesNotValidateOrMutatePayment(t *testin
 	}
 	if stored.Products[0].Price != 3 {
 		t.Fatalf("store product price = %v, want 3", stored.Products[0].Price)
+	}
+}
+
+func TestUpdateCardStoreConfigPaymentScopeDoesNotMutateStore(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	oldCfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, ServiceGroupIDs: []string{"svc-a"}, Products: []cardStoreProduct{{ID: "service_day", Kind: "service_card", Label: "Day Card", Enabled: true, Price: 3, DurationDays: 1, Credits: 300}}, PersonalPayment: cardStorePersonalPaymentConfig{AdminEmails: []string{"owner@example.com"}, Channels: []cardStorePersonalPaymentChannel{{ID: "wechat", Enabled: true, ImageURL: "https://pay.example.com/wx.png"}}}})
+	oldData, _ := json.Marshal(oldCfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(oldData)); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"enabled":false,"payment_mode":"personal_semimanual","payment_methods":["personal_semimanual"],"personal_payment":{"admin_emails":["owner@example.com"],"channels":[{"id":"wechat","enabled":true,"image_url":"https://pay.example.com/new-wx.png"}]},"service_group_ids":["svc-b"],"products":[{"id":"service_day","kind":"service_card","label":"Day Card","enabled":false,"price":99,"duration_days":1,"credits":300}]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/card-store/config?scope=payment", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	UpdateCardStoreConfigHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored := loadCardStoreConfig(context.Background(), system)
+	day, ok := findCardStoreProduct(stored, "service_day")
+	if !stored.Enabled || len(stored.ServiceGroupIDs) != 1 || stored.ServiceGroupIDs[0] != "svc-a" || !ok || day.Price != 3 || !day.Enabled {
+		t.Fatalf("store settings mutated by payment scope: enabled=%v groups=%#v products=%#v", stored.Enabled, stored.ServiceGroupIDs, stored.Products)
+	}
+	if stored.PaymentMode != cardStorePaymentModeManual || stored.PersonalPayment.Channels[0].ImageURL != "https://pay.example.com/new-wx.png" {
+		t.Fatalf("payment settings not saved: mode=%q personal=%#v", stored.PaymentMode, stored.PersonalPayment)
 	}
 }
 
@@ -954,6 +1005,8 @@ func TestAlipayDirectPayPageAddsTenantToConfiguredNotifyURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	payReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-TENANT/alipay/pay?tenant_id="+tenantID, nil)
+	payReq.Host = "hub.example.com"
+	payReq.Header.Set("X-Forwarded-Proto", "https")
 	payReq.SetPathValue("orderNo", "ALI-TENANT")
 	payRec := httptest.NewRecorder()
 	CardStoreAlipayPayPageHandler(system).ServeHTTP(payRec, payReq)
@@ -963,8 +1016,84 @@ func TestAlipayDirectPayPageAddsTenantToConfiguredNotifyURL(t *testing.T) {
 	if !strings.Contains(payRec.Body.String(), `name="notify_url" value="https://hub.example.com/api/card-store/payment/notify?tenant_id=tenant_alipay"`) {
 		t.Fatalf("pay page notify_url missing tenant_id: %s", payRec.Body.String())
 	}
-	if !strings.Contains(payRec.Body.String(), `name="return_url" value="https://hub.example.com/card_store?tenant_id=tenant_alipay"`) {
-		t.Fatalf("pay page return_url missing tenant_id: %s", payRec.Body.String())
+	if !strings.Contains(payRec.Body.String(), `name="return_url" value="https://hub.example.com/api/card-store/orders/ALI-TENANT/alipay/return?tenant_id=tenant_alipay"`) {
+		t.Fatalf("pay page return_url missing tenant-aware alipay return handler: %s", payRec.Body.String())
+	}
+}
+
+func TestAlipayDirectPayPageForcesReturnThroughOrderHandler(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey, ReturnURL: "https://hub.example.com/custom/thanks"}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-CUSTOM-RETURN", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	payReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-CUSTOM-RETURN/alipay/pay", nil)
+	payReq.Host = "hub.example.com"
+	payReq.Header.Set("X-Forwarded-Proto", "https")
+	payReq.SetPathValue("orderNo", "ALI-CUSTOM-RETURN")
+	payRec := httptest.NewRecorder()
+	CardStoreAlipayPayPageHandler(system).ServeHTTP(payRec, payReq)
+	if payRec.Code != http.StatusOK {
+		t.Fatalf("pay page status=%d body=%s", payRec.Code, payRec.Body.String())
+	}
+	if !strings.Contains(payRec.Body.String(), `name="return_url" value="https://hub.example.com/api/card-store/orders/ALI-CUSTOM-RETURN/alipay/return"`) || strings.Contains(payRec.Body.String(), `custom/thanks`) {
+		t.Fatalf("pay page return_url should use order handler, got: %s", payRec.Body.String())
+	}
+}
+
+func TestAlipayDirectPayPageRebasesStoredStoreReturnURLToCurrentHub(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey, ReturnURL: "https://oldhub.example.com/card_store?tenant_id=tenant_alipay"}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-REBASING-RETURN", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	payReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-REBASING-RETURN/alipay/pay", nil)
+	payReq.Host = "newhub.example.com"
+	payReq.Header.Set("X-Forwarded-Proto", "https")
+	payReq.SetPathValue("orderNo", "ALI-REBASING-RETURN")
+	payRec := httptest.NewRecorder()
+	CardStoreAlipayPayPageHandler(system).ServeHTTP(payRec, payReq)
+	if payRec.Code != http.StatusOK {
+		t.Fatalf("pay page status=%d body=%s", payRec.Code, payRec.Body.String())
+	}
+	if !strings.Contains(payRec.Body.String(), `name="return_url" value="https://newhub.example.com/api/card-store/orders/ALI-REBASING-RETURN/alipay/return"`) || strings.Contains(payRec.Body.String(), `oldhub.example.com`) {
+		t.Fatalf("pay page should rebase stale store return_url to current hub, got: %s", payRec.Body.String())
+	}
+}
+
+func TestAlipayDirectPayPageUsesAlipayNotifyDefault(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-DEFAULT-NOTIFY", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	payReq := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-DEFAULT-NOTIFY/alipay/pay", nil)
+	payReq.SetPathValue("orderNo", "ALI-DEFAULT-NOTIFY")
+	payRec := httptest.NewRecorder()
+	CardStoreAlipayPayPageHandler(system).ServeHTTP(payRec, payReq)
+	if payRec.Code != http.StatusOK {
+		t.Fatalf("pay page status=%d body=%s", payRec.Code, payRec.Body.String())
+	}
+	if !strings.Contains(payRec.Body.String(), `name="notify_url" value="http://example.com/api/card-store/payment/notify"`) || strings.Contains(payRec.Body.String(), `/api/zhifuxpay/notify`) {
+		t.Fatalf("pay page should use alipay notify endpoint by default: %s", payRec.Body.String())
 	}
 }
 
@@ -1025,6 +1154,214 @@ func TestAlipayDirectPayPageRejectsPaidOrDisabledOrders(t *testing.T) {
 	CardStoreAlipayPayPageHandler(system).ServeHTTP(disabledRec, disabledReq)
 	if disabledRec.Code != http.StatusConflict || !strings.Contains(disabledRec.Body.String(), "disabled") {
 		t.Fatalf("disabled pay page status=%d body=%s", disabledRec.Code, disabledRec.Body.String())
+	}
+}
+
+func TestAlipayDirectReturnMarksOrderPaidAndRedirectsToStore(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-RETURN", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{}
+	form.Set("app_id", "2021000000000000")
+	form.Set("auth_app_id", "2021000000000000")
+	form.Set("charset", "utf-8")
+	form.Set("out_trade_no", "ALI-RETURN")
+	form.Set("trade_no", "2026060122000000000099")
+	form.Set("total_amount", "12.34")
+	form.Set("sign_type", "RSA2")
+	sign, err := alipayRSA2Sign(alipaySignContent(form), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.Set("sign", sign)
+	req := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-RETURN/alipay/return?"+form.Encode(), nil)
+	req.SetPathValue("orderNo", "ALI-RETURN")
+	rec := httptest.NewRecorder()
+	CardStoreAlipayReturnHandler(system, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("return status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "/card_store") || !strings.Contains(location, "order_no=ALI-RETURN") || !strings.Contains(location, "email=buyer%40example.com") {
+		t.Fatalf("unexpected redirect location: %s", location)
+	}
+	orders := loadCardStoreOrders(context.Background(), system)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status != "paid" || orders.Orders[0].PlatformOrderNo != "2026060122000000000099" || orders.Orders[0].CardID == "" {
+		t.Fatalf("alipay return did not mark paid: %#v", orders.Orders)
+	}
+}
+
+func TestAlipayDirectReturnVerifiesAlipayPageReturnSignature(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	tenantID := "vantagics"
+	tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
+	appID := "2021006157654681"
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: appID, PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := tenantSystem.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "CS20260601095027522285", ProductID: "service_test_10", ProductLabel: "Test Card", Email: "buyer@example.com", Amount: 0.01, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), tenantSystem, order); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{}
+	form.Set("app_id", appID)
+	form.Set("auth_app_id", appID)
+	form.Set("charset", "utf-8")
+	form.Set("method", "alipay.trade.page.pay.return")
+	form.Set("out_trade_no", order.OrderNo)
+	form.Set("seller_id", "2088002001399080")
+	form.Set("sign_type", "RSA2")
+	form.Set("timestamp", "2026-06-01 17:50:53")
+	form.Set("total_amount", "0.01")
+	form.Set("trade_no", "2026060122001457361443083207")
+	form.Set("version", "1.0")
+	sign, err := alipayRSA2Sign(alipaySignContentSkipping(form, map[string]bool{"sign": true, "sign_type": true}), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.Set("sign", sign)
+	req := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/CS20260601095027522285/alipay/return?tenant_id="+tenantID+"&"+form.Encode(), nil)
+	req.SetPathValue("orderNo", order.OrderNo)
+	rec := httptest.NewRecorder()
+	CardStoreAlipayReturnHandler(system, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("return status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), tenantSystem)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status != "paid" || orders.Orders[0].PlatformOrderNo != "2026060122001457361443083207" || orders.Orders[0].CardID == "" {
+		t.Fatalf("alipay page return did not mark paid: %#v", orders.Orders)
+	}
+}
+
+func TestAlipayDirectReturnAcceptsTenantIDQueryOutsideSignature(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	tenantID := "tenant_alipay_return"
+	tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := tenantSystem.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-TENANT-RETURN", TenantID: tenantID, ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), tenantSystem, order); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{}
+	form.Set("app_id", "2021000000000000")
+	form.Set("charset", "utf-8")
+	form.Set("out_trade_no", "ALI-TENANT-RETURN")
+	form.Set("trade_no", "2026060122000000000101")
+	form.Set("total_amount", "12.34")
+	form.Set("sign_type", "RSA2")
+	sign, err := alipayRSA2Sign(alipaySignContent(form), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.Set("sign", sign)
+	req := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-TENANT-RETURN/alipay/return?tenant_id="+tenantID+"&"+form.Encode(), nil)
+	req.SetPathValue("orderNo", "ALI-TENANT-RETURN")
+	rec := httptest.NewRecorder()
+	CardStoreAlipayReturnHandler(system, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("return status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if location := rec.Header().Get("Location"); !strings.Contains(location, "tenant_id="+tenantID) || !strings.Contains(location, "order_no=ALI-TENANT-RETURN") {
+		t.Fatalf("unexpected redirect location: %s", location)
+	}
+	orders := loadCardStoreOrders(context.Background(), tenantSystem)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status != "paid" || orders.Orders[0].PlatformOrderNo != "2026060122000000000101" || orders.Orders[0].CardID == "" {
+		t.Fatalf("tenant alipay return did not mark paid: %#v", orders.Orders)
+	}
+}
+
+func TestAlipayDirectReturnDoesNotMarkUnpaidTradeStatusPaid(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: "2021000000000000", PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-WAIT", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{}
+	form.Set("app_id", "2021000000000000")
+	form.Set("charset", "utf-8")
+	form.Set("out_trade_no", "ALI-WAIT")
+	form.Set("trade_no", "2026060122000000000100")
+	form.Set("total_amount", "12.34")
+	form.Set("trade_status", "WAIT_BUYER_PAY")
+	form.Set("sign_type", "RSA2")
+	sign, err := alipayRSA2Sign(alipaySignContent(form), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.Set("sign", sign)
+	req := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-WAIT/alipay/return?"+form.Encode(), nil)
+	req.SetPathValue("orderNo", "ALI-WAIT")
+	rec := httptest.NewRecorder()
+	CardStoreAlipayReturnHandler(system, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("return status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), system)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status == "paid" || orders.Orders[0].CardID != "" {
+		t.Fatalf("unpaid alipay return marked paid: %#v", orders.Orders)
+	}
+}
+
+func TestAlipayDirectReturnInvalidSignatureRedirectsPendingOrder(t *testing.T) {
+	privateKey, publicKey := newAlipayTestKeys(t)
+	system := newTestLLMServiceSystemSettings()
+	appID := "2021000000000000"
+	cfg := normalizeCardStoreConfig(cardStoreConfig{Enabled: true, PaymentMode: cardStorePaymentModeAlipay, AlipayDirect: cardStoreAlipayDirectConfig{AppID: appID, PrivateKey: privateKey, AlipayPublicKey: publicKey}})
+	cfgData, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(cfgData)); err != nil {
+		t.Fatal(err)
+	}
+	order := cardStoreOrder{OrderNo: "ALI-BAD-RETURN", ProductID: "service_day", ProductLabel: "Day Card", Email: "buyer@example.com", Amount: 12.34, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, PayChannel: "alipay", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{}
+	form.Set("app_id", appID)
+	form.Set("charset", "utf-8")
+	form.Set("out_trade_no", order.OrderNo)
+	form.Set("trade_no", "2026060122000000000999")
+	form.Set("total_amount", "12.34")
+	form.Set("sign_type", "RSA2")
+	form.Set("sign", "invalid-signature")
+	req := httptest.NewRequest(http.MethodGet, "/api/card-store/orders/ALI-BAD-RETURN/alipay/return?"+form.Encode(), nil)
+	req.SetPathValue("orderNo", order.OrderNo)
+	rec := httptest.NewRecorder()
+	CardStoreAlipayReturnHandler(system, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("return status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	if !strings.Contains(location, "order_no=ALI-BAD-RETURN") || !strings.Contains(location, "payment_return=alipay_verify_pending") {
+		t.Fatalf("unexpected redirect location: %s", location)
+	}
+	orders := loadCardStoreOrders(context.Background(), system)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status == "paid" || orders.Orders[0].CardID != "" {
+		t.Fatalf("invalid return signature marked paid: %#v", orders.Orders)
+	}
+	if !strings.Contains(orders.Orders[0].PaymentMsg, "waiting async notify") {
+		t.Fatalf("invalid return signature message missing: %#v", orders.Orders[0])
 	}
 }
 
@@ -1741,18 +2078,81 @@ func TestCardStoreSalesStatsGroupsPaidOrders(t *testing.T) {
 	}
 	redeemedAt := now.Add(time.Hour)
 	sold := buildCardStoreSoldCards(orders, normalizeCardStoreConfig(cardStoreConfig{}), &llmservice.Registry{Cards: []llmservice.RechargeCard{{ID: "card-1", RedeemedByEmail: "redeemer@example.com", RedeemedAt: &redeemedAt}}})
-	if len(sold) != 3 || sold[0].OrderNo == "open-1" {
+	if len(sold) != 4 {
 		t.Fatalf("unexpected sold cards: %#v", sold)
 	}
+	var sawOpen bool
 	if sold[0].OrderNo == "paid-1" && (sold[0].RedeemedEmail != "redeemer@example.com" || sold[0].RedeemedAt == "") {
 		t.Fatalf("redeem fields missing: %#v", sold[0])
 	}
 	for _, card := range sold {
+		if card.OrderNo == "open-1" {
+			sawOpen = true
+		}
 		if card.OrderNo == "paid-1" && (!card.AutoRedeemed || card.AutoRedeemAt == "") {
 			t.Fatalf("auto redeem fields missing: %#v", card)
 		}
 		if card.OrderNo == "issue-1" && card.AutoRedeemErr != "redeem failed" {
 			t.Fatalf("auto redeem error missing: %#v", card)
 		}
+	}
+	if !sawOpen {
+		t.Fatalf("pending order missing from sales cards: %#v", sold)
+	}
+}
+
+func TestAdminCompleteCardStoreOrderFinishesPendingOrder(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	cfg := normalizeCardStoreConfig(cardStoreConfig{})
+	order := cardStoreOrder{OrderNo: "ADMIN-COMPLETE", ProductID: "service_test_10", ProductLabel: "Test Card", Email: "buyer@example.com", Amount: 0.01, Status: "payment_started", PaymentMode: cardStorePaymentModeAlipay, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := appendCardStoreOrder(context.Background(), system, order); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(cfg)
+	if err := system.Set(context.Background(), cardStoreConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/card-store/orders/ADMIN-COMPLETE/complete", strings.NewReader(`{"amount":0.01}`))
+	req.SetPathValue("orderNo", "ADMIN-COMPLETE")
+	rec := httptest.NewRecorder()
+	AdminCompleteCardStoreOrderHandler(system, nil, nil, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	orders := loadCardStoreOrders(context.Background(), system)
+	if len(orders.Orders) != 1 || orders.Orders[0].Status != "paid" || orders.Orders[0].EncryptedCode == "" || orders.Orders[0].CardID == "" {
+		t.Fatalf("order not completed: %#v", orders.Orders)
+	}
+}
+
+func TestAdminDeleteCardStoreOrderRemovesOnlyUnpaidOrders(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	orders := cardStoreOrders{Orders: []cardStoreOrder{
+		{OrderNo: "PENDING-DELETE", ProductID: "service_test_10", Email: "buyer@example.com", Amount: 0.01, Status: "payment_started", CreatedAt: now, UpdatedAt: now},
+		{OrderNo: "PAID-KEEP", ProductID: "service_test_10", Email: "paid@example.com", Amount: 0.01, Status: "paid", EncryptedCode: "enc", CreatedAt: now, UpdatedAt: now},
+	}}
+	if err := saveCardStoreOrders(context.Background(), system, orders); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/card-store/orders/PENDING-DELETE", nil)
+	req.SetPathValue("orderNo", "PENDING-DELETE")
+	rec := httptest.NewRecorder()
+	AdminDeleteCardStoreOrderHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := findCardStoreOrder(context.Background(), system, "PENDING-DELETE"); ok {
+		t.Fatalf("pending order still exists")
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/admin/card-store/orders/PAID-KEEP", nil)
+	req.SetPathValue("orderNo", "PAID-KEEP")
+	rec = httptest.NewRecorder()
+	AdminDeleteCardStoreOrderHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("paid delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := findCardStoreOrder(context.Background(), system, "PAID-KEEP"); !ok {
+		t.Fatalf("paid order was deleted")
 	}
 }

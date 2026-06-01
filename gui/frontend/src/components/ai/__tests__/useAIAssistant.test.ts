@@ -29,6 +29,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     FetchNews: vi.fn(async () => []),
     SelectAIAssistantFiles: vi.fn(async () => []),
     InjectAIAssistantSupplementary: vi.fn(async () => false),
+    InjectAIAssistantSupplementaryForSession: vi.fn(async () => false),
     InjectAIAssistantGuideReference: vi.fn(async () => true),
     InjectAIAssistantGuideReferenceForSession: vi.fn(async () => true),
     SubmitAgentView: vi.fn(async () => ({ text: 'submitted', error: '' })),
@@ -45,7 +46,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
     return renderHook(() => useAIAssistant(options));
@@ -116,6 +117,8 @@ function resetAppMocks() {
     (SelectAIAssistantFiles as any).mockImplementation(async () => []);
     (InjectAIAssistantSupplementary as any).mockReset();
     (InjectAIAssistantSupplementary as any).mockImplementation(async () => false);
+    (InjectAIAssistantSupplementaryForSession as any).mockReset();
+    (InjectAIAssistantSupplementaryForSession as any).mockImplementation(async () => false);
     (InjectAIAssistantGuideReference as any).mockReset();
     (InjectAIAssistantGuideReference as any).mockImplementation(async () => true);
     (InjectAIAssistantGuideReferenceForSession as any).mockReset();
@@ -2174,6 +2177,14 @@ describe('useAIAssistant property tests', () => {
                 RiskFlags: ['影响现有逻辑'],
                 RevisionHints: ['补充正确目录'],
                 Status: 'pending',
+                Labels: {
+                    Title: '执行前确认',
+                    Status: '状态',
+                    TargetPaths: '目标路径',
+                    PlannedActions: '计划操作',
+                    RiskFlags: '风险标记',
+                    RevisionHints: '修订提示',
+                },
             },
         };
 
@@ -2194,6 +2205,14 @@ describe('useAIAssistant property tests', () => {
             riskFlags: ['影响现有逻辑'],
             revisionHints: ['补充正确目录'],
             status: 'pending',
+            labels: {
+                title: '执行前确认',
+                status: '状态',
+                target_paths: '目标路径',
+                planned_actions: '计划操作',
+                risk_flags: '风险标记',
+                revision_hints: '修订提示',
+            },
         });
     });
 
@@ -2300,11 +2319,34 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.filter(m => m.role === 'user').at(-1)?.content).toBe('\u5173\u95ed\u4efb\u52a1\u9762\u677f');
     });
 
+    it('routes legacy task panel fallback injection to active desktop session', async () => {
+        (SubmitAgentView as any).mockImplementationOnce(async () => {
+            throw new Error('legacy submit path');
+        });
+        (InjectAIAssistantSupplementaryForSession as any).mockResolvedValueOnce(true);
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:D:/tasks/demo' });
+
+        await act(async () => {
+            await result.current.submitAgentView('plain-form', { value: 1 });
+        });
+
+        expect(InjectAIAssistantSupplementaryForSession).toHaveBeenCalledWith(
+            expect.stringContaining('__agent_view_submit__'),
+            'desktop-user:D:/tasks/demo',
+        );
+        expect(InjectAIAssistantSupplementary).not.toHaveBeenCalled();
+        expect(SendAIAssistantMessage).not.toHaveBeenCalled();
+    });
+
     it('normalizes action styles from assistant responses', async () => {
         const responseActions = [
-            { label: 'Safe', command: 'safe-cmd', style: 'default' },
+            { label: '  Safe  ', command: '  safe-cmd  ', style: 'default' },
+            { label: 'Approve', command: 'approve-cmd', style: 'primary' },
+            { label: 'Later', command: 'later-cmd', style: 'secondary' },
             { label: 'Delete', command: 'danger-cmd', style: 'danger' },
+            { Label: 'Pascal', Command: 'pascal-cmd', Style: 'primary' },
             { label: 'Fallback', command: 'fallback-cmd', style: 'warning' },
+            { label: 'No command', style: 'primary' },
         ];
         mockSendResponse = { text: 'ok', error: '', fields: null, actions: responseActions };
 
@@ -2317,9 +2359,34 @@ describe('useAIAssistant property tests', () => {
         const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
         expect(assistantMsg?.actions).toEqual([
             { label: 'Safe', command: 'safe-cmd', style: 'default' },
+            { label: 'Approve', command: 'approve-cmd', style: 'primary' },
+            { label: 'Later', command: 'later-cmd', style: 'secondary' },
             { label: 'Delete', command: 'danger-cmd', style: 'danger' },
+            { label: 'Pascal', command: 'pascal-cmd', style: 'primary' },
             { label: 'Fallback', command: 'fallback-cmd', style: 'default' },
         ] satisfies ChatAction[]);
+    });
+
+    it('drops empty action payloads after normalization', async () => {
+        mockSendResponse = {
+            text: 'ok',
+            error: '',
+            fields: null,
+            actions: [
+                { label: 'No command', style: 'primary' },
+                { command: 'no-label', style: 'primary' },
+                null,
+            ],
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('normalize empty actions');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.actions).toBeUndefined();
     });
 
     it('preserves draft input state across rerenders until cleared', async () => {

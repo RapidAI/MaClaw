@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -104,6 +106,11 @@ func (a *App) compareVersions(v1, v2 string) int {
 // runtime).
 var _isWin11 bool
 var _isWin11Once sync.Once
+
+var _windowsTerminalProbeCache struct {
+	sync.Once
+	available bool
+}
 
 func isWindows11() bool {
 	_isWin11Once.Do(func() {
@@ -1607,7 +1614,7 @@ func isWSLShell(path string) bool {
 		strings.Contains(lower, "microsoft/windowsapps/")
 }
 
-func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, pythonEnv string, projectDir string, env map[string]string, modelId string) {
+func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, pythonEnv string, projectDir string, env map[string]string, modelId string) error {
 	tm := NewToolManager(a)
 	a.log(fmt.Sprintf("platformLaunch: Looking for tool '%s'", binaryName))
 	status := tm.GetToolStatus(binaryName)
@@ -1631,7 +1638,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if npmPath == "" {
 			runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("npm not found. Please run environment check first."))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("npm not found. Please run environment check first."))
-			return
+			return fmt.Errorf("npm not found. Please run environment check first")
 		}
 
 		// Attempt to install the tool
@@ -1639,7 +1646,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if err != nil {
 			runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, err.Error())
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Failed to install %s: %v", binaryName, err))
-			return
+			return fmt.Errorf("failed to install %s: %w", binaryName, err)
 		}
 
 		// Re-check tool status after installation
@@ -1647,7 +1654,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if !status.Installed {
 			runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("Installation completed but tool not found"))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Installation completed but %s still not found. Please try running environment check.", binaryName))
-			return
+			return fmt.Errorf("installation completed but %s still not found", binaryName)
 		}
 
 		binaryPath = status.Path
@@ -1797,7 +1804,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	if err != nil {
 		a.log("Error creating batch file: " + err.Error())
 		a.ShowMessage("Launch Error", "Failed to create temporary batch file")
-		return
+		return fmt.Errorf("failed to create temporary batch file: %w", err)
 	}
 
 	a.log(fmt.Sprintf("Created launch script: %s", tempBatchPath))
@@ -1852,6 +1859,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if ret <= 32 {
 			a.log(fmt.Sprintf("ShellExecute failed with return value: %d", ret))
 			a.ShowMessage("Launch Error", "Failed to launch with admin privileges.")
+			return fmt.Errorf("failed to launch with admin privileges: ShellExecute returned %d", ret)
 		}
 	} else {
 		if binaryName == "codex" || binaryName == "openai" {
@@ -1898,7 +1906,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			if err := os.WriteFile(codexBatchPath, []byte(codexBatchContent), 0644); err != nil {
 				a.log("Error creating codex batch file: " + err.Error())
 				a.ShowMessage("Launch Error", "Failed to create temporary batch file")
-				return
+				return fmt.Errorf("failed to create temporary codex batch file: %w", err)
 			}
 
 			a.log(fmt.Sprintf("Launching %s with TTY batch mode", binaryName))
@@ -1936,6 +1944,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			if err := cmd.Start(); err != nil {
 				a.log("Error launching tool: " + err.Error())
 				a.ShowMessage("Launch Error", "Failed to start process: "+err.Error())
+				return fmt.Errorf("failed to start process: %w", err)
 			}
 		} else {
 			var cmdLine string
@@ -1964,9 +1973,12 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			if err := cmd.Start(); err != nil {
 				a.log("Error launching tool: " + err.Error())
 				a.ShowMessage("Launch Error", "Failed to start process: "+err.Error())
+				return fmt.Errorf("failed to start process: %w", err)
 			}
 		}
 	}
+
+	return nil
 }
 
 func (a *App) syncToSystemEnv(config corelib.AppConfig) {
@@ -2099,10 +2111,40 @@ func createHiddenCmd(name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// isWindowsTerminalAvailable checks if Windows Terminal (wt.exe) is installed and available
+// isWindowsTerminalAvailable checks if Windows Terminal (wt.exe) is installed and available.
+// WindowsApps execution aliases can exist even when Windows Terminal cannot be
+// launched from a packaged GUI process, so a path-only check causes silent
+// launch failures. Require a small version probe before using wt.exe.
 func (a *App) isWindowsTerminalAvailable() bool {
-	wtPath := a.getWindowsTerminalPath()
-	return wtPath != ""
+	_windowsTerminalProbeCache.Do(func() {
+		wtPath := a.getWindowsTerminalPath()
+		if wtPath == "" {
+			_windowsTerminalProbeCache.available = false
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, wtPath, "--version")
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: _CREATE_NO_WINDOW}
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+		if err := cmd.Run(); err != nil {
+			a.log(fmt.Sprintf("Windows Terminal probe failed: path=%s err=%v output=%q", wtPath, err, strings.TrimSpace(out.String())))
+			_windowsTerminalProbeCache.available = false
+			return
+		}
+		versionText := strings.TrimSpace(out.String())
+		if versionText == "" {
+			a.log(fmt.Sprintf("Windows Terminal probe returned empty output: path=%s", wtPath))
+			_windowsTerminalProbeCache.available = false
+			return
+		}
+		a.log(fmt.Sprintf("Windows Terminal probe ok: path=%s version=%s", wtPath, versionText))
+		_windowsTerminalProbeCache.available = true
+	})
+	return _windowsTerminalProbeCache.available
 }
 
 // getWindowsTerminalPath returns the full path to wt.exe if available, empty string otherwise

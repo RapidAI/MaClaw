@@ -1616,6 +1616,12 @@ func TestWorkflowReviewExecutionRequestDoesNotStartAgentLoop(t *testing.T) {
 }
 
 func TestDetectWorkflowReviewIntentFast(t *testing.T) {
+	for _, text := range []string{"\u786e\u8ba4", "\u7ee7\u7eed", "\u5f00\u5de5", "\u597d\u7684", "\u5408\u7406\uff0c\u7ee7\u7eed", "\u5f00\u59cb\u7f16\u7801", "\u5f00\u59cb\u7f16\u7801\u5427", "\u786e\u8ba4\u5f00\u59cb\u5b9e\u73b0"} {
+		got, ok := detectWorkflowReviewIntentFast(text)
+		if !ok || got != workflow.ReviewIntentConfirm {
+			t.Fatalf("detectWorkflowReviewIntentFast(%q)=(%q,%v), want confirm,true", text, got, ok)
+		}
+	}
 	for _, text := range []string{"开工", "继续", "继续推进", "OK", "go ahead", "start"} {
 		got, ok := detectWorkflowReviewIntentFast(text)
 		if !ok || got != workflow.ReviewIntentConfirm {
@@ -1630,6 +1636,148 @@ func TestDetectWorkflowReviewIntentFast(t *testing.T) {
 	}
 	if detectWorkflowReviewBlockedExecutionIntent("继续推进") || detectWorkflowReviewBlockedExecutionIntent("修改一下设计文档") {
 		t.Fatal("confirmations and document edits must not be treated as execution requests")
+	}
+}
+
+func TestCodingWorkflowTaskBreakdownConfirmStartsImplementationWithLocalTools(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-coding-task-breakdown-confirm-starts-implementation"
+	_, err := engine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a desktop game",
+		Goals:    []string{"build a desktop game"},
+	}, workflow.WorkflowStartOptions{ProjectPath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	if err := engine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != workflow.PhaseCodingRequirements {
+		t.Fatalf("SavePhaseOutput requirements phase=%q err=%v", phaseID, err)
+	}
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+		t.Fatalf("requirements confirm should schedule next phase loop without immediate response, got %#v", resp)
+	}
+	handler.workflowAgentLoopMarker.Delete(userID)
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != workflow.PhaseCodingTechDesign {
+		t.Fatalf("SavePhaseOutput tech_design phase=%q err=%v", phaseID, err)
+	}
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+		t.Fatalf("tech design confirm should schedule next phase loop without immediate response, got %#v", resp)
+	}
+	handler.workflowAgentLoopMarker.Delete(userID)
+	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != workflow.PhaseCodingTaskBreakdown {
+		t.Fatalf("SavePhaseOutput task_breakdown phase=%q err=%v", phaseID, err)
+	}
+	if !engine.IsAwaitingReview(userID) {
+		t.Fatal("task breakdown should await review before implementation")
+	}
+
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+	})
+
+	trimmed := "\u5f00\u59cb\u7f16\u7801"
+	result := handler.resolveIMEntryContext(imEntryContextOptions{
+		Message: &IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"},
+		Trimmed: &trimmed,
+	})
+	if result.Response != nil || !result.WorkflowAgentLoop {
+		t.Fatalf("task breakdown confirmation should start implementation agent loop, got %#v", result)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
+		t.Fatalf("workflow should advance to implementation after task breakdown confirm, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
+	}
+
+	toolSet := handler.prepareAgentLoopTools(userID, trimmed, &LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, agentLoopPhase{})
+	names := toolNameSetForWorkflowFilterTest(toolSet.Tools)
+	for _, name := range []string{"bash", "read_file", "list_directory", "write_file", "edit_file"} {
+		if !names[name] {
+			t.Fatalf("implementation workflow loop must expose local coding tool %s, got %#v", name, names)
+		}
+	}
+	if toolSet.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterFull) {
+		t.Fatalf("workflow decision = %q, want %q", toolSet.WorkflowDecision, workflow.ToolFilterFull)
+	}
+	for _, name := range []string{"bash", "write_file", "edit_file"} {
+		if !handler.isWorkflowToolAllowedForOwner(userID, name) {
+			t.Fatalf("implementation workflow execution gate must allow %s", name)
+		}
+	}
+	outPath := filepath.Join(t.TempDir(), "impl", "created.txt")
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+	writeResult := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		Context: &LoopContext{WorkflowAgentLoop: true, Runtime: RuntimeContext{
+			RequestID:     "req-implementation-write",
+			PolicyOwnerID: userID,
+		}},
+		ToolCall: llm.ToolCall{ID: "call_write", Function: llm.ToolCallFunction{
+			Name:      "write_file",
+			Arguments: fmt.Sprintf(`{"path":%q,"content":"ok"}`, outPath),
+		}},
+	})
+	if writeResult.FailureKind == toolFailurePolicyRejected || strings.Contains(writeResult.Text, "workflow tool policy") {
+		t.Fatalf("implementation workflow write_file execution must not be workflow-policy rejected, got %+v", writeResult)
+	}
+	if data, err := os.ReadFile(outPath); err != nil || string(data) != "ok" {
+		t.Fatalf("implementation write_file did not create expected file: data=%q err=%v result=%+v", string(data), err, writeResult)
+	}
+}
+
+func TestCodingWorkflowTaskBreakdownContinuePushStartsImplementation(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-coding-task-breakdown-continue-push-starts-implementation"
+	_, err := engine.StartWorkflowWithOptions(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a desktop game",
+		Goals:    []string{"build a desktop game"},
+	}, workflow.WorkflowStartOptions{ProjectPath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+	if err := engine.SkipPhaseForm(userID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("requirements")); err != nil || phaseID != workflow.PhaseCodingRequirements {
+		t.Fatalf("SavePhaseOutput requirements phase=%q err=%v", phaseID, err)
+	}
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+		t.Fatalf("requirements confirm should schedule next phase loop without immediate response, got %#v", resp)
+	}
+	handler.workflowAgentLoopMarker.Delete(userID)
+	if phaseID, err := engine.SavePhaseOutput(userID, substantialWorkflowDoc("tech_design")); err != nil || phaseID != workflow.PhaseCodingTechDesign {
+		t.Fatalf("SavePhaseOutput tech_design phase=%q err=%v", phaseID, err)
+	}
+	if resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "\u786e\u8ba4", "desktop"); resp != nil {
+		t.Fatalf("tech design confirm should schedule next phase loop without immediate response, got %#v", resp)
+	}
+	handler.workflowAgentLoopMarker.Delete(userID)
+	if phaseID, err := engine.SavePhaseOutput(userID, executableCodingBreakdown); err != nil || phaseID != workflow.PhaseCodingTaskBreakdown {
+		t.Fatalf("SavePhaseOutput task_breakdown phase=%q err=%v", phaseID, err)
+	}
+
+	trimmed := "\u7ee7\u7eed\u63a8\u8fdb"
+	result := handler.resolveIMEntryContext(imEntryContextOptions{
+		Message: &IMUserMessage{UserID: userID, Text: trimmed, Platform: "desktop"},
+		Trimmed: &trimmed,
+	})
+	if result.Response != nil || !result.WorkflowAgentLoop {
+		t.Fatalf("continue-push should confirm task breakdown and start implementation loop, got %#v", result)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingImplementation || engine.IsAwaitingReview(userID) {
+		t.Fatalf("workflow should advance to implementation after continue-push, got %#v awaiting=%v", ws, engine.IsAwaitingReview(userID))
 	}
 }
 

@@ -44,6 +44,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [dlgHubSelected, setDlgHubSelected] = useState(false); // true when "MaClaw 官方" is selected in dialog
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+    const [dlgToast, setDlgToast] = useState<{ ok: boolean; text: string } | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
     const [dlgTested, setDlgTested] = useState(false); // true after successful test; allows save-only on subsequent saves
     const [oauthBusy, setOauthBusy] = useState(false);
@@ -206,6 +207,21 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [dlgOpen, closeDialog]);
+
+    useEffect(() => {
+        if (!dlgTestResult) {
+            setDlgToast(null);
+            return;
+        }
+        const text = dlgHubSelected
+            ? (dlgTestResult.ok ? `✓ ${dlgTestResult.msg}` : `! ${dlgTestResult.msg}`)
+            : (dlgTestResult.ok
+                ? `✓ ${t("Connection OK, saved", "连接成功，已保存")}\n${dlgTestResult.msg}`
+                : `! ${t("Connection failed, not saved", "连接失败，未保存")}\n${dlgTestResult.msg}`);
+        setDlgToast({ ok: dlgTestResult.ok, text });
+        const timeout = window.setTimeout(() => setDlgToast(null), dlgTestResult.ok ? 7000 : 10000);
+        return () => window.clearTimeout(timeout);
+    }, [dlgHubSelected, dlgTestResult, t]);
 
     // Determine auth type of selected provider for conditional effects
     const dlgAuthType = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.auth_type : undefined;
@@ -445,6 +461,20 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
     return (
         <div className="llm-config-panel">
+            {dlgToast && (
+                <div role="status" aria-live="polite" style={{
+                    position: "fixed", top: 24, left: "50%", transform: "translateX(-50%)",
+                    zIndex: 10000, width: "min(92vw, 560px)", padding: "10px 14px",
+                    borderRadius: 8, fontSize: "0.76rem", lineHeight: 1.5,
+                    whiteSpace: "pre-wrap", wordBreak: "break-word", textAlign: "center",
+                    boxShadow: "0 12px 32px rgba(15,23,42,0.18)", pointerEvents: "none",
+                    background: dlgToast.ok ? "#ecfdf5" : "#fef2f2",
+                    border: `1px solid ${dlgToast.ok ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)"}`,
+                    color: dlgToast.ok ? colors.success : colors.danger,
+                }}>
+                    {dlgToast.text}
+                </div>
+            )}
             <div className="llm-config-panel__intro">
                 <p>
                     {t(
@@ -1070,23 +1100,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 </button>
                             )}
                         </div>
-
-                        {/* Test result */}
-                        {dlgTestResult && (
-                            <div style={{
-                                marginTop: 12, padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem",
-                                lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
-                                background: dlgTestResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-                                border: `1px solid ${dlgTestResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                color: dlgTestResult.ok ? colors.success : colors.danger,
-                            }}>
-                                {dlgHubSelected
-                                    ? (dlgTestResult.ok ? `✅ ${dlgTestResult.msg}` : `❌ ${dlgTestResult.msg}`)
-                                    : (dlgTestResult.ok
-                                        ? `✅ ${t("Connection OK, saved", "连接成功，已保存")}\n${dlgTestResult.msg}`
-                                        : `❌ ${t("Connection failed, not saved", "连接失败，未保存")}\n${dlgTestResult.msg}`)}
-                            </div>
-                        )}
                     </div>
                 </div>
             )}

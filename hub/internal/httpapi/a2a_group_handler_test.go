@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -227,6 +229,122 @@ func TestGroupDiscussionMessageDeliveryDedupesParticipantAliases(t *testing.T) {
 	sent := sender.snapshotMessages()
 	if len(sent) != 1 || !groupDiscussionParticipantIdentityMatches(sent[0].machineID, "maclaw-b") {
 		t.Fatalf("sent messages = %+v, want one alias-deduped delivery to maclaw-b", sent)
+	}
+}
+
+func TestGroupDiscussionBuildsSharedContextSummaryWithoutDroppingRawMessages(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	session, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Long group", Goal: "Keep shared memory", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "anna", RoleCode: "speak"}, {ID: "xiaoyan", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for i := 0; i < groupDiscussionSummaryMinMessages; i++ {
+		fromID := "owner"
+		content := "@anna shared fact about project"
+		if i%2 == 1 {
+			fromID = "anna"
+			content = "Anna answer with reusable fact"
+		}
+		if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: fmt.Sprintf("msg-%02d", i), FromID: fromID, Kind: corea2a.MessageStatement, Content: content}); err != nil {
+			t.Fatalf("AddDiscussionMessage %d: %v", i, err)
+		}
+	}
+
+	detail, err := svc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	if len(detail.Messages) != groupDiscussionSummaryMinMessages {
+		t.Fatalf("raw messages should be retained, got %d", len(detail.Messages))
+	}
+	if detail.Session == nil || !strings.Contains(detail.Session.ContextSummary, "@anna shared fact") || !strings.Contains(detail.Session.ContextSummary, "to_ids are reply targets") {
+		t.Fatalf("shared summary missing @ visibility semantics: %#v", detail.Session)
+	}
+	if detail.Session.SummaryUpToID == "" {
+		t.Fatalf("summary up-to marker should be set")
+	}
+}
+
+func TestGroupDiscussionSharedContextSummaryKeepsNewestCompressedLines(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	session, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Long group", Goal: strings.Repeat("goal ", 200), Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "anna", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for i := 0; i < groupDiscussionSummaryMinMessages+8; i++ {
+		content := fmt.Sprintf("old fact %02d %s", i, strings.Repeat("x", groupDiscussionSummaryLineMaxChars))
+		if i == groupDiscussionSummaryMinMessages-18 {
+			content = "newest compressed boundary fact"
+		}
+		if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: fmt.Sprintf("msg-%02d", i), FromID: "anna", Kind: corea2a.MessageStatement, Content: content}); err != nil {
+			t.Fatalf("AddDiscussionMessage %d: %v", i, err)
+		}
+	}
+
+	detail, err := svc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	if detail.Session == nil || !strings.Contains(detail.Session.ContextSummary, "newest compressed boundary fact") {
+		t.Fatalf("summary should keep newest compressed lines, got %q", detail.Session.ContextSummary)
+	}
+	if len(detail.Session.ContextSummary) > groupDiscussionSummaryMaxChars+len("[/compressed shared group memory]")+200 {
+		t.Fatalf("summary grew too large: %d", len(detail.Session.ContextSummary))
+	}
+}
+
+func TestGroupDiscussionSharedContextSummaryRollsForwardFromExistingSummary(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	session, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "Rolling group", Goal: "Keep old and new compressed facts", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "anna", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for i := 0; i < groupDiscussionSummaryMinMessages; i++ {
+		content := fmt.Sprintf("warmup fact %02d", i)
+		if i == 0 {
+			content = "old durable fact"
+		}
+		if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: fmt.Sprintf("msg-%02d", i), FromID: "anna", Kind: corea2a.MessageStatement, Content: content}); err != nil {
+			t.Fatalf("AddDiscussionMessage %d: %v", i, err)
+		}
+	}
+	first, err := svc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail first: %v", err)
+	}
+	if first.Session == nil || !strings.Contains(first.Session.ContextSummary, "old durable fact") {
+		t.Fatalf("first summary missing old fact: %#v", first.Session)
+	}
+	for i := groupDiscussionSummaryMinMessages; i < groupDiscussionSummaryMinMessages+groupDiscussionSummaryRecentMessages+2; i++ {
+		content := fmt.Sprintf("new fact %02d", i)
+		if i == groupDiscussionSummaryMinMessages {
+			content = "new durable fact"
+		}
+		if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: fmt.Sprintf("msg-%02d", i), FromID: "anna", Kind: corea2a.MessageStatement, Content: content}); err != nil {
+			t.Fatalf("AddDiscussionMessage %d: %v", i, err)
+		}
+	}
+
+	detail, err := svc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail final: %v", err)
+	}
+	if detail.Session == nil || !strings.Contains(detail.Session.ContextSummary, "old durable fact") || !strings.Contains(detail.Session.ContextSummary, "new durable fact") {
+		t.Fatalf("rolling summary should preserve prior summary and add new compressed facts: %q", detail.Session.ContextSummary)
+	}
+}
+
+func TestNewestGroupDiscussionSummaryLinesHandlesTinyBudget(t *testing.T) {
+	if got := newestGroupDiscussionSummaryLines([]string{"large line"}, 3); len(got) != 0 {
+		t.Fatalf("tiny budget should not overflow summary lines: %+v", got)
+	}
+	got := newestGroupDiscussionSummaryLines([]string{"older", "newest line"}, 10)
+	if len(got) != 1 || got[0] != "new..." {
+		t.Fatalf("summary should truncate newest line within budget: %+v", got)
+	}
+	got = newestGroupDiscussionSummaryLines([]string{"旧事实旧事实"}, 12)
+	if len(got) != 1 || len(got[0])+4 > 12 {
+		t.Fatalf("summary should keep multibyte line within byte budget: %+v len=%d", got, len(got[0]))
 	}
 }
 
@@ -1288,6 +1406,272 @@ func TestGroupDiscussionMessageDefaultTargetsRemoteVEsAndSkipsLocalAI(t *testing
 	}
 }
 
+func TestGroupDiscussionMessageDefaultReplyTargetFollowsLastExplicitTarget(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"machine-1","topic":"targeted","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+	for _, toID := range []string{"anna-machine", "xiaoyan-machine", "local-maclaw"} {
+		if _, err := svc.AddInvitation("tenant-a", created.Discussion.ID, corea2a.GroupInvitation{FromID: "machine-1", ToID: toID, Role: corea2a.GroupRoleSpeak}); err != nil {
+			t.Fatalf("AddInvitation %s: %v", toID, err)
+		}
+		invites := svc.ListInvitations("tenant-a", toID, "pending")
+		if len(invites) != 1 {
+			t.Fatalf("pending invites for %s = %+v", toID, invites)
+		}
+		if err := svc.RespondInvitation("tenant-a", invites[0].ID, corea2a.GroupInvitationResponse{FromID: toID, Decision: corea2a.GroupInvitationAccept}); err != nil {
+			t.Fatalf("RespondInvitation %s: %v", toID, err)
+		}
+	}
+
+	sender.messages = nil
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","to_ids":["local-maclaw"],"content":"@local inspect"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("explicit local status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","content":"continue"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("follow-up local status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","to_ids":["xiaoyan-machine"],"content":"@xiaoyan switch"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("explicit xiaoyan status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","content":"continue again"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("follow-up xiaoyan status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	if len(sender.messages) != 4 {
+		t.Fatalf("sent messages = %+v", sender.messages)
+	}
+	if sender.messages[0].machineID != "local-maclaw" || sender.messages[1].machineID != "local-maclaw" || sender.messages[2].machineID != "xiaoyan-machine" || sender.messages[3].machineID != "xiaoyan-machine" {
+		t.Fatalf("sent messages = %+v, want local/local/xiaoyan/xiaoyan", sender.messages)
+	}
+	detail, err := svc.GetDiscussionDetail("tenant-a", created.Discussion.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	last := detail.Session.Messages[len(detail.Session.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "xiaoyan-machine" {
+		t.Fatalf("persisted follow-up to_ids = %v, want [xiaoyan-machine]", last.ToIDs)
+	}
+}
+
+func TestGroupDiscussionUnresolvedMentionClearsDefaultReplyTarget(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"machine-1","topic":"targeted","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+	for _, toID := range []string{"anna-machine", "xiaoyan-machine", "local-maclaw"} {
+		if _, err := svc.AddInvitation("tenant-a", created.Discussion.ID, corea2a.GroupInvitation{FromID: "machine-1", ToID: toID, Role: corea2a.GroupRoleSpeak}); err != nil {
+			t.Fatalf("AddInvitation %s: %v", toID, err)
+		}
+		invites := svc.ListInvitations("tenant-a", toID, "pending")
+		if len(invites) != 1 {
+			t.Fatalf("pending invites for %s = %+v", toID, invites)
+		}
+		if err := svc.RespondInvitation("tenant-a", invites[0].ID, corea2a.GroupInvitationResponse{FromID: toID, Decision: corea2a.GroupInvitationAccept}); err != nil {
+			t.Fatalf("RespondInvitation %s: %v", toID, err)
+		}
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","to_ids":["local-maclaw"],"content":"@local inspect"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("explicit local status=%d body=%s", w.Code, w.Body.String())
+	}
+	sender.messages = nil
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","content":"@unknown continue"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("unresolved status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 3 {
+		t.Fatalf("unresolved mention should clear default target and broadcast, sent=%+v", sender.messages)
+	}
+	detail, err := svc.GetDiscussionDetail("tenant-a", created.Discussion.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	last := detail.Session.Messages[len(detail.Session.Messages)-1]
+	if len(last.ToIDs) != 0 {
+		t.Fatalf("unresolved mention persisted to_ids = %v, want broadcast", last.ToIDs)
+	}
+}
+
+func TestGroupDiscussionDeliveryFailureRollsBackDefaultReplyTarget(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"machine-1","topic":"targeted","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+	for _, toID := range []string{"anna-machine", "xiaoyan-machine", "local-maclaw"} {
+		if _, err := svc.AddInvitation("tenant-a", created.Discussion.ID, corea2a.GroupInvitation{FromID: "machine-1", ToID: toID, Role: corea2a.GroupRoleSpeak}); err != nil {
+			t.Fatalf("AddInvitation %s: %v", toID, err)
+		}
+		invites := svc.ListInvitations("tenant-a", toID, "pending")
+		if len(invites) != 1 {
+			t.Fatalf("pending invites for %s = %+v", toID, invites)
+		}
+		if err := svc.RespondInvitation("tenant-a", invites[0].ID, corea2a.GroupInvitationResponse{FromID: toID, Decision: corea2a.GroupInvitationAccept}); err != nil {
+			t.Fatalf("RespondInvitation %s: %v", toID, err)
+		}
+	}
+
+	sender.err = errors.New("delivery unavailable")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","to_ids":["local-maclaw"],"content":"@local inspect"}`))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("failed delivery status=%d body=%s", w.Code, w.Body.String())
+	}
+	detail, err := svc.GetDiscussionDetail("tenant-a", created.Discussion.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail after failure: %v", err)
+	}
+	if len(detail.Session.DefaultReplyTargets) != 0 {
+		t.Fatalf("failed explicit target should not leave default reply target: %+v", detail.Session.DefaultReplyTargets)
+	}
+
+	sender.err = nil
+	sender.messages = nil
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"machine-1","content":"continue"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("follow-up status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 2 || sender.messages[0].machineID != "anna-machine" || sender.messages[1].machineID != "xiaoyan-machine" {
+		t.Fatalf("follow-up should use normal default targets after rollback, sent=%+v", sender.messages)
+	}
+}
+
+func TestGroupDiscussionDuplicateMessageDoesNotMutateDefaultReplyTarget(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	session, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "idempotent target", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "anna", RoleCode: "speak"}, {ID: "local-maclaw", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-same", FromID: "owner", ToIDs: []string{"local-maclaw"}, Kind: corea2a.MessageStatement, Content: "ask local"}); err != nil {
+		t.Fatalf("first AddDiscussionMessage: %v", err)
+	}
+	if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-same", FromID: "owner", ToIDs: []string{"anna"}, Kind: corea2a.MessageStatement, Content: "duplicate retry with stale target"}); err != nil {
+		t.Fatalf("duplicate AddDiscussionMessage: %v", err)
+	}
+	updated, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-follow", FromID: "owner", Kind: corea2a.MessageStatement, Content: "continue"})
+	if err != nil {
+		t.Fatalf("follow AddDiscussionMessage: %v", err)
+	}
+	last := updated.Messages[len(updated.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "local-maclaw" {
+		t.Fatalf("duplicate message mutated default target, follow-up to_ids=%v", last.ToIDs)
+	}
+}
+func TestGroupDiscussionFailedMessageDoesNotCanonicalizeStoredDefaultReplyTarget(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	session, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "failed canonical target", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "local-maclaw", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	svc.mu.Lock()
+	svc.sessions["tenant-a"][session.ID].DefaultReplyTargets = map[string][]string{"owner": {"ve_local-maclaw"}}
+	svc.mu.Unlock()
+
+	if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-empty", FromID: "owner", Kind: corea2a.MessageStatement}); err == nil {
+		t.Fatalf("empty AddDiscussionMessage should fail")
+	}
+	detail, err := svc.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail: %v", err)
+	}
+	stored := detail.Session.DefaultReplyTargets["owner"]
+	if len(stored) != 1 || stored[0] != "ve_local-maclaw" {
+		t.Fatalf("failed message canonicalized default target: %+v", detail.Session.DefaultReplyTargets)
+	}
+	updated, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-follow", FromID: "owner", Kind: corea2a.MessageStatement, Content: "continue"})
+	if err != nil {
+		t.Fatalf("follow AddDiscussionMessage: %v", err)
+	}
+	last := updated.Messages[len(updated.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "local-maclaw" {
+		t.Fatalf("follow-up should still resolve stored alias, to_ids=%v", last.ToIDs)
+	}
+}
+func TestGroupDiscussionFailedMessageDoesNotMutateDefaultReplyTarget(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	session, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "failed target", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "anna", RoleCode: "speak"}, {ID: "local-maclaw", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-local", FromID: "owner", ToIDs: []string{"local-maclaw"}, Kind: corea2a.MessageStatement, Content: "ask local"}); err != nil {
+		t.Fatalf("seed AddDiscussionMessage: %v", err)
+	}
+	if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-empty", FromID: "owner", ToIDs: []string{"anna"}, Kind: corea2a.MessageStatement}); err == nil {
+		t.Fatalf("empty AddDiscussionMessage should fail")
+	}
+	updated, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-follow", FromID: "owner", Kind: corea2a.MessageStatement, Content: "continue"})
+	if err != nil {
+		t.Fatalf("follow AddDiscussionMessage: %v", err)
+	}
+	last := updated.Messages[len(updated.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "local-maclaw" {
+		t.Fatalf("failed AddDiscussionMessage mutated default target, follow-up to_ids=%v", last.ToIDs)
+	}
+
+	runtimeSession, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "failed runtime target", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "anna", RoleCode: "speak"}, {ID: "local-maclaw", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession runtime: %v", err)
+	}
+	if _, err := svc.AddMessage("tenant-a", runtimeSession.ID, AddMessageRequest{FromID: "owner", ToIDs: []string{"local-maclaw"}, Kind: corea2a.MessageStatement, Content: "ask local"}); err != nil {
+		t.Fatalf("seed AddMessage: %v", err)
+	}
+	if _, err := svc.AddMessage("tenant-a", runtimeSession.ID, AddMessageRequest{FromID: "owner", ToIDs: []string{"anna"}, Kind: corea2a.MessageStatement}); err == nil {
+		t.Fatalf("empty AddMessage should fail")
+	}
+	updated, err = svc.AddMessage("tenant-a", runtimeSession.ID, AddMessageRequest{FromID: "owner", Kind: corea2a.MessageStatement, Content: "continue"})
+	if err != nil {
+		t.Fatalf("follow AddMessage: %v", err)
+	}
+	last = updated.Messages[len(updated.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "local-maclaw" {
+		t.Fatalf("failed AddMessage mutated default target, follow-up to_ids=%v", last.ToIDs)
+	}
+}
 func TestGroupDiscussionMessageRejectsUnknownTargetID(t *testing.T) {
 	svc := NewGroupDiscussionService()
 	sender := &captureGroupDiscussionSender{}
@@ -1699,6 +2083,48 @@ func TestGroupDiscussionServicePersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionServicePersistsDerivedGroupChatStateAcrossRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "group-discussion-derived.db")
+	provider, err := sqlite.NewProvider(sqlite.Config{DSN: dbPath, WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+
+	svc := NewGroupDiscussionService(provider.Write)
+	session, err := svc.CreateSession("tenant-a", CreateSessionRequest{Topic: "persist derived", Goal: "shared memory survives restart", Participants: []corea2a.Participant{{ID: "owner", RoleCode: "initiator"}, {ID: "anna", RoleCode: "speak"}, {ID: "local-maclaw", RoleCode: "speak"}}, DecisionPolicy: corea2a.PolicyMajority})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-00", FromID: "owner", ToIDs: []string{"local-maclaw"}, Kind: corea2a.MessageStatement, Content: "local should keep default reply right"}); err != nil {
+		t.Fatalf("explicit AddDiscussionMessage: %v", err)
+	}
+	for i := 1; i < groupDiscussionSummaryMinMessages; i++ {
+		if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: fmt.Sprintf("msg-%02d", i), FromID: "owner", Kind: corea2a.MessageStatement, Content: fmt.Sprintf("durable shared fact %02d", i)}); err != nil {
+			t.Fatalf("AddDiscussionMessage %d: %v", i, err)
+		}
+	}
+
+	restarted := NewGroupDiscussionService(provider.Write)
+	detail, err := restarted.GetDiscussionDetail("tenant-a", session.ID)
+	if err != nil {
+		t.Fatalf("GetDiscussionDetail after restart: %v", err)
+	}
+	if detail.Session == nil || !strings.Contains(detail.Session.ContextSummary, "durable shared fact") || detail.Session.SummaryUpToID == "" {
+		t.Fatalf("restored summary missing: %+v", detail.Session)
+	}
+	updated, err := restarted.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{ID: "msg-after-restart", FromID: "owner", Kind: corea2a.MessageStatement, Content: "continue after restart"})
+	if err != nil {
+		t.Fatalf("AddDiscussionMessage after restart: %v", err)
+	}
+	last := updated.Messages[len(updated.Messages)-1]
+	if len(last.ToIDs) != 1 || last.ToIDs[0] != "local-maclaw" {
+		t.Fatalf("restored default reply target to_ids=%v", last.ToIDs)
+	}
+}
 func TestGroupDiscussionServicePersistsRejectReasonAcrossRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "group-discussion-reject.db")
 	provider, err := sqlite.NewProvider(sqlite.Config{DSN: dbPath, WAL: true, BusyTimeoutMS: 5000, MaxReadOpenConns: 2, MaxReadIdleConns: 1, MaxWriteOpenConns: 1, MaxWriteIdleConns: 1})

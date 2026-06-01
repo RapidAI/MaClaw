@@ -195,7 +195,7 @@ func remoteLaunchPolicyOwnerID(source RemoteLaunchSource) string {
 	case RemoteLaunchSourceAI:
 		return "remote:ai"
 	default:
-		return desktopUserID
+		return ""
 	}
 }
 

@@ -17,7 +17,6 @@ func (h *IMMessageHandler) captureScreenshotForDisplay(displayIndex int) string 
 	if err != nil {
 		return fmt.Sprintf("截取显示器 %d 失败: %s", displayIndex, err.Error())
 	}
-	h.lastScreenshotAt = time.Now()
 	return formatScreenshotBase64Result(base64Data)
 }
 
@@ -28,7 +27,6 @@ func (h *IMMessageHandler) captureDirectScreenshotResult() string {
 	if err != nil {
 		return fmt.Sprintf("截图失败: %s", err.Error())
 	}
-	h.lastScreenshotAt = time.Now()
 	return formatScreenshotBase64Result(base64Data)
 }
 
@@ -44,14 +42,12 @@ func (h *IMMessageHandler) captureSessionScreenshotResultForPlatform(sessionID, 
 		if err != nil {
 			return fmt.Sprintf("截图失败: %s", err.Error())
 		}
-		h.lastScreenshotAt = time.Now()
 		return formatScreenshotBase64Result(base64Data)
 	}
 
 	if err := h.manager.CaptureScreenshot(sessionID); err != nil {
 		return fmt.Sprintf("截图失败: %s", err.Error())
 	}
-	h.lastScreenshotAt = time.Now()
 	return "[screenshot_sent]"
 }
 

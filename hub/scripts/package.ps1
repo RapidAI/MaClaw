@@ -23,12 +23,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $pkgRoot "data\logs") | Out
 Copy-Item (Join-Path $distDir "maclaw-hub.exe") (Join-Path $pkgRoot "maclaw-hub.exe") -Force
 Copy-Item (Join-Path $root "configs\config.example.yaml") (Join-Path $pkgRoot "configs\config.yaml") -Force
 
-if (Test-Path (Join-Path $root "web\dist")) {
-    Copy-Item (Join-Path $root "web\dist") (Join-Path $pkgRoot "web") -Recurse -Force
-}
-if (Test-Path (Join-Path $root "web\admin")) {
+if (Test-Path (Join-Path $root "web")) {
     New-Item -ItemType Directory -Force -Path (Join-Path $pkgRoot "web") | Out-Null
-    Copy-Item (Join-Path $root "web\admin") (Join-Path $pkgRoot "web\admin") -Recurse -Force
+    Copy-Item (Join-Path $root "web\*") (Join-Path $pkgRoot "web") -Recurse -Force
 }
 
 Write-Host "Packaged MaClaw Hub to $pkgRoot"

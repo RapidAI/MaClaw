@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -166,7 +166,7 @@ export interface NewsCardData {
 export type NewsCategory = 'notice' | 'update' | 'tip' | 'alert' | '';
 export type AIAssistantInitStatus = 'connecting' | 'loading' | 'warming' | 'ready' | 'degraded';
 
-export type ChatActionStyle = 'default' | 'danger';
+export type ChatActionStyle = 'default' | 'primary' | 'secondary' | 'danger';
 
 export interface ChatAction {
     label: string;
@@ -241,6 +241,23 @@ interface AIAssistantResponseConfirmation {
     RevisionHints?: string[];
     status?: string;
     Status?: string;
+    labels?: AIAssistantResponseConfirmationLabels;
+    Labels?: AIAssistantResponseConfirmationLabels;
+}
+
+interface AIAssistantResponseConfirmationLabels {
+    title?: string;
+    Title?: string;
+    status?: string;
+    Status?: string;
+    target_paths?: string;
+    TargetPaths?: string;
+    planned_actions?: string;
+    PlannedActions?: string;
+    risk_flags?: string;
+    RiskFlags?: string;
+    revision_hints?: string;
+    RevisionHints?: string;
 }
 
 interface AIAssistantResponseUnfinishedSlot {
@@ -980,6 +997,26 @@ function normalizeStringArray(values: unknown): string[] | undefined {
     return normalized.length > 0 ? normalized : undefined;
 }
 
+function optionalTrimmedString(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed || undefined;
+}
+
+function normalizeConfirmationLabels(raw: unknown): ChatConfirmationLabels | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const labels = raw as Record<string, unknown>;
+    const normalized: ChatConfirmationLabels = {
+        title: optionalTrimmedString(labels.title ?? labels.Title),
+        status: optionalTrimmedString(labels.status ?? labels.Status),
+        target_paths: optionalTrimmedString(labels.target_paths ?? labels.TargetPaths),
+        planned_actions: optionalTrimmedString(labels.planned_actions ?? labels.PlannedActions),
+        risk_flags: optionalTrimmedString(labels.risk_flags ?? labels.RiskFlags),
+        revision_hints: optionalTrimmedString(labels.revision_hints ?? labels.RevisionHints),
+    };
+    return Object.values(normalized).some(Boolean) ? normalized : undefined;
+}
+
 function normalizeConfirmation(raw: AIAssistantResponseConfirmation | null | undefined): ChatConfirmation | undefined {
     if (!raw || typeof raw !== 'object') return undefined;
     const id = typeof raw.id === 'string' ? raw.id.trim() : (typeof raw.ID === 'string' ? raw.ID.trim() : '');
@@ -987,8 +1024,7 @@ function normalizeConfirmation(raw: AIAssistantResponseConfirmation | null | und
     if (!summary) return undefined;
     const taskType = typeof raw.task_type === 'string' ? raw.task_type.trim() : (typeof raw.TaskType === 'string' ? raw.TaskType.trim() : '');
     const status = typeof raw.status === 'string' ? raw.status.trim() : (typeof raw.Status === 'string' ? raw.Status.trim() : '');
-    const rawLabels = (raw as Record<string, unknown>).labels ?? (raw as Record<string, unknown>).Labels;
-    const labels = (rawLabels && typeof rawLabels === 'object') ? rawLabels as ChatConfirmationLabels : undefined;
+    const labels = normalizeConfirmationLabels(raw.labels ?? raw.Labels);
     return {
         id,
         summary,
@@ -1678,7 +1714,7 @@ function resolveSendResult(messages: ChatMessage[], assistantMessageId: string |
 }
 
 function normalizeActionStyle(style: unknown): ChatActionStyle {
-    return style === 'danger' ? 'danger' : 'default';
+    return style === 'primary' || style === 'secondary' || style === 'danger' ? style : 'default';
 }
 
 function normalizeInitStatus(status: unknown): AIAssistantInitStatus {
@@ -1687,13 +1723,21 @@ function normalizeInitStatus(status: unknown): AIAssistantInitStatus {
 
 function normalizeActions(actions: any): ChatAction[] | undefined {
     if (!Array.isArray(actions) || actions.length === 0) return undefined;
-    return actions
-        .filter(action => action && typeof action.label === 'string' && typeof action.command === 'string')
-        .map(action => ({
-            label: action.label,
-            command: action.command,
-            style: normalizeActionStyle(action.style),
-        }));
+    const normalized = actions
+        .map(action => {
+            if (!action || typeof action !== 'object') return null;
+            const raw = action as Record<string, unknown>;
+            const label = optionalTrimmedString(raw.label ?? raw.Label);
+            const command = optionalTrimmedString(raw.command ?? raw.Command);
+            if (!label || !command) return null;
+            return {
+                label,
+                command,
+                style: normalizeActionStyle(raw.style ?? raw.Style),
+            };
+        })
+        .filter((action): action is ChatAction => action !== null);
+    return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeNewsCategory(category: unknown): NewsCategory {
@@ -3333,7 +3377,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     // sees visual confirmation of what was injected.
     const injectSupplementary = useCallback(async (text: string): Promise<boolean> => {
         try {
-            const accepted = await InjectAIAssistantSupplementary(text);
+            const sessionKey = activeSessionKeyForEvents().trim();
+            const accepted = sessionKey
+                ? await InjectAIAssistantSupplementaryForSession(text, sessionKey)
+                : await InjectAIAssistantSupplementary(text);
             if (accepted) {
                 // Show the injected text as a user message in the chat area
                 // so the user has visual confirmation.
@@ -3343,7 +3390,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } catch {
             return false;
         }
-    }, []);
+    }, [activeSessionKeyForEvents]);
 
     const guideLaunchReference = useCallback(async (text: string, sessionKey?: string): Promise<boolean> => {
         try {

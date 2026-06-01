@@ -237,7 +237,7 @@ func resolveWorkflowFormUserID(handler *IMMessageHandler, engine *workflow.Workf
 				return userID
 			}
 		}
-		if userID := strings.TrimSpace(handler.lastUserID); userID != "" {
+		if userID := handler.legacyLastUserID(); userID != "" {
 			if engine == nil {
 				return userID
 			}

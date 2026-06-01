@@ -1538,7 +1538,7 @@
       var entry = directory && directory.byId && directory.byId[id];
       return entry && entry.name ? entry.name : '';
     }).filter(Boolean);
-    return names.length ? names.join(', ') : tr('selectedApprovers', { count: ids.length });
+    return names.length === ids.length ? names.join(', ') : tr('selectedApprovers', { count: ids.length });
   }
 
   function ensureApproverPickerShell() {
@@ -1601,13 +1601,7 @@
     document.getElementById('approverPickerCancel').textContent = tr('cancel');
     document.getElementById('approverPickerConfirm').textContent = tr('confirm');
     overlay.hidden = false;
-    loadApproverDirectory().then(function () {
-      refreshApproverControls();
-      renderApproverPicker();
-    }).catch(function (err) {
-      var body = document.getElementById('approverPickerBody');
-      if (body) body.innerHTML = '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerLoadFailed', { error: err && err.message || String(err) })) + '</div>';
-    });
+    loadAndRenderApproverDirectory();
     renderApproverPicker();
     setTimeout(function () {
       var search = document.getElementById('approverPickerSearch');
@@ -1621,6 +1615,18 @@
     state.approverPicker = null;
   }
 
+  async function loadAndRenderApproverDirectory() {
+    try {
+      await loadApproverDirectory();
+      pruneApproverPickerSelection();
+      refreshApproverControls();
+      renderApproverPicker();
+    } catch (err) {
+      var body = document.getElementById('approverPickerBody');
+      if (body) body.innerHTML = '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerLoadFailed', { error: err && err.message || String(err) })) + '</div>';
+    }
+  }
+
   function refreshApproverControls() {
     var node = state.nodes.find(function (n) { return n.id === state.selectedNodeId; });
     if (!node || node.type !== 'approval') return;
@@ -1628,10 +1634,22 @@
     syncApproverPickerField('cfgFallbackPicker', node.config.fallback_approver ? [node.config.fallback_approver] : [], false);
   }
 
+  function pruneApproverPickerSelection() {
+    if (!state.approverPicker || !state.approverDirectory || !state.approverDirectory.byId) return;
+    Object.keys(state.approverPicker.selected || {}).forEach(function (id) {
+      if (!state.approverDirectory.byId[id]) delete state.approverPicker.selected[id];
+    });
+  }
+
   async function loadApproverDirectory() {
     if (state.approverDirectory) return state.approverDirectory;
     if (state.approverDirectoryLoading) return state.approverDirectoryLoading;
-    state.approverDirectoryLoading = (async function () {
+    state.approverDirectoryLoading = fetchApproverDirectory();
+    return state.approverDirectoryLoading;
+  }
+
+  async function fetchApproverDirectory() {
+    try {
       var data = await workflowApi('/api/v1/workflow-directory/approvers');
       var groupRoot = normalizeGroupNode(data && data.tree);
       var membersByGroup = data && data.members_by_group || {};
@@ -1660,13 +1678,10 @@
       var directory = { root: groupRoot, membersByGroup: membersByGroup, usersByEmail: usersByEmail, machinesByEmail: machinesByEmail, veEntries: veEntries, byId: {} };
       indexApproverDirectory(directory);
       state.approverDirectory = directory;
-      state.approverDirectoryLoading = false;
       return directory;
-    })().catch(function (err) {
+    } finally {
       state.approverDirectoryLoading = false;
-      throw err;
-    })();
-    return state.approverDirectoryLoading;
+    }
   }
 
   function normalizeGroupNode(node) {

@@ -13,11 +13,7 @@ import (
 // a subsequent SendAIAssistantMessage call won't overlap with the old loop.
 // Returns the cancelled task's user text (if any) for display purposes.
 func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
-	h.globalLoopMu.RLock()
-	ctx := h.currentLoopCtx
-	taskText := h.lastUserText
-	userID := h.lastUserID
-	h.globalLoopMu.RUnlock()
+	ctx, userID, taskText := h.legacyLoopSnapshot()
 	if userID != "" {
 		return h.CancelSessionForUser(userID)
 	}
@@ -43,12 +39,7 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	ctx := h.getSessionLoopCtx(userID)
 	taskText := h.sessionLoopTaskText(userID)
 	if ctx == nil {
-		h.globalLoopMu.RLock()
-		if h.lastUserID == userID {
-			ctx = h.currentLoopCtx
-			taskText = h.lastUserText
-		}
-		h.globalLoopMu.RUnlock()
+		ctx, taskText, _ = h.legacyLoopSnapshotForUser(userID)
 	}
 	if ctx == nil {
 		return "", fmt.Errorf("no active session to cancel")
@@ -61,6 +52,45 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 		log.Printf("[CancelSessionForUser] timed out waiting for loop to exit user=%s", userID)
 	}
 	return taskText, nil
+}
+
+func (h *IMMessageHandler) legacyLoopSnapshot() (*LoopContext, string, string) {
+	if h == nil {
+		return nil, "", ""
+	}
+	h.globalLoopMu.RLock()
+	defer h.globalLoopMu.RUnlock()
+	return h.currentLoopCtx, strings.TrimSpace(h.lastUserID), h.lastUserText
+}
+
+func (h *IMMessageHandler) legacyLoopSnapshotForUser(userID string) (*LoopContext, string, bool) {
+	userID = strings.TrimSpace(userID)
+	if h == nil || userID == "" {
+		return nil, "", false
+	}
+	h.globalLoopMu.RLock()
+	defer h.globalLoopMu.RUnlock()
+	if strings.TrimSpace(h.lastUserID) != userID {
+		return nil, "", false
+	}
+	return h.currentLoopCtx, h.lastUserText, h.currentLoopCtx != nil
+}
+
+func (h *IMMessageHandler) runtimeTaskTextForOwner(ownerID string) string {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID != "" {
+		return h.sessionLoopTaskText(ownerID)
+	}
+	_, _, taskText := h.legacyLoopSnapshot()
+	return taskText
+}
+
+func (h *IMMessageHandler) currentRuntimeTaskTextOrLegacy() (string, string) {
+	ownerID, explicitRuntime := h.currentRuntimePolicyOwnerState()
+	if explicitRuntime && strings.TrimSpace(ownerID) == "" {
+		return "", ""
+	}
+	return h.runtimeTaskTextForOwner(ownerID), ownerID
 }
 
 func (h *IMMessageHandler) sessionLoopTaskText(userID string) string {

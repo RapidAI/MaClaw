@@ -173,8 +173,9 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		return
 	}
 
-	// Build context with sender info for the system prompt.
+	// Build context with sender info and shared group history for the system prompt.
 	senderContext := groupExecutorSenderContext(msg.FromID)
+	discussionContext := d.groupExecutorDiscussionContext(sess.SessionID, msg)
 
 	content := msg.Content
 	if HasAttachments(msg) {
@@ -184,7 +185,7 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	imMsg := IMUserMessage{
 		UserID:   fmt.Sprintf("ve-group-executor:%s", sess.SessionID),
 		Platform: "ve_group_executor",
-		Text:     senderContext + content,
+		Text:     senderContext + discussionContext + content,
 		Lang:     "zh",
 	}
 
@@ -449,6 +450,282 @@ func (d *GroupChatDispatcher) sendToGroup(sessionID string, msg a2a.GroupDiscuss
 	if err := d.app.sendVEA2AMessage(sessionID, msg); err != nil {
 		log.Printf("[group-dispatcher] failed to send message to session %s: %v", sessionID, err)
 	}
+}
+
+func (d *GroupChatDispatcher) groupExecutorDiscussionContext(sessionID string, current a2a.GroupDiscussionMessage) string {
+	if d == nil || d.app == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	client, cfg, err := d.app.veA2AHubClient()
+	if err != nil || client == nil {
+		localID := d.getLocalMachineID()
+		if cached, ok := d.cachedGroupExecutorDiscussionDetail(sessionID); ok {
+			return buildGroupExecutorDiscussionContext(cached, current, localID)
+		}
+		return ""
+	}
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if localID == "" {
+		localID = d.getLocalMachineID()
+	}
+	if localID == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	detail, err := client.GetConsultationDetailForAgent(ctx, strings.TrimSpace(sessionID), localID)
+	cancel()
+	if err != nil {
+		if cached, ok := d.cachedGroupExecutorDiscussionDetail(sessionID); ok {
+			return buildGroupExecutorDiscussionContext(cached, current, localID)
+		}
+		return ""
+	}
+	return buildGroupExecutorDiscussionContext(detail, current, localID)
+}
+
+func (d *GroupChatDispatcher) cachedGroupExecutorDiscussionDetail(sessionID string) (a2a.HubDiscussionDetail, bool) {
+	if d == nil || d.app == nil || strings.TrimSpace(sessionID) == "" {
+		return a2a.HubDiscussionDetail{}, false
+	}
+	store, err := d.app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return a2a.HubDiscussionDetail{}, false
+	}
+	defer store.Close()
+	detail, ok, err := store.CachedDetail(context.Background(), strings.TrimSpace(sessionID))
+	if err != nil || !ok {
+		return a2a.HubDiscussionDetail{}, false
+	}
+	return detail, true
+}
+
+func buildGroupExecutorDiscussionContext(detail a2a.HubDiscussionDetail, current a2a.GroupDiscussionMessage, localID string) string {
+	messages := groupExecutorRecentContextMessages(detail)
+	if len(messages) == 0 && strings.TrimSpace(detail.Discussion.Topic) == "" && strings.TrimSpace(detail.Discussion.Question) == "" && detail.Session == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[shared group chat context]\n")
+	b.WriteString("You are participating in a multi-person VE group chat. You must use the shared group history below when answering the current message. If the history contains relevant material, do not say you cannot see prior context or have no material.\n")
+	if topic := firstNonEmptyGroupString(detail.Discussion.Topic, sessionTopic(detail.Session)); strings.TrimSpace(topic) != "" {
+		b.WriteString("Topic: ")
+		b.WriteString(strings.TrimSpace(topic))
+		b.WriteString("\n")
+	}
+	if question := firstNonEmptyGroupString(detail.Discussion.Question, sessionGoal(detail.Session)); strings.TrimSpace(question) != "" {
+		b.WriteString("Goal: ")
+		b.WriteString(strings.TrimSpace(question))
+		b.WriteString("\n")
+	}
+	if participants := groupExecutorParticipantLines(detail, localID); len(participants) > 0 {
+		b.WriteString("Participants:\n")
+		for _, line := range participants {
+			b.WriteString("- ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if summary := groupExecutorContextSummary(detail); summary != "" {
+		b.WriteString("Shared compressed memory:\n")
+		b.WriteString(summary)
+		b.WriteString("\n")
+	}
+	if recent := groupExecutorRecentMessageLines(messages, current); len(recent) > 0 {
+		b.WriteString("Recent group messages:\n")
+		for _, line := range recent {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("[/shared group chat context]\n")
+	return b.String()
+}
+
+func groupExecutorRecentContextMessages(detail a2a.HubDiscussionDetail) []a2a.Message {
+	messages := groupExecutorDiscussionMessages(detail)
+	if groupExecutorContextSummary(detail) == "" || detail.Session == nil {
+		return messages
+	}
+	return groupExecutorMessagesAfterSummary(messages, detail.Session.SummaryUpToID)
+}
+
+func groupExecutorContextSummary(detail a2a.HubDiscussionDetail) string {
+	if detail.Session == nil {
+		return ""
+	}
+	return strings.TrimSpace(detail.Session.ContextSummary)
+}
+
+func groupExecutorDiscussionMessages(detail a2a.HubDiscussionDetail) []a2a.Message {
+	if len(detail.Messages) > 0 {
+		return detail.Messages
+	}
+	if detail.Session != nil && len(detail.Session.Messages) > 0 {
+		return detail.Session.Messages
+	}
+	return nil
+}
+
+func groupExecutorMessagesAfterSummary(messages []a2a.Message, summaryUpToID string) []a2a.Message {
+	summaryUpToID = strings.TrimSpace(summaryUpToID)
+	if summaryUpToID == "" {
+		return messages
+	}
+	for i, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.ID), summaryUpToID) {
+			return messages[i+1:]
+		}
+	}
+	return messages
+}
+
+func groupExecutorParticipantLines(detail a2a.HubDiscussionDetail, localID string) []string {
+	ids := make([]string, 0)
+	roles := map[string]string{}
+	if detail.Session != nil {
+		for _, participant := range detail.Session.Participants {
+			id := strings.TrimSpace(participant.ID)
+			if id == "" {
+				continue
+			}
+			ids = append(ids, id)
+			roles[groupDiscussionCanonicalIdentityKey(id)] = strings.TrimSpace(participant.RoleCode)
+		}
+	}
+	for _, id := range detail.Discussion.ParticipantIDs {
+		ids = append(ids, strings.TrimSpace(id))
+	}
+	ids = dedupeVEGroupParticipantIDs(ids)
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		label := id
+		if veGroupParticipantIdentityMatches(id, "local-maclaw") {
+			label += " (local AI)"
+		}
+		if role := strings.TrimSpace(roles[groupDiscussionCanonicalIdentityKey(id)]); role != "" {
+			label += " [" + role + "]"
+		}
+		lines = append(lines, label)
+	}
+	return lines
+}
+
+func groupExecutorRecentMessageLines(messages []a2a.Message, current a2a.GroupDiscussionMessage) []string {
+	lines := make([]string, 0, len(messages))
+	currentID := strings.TrimSpace(current.ID)
+	currentIndex := groupExecutorCurrentMessageIndex(messages, current)
+	var streamFrom string
+	var streamContent strings.Builder
+	flushStream := func() {
+		content := strings.TrimSpace(streamContent.String())
+		if content != "" {
+			fromID := strings.TrimSpace(streamFrom)
+			if fromID == "" {
+				fromID = "unknown"
+			}
+			lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupExecutorContextText(content, 1200)))
+		}
+		streamFrom = ""
+		streamContent.Reset()
+	}
+	for i, msg := range messages {
+		if i == currentIndex {
+			continue
+		}
+		if msg.Kind == a2a.MessageStreamEnd {
+			flushStream()
+			continue
+		}
+		if msg.Kind == a2a.MessageHandoff {
+			flushStream()
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if currentID != "" && strings.EqualFold(strings.TrimSpace(msg.ID), currentID) {
+			continue
+		}
+		fromID := strings.TrimSpace(msg.FromID)
+		if fromID == "" {
+			fromID = "unknown"
+		}
+		if msg.Kind == a2a.MessageStreamChunk {
+			chunk := msg.Content
+			if chunk == "" {
+				continue
+			}
+			if streamFrom != "" && !veGroupParticipantIdentityMatches(streamFrom, fromID) {
+				flushStream()
+			}
+			if streamFrom == "" {
+				streamFrom = fromID
+			}
+			streamContent.WriteString(chunk)
+			continue
+		}
+		if content == "" || strings.HasPrefix(strings.ToLower(content), "invitation ") {
+			continue
+		}
+		flushStream()
+		lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupExecutorContextText(content, 1200)))
+	}
+	flushStream()
+	if len(lines) > 14 {
+		lines = lines[len(lines)-14:]
+	}
+	return lines
+}
+
+func groupExecutorCurrentMessageIndex(messages []a2a.Message, current a2a.GroupDiscussionMessage) int {
+	if strings.TrimSpace(current.ID) != "" {
+		return -1
+	}
+	currentContent := strings.TrimSpace(current.Content)
+	if currentContent == "" {
+		return -1
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if strings.TrimSpace(msg.Content) != currentContent {
+			continue
+		}
+		if current.Kind != "" && msg.Kind != current.Kind {
+			continue
+		}
+		if strings.TrimSpace(current.FromID) != "" && !veGroupParticipantIdentityMatches(msg.FromID, current.FromID) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func truncateGroupExecutorContextText(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func sessionTopic(session *a2a.Session) string {
+	if session == nil {
+		return ""
+	}
+	return session.Topic
+}
+
+func sessionGoal(session *a2a.Session) string {
+	if session == nil {
+		return ""
+	}
+	return session.Goal
 }
 
 func groupExecutorSenderContext(fromID string) string {

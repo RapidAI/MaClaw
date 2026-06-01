@@ -446,31 +446,35 @@ function renderActions(
 ): React.ReactNode {
     return (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "4px 0" }}>
-            {actions.map((a, i) => (
-                <button
-                    key={`action-${i}`}
-                    data-testid="action-button"
-                    onClick={() => executeAction(a.command)}
-                    style={{
-                        ...baseInputBtnStyle,
-                        color: a.style === "danger" ? t.errorText : t.btnColor,
-                        borderColor: a.style === "danger" ? t.errorText : t.btnBorder,
-                        fontSize: "12px",
-                        padding: "4px 10px",
-                        width: "auto",
-                        height: "auto",
-                        maxWidth: "100%",
-                        minWidth: "36px",
-                        minHeight: "28px",
-                        lineHeight: 1.35,
-                        overflowWrap: "anywhere",
-                        textAlign: "center",
-                        whiteSpace: "normal",
-                    }}
-                >
-                    {formatActionLabel(a, lang)}
-                </button>
-            ))}
+            {actions.map((a, i) => {
+                const isPrimary = a.style === "primary";
+                return (
+                    <button
+                        key={`action-${i}`}
+                        data-testid="action-button"
+                        onClick={() => executeAction(a.command)}
+                        style={{
+                            ...baseInputBtnStyle,
+                            background: isPrimary ? t.btnColor : "transparent",
+                            color: isPrimary ? "#fff" : (a.style === "danger" ? t.errorText : t.btnColor),
+                            borderColor: a.style === "danger" ? t.errorText : t.btnBorder,
+                            fontSize: "12px",
+                            padding: "4px 10px",
+                            width: "auto",
+                            height: "auto",
+                            maxWidth: "100%",
+                            minWidth: "36px",
+                            minHeight: "28px",
+                            lineHeight: 1.35,
+                            overflowWrap: "anywhere",
+                            textAlign: "center",
+                            whiteSpace: "normal",
+                        }}
+                    >
+                        {formatActionLabel(a, lang)}
+                    </button>
+                );
+            })}
         </div>
     );
 }

@@ -101,6 +101,21 @@ func TestProjectTabWorkDir_EmptyRuntimeOwnerDoesNotFallbackToLastUser(t *testing
 	}
 }
 
+func TestToolBashEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &IMMessageHandler{
+		lastUserID: desktopUserID + ":" + tmpDir,
+	}
+
+	got := h.toolBash(map[string]interface{}{
+		"command":                        "pwd",
+		registeredToolPolicyOwnerIDField: "",
+	}, nil)
+	if got == "" || !contains(got, "runtime owner is missing") {
+		t.Fatalf("bash with empty runtime owner should fail closed, got %q", got)
+	}
+}
+
 func TestProjectTabWorkDir_InvalidDirectory_FallsBackToHome(t *testing.T) {
 	// Use a non-existent path as projectPath.
 	nonExistent := filepath.Join(t.TempDir(), "does_not_exist_xyz")

@@ -293,7 +293,7 @@ func TestHandleSkillRunAgentViewSubmitRevalidatesMissingOperation(t *testing.T) 
 	}
 }
 
-func TestHandleSkillRunAgentViewSubmitHonorsWorkflowPolicy(t *testing.T) {
+func TestHandleSkillRunAgentViewSubmitDoesNotInheritWorkflowPolicy(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -329,8 +329,11 @@ func TestHandleSkillRunAgentViewSubmitHonorsWorkflowPolicy(t *testing.T) {
 	resp := app.handleSkillRunAgentViewSubmit("writer-skill", map[string]interface{}{
 		"_run_args": map[string]interface{}{},
 	})
-	if resp == nil || !strings.Contains(resp.Text, "not allowed by the current workflow tool policy") {
-		t.Fatalf("expected workflow policy rejection, got %#v", resp)
+	if resp == nil {
+		t.Fatal("expected skill response")
+	}
+	if strings.Contains(resp.Text, "not allowed by the current workflow tool policy") || strings.Contains(resp.Error, "not allowed by the current workflow tool policy") {
+		t.Fatalf("manual agent-view skill submit must not inherit workflow policy, got %#v", resp)
 	}
 }
 

@@ -9,9 +9,7 @@ func (h *IMMessageHandler) hasActiveInterruptableLoop() bool {
 	if h == nil {
 		return false
 	}
-	h.globalLoopMu.RLock()
-	ctx := h.currentLoopCtx
-	h.globalLoopMu.RUnlock()
+	ctx, _, _ := h.legacyLoopSnapshot()
 	return ctx != nil && !ctx.IsCancelled()
 }
 

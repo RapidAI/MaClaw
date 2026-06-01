@@ -506,6 +506,9 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		contextToken = gw.GetContextToken(msg.FromUserID)
 	}
 	wl.Log("mgr.local", "---", msg.FromUserID, "ctx_token=%v text_len=%d media=%s", contextToken != "", len(msg.Text), msg.MediaType)
+	if m.echoInboundVoiceForDiagnostics(context.Background(), gw, msg, contextToken) {
+		return
+	}
 
 	// Build the user message; pass images as multimodal attachments so the
 	// LLM can actually "see" them, instead of just a file-path text prefix.
@@ -582,6 +585,35 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	m.sendAgentResponse(gw, msg.FromUserID, contextToken, resp)
 }
 
+func (m *weixinGatewayManager) echoInboundVoiceForDiagnostics(ctx context.Context, gw *weixin.Gateway, msg weixin.IncomingMessage, contextToken string) bool {
+	mode := strings.TrimSpace(os.Getenv("MACLAW_WEIXIN_ECHO_INBOUND_VOICE"))
+	if mode == "" || mode == "0" || strings.EqualFold(mode, "false") || strings.EqualFold(mode, "off") {
+		return false
+	}
+	if msg.MediaType != "voice" || len(msg.MediaData) == 0 {
+		return false
+	}
+	name := msg.MediaName
+	if name == "" {
+		name = "inbound.silk"
+	}
+	err := gw.SendMedia(ctx, weixin.OutgoingMedia{
+		ToUserID:     msg.FromUserID,
+		ContextToken: contextToken,
+		FileData:     msg.MediaData,
+		FileName:     name,
+		MediaType:    "voice",
+	})
+	if err != nil {
+		log.Printf("[weixin-mgr] echo inbound voice failed (to=%s size=%d): %v", msg.FromUserID, len(msg.MediaData), err)
+		weixin.GetWxLog().Log("mgr.local", "OUT", msg.FromUserID, "ERR echo-inbound-voice name=%s size=%d err=%v", name, len(msg.MediaData), err)
+	} else {
+		log.Printf("[weixin-mgr] echo inbound voice OK (to=%s size=%d name=%s)", msg.FromUserID, len(msg.MediaData), name)
+		weixin.GetWxLog().Log("mgr.local", "OUT", msg.FromUserID, "OK echo-inbound-voice name=%s size=%d mode=%s", name, len(msg.MediaData), mode)
+	}
+	return strings.EqualFold(mode, "only")
+}
+
 // sendAgentResponse dispatches all parts of an IMAgentResponse to the WeChat user.
 // reMarkdownImage matches ![alt](url) patterns in LLM response text.
 var reMarkdownImage = regexp.MustCompile(`!\[[^\]]*\]\(([^)]+)\)`)
@@ -612,7 +644,7 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 		nativeVoiceAccepted := m.sendVoiceResponse(ctx, gw, toUserID, contextToken, resp)
 		playableFileSent := m.sendVoiceFileFallback(ctx, gw, toUserID, contextToken, resp)
 		voiceSent = playableFileSent
-		weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "voice_delivery_summary native_api_accepted=%v playable_file_sent=%v user_visible_voice=%v", nativeVoiceAccepted, playableFileSent, playableFileSent)
+		weixin.GetWxLog().Log("mgr.local", "OUT", toUserID, "voice_delivery_summary native_api_accepted=%v native_green_bubble_expected=false playable_file_sent=%v user_visible_audio_file=%v", nativeVoiceAccepted, playableFileSent, playableFileSent)
 	}
 
 	if resp.Text != "" {

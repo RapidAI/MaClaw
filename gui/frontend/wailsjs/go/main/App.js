@@ -1173,6 +1173,10 @@ export function InjectAIAssistantSupplementary(arg1) {
   return window['go']['main']['App']['InjectAIAssistantSupplementary'](arg1);
 }
 
+export function InjectAIAssistantSupplementaryForSession(arg1, arg2) {
+  return window['go']['main']['App']['InjectAIAssistantSupplementaryForSession'](arg1, arg2);
+}
+
 export function InjectAIAssistantGuideReference(arg1) {
   return window['go']['main']['App']['InjectAIAssistantGuideReference'](arg1);
 }

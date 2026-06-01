@@ -84,32 +84,26 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
     });
 
-    it('shows a period limit badge even when another official route keeps service active', () => {
-        const { openServiceRedeemPage } = renderStatus({ ...baseCredits, serviceActive: true, status: 'period_limited', retryAfterSeconds: 39600 });
+    it('shows remaining credits when another official route keeps service active', () => {
+        renderStatus({ ...baseCredits, serviceActive: true, status: 'active', retryAfterSeconds: 0 });
 
-        const badge = screen.getByRole('button', { name: /\u9650\u989d/ });
-        expect(badge.textContent).toContain('\u9650\u989d');
-        expect(badge.getAttribute('data-state')).toBe('limited');
-        expect(badge.getAttribute('title')).toContain('MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u8fbe\u5230\u672c\u5468\u671f\u9650\u989d');
-        expect(badge.getAttribute('title')).toContain('\u7ea6 11 \u5c0f\u65f6\u540e\u6062\u590d');
-
-        fireEvent.click(badge);
-        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole('button', { name: /\u9650\u989d/ })).toBeNull();
+        expect(screen.getByText('90')).toBeTruthy();
     });
 
-    it('routes the sidebar buy action to service redeem while current official route is period-limited but service is still active', () => {
+    it('routes the sidebar buy action to credits page while service remains active', () => {
+        const lowCredits = { ...baseCredits, serviceActive: true, status: 'active', remaining: 10 };
         const { openServiceRedeemPage, openHubCreditsPage } = renderStatus(
-            { ...baseCredits, serviceActive: true, status: 'period_limited', retryAfterSeconds: 39600 },
+            lowCredits,
             { showHubCreditAction: true },
         );
 
         const buy = screen.getByRole('button', { name: '\u8d2d\u4e70' });
-        expect(buy.getAttribute('title')).toContain('MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u8fbe\u5230\u672c\u5468\u671f\u9650\u989d');
 
         fireEvent.click(buy);
 
-        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
-        expect(openHubCreditsPage).not.toHaveBeenCalled();
+        expect(openServiceRedeemPage).not.toHaveBeenCalled();
+        expect(openHubCreditsPage).toHaveBeenCalledTimes(1);
     });
 
     it('routes the sidebar buy action to service redeem while official service is period-limited', () => {

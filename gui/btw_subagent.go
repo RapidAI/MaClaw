@@ -54,6 +54,7 @@ type BtwSubAgent struct {
 	handler    *IMMessageHandler
 	cfg        corelib.MaclawLLMConfig
 	httpClient *http.Client
+	userID     string
 
 	// cancelled is set to 1 by Cancel(). ShouldStop() reads it.
 	// This is the mechanism-level cancellation — no dependency on LoopContext.
@@ -72,12 +73,21 @@ type BtwResult struct {
 }
 
 // NewBtwSubAgent creates a SubAgent for /btw side queries.
-func NewBtwSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client) *BtwSubAgent {
+func NewBtwSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, userID string) *BtwSubAgent {
+	ownerID := strings.TrimSpace(userID)
 	return &BtwSubAgent{
 		handler:    handler,
 		cfg:        cfg,
 		httpClient: httpClient,
+		userID:     ownerID,
 	}
+}
+
+func (b *BtwSubAgent) OwnerID() string {
+	if b == nil {
+		return ""
+	}
+	return strings.TrimSpace(b.userID)
 }
 
 // Cancel signals the SubAgent to stop at the next iteration.

@@ -102,11 +102,24 @@ func TestRequiredToolNamesForPolicyReturnsCopy(t *testing.T) {
 }
 
 func TestRequiredToolNamesForPolicyAreAllowed(t *testing.T) {
-	for _, policy := range []ToolFilterPolicy{ToolFilterDocOnly, ToolFilterOpsControlled} {
+	for _, policy := range []ToolFilterPolicy{ToolFilterDocOnly, ToolFilterOpsControlled, ToolFilterFull} {
 		for _, name := range RequiredToolNamesForPolicy(policy) {
 			if !IsToolAllowedByPolicy(policy, name) {
 				t.Fatalf("required tool %s must be allowed by policy %s", name, policy)
 			}
+		}
+	}
+}
+
+func TestRequiredToolNamesForFullPolicyKeepsLocalCodingTools(t *testing.T) {
+	required := RequiredToolNamesForPolicy(ToolFilterFull)
+	requiredSet := make(map[string]bool, len(required))
+	for _, name := range required {
+		requiredSet[name] = true
+	}
+	for _, name := range []string{"bash", "read_file", "list_directory", "write_file", "edit_file"} {
+		if !requiredSet[name] {
+			t.Fatalf("expected %s to be pinned for full workflow execution; got %#v", name, required)
 		}
 	}
 }

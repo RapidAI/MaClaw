@@ -172,10 +172,7 @@ func (h *IMMessageHandler) collectMainAgentRuntimeStatusForOwner(rs *RuntimeStat
 
 	// Legacy fallback for callers that do not yet have an owner. New runtime
 	// paths should pass ownerID so concurrent channels cannot see each other.
-	h.globalLoopMu.RLock()
-	ctx := h.currentLoopCtx
-	userText := h.lastUserText
-	h.globalLoopMu.RUnlock()
+	ctx, _, userText := h.legacyLoopSnapshot()
 	if ctx != nil && !ctx.IsCancelled() {
 		rs.MainAgentRunning = true
 		rs.MainAgentTask = userText
@@ -193,7 +190,10 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 	category, _ := args["category"].(string)
 	categoryKind := normalizeAgentStatusCategory(category)
 	taskID, _ := args["task_id"].(string)
-	ownerID := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrent(args)
+	ownerID, explicitRuntime := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
+	if explicitRuntime && ownerID == "" {
+		return "agent_status failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 
 	// If a specific task_id is provided, do a targeted lookup with log tail.
 	if taskID != "" {

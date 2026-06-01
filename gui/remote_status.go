@@ -344,7 +344,7 @@ func (a *App) ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, toolName strin
 	}
 	h := &IMMessageHandler{app: a}
 	policyUserID := strings.TrimSpace(ownerID)
-	if policyUserID == "" {
+	if policyUserID == "" || isSystemBackgroundWorkflowPolicyBypass(policyUserID, toolName, args) {
 		return nil
 	}
 	if !h.isWorkflowToolAllowedForOwner(policyUserID, toolName) {
@@ -361,10 +361,20 @@ func (a *App) ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, toolName strin
 }
 
 func (a *App) defaultManualPolicyOwnerID() string {
-	if a == nil {
-		return ""
+	return ""
+}
+
+func isSystemBackgroundWorkflowPolicyBypass(ownerID, toolName string, args map[string]interface{}) bool {
+	ownerID = strings.TrimSpace(ownerID)
+	toolName = strings.TrimSpace(toolName)
+	switch ownerID {
+	case capabilityManagedSyncOwnerID:
+		return toolName == "manage_skill" && strings.TrimSpace(nonEmptyStringFromAny(args["action"])) == "sync_capabilities"
+	case scheduledTaskExecutorOwnerID:
+		return toolName == "delegate_task" && strings.TrimSpace(nonEmptyStringFromAny(args["agent"])) == "scheduled_task"
+	default:
+		return false
 	}
-	return desktopUserID
 }
 
 func (a *App) remoteSessionPolicyOwnerID(sessionID string) string {

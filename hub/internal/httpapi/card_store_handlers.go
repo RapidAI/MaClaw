@@ -60,7 +60,7 @@ var cardStoreDefaultProductSpecs = []struct {
 	{ID: "service_year", Kind: "service_card", Label: "Year Card", DurationDays: 365, Credits: 70000},
 	{ID: "credits_10000", Kind: "credits", Label: "10,000 Credits", DurationDays: 365, Credits: 10000},
 	{ID: "credits_50000", Kind: "credits", Label: "50,000 Credits", DurationDays: 365, Credits: 50000},
-	{ID: "service_test_10", Kind: "service_card", Label: "Test Card", Description: "Only for payment testing. Issues a 10-credit service exchange card.", Price: 0.01, DurationDays: 1, Credits: 10},
+	{ID: "service_test_10", Kind: "service_card", Label: "Test Card", Description: "Only for payment testing. Issues a 1-credit service exchange card.", Price: 0.01, DurationDays: 1, Credits: 1},
 }
 
 type cardStoreConfig struct {
@@ -521,9 +521,19 @@ func UpdateCardStoreConfigHandler(system store.SystemSettingsRepository, audit s
 			req.PersonalPayment = oldCfg.PersonalPayment
 			req.AlipayDirect = oldCfg.AlipayDirect
 			validatePayment = false
+		} else if scope == "payment" {
+			req.Enabled = oldCfg.Enabled
+			req.ServiceGroupIDs = append([]string(nil), oldCfg.ServiceGroupIDs...)
+			req.Products = append([]cardStoreProduct(nil), oldCfg.Products...)
 		}
 		if validatePayment && notifyURLMatchesCurrentHub(req.NotifyURL, defaultCardStoreNotifyURL(r)) {
 			req.NotifyURL = ""
+		}
+		if validatePayment && cardStoreURLMatchesEndpointIgnoringTenantID(req.AlipayDirect.NotifyURL, "/api/card-store/payment/notify") {
+			req.AlipayDirect.NotifyURL = ""
+		}
+		if validatePayment && cardStoreURLMatchesEndpointIgnoringTenantID(req.AlipayDirect.ReturnURL, "/card_store") {
+			req.AlipayDirect.ReturnURL = ""
 		}
 		next := normalizeCardStoreConfig(req)
 		if validatePayment {
@@ -895,19 +905,11 @@ func CardStoreAlipayPayPageHandler(system store.SystemSettingsRepository) http.H
 		}
 		notifyURL := strings.TrimSpace(cfg.AlipayDirect.NotifyURL)
 		if notifyURL == "" {
-			notifyURL = cardStoreNotifyURLWithTenant(defaultCardStoreNotifyURL(r), tenantID)
+			notifyURL = cardStoreNotifyURLWithTenant(defaultCardStoreAlipayNotifyURL(r), tenantID)
 		} else {
 			notifyURL = cardStoreNotifyURLWithTenant(notifyURL, tenantID)
 		}
-		returnURL := strings.TrimSpace(cfg.AlipayDirect.ReturnURL)
-		if returnURL == "" {
-			returnURL = strings.TrimRight(externalBaseURL(r), "/") + "/card_store"
-			if tenantID != store.DefaultTenantID {
-				returnURL += "?tenant_id=" + url.QueryEscape(tenantID)
-			}
-		} else {
-			returnURL = cardStoreNotifyURLWithTenant(returnURL, tenantID)
-		}
+		returnURL := alipayDirectReturnURL(r, order, tenantID)
 		values, err := buildAlipayDirectRequest(cfg.AlipayDirect, order, notifyURL, returnURL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -915,6 +917,55 @@ func CardStoreAlipayPayPageHandler(system store.SystemSettingsRepository) http.H
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(renderAlipaySubmitPage(cfg.AlipayDirect.GatewayURL, values)))
+	}
+}
+
+func CardStoreAlipayReturnHandler(system store.SystemSettingsRepository, mailer cardStoreMailer, identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid alipay return", http.StatusBadRequest)
+			return
+		}
+		tenantID := store.NormalizeTenantID(r.URL.Query().Get("tenant_id"))
+		tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
+		cfg := loadCardStoreConfig(r.Context(), tenantSystem)
+		appID := firstNonEmptyString(r.Form.Get("app_id"), r.Form.Get("auth_app_id"))
+		if !cardStorePaymentMethodEnabled(cfg, cardStorePaymentModeAlipay) || !strings.EqualFold(strings.TrimSpace(appID), strings.TrimSpace(cfg.AlipayDirect.AppID)) {
+			http.Error(w, "alipay direct payment is disabled or app_id mismatch", http.StatusBadRequest)
+			return
+		}
+		orderNo := strings.TrimSpace(firstNonEmptyString(r.Form.Get("out_trade_no"), r.PathValue("orderNo")))
+		pathOrderNo := strings.TrimSpace(r.PathValue("orderNo"))
+		if pathOrderNo != "" && orderNo != pathOrderNo {
+			http.Error(w, "alipay return order mismatch", http.StatusBadRequest)
+			return
+		}
+		order, ok := findCardStoreOrder(r.Context(), tenantSystem, orderNo)
+		if !ok || order.PaymentMode != cardStorePaymentModeAlipay {
+			http.Error(w, "order not found", http.StatusNotFound)
+			return
+		}
+		if !verifyAlipayDirectNotify(alipayNotifySignedValues(r), cfg.AlipayDirect.AlipayPublicKey) {
+			_ = updateCardStoreOrderPaymentMessage(r.Context(), tenantSystem, orderNo, "alipay return signature invalid; waiting async notify")
+			http.Redirect(w, r, cardStoreOrderReturnRedirectURL(r, tenantID, order, "alipay_verify_pending"), http.StatusSeeOther)
+			return
+		}
+		tradeStatus := strings.TrimSpace(r.Form.Get("trade_status"))
+		if tradeStatus != "" && !isAlipayPaidTradeStatus(tradeStatus) {
+			http.Redirect(w, r, cardStoreOrderReturnRedirectURL(r, tenantID, order, "alipay"), http.StatusSeeOther)
+			return
+		}
+		paidAt := time.Now().UTC()
+		amount := parsePaymentAmount(firstNonEmptyString(r.Form.Get("total_amount"), r.Form.Get("receipt_amount"), formatPaymentAmount(order.Amount)))
+		update := cardStoreOrder{OrderNo: orderNo, Amount: amount, Status: "paid", PaymentMsg: "alipay direct returned", ActualPayAmount: firstNonEmptyString(r.Form.Get("receipt_amount"), r.Form.Get("total_amount")), PayType: cardStorePaymentModeAlipay, PayChannel: "alipay", PayChannelLabel: "Alipay", PlatformOrderNo: r.Form.Get("trade_no"), ChannelOrderNo: r.Form.Get("trade_no"), TradeType: firstNonEmptyString(tradeStatus, "SYNC_RETURN"), PaidAt: paidAt, UpdatedAt: paidAt}
+		if err := markCardStoreOrderPaid(r.Context(), tenantSystem, cfg, update, mailer, identity, tenantID, externalLLMBaseURL(r)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if current, ok := findCardStoreOrder(r.Context(), tenantSystem, orderNo); ok {
+			order = current
+		}
+		http.Redirect(w, r, cardStoreOrderReturnRedirectURL(r, tenantID, order, "alipay"), http.StatusSeeOther)
 	}
 }
 
@@ -931,7 +982,7 @@ func handleAlipayDirectNotify(w http.ResponseWriter, r *http.Request, system sto
 		return
 	}
 	status := strings.TrimSpace(r.Form.Get("trade_status"))
-	if status != "TRADE_SUCCESS" && status != "TRADE_FINISHED" {
+	if !isAlipayPaidTradeStatus(status) {
 		writePlainPaymentNotifyResult(w, "success")
 		return
 	}
@@ -981,6 +1032,10 @@ func CardStorePaymentOpenedHandler(system store.SystemSettingsRepository, mailer
 func AdminApproveCardStorePersonalOrderHandler(system store.SystemSettingsRepository, mailer cardStoreMailer, identity *auth.IdentityService, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orderNo := strings.TrimSpace(r.PathValue("orderNo"))
+		if orderNo == "" {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_ORDER_NOT_FOUND", "order not found")
+			return
+		}
 		var req cardStoreManualReviewRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		settings := scopedSystemSettingsForRequest(r, system)
@@ -998,6 +1053,63 @@ func AdminApproveCardStorePersonalOrderHandler(system store.SystemSettingsReposi
 		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "card_store.personal_payment.approve", map[string]any{"order_no": orderNo, "amount": update.Amount})
 		order, _ := findCardStoreOrder(r.Context(), settings, orderNo)
 		writeJSON(w, http.StatusOK, cardStoreOrderCreateResponse(RequestTenantID(r), order.Email, order))
+	}
+}
+
+func AdminCompleteCardStoreOrderHandler(system store.SystemSettingsRepository, mailer cardStoreMailer, identity *auth.IdentityService, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderNo := strings.TrimSpace(r.PathValue("orderNo"))
+		var req cardStoreManualReviewRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		settings := scopedSystemSettingsForRequest(r, system)
+		cfg := loadCardStoreConfig(r.Context(), settings)
+		order, ok := findCardStoreOrder(r.Context(), settings, orderNo)
+		if !ok {
+			writeError(w, http.StatusNotFound, "CARD_STORE_ORDER_NOT_FOUND", "order not found")
+			return
+		}
+		if isCardStorePaidLikeStatus(order.Status) {
+			writeJSON(w, http.StatusOK, cardStoreOrderCreateResponse(RequestTenantID(r), order.Email, order))
+			return
+		}
+		if !canCompleteCardStoreOrder(order.Status) {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_ORDER_COMPLETE_FAILED", "order cannot be completed")
+			return
+		}
+		amount := roundMoney(req.Amount)
+		if amount <= 0 {
+			amount = order.Amount
+		}
+		update := cardStoreOrder{OrderNo: orderNo, Amount: amount, Status: "paid", PaymentMsg: "admin completed paid order", ChannelOrderNo: strings.TrimSpace(req.ChannelOrderNo), PayTime: strings.TrimSpace(req.PayTime), PayType: firstNonEmptyString(order.PayType, order.PaymentMode), PaidAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), ReviewedBy: adminAuditUserID(r), ReviewedAt: time.Now().UTC(), ReviewNote: strings.TrimSpace(req.Note)}
+		if err := markCardStoreOrderPaid(r.Context(), settings, cfg, update, mailer, identity, RequestTenantID(r), externalLLMBaseURL(r)); err != nil {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_ORDER_COMPLETE_FAILED", err.Error())
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "card_store.order.complete", map[string]any{"order_no": orderNo, "amount": amount, "payment_mode": order.PaymentMode})
+		order, ok = findCardStoreOrder(r.Context(), settings, orderNo)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "CARD_STORE_ORDER_COMPLETE_FAILED", "order was completed but could not be reloaded")
+			return
+		}
+		writeJSON(w, http.StatusOK, cardStoreOrderCreateResponse(RequestTenantID(r), order.Email, order))
+	}
+}
+
+func AdminDeleteCardStoreOrderHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderNo := strings.TrimSpace(r.PathValue("orderNo"))
+		if orderNo == "" {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_ORDER_DELETE_FAILED", "order not found")
+			return
+		}
+		settings := scopedSystemSettingsForRequest(r, system)
+		order, err := deleteCardStoreOrder(r.Context(), settings, orderNo)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "CARD_STORE_ORDER_DELETE_FAILED", err.Error())
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "card_store.order.delete", map[string]any{"order_no": orderNo, "status": order.Status})
+		writeJSON(w, http.StatusOK, map[string]any{"order_no": orderNo, "deleted": true})
 	}
 }
 
@@ -1150,6 +1262,9 @@ func normalizeCardStoreConfig(cfg cardStoreConfig) cardStoreConfig {
 			product.DurationDays = spec.DurationDays
 		}
 		if product.Credits <= 0 {
+			product.Credits = spec.Credits
+		}
+		if spec.ID == "service_test_10" && product.Credits == 10 {
 			product.Credits = spec.Credits
 		}
 		product.PeriodLimits = sanitizeLLMServiceCardPeriodLimits(product.DurationDays, product.PeriodLimits)
@@ -1594,6 +1709,52 @@ func renderAlipaySubmitPage(gateway string, values url.Values) string {
 	return b.String()
 }
 
+func alipayDirectReturnURL(r *http.Request, order cardStoreOrder, tenantID string) string {
+	return cardStoreAlipayReturnURL(strings.TrimRight(externalBaseURL(r), "/"), order.OrderNo, tenantID)
+}
+
+func cardStoreAlipayReturnURL(baseURL string, orderNo string, tenantID string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	path := "/api/card-store/orders/" + url.PathEscape(orderNo) + "/alipay/return"
+	if baseURL != "" {
+		path = baseURL + path
+	}
+	if store.NormalizeTenantID(tenantID) != store.DefaultTenantID {
+		path += "?tenant_id=" + url.QueryEscape(store.NormalizeTenantID(tenantID))
+	}
+	return path
+}
+
+func cardStoreOrderReturnRedirectURL(r *http.Request, tenantID string, order cardStoreOrder, source string) string {
+	base := strings.TrimRight(externalBaseURL(r), "/") + "/card_store"
+	qs := url.Values{}
+	if store.NormalizeTenantID(tenantID) != store.DefaultTenantID {
+		qs.Set("tenant_id", store.NormalizeTenantID(tenantID))
+	}
+	if email := normalizeCardStoreEmail(order.Email); email != "" {
+		qs.Set("email", email)
+	}
+	if orderNo := strings.TrimSpace(order.OrderNo); orderNo != "" {
+		qs.Set("order_no", orderNo)
+	}
+	if source != "" {
+		qs.Set("payment_return", source)
+	}
+	if query := qs.Encode(); query != "" {
+		base += "?" + query
+	}
+	return base
+}
+
+func isAlipayPaidTradeStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "TRADE_SUCCESS", "TRADE_FINISHED":
+		return true
+	default:
+		return false
+	}
+}
+
 func alipayGatewayWithCharset(gateway string, charset string) string {
 	gateway = strings.TrimSpace(gateway)
 	charset = strings.TrimSpace(charset)
@@ -1627,8 +1788,13 @@ func verifyAlipayDirectNotify(values url.Values, publicKey string) bool {
 	if err != nil {
 		return false
 	}
-	digest := sha256.Sum256([]byte(alipaySignContent(values)))
-	return rsa.VerifyPKCS1v15(pub, cryptoHashSHA256(), digest[:], decoded) == nil
+	for _, content := range alipayVerifySignContents(values) {
+		digest := sha256.Sum256([]byte(content))
+		if rsa.VerifyPKCS1v15(pub, cryptoHashSHA256(), digest[:], decoded) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func alipayNotifySignedValues(r *http.Request) url.Values {
@@ -1660,9 +1826,22 @@ func alipayRSA2Sign(content string, privateKey string) (string, error) {
 }
 
 func alipaySignContent(values url.Values) string {
+	return alipaySignContentSkipping(values, map[string]bool{"sign": true})
+}
+
+func alipayVerifySignContents(values url.Values) []string {
+	primary := alipaySignContentSkipping(values, map[string]bool{"sign": true, "sign_type": true})
+	legacy := alipaySignContent(values)
+	if primary == legacy {
+		return []string{primary}
+	}
+	return []string{primary, legacy}
+}
+
+func alipaySignContentSkipping(values url.Values, skip map[string]bool) string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
-		if key == "sign" {
+		if skip[key] {
 			continue
 		}
 		if strings.TrimSpace(values.Get(key)) == "" {
@@ -1822,6 +2001,14 @@ func defaultCardStoreNotifyURL(r *http.Request) string {
 	return base + "/api/zhifuxpay/notify"
 }
 
+func defaultCardStoreAlipayNotifyURL(r *http.Request) string {
+	base := strings.TrimRight(externalBaseURL(r), "/")
+	if base == "" {
+		return "/api/card-store/payment/notify"
+	}
+	return base + "/api/card-store/payment/notify"
+}
+
 func notifyURLMatchesCurrentHub(configured string, current string) bool {
 	configured = strings.TrimSpace(configured)
 	current = strings.TrimSpace(current)
@@ -1834,6 +2021,24 @@ func notifyURLMatchesCurrentHub(configured string, current string) bool {
 		return strings.EqualFold(strings.TrimRight(configured, "/"), strings.TrimRight(current, "/"))
 	}
 	return strings.EqualFold(configuredURL.Scheme, currentURL.Scheme) && strings.EqualFold(configuredURL.Host, currentURL.Host) && configuredURL.EscapedPath() == currentURL.EscapedPath() && configuredURL.RawQuery == currentURL.RawQuery
+}
+
+func cardStoreURLMatchesEndpointIgnoringTenantID(rawURL string, endpointPath string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	endpointPath = strings.TrimSpace(endpointPath)
+	if rawURL == "" || endpointPath == "" {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if parsed.EscapedPath() != endpointPath {
+		return false
+	}
+	query := parsed.Query()
+	query.Del("tenant_id")
+	return query.Encode() == ""
 }
 
 func createCardStoreServiceCard(ctx context.Context, system store.SystemSettingsRepository, cfg cardStoreConfig, order cardStoreOrder) (llmservice.RechargeCard, string, error) {
@@ -2113,6 +2318,22 @@ func saveCardStorePaymentFailed(ctx context.Context, system store.SystemSettings
 	return saveCardStoreOrders(ctx, system, orders)
 }
 
+func updateCardStoreOrderPaymentMessage(ctx context.Context, system store.SystemSettingsRepository, orderNo string, message string) error {
+	orders := loadCardStoreOrders(ctx, system)
+	for i := range orders.Orders {
+		if strings.TrimSpace(orders.Orders[i].OrderNo) != strings.TrimSpace(orderNo) {
+			continue
+		}
+		if isCardStorePaidLikeStatus(orders.Orders[i].Status) {
+			return nil
+		}
+		orders.Orders[i].PaymentMsg = strings.TrimSpace(message)
+		orders.Orders[i].UpdatedAt = time.Now().UTC()
+		return saveCardStoreOrders(ctx, system, orders)
+	}
+	return fmt.Errorf("order not found")
+}
+
 func markCardStorePaymentOpened(ctx context.Context, system store.SystemSettingsRepository, cfg cardStoreConfig, orderNo, email, baseURL string, mailer cardStoreMailer) (cardStoreOrder, string, string, error) {
 	orders := loadCardStoreOrders(ctx, system)
 	now := time.Now().UTC()
@@ -2389,6 +2610,30 @@ func rejectCardStorePersonalOrder(ctx context.Context, system store.SystemSettin
 	return cardStoreOrder{}, fmt.Errorf("order not found")
 }
 
+func deleteCardStoreOrder(ctx context.Context, system store.SystemSettingsRepository, orderNo string) (cardStoreOrder, error) {
+	orders := loadCardStoreOrders(ctx, system)
+	for i := range orders.Orders {
+		if strings.TrimSpace(orders.Orders[i].OrderNo) != strings.TrimSpace(orderNo) {
+			continue
+		}
+		if isCardStorePaidLikeStatus(orders.Orders[i].Status) {
+			return cardStoreOrder{}, fmt.Errorf("paid order cannot be deleted")
+		}
+		removed := orders.Orders[i]
+		orders.Orders = append(orders.Orders[:i], orders.Orders[i+1:]...)
+		return removed, saveCardStoreOrders(ctx, system, orders)
+	}
+	return cardStoreOrder{}, fmt.Errorf("order not found")
+}
+
+func canCompleteCardStoreOrder(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" || isCardStorePaidLikeStatus(status) || status == cardStoreStatusPersonalRejected {
+		return false
+	}
+	return true
+}
+
 func GetCardStoreOrderHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orderNo := strings.TrimSpace(r.PathValue("orderNo"))
@@ -2571,6 +2816,10 @@ func buildCardStoreSoldCards(orders []cardStoreOrder, cfg cardStoreConfig, reg *
 		openedAt := ""
 		if !order.OpenedPaymentAt.IsZero() {
 			openedAt = order.OpenedPaymentAt.UTC().Format(time.RFC3339)
+		} else if !order.UpdatedAt.IsZero() {
+			openedAt = order.UpdatedAt.UTC().Format(time.RFC3339)
+		} else if !order.CreatedAt.IsZero() {
+			openedAt = order.CreatedAt.UTC().Format(time.RFC3339)
 		}
 		autoRedeemedAt := ""
 		if !order.AutoRedeemedAt.IsZero() {
@@ -2614,7 +2863,11 @@ func buildCardStoreSoldCards(orders []cardStoreOrder, cfg cardStoreConfig, reg *
 			ReviewNote:      order.ReviewNote,
 		})
 	}
-	sort.SliceStable(cards, func(i, j int) bool { return cards[i].PaidAt > cards[j].PaidAt })
+	sort.SliceStable(cards, func(i, j int) bool {
+		left := firstNonEmptyString(cards[i].PaidAt, cards[i].OpenedPaymentAt)
+		right := firstNonEmptyString(cards[j].PaidAt, cards[j].OpenedPaymentAt)
+		return left > right
+	})
 	return cards
 }
 
@@ -2628,7 +2881,13 @@ func isCardStorePaidLikeStatus(status string) bool {
 }
 
 func isCardStoreVisibleInSales(status string) bool {
-	return isCardStorePaidLikeStatus(status) || strings.EqualFold(strings.TrimSpace(status), cardStoreStatusPersonalOpened)
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "created", "payment_started", "payment_failed", cardStoreStatusPersonalCreated, cardStoreStatusPersonalOpened, cardStoreStatusPersonalRejected:
+		return true
+	default:
+		return isCardStorePaidLikeStatus(status)
+	}
 }
 
 func externalBaseURL(r *http.Request) string {

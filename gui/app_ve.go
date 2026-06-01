@@ -392,10 +392,8 @@ func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []strin
 		return err
 	}
 
-	// No explicit mentions preserve 1:1 default responder semantics. Once more
-	// than one remote speaking participant is present, it becomes a real group
-	// turn targeted to all writable digital employees while the local AI stays
-	// quiet unless explicitly targeted.
+	// No explicit mentions are resolved by Hub so the persisted default reply
+	// target survives tab reloads, history sends, and app restarts.
 	if !targets.Explicit {
 		msg.ToIDs = a.groupDiscussionUnmentionedTargetIDs(sessionID)
 		return a.sendVEA2AMessage(sessionID, msg)
@@ -619,6 +617,9 @@ func (a *App) groupDiscussionUnmentionedTargetIDs(sessionID string) []string {
 	detail, err := client.GetConsultationDetailForAgent(ctx, strings.TrimSpace(sessionID), localID)
 	if err != nil || detail.Session == nil {
 		return singleGroupDiscussionTarget(preferredID)
+	}
+	if groupDiscussionDetailHasDefaultReplyTarget(detail, localID) {
+		return nil
 	}
 	candidates := make([]string, 0, len(detail.Session.Participants))
 	for _, participant := range detail.Session.Participants {

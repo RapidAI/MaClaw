@@ -37,16 +37,6 @@ export const GeneralAdvancedSettingsPanel = ({
     setEnvCheckInterval,
 }: GeneralAdvancedSettingsPanelProps) => (
     <div className="settings-panel general-advanced-settings">
-        <label className="general-settings-option general-settings-option--wide">
-            <input
-                type="checkbox"
-                checked={!config?.hide_startup_popup}
-                onChange={(e) => saveConfigPatch(config, setConfig, { hide_startup_popup: !e.target.checked })}
-            />
-            <span>{t("showWelcomePage")}</span>
-            <small>{textForLang(lang, 'When enabled, a welcome popup with tutorial links will be shown at startup.', '开启后，程序启动时将显示新手教学和快速入门链接', '開啟後，程序啟動時將顯示新手教學和快速入門連結')}</small>
-        </label>
-
         <section className="general-settings-card general-settings-card--stacked">
             <div className="general-settings-option-row">
                 <label className="general-settings-option general-settings-option--inline">

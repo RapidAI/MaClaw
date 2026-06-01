@@ -21,8 +21,8 @@ func WorkflowApproverDirectoryHandler(securitySvc *security.SecurityService, ide
 			return
 		}
 
-		tenantID := store.TenantIDFromContext(r.Context())
-		if tenantID == "" {
+		tenantID, ok := store.TenantIDFromContextIfPresent(r.Context())
+		if !ok {
 			tenantID = RequestTenantID(r)
 		}
 

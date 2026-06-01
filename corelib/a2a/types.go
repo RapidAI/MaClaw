@@ -63,21 +63,25 @@ type Participant struct {
 }
 
 type Session struct {
-	ID             string         `json:"id"`
-	TenantID       string         `json:"tenant_id,omitempty"`
-	OrgUnitID      string         `json:"org_unit_id,omitempty"`
-	Topic          string         `json:"topic"`
-	Goal           string         `json:"goal,omitempty"`
-	Status         SessionStatus  `json:"status"`
-	DecisionPolicy DecisionPolicy `json:"decision_policy"`
-	Participants   []Participant  `json:"participants"`
-	Messages       []Message      `json:"messages,omitempty"`
-	Proposals      []Proposal     `json:"proposals,omitempty"`
-	Reviews        []Review       `json:"reviews,omitempty"`
-	Decision       *Decision      `json:"decision,omitempty"`
-	Escalation     *Escalation    `json:"escalation,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	ID                  string              `json:"id"`
+	TenantID            string              `json:"tenant_id,omitempty"`
+	OrgUnitID           string              `json:"org_unit_id,omitempty"`
+	Topic               string              `json:"topic"`
+	Goal                string              `json:"goal,omitempty"`
+	Status              SessionStatus       `json:"status"`
+	DecisionPolicy      DecisionPolicy      `json:"decision_policy"`
+	Participants        []Participant       `json:"participants"`
+	ContextSummary      string              `json:"context_summary,omitempty"`
+	SummaryUpToID       string              `json:"summary_up_to_id,omitempty"`
+	SummaryUpdatedAt    time.Time           `json:"summary_updated_at,omitempty"`
+	DefaultReplyTargets map[string][]string `json:"default_reply_targets,omitempty"`
+	Messages            []Message           `json:"messages,omitempty"`
+	Proposals           []Proposal          `json:"proposals,omitempty"`
+	Reviews             []Review            `json:"reviews,omitempty"`
+	Decision            *Decision           `json:"decision,omitempty"`
+	Escalation          *Escalation         `json:"escalation,omitempty"`
+	CreatedAt           time.Time           `json:"created_at"`
+	UpdatedAt           time.Time           `json:"updated_at"`
 }
 
 type Message struct {

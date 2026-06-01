@@ -881,7 +881,39 @@ func (h *VEMessageHandler) restoreSessionHistory(sessionID string, current a2a.G
 	if len(messages) == 0 && detail.Session != nil {
 		messages = detail.Session.Messages
 	}
-	return buildVEConversationHistoryFromMessages(messages, localID, current)
+	if detail.Session != nil && strings.TrimSpace(detail.Session.ContextSummary) != "" {
+		messages = veMessagesAfterSummary(messages, detail.Session.SummaryUpToID)
+	}
+	history := buildVEConversationHistoryFromMessages(messages, localID, current)
+	if detail.Session != nil {
+		history = prependVEGroupContextSummary(history, detail.Session.ContextSummary)
+	}
+	return history
+}
+
+func veMessagesAfterSummary(messages []a2a.Message, summaryUpToID string) []a2a.Message {
+	summaryUpToID = strings.TrimSpace(summaryUpToID)
+	if summaryUpToID == "" {
+		return messages
+	}
+	for i, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.ID), summaryUpToID) {
+			return messages[i+1:]
+		}
+	}
+	return messages
+}
+
+func prependVEGroupContextSummary(history []agent.ConversationEntry, summary string) []agent.ConversationEntry {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return history
+	}
+	entry := agent.ConversationEntry{Role: "user", Content: "Shared group memory:\n" + summary}
+	out := make([]agent.ConversationEntry, 0, len(history)+1)
+	out = append(out, entry)
+	out = append(out, history...)
+	return out
 }
 
 func buildVEConversationHistoryFromMessages(messages []a2a.Message, localID string, current a2a.GroupDiscussionMessage) []agent.ConversationEntry {

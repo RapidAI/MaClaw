@@ -147,6 +147,10 @@ type IMMessageHandler struct {
 	// lastScreenshotAt records the time of the last successful screenshot
 	// to enforce a cooldown period and prevent accidental rapid-fire captures.
 	lastScreenshotAt time.Time
+	// screenshotCooldowns scopes screenshot cooldowns by runtime owner/request so
+	// desktop, IM, third-party, and ownerless isolated runtimes do not throttle
+	// each other.
+	screenshotCooldowns sync.Map // map[string]time.Time
 
 	// topicDetector automatically detects topic switches and clears stale
 	// conversation context so users don't need to manually /new.
@@ -362,14 +366,21 @@ type IMMessageHandler struct {
 	// cancel/merge/status mechanisms. Set during construction.
 	interruptHandler *imInterruptHandler
 
-	// activeBtwSubAgent holds the currently running /btw SubAgent (if any).
-	// Used by /cancel to cancel a running side query. Stored/cleared
-	// atomically by handleBtwCommand.
+	// activeBtwSubAgents tracks running /btw SubAgents by owner. This is the
+	// primary cancellation registry for concurrent channels.
+	// Keyed by userID, value is *BtwSubAgent.
+	activeBtwSubAgents sync.Map
+
+	// activeBtwSubAgent holds the most recent /btw SubAgent for legacy callers.
+	// New cancellation paths must use activeBtwSubAgents.
 	activeBtwSubAgent atomic.Pointer[BtwSubAgent]
 
-	// activeLoopCallbacks holds the currently running /loop callbacks (if any).
-	// Used by /cancel to cancel a running loop command. Stored/cleared
-	// atomically by handleLoopCommand.
+	// activeLoopCallbacksByOwner tracks running /loop callbacks by owner.
+	// Keyed by userID, value is *guiLoopCommandCallbacks.
+	activeLoopCallbacksByOwner sync.Map
+
+	// activeLoopCallbacks holds the most recent /loop callbacks for legacy callers.
+	// New cancellation paths must use activeLoopCallbacksByOwner.
 	activeLoopCallbacks atomic.Pointer[guiLoopCommandCallbacks]
 }
 

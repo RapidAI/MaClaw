@@ -77,7 +77,10 @@ func (h *IMMessageHandler) toolBashBackgroundForOwner(command, workDir, taskRole
 
 // toolAsyncWait handles the async_wait tool: check/wait/kill/list background tasks.
 func (h *IMMessageHandler) toolAsyncWait(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
-	ownerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "async_wait failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
 	actionText := stringVal(args, "action")
 	action := normalizeAsyncWaitAction(actionText)
 
@@ -167,9 +170,7 @@ func (h *IMMessageHandler) runtimeLoopContextForOwner(ownerID string) *LoopConte
 	if ownerID != "" {
 		return h.getSessionLoopCtx(ownerID)
 	}
-	h.globalLoopMu.RLock()
-	ctx := h.currentLoopCtx
-	h.globalLoopMu.RUnlock()
+	ctx, _, _ := h.legacyLoopSnapshot()
 	return ctx
 }
 

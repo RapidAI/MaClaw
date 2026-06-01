@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"pgregory.net/rapid"
 )
@@ -543,6 +544,33 @@ func TestBuildVEConversationHistoryFromMessagesPreservesStreamChunks(t *testing.
 	}
 	if got := history[0].Content; got != "Visible \n\x01raw intermediate chunkreply." {
 		t.Fatalf("assistant content = %q, want raw coalesced stream", got)
+	}
+}
+
+func TestPrependVEGroupContextSummary(t *testing.T) {
+	history := []agent.ConversationEntry{{Role: "user", Content: "current restored message"}}
+	got := prependVEGroupContextSummary(history, "compressed shared facts")
+	if len(got) != 2 {
+		t.Fatalf("history len = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].Role != "user" || !strings.Contains(got[0].Content.(string), "compressed shared facts") {
+		t.Fatalf("summary entry = %+v", got[0])
+	}
+	if got[1].Content != "current restored message" {
+		t.Fatalf("original history not preserved: %+v", got)
+	}
+}
+
+func TestVEMessagesAfterSummaryKeepsOnlyRecentRawWindow(t *testing.T) {
+	messages := []a2a.Message{
+		{ID: "m1", Content: "summarized"},
+		{ID: "m2", Content: "summary boundary"},
+		{ID: "m3", Content: "recent"},
+	}
+
+	got := veMessagesAfterSummary(messages, "m2")
+	if len(got) != 1 || got[0].ID != "m3" {
+		t.Fatalf("recent messages = %+v", got)
 	}
 }
 

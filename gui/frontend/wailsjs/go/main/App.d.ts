@@ -604,6 +604,8 @@ export function CancelAIAssistantSessionForSession(arg1:string):Promise<string>;
 
 export function InjectAIAssistantSupplementary(arg1:string):Promise<boolean>;
 
+export function InjectAIAssistantSupplementaryForSession(arg1:string,arg2:string):Promise<boolean>;
+
 export function InjectAIAssistantGuideReference(arg1:string):Promise<boolean>;
 
 export function InjectAIAssistantGuideReferenceForSession(arg1:string,arg2:string):Promise<boolean>;

@@ -159,25 +159,25 @@ func confirmationPlannedActions(intent taskIntent, lang string) []string {
 	}
 }
 
-func confirmationRiskFlags(intent taskIntent) []string {
+func confirmationRiskFlags(intent taskIntent, lang string) []string {
 	switch intent {
 	case intentCoding:
-		return []string{"Executing without confirmation may modify code in the wrong directory"}
+		return []string{i18n.T(i18n.MsgExecRiskCoding1, lang)}
 	case intentSSH:
-		return []string{"Executing without confirmation may connect to the wrong server or environment"}
+		return []string{i18n.T(i18n.MsgExecRiskSSH1, lang)}
 	case intentAmbiguous:
-		return []string{"The request has multiple possible execution paths and should be clarified first"}
+		return []string{i18n.T(i18n.MsgExecRiskAmbig1, lang)}
 	default:
 		return nil
 	}
 }
 
-func confirmationRevisionHints(intent taskIntent) []string {
+func confirmationRevisionHints(intent taskIntent, lang string) []string {
 	switch intent {
 	case intentAmbiguous:
-		return []string{"Clarify whether this is code work or SSH/server work", "Provide the correct project directory or host information"}
+		return []string{i18n.T(i18n.MsgExecRevisionAmbig1, lang), i18n.T(i18n.MsgExecRevisionAmbig2, lang)}
 	default:
-		return []string{"If the directory is wrong, reply with the correct directory", "If the task understanding is wrong, reply with the correction"}
+		return []string{i18n.T(i18n.MsgExecRevisionDefault1, lang), i18n.T(i18n.MsgExecRevisionDefault2, lang)}
 	}
 }
 
@@ -253,8 +253,8 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		TaskType:            confirmationTaskLabel(result.Intent),
 		TargetPaths:         targetPaths,
 		PlannedActions:      plannedActions,
-		RiskFlags:           confirmationRiskFlags(result.Intent),
-		RevisionHints:       confirmationRevisionHints(result.Intent),
+		RiskFlags:           confirmationRiskFlags(result.Intent, lang),
+		RevisionHints:       confirmationRevisionHints(result.Intent, lang),
 		Status:              confirmationStatusPending,
 		CreatedAt:           now,
 		UpdatedAt:           now,

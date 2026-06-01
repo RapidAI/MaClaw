@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 
 const GetMaclawLLMProvidersMock = vi.fn();
 const SaveMaclawLLMProvidersMock = vi.fn();
@@ -10,6 +10,7 @@ const GetHubLLMServiceStatusMock = vi.fn();
 const FetchProviderModelsMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
+const StartOpenAIOAuthMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
@@ -19,7 +20,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetHubLLMServiceStatus: (...args: unknown[]) => GetHubLLMServiceStatusMock(...args),
     LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
     SetMaclawAgentMaxIterations: vi.fn(),
-    StartOpenAIOAuth: vi.fn(),
+    StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
     FetchCodeGenModels: vi.fn(),
@@ -62,6 +63,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
     });
 
     afterEach(() => {
+        vi.useRealTimers();
         cleanup();
     });
 
@@ -333,6 +335,33 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
         expect(await screen.findByText(/Connection failed, not saved/)).toBeTruthy();
+    });
+
+    it('hides the toast without clearing OAuth repair actions', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'OpenAI', url: 'https://api.openai.com/v1', key: '', model: 'gpt-4o', protocol: 'openai', auth_type: 'oauth' },
+            ],
+            current: 'OpenAI',
+        });
+        StartOpenAIOAuthMock.mockRejectedValue(new Error('oauth failed'));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with OpenAI' }));
+
+        expect((await screen.findByRole('status')).textContent).toMatch(/Connection failed, not saved/);
+        expect(await screen.findByRole('button', { name: /Import from Codex CLI/i })).toBeTruthy();
+
+        await act(async () => {
+            vi.advanceTimersByTime(10000);
+        });
+        await waitFor(() => {
+            expect(screen.queryByRole('status')).toBeNull();
+        });
+        expect(screen.getByRole('button', { name: /Import from Codex CLI/i })).toBeTruthy();
     });
 
 });

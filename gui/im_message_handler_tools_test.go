@@ -1113,6 +1113,19 @@ func TestExecuteAgentLoopToolCallRejectsUnsolicitedSetNickname(t *testing.T) {
 	}
 }
 
+func TestToolSetNicknameOwnerlessCurrentRuntimeDoesNotUseLegacyTaskText(t *testing.T) {
+	handler := &IMMessageHandler{
+		app:            &App{},
+		lastUserText:   "call me Desk Mate",
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-empty-owner"}},
+	}
+
+	got := handler.toolSetNickname(map[string]interface{}{"nickname": "Desk Mate"})
+	if !strings.Contains(got, "set_nickname") && !strings.Contains(got, "仅在用户明确要求") {
+		t.Fatalf("ownerless current runtime should not inherit legacy nickname request, got %q", got)
+	}
+}
+
 // TestRouteTools_WithRouterFilters verifies that routeTools delegates to
 // the ToolRouter when configured.
 func TestRouteTools_WithRouterFilters(t *testing.T) {
@@ -1649,6 +1662,18 @@ func TestToolCreateSessionDisabled(t *testing.T) {
 	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
 	if !contains(result, "create_session is disabled") || !contains(result, "CodingSubAgent") {
 		t.Fatalf("expected disabled CodingSubAgent guidance, got: %s", result)
+	}
+}
+
+func TestSessionTaskGuardOwnerlessCurrentRuntimeDoesNotUseLegacyTaskText(t *testing.T) {
+	handler := &IMMessageHandler{
+		app:            &App{},
+		lastUserText:   "fix code and create a coding session",
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-empty-owner"}},
+	}
+
+	if got := handler.checkSessionTaskGuard(); got == "" {
+		t.Fatal("ownerless current runtime inherited legacy coding text and allowed session creation")
 	}
 }
 

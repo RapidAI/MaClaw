@@ -6,7 +6,7 @@ import { GroupParticipantPanel } from "./GroupParticipantPanel";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEGroupChat";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalHumanParticipantId, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
+import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys, participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 
 type HistoryDiscussionDetail = {
@@ -147,8 +147,13 @@ const mentionLabelsForHistoryParticipant = (participant: MentionParticipant): st
         labels.add(LOCAL_AI_DISPLAY_NAME_EN);
         labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANS);
         labels.add(LOCAL_AI_DISPLAY_NAME_ZH_HANT);
-        labels.add("本机 AI");
-        labels.add("本機 AI");
+        labels.add("\u672c\u5730AI");
+        labels.add("\u672c\u5730 AI");
+        labels.add("\u672c\u673aAI");
+        labels.add("\u672c\u673a AI");
+        labels.add("\u672c\u6a5f AI");
+        labels.add("\u672c\u5730\u667a\u80fd\u4f53");
+        labels.add("\u672c\u673a\u667a\u80fd\u4f53");
     }
     return [...labels];
 };
@@ -168,21 +173,14 @@ const hasUnresolvedHistoryMentionTrigger = (content: string): boolean => /(^|[^A
 const historyTargetParticipantIds = (content: string, participants: MentionParticipant[]): string[] => {
     const mentioned = mentionedHistoryParticipantIds(content, participants);
     if (mentioned.length > 0 || hasUnresolvedHistoryMentionTrigger(content)) return mentioned;
-    const defaultCandidates = dedupeByHistoryParticipantIdentity(participants.filter((participant) => {
-        const id = String(participant.id || "").trim();
-        if (!id || isLocalHumanParticipantId(id)) return false;
-        return !isLocalParticipantId(id) && !isLocalAIName(participant.name);
-    }));
-    if (defaultCandidates.length !== 1) return [];
-    const defaultParticipant = defaultCandidates[0]?.id?.trim();
-    return defaultParticipant ? [defaultParticipant] : [];
+    return [];
 };
 
 const participantFallbackName = (id: string, index: number, lang: string | undefined): string => {
     const normalized = normalizeHistoryParticipantId(id);
-    if (normalized === "me" || normalized === "user") return textForLang(lang, "Me", "我", "我");
+    if (normalized === "me" || normalized === "user") return textForLang(lang, "Me", "\u6211", "\u6211");
     if (normalized === LEGACY_LOCAL_AI_PARTICIPANT_ID) return localAINameForLang(lang);
-    return textForLang(lang, `Participant ${index + 1}`, `参与者 ${index + 1}`, `參與者 ${index + 1}`);
+    return textForLang(lang, `Participant ${index + 1}`, `\u53c2\u4e0e\u8005${index + 1}`, `\u53c3\u8207\u8005${index + 1}`);
 };
 
 const readableParticipantName = (name: string | undefined, id: string, index: number, lang: string | undefined): string => {
@@ -208,7 +206,6 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadSeqRef = useRef(0);
     const mentionParticipantsRef = useRef<MentionParticipant[]>([]);
-
     const load = useCallback(async (options?: { silent?: boolean }) => {
         if (!discussionId) return;
         const seq = loadSeqRef.current + 1;
@@ -299,7 +296,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
             setOptimisticMessages((prev) => [...prev, {
                 id: `local-${Date.now()}`,
                 from_id: "me",
-                from_name: textForLang(lang, "Me", "我", "我"),
+                from_name: textForLang(lang, "Me", "\u6211", "\u6211"),
                 kind: "statement",
                 content,
                 created_at: createdAt,
@@ -525,7 +522,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                 id: m.id || `m-${idx}`,
                 fromId,
                 fromName: isLocalHistoryUser
-                    ? textForLang(lang, "Me", "我", "我")
+                    ? textForLang(lang, "Me", "\u6211", "\u6211")
                     : readableHistorySpeakerName(m.from_name, fromId, participants, participantFallbackName(fromId, idx, lang)),
                 content,
                 timestamp: m.created_at ? Date.parse(m.created_at) || Date.now() : Date.now(),

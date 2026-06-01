@@ -1,4 +1,7 @@
 import type { CSSProperties, MouseEvent } from "react";
+import { LoadConfig } from "../../../wailsjs/go/main/App";
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
+import { buildHubCardStoreURL } from "../../utils/hubCredits";
 import { localizeText } from "./aiAssistantI18n";
 import { dotBase, getTitleBarToolButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { getWindowControlButtonStyle } from "./aiAssistantControls";
@@ -8,6 +11,23 @@ import { VEAuthorizationRequestCenter } from "./VEAuthorizationDialog";
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from "../layout/WindowControlIcons";
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "drag" | "no-drag" };
+
+type CardStoreConfig = {
+    remote_email?: string;
+    remote_hub_url?: string;
+    remote_tenant_id?: string;
+    remote_viewer_token?: string;
+};
+
+export async function openCurrentTenantCardStore(loadConfig: () => Promise<CardStoreConfig> = LoadConfig, openURL: (url: string) => void = BrowserOpenURL) {
+    try {
+        const config = await loadConfig();
+        const storeURL = buildHubCardStoreURL(config?.remote_hub_url, config?.remote_tenant_id, config?.remote_email, config?.remote_viewer_token);
+        if (storeURL) openURL(storeURL);
+    } catch (error) {
+        console.warn("[AIAssistantPanel] Failed to open card store", error);
+    }
+}
 
 interface AssistantTitleBarProps {
     clearHistory: () => void;
@@ -56,6 +76,7 @@ export function AssistantTitleBar({ clearHistory, codingAgentProgress, inline, l
             </div>
             <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { "--wails-draggable": "no-drag", position: "relative", zIndex: 30010 } satisfies WailsDragStyle : {}) }}>
                 <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", minWidth: 0, paddingTop: 1 }}>
+                    <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{"\u{1F6D2}"}</span></button>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks", "\u641c\u7d22\u4efb\u52a1")}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)" }}>{"\u{1F50D}"}</span></button>
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleTts) } : { onClick: toggleTts })} style={{ ...getTitleBarToolButtonStyle(t, ttsEnabled ? "active" : "default"), position: "relative" }} title={ttsEnabled ? localizeText(lang, "Voice readback ON - click to disable", "\u8bed\u97f3\u64ad\u62a5\u5df2\u5f00\u542f\uff0c\u70b9\u51fb\u5173\u95ed") : localizeText(lang, "Voice readback OFF - click to enable", "\u8bed\u97f3\u64ad\u62a5\u5df2\u5173\u95ed\uff0c\u70b9\u51fb\u5f00\u542f")}><span aria-hidden="true" style={{ fontSize: "16px", lineHeight: 1, transform: "translateY(-0.5px)", opacity: ttsPlaying ? 0 : 1, transition: "opacity 150ms" }}>{ttsEnabled ? "\u{1F50A}" : "\u{1F507}"}</span>{ttsPlaying && <TTSLevelBars accentColor={t.headingColor} />}</button>

@@ -39,8 +39,9 @@ var workflowHelpers = helpers(state);
 var approverHelpers = new Function('state', 'tr', [
   extractFunction('normalizeApproverIds'),
   extractFunction('formatApproverSelection'),
+  extractFunction('pruneApproverPickerSelection'),
   extractFunction('renderApproverRow')
-].join('\n') + '\nreturn { normalizeApproverIds: normalizeApproverIds, formatApproverSelection: formatApproverSelection, renderApproverRow: renderApproverRow };')(
+].join('\n') + '\nreturn { normalizeApproverIds: normalizeApproverIds, formatApproverSelection: formatApproverSelection, pruneApproverPickerSelection: pruneApproverPickerSelection, renderApproverRow: renderApproverRow };')(
   state,
   function (key, params) {
     if (key === 'selectedApprovers') return String(params.count) + ' selected';
@@ -95,6 +96,12 @@ assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1'], 'Choos
 
 state.approverDirectory = { byId: { 'machine-secret-1': { name: 'Alice' }, 've-secret-1': { name: 'Runtime Worker' } } };
 assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1', 've-secret-1'], 'Choose approvers'), 'Alice, Runtime Worker', 'renders approver names from directory');
+assertEqual(approverHelpers.formatApproverSelection(['machine-secret-1', 'stale-secret-1'], 'Choose approvers'), '2 selected', 'does not hide stale selected approver ids behind partial names');
+state.approverPicker = { selected: { 'machine-secret-1': true, 'stale-secret-1': true } };
+approverHelpers.pruneApproverPickerSelection();
+assertEqual(Object.keys(state.approverPicker.selected).join(','), 'machine-secret-1', 'drops stale approver ids once directory is loaded');
+var loadApproverDirectorySource = extractFunction('loadApproverDirectory') + '\n' + extractFunction('fetchApproverDirectory') + '\n' + extractFunction('loadAndRenderApproverDirectory');
+assertTrue(loadApproverDirectorySource.indexOf('.catch(') === -1, 'loads approver directory without catch chaining');
 
 global.escapeHtml = function (value) { return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
 global.escapeAttr = global.escapeHtml;

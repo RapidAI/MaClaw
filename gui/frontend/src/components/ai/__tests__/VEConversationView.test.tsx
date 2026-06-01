@@ -1044,6 +1044,88 @@ describe("VEConversationView", () => {
             expect(send).not.toHaveBeenCalled();
         });
 
+        it("leaves unmentioned follow-ups untargeted so Hub owns default reply routing", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@Local AI inspect" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.change(textarea, { target: { value: "continue" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local AI inspect", ["local-maclaw"]);
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(2, "test-session-1", "continue", []);
+        });
+
+        it("leaves unresolved mention follow-ups untargeted for Hub routing", async () => {
+            const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@Local AI inspect" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.change(textarea, { target: { value: "@unknown continue" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.change(textarea, { target: { value: "continue again" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local AI inspect", ["local-maclaw"]);
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(2, "test-session-1", "@unknown continue", []);
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(3, "test-session-1", "continue again", []);
+        });
+
+        it("does not remember an explicit group reply target when sending fails", async () => {
+            const sendGroupMessage = vi.fn()
+                .mockRejectedValueOnce(new Error("offline"))
+                .mockResolvedValue(undefined);
+            renderConversation({
+                sendGroupMessage,
+                participants: [
+                    { id: "ve-a", name: "Agent A", online: true },
+                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "ve-b", name: "Agent B", online: true },
+                ],
+            });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "@Local AI inspect" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.change(textarea, { target: { value: "continue" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local AI inspect", ["local-maclaw"]);
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(2, "test-session-1", "continue", []);
+        });
+
         it("broadcasts unmentioned group messages when multiple remote digital employees are present", async () => {
             const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
             renderConversation({
@@ -1065,7 +1147,7 @@ describe("VEConversationView", () => {
             expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "please continue", []);
         });
 
-        it("routes unmentioned group messages to the only remote digital employee", async () => {
+        it("leaves unmentioned group messages untargeted with one remote digital employee", async () => {
             const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
             renderConversation({
                 veId: "ve-a",
@@ -1082,10 +1164,10 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
 
             await act(async () => { await vi.runAllTimersAsync(); });
-            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "please continue", ["ve-a"]);
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "please continue", []);
         });
 
-        it("routes unmentioned group messages to the original employee machine id", async () => {
+        it("leaves original-employee unmentioned messages untargeted for Hub routing", async () => {
             const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
             renderConversation({
                 veId: "ve_m_anna",
@@ -1102,10 +1184,10 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
 
             await act(async () => { await vi.runAllTimersAsync(); });
-            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "继续", ["m_anna"]);
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "继续", []);
         });
 
-        it("routes unmentioned group messages when original employee id uses ve dash alias", async () => {
+        it("leaves ve-dash alias unmentioned messages untargeted for Hub routing", async () => {
             const sendGroupMessage = vi.fn().mockResolvedValue(undefined);
             renderConversation({
                 veId: "ve-m_anna",
@@ -1122,7 +1204,7 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
 
             await act(async () => { await vi.runAllTimersAsync(); });
-            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "continue", ["m_anna"]);
+            expect(sendGroupMessage).toHaveBeenCalledWith("test-session-1", "continue", []);
         });
 
         it("does not route raw participant ids as @mentions", async () => {

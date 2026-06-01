@@ -38,12 +38,14 @@ func FilterToolDefinitions(policy ToolFilterPolicy, tools []map[string]interface
 }
 
 // RequiredToolNamesForPolicy returns ordered tools that are not optional for a
-// restricted workflow phase. Routing may still select additional allowed tools,
-// but these names must remain advertised whenever available because workflow
-// prompts and execution policy depend on them.
+// workflow phase. Routing may still select additional allowed tools, but these
+// names must remain advertised whenever available because workflow prompts and
+// execution policy depend on them.
 func RequiredToolNamesForPolicy(policy ToolFilterPolicy) []string {
 	var names []string
 	switch policy {
+	case ToolFilterFull:
+		names = []string{"bash", "read_file", "list_directory", "write_file", "edit_file"}
 	case ToolFilterDocOnly:
 		names = []string{"read_file", "list_directory", "send_file"}
 	case ToolFilterOpsControlled:

@@ -887,6 +887,40 @@ func TestGroupDiscussionSendHistoryMessageDefaultsToFirstRemoteParticipant(t *te
 	}
 }
 
+func TestGroupDiscussionSendHistoryMessageDefersToHubDefaultReplyTarget(t *testing.T) {
+	var gotToIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/consultations/disc-default-hub/detail":
+			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-default-hub", Status: "open", LocalRelation: "initiated_by_me", Readonly: false, Role: "initiator", ParticipantIDs: []string{"me", "anna-machine", "local-maclaw"}},
+				Session: &a2a.Session{
+					Participants:        []a2a.Participant{{ID: "me", RoleCode: "initiator"}, {ID: "anna-machine", RoleCode: "speak"}, {ID: "local-maclaw", RoleCode: "speak"}},
+					DefaultReplyTargets: map[string][]string{"machine-1": {"local-maclaw"}},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-default-hub/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Fatalf("decode message: %v", err)
+			}
+			gotToIDs = append([]string(nil), msg.ToIDs...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1", GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true}}}
+	if err := app.GroupDiscussionSendHistoryMessage("disc-default-hub", a2a.GroupDiscussionMessage{Content: "continue"}); err != nil {
+		t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
+	}
+	if len(gotToIDs) != 0 {
+		t.Fatalf("to_ids = %v, want Hub to resolve stored default", gotToIDs)
+	}
+}
+
 func TestGroupDiscussionSendHistoryMessageDefaultsWithDuplicateRemoteAliases(t *testing.T) {
 	var gotToIDs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

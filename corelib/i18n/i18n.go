@@ -321,6 +321,15 @@ const (
 	MsgExecPlanAmbig3   = "msg.exec_plan_ambig_3"
 	MsgExecPlanDefault1 = "msg.exec_plan_default_1"
 	MsgExecPlanDefault2 = "msg.exec_plan_default_2"
+	MsgExecRiskCoding1  = "msg.exec_risk_coding_1"
+	MsgExecRiskSSH1     = "msg.exec_risk_ssh_1"
+	MsgExecRiskAmbig1   = "msg.exec_risk_ambig_1"
+
+	// Execution confirmation - localized revision hints.
+	MsgExecRevisionAmbig1   = "msg.exec_revision_ambig_1"
+	MsgExecRevisionAmbig2   = "msg.exec_revision_ambig_2"
+	MsgExecRevisionDefault1 = "msg.exec_revision_default_1"
+	MsgExecRevisionDefault2 = "msg.exec_revision_default_2"
 )
 
 // defaultLang is the fallback language when lang is empty or unknown.
@@ -627,6 +636,13 @@ var translations = map[string]map[string]string{
 		MsgExecPlanAmbig3:        "确认后执行",
 		MsgExecPlanDefault1:      "确认任务理解",
 		MsgExecPlanDefault2:      "确认后开始执行",
+		MsgExecRiskCoding1:       "未确认就执行可能会修改错误目录中的代码",
+		MsgExecRiskSSH1:          "未确认就执行可能会连接到错误的服务器或环境",
+		MsgExecRiskAmbig1:        "该请求存在多个可能的执行路径，应先澄清",
+		MsgExecRevisionAmbig1:    "请说明这是代码工作还是 SSH/服务器工作",
+		MsgExecRevisionAmbig2:    "请提供正确的项目目录或主机信息",
+		MsgExecRevisionDefault1:  "如果目录不对，请回复正确目录",
+		MsgExecRevisionDefault2:  "如果任务理解不对，请回复修正内容",
 	},
 	"en": {
 		MsgAckProcessing:                      "⏳ Processing, please wait...",
@@ -922,6 +938,13 @@ var translations = map[string]map[string]string{
 		MsgExecPlanAmbig3:        "Execute after confirmation",
 		MsgExecPlanDefault1:      "Confirm task understanding",
 		MsgExecPlanDefault2:      "Start execution after confirmation",
+		MsgExecRiskCoding1:       "Executing without confirmation may modify code in the wrong directory",
+		MsgExecRiskSSH1:          "Executing without confirmation may connect to the wrong server or environment",
+		MsgExecRiskAmbig1:        "The request has multiple possible execution paths and should be clarified first",
+		MsgExecRevisionAmbig1:    "Clarify whether this is code work or SSH/server work",
+		MsgExecRevisionAmbig2:    "Provide the correct project directory or host information",
+		MsgExecRevisionDefault1:  "If the directory is wrong, reply with the correct directory",
+		MsgExecRevisionDefault2:  "If the task understanding is wrong, reply with the correction",
 	},
 }
 

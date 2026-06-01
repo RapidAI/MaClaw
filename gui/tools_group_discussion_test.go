@@ -468,6 +468,103 @@ func TestFormatGroupDiscussionSupplement(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionSummarizeResultInjectUsesRuntimeOwner(t *testing.T) {
+	ownerID := "weixin:user-1"
+	desktopID := "desktop-user"
+	handler := &IMMessageHandler{lastUserID: desktopID, currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-desktop", PolicyOwnerID: desktopID}}}
+	ownerState := handler.getSessionLoop(ownerID)
+	ownerState.stateMu.Lock()
+	ownerState.loopCtx = NewLoopContext("chat", 20, nil)
+	ownerState.stateMu.Unlock()
+	desktopState := handler.getSessionLoop(desktopID)
+	desktopState.stateMu.Lock()
+	desktopState.loopCtx = NewLoopContext("desktop", 20, nil)
+	desktopState.stateMu.Unlock()
+	app := &App{imHandler: handler}
+	if !toolAcceptsRuntimePolicyOwnerArg("group_discussion") {
+		t.Fatal("group_discussion must accept hidden runtime owner args")
+	}
+	args := map[string]interface{}{
+		registeredToolPolicyOwnerIDField: ownerID,
+	}
+	gotOwner, explicitRuntime := groupDiscussionRuntimeOwnerForInjection(handler, args, true)
+	if !explicitRuntime || gotOwner != ownerID {
+		t.Fatalf("runtime owner = %q explicit=%v, want %q explicit", gotOwner, explicitRuntime, ownerID)
+	}
+	if _, ok := args[registeredToolPolicyOwnerIDField]; ok {
+		t.Fatal("runtime owner arg leaked after consumption")
+	}
+	if _, err := app.injectGroupDiscussionSummaryForUser(gotOwner, GroupDiscussionSummarizeResult{ConsultationID: "disc-runtime-owner", Summary: "Use staged rollout"}); err != nil {
+		t.Fatalf("injectGroupDiscussionSummaryForUser: %v", err)
+	}
+	if _, ok := handler.pendingInjection.Load(desktopID); ok {
+		t.Fatal("group discussion injection leaked into desktop/lastUserID session")
+	}
+	pending, ok := handler.pendingInjection.Load(ownerID)
+	if !ok || !strings.Contains(fmt.Sprint(pending), "Use staged rollout") {
+		t.Fatalf("owner pending injection = %#v, ok=%v", pending, ok)
+	}
+}
+
+func TestGroupDiscussionSummarizeResultEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	handler := &IMMessageHandler{lastUserID: "desktop-user", currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-desktop", PolicyOwnerID: "desktop-user"}}}
+	desktopState := handler.getSessionLoop("desktop-user")
+	desktopState.stateMu.Lock()
+	desktopState.loopCtx = NewLoopContext("desktop", 20, nil)
+	desktopState.stateMu.Unlock()
+	app := &App{imHandler: handler}
+
+	raw := dispatchGroupDiscussionTool(app, handler, map[string]interface{}{
+		"action":                         "summarize_result",
+		"consultation_id":                "disc-empty-owner",
+		"force":                          true,
+		"inject":                         true,
+		registeredToolPolicyOwnerIDField: "",
+	})
+	var payload struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal summarize result: %v\n%s", err, raw)
+	}
+	if payload.OK || !strings.Contains(payload.Error, "non-empty runtime owner") {
+		t.Fatalf("empty runtime owner should fail closed, got %s", raw)
+	}
+	if _, ok := handler.pendingInjection.Load("desktop-user"); ok {
+		t.Fatal("empty runtime owner inherited desktop/lastUserID injection")
+	}
+}
+
+func TestGroupDiscussionSummarizeResultInjectWithoutHiddenOwnerDoesNotUseCurrentLoop(t *testing.T) {
+	handler := &IMMessageHandler{lastUserID: "desktop-user", currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-desktop", PolicyOwnerID: "desktop-user"}}}
+	desktopState := handler.getSessionLoop("desktop-user")
+	desktopState.stateMu.Lock()
+	desktopState.loopCtx = NewLoopContext("desktop", 20, nil)
+	desktopState.stateMu.Unlock()
+	app := &App{imHandler: handler}
+
+	raw := dispatchGroupDiscussionTool(app, handler, map[string]interface{}{
+		"action":          "summarize_result",
+		"consultation_id": "disc-no-hidden-owner",
+		"force":           true,
+		"inject":          true,
+	})
+	var payload struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal summarize result: %v\n%s", err, raw)
+	}
+	if payload.OK || !strings.Contains(payload.Error, "non-empty runtime owner") {
+		t.Fatalf("missing hidden runtime owner should fail closed, got %s", raw)
+	}
+	if _, ok := handler.pendingInjection.Load("desktop-user"); ok {
+		t.Fatal("missing hidden runtime owner inherited currentLoopCtx injection")
+	}
+}
+
 func TestFinalizeGroupDiscussionSummaryPreviewCarriesSafeHandoff(t *testing.T) {
 	t.Parallel()
 	got := finalizeGroupDiscussionSummaryPreview(GroupDiscussionSummarizeResult{ConsultationID: "disc-1", Summary: "Use staged rollout", AnswerCount: 2, UsedLLM: true})

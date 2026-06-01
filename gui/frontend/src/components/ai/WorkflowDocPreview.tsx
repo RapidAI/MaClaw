@@ -702,6 +702,7 @@ function WorkflowProgressBoard({
                     // so a non-canonical current phase id still highlights its canonical node.
                     const isCurrent = currentIndex >= 0 && index === currentIndex;
                     const isViewing = pid === activePhaseID;
+                    const isViewingOnly = isViewing && !isCurrent;
                     const isPast = currentIndex >= 0 && index < currentIndex;
                     const cardState = workflowProgressPhaseCardState({
                         expectsDocument,
@@ -733,15 +734,20 @@ function WorkflowProgressBoard({
                             key={pid}
                             type="button"
                             aria-label={`${phaseLabel}${ariaSeparator}${statusLabel}`}
+                            aria-current={isCurrent ? "step" : undefined}
                             aria-pressed={isViewing}
                             onClick={() => onSelectPhase(pid)}
                             style={{
                                 minHeight: "68px",
                                 padding: "8px 10px",
                                 borderRadius: "8px",
-                                border: `1px solid ${isViewing ? theme.accentColor : theme.border}`,
-                                background: isViewing ? theme.accentBg : `linear-gradient(180deg, ${softToneBg}, ${theme.bg})`,
-                                boxShadow: isViewing ? `0 0 0 1px ${theme.accentColor} inset` : "none",
+                                border: `1px solid ${isCurrent ? theme.accentColor : theme.border}`,
+                                background: isCurrent ? theme.accentBg : `linear-gradient(180deg, ${softToneBg}, ${theme.bg})`,
+                                boxShadow: isCurrent
+                                    ? `0 0 0 1px ${theme.accentColor} inset`
+                                    : isViewingOnly
+                                        ? `0 0 0 1px ${theme.border} inset`
+                                        : "none",
                                 color: theme.text,
                                 cursor: "pointer",
                                 opacity: cardState.emphasized ? 1 : 0.64,

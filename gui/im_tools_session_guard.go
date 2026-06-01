@@ -12,7 +12,8 @@ import (
 // user message should NOT create a coding session. Returns "" only for
 // explicit coding tasks.
 func (h *IMMessageHandler) checkSessionTaskGuard() string {
-	result := h.classifyTaskIntentForSessionGuard(h.lastUserText)
+	userText, ownerID := h.currentRuntimeTaskTextOrLegacy()
+	result := h.classifyTaskIntentForSessionGuard(userText)
 
 	if result.Intent == intentCoding {
 		return ""
@@ -20,7 +21,7 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 
 	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
 		if gic := h.getGateIntentClassifier(); gic != nil {
-			gResult := gic.Classify(h.lastUserText, h.currentRuntimePolicyOwnerID())
+			gResult := gic.Classify(userText, ownerID)
 			switch gResult.Intent {
 			case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance:
 				return ""
@@ -33,7 +34,7 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 
 		if h.app != nil && h.getAppToolRouter() != nil {
 			if ic := h.getAppToolRouter().IntentClassifier(); ic != nil {
-				icResult := ic.Classify(h.lastUserText)
+				icResult := ic.Classify(userText)
 				switch icResult.Intent {
 				case tool.IntentCoding:
 					return ""
@@ -110,6 +111,7 @@ func (h *IMMessageHandler) conversationHasCodingContextForOwnerUIC(uic *intent.U
 	if userID == "" {
 		return false
 	}
+	currentTaskText := h.runtimeTaskTextForOwner(userID)
 	entries := h.memory.Load(userID)
 	if len(entries) == 0 {
 		return false
@@ -122,7 +124,7 @@ func (h *IMMessageHandler) conversationHasCodingContextForOwnerUIC(uic *intent.U
 		if entries[i].Role != "user" {
 			continue
 		}
-		if strings.TrimSpace(text) == strings.TrimSpace(h.lastUserText) {
+		if strings.TrimSpace(text) == strings.TrimSpace(currentTaskText) {
 			continue
 		}
 		// Use embedding-only classification for history entries to avoid

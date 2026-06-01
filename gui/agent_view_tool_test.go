@@ -293,6 +293,58 @@ func TestHandleRegisteredToolAgentViewSubmitStripsRuntimePolicyOwner(t *testing.
 	}
 }
 
+func TestHandleRegisteredToolAgentViewSubmitKeepsOwnerForOwnerAwareTool(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	var seenOwner string
+	if err := h.registry.Register(RegisteredTool{
+		Name:     "memory",
+		Required: []string{"value"},
+		Handler: func(args map[string]interface{}) string {
+			seenOwner = consumeRuntimePolicyOwnerIDFromToolArgs(args)
+			return "captured"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.handleRegisteredToolAgentViewSubmit("memory", map[string]interface{}{
+		registeredToolAgentViewArgsField: map[string]interface{}{registeredToolPolicyOwnerIDField: "remote:mobile"},
+		"value":                          "x",
+	})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if seenOwner != "remote:mobile" {
+		t.Fatalf("owner-aware registered tool owner = %q, want remote:mobile", seenOwner)
+	}
+}
+
+func TestHandleRegisteredToolAgentViewSubmitEmptyOwnerAwareRuntimeOwnerFailsClosed(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	called := false
+	if err := h.registry.Register(RegisteredTool{
+		Name:     "memory",
+		Required: []string{"value"},
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "captured"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.handleRegisteredToolAgentViewSubmit("memory", map[string]interface{}{
+		registeredToolAgentViewArgsField: map[string]interface{}{registeredToolPolicyOwnerIDField: ""},
+		"value":                          "x",
+	})
+	if called {
+		t.Fatal("owner-aware registered tool should not run with empty runtime owner")
+	}
+	if resp == nil || !strings.Contains(resp.Error, "runtime owner is missing") {
+		t.Fatalf("expected runtime owner rejection, got %#v", resp)
+	}
+}
+
 func TestHandleRegisteredToolAgentViewSubmitWithoutOwnerDoesNotUseLegacyFallback(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	h.registry = NewToolRegistry()

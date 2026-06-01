@@ -22,6 +22,21 @@ const testTheme = {
     quoteBg: '#f8fafc',
 };
 
+function cssRGB(hex: string): string {
+    const raw = hex.replace('#', '');
+    const value = raw.length === 3
+        ? raw.split('').map(part => `${part}${part}`).join('')
+        : raw;
+    const r = Number.parseInt(value.slice(0, 2), 16);
+    const g = Number.parseInt(value.slice(2, 4), 16);
+    const b = Number.parseInt(value.slice(4, 6), 16);
+    return `rgb(${r}, ${g}, ${b})`;
+}
+
+function buttonByLabel(label: string): HTMLButtonElement {
+    return screen.getByLabelText(label) as HTMLButtonElement;
+}
+
 describe('workflowProgressPhaseIDs', () => {
     it('marks only the workflow preview header as a window drag region', () => {
         render(React.createElement(WorkflowDocPreview, {
@@ -355,6 +370,17 @@ describe('workflowProgressPhaseIDs', () => {
         expect(screen.getByLabelText('需求分析，已完成').getAttribute('aria-pressed')).toBe('true');
         expect(screen.getByLabelText('技术设计，缺文档')).toBeTruthy();
         expect(screen.getByLabelText('任务拆分，生成中')).toBeTruthy();
+
+        const requirementsButton = buttonByLabel('需求分析，已完成');
+        const tasksButton = buttonByLabel('任务拆分，生成中');
+        expect(requirementsButton.getAttribute('aria-pressed')).toBe('true');
+        expect(requirementsButton.getAttribute('aria-current')).toBeNull();
+        expect(requirementsButton.style.borderColor).toBe(cssRGB(testTheme.border));
+        expect(requirementsButton.style.boxShadow).toContain(testTheme.border);
+        expect(tasksButton.getAttribute('aria-pressed')).toBe('false');
+        expect(tasksButton.getAttribute('aria-current')).toBe('step');
+        expect(tasksButton.style.borderColor).toBe(cssRGB(testTheme.accentColor));
+        expect(tasksButton.style.boxShadow).toContain(testTheme.accentColor);
 
         fireEvent.click(screen.getByTitle('任务拆分 · 生成中'));
 

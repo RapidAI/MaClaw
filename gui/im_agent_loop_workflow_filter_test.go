@@ -109,6 +109,49 @@ func TestApplyWorkflowToolFilterRestoresDocRequiredTools(t *testing.T) {
 	}
 }
 
+func TestFullWorkflowPhasePinsLocalCodingTools(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "workflow-full-phase-pins-local-tools-user"
+	workflowType := workflow.WorkflowType("full_policy_local_tools")
+	handler.app.workflowEngine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "full policy local tools",
+		Description: "test template",
+		Phases: []workflow.PhaseTemplate{{
+			ID:          "implementation",
+			Name:        "Implementation",
+			Prompt:      "implement the project",
+			Deliverable: "working code",
+			ToolPolicy:  workflow.ToolFilterFull,
+		}},
+	})
+	if _, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "build"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("list_directory", "list directory", nil, nil),
+		toolDef("write_file", "write file", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+		toolDef("task", "task", nil, nil),
+	})
+
+	filtered := handler.applyWorkflowToolFilterWithCatalog(userID,
+		[]map[string]interface{}{toolDef("task", "task", nil, nil)},
+		handler.getTools(),
+	)
+	names := toolNameSetForWorkflowFilterTest(filtered)
+	for _, name := range []string{"bash", "read_file", "list_directory", "write_file", "edit_file"} {
+		if !names[name] {
+			t.Fatalf("full execution phase must keep local coding tool %s available, got %#v", name, names)
+		}
+	}
+	if !names["task"] {
+		t.Fatalf("full policy should preserve routed non-local tools too, got %#v", names)
+	}
+}
+
 func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-doc-only-blocks-implementation-tools-user"

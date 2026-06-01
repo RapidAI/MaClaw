@@ -104,7 +104,6 @@ requireFile('gui/frontend/src/components/pages/GossipPage.tsx');
 requireFile('gui/frontend/src/components/AboutPanel.tsx');
 requireFile('gui/frontend/src/components/MemoryHealthDialog.tsx');
 requireFile('gui/frontend/src/components/SecurityEventsDialog.tsx');
-requireFile('gui/frontend/src/components/modals/StartupPopup.tsx');
 requireFile('gui/frontend/src/components/modals/ThanksModal.tsx');
 requireFile('gui/frontend/src/components/modals/ToolRepairProgressDialog.tsx');
 requireFile('gui/frontend/src/components/modals/UpdateModal.tsx');
@@ -215,7 +214,6 @@ for (const [rel, max] of highRiskRemoteFileLineLimits) requireMaxLines(rel, max)
 
 const modalThemeFiles = [
   'gui/frontend/src/components/modals/InstallSkillModal.tsx',
-  'gui/frontend/src/components/modals/StartupPopup.tsx',
   'gui/frontend/src/components/modals/ConfirmDialog.tsx',
   'gui/frontend/src/components/modals/UpdateModal.tsx',
 ];
@@ -417,7 +415,6 @@ const criticalMarkers = [
   ['ProjectManagerPage', 'project manager page'],
   ['RemoteSessionsPage', 'remote sessions page'],
   ['SkillsPage', 'skills page'],
-  ['StartupPopup', 'startup popup'],
   ['ThanksModal', 'thanks modal'],
   ['AboutPanel', 'about page'],
   ['ToolRepairProgressDialog', 'tool repair progress dialog'],
@@ -512,7 +509,6 @@ for (const rel of [
   'gui/frontend/src/components/layout/SidebarSystemStatus.tsx',
   'gui/frontend/src/components/layout/MainTopHeader.tsx',
   'gui/frontend/src/components/layout/AppStatusMessageBar.tsx',
-  'gui/frontend/src/components/modals/StartupPopup.tsx',
   'gui/frontend/src/components/modals/ThanksModal.tsx',
   'gui/frontend/src/components/modals/ToolRepairProgressDialog.tsx',
   'gui/frontend/src/components/modals/UpdateModal.tsx',
@@ -626,11 +622,6 @@ requireIncludes('gui/frontend/src/components/SecurityEventsDialog.tsx', "t('secu
 requireIncludes('gui/frontend/src/components/SecurityEventsDialog.tsx', "t('securityEventsTime')", 'security events table header localization');
 requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"securityEventsDeniedSummary"', 'security events summary translations');
 requireIncludes('gui/frontend/src/i18n/appTranslations.ts', '"securityRiskCritical"', 'security event risk translations');
-requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'hide_startup_popup', 'startup popup hide toggle wiring');
-requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'UserManual_CN.md', 'startup popup manual link');
-requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', 'var(--theme-surface)', 'startup popup theme-aware surface');
-requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', '\\u{1F3AC}', 'startup popup quick start icon');
-requireIncludes('gui/frontend/src/components/modals/StartupPopup.tsx', '\\u{1F4D6}', 'startup popup manual icon');
 requireIncludes('gui/frontend/src/components/modals/ThanksModal.tsx', 'ReactMarkdown', 'thanks modal markdown rendering');
 requireIncludes('gui/frontend/src/components/modals/ThanksModal.tsx', 'components={{ a: MarkdownLink }}', 'thanks modal markdown links');
 requireIncludes('gui/frontend/src/components/modals/ToolRepairProgressDialog.tsx', 'toolRepairInstalling', 'tool repair installing message');

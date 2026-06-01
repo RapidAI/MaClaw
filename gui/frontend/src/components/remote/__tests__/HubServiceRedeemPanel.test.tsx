@@ -39,7 +39,7 @@ describe('HubServiceRedeemPanel', () => {
             available_models: ['auto'],
             hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
         });
-        LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token', remote_tenant_id: 'tenant acme' });
+        LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token', remote_tenant_id: 'tenant acme', remote_email: 'dev@example.com' });
         RedeemHubLLMServiceMock.mockResolvedValue({ active: true, skip_llm_config: true });
     });
 
@@ -55,6 +55,7 @@ describe('HubServiceRedeemPanel', () => {
             default_model: 'auto',
             available_models: ['auto'],
             hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            nearest_expires_at: '2026-05-06T00:00:00Z',
             credit_grants: [{
                 service_group_id: 'coding-basic',
                 source: 'card',
@@ -204,6 +205,133 @@ describe('HubServiceRedeemPanel', () => {
         expect(screen.getAllByText('25').length).toBeGreaterThan(0);
     });
 
+    it('shows currently available credits instead of blocked remaining credits while service is active', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['LLM'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credits_remaining: 4900,
+            credits_available: 10000,
+            credit_grants: [{
+                service_group_id: 'coding-monthly',
+                source: 'card',
+                expires_at: '2026-05-31T00:00:00Z',
+                active: false,
+                status: 'period_limited',
+                credits_total: 5000,
+                credits_used: 100,
+                credits_remaining: 4900,
+            }, {
+                service_group_id: 'coding-point-card',
+                source: 'card',
+                expires_at: '2027-05-31T00:00:00Z',
+                active: false,
+                status: 'queued',
+                credits_total: 10000,
+                credits_used: 0,
+                credits_remaining: 10000,
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        await screen.findByText('coding-monthly');
+        expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('10000');
+        expect(screen.getByText('Total credits').parentElement?.textContent).toContain('10100');
+    });
+
+    it('falls back to the longest grant expiry when status has no effective expiry', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['LLM'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'coding-basic',
+                source: 'card',
+                expires_at: '2026-05-06T00:00:00Z',
+                active: true,
+                status: 'active',
+            }, {
+                service_group_id: 'coding-next',
+                source: 'card',
+                expires_at: '2026-06-06T00:00:00Z',
+                active: false,
+                status: 'queued',
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        await screen.findByText('coding-basic');
+        expect(screen.getAllByText(/06\/06\/2026/).length).toBeGreaterThan(0);
+    });
+
+    it('ignores invalid grant expiry values when choosing the fallback service expiry', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['LLM'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'coding-invalid',
+                source: 'card',
+                expires_at: 'not-a-date',
+                active: true,
+                status: 'active',
+            }, {
+                service_group_id: 'coding-valid',
+                source: 'card',
+                expires_at: '2026-06-06T00:00:00Z',
+                active: false,
+                status: 'queued',
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        await screen.findByText('coding-invalid');
+        expect(screen.getAllByText(/06\/06\/2026/).length).toBeGreaterThan(0);
+    });
+
+    it('guards malformed numeric fields from leaking NaN into credit totals', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['LLM'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credits_total: 'bad',
+            credits_used: 'bad',
+            credits_remaining: 'bad',
+            credits_available: '25',
+            credit_grants: [{
+                service_group_id: 'coding-basic',
+                source: 'card',
+                expires_at: '2026-06-06T00:00:00Z',
+                active: true,
+                status: 'active',
+                credits_total: 'bad',
+                credits_remaining: 'bad',
+            }],
+        });
+
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        await screen.findByText('coding-basic');
+        expect(screen.getByText('Total credits').parentElement?.textContent).toContain('25');
+        expect(screen.getByText('Used credits').parentElement?.textContent).toContain('0');
+        expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('25');
+    });
+
     it('shows expired grant expiry while reporting no currently available credits', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: false,
@@ -278,14 +406,26 @@ describe('HubServiceRedeemPanel', () => {
 
         fireEvent.click(buyCredits);
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme');
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
         });
 
         BrowserOpenURLMock.mockClear();
         fireEvent.click(viewCredits);
 
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/get-credits?tenant_id=tenant%20acme#token=viewer%20token');
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/get-credits?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
+        });
+    });
+
+    it('opens card store with viewer token fallback when configured email is unavailable', async () => {
+        LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token', remote_tenant_id: 'tenant acme' });
+        render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const buyCredits = await screen.findByRole('button', { name: 'Buy Credits' });
+        fireEvent.click(buyCredits);
+
+        await waitFor(() => {
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme#token=viewer%20token');
         });
     });
 

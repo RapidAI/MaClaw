@@ -18,6 +18,7 @@
           <button id="langZh" type="button" data-lang="zh" aria-pressed="true">中</button>
           <button id="langEn" type="button" data-lang="en" aria-pressed="false">EN</button>
         </div>
+        <button id="accountBtn" class="account-chip" type="button" hidden></button>
         <a class="ghost" href="/get-credits" data-credits-center-link data-i18n="creditsCenter">额度中心</a>
         <button id="reloadBtn" type="button" data-i18n="reload">刷新</button>
       </nav>
@@ -73,13 +74,14 @@
         loading: '加载中...', storeEnabled: '商店已启用', storeDisabled: '商店未启用', loadFailed: '商品加载失败', priceConfigured: '所有价格由后台「在线商店」配置。',
         paymentTitle: '支付后续', paymentDesc: '支付通知验签成功后，系统自动生成服务兑换码。', recoveryTitleShort: '邮箱找回', recoveryDescShort: '忘记兑换码时可用购买邮箱重新发送。',
         catalogEyebrow: 'Catalog', catalogTitle: '可购买卡种', catalogDesc: '服务卡覆盖固定周期，点卡用于补充 credits。',
-        serviceCard: '服务兑换卡', creditsCard: '纯点卡', registeredEmail: '注册邮箱', secondaryEmail: '第二邮箱（可选）', buy: '购买', validForDays: '天有效', validForDay: '天有效',
+        serviceCard: '服务兑换卡', creditsCard: '纯点卡', registeredEmail: '注册邮箱', secondaryEmail: '第二邮箱（可选）', buy: '购买', validForDays: '天有效', validForDay: '天有效', accountNotSet: '未设置邮箱', accountHint: '购买邮箱', changeEmail: '更换邮箱', emailDialogTitle: '确认购买邮箱', emailDialogDesc: '服务兑换码会发送到该邮箱；如果邮箱匹配已注册账户，支付后会自动充值。', continueBuy: '继续购买', cancel: '取消', returnOrderTitle: '支付返回', returnOrderLoading: '正在确认支付结果...',
         recoveryEyebrow: 'Recovery', recoveryTitle: '找回服务兑换码', recoveryDesc: '输入购买时使用的注册邮箱或第二邮箱，系统会把已支付订单的兑换码发送到该邮箱。', recoverButton: '发送找回邮件',
         enterEmail: '请填写注册邮箱', invalidSecondEmail: '请填写有效的第二邮箱，或留空', createOrder: '正在创建订单...', orderCreated: '订单已创建，支付完成后此处会显示兑换码', openPayment: '打开支付页面', paymentLinkHint: '支付链接', createFailed: '创建订单失败', waitingNotify: '等待支付通知中... 订单号 ', manualWaiting: '已提醒店主，请等待核对到账。订单号 ', manualRejected: '订单已驳回', payCode: '付款备注', payAmount: '付款金额', payChannel: '付款方式', payee: '收款人', payQR: '付款码', productLabel: '商品', payDone: '我已扫码支付完成', payDoneSending: '正在通知店主...', payDoneSent: '已通知店主', payDoneWarning: '重要：扫码付款后必须点击“支付完成”按钮，否则店主不会收到确认邮件，订单可能无法及时处理。', payDoneFirst: '请扫码付款后点击“支付完成”，店主才会收到确认邮件。',
         serviceCode: '服务兑换码', paidSent: '支付成功，兑换码已发送到邮箱', paidGenerated: '支付成功，兑换码已生成', autoRedeemed: '支付成功，已自动充值到注册邮箱账户', autoRedeemFailed: '支付成功，但自动充值未完成，请使用兑换码手动兑换。', issueFailed: '支付已确认，但服务码生成失败，请联系管理员处理。', notifyTimeout: '还没有收到支付通知，可稍后刷新或使用邮箱找回',
+        resultSuccessTitle: '支付成功', resultPendingTitle: '正在确认支付结果...', resultSuccessLead: '订单已完成，服务兑换码已生成。', resultAutoRedeemedLead: '已自动充值到注册邮箱账户，兑换码作为备用凭证保留。', resultPendingLead: '正在读取订单状态，确认后会在这里显示兑换码。', resultBackupCode: '备用服务兑换码', copyCode: '复制兑换码', copied: '已复制', viewCredits: '查看 Credits', continueShopping: '继续购买', orderNumber: '订单号', paidAccount: '充值账号', productLabelShort: '商品', paymentAmount: '支付金额', mailState: '邮件状态', autoRedeemState: '自动充值', done: '已完成', notDone: '未完成', continueShoppingTitle: '继续购买其他卡种',
         recoverSending: '正在发送找回邮件...', recoverSent: '已发送找回邮件，请查收邮箱', recoverNone: '没有找到已支付的兑换码', recoverFailed: '发送失败', emptyProducts: '暂无可售商品',
-        productNames: { service_day: '日卡', service_week: '周卡', service_month: '月卡', service_quarter: '季卡', service_year: '年卡', credits_10000: '纯点卡 1 万点', credits_50000: '纯点卡 5 万点', service_test_10: '测试商品 10 credits' },
-        productDescriptions: { service_test_10: '仅用于测试。生成 10 credits 服务兑换卡。' }
+        productNames: { service_day: '日卡', service_week: '周卡', service_month: '月卡', service_quarter: '季卡', service_year: '年卡', credits_10000: '纯点卡 1 万点', credits_50000: '纯点卡 5 万点', service_test_10: '测试商品 1 credit' },
+        productDescriptions: { service_test_10: '仅用于测试。生成 1 credit 服务兑换卡。' }
       },
       en: {
         title: 'MaClaw Service Card Store', brandSubtitle: 'Service Card Store', creditsCenter: 'Credits Center', reload: 'Refresh',
@@ -87,25 +89,33 @@
         loading: 'Loading...', storeEnabled: 'Store enabled', storeDisabled: 'Store disabled', loadFailed: 'Products failed to load', priceConfigured: 'All prices are configured in Admin > Online Store.',
         paymentTitle: 'After payment', paymentDesc: 'After a verified payment notification, the system creates a service exchange code automatically.', recoveryTitleShort: 'Email recovery', recoveryDescShort: 'Use the purchase email to resend forgotten service codes.',
         catalogEyebrow: 'Catalog', catalogTitle: 'Available cards', catalogDesc: 'Service cards cover fixed periods. Credits cards add credits.',
-        serviceCard: 'Service card', creditsCard: 'Credits card', registeredEmail: 'Registered email', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid',
+        serviceCard: 'Service card', creditsCard: 'Credits card', registeredEmail: 'Registered email', secondaryEmail: 'Second email (optional)', buy: 'Buy', validForDays: 'days valid', validForDay: 'day valid', accountNotSet: 'Email not set', accountHint: 'Purchase email', changeEmail: 'Change email', emailDialogTitle: 'Confirm purchase email', emailDialogDesc: 'The service code will be sent to this email. If it matches a registered account, credits are added automatically after payment.', continueBuy: 'Continue', cancel: 'Cancel', returnOrderTitle: 'Payment return', returnOrderLoading: 'Confirming payment result...',
         recoveryEyebrow: 'Recovery', recoveryTitle: 'Recover service code', recoveryDesc: 'Enter the registered email or second email used for purchase. Paid order codes will be resent to that inbox.', recoverButton: 'Send recovery email',
         enterEmail: 'Enter registered email', invalidSecondEmail: 'Enter a valid second email, or leave it empty.', createOrder: 'Creating order...', orderCreated: 'Order created. The service code will appear here after payment.', openPayment: 'Open payment page', paymentLinkHint: 'Payment link', createFailed: 'Order creation failed', waitingNotify: 'Waiting for payment notification... Order ', manualWaiting: 'Store owner has been notified. Waiting for payment confirmation. Order ', manualRejected: 'Order rejected', payCode: 'Payment remark', payAmount: 'Amount', payChannel: 'Payment method', payee: 'Payee', payQR: 'Payment QR', productLabel: 'Product', payDone: 'I have paid', payDoneSending: 'Notifying store owner...', payDoneSent: 'Store owner notified', payDoneWarning: 'Important: after scanning and paying, click "I have paid". Otherwise the store owner will not receive the confirmation email and the order may not be handled in time.', payDoneFirst: 'Scan and pay, then click "I have paid" so the store owner receives the confirmation email.',
         serviceCode: 'Service code', paidSent: 'Payment successful. Code sent by email.', paidGenerated: 'Payment successful. Code generated.', autoRedeemed: 'Payment successful. Credits were added to the registered email account.', autoRedeemFailed: 'Payment successful, but auto credit did not complete. Redeem the code manually.', issueFailed: 'Payment confirmed, but service code issuance failed. Please contact an administrator.', notifyTimeout: 'Payment notification not received yet. Refresh later or recover by email.',
+        resultSuccessTitle: 'Payment successful', resultPendingTitle: 'Confirming payment result...', resultSuccessLead: 'The order is complete and the service code has been issued.', resultAutoRedeemedLead: 'Credits were added to the registered email account. The service code remains as a backup receipt.', resultPendingLead: 'Reading order status. The service code will appear here after confirmation.', resultBackupCode: 'Backup service code', copyCode: 'Copy code', copied: 'Copied', viewCredits: 'View Credits', continueShopping: 'Continue shopping', orderNumber: 'Order', paidAccount: 'Account', productLabelShort: 'Product', paymentAmount: 'Amount', mailState: 'Email', autoRedeemState: 'Auto credit', done: 'Done', notDone: 'Not done', continueShoppingTitle: 'Continue shopping',
         recoverSending: 'Sending recovery email...', recoverSent: 'Recovery email sent. Please check your inbox.', recoverNone: 'No paid service codes found.', recoverFailed: 'Send failed', emptyProducts: 'No products available',
-        productNames: { service_day: 'Day card', service_week: 'Week card', service_month: 'Month card', service_quarter: 'Quarter card', service_year: 'Year card', credits_10000: 'Credits card 10,000', credits_50000: 'Credits card 50,000', service_test_10: 'Test product 10 credits' },
-        productDescriptions: { service_test_10: 'For payment testing only. Issues a 10-credit service exchange card.' }
+        productNames: { service_day: 'Day card', service_week: 'Week card', service_month: 'Month card', service_quarter: 'Quarter card', service_year: 'Year card', credits_10000: 'Credits card 10,000', credits_50000: 'Credits card 50,000', service_test_10: 'Test product 1 credit' },
+        productDescriptions: { service_test_10: 'For payment testing only. Issues a 1-credit service exchange card.' }
       }
     };
+    I18N.zh.alipayVerifyPending = '支付宝返回已收到，正在等待异步支付通知确认...';
+    I18N.en.alipayVerifyPending = 'Alipay return received. Waiting for async payment confirmation...';
     const state = document.getElementById('storeState');
     const productsRoot = document.getElementById('products');
     const urlParams = new URLSearchParams(location.search);
     let lang = normalizeLang(urlParams.get('lang') || localStorage.getItem('card_store_lang') || navigator.language || 'zh');
     let lastProductsData = null;
-    let tenantId = urlParams.get('tenant_id') || '';
-    let registeredEmail = localStorage.getItem('card_store_email') || '';
+    let checkoutResultBody = null;
+    let checkoutResultPaid = false;
+    let tenantId = urlParams.get('tenant_id') || localStorage.getItem('card_store_tenant_id') || '';
+    let registeredEmail = normalizeEmail(urlParams.get('email') || localStorage.getItem('card_store_email') || '');
+    let secondaryEmail = normalizeEmail(localStorage.getItem('card_store_secondary_email') || '');
+    if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail);
     const productTone = { service_day: ['#08a7ff', '#5b5ff7', '#7afcff'], service_week: ['#00c6a7', '#1f8fff', '#c8ff6a'], service_month: ['#8b5cf6', '#06b6d4', '#ff8bd1'], service_quarter: ['#ff9f1c', '#f43f5e', '#38bdf8'], service_year: ['#14b8a6', '#2563eb', '#22d3ee'], credits_10000: ['#0ea5e9', '#22d3ee', '#a7f3d0'], credits_50000: ['#6366f1', '#ec4899', '#facc15'], service_test_10: ['#64748b', '#f97316', '#fbbf24'] };
     function normalizeLang(value) { return String(value || '').toLowerCase().indexOf('en') === 0 ? 'en' : 'zh'; }
     function t(key) { return I18N[lang][key] || I18N.zh[key] || key; }
+    function normalizeEmail(value) { return String(value || '').trim().toLowerCase(); }
     function money(v) { return '¥' + Number(v || 0).toFixed(2); }
     function label(product) { return (I18N[lang].productNames || {})[product.id] || product.label || product.id; }
     function productDescription(product) { return (I18N[lang].productDescriptions || {})[product.id] || product.description || ''; }
@@ -113,11 +123,14 @@
     function cardArtTitle(product) { return ({ service_day: 'DAY PASS', service_week: 'WEEK PASS', service_month: 'MONTH', service_quarter: 'QUARTER', service_year: 'YEAR PASS', service_test_10: 'TEST CARD' })[product.id] || (isCredits(product) ? 'CREDITS' : 'SERVICE'); }
     function esc(v) { return String(v == null ? '' : v).replace(/[&<>\"]/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[s])); }
     function svgId(v) { return String(v || 'card').replace(/[^a-zA-Z0-9_-]/g, '-'); }
-    function cardStoreURL() { return tenantId ? '/card_store?tenant_id=' + encodeURIComponent(tenantId) : '/card_store'; }
-    function creditsCenterURL() { return tenantId ? '/get-credits?tenant_id=' + encodeURIComponent(tenantId) : '/get-credits'; }
+    function scopedURL(path) { const qs = new URLSearchParams(); if (tenantId) qs.set('tenant_id', tenantId); if (registeredEmail) qs.set('email', registeredEmail); const query = qs.toString(); return path + (query ? '?' + query : ''); }
+    function cardStoreURL() { return scopedURL('/card_store'); }
+    function creditsCenterURL() { return scopedURL('/get-credits'); }
     function updateTenantScopedLinks() { document.querySelectorAll('[data-card-store-home-link]').forEach(link => { link.setAttribute('href', cardStoreURL()); }); document.querySelectorAll('[data-credits-center-link]').forEach(link => { link.setAttribute('href', creditsCenterURL()); }); }
+    function updateAccountChip() { const btn = document.getElementById('accountBtn'); if (!btn) return; btn.hidden = false; btn.textContent = registeredEmail || t('accountNotSet'); btn.title = registeredEmail ? (t('accountHint') + ': ' + registeredEmail + ' · ' + t('changeEmail')) : t('accountNotSet'); btn.classList.toggle('is-empty', !registeredEmail); }
+    function setBuyerEmails(email, second) { registeredEmail = normalizeEmail(email); secondaryEmail = normalizeEmail(second); if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail); if (secondaryEmail) localStorage.setItem('card_store_secondary_email', secondaryEmail); else localStorage.removeItem('card_store_secondary_email'); updateAccountChip(); updateTenantScopedLinks(); }
     function setTenantId(value) { const next = String(value || '').trim(); if (!next) { tenantId = ''; localStorage.removeItem('card_store_tenant_id'); updateTenantScopedLinks(); return; } tenantId = next; localStorage.setItem('card_store_tenant_id', tenantId); updateTenantScopedLinks(); }
-    function cleanCardStoreURL() { const qs = new URLSearchParams(window.location.search || ''); const current = qs.get('tenant_id') || tenantId; qs.delete('token'); if (current) qs.set('tenant_id', current); const query = qs.toString(); return window.location.pathname + (query ? '?' + query : ''); }
+    function cleanCardStoreURL() { const qs = new URLSearchParams(window.location.search || ''); const current = qs.get('tenant_id') || tenantId; const email = normalizeEmail(qs.get('email') || registeredEmail); qs.delete('token'); if (current) qs.set('tenant_id', current); if (email) qs.set('email', email); const query = qs.toString(); return window.location.pathname + (query ? '?' + query : ''); }
     function formatDuration(product) {
       const days = Number(product.duration_days || 0);
       if (!days) return Number(product.credits || 0).toLocaleString() + ' credits';
@@ -133,7 +146,9 @@
         node.setAttribute('aria-pressed', String(active));
       });
       localStorage.setItem('card_store_lang', lang);
+      updateAccountChip();
       if (lastProductsData) render(lastProductsData);
+      if (checkoutResultBody) showCheckoutResult(checkoutResultBody, checkoutResultPaid, { preserveScroll: true });
     }
     function svgCard(product) {
       const tones = productTone[product.id] || ['#08a7ff', '#5b5ff7', '#7afcff'];
@@ -149,8 +164,8 @@
     }
     function paymentChannelIcon(id) {
       const value = String(id || '').toLowerCase();
+      if (value.indexOf('alipay') >= 0) return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M8 10h8M12 7v8M8.5 17c2.8-.4 5.3-1.8 7-4" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       if (value.indexOf('wechat') >= 0) return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.2C5.9 6.2 3 8.5 3 11.3c0 1.6.9 3 2.4 3.9l-.5 1.9 2.2-1.1c.7.2 1.5.4 2.4.4 3.6 0 6.5-2.3 6.5-5.1S13.1 6.2 9.5 6.2Z"/><path d="M14.6 10.2c3.1 0 5.4 2 5.4 4.3 0 1.2-.7 2.4-1.8 3.1l.4 1.6-1.8-.9c-.7.2-1.4.3-2.2.3-3.1 0-5.4-1.9-5.4-4.2s2.3-4.2 5.4-4.2Z"/><circle cx="7.3" cy="10.5" r=".8" fill="#fff"/><circle cx="11.7" cy="10.5" r=".8" fill="#fff"/></svg>';
-      if (value.indexOf('alipay') >= 0) return '<svg viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="16.7" text-anchor="middle" fill="#fff" font-size="15" font-weight="900" font-family="KaiTi,STKaiti,SimSun,serif">支</text><path d="M7.8 18.2c2.4.7 5.5.5 8.4-1.9M15.2 13.8c1.2 1.7 2.8 2.8 4.4 3.4" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="3"/><path d="M7 10h10M7 14h6" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>';
     }
     function paymentMethodSelect(channels, productID) {
@@ -183,7 +198,8 @@
         const descText = productDescription(product);
         const desc = descText ? '<p class="product-desc">' + esc(descText) + '</p>' : '';
         const channelSelect = paymentMethodSelect(data.payment_channels || [], product.id);
-        card.innerHTML = svgCard(product) + '<div class="product-body"><div><span class="pill">' + (isCredits(product) ? t('creditsCard') : t('serviceCard')) + '</span><h3>' + esc(label(product)) + '</h3><p>' + esc(formatDuration(product)) + '</p>' + desc + '</div><div class="mail-fields"><label>' + t('registeredEmail') + '<input type="email" class="buyer-email" value="' + esc(registeredEmail) + '" placeholder="name@example.com" autocomplete="email"></label><label>' + t('secondaryEmail') + '<input type="email" class="second-email" placeholder="backup@example.com" autocomplete="email"></label>' + channelSelect + '</div><div class="buy-row"><div class="price">' + money(product.price) + '</div><button type="button">' + t('buy') + '</button></div><div class="code-box" hidden></div><div class="msg" aria-live="polite"></div></div>';
+        const payBlock = channelSelect ? '<div class="product-payment">' + channelSelect + '</div>' : '';
+        card.innerHTML = svgCard(product) + '<div class="product-body"><div><span class="pill">' + (isCredits(product) ? t('creditsCard') : t('serviceCard')) + '</span><h3>' + esc(label(product)) + '</h3><p>' + esc(formatDuration(product)) + '</p>' + desc + '</div>' + payBlock + '<div class="buy-row"><div class="price">' + money(product.price) + '</div><button type="button">' + t('buy') + '</button></div><div class="code-box" hidden></div><div class="msg" aria-live="polite"></div></div>';
         const btn = card.querySelector('button');
         const msg = card.querySelector('.msg');
         const codeBox = card.querySelector('.code-box');
@@ -191,25 +207,23 @@
         updatePaymentOptionUI(card);
         btn.disabled = !data.enabled || Number(product.price || 0) <= 0;
         btn.addEventListener('click', async () => {
-          const email = card.querySelector('.buyer-email').value.trim().toLowerCase();
-          const secondaryInput = card.querySelector('.second-email');
-          const secondaryEmail = secondaryInput.value.trim().toLowerCase();
-          if (!email) { msg.textContent = t('enterEmail'); return; }
-          if (secondaryEmail && !secondaryInput.checkValidity()) { msg.textContent = t('invalidSecondEmail'); secondaryInput.focus(); return; }
           const selectedMethod = (card.querySelector('.pay-method:checked') && card.querySelector('.pay-method:checked').value) || data.payment_mode || '';
+          const buyer = await ensureBuyerEmail();
+          if (!buyer) { msg.textContent = t('enterEmail'); return; }
+          const email = buyer.email;
+          const orderSecondaryEmail = buyer.secondaryEmail;
           const payWindow = isManualPaymentMethod(selectedMethod) ? null : window.open('', '_blank');
           if (payWindow) payWindow.opener = null;
           btn.disabled = true;
           msg.textContent = t('createOrder');
           let keepButtonDisabled = false;
           try {
-            const payload = { product_id: product.id, email, secondary_email: secondaryEmail, tenant_id: tenantId };
+            const payload = { product_id: product.id, email, secondary_email: orderSecondaryEmail, tenant_id: tenantId };
             if (selectedMethod) payload.payment_method = selectedMethod;
             const res = await fetch('/api/card-store/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const body = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(body.message || t('createFailed'));
-            registeredEmail = email;
-            localStorage.setItem('card_store_email', email);
+            setBuyerEmails(email, orderSecondaryEmail);
             if (body.tenant_id) setTenantId(body.tenant_id);
             msg.textContent = t('orderCreated');
             if (body.status === 'paid' && body.code) {
@@ -241,10 +255,123 @@
       });
       if (!productsRoot.children.length) productsRoot.innerHTML = '<div class="empty">' + t('emptyProducts') + '</div>';
     }
+    function openBuyerEmailDialog() {
+      return new Promise(resolve => {
+        closeBuyerEmailDialog();
+        const modal = document.createElement('div');
+        modal.className = 'buyer-email-modal';
+        modal.innerHTML = '<form class="buyer-email-modal__panel" role="dialog" aria-modal="true" aria-labelledby="buyerEmailTitle"><button type="button" class="buyer-email-modal__close" aria-label="Close" data-close-buyer-email>&times;</button><h3 id="buyerEmailTitle">' + esc(t('emailDialogTitle')) + '</h3><p>' + esc(t('emailDialogDesc')) + '</p><label>' + esc(t('registeredEmail')) + '<input type="email" name="email" value="' + esc(registeredEmail) + '" placeholder="name@example.com" autocomplete="email" required></label><label>' + esc(t('secondaryEmail')) + '<input type="email" name="secondary_email" value="' + esc(secondaryEmail) + '" placeholder="backup@example.com" autocomplete="email"></label><div class="buyer-email-modal__actions"><button type="button" class="buyer-email-modal__cancel" data-close-buyer-email>' + esc(t('cancel')) + '</button><button type="submit">' + esc(t('continueBuy')) + '</button></div><div class="buyer-email-modal__status msg" aria-live="polite"></div></form>';
+        document.body.appendChild(modal);
+        const form = modal.querySelector('form');
+        const emailInput = modal.querySelector('input[name="email"]');
+        const secondInput = modal.querySelector('input[name="secondary_email"]');
+        const status = modal.querySelector('.buyer-email-modal__status');
+        const done = value => { closeBuyerEmailDialog(); resolve(value); };
+        modal.querySelectorAll('[data-close-buyer-email]').forEach(btn => btn.addEventListener('click', () => done(null)));
+        modal.addEventListener('click', event => { if (event.target === modal) done(null); });
+        form.addEventListener('submit', event => {
+          event.preventDefault();
+          const email = normalizeEmail(emailInput.value);
+          const second = normalizeEmail(secondInput.value);
+          if (!email || !emailInput.checkValidity()) { status.textContent = t('enterEmail'); emailInput.focus(); return; }
+          if (second && !secondInput.checkValidity()) { status.textContent = t('invalidSecondEmail'); secondInput.focus(); return; }
+          setBuyerEmails(email, second);
+          done({ email, secondaryEmail: second });
+        });
+        emailInput.focus();
+      });
+    }
+    function closeBuyerEmailDialog() { const modal = document.querySelector('.buyer-email-modal'); if (modal) modal.remove(); }
+    async function ensureBuyerEmail() {
+      if (registeredEmail) return { email: registeredEmail, secondaryEmail };
+      return openBuyerEmailDialog();
+    }
+    function paidOrderMessage(body) {
+      return body.auto_redeemed ? t('autoRedeemed') : (body.auto_redeem_error ? t('autoRedeemFailed') : (body.mail_status === 'sent' ? t('paidSent') : t('paidGenerated')));
+    }
     function showPaidOrder(body, msg, codeBox) {
-      codeBox.hidden = false;
-      codeBox.innerHTML = '<span>' + t('serviceCode') + '</span><strong>' + esc(body.code) + '</strong>';
-      msg.textContent = body.auto_redeemed ? t('autoRedeemed') : (body.auto_redeem_error ? t('autoRedeemFailed') : (body.mail_status === 'sent' ? t('paidSent') : t('paidGenerated')));
+      if (codeBox) {
+        codeBox.hidden = false;
+        codeBox.innerHTML = '<span>' + t('serviceCode') + '</span><strong>' + esc(body.code) + '</strong>';
+      }
+      if (msg) msg.textContent = paidOrderMessage(body);
+      if (body && body.order_no) showCheckoutResult(body, true);
+    }
+    function setCheckoutResultMode(active) {
+      document.body.classList.toggle('checkout-result-mode', !!active);
+      document.querySelectorAll('.hero,.status-band').forEach(node => { node.hidden = !!active; });
+      const head = document.querySelector('.section-head');
+      if (head) {
+        head.classList.toggle('section-head--continue', !!active);
+        const title = head.querySelector('h2');
+        if (title && active) title.textContent = t('continueShoppingTitle');
+        else if (title) title.textContent = t('catalogTitle');
+      }
+    }
+    function ensureCheckoutResultPanel() {
+      let panel = document.getElementById('checkoutResultPanel');
+      if (panel) return panel;
+      panel = document.createElement('section');
+      panel.id = 'checkoutResultPanel';
+      panel.className = 'checkout-result-panel';
+      panel.hidden = true;
+      panel.innerHTML = '<div class="checkout-result-card"><div class="checkout-result-main"><div class="success-mark" aria-hidden="true">✓</div><p class="eyebrow" data-result-eyebrow>' + esc(t('returnOrderTitle')) + '</p><h1 data-result-title>' + esc(t('resultPendingTitle')) + '</h1><p class="result-lead" data-result-lead>' + esc(t('resultPendingLead')) + '</p><div class="result-actions"><a class="result-primary" data-credits-center-link href="' + esc(creditsCenterURL()) + '">' + esc(t('viewCredits')) + '</a><button type="button" data-continue-shopping>' + esc(t('continueShopping')) + '</button></div><div class="msg" data-result-msg aria-live="polite"></div></div><div class="result-side"><div class="result-code-box" data-result-code-box hidden><span data-result-code-label>' + esc(t('serviceCode')) + '</span><strong data-result-code></strong><button type="button" data-copy-code>' + esc(t('copyCode')) + '</button></div><dl class="result-details" data-result-details></dl></div></div>';
+      document.querySelector('.topbar').insertAdjacentElement('afterend', panel);
+      const continueButton = panel.querySelector('[data-continue-shopping]');
+      if (continueButton) continueButton.addEventListener('click', () => {
+        checkoutResultBody = null;
+        checkoutResultPaid = false;
+        setCheckoutResultMode(false);
+        panel.hidden = true;
+        const head = document.querySelector('.section-head');
+        if (head) head.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      const copyButton = panel.querySelector('[data-copy-code]');
+      if (copyButton) copyButton.addEventListener('click', async () => {
+        const code = panel.querySelector('[data-result-code]').textContent || '';
+        if (!code) return;
+        try { await navigator.clipboard.writeText(code); copyButton.textContent = t('copied'); }
+        catch (_) { copyButton.textContent = t('copyCode'); }
+        setTimeout(() => { copyButton.textContent = t('copyCode'); }, 1600);
+      });
+      return panel;
+    }
+    function resultDetail(labelText, value) {
+      if (value === undefined || value === null || String(value).trim() === '') return '';
+      return '<dt>' + esc(labelText) + '</dt><dd>' + esc(value) + '</dd>';
+    }
+    function showCheckoutResult(body, paid, options) {
+      checkoutResultBody = Object.assign({}, body || {});
+      checkoutResultPaid = !!paid;
+      options = options || {};
+      const panel = ensureCheckoutResultPanel();
+      panel.hidden = false;
+      setCheckoutResultMode(true);
+      updateTenantScopedLinks();
+      const isPaid = !!(paid && body && body.code);
+      const mark = panel.querySelector('.success-mark');
+      if (mark) {
+        mark.textContent = isPaid ? '✓' : '…';
+        mark.classList.toggle('success-mark--pending', !isPaid);
+      }
+      panel.querySelector('[data-result-title]').textContent = isPaid ? t('resultSuccessTitle') : t('resultPendingTitle');
+      panel.querySelector('[data-result-lead]').textContent = isPaid ? (body.auto_redeemed ? t('resultAutoRedeemedLead') : t('resultSuccessLead')) : t('resultPendingLead');
+      const msg = panel.querySelector('[data-result-msg]');
+      msg.textContent = isPaid ? paidOrderMessage(body) : (body && body.message ? body.message : t('returnOrderLoading'));
+      const codeBox = panel.querySelector('[data-result-code-box]');
+      const codeNode = panel.querySelector('[data-result-code]');
+      const codeLabel = panel.querySelector('[data-result-code-label]');
+      if (isPaid) {
+        codeBox.hidden = false;
+        codeLabel.textContent = body.auto_redeemed ? t('resultBackupCode') : t('serviceCode');
+        codeNode.textContent = body.code || '';
+      } else {
+        codeBox.hidden = true;
+        codeNode.textContent = '';
+      }
+      const details = panel.querySelector('[data-result-details]');
+      details.innerHTML = resultDetail(t('orderNumber'), body.order_no) + resultDetail(t('productLabelShort'), body.product_label || body.product_id) + resultDetail(t('paymentAmount'), body.amount ? money(body.amount) : '') + resultDetail(t('paidAccount'), body.email || registeredEmail) + (isPaid ? resultDetail(t('mailState'), body.mail_status || '-') + resultDetail(t('autoRedeemState'), body.auto_redeemed ? t('done') : (body.auto_redeem_error ? body.auto_redeem_error : t('notDone'))) : '');
+      if (!options.preserveScroll) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     function showPaymentLink(payURL, codeBox) {
       codeBox.hidden = false;
@@ -288,7 +415,7 @@
         const res = await fetch('/api/card-store/orders/' + encodeURIComponent(body.order_no) + '/payment-opened', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, tenant_id: body.tenant_id || tenantId }) });
         const next = await res.json().catch(() => ({}));
         if (res.ok && next.reminder_mail_status === 'failed') { body.payment_opened_notified = false; if (button) { button.disabled = false; button.textContent = t('payDone'); button.style.cursor = 'pointer'; } msg.textContent = next.reminder_mail_error || next.message || msg.textContent; if (statusEl) statusEl.textContent = msg.textContent; return; }
-        if (res.ok) { body.payment_opened_notified = true; if (button) { button.textContent = t('payDoneSent'); button.style.cursor = 'default'; } msg.textContent = t('manualWaiting') + body.order_no; if (statusEl) statusEl.textContent = msg.textContent; pollOrder(body.order_no, body.tenant_id || tenantId, email, msg, codeBox); }
+        if (res.ok) { body.payment_opened_notified = true; if (button) { button.disabled = false; button.textContent = t('payDoneSent'); button.style.cursor = 'pointer'; button.onclick = closeManualPaymentDialog; } msg.textContent = t('manualWaiting') + body.order_no; if (statusEl) statusEl.textContent = msg.textContent; pollOrder(body.order_no, body.tenant_id || tenantId, email, msg, codeBox); }
         else { body.payment_opened_notified = false; if (button) { button.disabled = false; button.textContent = t('payDone'); button.style.cursor = 'pointer'; } msg.textContent = next.message || msg.textContent; if (statusEl) statusEl.textContent = msg.textContent; }
       } catch (_) { body.payment_opened_notified = false; if (button) { button.disabled = false; button.textContent = t('payDone'); button.style.cursor = 'pointer'; } if (statusEl) statusEl.textContent = msg.textContent; }
     }
@@ -320,6 +447,26 @@
       }
       msg.textContent = t('notifyTimeout');
     }
+    async function resumeReturnedOrder() {
+      const orderNo = String(urlParams.get('order_no') || '').trim();
+      if (!orderNo) return;
+      const email = registeredEmail || normalizeEmail(urlParams.get('email') || '');
+      if (!email) return;
+      showCheckoutResult({ order_no: orderNo, email, message: urlParams.get('payment_return') === 'alipay_verify_pending' ? t('alipayVerifyPending') : t('returnOrderLoading') }, false);
+      const panel = ensureCheckoutResultPanel();
+      const msg = panel.querySelector('[data-result-msg]');
+      try {
+        const qs = new URLSearchParams({ email });
+        if (tenantId) qs.set('tenant_id', tenantId);
+        const res = await fetch('/api/card-store/orders/' + encodeURIComponent(orderNo) + '?' + qs.toString());
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body.status === 'paid' && body.code) {
+          showCheckoutResult(body, true);
+          return;
+        }
+      } catch (_) {}
+      pollOrder(orderNo, tenantId, email, msg, null);
+    }
     async function loadProducts() {
       state.textContent = t('loading');
       try {
@@ -341,8 +488,7 @@
         const res = await fetch('/api/card-store/me', { headers: { Authorization: 'Bearer ' + token } });
         const body = await res.json();
         if (body.authenticated && body.email) {
-          registeredEmail = body.email;
-          localStorage.setItem('card_store_email', registeredEmail);
+          setBuyerEmails(body.email, secondaryEmail);
           if (body.tenant_id) setTenantId(body.tenant_id);
           if (window.history && window.history.replaceState) window.history.replaceState(null, document.title, cleanCardStoreURL());
         }
@@ -366,10 +512,12 @@
         applyI18n();
       });
     });
+    document.getElementById('accountBtn').addEventListener('click', () => { void openBuyerEmailDialog(); });
     document.getElementById('reloadBtn').addEventListener('click', loadProducts);
     applyI18n();
+    updateAccountChip();
     updateTenantScopedLinks();
-    loadMe().finally(loadProducts);
+    loadMe().finally(async () => { await loadProducts(); await resumeReturnedOrder(); });
   </script>
 </body>
 </html>

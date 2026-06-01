@@ -272,7 +272,7 @@ func (a *App) lastIMUserID() string {
 	if a == nil || a.imHandler == nil {
 		return ""
 	}
-	return a.imHandler.lastUserID
+	return a.imHandler.legacyLastUserID()
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -3657,12 +3657,12 @@ func getBaseUrl(selectedModel *corelib.ModelConfig) string {
 	}
 	return baseUrl
 }
-func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonProject bool, pythonEnv string, projectDir string, useProxy bool) {
+func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonProject bool, pythonEnv string, projectDir string, useProxy bool) error {
 	a.log(fmt.Sprintf("LaunchTool called: %s, yolo=%v, admin=%v, py=%v, pyenv=%s, dir=%s, proxy=%v",
 		toolName, yoloMode, adminMode, pythonProject, pythonEnv, projectDir, useProxy))
 	if err := a.ensureWorkflowAllowsRemoteToolCall("create_session", map[string]interface{}{"tool": toolName, "project_dir": projectDir, "launch_source": "desktop"}); err != nil {
 		a.log(fmt.Sprintf("LaunchTool blocked by workflow policy: %v", err))
-		return
+		return err
 	}
 	a.log(fmt.Sprintf("Launching %s...", toolName))
 
@@ -3682,7 +3682,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	config, err := a.LoadConfig()
 	if err != nil {
 		a.log("Error loading config: " + err.Error())
-		return
+		return err
 	}
 	launchToolKind := normalizeRemoteToolNameKind(toolName)
 	var toolCfg corelib.ToolConfig
@@ -3728,7 +3728,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		// Check OEM extra tools from brand config
 		extraTool := findExtraTool(launchToolKind.String())
 		if extraTool == nil {
-			return
+			return fmt.Errorf("unsupported tool: %s", toolName)
 		}
 		// Load tool config from ExtraToolConfigs map
 		if config.ExtraToolConfigs != nil {
@@ -3755,7 +3755,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			message = "Please select a provider first."
 		}
 		a.ShowMessage(title, message)
-		return
+		return fmt.Errorf("please select a provider first")
 	}
 	// Ensure ActiveTool is set correctly for syncToSystemEnv
 	config.ActiveTool = launchToolKind.String()
@@ -3892,7 +3892,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			// preserving user's MCP servers, profiles, and other settings.
 			if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel)); err != nil {
 				a.log("Codex provider switch failed: " + err.Error())
-				return
+				return err
 			}
 			a.log("Codex: Updated config with provider settings (preserving user state)")
 		case remoteToolNameOpencode:
@@ -3968,7 +3968,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		case remoteToolNameCodex:
 			if err := configfile.ClearCodexThirdPartySettings(); err != nil {
 				a.log("Codex builtin switch failed: " + err.Error())
-				return
+				return err
 			}
 			backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
@@ -4002,7 +4002,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "")
 		if err != nil {
 			a.log("build remote launch spec failed: " + err.Error())
-			return
+			return err
 		}
 
 		if a.remoteSessions == nil {
@@ -4012,8 +4012,9 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		_, err = a.remoteSessions.Create(spec)
 		if err != nil {
 			a.log("create remote session failed: " + err.Error())
+			return err
 		}
-		return
+		return nil
 	}
 
 	// Ensure tool onboarding is complete for local launches so the user
@@ -4024,7 +4025,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	yoloMode = a.enforceYoloModeQuiet(yoloMode)
 
 	// Platform specific launch
-	a.platformLaunch(binaryName, yoloMode, adminMode, pythonEnv, projectDir, env, selectedModel.ModelId)
+	return a.platformLaunch(binaryName, yoloMode, adminMode, pythonEnv, projectDir, env, selectedModel.ModelId)
 }
 func (a *App) log(message string) {
 	if a.IsInitMode {

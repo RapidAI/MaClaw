@@ -134,6 +134,147 @@ func TestGroupExecutorSenderContextGuardsVisibleReply(t *testing.T) {
 	}
 }
 
+func TestBuildGroupExecutorDiscussionContextIncludesPriorGroupMessages(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{Topic: "朱禄的数字分身", Question: "介绍数字分身", ParticipantIDs: []string{"machine-1", "zhulu-machine", "local-maclaw"}},
+		Session: &a2a.Session{Participants: []a2a.Participant{
+			{ID: "machine-1", RoleCode: "initiator"},
+			{ID: "zhulu-machine", RoleCode: "speak"},
+			{ID: "local-maclaw", RoleCode: "speak"},
+		}},
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "zhulu-machine", Kind: a2a.MessageStatement, Content: "朱禄的数字分身擅长网络流量处理、高速转发、流量特征提取和深度学习。"},
+			{ID: "m2", FromID: "machine-1", Kind: a2a.MessageStatement, Content: "@本机AI 基于刚才对方介绍的资料，做个朱禄的数字分身的介绍 ppt"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{FromID: "machine-1", Content: "@本机AI 基于刚才对方介绍的资料，做个朱禄的数字分身的介绍 ppt"}, "machine-1")
+	if !strings.Contains(got, "朱禄的数字分身") || !strings.Contains(got, "高速转发") || !strings.Contains(got, "local AI") {
+		t.Fatalf("context missing group facts: %q", got)
+	}
+	if strings.Contains(got, "@本机AI 基于刚才") {
+		t.Fatalf("context should not duplicate current local-targeted input: %q", got)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextSkipsSyncedCurrentInputWithoutFromID(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "zhulu-machine", Kind: a2a.MessageStatement, Content: "朱禄的数字分身擅长流量特征提取。"},
+			{ID: "m2", FromID: "machine-1", Kind: a2a.MessageStatement, Content: "@本机AI 做介绍PPT"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{Content: "@本机AI 做介绍PPT"}, "machine-1")
+	if strings.Contains(got, "@本机AI 做介绍PPT") {
+		t.Fatalf("context should skip current input even when current FromID is empty: %q", got)
+	}
+	if !strings.Contains(got, "流量特征提取") {
+		t.Fatalf("context should keep prior group facts: %q", got)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextKeepsOlderRepeatedInput(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "machine-1", Kind: a2a.MessageStatement, Content: "repeat request"},
+			{ID: "m2", FromID: "anna", Kind: a2a.MessageStatement, Content: "answer between repeats"},
+			{ID: "m3", FromID: "machine-1", Kind: a2a.MessageStatement, Content: "repeat request"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{FromID: "machine-1", Kind: a2a.MessageStatement, Content: "repeat request"}, "machine-1")
+	if strings.Count(got, "repeat request") != 1 {
+		t.Fatalf("context should keep older repeated input and skip only current: %q", got)
+	}
+	if !strings.Contains(got, "answer between repeats") {
+		t.Fatalf("context should keep intervening messages: %q", got)
+	}
+}
+
+func TestGroupExecutorParticipantLinesDoesNotLabelInitiatorAsLocalAI(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{Session: &a2a.Session{Participants: []a2a.Participant{
+		{ID: "machine-1", RoleCode: "initiator"},
+		{ID: "local-maclaw", RoleCode: "speak"},
+	}}}
+
+	got := groupExecutorParticipantLines(detail, "machine-1")
+	joined := strings.Join(got, "\n")
+	if strings.Contains(joined, "machine-1 (local AI)") {
+		t.Fatalf("initiator machine should not be labelled local AI: %q", joined)
+	}
+	if !strings.Contains(joined, "local-maclaw (local AI)") {
+		t.Fatalf("local AI alias should be labelled: %q", joined)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextCoalescesStreamChunks(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "zhulu-machine", Kind: a2a.MessageStreamChunk, Content: "朱禄擅长"},
+			{ID: "m2", FromID: "zhulu-machine", Kind: a2a.MessageStreamChunk, Content: "网络流量处理"},
+			{ID: "m3", FromID: "zhulu-machine", Kind: a2a.MessageStreamEnd},
+			{ID: "m4", FromID: "machine-1", Kind: a2a.MessageStatement, Content: "@本机AI 做介绍PPT"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{FromID: "machine-1", Content: "@本机AI 做介绍PPT"}, "machine-1")
+	if !strings.Contains(got, "[zhulu-machine] 朱禄擅长网络流量处理") {
+		t.Fatalf("context did not coalesce stream chunks: %q", got)
+	}
+	if strings.Count(got, "zhulu-machine") != 1 {
+		t.Fatalf("stream chunks should appear as one prior message: %q", got)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextPreservesStreamChunkSpacing(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "anna", Kind: a2a.MessageStreamChunk, Content: "Hello "},
+			{ID: "m2", FromID: "anna", Kind: a2a.MessageStreamChunk, Content: "world"},
+			{ID: "m3", FromID: "anna", Kind: a2a.MessageStreamEnd},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{}, "machine-1")
+	if !strings.Contains(got, "[anna] Hello world") {
+		t.Fatalf("context should preserve stream chunk spacing: %q", got)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextIncludesCompressedMemory(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Session: &a2a.Session{ContextSummary: "[compressed shared group memory]\n- [anna] earlier important fact"},
+		Messages: []a2a.Message{
+			{ID: "m99", FromID: "machine-1", Kind: a2a.MessageStatement, Content: "@本机AI continue"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{ID: "m99", FromID: "machine-1", Content: "@本机AI continue"}, "machine-1")
+	if !strings.Contains(got, "Shared compressed memory") || !strings.Contains(got, "earlier important fact") {
+		t.Fatalf("context should include compressed memory: %q", got)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextUsesOnlyPostSummaryRecentMessages(t *testing.T) {
+	detail := a2a.HubDiscussionDetail{
+		Session: &a2a.Session{ContextSummary: "[compressed shared group memory]\n- [anna] summarized old fact", SummaryUpToID: "m2"},
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "anna", Kind: a2a.MessageStatement, Content: "old detail one"},
+			{ID: "m2", FromID: "anna", Kind: a2a.MessageStatement, Content: "old detail two"},
+			{ID: "m3", FromID: "anna", Kind: a2a.MessageStatement, Content: "recent detail"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{}, "machine-1")
+	if strings.Contains(got, "old detail one") || strings.Contains(got, "old detail two") {
+		t.Fatalf("context should not repeat summarized raw messages: %q", got)
+	}
+	if !strings.Contains(got, "summarized old fact") || !strings.Contains(got, "recent detail") {
+		t.Fatalf("context should include summary and post-summary recent messages: %q", got)
+	}
+}
+
 func TestSanitizeVEGroupExecutorHistoryClearsReasoningFieldsOnly(t *testing.T) {
 	history := []agent.ConversationEntry{
 		{Role: "user", Content: "weather"},

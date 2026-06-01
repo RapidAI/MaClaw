@@ -5,6 +5,7 @@ import geminiIcon from '../../assets/images/gemincli.png';
 import iflowIcon from '../../assets/images/iflow.png';
 import opencodeIcon from '../../assets/images/opencode.png';
 import kiloIcon from '../../assets/images/KiloCode.png';
+import { getToolLabel, getVisibleToolOptions } from '../../config/toolCatalog';
 
 type SidebarToolSelectorProps = {
     activeTool: string;
@@ -15,7 +16,19 @@ type SidebarToolSelectorProps = {
     visible?: boolean;
 };
 
-/** Premium decorative divider shown when coding tool entry is hidden */
+const toolIcons: Record<string, string> = {
+    claude: claudecodeIcon,
+    gemini: geminiIcon,
+    codex: codexIcon,
+    opencode: opencodeIcon,
+    codebuddy: codebuddyIcon,
+    iflow: iflowIcon,
+    kilo: kiloIcon,
+};
+
+const sidebarToolSelectorLabels = ['Claude Code', 'Gemini CLI', 'CodeBuddy', 'Kilo Code'];
+
+/** Premium decorative divider shown when coding tool entry is hidden. */
 function PremiumDivider() {
     return (
         <div style={{ flexShrink: 0, padding: '12px 16px' }}>
@@ -42,21 +55,40 @@ export const SidebarToolSelector = ({
         return <PremiumDivider />;
     }
 
+    const visibleTools = getVisibleToolOptions(config);
+    const tools = visibleTools.some((tool) => tool.id === activeTool)
+        ? visibleTools
+        : [{ id: activeTool, name: getToolLabel(activeTool) }, ...visibleTools];
+    const activeToolIcon = toolIcons[activeTool];
+
     return (
         <div style={{ flexShrink: 0, borderBottom: '1px solid var(--theme-border)' }}>
-            <div onClick={() => setToolDropdownOpen(prev => !prev)} style={{ display: 'flex', alignItems: 'center', height: '58px', padding: '0 18px', gap: '12px', cursor: 'pointer' }}>
-                <span style={{ color: '#f97316', fontSize: '1rem', lineHeight: 1 }}>✺</span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 700, color: 'var(--theme-text-primary)', flex: 1 }}>{activeTool === 'claude' ? 'Claude Code' : activeTool === 'gemini' ? 'Gemini CLI' : activeTool === 'codex' ? 'CodeX' : activeTool === 'opencode' ? 'OpenCode' : activeTool === 'codebuddy' ? 'CodeBuddy' : activeTool === 'cursor' ? 'Cursor Agent' : activeTool === 'iflow' ? 'iFlow CLI' : activeTool === 'kilo' ? 'Kilo Code' : activeTool}</span>
-                <span style={{ fontSize: '0.72rem', opacity: 0.55, flexShrink: 0 }}>{toolDropdownOpen ? '▲' : '▼'}</span>
-            </div>
+            <button
+                type="button"
+                aria-expanded={toolDropdownOpen}
+                onClick={() => setToolDropdownOpen(prev => !prev)}
+                style={{ display: 'flex', alignItems: 'center', width: '100%', height: '58px', padding: '0 18px', gap: '12px', cursor: 'pointer', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left' }}
+            >
+                {activeToolIcon
+                    ? <img src={activeToolIcon} style={{ width: '18px', height: '18px', flexShrink: 0 }} alt="" />
+                    : <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--theme-primary)', flexShrink: 0 }} />}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 700, color: 'var(--theme-text-primary)', flex: 1 }}>{getToolLabel(activeTool)}</span>
+                <span style={{ fontSize: '0.72rem', opacity: 0.55, flexShrink: 0 }}>{toolDropdownOpen ? '\u25B4' : '\u25BE'}</span>
+            </button>
             {toolDropdownOpen && (
-                <div style={{ padding: '0 8px 8px' }}>
-                    {([{ id: 'claude', name: 'Claude Code', icon: claudecodeIcon }, ...(config?.show_gemini !== false ? [{ id: 'gemini', name: 'Gemini CLI', icon: geminiIcon }] : []), ...(config?.show_codex !== false ? [{ id: 'codex', name: 'CodeX', icon: codexIcon }] : []), ...(config?.show_opencode !== false ? [{ id: 'opencode', name: 'OpenCode', icon: opencodeIcon }] : []), ...(config?.show_codebuddy !== false ? [{ id: 'codebuddy', name: 'CodeBuddy', icon: codebuddyIcon }] : []), ...(config?.show_iflow !== false ? [{ id: 'iflow', name: 'iFlow CLI', icon: iflowIcon }] : []), ...(config?.show_kilo !== false ? [{ id: 'kilo', name: 'Kilo Code', icon: kiloIcon }] : [])] as { id: string; name: string; icon: string }[]).map(tool => (
-                        <div key={tool.id} onClick={() => switchTool(tool.id)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: activeTool === tool.id ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent', fontWeight: activeTool === tool.id ? 700 : 500 }}>
-                            <img src={tool.icon} style={{ width: '16px', height: '16px' }} alt="" />
+                <div role="group" aria-label="Coding tools" data-ui-guard-labels={sidebarToolSelectorLabels.join(', ')} style={{ padding: '0 8px 8px' }}>
+                    {tools.map(tool => (
+                        <button
+                            type="button"
+                            aria-current={activeTool === tool.id ? 'true' : undefined}
+                            key={tool.id}
+                            onClick={() => switchTool(tool.id)}
+                            style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '8px', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer', border: 0, fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: activeTool === tool.id ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent', fontWeight: activeTool === tool.id ? 700 : 500, textAlign: 'left' }}
+                        >
+                            {toolIcons[tool.id] && <img src={toolIcons[tool.id]} style={{ width: '16px', height: '16px' }} alt="" />}
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
-                            {activeTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>✓</span>}
-                        </div>
+                            {activeTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>{'\u2713'}</span>}
+                        </button>
                     ))}
                 </div>
             )}

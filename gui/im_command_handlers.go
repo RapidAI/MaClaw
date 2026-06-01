@@ -23,13 +23,9 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		if ctx := h.getSessionLoopCtx(msg.UserID); ctx != nil {
 			return h.finalizeTraceResult(ctx, resp, resp.Text, ""), true
 		}
-		h.globalLoopMu.RLock()
-		if h.lastUserID == msg.UserID && h.currentLoopCtx != nil {
-			ctx := h.currentLoopCtx
-			h.globalLoopMu.RUnlock()
+		if ctx, _, ok := h.legacyLoopSnapshotForUser(msg.UserID); ok {
 			return h.finalizeTraceResult(ctx, resp, resp.Text, ""), true
 		}
-		h.globalLoopMu.RUnlock()
 		return resp, true
 	}
 
@@ -92,23 +88,18 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 				return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "confirmation", "")}, true
 			}
 		}
-		if btw := h.activeBtwSubAgent.Load(); btw != nil {
+		if btw := h.activeBtwSubAgentForOwner(msg.UserID); btw != nil {
 			btw.Cancel()
 			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "btw", "")}, true
 		}
-		if loop := h.activeLoopCallbacks.Load(); loop != nil {
+		if loop := h.activeLoopCallbacksForOwner(msg.UserID); loop != nil {
 			loop.Cancel()
 			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "loop", "")}, true
 		}
 		ctx := h.getSessionLoopCtx(msg.UserID)
 		taskText := h.sessionLoopTaskText(msg.UserID)
 		if ctx == nil {
-			h.globalLoopMu.RLock()
-			if h.lastUserID == msg.UserID {
-				ctx = h.currentLoopCtx
-				taskText = h.lastUserText
-			}
-			h.globalLoopMu.RUnlock()
+			ctx, taskText, _ = h.legacyLoopSnapshotForUser(msg.UserID)
 		}
 		if ctx == nil {
 			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "none", "")}, true
@@ -386,7 +377,7 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
 
-	btw := NewBtwSubAgent(h, cfg, httpClient)
+	btw := NewBtwSubAgent(h, cfg, httpClient, msg.UserID)
 	btw.SetCallbacks(onToken, func(text string) {
 		if onProgress != nil {
 			onProgress(text)
@@ -394,8 +385,7 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 	})
 
 	// Wire cancellation: store the SubAgent so /cancel can reach it.
-	h.activeBtwSubAgent.Store(btw)
-	defer h.activeBtwSubAgent.Store((*BtwSubAgent)(nil))
+	defer h.storeActiveBtwSubAgent(msg.UserID, btw)()
 
 	result := btw.Execute(query)
 
@@ -428,6 +418,43 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 	log.Printf("[btw] completed query=%q iterations=%d tools=%d", truncateRunes(query, 50), result.Iterations, result.ToolCalls)
 
 	return &IMAgentResponse{Text: result.Text}
+}
+
+func (h *IMMessageHandler) storeActiveBtwSubAgent(userID string, btw *BtwSubAgent) func() {
+	if h == nil || btw == nil {
+		return func() {}
+	}
+	ownerID := strings.TrimSpace(userID)
+	if ownerID != "" {
+		h.activeBtwSubAgents.Store(ownerID, btw)
+	}
+	h.activeBtwSubAgent.Store(btw)
+	return func() {
+		if ownerID != "" {
+			if current, ok := h.activeBtwSubAgents.Load(ownerID); ok && current == btw {
+				h.activeBtwSubAgents.Delete(ownerID)
+			}
+		}
+		h.activeBtwSubAgent.CompareAndSwap(btw, nil)
+	}
+}
+
+func (h *IMMessageHandler) activeBtwSubAgentForOwner(userID string) *BtwSubAgent {
+	if h == nil {
+		return nil
+	}
+	ownerID := strings.TrimSpace(userID)
+	if ownerID != "" {
+		if v, ok := h.activeBtwSubAgents.Load(ownerID); ok {
+			if btw, _ := v.(*BtwSubAgent); btw != nil {
+				return btw
+			}
+		}
+	}
+	if btw := h.activeBtwSubAgent.Load(); btw != nil && btw.OwnerID() == ownerID {
+		return btw
+	}
+	return nil
 }
 
 // handleSessionsCommand returns a quick status summary of active sessions.

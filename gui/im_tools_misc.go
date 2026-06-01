@@ -356,13 +356,15 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		if h.app != nil && h.app.skillInstallReviewNeedsConfirmationForSource(scanReport, effectiveSource) {
 			platform := runtimePlatform
 			confirmCtx := context.Background()
-			if platform == "" {
-				platform = h.currentRuntimePlatform()
-			}
-			if platform == "" && h.currentLoopCtx != nil {
+			if loopCtx := h.runtimeLoopContextForOwner(installPolicyOwnerID); loopCtx != nil {
+				if platform == "" {
+					platform = runtimePlatformFromLoopContext(loopCtx)
+				}
 				var cancel context.CancelFunc
-				confirmCtx, cancel = h.currentLoopCtx.Context()
+				confirmCtx, cancel = loopCtx.Context()
 				defer cancel()
+			} else if platform == "" {
+				platform = h.currentRuntimePlatform()
 			}
 
 			allFactors := scanReport.PatternAssessment.Factors
@@ -1351,7 +1353,10 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if h.contextResolver != nil {
 		projectPath, _ = h.contextResolver.ResolveProject()
 	}
-	ownerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
+	ownerID, explicitRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if ownerID == "" && explicitRuntimeOwner {
+		return "memory owner is missing; isolated runtime will not fall back to desktop memory"
+	}
 	if ownerID == "" {
 		var explicitRuntime bool
 		ownerID, explicitRuntime = h.currentRuntimePolicyOwnerState()
@@ -1711,9 +1716,7 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 	requestText := stringVal(args, "_user_text")
 	if requestText == "" && h != nil {
-		h.globalLoopMu.RLock()
-		requestText = h.lastUserText
-		h.globalLoopMu.RUnlock()
+		requestText, _ = h.currentRuntimeTaskTextOrLegacy()
 	}
 	if h == nil || !isExplicitNicknameRequest(requestText) {
 		return "[system rejected] set_nickname 仅在用户明确要求改名或给你起名字时可用。不要主动给自己起昵称；昵称为空时等待 Hub 自动分配。"

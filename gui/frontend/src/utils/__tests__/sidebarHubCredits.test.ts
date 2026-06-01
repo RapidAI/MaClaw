@@ -17,22 +17,23 @@ describe('normalizeSidebarHubCredits', () => {
         });
     });
 
-    it('surfaces active period limit so the sidebar can warn about the current route', () => {
+    it('keeps sidebar active when another official grant can cover a period-limited grant', () => {
         const credits = normalizeSidebarHubCredits({
             active: true,
             credit_grants: [
                 { status: 'period_limited', credits_total: 100, credits_used: 10, credits_remaining: 90, retry_after_seconds: 3600, expires_at: '2026-05-01T00:00:00Z' },
                 { status: 'active', active: true, credits_total: 100, credits_used: 1, credits_remaining: 99, expires_at: '2026-05-06T00:00:00Z' },
+                { status: 'queued', active: false, credits_total: 100, credits_used: 0, credits_remaining: 100, expires_at: '2026-06-06T00:00:00Z' },
             ],
         });
 
         expect(credits?.authorized).toBe(true);
         expect(credits?.serviceActive).toBe(true);
-        expect(credits?.status).toBe('period_limited');
+        expect(credits?.status).toBe('active');
         expect(credits?.total).toBe(200);
         expect(credits?.remaining).toBe(189);
-        expect(credits?.expiresAt).toBe('2026-05-06T00:00:00Z');
-        expect(credits?.retryAfterSeconds).toBe(3600);
+        expect(credits?.expiresAt).toBe('2026-06-06T00:00:00Z');
+        expect(credits?.retryAfterSeconds).toBe(0);
     });
 
     it('surfaces period limit retry metadata when all official routes are limited', () => {
@@ -89,6 +90,39 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.total).toBe(100);
     });
 
+    it('prefers currently available credits over blocked remaining credits while service is active', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_remaining: 4900,
+            credits_available: 10000,
+            credit_grants: [
+                { status: 'period_limited', active: false, credits_total: 5000, credits_used: 100, credits_remaining: 4900, expires_at: '2026-05-31T00:00:00Z' },
+                { status: 'queued', active: false, credits_total: 10000, credits_used: 0, credits_remaining: 10000, expires_at: '2027-05-31T00:00:00Z' },
+            ],
+        });
+
+        expect(credits?.serviceActive).toBe(true);
+        expect(credits?.remaining).toBe(10000);
+        expect(credits?.total).toBe(10100);
+    });
+
+    it('reports active status when service is covered by an early-start eligible queued point card', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_remaining: 10000,
+            credits_available: 10000,
+            credit_grants: [
+                { status: 'period_limited', active: false, retry_after_seconds: 3600, credits_total: 5000, credits_used: 100, credits_remaining: 4900, expires_at: '2026-05-31T00:00:00Z' },
+                { status: 'queued', active: false, retry_after_seconds: 7200, credits_total: 10000, credits_used: 0, credits_remaining: 10000, expires_at: '2027-05-31T00:00:00Z' },
+            ],
+        });
+
+        expect(credits?.status).toBe('active');
+        expect(credits?.retryAfterSeconds).toBe(0);
+        expect(credits?.retryAfterAt).toBe('');
+        expect(credits?.remaining).toBe(10000);
+    });
+
     it('keeps expired grants authorized for explanation but exposes zero currently available credits', () => {
         const credits = normalizeSidebarHubCredits({
             active: false,
@@ -106,5 +140,58 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.status).toBe('expired');
         expect(credits?.remaining).toBe(0);
         expect(credits?.expiresAt).toBe('2026-05-05T12:13:17Z');
+    });
+
+    it('ignores invalid expiry values when a valid grant expiry exists', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [
+                { status: 'active', active: true, expires_at: 'not-a-date', credits_total: 10, credits_remaining: 10 },
+                { status: 'queued', active: false, expires_at: '2026-06-06T00:00:00Z', credits_total: 10, credits_remaining: 10 },
+            ],
+        });
+
+        expect(credits?.expiresAt).toBe('2026-06-06T00:00:00Z');
+    });
+
+    it('does not extend visible validity with spent point-card grants', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [
+                { status: 'active', active: true, expires_at: '2026-05-06T00:00:00Z', credits_total: 10, credits_remaining: 10 },
+                { status: 'exhausted', active: false, expires_at: '2027-06-06T00:00:00Z', credits_total: 100, credits_used: 100, credits_remaining: 0 },
+            ],
+        });
+
+        expect(credits?.expiresAt).toBe('2026-05-06T00:00:00Z');
+    });
+
+    it('keeps queued legacy grant expiry when remaining fields are absent', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [
+                { status: 'active', active: true, expires_at: '2026-05-06T00:00:00Z', credits_total: 10, credits_remaining: 10 },
+                { status: 'queued', active: false, expires_at: '2026-06-06T00:00:00Z', credits_total: 100 },
+            ],
+        });
+
+        expect(credits?.expiresAt).toBe('2026-06-06T00:00:00Z');
+    });
+
+    it('guards malformed numeric fields from leaking NaN into sidebar credits', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_total: 'bad' as any,
+            credits_used: 'also-bad' as any,
+            credits_remaining: 'nope' as any,
+            credits_available: '25' as any,
+            tokens_per_credit: 'bad' as any,
+            credit_grants: [{ status: 'active', active: true, credits_total: 'bad' as any, credits_remaining: 'bad' as any }],
+        });
+
+        expect(credits?.total).toBe(25);
+        expect(credits?.used).toBe(0);
+        expect(credits?.remaining).toBe(25);
+        expect(credits?.tokensPerCredit).toBe(0);
     });
 });

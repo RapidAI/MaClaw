@@ -175,6 +175,86 @@ func TestCancelCommandDoesNotCancelOtherUsersLoop(t *testing.T) {
 	}
 }
 
+func TestCancelCommandDoesNotCancelOtherUsersBtwOrLoopCommand(t *testing.T) {
+	btw := &BtwSubAgent{userID: "other-user"}
+	loop := &guiLoopCommandCallbacks{userID: "other-user"}
+	h := &IMMessageHandler{}
+	h.activeBtwSubAgent.Store(btw)
+	h.activeLoopCallbacks.Store(loop)
+
+	resp, handled := h.handleImmediateIMCommand(IMUserMessage{UserID: "desktop-user", Text: "/cancel"}, "/cancel", nil, nil)
+	if !handled || resp == nil {
+		t.Fatal("cancel command should be handled")
+	}
+	if btw.cancelled.Load() != 0 {
+		t.Fatal("cancel command must not cancel another user's /btw subagent")
+	}
+	if loop.IsCancelled() {
+		t.Fatal("cancel command must not cancel another user's /loop command")
+	}
+}
+
+func TestCancelCommandCancelsTargetUsersBtwAndLoopCommand(t *testing.T) {
+	btw := &BtwSubAgent{userID: "desktop-user"}
+	h := &IMMessageHandler{}
+	h.activeBtwSubAgent.Store(btw)
+
+	resp, handled := h.handleImmediateIMCommand(IMUserMessage{UserID: "desktop-user", Text: "/cancel"}, "/cancel", nil, nil)
+	if !handled || resp == nil {
+		t.Fatal("cancel command should be handled")
+	}
+	if btw.cancelled.Load() == 0 {
+		t.Fatal("cancel command should cancel target user's /btw subagent")
+	}
+
+	loop := &guiLoopCommandCallbacks{userID: "desktop-user"}
+	h.activeBtwSubAgent.Store((*BtwSubAgent)(nil))
+	h.activeLoopCallbacks.Store(loop)
+	resp, handled = h.handleImmediateIMCommand(IMUserMessage{UserID: "desktop-user", Text: "/cancel"}, "/cancel", nil, nil)
+	if !handled || resp == nil {
+		t.Fatal("cancel command should be handled")
+	}
+	if !loop.IsCancelled() {
+		t.Fatal("cancel command should cancel target user's /loop command")
+	}
+}
+
+func TestSideRunnerRegistriesKeepConcurrentOwnersIsolated(t *testing.T) {
+	h := &IMMessageHandler{}
+	btw1 := &BtwSubAgent{userID: "user-1"}
+	btw2 := &BtwSubAgent{userID: "user-2"}
+	cleanupBtw1 := h.storeActiveBtwSubAgent("user-1", btw1)
+	cleanupBtw2 := h.storeActiveBtwSubAgent("user-2", btw2)
+
+	if got := h.activeBtwSubAgentForOwner("user-1"); got != btw1 {
+		t.Fatalf("activeBtwSubAgentForOwner(user-1) = %p, want %p", got, btw1)
+	}
+	if got := h.activeBtwSubAgentForOwner("user-2"); got != btw2 {
+		t.Fatalf("activeBtwSubAgentForOwner(user-2) = %p, want %p", got, btw2)
+	}
+	cleanupBtw1()
+	if got := h.activeBtwSubAgentForOwner("user-2"); got != btw2 {
+		t.Fatalf("cleanup for user-1 removed user-2 /btw = %p, want %p", got, btw2)
+	}
+	cleanupBtw2()
+
+	loop1 := &guiLoopCommandCallbacks{userID: "user-1"}
+	loop2 := &guiLoopCommandCallbacks{userID: "user-2"}
+	cleanupLoop1 := h.storeActiveLoopCallbacks("user-1", loop1)
+	cleanupLoop2 := h.storeActiveLoopCallbacks("user-2", loop2)
+	if got := h.activeLoopCallbacksForOwner("user-1"); got != loop1 {
+		t.Fatalf("activeLoopCallbacksForOwner(user-1) = %p, want %p", got, loop1)
+	}
+	if got := h.activeLoopCallbacksForOwner("user-2"); got != loop2 {
+		t.Fatalf("activeLoopCallbacksForOwner(user-2) = %p, want %p", got, loop2)
+	}
+	cleanupLoop1()
+	if got := h.activeLoopCallbacksForOwner("user-2"); got != loop2 {
+		t.Fatalf("cleanup for user-1 removed user-2 /loop = %p, want %p", got, loop2)
+	}
+	cleanupLoop2()
+}
+
 func TestInterruptCorrectionCancelsTargetUserLoop(t *testing.T) {
 	targetLoop := NewLoopContext("chat", 3, nil)
 	otherLoop := NewLoopContext("chat", 3, nil)

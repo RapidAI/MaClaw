@@ -135,9 +135,15 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 		}
 		return &IMAgentResponse{Text: "Tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	policyOwnerID := consumeRuntimePolicyOwnerIDFromToolArgs(args)
+	policyOwnerID, explicitRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if explicitRuntimeOwner && policyOwnerID == "" && toolAcceptsRuntimePolicyOwnerArg(toolName) {
+		return &IMAgentResponse{Text: "Tool execution failed: runtime owner is missing; isolated runtime will not fall back to desktop loop.", Error: "runtime owner is missing", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	}
 	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, toolName, args); rejection != nil {
 		return rejection
+	}
+	if policyOwnerID != "" && toolAcceptsRuntimePolicyOwnerArg(toolName) {
+		args[registeredToolPolicyOwnerIDField] = policyOwnerID
 	}
 
 	var result string
@@ -243,10 +249,16 @@ func (h *IMMessageHandler) currentRuntimeOrLegacyPolicyOwnerID() string {
 	if ownerID, explicit := h.currentRuntimePolicyOwnerState(); explicit {
 		return ownerID
 	}
+	return h.legacyLastUserID()
+}
+
+func (h *IMMessageHandler) legacyLastUserID() string {
+	if h == nil {
+		return ""
+	}
 	h.globalLoopMu.RLock()
-	lastUserID := strings.TrimSpace(h.lastUserID)
-	h.globalLoopMu.RUnlock()
-	return lastUserID
+	defer h.globalLoopMu.RUnlock()
+	return strings.TrimSpace(h.lastUserID)
 }
 
 func (h *IMMessageHandler) currentRuntimePolicyOwnerState() (string, bool) {

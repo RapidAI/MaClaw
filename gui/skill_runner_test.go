@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
@@ -29,6 +30,51 @@ func TestSkillDocHelpersAcceptMixedCaseSkillMarkdown(t *testing.T) {
 	}
 	if got := loadSkillDocContent(dir); !strings.Contains(got, "mixed skill docs") {
 		t.Fatalf("loadSkillDocContent() = %q", got)
+	}
+}
+
+func TestSkillRunnerStartRunDoesNotInheritWorkflowPolicy(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := h.app
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "manual-runner-skill",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo runner"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+	if _, err := app.workflowEngine.StartWorkflow(desktopUserID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if err := app.workflowEngine.SkipPhaseForm(desktopUserID); err != nil {
+		t.Fatalf("SkipPhaseForm failed: %v", err)
+	}
+
+	runID, err := runner.StartRun("manual-runner-skill", nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "not allowed by the current workflow tool policy") {
+			t.Fatalf("manual SkillRunner.StartRun must not inherit workflow policy: %v", err)
+		}
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != skillRunStatusSuccess {
+		t.Fatalf("skill status = %s, want success; status=%#v", status.Status, status)
 	}
 }
 

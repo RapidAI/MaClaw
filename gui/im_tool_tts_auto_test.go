@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
 func TestIsIMPlatformIncludesLocalGateways(t *testing.T) {
@@ -137,5 +139,13 @@ func TestWeixinNativeVoiceExperimentVariantsParsesAllowList(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("variants = %#v, want %#v", got, want)
 		}
+	}
+}
+
+func TestEchoInboundVoiceForDiagnosticsDisabledByDefault(t *testing.T) {
+	t.Setenv("MACLAW_WEIXIN_ECHO_INBOUND_VOICE", "")
+	m := &weixinGatewayManager{}
+	if got := m.echoInboundVoiceForDiagnostics(context.Background(), nil, weixin.IncomingMessage{MediaType: "voice", MediaData: []byte("x")}, "ctx"); got {
+		t.Fatal("echoInboundVoiceForDiagnostics returned true while disabled")
 	}
 }

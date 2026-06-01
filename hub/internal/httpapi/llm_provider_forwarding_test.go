@@ -709,7 +709,7 @@ func TestLLMV1ChatCompletionsHandlerReportsQueuedGrantRetry(t *testing.T) {
 	}
 }
 
-func TestLLMV1ChatCompletionsHandlerReportsQueuedGrantRetryWhenCurrentGrantExhausted(t *testing.T) {
+func TestLLMV1ChatCompletionsHandlerAllowsQueuedGrantWhenCurrentGrantExhausted(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "exhausted-then-queued@example.com")
 	ctx := context.Background()
@@ -755,7 +755,16 @@ func TestLLMV1ChatCompletionsHandlerReportsQueuedGrantRetryWhenCurrentGrantExhau
 	var upstreamHits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits.Add(1)
-		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":    "upstream",
+			"model": "auto",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 12000, "completion_tokens": 8000, "total_tokens": 20000},
+		})
 	}))
 	defer server.Close()
 
@@ -774,21 +783,31 @@ func TestLLMV1ChatCompletionsHandlerReportsQueuedGrantRetryWhenCurrentGrantExhau
 
 	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
+	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["code"] != "LLM_SERVICE_GRANT_QUEUED" {
-		t.Fatalf("expected queued grant code, body = %s", rr.Body.String())
+	if resp["id"] != "upstream" {
+		t.Fatalf("expected upstream response, body = %s", rr.Body.String())
 	}
-	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
-		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected upstream to be used once, hits = %d", upstreamHits.Load())
 	}
-	if upstreamHits.Load() != 0 {
-		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	serviceReg, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load service registry: %v", err)
+	}
+	if len(serviceReg.Grants) != 2 {
+		t.Fatalf("expected 2 grants, got %#v", serviceReg.Grants)
+	}
+	if !serviceReg.Grants[1].StartsAt.Before(startsAt) || !serviceReg.Grants[1].ExpiresAt.Before(startsAt.Add(24*time.Hour)) {
+		t.Fatalf("expected queued grant to shift earlier, got %#v", serviceReg.Grants[1])
+	}
+	if serviceReg.Grants[1].CreditsUsed != 2 {
+		t.Fatalf("expected shifted grant to be charged 2 credits, got %#v", serviceReg.Grants[1])
 	}
 }
 

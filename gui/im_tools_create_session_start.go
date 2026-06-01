@@ -28,6 +28,11 @@ func (h *IMMessageHandler) buildCreateSessionStartRequest(toolName, projectID, p
 }
 
 func (h *IMMessageHandler) createSessionParentRunID() string {
+	if h == nil {
+		return ""
+	}
+	h.globalLoopMu.RLock()
+	defer h.globalLoopMu.RUnlock()
 	if h.currentLoopCtx == nil {
 		return ""
 	}

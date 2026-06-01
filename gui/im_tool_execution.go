@@ -604,7 +604,7 @@ func (h *IMMessageHandler) consumeRuntimePlatformFromToolArgsOrCurrent(args map[
 
 func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "bash", "run_skill", "install_skill_hub", "search_and_install_skill", "memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations":
+	case "bash", "manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill", "memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations", "group_discussion", "screenshot":
 		return true
 	default:
 		return false
@@ -613,7 +613,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 
 func toolAcceptsRuntimePlatformArg(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "install_skill_hub", "search_and_install_skill", "screenshot", "tts":
+	case "manage_skill", "install_skill_hub", "search_and_install_skill", "screenshot", "tts":
 		return true
 	default:
 		return false
@@ -661,9 +661,7 @@ func (h *IMMessageHandler) workflowPolicyUserID(userID string) string {
 	if userID != "" {
 		return userID
 	}
-	h.globalLoopMu.RLock()
-	lastUserID := strings.TrimSpace(h.lastUserID)
-	h.globalLoopMu.RUnlock()
+	lastUserID := h.legacyLastUserID()
 	if lastUserID != "" && engine.GetActiveWorkflow(lastUserID) != nil {
 		return lastUserID
 	}

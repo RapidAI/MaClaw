@@ -53,3 +53,51 @@ func TestToolAgentStatusUsesHiddenRuntimeOwner(t *testing.T) {
 		t.Fatalf("agent_status leaked desktop task to remote owner: %s", out)
 	}
 }
+
+func TestToolAgentStatusEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	h := &IMMessageHandler{}
+	desktopCtx := NewLoopContext("desktop", 1, nil)
+	h.setSessionLoopCtx(desktopUserID, desktopCtx)
+	state := h.getSessionLoop(desktopUserID)
+	state.stateMu.Lock()
+	state.userText = "desktop secret task"
+	state.stateMu.Unlock()
+	h.globalLoopMu.Lock()
+	h.currentLoopCtx = desktopCtx
+	h.lastUserText = "desktop secret task"
+	h.lastUserID = desktopUserID
+	h.globalLoopMu.Unlock()
+
+	out := h.toolAgentStatus(map[string]interface{}{
+		"category":                       "main_agent",
+		registeredToolPolicyOwnerIDField: "",
+	})
+	if !strings.Contains(out, "runtime owner is missing") {
+		t.Fatalf("agent_status with empty runtime owner should fail closed, got: %s", out)
+	}
+	if strings.Contains(out, "desktop secret task") {
+		t.Fatalf("agent_status leaked desktop task with empty runtime owner: %s", out)
+	}
+}
+
+func TestToolAgentStatusCurrentRuntimeOwnerMissingFailsClosed(t *testing.T) {
+	desktopCtx := NewLoopContext("desktop", 1, nil)
+	h := &IMMessageHandler{currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-empty-owner"}}}
+	h.setSessionLoopCtx(desktopUserID, desktopCtx)
+	state := h.getSessionLoop(desktopUserID)
+	state.stateMu.Lock()
+	state.userText = "desktop secret task"
+	state.stateMu.Unlock()
+	h.globalLoopMu.Lock()
+	h.lastUserText = "desktop secret task"
+	h.lastUserID = desktopUserID
+	h.globalLoopMu.Unlock()
+
+	out := h.toolAgentStatus(map[string]interface{}{"category": "main_agent"})
+	if !strings.Contains(out, "runtime owner is missing") {
+		t.Fatalf("agent_status with ownerless current runtime should fail closed, got: %s", out)
+	}
+	if strings.Contains(out, "desktop secret task") {
+		t.Fatalf("agent_status leaked desktop task from ownerless current runtime: %s", out)
+	}
+}

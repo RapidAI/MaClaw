@@ -53,6 +53,19 @@ ps -eo pid=,args= | awk -v cmd="$APP_DIR/$BIN_NAME" '$2 == cmd { print $1 }' | w
   fi
 done
 
+# Older deploys started the binary as "./maclaw-hub" from APP_DIR. Those
+# processes survive path-based matching after the binary is replaced.
+ps -eo pid=,args= | awk -v bin="$BIN_NAME" '$2 == "./" bin || $2 == bin { print $1 }' | while read -r pid; do
+  if [ -n "${pid:-}" ] && [ "$(readlink "/proc/$pid/cwd" 2>/dev/null || true)" = "$APP_DIR" ]; then
+    echo "Stopping relative $BIN_NAME process: $pid"
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  fi
+done
+
 echo "Starting $BIN_NAME..."
 nohup "$APP_DIR/$BIN_NAME" --config "$CONFIG_PATH" >>"$LOG_FILE" 2>&1 &
 NEW_PID=$!

@@ -575,7 +575,7 @@ func (a *App) GetDownloadsFolder() (string, error) {
 	return filepath.Join(home, "Downloads"), nil
 }
 
-func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, pythonEnv string, projectDir string, env map[string]string, modelId string) {
+func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, pythonEnv string, projectDir string, env map[string]string, modelId string) error {
 	// Linux launch implementation
 	tm := NewToolManager(a)
 	status := tm.GetToolStatus(binaryName)
@@ -591,7 +591,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if npmPath == "" {
 			wails_runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("npm not found. Please run environment check first."))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("npm not found. Please run environment check first."))
-			return
+			return fmt.Errorf("npm not found. Please run environment check first")
 		}
 
 		// Attempt to install the tool
@@ -599,7 +599,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if err != nil {
 			wails_runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, err.Error())
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Failed to install %s: %v", binaryName, err))
-			return
+			return fmt.Errorf("failed to install %s: %w", binaryName, err)
 		}
 
 		// Re-check tool status after installation
@@ -607,7 +607,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		if !status.Installed {
 			wails_runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("Installation completed but tool not found"))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Installation completed but %s still not found. Please try running environment check.", binaryName))
-			return
+			return fmt.Errorf("installation completed but %s still not found", binaryName)
 		}
 
 		wails_runtime.EventsEmit(a.ctx, "tool-repair-success", binaryName, status.Version)
@@ -650,7 +650,9 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	scriptContent += fmt.Sprintf("\"%s\" %s\n", status.Path, strings.Join(cmdArgs, " "))
 	scriptContent += "echo 'Press Enter to close...'\nread\n"
 
-	os.WriteFile(scriptPath, []byte(scriptContent), 0755)
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		return fmt.Errorf("failed to create launch script: %w", err)
+	}
 
 	// Try to open terminal
 	terminals := []string{"x-terminal-emulator", "gnome-terminal", "konsole", "xterm"}
@@ -667,10 +669,14 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	}
 
 	if cmd != nil {
-		cmd.Start()
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start terminal: %w", err)
+		}
 	} else {
 		a.log("No supported terminal emulator found.")
+		return fmt.Errorf("no supported terminal emulator found")
 	}
+	return nil
 }
 
 func contains(slice []string, item string) bool {

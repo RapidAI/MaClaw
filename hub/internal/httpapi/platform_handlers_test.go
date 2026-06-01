@@ -804,6 +804,87 @@ func TestGroupDiscussionStreamMessagesDoNotExecutePlatformRuntime(t *testing.T) 
 	}
 }
 
+func TestMacLawSrvDiscussionContextCoalescesSharedStreamHistory(t *testing.T) {
+	session := &corea2a.Session{
+		Topic:          "Shared topic",
+		ContextSummary: "[compressed shared group memory]\n- [anna] older fact",
+		Participants: []corea2a.Participant{
+			{ID: "maclaw-gui", RoleCode: "initiator"},
+			{ID: "ve_employee_1", RoleCode: "speak"},
+			{ID: "ve_employee_2", RoleCode: "speak"},
+		},
+		Messages: []corea2a.Message{
+			{ID: "m1", FromID: "ve_employee_1", Kind: corea2a.MessageStreamChunk, Content: "Anna knows "},
+			{ID: "m2", FromID: "ve-employee-1", Kind: corea2a.MessageStreamChunk, Content: "the prior plan."},
+			{ID: "m3", FromID: "ve_employee_1", Kind: corea2a.MessageStreamEnd},
+			{ID: "m4", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "@Xiaoyan continue from Anna"},
+		},
+	}
+
+	got := macLawSrvDiscussionContext(session, corea2a.GroupDiscussionMessage{ID: "m4", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "@Xiaoyan continue from Anna"}, "ve_employee_2")
+	if !strings.Contains(got, "[ve_employee_1] Anna knows the prior plan.") {
+		t.Fatalf("context should coalesce prior stream chunks: %q", got)
+	}
+	if !strings.Contains(got, "older fact") {
+		t.Fatalf("context should include compressed memory: %q", got)
+	}
+	if strings.Contains(got, "@Xiaoyan continue from Anna\n[maclaw-gui]") || strings.Contains(got, "[maclaw-gui] @Xiaoyan continue from Anna") {
+		t.Fatalf("context should not duplicate current targeted input in recent history: %q", got)
+	}
+}
+
+func TestMacLawSrvDiscussionRecentContextKeepsMentionedMessagesVisible(t *testing.T) {
+	messages := []corea2a.Message{
+		{ID: "m1", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "@Anna summarize contract", ToIDs: []string{"ve_employee_1"}},
+		{ID: "m2", FromID: "ve_employee_1", Kind: corea2a.MessageStatement, Content: "Key risk is renewal."},
+		{ID: "m3", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "@Xiaoyan check Anna's point", ToIDs: []string{"ve_employee_2"}},
+	}
+
+	got := strings.Join(macLawSrvDiscussionRecentContext(messages, corea2a.GroupDiscussionMessage{ID: "m3", Content: "@Xiaoyan check Anna's point"}), "\n")
+	if !strings.Contains(got, "@Anna summarize contract") || !strings.Contains(got, "Key risk is renewal.") {
+		t.Fatalf("@ targeted messages should remain shared context: %q", got)
+	}
+	if strings.Contains(got, "@Xiaoyan check Anna's point") {
+		t.Fatalf("current message should not be duplicated in recent context: %q", got)
+	}
+}
+
+func TestMacLawSrvDiscussionRecentContextKeepsOlderRepeatedInput(t *testing.T) {
+	messages := []corea2a.Message{
+		{ID: "m1", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "repeat request"},
+		{ID: "m2", FromID: "ve_employee_1", Kind: corea2a.MessageStatement, Content: "answer between repeats"},
+		{ID: "m3", FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "repeat request"},
+	}
+
+	got := strings.Join(macLawSrvDiscussionRecentContext(messages, corea2a.GroupDiscussionMessage{FromID: "maclaw-gui", Kind: corea2a.MessageStatement, Content: "repeat request"}), "\n")
+	if strings.Count(got, "repeat request") != 1 {
+		t.Fatalf("context should skip only current repeated input: %q", got)
+	}
+	if !strings.Contains(got, "answer between repeats") {
+		t.Fatalf("context should keep intervening message: %q", got)
+	}
+}
+
+func TestMacLawSrvDiscussionContextUsesOnlyPostSummaryRecentMessages(t *testing.T) {
+	session := &corea2a.Session{
+		ContextSummary: "[compressed shared group memory]\n- [anna] summarized old fact",
+		SummaryUpToID:  "m2",
+		Messages: []corea2a.Message{
+			{ID: "m1", FromID: "anna", Kind: corea2a.MessageStatement, Content: "old detail one"},
+			{ID: "m2", FromID: "anna", Kind: corea2a.MessageStatement, Content: "old detail two"},
+			{ID: "m3", FromID: "anna", Kind: corea2a.MessageStatement, Content: "recent detail"},
+		},
+	}
+
+	got := macLawSrvDiscussionContext(session, corea2a.GroupDiscussionMessage{FromID: "maclaw-gui", Content: "continue"}, "ve_employee_1")
+	if strings.Contains(got, "old detail one") || strings.Contains(got, "old detail two") {
+		t.Fatalf("context should not repeat summarized raw messages: %q", got)
+	}
+	if !strings.Contains(got, "summarized old fact") || !strings.Contains(got, "recent detail") {
+		t.Fatalf("context should include summary and post-summary recent messages: %q", got)
+	}
+}
+
 func TestGroupDiscussionMessageReturnsBeforeSlowMacLawSrvRuntimeReply(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	called := make(chan struct{}, 1)

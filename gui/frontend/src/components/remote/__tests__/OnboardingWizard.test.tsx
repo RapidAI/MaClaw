@@ -293,6 +293,31 @@ describe('OnboardingWizard registration', () => {
         expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
     });
 
+    it('skips LLM step when a period-limited grant is covered by another active official grant', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        RedeemHubLLMServiceMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: false,
+            credit_grants: [
+                { status: 'period_limited', active: false, retry_after_seconds: 3600 },
+                { status: 'active', active: true, credits_remaining: 50 },
+            ],
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'COVERED' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('COVERED');
+        });
+        expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+        expect(screen.queryByText(/period limited\. LLM setup is not skipped yet/i)).toBeNull();
+    });
+
     it('marks registration done after activation succeeds', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
         GetRemoteActivationStatusMock.mockResolvedValue({ activated: true });

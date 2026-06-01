@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel } from '../AIAssistantPanel';
+import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
@@ -334,7 +335,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(inputBar.style.flex).toBe('1 1 auto');
     });
 
-    it('shows tutorial action before refresh in the title bar tools group', () => {
+    it('shows card store action before search in the title bar tools group', () => {
         const { getByTestId } = renderPanel({
             actions: {
                 sendMessage: async () => {},
@@ -347,13 +348,27 @@ describe('AIAssistantPanel property tests', () => {
 
         const toolsGroup = getByTestId('ai-titlebar-tools-group');
         const buttons = Array.from(toolsGroup.querySelectorAll('button'));
-        expect(buttons).toHaveLength(6);
-        expect(buttons[0]?.getAttribute('title')).toBe('Search tasks');
-        expect(buttons[1]?.getAttribute('title')).toContain('Voice readback OFF');
-        expect(buttons[2]?.getAttribute('title')).toBe('Switch to dark mode');
-        expect(buttons[3]?.getAttribute('title')).toBe('Knowledge Base');
-        expect(buttons[4]?.getAttribute('title')).toBe('Refresh news');
-        expect(buttons[5]?.getAttribute('title')).toBe('Clear history');
+        expect(buttons).toHaveLength(7);
+        expect(buttons[0]?.getAttribute('title')).toBe('Buy service redemption cards');
+        expect(buttons[1]?.getAttribute('title')).toBe('Search tasks');
+        expect(buttons[2]?.getAttribute('title')).toContain('Voice readback OFF');
+        expect(buttons[3]?.getAttribute('title')).toBe('Switch to dark mode');
+        expect(buttons[4]?.getAttribute('title')).toBe('Knowledge Base');
+        expect(buttons[5]?.getAttribute('title')).toBe('Refresh news');
+        expect(buttons[6]?.getAttribute('title')).toBe('Clear history');
+    });
+
+    it('opens current tenant card store URL from config', async () => {
+        const openURL = vi.fn();
+
+        await openCurrentTenantCardStore(async () => ({
+            remote_hub_url: 'https://hub.example.com/',
+            remote_tenant_id: 'tenant acme',
+            remote_email: 'dev@example.com',
+            remote_viewer_token: 'viewer token',
+        }), openURL);
+
+        expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token');
     });
 
     it('shows trial-reflect badge when mode is enabled', () => {
@@ -1428,6 +1443,41 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.textContent).toContain('\u6267\u884c\u524d\u786e\u8ba4 - \u4ee3\u7801\u4efb\u52a1');
         expect(container.textContent).toContain('\u72b6\u6001: \u6267\u884c\u4e2d');
         expect(container.textContent).toContain('\u786e\u8ba4\u5e76\u5f00\u59cb');
+    });
+
+    it('renders backend-provided confirmation labels and primary action styling', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'confirm',
+                confirmation: {
+                    id: 'c-labels',
+                    summary: 'ready',
+                    status: 'pending',
+                    targetPaths: ['D:/work/project'],
+                    labels: {
+                        title: 'Custom confirmation',
+                        status: 'Custom status',
+                        target_paths: 'Custom paths',
+                    },
+                },
+                actions: [
+                    { label: 'Confirm and start', command: '__confirm_execution__ c-labels', style: 'primary' },
+                ],
+            }),
+        ];
+
+        const { container, getByTestId } = renderPanel({
+            lang: 'en',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(container.textContent).toContain('Custom confirmation');
+        expect(getByTestId('confirmation-status').textContent).toContain('Custom status');
+        expect(getByTestId('confirmation-target-paths').textContent).toContain('Custom paths');
+        const button = getByTestId('action-button') as HTMLButtonElement;
+        expect(button.style.background).not.toBe('transparent');
+        expect(button.style.color).toBe('rgb(255, 255, 255)');
     });
 
     it('confirmation card buttons reuse executeAction', async () => {

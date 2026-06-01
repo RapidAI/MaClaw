@@ -350,6 +350,9 @@ function Stage-DeployAssets {
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\admin-core.js') -Label 'hubcenter admin core script'
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\admin') -Label 'hub admin web assets'
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\dist') -Label 'hub pwa web dist'
+    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\card_store') -Label 'hub card store web assets'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\index.html') -Label 'hub card store index'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\professional.css') -Label 'hub card store stylesheet'
 }
 
 function Build-LocalBinaries {
@@ -1021,6 +1024,9 @@ function Invoke-PostDeploySmokeCheck {
         if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
             $checks += [pscustomobject]@{ Label = 'hub healthz'; Url = ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub admin'; Url = ("{0}/admin" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hub card store page'; Url = ("{0}/card_store?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hub card store public api'; Url = ("{0}/api/card-store/products?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hub card store admin api'; Url = ("{0}/api/admin/card-store/config" -f $target.HubPublicUrl.TrimEnd('/')); Want = 401 }
         }
 
         foreach ($check in $checks) {

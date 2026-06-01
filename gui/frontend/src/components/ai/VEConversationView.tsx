@@ -331,26 +331,10 @@ function hasUnresolvedMentionTrigger(content: string): boolean {
     return /(^|[^A-Za-z0-9_.-])@[^\s@]+/.test(content);
 }
 
-function defaultResponderParticipantId(defaultParticipantId: string, participants: MentionParticipant[] | undefined): string {
-    const normalizedDefault = normalizeMentionParticipantId(defaultParticipantId);
-    if (!normalizedDefault || !participants?.length) return "";
-    for (const participant of participants) {
-        const id = String(participant.id || "").trim();
-        if (!id) continue;
-        if (participantIdentityMatches(id, normalizedDefault)) {
-            return id;
-        }
-    }
-    return "";
-}
-
-function outgoingTargetParticipantIds(content: string, participants: MentionParticipant[] | undefined, defaultParticipantId: string): string[] {
+function outgoingTargetParticipantIds(content: string, participants: MentionParticipant[] | undefined): string[] {
     const mentioned = mentionedParticipantIds(content, participants);
     if (mentioned.length > 0 || hasUnresolvedMentionTrigger(content)) return mentioned;
-    const remoteParticipants = (participants || []).filter((participant) => !isLocalGroupParticipant(participant));
-    if (remoteParticipants.length > 1) return [];
-    const defaultID = defaultResponderParticipantId(defaultParticipantId, participants);
-    return defaultID ? [defaultID] : [];
+    return [];
 }
 
 function isLocalGroupParticipant(participant: MentionParticipant): boolean {
@@ -1137,7 +1121,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (!sid) return false;
 
             try {
-                const targetParticipantIds = outgoingTargetParticipantIds(content, participants, veId);
+                const targetParticipantIds = outgoingTargetParticipantIds(content, participants);
                 if (filePaths && filePaths.length > 0 && participants?.length && sendGroupMessageWithAttachments) {
                     await sendGroupMessageWithAttachments(sid, content, targetParticipantIds, filePaths);
                 } else if (filePaths && filePaths.length > 0 && sendMessageWithAttachments) {

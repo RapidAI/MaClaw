@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -28,7 +29,7 @@ type guiLoopCommandCallbacks struct {
 	onProgress coretool.ProgressCallback
 	onToken    llm.TokenCallback
 	userID     string
-	cancelled  bool
+	cancelled  atomic.Bool
 }
 
 func (c *guiLoopCommandCallbacks) RunModifyCycle(ctx context.Context, prompt string, iteration int) agent.LoopResult {
@@ -84,13 +85,13 @@ func (c *guiLoopCommandCallbacks) OnFailure(state *agent.LoopCommandState) {
 }
 
 func (c *guiLoopCommandCallbacks) IsCancelled() bool {
-	return c.cancelled
+	return c.cancelled.Load()
 }
 
 // Cancel marks the loop as cancelled. Called from the main handler when
 // the user sends /cancel or clicks the stop button.
 func (c *guiLoopCommandCallbacks) Cancel() {
-	c.cancelled = true
+	c.cancelled.Store(true)
 }
 
 // ---------------------------------------------------------------------------

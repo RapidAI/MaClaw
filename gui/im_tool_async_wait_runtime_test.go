@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRuntimeLoopContextForOwnerDoesNotUseOtherCurrentLoop(t *testing.T) {
 	h := &IMMessageHandler{}
@@ -21,5 +24,23 @@ func TestRuntimeLoopContextForOwnerDoesNotUseOtherCurrentLoop(t *testing.T) {
 	}
 	if got := h.runtimeLoopContextForOwner(""); got != desktopCtx {
 		t.Fatalf("runtimeLoopContextForOwner(legacy) = %p, want current ctx %p", got, desktopCtx)
+	}
+}
+
+func TestToolAsyncWaitEmptyRuntimeOwnerFailsClosed(t *testing.T) {
+	desktopCtx := NewLoopContext("desktop", 1, nil)
+	h := &IMMessageHandler{}
+	h.globalLoopMu.Lock()
+	h.currentLoopCtx = desktopCtx
+	h.lastUserID = desktopUserID
+	h.globalLoopMu.Unlock()
+
+	got := h.toolAsyncWait(map[string]interface{}{
+		"action":                         "wait",
+		"task_id":                        "bg_test",
+		registeredToolPolicyOwnerIDField: "",
+	}, nil)
+	if !strings.Contains(got, "runtime owner is missing") {
+		t.Fatalf("async_wait with empty runtime owner should fail closed, got %q", got)
 	}
 }

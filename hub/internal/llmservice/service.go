@@ -221,12 +221,23 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 			status.NearestExpiresAt = nearest.Format(time.RFC3339)
 		}
 	}
+	if len(serviceGroupIDs) > 0 {
+		creditsAvailable = AvailableCreditsForServiceGroups(reg, email, serviceGroupIDs, now)
+	}
 	if effectiveExpiresAt := effectiveGrantExpiresAt(reg, email, now); effectiveExpiresAt != nil {
 		status.EffectiveExpiresAt = effectiveExpiresAt.Format(time.RFC3339)
 	}
 	status.CreditsAvailable = roundCredits(creditsAvailable)
-	if status.CreditsRemaining == 0 && status.CreditsAvailable > 0 {
+	if status.Active && len(serviceGroupIDs) > 0 && (HasUnlimitedActiveGrantForServiceGroups(reg, email, serviceGroupIDs, now) || hasEarlyStartableUnmeteredUnlimitedGrant(reg, email, serviceGroupIDs, now)) {
+		status.CreditsTotal = 0
+		status.CreditsUsed = 0
+		status.CreditsRemaining = 0
+		status.CreditsAvailable = 0
+	} else if (status.Active || status.CreditsRemaining == 0) && status.CreditsAvailable > 0 {
 		status.CreditsRemaining = status.CreditsAvailable
+	}
+	if status.CreditsRemaining > 0 && status.CreditsTotal < status.CreditsUsed+status.CreditsRemaining {
+		status.CreditsTotal = roundCredits(status.CreditsUsed + status.CreditsRemaining)
 	}
 	return status, models, nil
 }
@@ -987,9 +998,17 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 	if email == "" || len(serviceGroupIDs) == 0 {
 		return 0
 	}
+	if HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, email, serviceGroupIDs, now) {
+		return 0
+	}
+	if idx := earlyStartableUnmeteredUnlimitedGrantIndex(reg, email, serviceGroupIDs, now); idx >= 0 {
+		shiftGrantToEarlyStart(&reg.Grants[idx], now)
+		return 0
+	}
 	type candidate struct {
-		idx int
-		g   Grant
+		idx        int
+		g          Grant
+		earlyStart bool
 	}
 	candidates := make([]candidate, 0)
 	serviceGroupSet := map[string]struct{}{}
@@ -1003,15 +1022,29 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if !now.Before(grant.ExpiresAt) {
 			continue
 		}
-		if consumableGrantCredits(grant, now) <= 0 {
+		earlyStart := false
+		if now.Before(grant.StartsAt) {
+			if !canEarlyStartQueuedGrant(reg, email, grant, i, serviceGroupSet, now) {
+				continue
+			}
+			earlyStart = true
+		}
+		candidateGrant := grant
+		if earlyStart {
+			candidateGrant = grantWithEarlyStartWindow(grant, now)
+		}
+		if consumableGrantCredits(candidateGrant, now) <= 0 {
 			continue
 		}
-		candidates = append(candidates, candidate{idx: i, g: grant})
+		candidates = append(candidates, candidate{idx: i, g: candidateGrant, earlyStart: earlyStart})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].earlyStart != candidates[j].earlyStart {
+			return !candidates[i].earlyStart
+		}
 		if candidates[i].g.ExpiresAt.Equal(candidates[j].g.ExpiresAt) {
 			return candidates[i].g.CreatedAt.Before(candidates[j].g.CreatedAt)
 		}
@@ -1021,6 +1054,9 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 	consumed := 0.0
 	for _, cand := range candidates {
 		grant := &reg.Grants[cand.idx]
+		if cand.earlyStart {
+			shiftGrantToEarlyStart(grant, now)
+		}
 		available := consumableGrantCredits(*grant, now)
 		if available <= 0 {
 			continue
@@ -1050,8 +1086,72 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	total := 0.0
-	for _, grant := range reg.Grants {
+	for i, grant := range reg.Grants {
 		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		if now.Before(grant.StartsAt) {
+			if !canEarlyStartQueuedGrant(reg, normalizeEmail(email), grant, i, serviceGroupSet, now) {
+				continue
+			}
+			grant = grantWithEarlyStartWindow(grant, now)
+		}
+		total += availableGrantCredits(grant, now)
+	}
+	return roundCredits(total)
+}
+
+func hasEarlyStartableUnmeteredUnlimitedGrant(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
+	return earlyStartableUnmeteredUnlimitedGrantIndex(reg, email, serviceGroupIDs, now) >= 0
+}
+
+func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, email string, serviceGroupIDs []string, now time.Time) int {
+	if reg == nil {
+		return -1
+	}
+	email = normalizeEmail(email)
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if email == "" || len(serviceGroupIDs) == 0 {
+		return -1
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
+	}
+	if !queuedGrantBlockedOnlyByExhausted(reg, email, serviceGroupSet, now) {
+		return -1
+	}
+	bestIdx := -1
+	for i, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != email {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if grant.CreditsTotal > 0 || hasGrantPeriodLimits(grant) || !grant.StartsAt.After(now) || !grant.ExpiresAt.After(now) {
+			continue
+		}
+		if !canEarlyStartQueuedGrant(reg, email, grant, i, serviceGroupSet, now) {
+			continue
+		}
+		if bestIdx < 0 || queuedGrantPrecedes(grant, i, reg.Grants[bestIdx], bestIdx) {
+			bestIdx = i
+		}
+	}
+	return bestIdx
+}
+
+func queuedGrantBlockedOnlyByExhausted(reg *Registry, email string, serviceGroupSet map[string]struct{}, now time.Time) bool {
+	blockedByExhausted := false
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != email {
 			continue
 		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
@@ -1060,9 +1160,117 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
 			continue
 		}
-		total += availableGrantCredits(grant, now)
+		if availableGrantCredits(grant, now) > 0 || (grant.CreditsTotal <= 0 && !hasGrantPeriodLimits(grant)) {
+			return false
+		}
+		status, _, _, _ := grantStatus(grant, now)
+		switch status {
+		case "exhausted":
+			blockedByExhausted = true
+		case "period_limited":
+			return false
+		}
 	}
-	return roundCredits(total)
+	return blockedByExhausted
+}
+
+func canEarlyStartQueuedGrant(reg *Registry, email string, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time) bool {
+	if reg == nil || !queued.StartsAt.After(now) || !queued.ExpiresAt.After(now) {
+		return false
+	}
+	if queued.CreditsTotal > 0 && remainingGrantCredits(queued) <= 0 {
+		return false
+	}
+	blockedByExhausted := false
+	blockedByPeriodLimit := false
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != email {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		if availableGrantCredits(grant, now) > 0 || (grant.CreditsTotal <= 0 && !hasGrantPeriodLimits(grant)) {
+			return false
+		}
+		status, _, _, _ := grantStatus(grant, now)
+		switch status {
+		case "exhausted":
+			blockedByExhausted = true
+		case "period_limited":
+			blockedByPeriodLimit = true
+		}
+	}
+	if blockedByPeriodLimit {
+		return !hasGrantPeriodLimits(queued) && !hasEarlierQueuedGrant(reg, email, queued, queuedIndex, serviceGroupSet, now, false)
+	}
+	return blockedByExhausted && !hasEarlierQueuedGrant(reg, email, queued, queuedIndex, serviceGroupSet, now, true)
+}
+
+func hasEarlierQueuedGrant(reg *Registry, email string, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time, includePeriodLimited bool) bool {
+	for idx, grant := range reg.Grants {
+		if idx == queuedIndex || (queued.ID != "" && grant.ID == queued.ID) {
+			continue
+		}
+		if normalizeEmail(grant.Email) != email {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if !grant.StartsAt.After(now) || !grant.ExpiresAt.After(now) {
+			continue
+		}
+		if grant.CreditsTotal > 0 && remainingGrantCredits(grant) <= 0 {
+			continue
+		}
+		if !includePeriodLimited && hasGrantPeriodLimits(grant) {
+			continue
+		}
+		if availableGrantCredits(grantWithEarlyStartWindow(grant, now), now) <= 0 {
+			continue
+		}
+		if queuedGrantPrecedes(grant, idx, queued, queuedIndex) {
+			return true
+		}
+	}
+	return false
+}
+
+func queuedGrantPrecedes(a Grant, aIndex int, b Grant, bIndex int) bool {
+	if !a.StartsAt.Equal(b.StartsAt) {
+		return a.StartsAt.Before(b.StartsAt)
+	}
+	if !a.ExpiresAt.Equal(b.ExpiresAt) {
+		return a.ExpiresAt.Before(b.ExpiresAt)
+	}
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.Before(b.CreatedAt)
+	}
+	if a.ID != "" && b.ID != "" && a.ID != b.ID {
+		return a.ID < b.ID
+	}
+	return aIndex >= 0 && bIndex >= 0 && aIndex < bIndex
+}
+
+func grantWithEarlyStartWindow(grant Grant, now time.Time) Grant {
+	shiftGrantToEarlyStart(&grant, now)
+	return grant
+}
+
+func shiftGrantToEarlyStart(grant *Grant, now time.Time) {
+	if grant == nil || !grant.StartsAt.After(now) {
+		return
+	}
+	duration := grant.ExpiresAt.Sub(grant.StartsAt)
+	if duration <= 0 {
+		return
+	}
+	grant.StartsAt = now
+	grant.ExpiresAt = now.Add(duration)
 }
 
 func availableGrantCredits(grant Grant, now time.Time) float64 {
@@ -1350,6 +1558,35 @@ func HasUnlimitedActiveGrantForServiceGroups(reg *Registry, email string, servic
 	return false
 }
 
+func HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
+	if reg == nil {
+		return false
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return false
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(id)] = struct{}{}
+	}
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		if grant.CreditsTotal <= 0 && !hasGrantPeriodLimits(grant) {
+			return true
+		}
+	}
+	return false
+}
+
 func BillingEligibilityForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) (bool, string, string, string, float64, bool, bool) {
 	if reg == nil {
 		return true, AccessPolicyFree, "", "", 0, false, false
@@ -1365,17 +1602,23 @@ func BillingEligibilityForServiceGroups(reg *Registry, email string, serviceGrou
 	if len(grantRequiredGroupIDs) == 0 {
 		return true, AccessPolicyFree, "", "", 0, false, false
 	}
+	if HasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now) {
+		return true, AccessPolicyGrantRequired, "", "", 0, true, true
+	}
+	if hasEarlyStartableUnmeteredUnlimitedGrant(reg, email, grantRequiredGroupIDs, now) {
+		return true, AccessPolicyGrantRequired, "", "", 0, true, true
+	}
 	availableCredits := AvailableCreditsForServiceGroups(reg, email, grantRequiredGroupIDs, now)
 	if availableCredits > 0 {
 		return true, AccessPolicyGrantRequired, "", "", roundCredits(availableCredits), true, true
 	}
 	hasActiveGrant := HasActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now)
 	if hasActiveGrant {
-		if retryAt := PeriodLimitRetryAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); retryAt != nil {
-			return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
-		}
 		if HasUnlimitedActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now) {
 			return true, AccessPolicyGrantRequired, "", "", 0, true, true
+		}
+		if retryAt := PeriodLimitRetryAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); retryAt != nil {
+			return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
 		}
 		if startsAt := GrantStartAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); startsAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, true, true

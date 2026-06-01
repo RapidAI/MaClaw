@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL, EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
-import { buildHubCardStoreURL, buildHubCreditsURL } from "../../utils/hubCredits";
+import { buildHubCardStoreURL, buildHubCreditsURL, grantCanContributeExpiry, latestExpiry, numeric } from "../../utils/hubCredits";
 
 interface HubLLMAuthorizedModel {
     name: string;
@@ -103,31 +103,35 @@ function creditTotals(status: HubLLMServiceStatus | null) {
         const s = String(grant.status || "").toLowerCase();
         return s !== "queued" && s !== "expired";
     });
-    const grantTotal = effectiveGrants.reduce((sum, grant) => sum + Number(grant.credits_total || 0), 0);
-    const grantUsed = effectiveGrants.reduce((sum, grant) => sum + Number(grant.credits_used || 0), 0);
-    const grantRemaining = effectiveGrants.reduce((sum, grant) => sum + Number(grant.credits_remaining || 0), 0);
-    const total = Number(status?.credits_total ?? grantTotal);
-    const used = Number(status?.credits_used ?? grantUsed);
-    const remainingRaw = Number(status?.credits_remaining ?? grantRemaining);
-    const available = Number(status?.credits_available || 0);
+    const grantTotal = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_total), 0);
+    const grantUsed = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_used), 0);
+    const grantRemaining = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_remaining), 0);
+    let total = numeric(status?.credits_total ?? grantTotal);
+    const used = numeric(status?.credits_used ?? grantUsed);
+    const remainingRaw = numeric(status?.credits_remaining ?? grantRemaining);
+    const available = numeric(status?.credits_available);
     const onlyExpiredGrants = !status?.active && grants.length > 0 && grants.every((grant) => String(grant.status || "").toLowerCase() === "expired");
     if (onlyExpiredGrants) return { total, used, remaining: Math.max(0, available) };
-    const remaining = remainingRaw > 0 ? remainingRaw : available;
+    const remaining = (status?.active || remainingRaw <= 0) && available > 0 ? available : remainingRaw;
+    if (remaining > 0 && total < used + remaining) total = used + remaining;
     return { total, used, remaining };
 }
 
 function serviceExpiry(status: HubLLMServiceStatus | null): string {
     const grants = creditGrants(status);
-    const primary = status?.active
-        ? grants.find((grant) => String(grant.status || "").toLowerCase() === "active" || grant.active === true)
-        : grants[0];
-    return status?.effective_expires_at || status?.nearest_expires_at || primary?.expires_at || grants.map((grant) => String(grant.expires_at || "")).filter(Boolean).sort()[0] || "";
+    const latestGrantExpiry = latestExpiry(grants
+        .filter(grantCanContributeExpiry)
+        .map((grant) => String(grant.expires_at || "")));
+    const latestExpiredGrantExpiry = latestExpiry(grants
+        .filter((grant) => String(grant.status || "").toLowerCase() === "expired")
+        .map((grant) => String(grant.expires_at || "")));
+    return status?.effective_expires_at || latestGrantExpiry || status?.nearest_expires_at || latestExpiredGrantExpiry || "";
 }
 
 function grantRemainingCredits(grant: HubLLMActiveGrant): number {
-    const remaining = Number(grant.credits_remaining || 0);
+    const remaining = numeric(grant.credits_remaining);
     if (remaining > 0) return remaining;
-    const available = Number(grant.credits_available || 0);
+    const available = numeric(grant.credits_available);
     return available > 0 ? available : remaining;
 }
 
@@ -350,8 +354,8 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     const openHubCardStorePage = useCallback(async () => {
         try {
-            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_tenant_id?: string } | null;
-            const url = buildHubCardStoreURL(cfg?.remote_hub_url, cfg?.remote_tenant_id);
+            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_tenant_id?: string; remote_email?: string; remote_viewer_token?: string } | null;
+            const url = buildHubCardStoreURL(cfg?.remote_hub_url, cfg?.remote_tenant_id, cfg?.remote_email, cfg?.remote_viewer_token);
             if (!url) {
                 await showAlert(t("Card store is unavailable because Hub URL is missing.", "Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00\u670d\u52a1\u5361\u5546\u5e97\u3002"));
                 return;
@@ -364,8 +368,8 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     const openHubCreditsPage = useCallback(async () => {
         try {
-            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_viewer_token?: string; remote_tenant_id?: string } | null;
-            const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token, cfg?.remote_tenant_id);
+            const cfg = await callBackend(() => LoadConfig()) as { remote_hub_url?: string; remote_viewer_token?: string; remote_tenant_id?: string; remote_email?: string } | null;
+            const url = buildHubCreditsURL(cfg?.remote_hub_url, cfg?.remote_viewer_token, cfg?.remote_tenant_id, cfg?.remote_email);
             if (!url) {
                 await showAlert(t("Credits page is unavailable because Hub URL is missing.", "Hub \u5730\u5740\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002"));
                 return;

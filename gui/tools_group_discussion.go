@@ -115,7 +115,12 @@ func dispatchGroupDiscussionTool(app *App, handler *IMMessageHandler, args map[s
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"readiness": readiness}, readiness.RecommendedFocusContext, readiness.RecommendedToolCall, readiness.NonExecutingBoundary, err)
 	case groupDiscussionToolActionSummarizeResult:
 		preview := groupDiscussionBool(args["preview"])
-		result, err := app.GroupDiscussionSummarizeResult(GroupDiscussionSummarizeRequest{ConsultationID: stringVal(args, "consultation_id"), Submit: groupDiscussionBool(args["submit"]), Inject: groupDiscussionBool(args["inject"]), Force: groupDiscussionBool(args["force"]), Preview: preview})
+		inject := groupDiscussionBool(args["inject"])
+		ownerID, _ := groupDiscussionRuntimeOwnerForInjection(handler, args, inject)
+		if inject && strings.TrimSpace(ownerID) == "" {
+			return groupDiscussionResult(nil, fmt.Errorf("group_discussion summarize_result inject requires non-empty runtime owner"))
+		}
+		result, err := app.GroupDiscussionSummarizeResult(GroupDiscussionSummarizeRequest{ConsultationID: stringVal(args, "consultation_id"), UserID: ownerID, Submit: groupDiscussionBool(args["submit"]), Inject: inject, Force: groupDiscussionBool(args["force"]), Preview: preview})
 		if preview {
 			return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"summary": result}, result.RecommendedFocusContext, result.RecommendedToolCall, result.NonExecutingBoundary, err)
 		}
@@ -1774,7 +1779,8 @@ func groupDiscussionClassifyHumanAuthorization(app *App, handler *IMMessageHandl
 	if app == nil || handler == nil {
 		return groupDiscussionAuthorizationDecision{}, fmt.Errorf("assistant context is unavailable")
 	}
-	userText := strings.TrimSpace(handler.lastUserText)
+	userText, _ := handler.currentRuntimeTaskTextOrLegacy()
+	userText = strings.TrimSpace(userText)
 	if userText == "" {
 		return groupDiscussionAuthorizationDecision{}, fmt.Errorf("latest user message is empty")
 	}
@@ -1918,6 +1924,18 @@ func groupDiscussionRequestFromArgs(app *App, args map[string]interface{}) a2a.G
 		TimeoutSeconds: groupDiscussionInt(args["timeout_seconds"]),
 		CreatedAt:      time.Now(),
 	}
+}
+
+func groupDiscussionRuntimeOwnerForInjection(handler *IMMessageHandler, args map[string]interface{}, inject bool) (string, bool) {
+	if inject || handler == nil {
+		ownerID, ok := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+		return ownerID, ok
+	}
+	ownerID, explicitRuntime := handler.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
+	if explicitRuntime {
+		return ownerID, explicitRuntime
+	}
+	return "", false
 }
 
 func groupDiscussionSuggest(app *App, args map[string]interface{}) string {

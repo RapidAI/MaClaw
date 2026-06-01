@@ -173,8 +173,7 @@ func (h *IMMessageHandler) handleLoopCommand(
 	}
 
 	// Wire cancellation: store the callbacks so /cancel can reach them.
-	h.activeLoopCallbacks.Store(cb)
-	defer h.activeLoopCallbacks.Store((*guiLoopCommandCallbacks)(nil))
+	defer h.storeActiveLoopCallbacks(msg.UserID, cb)()
 
 	// Run the loop command (blocking).
 	ctx := context.Background()
@@ -182,6 +181,43 @@ func (h *IMMessageHandler) handleLoopCommand(
 
 	// Build the response.
 	return buildLoopCommandResponseWithLang(state, responseLang)
+}
+
+func (h *IMMessageHandler) storeActiveLoopCallbacks(userID string, cb *guiLoopCommandCallbacks) func() {
+	if h == nil || cb == nil {
+		return func() {}
+	}
+	ownerID := strings.TrimSpace(userID)
+	if ownerID != "" {
+		h.activeLoopCallbacksByOwner.Store(ownerID, cb)
+	}
+	h.activeLoopCallbacks.Store(cb)
+	return func() {
+		if ownerID != "" {
+			if current, ok := h.activeLoopCallbacksByOwner.Load(ownerID); ok && current == cb {
+				h.activeLoopCallbacksByOwner.Delete(ownerID)
+			}
+		}
+		h.activeLoopCallbacks.CompareAndSwap(cb, nil)
+	}
+}
+
+func (h *IMMessageHandler) activeLoopCallbacksForOwner(userID string) *guiLoopCommandCallbacks {
+	if h == nil {
+		return nil
+	}
+	ownerID := strings.TrimSpace(userID)
+	if ownerID != "" {
+		if v, ok := h.activeLoopCallbacksByOwner.Load(ownerID); ok {
+			if cb, _ := v.(*guiLoopCommandCallbacks); cb != nil {
+				return cb
+			}
+		}
+	}
+	if cb := h.activeLoopCallbacks.Load(); cb != nil && strings.TrimSpace(cb.userID) == ownerID {
+		return cb
+	}
+	return nil
 }
 
 // buildLoopCommandResponse formats the final loop state into a user-facing response.

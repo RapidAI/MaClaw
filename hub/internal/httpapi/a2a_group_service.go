@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -18,8 +19,14 @@ import (
 )
 
 const (
-	groupDiscussionPersistenceTimeout = 5 * time.Second
+	groupDiscussionPersistenceTimeout    = 5 * time.Second
+	groupDiscussionSummaryMinMessages    = 40
+	groupDiscussionSummaryRecentMessages = 16
+	groupDiscussionSummaryMaxChars       = 6000
+	groupDiscussionSummaryLineMaxChars   = 420
 )
+
+var groupDiscussionUnresolvedMentionPattern = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])@[^\s@]+`)
 
 type GroupDiscussionService struct {
 	mu       sync.RWMutex
@@ -725,16 +732,21 @@ func (s *GroupDiscussionService) AddDiscussionMessage(tenantID, sessionID string
 		if err := requireGroupDiscussionWritableParticipant(session, fromID); err != nil {
 			return err
 		}
-		toIDs, err := normalizeGroupDiscussionMessageTargetIDs(session, fromID, msg.ToIDs)
-		if err != nil {
-			return err
-		}
 		for _, existing := range session.Messages {
 			if strings.TrimSpace(existing.ID) == messageID {
 				return nil
 			}
 		}
-		return session.AddMessage(corea2a.Message{ID: messageID, FromID: fromID, ToIDs: toIDs, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments, CreatedAt: time.Now().UTC()})
+		toIDs, err := normalizeGroupDiscussionMessageTargetIDs(session, fromID, msg.ToIDs, msg.Content, kind)
+		if err != nil {
+			return err
+		}
+		if err := session.AddMessage(corea2a.Message{ID: messageID, FromID: fromID, ToIDs: toIDs, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		applyGroupDiscussionMessageTargetEffect(session, fromID, msg.ToIDs, msg.Content, kind)
+		refreshGroupDiscussionContextSummary(session)
+		return nil
 	})
 }
 
@@ -758,6 +770,231 @@ func (s *GroupDiscussionService) HasDiscussionMessage(tenantID, sessionID, messa
 	return false
 }
 
+func refreshGroupDiscussionContextSummary(session *corea2a.Session) {
+	if session == nil || len(session.Messages) < groupDiscussionSummaryMinMessages {
+		return
+	}
+	cutoff := len(session.Messages) - groupDiscussionSummaryRecentMessages
+	if cutoff <= 0 {
+		return
+	}
+	upToID := strings.TrimSpace(session.Messages[cutoff-1].ID)
+	if upToID != "" && strings.EqualFold(strings.TrimSpace(session.SummaryUpToID), upToID) && strings.TrimSpace(session.ContextSummary) != "" {
+		return
+	}
+	summary := buildGroupDiscussionContextSummary(session, cutoff)
+	if strings.TrimSpace(summary) == "" {
+		return
+	}
+	session.ContextSummary = summary
+	session.SummaryUpToID = upToID
+	session.SummaryUpdatedAt = time.Now().UTC()
+}
+
+func buildGroupDiscussionContextSummary(session *corea2a.Session, cutoff int) string {
+	if session == nil || cutoff <= 0 {
+		return ""
+	}
+	if cutoff > len(session.Messages) {
+		cutoff = len(session.Messages)
+	}
+	start := groupDiscussionSummaryStartIndex(session.Messages[:cutoff], session.SummaryUpToID)
+	lines := make([]string, 0, cutoff-start)
+	if start > 0 {
+		lines = append(lines, groupDiscussionExistingSummaryLines(session.ContextSummary)...)
+	}
+	lines = append(lines, groupDiscussionSummaryMessageLines(session.Messages[start:cutoff])...)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[compressed shared group memory]\n")
+	b.WriteString("This memory is shared by all participants. @ mentions and to_ids are reply targets, not private visibility.\n")
+	if topic := strings.TrimSpace(session.Topic); topic != "" {
+		b.WriteString("Topic: ")
+		b.WriteString(truncateGroupDiscussionSummaryText(topic, groupDiscussionSummaryLineMaxChars))
+		b.WriteString("\n")
+	}
+	if goal := strings.TrimSpace(session.Goal); goal != "" {
+		b.WriteString("Goal: ")
+		b.WriteString(truncateGroupDiscussionSummaryText(goal, groupDiscussionSummaryLineMaxChars))
+		b.WriteString("\n")
+	}
+	b.WriteString("Earlier messages through ")
+	b.WriteString(strings.TrimSpace(session.Messages[cutoff-1].ID))
+	b.WriteString(":\n")
+	for _, line := range newestGroupDiscussionSummaryLines(lines, groupDiscussionSummaryMaxChars-b.Len()) {
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("[/compressed shared group memory]")
+	return b.String()
+}
+
+func groupDiscussionSummaryStartIndex(messages []corea2a.Message, summaryUpToID string) int {
+	summaryUpToID = strings.TrimSpace(summaryUpToID)
+	if summaryUpToID == "" {
+		return 0
+	}
+	for i, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.ID), summaryUpToID) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func groupDiscussionExistingSummaryLines(summary string) []string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return nil
+	}
+	lines := make([]string, 0)
+	for _, raw := range strings.Split(summary, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func newestGroupDiscussionSummaryLines(lines []string, maxChars int) []string {
+	if len(lines) == 0 || maxChars <= 0 {
+		return nil
+	}
+	selected := make([]string, 0, len(lines))
+	used := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		cost := len(line) + 4
+		if used > 0 && used+cost > maxChars {
+			break
+		}
+		if used == 0 && cost > maxChars {
+			lineBudget := maxChars - 4
+			if lineBudget <= 0 {
+				break
+			}
+			line = truncateGroupDiscussionSummaryTextToBudget(line, lineBudget)
+			cost = len(line) + 4
+		}
+		used += cost
+		selected = append(selected, line)
+	}
+	for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
+		selected[i], selected[j] = selected[j], selected[i]
+	}
+	return selected
+}
+
+func groupDiscussionSummaryMessageLines(messages []corea2a.Message) []string {
+	lines := make([]string, 0, len(messages))
+	var streamFrom string
+	var streamContent strings.Builder
+	flushStream := func() {
+		content := strings.TrimSpace(streamContent.String())
+		if content != "" {
+			fromID := strings.TrimSpace(streamFrom)
+			if fromID == "" {
+				fromID = "unknown"
+			}
+			lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupDiscussionSummaryText(content, groupDiscussionSummaryLineMaxChars)))
+		}
+		streamFrom = ""
+		streamContent.Reset()
+	}
+	for _, msg := range messages {
+		content := strings.TrimSpace(msg.Content)
+		switch msg.Kind {
+		case corea2a.MessageStreamEnd, corea2a.MessageHandoff:
+			flushStream()
+			continue
+		case corea2a.MessageStreamChunk:
+			if msg.Content == "" {
+				continue
+			}
+			fromID := strings.TrimSpace(msg.FromID)
+			if streamFrom != "" && !groupDiscussionParticipantIdentityMatches(streamFrom, fromID) {
+				flushStream()
+			}
+			if streamFrom == "" {
+				streamFrom = fromID
+			}
+			streamContent.WriteString(msg.Content)
+			continue
+		default:
+			flushStream()
+		}
+		if content == "" || strings.HasPrefix(strings.ToLower(content), "invitation ") {
+			continue
+		}
+		fromID := strings.TrimSpace(msg.FromID)
+		if fromID == "" {
+			fromID = "unknown"
+		}
+		lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupDiscussionSummaryText(content, groupDiscussionSummaryLineMaxChars)))
+	}
+	flushStream()
+	return lines
+}
+
+func truncateGroupDiscussionSummaryText(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func truncateGroupDiscussionSummaryTextToBudget(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return ""
+	}
+	if len(value) <= maxRunes {
+		return value
+	}
+	runes := []rune(value)
+	if maxRunes <= 3 {
+		var b strings.Builder
+		for _, r := range runes {
+			part := string(r)
+			if b.Len()+len(part) > maxRunes {
+				break
+			}
+			b.WriteString(part)
+		}
+		return b.String()
+	}
+	var b strings.Builder
+	limit := maxRunes - 3
+	for _, r := range runes {
+		part := string(r)
+		if b.Len()+len(part) > limit {
+			break
+		}
+		b.WriteString(part)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	b.WriteString("...")
+	return b.String()
+}
+
 func (s *GroupDiscussionService) RemoveDiscussionMessage(tenantID, sessionID, messageID string) error {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
@@ -769,6 +1006,7 @@ func (s *GroupDiscussionService) RemoveDiscussionMessage(tenantID, sessionID, me
 				continue
 			}
 			session.Messages = append(session.Messages[:i], session.Messages[i+1:]...)
+			rebuildGroupDiscussionDerivedMessageState(session)
 			return nil
 		}
 		return nil
@@ -776,11 +1014,103 @@ func (s *GroupDiscussionService) RemoveDiscussionMessage(tenantID, sessionID, me
 	return err
 }
 
-func normalizeGroupDiscussionMessageTargetIDs(session *corea2a.Session, fromID string, toIDs []string) ([]string, error) {
+func rebuildGroupDiscussionDerivedMessageState(session *corea2a.Session) {
+	if session == nil {
+		return
+	}
+	session.ContextSummary = ""
+	session.SummaryUpToID = ""
+	session.SummaryUpdatedAt = time.Time{}
+	session.DefaultReplyTargets = nil
+	for _, msg := range session.Messages {
+		fromID := strings.TrimSpace(msg.FromID)
+		if fromID == "" {
+			continue
+		}
+		if len(msg.ToIDs) > 0 && groupDiscussionMessageKindUpdatesDefaultReplyTarget(msg.Kind) {
+			setGroupDiscussionDefaultReplyTargets(session, fromID, msg.ToIDs)
+			continue
+		}
+		if groupDiscussionMessageKindUpdatesDefaultReplyTarget(msg.Kind) && groupDiscussionUnresolvedMentionPattern.MatchString(msg.Content) {
+			clearGroupDiscussionDefaultReplyTargets(session, fromID)
+		}
+	}
+	refreshGroupDiscussionContextSummary(session)
+}
+
+func normalizeGroupDiscussionMessageTargetIDs(session *corea2a.Session, fromID string, toIDs []string, content string, kind corea2a.MessageKind) ([]string, error) {
 	if len(toIDs) > 0 {
 		return normalizeGroupDiscussionTargetIDs(session, toIDs)
 	}
+	if !groupDiscussionMessageKindUpdatesDefaultReplyTarget(kind) {
+		return nil, nil
+	}
+	if groupDiscussionUnresolvedMentionPattern.MatchString(content) {
+		return nil, nil
+	}
+	if targets := groupDiscussionDefaultReplyTargetsForSender(session, fromID); len(targets) > 0 {
+		return targets, nil
+	}
 	return groupDiscussionDefaultMessageTargetIDs(session, fromID), nil
+}
+
+func applyGroupDiscussionMessageTargetEffect(session *corea2a.Session, fromID string, rawToIDs []string, content string, kind corea2a.MessageKind) {
+	if !groupDiscussionMessageKindUpdatesDefaultReplyTarget(kind) {
+		return
+	}
+	if len(rawToIDs) > 0 {
+		if normalized, err := normalizeGroupDiscussionTargetIDs(session, rawToIDs); err == nil && len(normalized) > 0 {
+			setGroupDiscussionDefaultReplyTargets(session, fromID, normalized)
+		}
+		return
+	}
+	if groupDiscussionUnresolvedMentionPattern.MatchString(content) {
+		clearGroupDiscussionDefaultReplyTargets(session, fromID)
+	}
+}
+
+func groupDiscussionMessageKindUpdatesDefaultReplyTarget(kind corea2a.MessageKind) bool {
+	switch kind {
+	case "", corea2a.MessageStatement, corea2a.MessageQuestion, corea2a.MessageAnswer, corea2a.MessageEvidence, corea2a.MessageObjection, corea2a.MessageEscalation:
+		return true
+	default:
+		return false
+	}
+}
+
+func setGroupDiscussionDefaultReplyTargets(session *corea2a.Session, fromID string, toIDs []string) {
+	fromKey := groupDiscussionCanonicalParticipantIdentityKey(fromID)
+	if session == nil || fromKey == "" || len(toIDs) == 0 {
+		return
+	}
+	if session.DefaultReplyTargets == nil {
+		session.DefaultReplyTargets = map[string][]string{}
+	}
+	session.DefaultReplyTargets[fromKey] = append([]string(nil), toIDs...)
+}
+
+func clearGroupDiscussionDefaultReplyTargets(session *corea2a.Session, fromID string) {
+	fromKey := groupDiscussionCanonicalParticipantIdentityKey(fromID)
+	if session == nil || fromKey == "" || len(session.DefaultReplyTargets) == 0 {
+		return
+	}
+	delete(session.DefaultReplyTargets, fromKey)
+}
+
+func groupDiscussionDefaultReplyTargetsForSender(session *corea2a.Session, fromID string) []string {
+	fromKey := groupDiscussionCanonicalParticipantIdentityKey(fromID)
+	if session == nil || fromKey == "" || len(session.DefaultReplyTargets) == 0 {
+		return nil
+	}
+	stored, ok := session.DefaultReplyTargets[fromKey]
+	if !ok || len(stored) == 0 {
+		return nil
+	}
+	normalized, err := normalizeGroupDiscussionTargetIDs(session, stored)
+	if err != nil || len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func groupDiscussionDefaultMessageTargetIDs(session *corea2a.Session, fromID string) []string {
@@ -1109,11 +1439,16 @@ func (s *GroupDiscussionService) AddMessage(tenantID, sessionID string, req AddM
 				return err
 			}
 		}
-		toIDs, err := normalizeGroupDiscussionTargetIDs(session, req.ToIDs)
+		toIDs, err := normalizeGroupDiscussionMessageTargetIDs(session, req.FromID, req.ToIDs, req.Content, req.Kind)
 		if err != nil {
 			return err
 		}
-		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: req.FromID, ToIDs: toIDs, Kind: req.Kind, Content: req.Content, Evidence: req.Evidence, TextAttachments: req.TextAttachments, ImageAttachments: req.ImageAttachments, FileAttachments: req.FileAttachments, CreatedAt: time.Now().UTC()})
+		if err := session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: req.FromID, ToIDs: toIDs, Kind: req.Kind, Content: req.Content, Evidence: req.Evidence, TextAttachments: req.TextAttachments, ImageAttachments: req.ImageAttachments, FileAttachments: req.FileAttachments, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		applyGroupDiscussionMessageTargetEffect(session, req.FromID, req.ToIDs, req.Content, req.Kind)
+		refreshGroupDiscussionContextSummary(session)
+		return nil
 	})
 }
 
@@ -1344,6 +1679,12 @@ func cloneSession(in *corea2a.Session) *corea2a.Session {
 	}
 	out := *in
 	out.Participants = append([]corea2a.Participant(nil), in.Participants...)
+	if len(in.DefaultReplyTargets) > 0 {
+		out.DefaultReplyTargets = make(map[string][]string, len(in.DefaultReplyTargets))
+		for key, targets := range in.DefaultReplyTargets {
+			out.DefaultReplyTargets[key] = append([]string(nil), targets...)
+		}
+	}
 	out.Messages = append([]corea2a.Message(nil), in.Messages...)
 	out.Proposals = append([]corea2a.Proposal(nil), in.Proposals...)
 	out.Reviews = append([]corea2a.Review(nil), in.Reviews...)
