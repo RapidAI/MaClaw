@@ -188,6 +188,9 @@ func TestHostAdaptersUseCorelibMemoryStoreFactory(t *testing.T) {
 	var findings []string
 	for _, root := range []string{"gui", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
 		err := filepath.WalkDir(filepath.Join(repoRoot, filepath.FromSlash(root)), func(path string, d os.DirEntry, err error) error {
+			if err != nil && os.IsNotExist(err) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -235,6 +238,9 @@ func TestHostAdaptersUseCorelibMemoryMaintenance(t *testing.T) {
 	var findings []string
 	for _, root := range []string{"gui", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
 		err := filepath.WalkDir(filepath.Join(repoRoot, filepath.FromSlash(root)), func(path string, d os.DirEntry, err error) error {
+			if err != nil && os.IsNotExist(err) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -470,6 +476,9 @@ func TestHostMemoryInspectionUsesCorelibToolFacades(t *testing.T) {
 	var findings []string
 	for _, root := range []string{"gui", "tui", "maclawsrv", "MaClawSrv", filepath.ToSlash(filepath.Join("corelib", "agentservice"))} {
 		err := filepath.WalkDir(filepath.Join(repoRoot, filepath.FromSlash(root)), func(path string, d os.DirEntry, err error) error {
+			if err != nil && os.IsNotExist(err) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}

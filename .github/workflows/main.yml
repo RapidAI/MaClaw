@@ -19,6 +19,8 @@ env:
   APP_NAME: MaClaw
   GO_VERSION: '1.25.0'
   NODE_VERSION: '20'
+  RELEASE_CHANNEL: stable
+  MANIFEST_NAME: latest.json
 
 jobs:
   # ============================================================
@@ -1606,7 +1608,6 @@ jobs:
 
       - name: Skip Gitee release asset upload
         run: echo "Release packages are uploaded to Tencent COS; skipping slow Gitee asset upload."
-
 
 
 

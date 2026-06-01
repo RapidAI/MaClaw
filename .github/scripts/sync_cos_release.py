@@ -25,8 +25,13 @@ only_assets = [
 
 # Release channel: "stable" or "beta". Determines the storage prefix for assets.
 # stable → latest/  |  beta → beta/
-release_channel = os.environ.get("RELEASE_CHANNEL", "stable")
+release_channel = (os.environ.get("RELEASE_CHANNEL") or "stable").strip()
 asset_prefix = "beta" if release_channel == "beta" else "latest"
+
+
+def resolve_manifest_name(value=None):
+    name = (value or "").strip()
+    return name or "latest.json"
 
 
 def upload_file(client, local_path, key, cache_control):
@@ -110,6 +115,7 @@ def manifest_asset(path):
 
 
 def write_latest_manifest(assets, manifest_name="latest.json"):
+    manifest_name = resolve_manifest_name(manifest_name)
     latest = {
         "version": tag,
         "tag": tag,
@@ -122,7 +128,7 @@ def write_latest_manifest(assets, manifest_name="latest.json"):
 
 
 def main():
-    manifest_name = os.environ.get("MANIFEST_OUTPUT_NAME", "latest.json")
+    manifest_name = resolve_manifest_name(os.environ.get("MANIFEST_OUTPUT_NAME"))
     assets = collect_assets()
     latest_path = write_latest_manifest(assets, manifest_name)
     missing = [
@@ -164,12 +170,12 @@ def main():
 
 if __name__ == "__main__":
     import sys
-    manifest_name = os.environ.get("MANIFEST_OUTPUT_NAME", "latest.json")
+    manifest_name = resolve_manifest_name(os.environ.get("MANIFEST_OUTPUT_NAME"))
     # Parse --manifest-name from CLI args (overrides env var)
     args = sys.argv[1:]
     for i, arg in enumerate(args):
         if arg == "--manifest-name" and i + 1 < len(args):
-            manifest_name = args[i + 1]
+            manifest_name = resolve_manifest_name(args[i + 1])
             break
     if "--manifest-only" in args:
         write_latest_manifest(collect_assets(), manifest_name)
