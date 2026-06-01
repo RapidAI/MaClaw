@@ -3,8 +3,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -2111,10 +2109,10 @@ func createHiddenCmd(name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// isWindowsTerminalAvailable checks if Windows Terminal (wt.exe) is installed and available.
-// WindowsApps execution aliases can exist even when Windows Terminal cannot be
-// launched from a packaged GUI process, so a path-only check causes silent
-// launch failures. Require a small version probe before using wt.exe.
+// isWindowsTerminalAvailable checks if Windows Terminal (wt.exe) is installed.
+// Do not execute wt.exe here: command-line probes such as --version can surface
+// Windows Terminal's GUI Help dialog when called from the packaged app during
+// startup. Launch failures are still handled by the actual launch path below.
 func (a *App) isWindowsTerminalAvailable() bool {
 	_windowsTerminalProbeCache.Do(func() {
 		wtPath := a.getWindowsTerminalPath()
@@ -2122,26 +2120,13 @@ func (a *App) isWindowsTerminalAvailable() bool {
 			_windowsTerminalProbeCache.available = false
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		cmd := exec.CommandContext(ctx, wtPath, "--version")
-		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: _CREATE_NO_WINDOW}
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-		if err := cmd.Run(); err != nil {
-			a.log(fmt.Sprintf("Windows Terminal probe failed: path=%s err=%v output=%q", wtPath, err, strings.TrimSpace(out.String())))
+		info, err := os.Stat(wtPath)
+		if err != nil || info.IsDir() {
+			a.log(fmt.Sprintf("Windows Terminal path probe failed: path=%s err=%v", wtPath, err))
 			_windowsTerminalProbeCache.available = false
 			return
 		}
-		versionText := strings.TrimSpace(out.String())
-		if versionText == "" {
-			a.log(fmt.Sprintf("Windows Terminal probe returned empty output: path=%s", wtPath))
-			_windowsTerminalProbeCache.available = false
-			return
-		}
-		a.log(fmt.Sprintf("Windows Terminal probe ok: path=%s version=%s", wtPath, versionText))
+		a.log(fmt.Sprintf("Windows Terminal path probe ok: path=%s", wtPath))
 		_windowsTerminalProbeCache.available = true
 	})
 	return _windowsTerminalProbeCache.available

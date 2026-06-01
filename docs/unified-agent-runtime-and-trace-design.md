@@ -654,24 +654,44 @@ Trace shows distinct lock keys.
 - [x] Fail closed for owner-aware skill/subagent launch tools when an explicit runtime envelope has no owner.
 - [x] Use runtime owner for `compress_context` pending compression state.
 - [x] Use runtime owner for direct `run_skill` and search/install SkillHub execution paths.
+- [x] Carry hidden runtime owner and platform through merged `manage_skill` so action=run/install/search follows the same path as legacy aliases.
 - [x] Carry runtime platform through owner-aware SkillHub install confirmation so IM prompts do not read the desktop/global loop context.
+- [x] Bind SkillHub install confirmation wait context to the owning runtime loop instead of the legacy global loop.
 - [x] Carry runtime platform and owner through search-and-install SkillHub path before network search/install side effects.
 - [x] Carry runtime platform through screenshot and TTS tools so IM media delivery does not read desktop/global loop context.
 - [x] Scope `agent_status` main-agent state by runtime owner so remote `/btw` cannot see another channel's current loop.
 - [x] Carry hidden runtime owner through `agent_status` so status reads are scoped like other owner-aware tools.
+- [x] Fail closed for `agent_status` when an explicit runtime envelope has no owner, including direct empty hidden-owner submissions.
 - [x] Carry hidden runtime owner through `async_wait` so wait cancellation follows the owning loop, not the global current loop.
+- [x] Fail closed for `async_wait` when an explicit runtime envelope has no owner so waits cannot bind to another channel's loop cancellation.
 - [x] Carry hidden runtime owner through `set_max_iterations` so loop-limit changes target the owning runtime and empty-owner runtimes fail closed.
 - [x] Route desktop AI cancel through desktop/project session identity so an IM loop in legacy global state is not cancelled by the main UI.
 - [x] Require Hub `im.cancel_session` to include target user/session identity instead of cancelling the legacy global loop.
+- [x] Scope `/cancel` for `/btw` and `/loop` side runners by owner so one channel cannot cancel another channel's side query.
+- [x] Store `/btw` and `/loop` side runners in owner-keyed registries so concurrent side queries do not overwrite each other's cancellation handle.
+- [x] Make `/loop` side-runner cancellation flag atomic so cancellation can be signalled safely across goroutines.
+- [x] Route task-panel supplementary fallback through explicit desktop/project session keys instead of legacy `lastUserID`.
+- [x] Route `group_discussion summarize_result inject=true` through runtime owner and fail closed for explicit empty owners so summaries cannot inject into another channel's loop.
+- [x] Require the hidden runtime owner for `group_discussion summarize_result inject=true`; direct calls without the hidden owner must not fall back to `currentLoopCtx`.
+- [x] Guard remaining legacy `lastUserID/currentLoopCtx` read helpers with `globalLoopMu` so compatibility paths do not race concurrent channel loops.
+- [x] Centralize legacy `lastUserID` reads through a locked helper for workflow forms, policy fallback, desktop injection fallback, and lifecycle providers.
+- [x] Centralize legacy loop snapshots for cancel/reset/async wait fallbacks so `lastUserID`, `lastUserText`, and `currentLoopCtx` are read atomically.
+- [x] Scope screenshot and session-guard task text lookups by runtime owner so one channel's prompt cannot influence another channel's tool guard.
+- [x] Scope screenshot cooldown by runtime owner/request so desktop, IM, third-party, and ownerless isolated runtimes do not throttle each other.
+- [x] Treat ownerless explicit current runtimes as isolated for task-text consumers; screenshot, session guard, nickname, and discussion approval must not fall back to legacy prompt text.
 - [x] Use explicit manual/desktop owner for skill AgentView submissions.
 - [x] Preserve explicit runtime owner through MCP AgentView correction forms.
+- [x] Preserve explicit runtime owner through owner-aware AgentView task-panel submissions while still stripping it from generic tools.
+- [x] Reject owner-aware AgentView task-panel submissions with explicit empty runtime owner.
 - [x] Inject hidden runtime owner into synchronous tool args so handler internals do not read the global loop owner.
 - [x] Restrict hidden runtime owner injection to owner-aware internal tools so generic/MCP tools never receive private runtime fields.
 - [x] Centralize hidden runtime owner consumption so internal tools strip private owner fields before downstream execution.
 - [x] Use explicit runtime owner for memory tool context-hint conversation lookup.
 - [x] Reject memory tool/context-hint desktop fallback when an explicit runtime envelope has no owner.
+- [x] Reject direct hidden empty-owner `memory` tool submissions instead of treating them as manual desktop memory writes.
 - [x] Prevent prompt runtime/situation-report memory sections from falling back to desktop when an explicit runtime envelope has no owner.
 - [x] Use hidden runtime owner for local `bash` default project working-directory resolution without leaking it to external tools.
+- [x] Fail closed for `bash` when an explicit hidden runtime owner is empty so local commands cannot inherit a desktop project working directory.
 - [x] Use runtime owner for agent-loop tool exposure/execution, bonus-round tools, loop-command tool callbacks, skill auto-run fallbacks, send_and_observe task enrichment, truncation fallback catalogs, NeedsConfirm gates, coding-gate bypasses, steering doc/suggest events, task-orchestrator routing, SubAgent routing, and post-loop workflow capture.
 - [x] Make manual remote/App API policy checks use explicit desktop owner instead of arbitrary single-active workflow fallback.
 - [x] Move scheduled-task execution path to explicit system background owner.
