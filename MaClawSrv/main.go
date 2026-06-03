@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,10 +53,11 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("invalid credential pepper configuration: %w", err)
 	}
 	svc, err := agentservice.NewService(agentservice.Config{
-		DataRoot:         dataRoot,
-		TokenSecret:      tokenSecret,
-		TokenTTL:         12 * time.Hour,
-		CredentialPepper: credentialPepper,
+		DataRoot:           dataRoot,
+		TokenSecret:        tokenSecret,
+		TokenTTL:           12 * time.Hour,
+		CredentialPepper:   credentialPepper,
+		SecurityPolicyMode: getenv("MACLAW_SECURITY_POLICY_MODE", "developer"),
 	}, nil, executor)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
@@ -100,10 +102,10 @@ func runServer(ctx context.Context) error {
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           server.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: durationEnvSeconds("MACLAW_HTTP_READ_HEADER_TIMEOUT_SECONDS", 10),
+		ReadTimeout:       durationEnvSeconds("MACLAW_HTTP_READ_TIMEOUT_SECONDS", 30),
+		WriteTimeout:      durationEnvSeconds("MACLAW_HTTP_WRITE_TIMEOUT_SECONDS", 600),
+		IdleTimeout:       durationEnvSeconds("MACLAW_HTTP_IDLE_TIMEOUT_SECONDS", 120),
 		MaxHeaderBytes:    1 << 20,
 	}
 	tlsCertFile := os.Getenv("MACLAW_TLS_CERT_FILE")
@@ -164,6 +166,19 @@ func validateStartupSecrets(adminSecret, tokenSecret string) error {
 		return errors.New("default development secrets are not allowed")
 	}
 	return nil
+}
+
+func durationEnvSeconds(key string, fallback int) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return time.Duration(fallback) * time.Second
+	}
+	seconds, err := strconv.Atoi(value)
+	if err != nil || seconds <= 0 {
+		log.Printf("invalid %s=%q, using %ds", key, value, fallback)
+		return time.Duration(fallback) * time.Second
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func configureServiceLogging(dataRoot string) error {

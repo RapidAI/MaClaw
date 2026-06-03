@@ -892,21 +892,47 @@ type UpdateSessionInput struct {
 }
 
 type PostMessageInput struct {
-	Content   string            `json:"content"`
-	InputType string            `json:"input_type,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Content           string                    `json:"content"`
+	InputType         string                    `json:"input_type,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	CapabilityContext *RuntimeCapabilityContext `json:"capability_context,omitempty"`
 }
 
 type SendMessageInput struct {
-	SessionID        string            `json:"session_id,omitempty"`
-	AgentID          string            `json:"agent_id,omitempty"`
-	Title            string            `json:"title,omitempty"`
-	Content          string            `json:"content"`
-	InputType        string            `json:"input_type,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
-	SessionMetadata  map[string]string `json:"session_metadata,omitempty"`
-	ClientSessionKey string            `json:"client_session_key,omitempty"`
-	ClientMessageID  string            `json:"client_message_id,omitempty"`
+	SessionID         string                    `json:"session_id,omitempty"`
+	AgentID           string                    `json:"agent_id,omitempty"`
+	Title             string                    `json:"title,omitempty"`
+	Content           string                    `json:"content"`
+	InputType         string                    `json:"input_type,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	SessionMetadata   map[string]string         `json:"session_metadata,omitempty"`
+	CapabilityContext *RuntimeCapabilityContext `json:"capability_context,omitempty"`
+	ClientSessionKey  string                    `json:"client_session_key,omitempty"`
+	ClientMessageID   string                    `json:"client_message_id,omitempty"`
+}
+
+type CapabilityCard struct {
+	SourceType         string            `json:"source_type"`
+	SourceExpertUserID string            `json:"source_expert_user_id,omitempty"`
+	SourceRef          string            `json:"source_ref"`
+	SourceVersion      string            `json:"source_version,omitempty"`
+	Name               string            `json:"name"`
+	Summary            string            `json:"summary,omitempty"`
+	RiskTypes          []string          `json:"risk_types,omitempty"`
+	TargetTypes        []string          `json:"target_types,omitempty"`
+	Languages          []string          `json:"languages,omitempty"`
+	UseWhen            string            `json:"use_when,omitempty"`
+	DoNotUseWhen       string            `json:"do_not_use_when,omitempty"`
+	InputsRequired     []string          `json:"inputs_required,omitempty"`
+	Outputs            []string          `json:"outputs,omitempty"`
+	Tags               []string          `json:"tags,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
+}
+
+type RuntimeCapabilityContext struct {
+	AgentProfile string           `json:"agent_profile,omitempty"`
+	Query        string           `json:"query,omitempty"`
+	Cards        []CapabilityCard `json:"cards,omitempty"`
 }
 
 type AgentToolCapability struct {
@@ -918,13 +944,18 @@ type AgentToolCapability struct {
 }
 
 type AgentCapabilities struct {
-	Executor          string                `json:"executor"`
-	SupportsSessions  bool                  `json:"supports_sessions"`
-	SupportsAskUser   bool                  `json:"supports_ask_user"`
-	SupportsSSH       bool                  `json:"supports_ssh"`
-	SupportsLocalBash bool                  `json:"supports_local_bash"`
-	Tools             []AgentToolCapability `json:"tools,omitempty"`
-	Metadata          map[string]string     `json:"metadata,omitempty"`
+	Executor                 string                `json:"executor"`
+	SupportsSessions         bool                  `json:"supports_sessions"`
+	SupportsAskUser          bool                  `json:"supports_ask_user"`
+	SupportsSSH              bool                  `json:"supports_ssh"`
+	SupportsLocalBash        bool                  `json:"supports_local_bash"`
+	RedteamDomainProfile     bool                  `json:"redteam_domain_profile,omitempty"`
+	CapabilityCardContext    bool                  `json:"capability_card_context,omitempty"`
+	StructuredRedteamPlanner bool                  `json:"structured_redteam_planner,omitempty"`
+	NativeCatalogGrantSync   bool                  `json:"native_catalog_grant_sync,omitempty"`
+	ReportSchemaV1           bool                  `json:"report_schema_v1,omitempty"`
+	Tools                    []AgentToolCapability `json:"tools,omitempty"`
+	Metadata                 map[string]string     `json:"metadata,omitempty"`
 }
 
 type ExecuteRequest struct {
@@ -947,6 +978,11 @@ type ExecuteRequest struct {
 	// risk-policy gate. When present in ops_controlled mode, bash/ssh execution
 	// must match this manifest exactly.
 	OpsApprovedCommands []workflow.OpsApprovedCommand
+
+	// CapabilityContext carries a safe, platform-provided shortlist of
+	// available domain capabilities. It must not contain payloads, archives,
+	// credentials, tokens, or evidence content.
+	CapabilityContext *RuntimeCapabilityContext
 }
 
 type ExecuteResult struct {

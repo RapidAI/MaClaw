@@ -16,24 +16,27 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 type Config struct {
-	DataRoot         string
-	TokenSecret      string
-	TokenTTL         time.Duration
-	CredentialPepper string
+	DataRoot           string
+	TokenSecret        string
+	TokenTTL           time.Duration
+	CredentialPepper   string
+	SecurityPolicyMode string
 }
 
 type Service struct {
-	store            Store
-	records          RecordStore
-	executor         Executor
-	tokens           *TokenManager
-	dataRoot         string
-	credentialPepper string
-	now              func() time.Time
+	store              Store
+	records            RecordStore
+	executor           Executor
+	tokens             *TokenManager
+	dataRoot           string
+	credentialPepper   string
+	securityPolicyMode string
+	now                func() time.Time
 
 	// SkillSourceFilter returns the allowed skill sources for a given principal.
 	// nil means all sources are allowed. Set by MaClawSrv at initialization
@@ -54,6 +57,21 @@ type auditRecord struct {
 	ActorTenantID string
 	ActorUserID   string
 	Metadata      map[string]string
+}
+
+type preparedPostMessage struct {
+	principal       Principal
+	tenant          Tenant
+	user            User
+	instance        Instance
+	session         Session
+	config          UserConfig
+	userMessage     Message
+	run             Run
+	history         []Message
+	effectiveText   string
+	clearPendingAsk bool
+	capabilityCtx   *RuntimeCapabilityContext
 }
 
 func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
@@ -84,7 +102,8 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	} else {
 		records = NewMemoryRecordStore()
 	}
-	return &Service{store: store, records: records, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}, nil
+	policyMode := security.NewPolicyEngineWithMode(cfg.SecurityPolicyMode).Mode()
+	return &Service{store: store, records: records, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, securityPolicyMode: policyMode, now: time.Now}, nil
 }
 
 func (s *Service) DataRoot() string { return s.dataRoot }
@@ -1223,10 +1242,21 @@ func (s *Service) GetInstanceCapabilities(ctx context.Context, p Principal, inst
 			return nil, err
 		}
 		if caps != nil {
-			return caps, nil
+			return applyRedteamRuntimeCapabilities(caps), nil
 		}
 	}
-	return &AgentCapabilities{Executor: "unknown", SupportsSessions: true}, nil
+	return applyRedteamRuntimeCapabilities(&AgentCapabilities{Executor: "unknown", SupportsSessions: true}), nil
+}
+
+func applyRedteamRuntimeCapabilities(caps *AgentCapabilities) *AgentCapabilities {
+	if caps == nil {
+		return nil
+	}
+	caps.RedteamDomainProfile = true
+	caps.CapabilityCardContext = true
+	caps.StructuredRedteamPlanner = true
+	caps.ReportSchemaV1 = true
+	return caps
 }
 
 func (s *Service) ListInstances(ctx context.Context, p Principal) ([]Instance, error) {
@@ -1453,7 +1483,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 		}
 		metadata["client_message_id"] = clientMessageID
 	}
-	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Metadata: metadata})
+	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Metadata: metadata, CapabilityContext: in.CapabilityContext})
 	if err != nil {
 		return sess, run, msg, err
 	}
@@ -1538,82 +1568,117 @@ func (s *Service) findExistingClientMessage(sessionID string, p Principal, insta
 	}
 	return run, assistant, true
 }
-func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sessionID string, in PostMessageInput) (*Run, *Message, error) {
+func (s *Service) preparePostMessage(ctx context.Context, p Principal, instanceID, sessionID string, in PostMessageInput) (*preparedPostMessage, error) {
+	_ = ctx
 	tenant, err := s.store.GetTenant(p.TenantID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	user, err := s.store.GetUser(p.TenantID, p.UserID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	inst = s.withInstanceReadiness(inst)
 	if !inst.Ready {
-		return nil, nil, fmt.Errorf("instance is not ready: %s", inst.ReadyReason)
+		return nil, fmt.Errorf("instance is not ready: %s", inst.ReadyReason)
 	}
 	sess, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sessionID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if sess.Archived {
-		return nil, nil, ErrSessionArchived
+		return nil, ErrSessionArchived
 	}
 	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
 	if err != nil && err != ErrUserConfigNotFound {
-		return nil, nil, err
+		return nil, err
 	}
 	content := strings.TrimSpace(in.Content)
 	if content == "" {
-		return nil, nil, fmt.Errorf("content is required")
+		return nil, fmt.Errorf("content is required")
 	}
 	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricMessages); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricRuns); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	effectiveContent, pendingAskReq := buildEffectiveUserContent(sess, content)
 	now := s.now()
 	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Metadata: cloneMap(in.Metadata), CreatedAt: now}
 	if err := s.store.SaveMessage(userMsg); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "message.posted", ResourceType: "message", ResourceID: userMsg.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID, "role": string(userMsg.Role)}})
 	run := Run{ID: NewID("run"), TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, SessionID: sess.ID, UserMessageID: userMsg.ID, Status: RunStatusRunning, StartedAt: now}
 	if err := s.store.SaveRun(run); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.started", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID}})
 	history, histErr := s.store.ListMessages(sess.ID)
 	if histErr != nil {
-		return nil, nil, histErr
+		return nil, histErr
 	}
+	return &preparedPostMessage{
+		principal:       p,
+		tenant:          tenant,
+		user:            user,
+		instance:        inst,
+		session:         sess,
+		config:          cfg,
+		userMessage:     userMsg,
+		run:             run,
+		history:         history,
+		effectiveText:   effectiveContent,
+		clearPendingAsk: pendingAskReq != nil,
+		capabilityCtx:   in.CapabilityContext,
+	}, nil
+}
+
+func (s *Service) completePreparedPostMessage(ctx context.Context, prepared *preparedPostMessage) (*Run, *Message, error) {
+	if prepared == nil {
+		return nil, nil, fmt.Errorf("prepared post message is required")
+	}
+	p := prepared.principal
+	inst := prepared.instance
+	sess := prepared.session
+	userMsg := prepared.userMessage
+	run := prepared.run
 	execMsg := userMsg
-	execMsg.Content = effectiveContent
+	execMsg.Content = prepared.effectiveText
+	execMsg.Metadata = cloneMap(execMsg.Metadata)
+	if execMsg.Metadata == nil {
+		execMsg.Metadata = map[string]string{}
+	}
+	execMsg.Metadata["run_id"] = run.ID
+	if strings.TrimSpace(execMsg.Metadata["session_id"]) == "" {
+		execMsg.Metadata["session_id"] = sess.ID
+	}
 	execCtx, cancelExec := context.WithCancel(ctx)
 	s.registerRunCancel(run.ID, cancelExec)
+	defer cancelExec()
+	defer s.clearRunCancel(run.ID)
 	res, execErr := s.executor.Execute(execCtx, ExecuteRequest{
 		Principal:  p,
-		Tenant:     tenant,
-		User:       user,
+		Tenant:     prepared.tenant,
+		User:       prepared.user,
 		Instance:   inst,
 		Session:    sess,
 		Message:    execMsg,
-		History:    history,
+		History:    prepared.history,
 		DataDir:    inst.DataDir,
-		Config:     cfg.AppConfig,
+		Config:     prepared.config.AppConfig,
 		ToolPolicy: toolPolicyFromMetadata(userMsg.Metadata, sess.Metadata),
 		OpsApprovedCommands: opsApprovedCommandsFromMetadata(
 			userMsg.Metadata,
 			sess.Metadata,
 		),
+		CapabilityContext: prepared.capabilityCtx,
 	})
-	s.clearRunCancel(run.ID)
-	cancelExec()
 	completed := s.now()
 	run.CompletedAt = &completed
 	run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
@@ -1622,16 +1687,16 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			run.Status = RunStatusCancelled
 			run.Error = "run cancelled"
 			_ = s.store.SaveRun(run)
-			_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.cancelled", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID}})
+			_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.cancelled", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": inst.ID, "session_id": sess.ID}})
 			return &run, nil, execErr
 		}
 		run.Status = RunStatusFailed
 		run.Error = execErr.Error()
 		_ = s.store.SaveRun(run)
-		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.failed", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID}})
+		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.failed", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": inst.ID, "session_id": sess.ID}})
 		return &run, nil, execErr
 	}
-	assistant := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleAssistant, OutputType: defaultString(res.OutputType, "text/plain"), Content: res.Content, Metadata: cloneMap(res.Metadata), CreatedAt: completed}
+	assistant := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID, Role: MessageRoleAssistant, OutputType: defaultString(res.OutputType, "text/plain"), Content: res.Content, Metadata: cloneMap(res.Metadata), CreatedAt: completed}
 	if err := s.store.SaveMessage(assistant); err != nil {
 		return nil, nil, err
 	}
@@ -1642,7 +1707,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if err := s.store.SaveRun(run); err != nil {
 		return nil, nil, err
 	}
-	if pendingAskReq != nil {
+	if prepared.clearPendingAsk {
 		sess.Metadata = clearPendingAskUserMetadata(sess.Metadata)
 	}
 	if res != nil && res.Metadata != nil && normalizeResponseSourceKind(res.Metadata[metaResponseSource]).IsWaitingForUser() {
@@ -1650,8 +1715,28 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	}
 	sess.UpdatedAt = completed
 	_ = s.store.SaveSession(sess)
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.succeeded", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID, "assistant_message_id": assistant.ID}})
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.succeeded", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": inst.ID, "session_id": sess.ID, "assistant_message_id": assistant.ID}})
 	return &run, &assistant, nil
+}
+
+func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sessionID string, in PostMessageInput) (*Run, *Message, error) {
+	prepared, err := s.preparePostMessage(ctx, p, instanceID, sessionID, in)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.completePreparedPostMessage(ctx, prepared)
+}
+
+func (s *Service) PostMessageAsync(ctx context.Context, p Principal, instanceID, sessionID string, in PostMessageInput) (*Run, error) {
+	prepared, err := s.preparePostMessage(ctx, p, instanceID, sessionID, in)
+	if err != nil {
+		return nil, err
+	}
+	run := prepared.run
+	go func() {
+		_, _, _ = s.completePreparedPostMessage(context.Background(), prepared)
+	}()
+	return &run, nil
 }
 
 func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) workflow.ToolFilterPolicy {

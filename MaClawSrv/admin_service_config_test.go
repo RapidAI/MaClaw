@@ -13,6 +13,15 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
+func containsAllowedValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAdminServiceConfigSchemaDraftAndValidate(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -35,6 +44,18 @@ func TestAdminServiceConfigSchemaDraftAndValidate(t *testing.T) {
 	}
 	if len(schema.Items) == 0 {
 		t.Fatalf("expected schema items")
+	}
+	var foundSecurityPolicy bool
+	for _, item := range schema.Items {
+		if item.Key == "security_policy_mode" {
+			foundSecurityPolicy = true
+			if item.EnvKey != "MACLAW_SECURITY_POLICY_MODE" || item.Type != "enum" || !containsAllowedValue(item.AllowedValues, "developer") {
+				t.Fatalf("unexpected security policy schema field: %#v", item)
+			}
+		}
+	}
+	if !foundSecurityPolicy {
+		t.Fatalf("schema missing security_policy_mode")
 	}
 
 	body := `{"values":{"http_addr":"127.0.0.1:19090","allow_insecure_http":false,"admin_web_default_locale":"en-US","sandbox_mode":"bwrap","sandbox_install_policy":"suggest","sandbox_report_retention":30,"sandbox_startup_diagnose":true},"reason":"prepare admin settings"}`

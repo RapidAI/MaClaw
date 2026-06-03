@@ -12,6 +12,7 @@ build/windows/installer/tmp
 dev/
 nul
 .codex_tmp/
+.tmp/
 .venv*/
 .gocache/
 .gomodcache/

@@ -152,6 +152,7 @@ type skillHubDownloadEnvelope struct {
 	Steps       []corelib.NLSkillStep `json:"steps,omitempty"`
 	Type        string                `json:"type,omitempty"`
 	Content     string                `json:"content,omitempty"`
+	Files       map[string]string     `json:"files,omitempty"`
 }
 
 type skillMarketSearchResponse struct {
@@ -184,10 +185,142 @@ func (s *Service) ListSkills(ctx context.Context, p Principal) ([]corelib.NLSkil
 		return nil, err
 	}
 	items := skill.ScanSkillDirAll(root)
+	items = dedupeSkillEntriesByName(items)
 	sort.Slice(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
 	return items, nil
+}
+
+func dedupeSkillEntriesByName(items []corelib.NLSkillEntry) []corelib.NLSkillEntry {
+	if len(items) < 2 {
+		return items
+	}
+	byName := make(map[string]corelib.NLSkillEntry, len(items))
+	order := make([]string, 0, len(items))
+	for _, item := range items {
+		key := strings.ToLower(strings.TrimSpace(item.Name))
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(filepath.Base(item.SkillDir)))
+		}
+		if key == "" {
+			continue
+		}
+		current, exists := byName[key]
+		if !exists {
+			byName[key] = item
+			order = append(order, key)
+			continue
+		}
+		if preferSkillEntry(item, current) {
+			byName[key] = item
+		}
+	}
+	out := make([]corelib.NLSkillEntry, 0, len(order))
+	for _, key := range order {
+		out = append(out, byName[key])
+	}
+	return out
+}
+
+func preferSkillEntry(candidate, current corelib.NLSkillEntry) bool {
+	if skillStatusRank(candidate.Status) != skillStatusRank(current.Status) {
+		return skillStatusRank(candidate.Status) > skillStatusRank(current.Status)
+	}
+	if cmp := compareVersionish(candidate.HubVersion, current.HubVersion); cmp != 0 {
+		return cmp > 0
+	}
+	if (candidate.GlobalTimeout > 0) != (current.GlobalTimeout > 0) {
+		return candidate.GlobalTimeout > 0
+	}
+	if candidate.GlobalTimeout != current.GlobalTimeout {
+		return candidate.GlobalTimeout > current.GlobalTimeout
+	}
+	if cmp := compareRFC3339(candidate.CreatedAt, current.CreatedAt); cmp != 0 {
+		return cmp > 0
+	}
+	if cmp := compareSkillDirModTime(candidate.SkillDir, current.SkillDir); cmp != 0 {
+		return cmp > 0
+	}
+	return strings.Compare(candidate.SkillDir, current.SkillDir) > 0
+}
+
+func skillStatusRank(status string) int {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "active":
+		return 2
+	case "disabled":
+		return 0
+	default:
+		return 1
+	}
+}
+
+func compareVersionish(a, b string) int {
+	pa := parseVersionish(a)
+	pb := parseVersionish(b)
+	max := len(pa)
+	if len(pb) > max {
+		max = len(pb)
+	}
+	for i := 0; i < max; i++ {
+		av, bv := 0, 0
+		if i < len(pa) {
+			av = pa[i]
+		}
+		if i < len(pb) {
+			bv = pb[i]
+		}
+		if av != bv {
+			if av > bv {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+func parseVersionish(value string) []int {
+	parts := strings.FieldsFunc(strings.TrimSpace(value), func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	out := make([]int, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		n := 0
+		for _, r := range part {
+			n = n*10 + int(r-'0')
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func compareRFC3339(a, b string) int {
+	ta, errA := time.Parse(time.RFC3339, strings.TrimSpace(a))
+	tb, errB := time.Parse(time.RFC3339, strings.TrimSpace(b))
+	if errA != nil || errB != nil || ta.Equal(tb) {
+		return 0
+	}
+	if ta.After(tb) {
+		return 1
+	}
+	return -1
+}
+
+func compareSkillDirModTime(a, b string) int {
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	if errA != nil || errB != nil || ia.ModTime().Equal(ib.ModTime()) {
+		return 0
+	}
+	if ia.ModTime().After(ib.ModTime()) {
+		return 1
+	}
+	return -1
 }
 
 func (s *Service) GetSkill(ctx context.Context, p Principal, name string) (*corelib.NLSkillEntry, error) {
@@ -354,11 +487,20 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 		}
 		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	case "skillhub":
-		entry, err := downloadSkillHubEntry(ctx, strings.TrimSpace(in.SkillHubURL), strings.TrimSpace(in.SkillID))
+		entry, dir, cleanup, err := downloadSkillHubPackage(ctx, strings.TrimSpace(in.SkillHubURL), strings.TrimSpace(in.SkillID))
 		if err != nil {
 			return nil, err
 		}
-		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
+		defer cleanup()
+		if report, err := s.scanImportedSkillBeforeInstall(ctx, entry, dir); err != nil {
+			s.recordSkillScanRejection(p, entry, report, err)
+			return nil, err
+		}
+		stored, err := s.persistExtractedSkillDir(p, *entry, dir, in.Overwrite)
+		if err != nil {
+			return nil, err
+		}
+		return []corelib.NLSkillEntry{stored}, nil
 	default:
 		return nil, fmt.Errorf("unsupported skill install source %q", source)
 	}
@@ -404,6 +546,16 @@ func (s *Service) scanSkillForOutbound(ctx context.Context, p Principal, entry c
 	if report != nil {
 		level = report.FinalLevel
 		summary = report.Summary
+	}
+	action := security.NewPolicyEngineWithMode(s.securityPolicyMode).Evaluate("skill_"+phase, map[string]interface{}{
+		"name":       entry.Name,
+		"source":     entry.Source,
+		"skill_dir":  dir,
+		"scan_level": string(level),
+		"phase":      phase,
+	}, level)
+	if action == security.PolicyAllow || action == security.PolicyAudit {
+		return nil
 	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.rejected", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"phase": phase, "risk_level": string(level), "summary": summary}})
 	return fmt.Errorf("skill %s blocked by security scan: level=%s summary=%s", phase, level, summary)
@@ -581,7 +733,7 @@ func (s *Service) installSkillArchiveBytes(ctx context.Context, p Principal, dat
 		if err != nil {
 			return nil, err
 		}
-		if report, err := scanImportedSkillBeforeInstall(ctx, entry, root); err != nil {
+		if report, err := s.scanImportedSkillBeforeInstall(ctx, entry, root); err != nil {
 			s.recordSkillScanRejection(p, entry, report, err)
 			return nil, err
 		}
@@ -599,6 +751,18 @@ func (s *Service) installSkillArchiveBytes(ctx context.Context, p Principal, dat
 }
 
 func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillEntry, skillDir string) (*skill.ScanReport, error) {
+	return scanImportedSkillBeforeInstallWithMode(ctx, entry, skillDir, "standard")
+}
+
+func (s *Service) scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillEntry, skillDir string) (*skill.ScanReport, error) {
+	mode := "standard"
+	if s != nil && strings.TrimSpace(s.securityPolicyMode) != "" {
+		mode = s.securityPolicyMode
+	}
+	return scanImportedSkillBeforeInstallWithMode(ctx, entry, skillDir, mode)
+}
+
+func scanImportedSkillBeforeInstallWithMode(ctx context.Context, entry *corelib.NLSkillEntry, skillDir, policyMode string) (*skill.ScanReport, error) {
 	if entry == nil {
 		return nil, fmt.Errorf("skill entry is required")
 	}
@@ -622,6 +786,15 @@ func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillE
 		return nil, fmt.Errorf("skill security scan produced no report")
 	}
 	if report.NeedsUserReview() {
+		action := security.NewPolicyEngineWithMode(policyMode).Evaluate("skill_install", map[string]interface{}{
+			"name":       entry.Name,
+			"source":     entry.Source,
+			"skill_dir":  skillDir,
+			"scan_level": string(report.FinalLevel),
+		}, report.FinalLevel)
+		if action == security.PolicyAllow || action == security.PolicyAudit {
+			return report, nil
+		}
 		return report, fmt.Errorf("skill security scan blocked installation: level=%s summary=%s", report.FinalLevel, report.Summary)
 	}
 	return report, nil
@@ -639,7 +812,7 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, fmt.Errorf("skill name is required")
 		}
-		if report, err := scanImportedSkillBeforeInstall(ctx, &entry, entry.SkillDir); err != nil {
+		if report, err := s.scanImportedSkillBeforeInstall(ctx, &entry, entry.SkillDir); err != nil {
 			s.recordSkillScanRejection(p, &entry, report, err)
 			return nil, err
 		}
@@ -714,6 +887,7 @@ func (s *Service) persistExtractedSkillDir(p Principal, entry corelib.NLSkillEnt
 	}
 	dir := filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name)))
 	if overwrite {
+		_ = s.removeDuplicateSkillDirs(p, entry.Name, dir)
 		_ = os.RemoveAll(dir)
 	}
 	if err := secureMkdirAll(dir); err != nil {
@@ -726,6 +900,32 @@ func (s *Service) persistExtractedSkillDir(p Principal, entry corelib.NLSkillEnt
 	entry.Source = firstNonEmpty(entry.Source, "file")
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.imported", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"source": entry.Source}})
 	return entry, nil
+}
+
+func (s *Service) removeDuplicateSkillDirs(p Principal, name, keepDir string) error {
+	root, err := s.ensureUserSkillsRoot(p)
+	if err != nil {
+		return err
+	}
+	keepDir, _ = filepath.Abs(keepDir)
+	for _, item := range skill.ScanSkillDirAll(root) {
+		if !item.MatchesName(strings.TrimSpace(name)) {
+			continue
+		}
+		dir := strings.TrimSpace(item.SkillDir)
+		if dir == "" {
+			continue
+		}
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		if absDir == keepDir {
+			continue
+		}
+		_ = os.RemoveAll(absDir)
+	}
+	return nil
 }
 
 func restoreSkillDirFromArchive(skillDir string, archive []byte) error {
@@ -849,6 +1049,82 @@ func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corel
 	}
 	entry := &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, "skillhub"), SourceProject: baseURL, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content}
 	return entry, nil
+}
+
+func downloadSkillHubPackage(ctx context.Context, baseURL, skillID string) (*corelib.NLSkillEntry, string, func(), error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	entry, payload, err := fetchSkillHubDownloadEnvelope(ctx, baseURL, strings.TrimSpace(skillID))
+	if err != nil {
+		return nil, "", func() {}, err
+	}
+	tmpDir, err := os.MkdirTemp("", "maclawsrv-skillhub-install-*")
+	if err != nil {
+		return nil, "", func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
+	if err := writeEntryToSkillDir(tmpDir, *entry); err != nil {
+		cleanup()
+		return nil, "", func() {}, err
+	}
+	for rel, encoded := range payload.Files {
+		target, err := safeImportedZipTarget(tmpDir, rel)
+		if err != nil {
+			cleanup()
+			return nil, "", func() {}, err
+		}
+		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		if err != nil {
+			cleanup()
+			return nil, "", func() {}, fmt.Errorf("decode hub skill file %q: %w", rel, err)
+		}
+		if int64(len(data)) > maxImportedSkillZipFileBytes {
+			cleanup()
+			return nil, "", func() {}, fmt.Errorf("hub skill file %q exceeds %d bytes", rel, maxImportedSkillZipFileBytes)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			cleanup()
+			return nil, "", func() {}, err
+		}
+		if err := fileutil.AtomicWriteFile(target, data, 0o644); err != nil {
+			cleanup()
+			return nil, "", func() {}, err
+		}
+	}
+	loaded, err := loadImportedSkillEntry(tmpDir)
+	if err != nil {
+		cleanup()
+		return nil, "", func() {}, err
+	}
+	loaded.Source = entry.Source
+	loaded.SourceProject = entry.SourceProject
+	loaded.HubSkillID = entry.HubSkillID
+	loaded.HubVersion = entry.HubVersion
+	loaded.TrustLevel = entry.TrustLevel
+	loaded.SkillDir = tmpDir
+	loaded.DirName = normalizeSkillDirName(loaded.Name)
+	return loaded, tmpDir, cleanup, nil
+}
+
+func fetchSkillHubDownloadEnvelope(ctx context.Context, baseURL, skillID string) (*corelib.NLSkillEntry, *skillHubDownloadEnvelope, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	skillID = strings.TrimSpace(skillID)
+	if baseURL == "" || skillID == "" {
+		return nil, nil, fmt.Errorf("skill_hub_url and skill_id are required")
+	}
+	endpoint := fmt.Sprintf("%s/api/v1/skills/%s/download", baseURL, url.PathEscape(skillID))
+	body, err := doJSONRequest(ctx, http.MethodGet, endpoint, nil, nil, skillHubJSONMaxBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	var payload skillHubDownloadEnvelope
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(payload.Name) == "" {
+		return nil, nil, fmt.Errorf("skill hub response missing name")
+	}
+	entry := &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, "skillhub"), SourceProject: baseURL, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content}
+	return entry, &payload, nil
 }
 
 func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, archive []byte, authToken string) (string, error) {
@@ -1293,8 +1569,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 // filterAllowedSources returns only the sources that are in the allowed list.
-// Maps search source names (github, skillmarket, skillhub) to canonical names
-// (github, skillhub, skillhub) for comparison.
+// Maps search source names to the canonical identifiers used by source policy.
+// Private skillhub and public skillmarket are intentionally distinct.
 func filterAllowedSources(requested, allowed []string) []string {
 	allowedSet := make(map[string]bool, len(allowed))
 	for _, s := range allowed {
@@ -1316,8 +1592,10 @@ func searchSourceToCanonical(source string) string {
 	switch source {
 	case "github":
 		return "github"
-	case "skillhub", "skillmarket":
+	case "skillhub":
 		return "skillhub"
+	case "skillmarket":
+		return "skillmarket"
 	case "clawhub":
 		return "clawhub"
 	default:

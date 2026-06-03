@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -228,7 +230,9 @@ func ParseNonStreamOpenAIResponseBody(body []byte) (*Response, error) {
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
-	return projectOpenAIWireResponse(wire), nil
+	result := projectOpenAIWireResponse(wire)
+	debugLogEmptyOpenAIResponse(result, body)
+	return result, nil
 }
 
 func ParseNonStreamOpenAIResponse(resp *http.Response) (*Response, error) {
@@ -238,6 +242,22 @@ func ParseNonStreamOpenAIResponse(resp *http.Response) (*Response, error) {
 		return nil, fmt.Errorf("llm error: status=%d body=%s", resp.StatusCode, sanitized)
 	}
 	return ParseNonStreamOpenAIResponseBody(body)
+}
+
+func debugLogEmptyOpenAIResponse(resp *Response, body []byte) {
+	if os.Getenv("MACLAW_DEBUG_LLM_EMPTY") != "1" || resp == nil || len(resp.Choices) == 0 {
+		return
+	}
+	choice := resp.Choices[0]
+	msg := choice.Message
+	if strings.TrimSpace(msg.Content) != "" || strings.TrimSpace(msg.ReasoningContent) != "" || len(msg.ToolCalls) > 0 {
+		return
+	}
+	raw := strings.TrimSpace(string(body))
+	if len(raw) > 4096 {
+		raw = raw[:4096] + "...<truncated>"
+	}
+	log.Printf("[LLM-debug] empty OpenAI-compatible response finish_reason=%q choices=%d raw=%s", choice.FinishReason, len(resp.Choices), raw)
 }
 
 // htmlStripRe matches HTML tags for sanitization.

@@ -62,6 +62,23 @@ func TestMCPReadinessManager_EnsureReady_LocalAutoStart(t *testing.T) {
 	}
 }
 
+func TestNewMCPToolBridgeUsesLongRemoteMCPTimeoutForConfirmedRuns(t *testing.T) {
+	t.Setenv("MACLAW_REMOTE_MCP_TOOL_TIMEOUT_SECONDS", "")
+	store := NewMemoryStore()
+	svc, err := NewService(Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789abcdef",
+	}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	bridge := NewMCPToolBridge(svc)
+	if bridge.client.Timeout != 650*time.Second {
+		t.Fatalf("remote MCP tool timeout = %s, want 650s", bridge.client.Timeout)
+	}
+}
+
 func TestMCPReadinessManager_EnsureReady_LocalDisabled_Skipped(t *testing.T) {
 	store := NewMemoryStore()
 	svc, err := NewService(Config{

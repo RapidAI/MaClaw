@@ -6,11 +6,30 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+const defaultRemoteMCPToolTimeout = 650 * time.Second
+
+func remoteMCPToolTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("MACLAW_REMOTE_MCP_TOOL_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return defaultRemoteMCPToolTimeout
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return defaultRemoteMCPToolTimeout
+	}
+	if seconds < 30 {
+		seconds = 30
+	}
+	return time.Duration(seconds) * time.Second
+}
 
 // MCPToolProvider is the interface required by the agent executor to discover
 // and invoke MCP tools at runtime. It is satisfied by *MCPToolBridge which
@@ -57,7 +76,7 @@ type MCPToolBridge struct {
 func NewMCPToolBridge(svc *Service) *MCPToolBridge {
 	return &MCPToolBridge{
 		svc:       svc,
-		client:    &http.Client{Timeout: 30 * time.Second},
+		client:    &http.Client{Timeout: remoteMCPToolTimeout()},
 		readiness: NewMCPReadinessManager(svc),
 	}
 }
@@ -308,9 +327,16 @@ func (c *coreAgentCallbacks) executeMCPTool(name string, args map[string]interfa
 	// Find the entry matching the resolved name.
 	for _, e := range entries {
 		if mcpResolvedName(e, coreNames, nameOwner) == name {
-			ctx, cancel := context.WithTimeout(c.ctx, 60*time.Second)
+			if blocked, reason := c.redteamMCPBatchRequiresSkillRun(e.ToolName, args); blocked {
+				return "Error: " + reason, true
+			}
+			preparedArgs, blocked, reason := c.redteamPrepareSkillPayloadRegistration(e.ToolName, args)
+			if blocked {
+				return "Error: " + reason, true
+			}
+			ctx, cancel := context.WithTimeout(c.ctx, remoteMCPToolTimeout())
 			defer cancel()
-			result, err := c.mcpProvider.CallTool(ctx, c.principal, e.ServerID, e.ToolName, args)
+			result, err := c.mcpProvider.CallTool(ctx, c.principal, e.ServerID, e.ToolName, preparedArgs)
 			if err != nil {
 				log.Printf("[MCP] tool %s/%s call failed: %v", e.ServerID, e.ToolName, err)
 				return fmt.Sprintf("Error: MCP tool call failed: %v", err), true

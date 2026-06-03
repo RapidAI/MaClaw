@@ -116,6 +116,59 @@ func TestRunLoop_NoToolCalls_ReturnsFinalText(t *testing.T) {
 	}
 }
 
+func TestRunLoop_UsesResponsesAPIWhenConfigured(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.URL.Path != "/responses" {
+			t.Fatalf("request path = %s, want /responses", r.URL.Path)
+		}
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, ok := req["input"]; !ok {
+			t.Fatalf("Responses API request missing input: %#v", req)
+		}
+		if _, ok := req["tools"]; !ok {
+			t.Fatalf("Responses API request missing tools: %#v", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch callCount {
+		case 1:
+			w.Write([]byte(`{"output":[{"type":"function_call","call_id":"call_1","name":"search_redteam_capabilities","arguments":"{\"query\":\"classical chinese jailbreak\"}"}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`))
+		default:
+			w.Write([]byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"found CCBOS capability"}]}],"usage":{"input_tokens":20,"output_tokens":4,"total_tokens":24}}`))
+		}
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:     server.URL,
+			Model:   "gpt-5.5",
+			Key:     "test-key",
+			WireAPI: "responses",
+		},
+		maxIter:    10,
+		sysPrompt:  "You are a red-team agent.",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("search_redteam_capabilities", "Search capabilities", map[string]interface{}{"type": "object"})},
+		toolResult: `{"items":[{"name":"CCBOS"}]}`,
+	}
+
+	result := RunLoop(cb, "find classical Chinese jailbreak capabilities", nil, nil)
+
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("unexpected result: error=%q hard_exit=%v", result.Error, result.HardExit)
+	}
+	if result.Text != "found CCBOS capability" {
+		t.Fatalf("text = %q, want final Responses API message", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "search_redteam_capabilities" {
+		t.Fatalf("tool calls = %#v", cb.toolCalls)
+	}
+}
+
 func TestRunLoop_WithToolCall_ExecutesAndContinues(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +554,83 @@ func TestRunLoop_ConsecutiveEmptyResponses_HardExit(t *testing.T) {
 	}
 }
 
+func TestRunLoop_EmptyStreamingToolResponseFallsBackToNonStream(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+		case 2:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id":   "call_search",
+							"type": "function",
+							"function": map[string]interface{}{
+								"name":      "search_redteam_capabilities",
+								"arguments": `{"query":"classical Chinese jailbreak"}`,
+							},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			})
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": "I found the relevant capability."},
+					"finish_reason": "stop",
+				}},
+			})
+		}
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:   server.URL,
+			Model: "test",
+			Key:   "test-key",
+		},
+		maxIter:   5,
+		sysPrompt: "test",
+		tools: []map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "search_redteam_capabilities",
+				"description": "Search safe red-team capability cards.",
+				"parameters": map[string]interface{}{
+					"type":       "object",
+					"required":   []string{"query"},
+					"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+				},
+			},
+		}},
+		toolResult: `{"items":[{"source_ref":"ccbos-classical-chinese-skill"}]}`,
+	}
+
+	result := RunLoop(cb, "search available red-team capabilities", nil, server.Client())
+	if result.HardExit || result.Error != "" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if result.Text != "I found the relevant capability." {
+		t.Fatalf("result text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "search_redteam_capabilities" {
+		t.Fatalf("tool calls = %#v", cb.toolCalls)
+	}
+	if callCount != 3 {
+		t.Fatalf("HTTP call count = %d, want 3", callCount)
+	}
+}
+
 func TestRunLoop_DriftDetection_SameToolSameResult(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -841,6 +971,34 @@ func TestBuildEmptyResponseRecovery_Escalation(t *testing.T) {
 	}
 	if !strings.Contains(prompt3, "test goal") {
 		t.Fatal("third empty should include user goal")
+	}
+}
+
+func TestBuildEmptyResponseRecoveryPromptIsReadableAndActionable(t *testing.T) {
+	prompt := buildEmptyResponseRecoveryPrompt(3, "", toolOutcome{kind: toolOutcomeOK}, "search available red-team capabilities")
+	for _, want := range []string{
+		"consecutive empty assistant responses",
+		"call the appropriate tool",
+		"Original user goal: search available red-team capabilities",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "绯荤粺") || strings.Contains(prompt, "鐢ㄦ埛") {
+		t.Fatalf("prompt contains mojibake text: %q", prompt)
+	}
+}
+
+func TestBuildEmptyResponseRecoveryPromptIncludesToolOutcome(t *testing.T) {
+	timeoutPrompt := buildEmptyResponseRecoveryPrompt(1, "search_redteam_capabilities", toolOutcome{kind: toolOutcomeTimeout}, "")
+	if !strings.Contains(timeoutPrompt, "timed out") || !strings.Contains(timeoutPrompt, "search_redteam_capabilities") {
+		t.Fatalf("timeout prompt missing tool context:\n%s", timeoutPrompt)
+	}
+
+	errorPrompt := buildEmptyResponseRecoveryPrompt(1, "search_redteam_capabilities", toolOutcome{kind: toolOutcomeError}, "")
+	if !strings.Contains(errorPrompt, "returned an error") || !strings.Contains(errorPrompt, "alternative safe path") {
+		t.Fatalf("error prompt missing tool context:\n%s", errorPrompt)
 	}
 }
 

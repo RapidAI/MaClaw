@@ -2,10 +2,14 @@ package skillmarket
 
 import (
 	"archive/zip"
+	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	hubskill "github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
 
 // ── Task 4.5: Processor 单元测试 ────────────────────────────────────────
@@ -77,6 +81,68 @@ func TestSafeUnzip_SandboxCleanup(t *testing.T) {
 	os.RemoveAll(sandboxDir)
 	if _, err := os.Stat(sandboxDir); !os.IsNotExist(err) {
 		t.Error("sandbox dir should be removed after cleanup")
+	}
+}
+
+func TestProcessorPublishesOriginalSkillYAMLForExecutableHubInstall(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	u := createTestUser(t, store, "skill-author@test.com", 0)
+	skillStore := hubskill.NewSkillStore(t.TempDir())
+	processor := NewProcessor(t.TempDir(), t.TempDir(), store, skillStore, nil, nil, nil)
+	originalYAML := `name: ccbos-classical-chinese-skill
+description: executable skill
+triggers:
+  - CCBOS
+type: executable
+steps:
+  - action: run
+    params:
+      command: python3 runtime/main.py --input {{input}} --output {{output}}
+`
+	zipPath := createTestZip(t, map[string]string{
+		"skill.yaml":      originalYAML,
+		"runtime/main.py": "print('payload_dataset')\n",
+	})
+	sub := &SkillSubmission{
+		ID:      "sub-executable-yaml",
+		Email:   u.Email,
+		UserID:  u.ID,
+		Status:  "pending",
+		ZipPath: zipPath,
+	}
+	if err := store.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+
+	if err := processor.processOne(ctx, sub.ID); err != nil {
+		t.Fatalf("processOne: %v", err)
+	}
+	updated, err := store.GetSubmissionByID(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubmissionByID: %v", err)
+	}
+	if updated.SkillID == "" {
+		t.Fatalf("submission did not record skill id")
+	}
+	published, err := skillStore.Get(updated.SkillID)
+	if err != nil {
+		t.Fatalf("published skill not found: %v", err)
+	}
+	encodedYAML := published.Files["skill.yaml"]
+	if encodedYAML == "" {
+		t.Fatalf("published hub package did not include original skill.yaml")
+	}
+	data, err := base64.StdEncoding.DecodeString(encodedYAML)
+	if err != nil {
+		t.Fatalf("decode skill.yaml: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "steps:") || !strings.Contains(got, "python3 runtime/main.py") {
+		t.Fatalf("published skill.yaml lost executable steps:\n%s", got)
+	}
+	if published.Files["runtime/main.py"] == "" {
+		t.Fatalf("published hub package did not include runtime/main.py")
 	}
 }
 

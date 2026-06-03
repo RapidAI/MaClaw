@@ -5,11 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -92,6 +96,180 @@ func TestScanImportedSkillBeforeInstallIgnoresClaimedTrustedLevel(t *testing.T) 
 	}
 	if entry.TrustLevel != security.TrustLevelTrusted {
 		t.Fatalf("scanImportedSkillBeforeInstall mutated trust level to %q", entry.TrustLevel)
+	}
+}
+
+func TestImportExecutableSkillArchiveAllowedInDeveloperMode(t *testing.T) {
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test", SecurityPolicyMode: "developer"}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	archive := makeSkillZipBytes(t, map[string]string{
+		"ccbos/skill.yaml":      "name: ccbos-dev\ndescription: executable skill\nsteps:\n  - action: run\n    command: python runtime/main.py\n",
+		"ccbos/runtime/main.py": "print('ok')\n",
+	})
+
+	items, err := svc.ImportSkillArchive(context.Background(), principal, SkillImportInput{
+		ZipBase64: base64.StdEncoding.EncodeToString(archive),
+		Overwrite: true,
+	})
+	if err != nil {
+		t.Fatalf("ImportSkillArchive() error = %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "ccbos-dev" {
+		t.Fatalf("items = %#v", items)
+	}
+	if _, err := os.Stat(filepath.Join(items[0].SkillDir, "runtime", "main.py")); err != nil {
+		t.Fatalf("runtime/main.py was not installed: %v", err)
+	}
+}
+
+func TestInstallSkillHubExecutablePackageRestoresRuntimeFiles(t *testing.T) {
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test", SecurityPolicyMode: "developer"}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/skills/ccbos-classical-chinese-skill/download" {
+			t.Fatalf("unexpected hub request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "ccbos-classical-chinese-skill",
+			"name":        "ccbos-classical-chinese-skill",
+			"description": "Generate classical Chinese jailbreak payloads",
+			"version":     "1.0.0",
+			"trust_level": "community",
+			"triggers":    []string{"CCBOS", "文言文越狱"},
+			"type":        "executable",
+			"steps": []map[string]any{{
+				"action": "run",
+				"params": map[string]any{"command": "python runtime/main.py --input {{input}} --output {{output}}"},
+			}},
+			"files": map[string]string{
+				"runtime/main.py": base64.StdEncoding.EncodeToString([]byte("print('payload')\n")),
+			},
+		})
+	}))
+	defer hub.Close()
+
+	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{
+		Source:      "skillhub",
+		SkillHubURL: hub.URL,
+		SkillID:     "ccbos-classical-chinese-skill",
+		Overwrite:   true,
+	})
+	if err != nil {
+		t.Fatalf("InstallSkill() error = %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "ccbos-classical-chinese-skill" {
+		t.Fatalf("items = %#v", items)
+	}
+	if _, err := os.Stat(filepath.Join(items[0].SkillDir, "runtime", "main.py")); err != nil {
+		t.Fatalf("runtime/main.py was not restored from hub package: %v", err)
+	}
+}
+
+func TestInstallSkillHubOverwriteUsesCanonicalSkillDirectory(t *testing.T) {
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test", SecurityPolicyMode: "developer"}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	hubVersion := "1"
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/skills/ccbos-classical-chinese-skill/download" {
+			t.Fatalf("unexpected hub request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "ccbos-classical-chinese-skill",
+			"name":        "ccbos-classical-chinese-skill",
+			"description": "Generate classical Chinese jailbreak payloads",
+			"version":     hubVersion,
+			"trust_level": "community",
+			"type":        "executable",
+			"steps": []map[string]any{{
+				"action": "run",
+				"params": map[string]any{"command": "python runtime/main.py --input {{input}} --output {{output}}"},
+			}},
+			"files": map[string]string{
+				"runtime/main.py": base64.StdEncoding.EncodeToString([]byte("print('payload')\n")),
+			},
+		})
+	}))
+	defer hub.Close()
+
+	for _, version := range []string{"1", "2"} {
+		hubVersion = version
+		if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{
+			Source:      "skillhub",
+			SkillHubURL: hub.URL,
+			SkillID:     "ccbos-classical-chinese-skill",
+			Overwrite:   true,
+		}); err != nil {
+			t.Fatalf("InstallSkill(version=%s) error = %v", version, err)
+		}
+	}
+
+	root := svc.userSkillsRoot(principal.TenantID, principal.UserID)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", root, err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("installed skill dirs = %v, want one canonical directory", names)
+	}
+	if got := entries[0].Name(); got != "ccbos-classical-chinese-skill" {
+		t.Fatalf("skill dir = %q, want canonical skill name", got)
+	}
+}
+
+func TestListSkillsDeduplicatesDuplicateNamesPreferringNewest(t *testing.T) {
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test", SecurityPolicyMode: "developer"}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatalf("ensureUserSkillsRoot: %v", err)
+	}
+	oldDir := filepath.Join(root, "a-old-install")
+	newDir := filepath.Join(root, "z-new-install")
+	for _, dir := range []string{oldDir, newDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "skill.yaml"), []byte("name: duplicate-skill\ndescription: old\nstatus: active\nsteps:\n  - action: run\n    command: echo old\n"), 0o644); err != nil {
+		t.Fatalf("write old skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir, "skill.yaml"), []byte("name: duplicate-skill\ndescription: new\nstatus: active\nglobal_timeout: 600\nsteps:\n  - action: run\n    command: echo new\n"), 0o644); err != nil {
+		t.Fatalf("write new skill: %v", err)
+	}
+	oldTime := time.Now().Add(-time.Hour)
+	newTime := time.Now()
+	_ = os.Chtimes(oldDir, oldTime, oldTime)
+	_ = os.Chtimes(newDir, newTime, newTime)
+
+	items, err := svc.ListSkills(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("ListSkills returned %d duplicate items, want 1: %#v", len(items), items)
+	}
+	if items[0].Description != "new" || items[0].GlobalTimeout != 600 {
+		t.Fatalf("selected skill = %#v, want newest duplicate with global_timeout", items[0])
 	}
 }
 
@@ -240,6 +418,34 @@ func TestExportSkillBlocksCriticalRiskBeforeArchive(t *testing.T) {
 		t.Fatalf("skill.rejected audit count = %d, want 1; events=%#v", len(events), events)
 	}
 }
+
+func TestExportExecutableSkillArchiveAllowedInDeveloperMode(t *testing.T) {
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "test", TokenTTL: time.Hour, SecurityPolicyMode: "developer"}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	archive := makeSkillZipBytes(t, map[string]string{
+		"ccbos/skill.yaml":      "name: ccbos-export-dev\ndescription: executable skill\nsteps:\n  - action: run\n    command: python runtime/main.py\n",
+		"ccbos/runtime/main.py": "print('ok')\n",
+	})
+	if _, err := svc.ImportSkillArchive(context.Background(), principal, SkillImportInput{
+		ZipBase64: base64.StdEncoding.EncodeToString(archive),
+		Overwrite: true,
+	}); err != nil {
+		t.Fatalf("ImportSkillArchive() error = %v", err)
+	}
+
+	out, err := svc.ExportSkill(context.Background(), principal, "ccbos-export-dev")
+	if err != nil {
+		t.Fatalf("ExportSkill() error = %v", err)
+	}
+	if out == nil || out.ArchiveBase64 == "" {
+		t.Fatalf("export output = %#v", out)
+	}
+}
+
 func TestUploadSkillBlocksCriticalRiskBeforeSubmit(t *testing.T) {
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
@@ -450,5 +656,18 @@ func TestInstallSkillHonorsCanceledContextBeforePersist(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(svc.userSkillsRoot(tenant.ID, user.ID), "cancel-install")); !os.IsNotExist(statErr) {
 		t.Fatalf("canceled install should not persist skill, stat err = %v", statErr)
+	}
+}
+
+func TestSkillSourceFilterDoesNotTreatSkillMarketAsPrivateSkillHub(t *testing.T) {
+	requested := normalizeSkillSearchSources(nil)
+	filtered := filterAllowedSources(requested, []string{"skillhub"})
+	for _, source := range filtered {
+		if source == "skillmarket" || source == "github" {
+			t.Fatalf("source %q should not be allowed by private skillhub-only policy: %#v", source, filtered)
+		}
+	}
+	if len(filtered) != 1 || filtered[0] != "skillhub" {
+		t.Fatalf("filtered sources = %#v, want only skillhub", filtered)
 	}
 }

@@ -186,7 +186,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 			TimeoutSec:     provider.TimeoutSec,
 			SupportsVision: provider.SupportsVision,
 			AgentType:      provider.AgentType,
-			WireAPI:        strings.TrimSpace(provider.WireAPI),
+			WireAPI:        effectiveProviderWireAPI(provider, protocol),
 			ProviderName:   strings.TrimSpace(provider.Name),
 		}, nil
 	}
@@ -205,6 +205,22 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
 	}, nil
+}
+
+func effectiveProviderWireAPI(provider corelib.MaclawLLMProvider, protocol string) string {
+	wireAPI := strings.TrimSpace(provider.WireAPI)
+	if strings.EqualFold(strings.TrimSpace(protocol), "anthropic") {
+		return wireAPI
+	}
+	model := strings.ToLower(strings.TrimSpace(provider.Model))
+	normalizedWire := strings.ToLower(wireAPI)
+	if strings.HasPrefix(model, "gpt-5") {
+		switch normalizedWire {
+		case "", "chat", "chat_completions", "openai":
+			return "responses"
+		}
+	}
+	return wireAPI
 }
 
 func resolveSelectedProvider(cfg corelib.AppConfig) (corelib.MaclawLLMProvider, error) {
@@ -310,6 +326,7 @@ func cloneAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
 	return out
 }
 func mergeSecretPreserving(current, next corelib.AppConfig) corelib.AppConfig {
+	preserveRuntimeIntegrationConfig(current, &next)
 	preserveMaskedSecretString(&next.DefaultProxyPassword, current.DefaultProxyPassword)
 	preserveMaskedSecretString(&next.RemoteMachineToken, current.RemoteMachineToken)
 	preserveMaskedSecretString(&next.RemoteViewerToken, current.RemoteViewerToken)
@@ -329,6 +346,25 @@ func mergeSecretPreserving(current, next corelib.AppConfig) corelib.AppConfig {
 	preserveModelRouteSecrets(current.ModelRoutes, next.ModelRoutes)
 	preserveExtraToolConfigSecrets(current.ExtraToolConfigs, next.ExtraToolConfigs)
 	return next
+}
+
+func preserveRuntimeIntegrationConfig(current corelib.AppConfig, next *corelib.AppConfig) {
+	if next == nil {
+		return
+	}
+	clonedCurrent := cloneAppConfig(current)
+	if strings.TrimSpace(next.RemoteHubURL) == "" {
+		next.RemoteHubURL = clonedCurrent.RemoteHubURL
+	}
+	if len(next.SkillSourcesAllowed) == 0 && len(clonedCurrent.SkillSourcesAllowed) > 0 {
+		next.SkillSourcesAllowed = clonedCurrent.SkillSourcesAllowed
+	}
+	if len(next.MCPServers) == 0 && len(clonedCurrent.MCPServers) > 0 {
+		next.MCPServers = clonedCurrent.MCPServers
+	}
+	if len(next.LocalMCPServers) == 0 && len(clonedCurrent.LocalMCPServers) > 0 {
+		next.LocalMCPServers = clonedCurrent.LocalMCPServers
+	}
 }
 
 func preserveSecretString(next *string, current string) {

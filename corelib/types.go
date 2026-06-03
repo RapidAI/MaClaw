@@ -377,7 +377,30 @@ func (e *NLSkillEntry) MatchesName(query string) bool {
 			return true
 		}
 	}
+	normalizedQuery := normalizeSkillLookupToken(query)
+	if len(normalizedQuery) >= 4 {
+		for _, candidate := range append([]string{e.Name, e.DirName, filepath.Base(e.SkillDir)}, e.Triggers...) {
+			normalizedCandidate := normalizeSkillLookupToken(candidate)
+			if normalizedCandidate == normalizedQuery || strings.Contains(normalizedCandidate, normalizedQuery) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+func normalizeSkillLookupToken(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	for _, prefix := range []string{"skillhub:", "skill:"} {
+		value = strings.TrimPrefix(value, prefix)
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // learnedSources is the set of Source values that classify a skill as

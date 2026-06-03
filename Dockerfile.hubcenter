@@ -1,0 +1,20 @@
+FROM golang:1.25 AS build
+
+ENV GOPROXY=https://goproxy.cn,direct
+
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY datasrv/go.mod ./datasrv/go.mod
+COPY gui/internal/systray/go.mod ./gui/internal/systray/go.mod
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 GOOS=linux go build -o /out/maclaw-hubcenter ./hubcenter/cmd/hubcenter
+
+FROM golang:1.25
+
+WORKDIR /app
+COPY --from=build /out/maclaw-hubcenter /usr/local/bin/maclaw-hubcenter
+COPY hubcenter/web ./hubcenter/web
+
+EXPOSE 9388
+ENTRYPOINT ["maclaw-hubcenter"]

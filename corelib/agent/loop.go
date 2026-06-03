@@ -239,7 +239,7 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 			}
 
 			// Build a context-aware recovery prompt.
-			recoverPrompt := buildEmptyResponseRecovery(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
+			recoverPrompt := buildEmptyResponseRecoveryPrompt(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
 
 			// Inject a recover prompt to nudge the LLM.
 			conversation = append(conversation, map[string]interface{}{
@@ -450,6 +450,9 @@ func doLLMRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, con
 	if cfg.Protocol == "anthropic" {
 		return llm.DoAnthropicRequest(ctx, cfg, conversation, tools, httpClient)
 	}
+	if cfg.IsResponsesAPI() {
+		return llm.DoResponsesAPIRequest(ctx, cfg, conversation, tools, httpClient)
+	}
 	return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)
 }
 
@@ -502,6 +505,38 @@ func buildEmptyResponseRecovery(emptyCount int, lastToolName string, outcome too
 // "[错误] 命令超时", "工具执行异常"). This is NOT keyword matching on
 // arbitrary LLM output — these are structured markers we control.
 // ---------------------------------------------------------------------------
+
+// buildEmptyResponseRecoveryPrompt is the production recovery prompt used by
+// RunLoop. Keep it ASCII and provider-neutral so it remains readable even when
+// logs or source files pass through non-UTF-8 terminals.
+func buildEmptyResponseRecoveryPrompt(emptyCount int, lastToolName string, outcome toolOutcome, userGoal string) string {
+	var sb strings.Builder
+	if emptyCount <= 2 {
+		sb.WriteString("[system] Your previous assistant response was empty.")
+	} else {
+		sb.WriteString(fmt.Sprintf("[system] Warning: you have returned %d consecutive empty assistant responses. You must now either provide a useful answer or call an appropriate tool; otherwise this task will be stopped.", emptyCount))
+	}
+
+	if lastToolName != "" {
+		switch outcome.kind {
+		case toolOutcomeTimeout:
+			sb.WriteString(fmt.Sprintf("\nThe previous tool call %q timed out. Do not abandon the task. Check whether the operation may still be running, retry with a shorter or safer approach if useful, or explain the current limitation to the user.", lastToolName))
+		case toolOutcomeError:
+			sb.WriteString(fmt.Sprintf("\nThe previous tool call %q returned an error. Analyze the error, try an alternative safe path if one is available, or clearly explain what is blocking progress.", lastToolName))
+		default:
+			sb.WriteString(fmt.Sprintf("\nThe previous tool call was %q. Continue based on its result instead of returning an empty message.", lastToolName))
+		}
+	} else {
+		sb.WriteString("\nIf tools are available and relevant, call the appropriate tool. If no tool is needed or no suitable tool is available, answer the user directly and state the current limitation.")
+	}
+
+	if emptyCount >= 2 && userGoal != "" {
+		goalSnippet := truncateRunesPrefix(userGoal, 200)
+		sb.WriteString(fmt.Sprintf("\n\nOriginal user goal: %s", goalSnippet))
+		sb.WriteString("\nContinue working toward this goal, or tell the user what information or capability is missing.")
+	}
+	return sb.String()
+}
 
 type toolOutcomeKind int
 
@@ -591,10 +626,36 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 		}
 		return resp, nil
 	}
+	if cfg.IsResponsesAPI() {
+		return llm.DoResponsesAPIRequest(ctx, cfg, conversation, tools, httpClient)
+	}
 	resp, err := llm.DoOpenAIRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
 	if err != nil {
 		log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
 		return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)
 	}
+	if shouldRetryEmptyStreamingResponse(resp, tools) {
+		log.Printf("[agent-loop] streaming returned an empty response with tools, falling back to non-stream")
+		if fallback, err := llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient); err == nil && !streamingResponseIsEmpty(fallback) {
+			return fallback, nil
+		}
+	}
 	return resp, nil
+}
+
+func shouldRetryEmptyStreamingResponse(resp *llm.Response, tools []map[string]interface{}) bool {
+	if len(tools) == 0 {
+		return false
+	}
+	return streamingResponseIsEmpty(resp)
+}
+
+func streamingResponseIsEmpty(resp *llm.Response) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return true
+	}
+	msg := resp.Choices[0].Message
+	return strings.TrimSpace(msg.Content) == "" &&
+		strings.TrimSpace(msg.ReasoningContent) == "" &&
+		len(msg.ToolCalls) == 0
 }

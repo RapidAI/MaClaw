@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	maxZipRatio    = 20    // 解压比率上限
+	maxZipRatio    = 20        // 解压比率上限
 	maxTotalSize   = 500 << 20 // 500MB
 	maxSingleFile  = 50 << 20  // 50MB
 	maxFileCount   = 1000
@@ -217,9 +217,6 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		}
 		rel, _ := filepath.Rel(pkgRoot, path)
 		rel = filepath.ToSlash(rel) // 统一为正斜杠
-		if rel == "skill.yaml" {
-			return nil // 元数据已解析
-		}
 		ext := strings.ToLower(filepath.Ext(rel))
 		if !allowedExts[ext] {
 			return nil

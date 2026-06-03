@@ -3020,6 +3020,15 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("async")), "true") {
+		run, err := s.svc.PostMessageAsync(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
+		if err != nil {
+			writeRedactedError(w, err, s.svc.DataRoot())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run)})
+		return
+	}
 	run, msg, err := s.svc.PostMessage(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 	if err != nil {
 		if run != nil {
